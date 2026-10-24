@@ -201,13 +201,32 @@ test("a working agent row shows its latest intent in the meta line", () => {
   expect(document.querySelector("[data-activity-meta]")?.textContent).not.toBe("running");
 });
 
-test("a terminal agent row keeps its status word over a stale intent", () => {
-  render(
+test("a live agent waiting in idle keeps its current status visible", () => {
+  const view = render(
+    <AgentRow sub={activityDelegate({ terminal: false, lifecycle: "running", phase: "idle", status: "idle" })} />,
+  );
+  expect(view.container.querySelector("[data-activity-meta]")?.textContent).toBe("idle");
+});
+
+test.each(["cancelled", "stopped", "exhausted", "unknown"])(
+  "a terminal agent retains its non-success outcome meta: %s",
+  (outcome) => {
+    const view = render(
+      <AgentRow sub={activityDelegate({ terminal: true, status: "idle", outcome, latestIntent: "Stale intent." })} />,
+    );
+    const meta = view.container.querySelector("[data-activity-meta]");
+    expect(meta?.textContent).toBe(outcome);
+    expect(meta?.textContent).not.toBe("Stale intent.");
+  },
+);
+
+test("a terminal agent row keeps its status accessible over a stale intent", () => {
+  const view = render(
     <AgentRow
       sub={activityDelegate({ terminal: true, outcome: "completed", status: "completed", latestIntent: "Stale line." })}
     />,
   );
-  expect(screen.getByText("completed")).toBeTruthy();
+  expect(view.container.querySelector("[aria-description]")?.getAttribute("aria-description")).toBe("completed");
   expect(screen.queryByText("Stale line.")).toBeNull();
 });
 

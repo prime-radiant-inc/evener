@@ -40,7 +40,7 @@
 
 **Interfaces:**
 - Consumes: existing `SessionDelegate`, `JobActivityJob`, `SessionWatch`, `relativeTime`, `absoluteTime`, status and glyph helpers.
-- Produces: `ActivityTime({ at: string | undefined, meaning: string, now: number })`, returning a `<time>` with the source ISO `dateTime`, relative display, and meaning in its accessible tooltip; `agentActivityTime(sub)`, `jobActivityTime(job)`, and `watchActivityTime(row)` returning `{ at, meaning } | undefined`. `AgentRow`, `JobRow`, and `WatchRow` accept `now: number`; caller sites pass it in Task 2.
+- Produces: `ActivityTime({ at: string | undefined, meaning: string, now: number })`, returning a `<time>` with the source ISO `dateTime`, relative display, and meaning in its accessible tooltip; `agentActivityTime(sub)`, `jobActivityTime(job)`, and `watchActivityTime(watch: SessionWatch)` returning `{ at, meaning } | undefined`. `AgentRow`, `JobRow`, and `WatchRow` accept optional `now?: number`; when omitted they use a render-time instant for standalone fixture callers, while Task 2 supplies the shared clock in production.
 
 - [ ] **Step 1: Write failing source-time and density tests**
 

@@ -62,16 +62,12 @@ function agentStateText(sub: SessionDelegate): string {
 function agentIsSuccessful(sub: SessionDelegate): boolean {
   if (!sub.terminal) return false;
   const outcome = sub.outcome?.trim().toLowerCase();
-  if (outcome) return !isFailedDelegateOutcome(outcome) && !["cancelled", "stopped"].includes(outcome);
+  if (outcome) return ["completed", "done", "success"].includes(outcome);
   return agentStateText(sub) === "completed";
 }
 
-function RowStatus({ status, wireStatus }: { status: string; wireStatus: string }) {
-  return (
-    <span aria-hidden="true" data-activity-status data-status={wireStatus} hidden>
-      {status}
-    </span>
-  );
+function RowStatus({ wireStatus }: { wireStatus: string }) {
+  return <span aria-hidden="true" data-activity-status data-status={wireStatus} hidden />;
 }
 
 // The dot must flip at the quiet threshold, not only when the next publish
@@ -131,7 +127,7 @@ export function AgentRow({ sub, onDrill, now }: { sub: SessionDelegate; onDrill?
       }
       label={
         <>
-          <RowStatus status={status} wireStatus={sub.status} />
+          <RowStatus wireStatus={sub.status} />
           <span className={CLASS.rowTitle} title={status}>
             {sub.name?.trim() || sub.description || sub.task || sub.delegateId}
           </span>
@@ -169,7 +165,7 @@ export function JobRow({ job, onOpen, now }: { job: JobActivityJob; onOpen?: () 
       }
       label={
         <>
-          <RowStatus status={status} wireStatus={job.status} />
+          <RowStatus wireStatus={job.status} />
           <span className={`${CLASS.rowTitle} ${description ? "" : CLASS.rowMono}`} title={job.command}>
             {description || job.command?.trim() || job.jobId}
           </span>

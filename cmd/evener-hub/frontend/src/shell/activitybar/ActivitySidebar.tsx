@@ -7,8 +7,9 @@
 // glyphs, and their counts come from the one ACTIVITY_TABS table - the same
 // table the status bar's chips read, so the two surfaces cannot drift.
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
 import { AnimatePresence, m, spatialTransition } from "../../motion";
+import { useNowTick } from "../../panes/session/liveness";
 import { popAgentCascade } from "../../panes/zoom/actions";
 import { cascadeOrigin, cascadeOriginRef } from "../../panes/zoom/inspectionOrigin";
 import { deriveCascadePath, parseZoomParams } from "../../panes/zoom/intent";
@@ -30,6 +31,10 @@ import {
   useActivitySidebarStore,
 } from "./activitySidebarStore";
 import { ACTIVITY_TABS, activityTabSpec } from "./activityTabs";
+
+function ActivityBodyClock({ children }: { children: (now: number) => ReactNode }) {
+  return children(useNowTick(30_000));
+}
 
 const CLASS = {
   sidebar: requireClass(styles.sidebar, "activitybar.module.css", "sidebar"),
@@ -203,14 +208,18 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
                 />
               </div>
               <DisclosurePersistenceContext.Provider value={JSON.stringify([scope.leaf.ref, tab])}>
-                <ActivityViewport
-                  key={JSON.stringify([scope.leaf.ref, tab])}
-                  sessionRef={scope.leaf.ref}
-                  tab={tab}
-                  className={CLASS.body}
-                >
-                  {Body === null ? null : <Body scope={scope} />}
-                </ActivityViewport>
+                <ActivityBodyClock>
+                  {(now) => (
+                    <ActivityViewport
+                      key={JSON.stringify([scope.leaf.ref, tab])}
+                      sessionRef={scope.leaf.ref}
+                      tab={tab}
+                      className={CLASS.body}
+                    >
+                      {Body === null ? null : <Body scope={scope} now={now} />}
+                    </ActivityViewport>
+                  )}
+                </ActivityBodyClock>
               </DisclosurePersistenceContext.Provider>
             </div>
           </FocusScope>

@@ -1,4 +1,4 @@
-import type { JobActivityJob, SessionDelegate, SessionWatch } from "@evener/appwire-client";
+import type { JobActivityJob, SessionDelegate, SessionWatch, TaskRow } from "@evener/appwire-client";
 import { absoluteTime, relativeTime } from "@evener/appwire-client";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./activitybar.module.css";
@@ -73,4 +73,14 @@ export function watchActivityTime(watch: SessionWatch): ActivityTimeValue | unde
   const delivery = validTime(last, "delivered");
   if (delivery) return delivery;
   return validTime(watch.watch.createdAt, watch.state === "armed" ? "armed" : "created");
+}
+
+export function taskActivityTime(task: TaskRow): ActivityTimeValue | undefined {
+  if (task.status === "done" || task.status === "cancelled") {
+    return (
+      validTime(task.completedAt, task.status === "done" ? "completed" : "cancelled") ??
+      validTime(task.updatedAt, "updated")
+    );
+  }
+  return validTime(task.updatedAt, "updated");
 }

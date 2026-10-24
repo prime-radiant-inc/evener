@@ -26,15 +26,15 @@ This is a small frontend presentation change. It uses the existing activity data
 ## Approaches
 
 1. **Strict one-line ledger.** Put every title, status, and time on one line. This is densest, but it loses useful live intent and makes failures and watch conditions harder to understand.
-2. **Compact rows with contextual detail, chosen.** Settled agents and jobs get one line; tasks retain their existing compact history treatment. A second line appears only for live work, a failure, or watch conditions and delivery context. This matches the mockup Jesse selected and keeps important exceptions legible.
+2. **Compact rows with contextual detail, chosen.** Successfully settled agents and jobs get one line; tasks retain their existing compact history treatment. A second line appears for live work, a failure, cancelled/stopped or another non-success outcome, or watch conditions and delivery context. This matches the mockup Jesse selected and keeps important exceptions legible.
 3. **Roomier two-line rows.** Give every item a status/timing line. This is easier to read in isolation but repeats settled status and required scrolling in the comparison; Jesse did not choose it.
 
 ## Row grammar
 
 The first line is a single horizontal unit: the existing status glyph or task check, a title that ellipsizes when necessary, and a non-shrinking relative `<time>`. The timestamp never displaces or overlaps the title. It uses the existing caption type and neutral readable ink, with tabular numbers.
 
-- **Settled Agents and Jobs:** one line. Remove the repeated duration/status meta from the collapsed row. A successful agent does not gain a green status wash or dot.
-- **Failures:** keep the established status shape and an explicit plain-language failure or cancellation state. Do not rely on hue alone.
+- **Successfully settled Agents and Jobs:** one line. Remove the repeated duration/status meta from the collapsed row. A successful agent does not gain a green status wash or dot.
+- **Non-success outcomes:** keep the established status shape and explicit plain-language failure, cancellation, stopped, or other outcome meta. Do not reduce a non-success terminal row to an indistinguishable title or rely on hue alone.
 - **Live Agents and Jobs:** retain the current live glyph behavior and useful secondary text. A running agent's own stated intent remains the why-line, with the existing quiet-dot rule; shell jobs keep their job glyph. Status and attention behavior does not change.
 - **Tasks:** retain `TaskCheck`, cancelled-task strike-through, non-struck completed titles, and the latest note on unfinished tasks when present. Settled rows stay one line. Only the sidebar's task presentation changes.
 - **Watches:** retain the second line from `watchMeta`, including trigger conditions, delivery counts, next-fire information where applicable, and armed/ended state. These facts justify the extra line.

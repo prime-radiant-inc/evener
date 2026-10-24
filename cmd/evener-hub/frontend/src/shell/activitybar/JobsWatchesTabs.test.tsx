@@ -41,6 +41,7 @@ test("jobs show supplied terminal status and have no invented transcript action"
         command: "real status",
         status: "command_exited_nonzero",
         terminal: true,
+        outcome: "failure",
         reason: "exit 2",
       }),
     ],
@@ -50,7 +51,9 @@ test("jobs show supplied terminal status and have no invented transcript action"
   render(<JobsTab scope={scope()} />);
   fireEvent.click(await screen.findByText("1 completed job"));
   expect(screen.getByText("real status")).toBeTruthy();
-  expect(screen.getByText(/Command failed/)).toBeTruthy();
+  const row = screen.getByText("real status").closest("[aria-description]");
+  expect(row?.getAttribute("aria-description")).toBe("Command failed");
+  expect(row?.querySelector("[data-activity-meta]")?.getAttribute("data-failed")).toBe("true");
   expect(screen.queryByRole("button", { name: /real status/ })).toBeNull();
 });
 test("watch tab reads typed receiver state and preserves cadence/delivery vocabulary", async () => {
@@ -158,8 +161,10 @@ test("all terminal jobs fold, and revealed output opens its authoritative owner 
   fireEvent.click(screen.getByText("7 completed jobs"));
   for (const status of ["command_exited_nonzero", "killed", "cancelled", "stopped", "unknown"])
     expect(screen.getByText(`command ${status}`)).toBeTruthy();
-  for (const text of ["completed", "Command failed", "killed", "cancelled", "stopped", "unknown"])
-    expect(screen.getAllByText(text).length).toBeGreaterThan(0);
+  for (const status of ["command_exited_nonzero", "killed", "cancelled", "stopped", "unknown"])
+    expect(
+      screen.getByText(`command ${status}`).closest("[aria-description]")?.getAttribute("aria-description")?.length,
+    ).toBeGreaterThan(0);
   fireEvent.click(screen.getByRole("button", { name: /successful command/ }));
   const opened = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
   expect(opened).toMatchObject({
