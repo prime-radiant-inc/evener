@@ -20,6 +20,7 @@ import {
 	NativeMutationRuntime,
 	type NativeMutationRequest,
 } from "./nativeMutationRuntime";
+import { MutationNotSentError } from "../../mobile/src/state/conversationMutation";
 
 const expoSQLite = vi.hoisted(() => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite", () => expoSQLite);
@@ -1594,7 +1595,7 @@ test.each([
 			params: { ref: "ref-1", expectedInstanceId: "instance-1", ...extra },
 		});
 		expect((client.calls[0]?.params as { clientMutationId?: string }).clientMutationId).toEqual(expect.any(String));
-		expect(await runtime.storage.listOutbox("")).toEqual([]);
+		expect(await runtime.storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-1"))).toEqual([]);
 		await runtime.stop();
 	},
 );
@@ -1608,6 +1609,37 @@ test("a direct send is remembered as this phone's", async () => {
 
 	const sent = (client.calls[0]?.params as { clientMutationId: string }).clientMutationId;
 	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-1")).has(sent)).toBe(true);
+	await runtime.stop();
+});
+
+test("a false precondition refuses before the durable enqueue", async () => {
+	const { runtime, client } = await readyRuntimeWithClient();
+	client.on("turn/start", (params) => appliedReceipt(params));
+	const precondition = vi.fn(() => false);
+
+	await expect(runtime.submit({ ...request("send"), precondition })).rejects.toBeInstanceOf(MutationNotSentError);
+
+	expect(precondition).toHaveBeenCalledTimes(1);
+	expect(await runtime.storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-1"))).toEqual([]);
+	expect(client.calls).toHaveLength(0);
+	await runtime.stop();
+});
+
+test("a precondition rechecked immediately before the storage fallback can still refuse it", async () => {
+	const { runtime, client } = await readyRuntimeWithClient();
+	client.on("turn/start", (params) => appliedReceipt(params));
+	refuseWrites(database!);
+	let checks = 0;
+	const precondition = () => {
+		checks += 1;
+		return checks === 1;
+	};
+
+	await expect(runtime.submit({ ...request("send"), precondition })).rejects.toBeInstanceOf(MutationNotSentError);
+
+	// Once before the enqueue, once again immediately before the direct request.
+	expect(checks).toBe(2);
+	expect(client.calls).toHaveLength(0);
 	await runtime.stop();
 });
 

@@ -367,6 +367,11 @@ type testConfig struct {
 	// Session.mu work (the transcript writer sample) and is about to enter the
 	// serializer. Nil in production.
 	queueHeadClaimSampled func()
+	// turnGateSampledTranscript observes the turn gate after it sampled the
+	// attached transcript writer and before it decided the refusal. The hook
+	// runs with no session lock held; tests use it to replace and close that
+	// writer. Nil in production.
+	turnGateSampledTranscript func(*transcript.Writer)
 	// delegateDeliveryClassified observes whether an incoming waiterless delivery
 	// was deferred to the enclosing ProcessInput drain. Nil in production.
 	delegateDeliveryClassified func(*Session, bool)

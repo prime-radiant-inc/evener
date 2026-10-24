@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { MutationNotSentError } from "../../mobile/src/state/conversationMutation";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
@@ -346,5 +347,117 @@ it("retains uncertain structured replies and prevents a second dispatch", async 
 		draft: "ordinary draft",
 		unconfirmed: "structured reply",
 		unconfirmedCaptureToken: "draft-document-capture-1",
+	});
+});
+
+describe("a mutation proven not sent", () => {
+	it("clears only its own uncertainty marker and keeps the edited draft and images", async () => {
+		const { document, repository, destination } = setup();
+		document.edit("keep me");
+		document.addImage({ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" });
+		const before = document.getSnapshot().record;
+		const outcome = await document.submitText("continue", async () => {
+			throw new MutationNotSentError("the session retired");
+		});
+		expect(outcome).toBe("not-sent");
+		expect(document.getSnapshot().submitting).toBe(false);
+		expect(repository.read(destination)).toEqual(before);
+		expect(repository.imageInputs(destination, repository.read(destination).images ?? [])[0]?.data).toBe("AQID");
+	});
+
+	it("leaves an ordinary false outcome uncertain, as before", async () => {
+		const { document, repository, destination } = setup();
+		document.edit("keep me");
+		const outcome = await document.submitText("continue", async () => false);
+		expect(outcome).toBe(false);
+		expect(repository.read(destination)).toEqual({
+			draft: "keep me",
+			unconfirmed: "continue",
+			unconfirmedCaptureToken: "draft-document-capture-1",
+		});
+	});
+
+	it("propagates an ordinary throw with its uncertainty marker intact", async () => {
+		const { document, repository, destination } = setup();
+		document.edit("keep me");
+		await expect(
+			document.submitText("continue", async () => {
+				throw new Error("wire exploded");
+			}),
+		).rejects.toThrow("wire exploded");
+		expect(document.getSnapshot().submitting).toBe(false);
+		expect(repository.read(destination)).toEqual({
+			draft: "keep me",
+			unconfirmed: "continue",
+			unconfirmedCaptureToken: "draft-document-capture-1",
+		});
+	});
+});
+
+describe("image insertion and selected labels", () => {
+	function selectedDraft(text: string, offset: number) {
+		const { repository, destination } = setup();
+		repository.write(destination, {
+			draft: text,
+			unconfirmed: null,
+			composer: {
+				skillNames: ["inspect"],
+				commandNames: ["inspect"],
+				mentions: [
+					{ kind: "skill", name: "inspect", offset },
+					{ kind: "command", name: "inspect", offset },
+				],
+			},
+		});
+		return { document: new DraftDocument(() => repository, destination), repository, destination };
+	}
+
+	it("drops a label and its selections when the insertion splits it", () => {
+		const { document, repository, destination } = selectedDraft("/inspect body", 0);
+
+		document.addImage({ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" }, 3);
+
+		const record = repository.read(destination);
+		expect(record.draft).toBe("/in[image 1]spect body");
+		expect(record.composer?.mentions).toEqual([]);
+		expect(record.composer?.skillNames).toEqual([]);
+		expect(record.composer?.commandNames).toEqual([]);
+	});
+
+	it("keeps the label with the shifted offset when the insertion lands before it", async () => {
+		const { document, repository, destination } = selectedDraft("/inspect body", 0);
+
+		document.addImage({ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" }, 0);
+
+		const record = repository.read(destination);
+		expect(record.draft).toBe("[image 1]/inspect body");
+		expect(record.composer?.mentions).toEqual([
+			{ kind: "skill", name: "inspect", offset: "[image 1]".length },
+			{ kind: "command", name: "inspect", offset: "[image 1]".length },
+		]);
+		expect(record.composer?.skillNames).toEqual(["inspect"]);
+		expect(record.composer?.commandNames).toEqual(["inspect"]);
+		await document.submit(async (_text, _images, context) => {
+			expect(context.composer?.mentions).toEqual([
+				{ kind: "skill", name: "inspect", offset: "[image 1]".length },
+				{ kind: "command", name: "inspect", offset: "[image 1]".length },
+			]);
+			return false;
+		});
+	});
+
+	it("keeps the label at its offset when the insertion lands after it", () => {
+		const { document, repository, destination } = selectedDraft("/inspect body", 0);
+
+		document.addImage({ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" }, "/inspect".length);
+
+		const record = repository.read(destination);
+		expect(record.draft).toBe("/inspect[image 1] body");
+		expect(record.composer?.mentions).toEqual([
+			{ kind: "skill", name: "inspect", offset: 0 },
+			{ kind: "command", name: "inspect", offset: 0 },
+		]);
+		expect(record.composer?.skillNames).toEqual(["inspect"]);
+		expect(record.composer?.commandNames).toEqual(["inspect"]);
 	});
 });
