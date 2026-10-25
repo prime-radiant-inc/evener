@@ -59,7 +59,7 @@ func TestRound8PushDeployReturnsResolvedTarget(t *testing.T) {
 // after a push deploy on a host with no evener_path and no evener on PATH, the
 // post-deploy launch-check (refreshLaunchContract) must address the recorded
 // install target. Before the fix host.EvenerPath stayed empty, the re-probe ran
-// the literal `evener`, and the terminal errExecutableMissing refused a host the
+// the literal `evener`, and the terminal ErrExecutableMissing refused a host the
 // push had just provisioned.
 func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}

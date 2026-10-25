@@ -232,7 +232,7 @@ func TestOperationRestartReconcilesFreshDeploymentDrift(t *testing.T) {
 					if drift == "repair-write-failure" || drift == "repair-wrong-build" {
 						wantErr := ErrDeploy
 						if drift == "repair-wrong-build" {
-							wantErr = errDeployUnstamped
+							wantErr = ErrDeployUnstamped
 						}
 						pending = m.pendingRestart(host.Name)
 						if !errors.Is(err, wantErr) || writes != 2 || restarts != 0 || running != "predecessor-build" || !pending.deployment || !pending.restart || pending.expectedVersion != requested || pending.replaced.startedAt.Format(time.RFC3339) != "2026-01-01T00:00:00Z" || pending.writeAcknowledged != (drift == "repair-wrong-build") {

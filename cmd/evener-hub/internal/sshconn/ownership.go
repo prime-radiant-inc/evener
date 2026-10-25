@@ -201,7 +201,7 @@ func (m *Manager) checkOwnerExecutable(ctx context.Context, host hostreg.Host, e
 
 func (m *Manager) revalidateOwnedEndpointUsing(ctx context.Context, host hostreg.Host, facts Preflight, prior selectedOwner, read func(context.Context, hostreg.Host, Preflight) (hubendpoint.Report, error)) (selectedOwner, error) {
 	m.applyResolvedTarget(&host)
-	if !host.Equal(prior.host) || host.Generation != prior.host.Generation || host.IncarnationID != prior.host.IncarnationID || host.PresenceEpoch != prior.host.PresenceEpoch {
+	if !hostreg.SameRegistrationAndPresence(host, prior.host) {
 		return selectedOwner{}, fmt.Errorf("%w: host registration changed", errOwnerEvidence)
 	}
 	now, err := m.resolveOwnedEndpointUsing(ctx, host, facts, read)
@@ -215,7 +215,7 @@ func (m *Manager) revalidateOwnedEndpointUsing(ctx context.Context, host hostreg
 }
 
 func sameOwner(now, prior selectedOwner) bool {
-	return now.host.Equal(prior.host) && now.host.Generation == prior.host.Generation && now.host.IncarnationID == prior.host.IncarnationID && now.host.PresenceEpoch == prior.host.PresenceEpoch && sameProcess(now, prior) && sameLaunch(now, prior)
+	return hostreg.SameRegistrationAndPresence(now.host, prior.host) && sameProcess(now, prior) && sameLaunch(now, prior)
 }
 
 func sameProcess(now, prior selectedOwner) bool {

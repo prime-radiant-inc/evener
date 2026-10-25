@@ -38,8 +38,8 @@ func TestDirtyControllerRefusesABuildSource(t *testing.T) {
 	})
 
 	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
-	if !errors.Is(err, errControllerDirty) {
-		t.Fatalf("err = %v, want errControllerDirty", err)
+	if !errors.Is(err, ErrControllerDirty) {
+		t.Fatalf("err = %v, want ErrControllerDirty", err)
 	}
 }
 
@@ -60,8 +60,8 @@ func TestDirtyControllerRefusesANamedBuildBinary(t *testing.T) {
 	})
 
 	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
-	if !errors.Is(err, errControllerDirty) {
-		t.Fatalf("err = %v, want errControllerDirty", err)
+	if !errors.Is(err, ErrControllerDirty) {
+		t.Fatalf("err = %v, want ErrControllerDirty", err)
 	}
 	if builds != 0 {
 		t.Fatalf("build attempts = %d, want 0 (an undeclared build source cannot be proven to reproduce a dirty controller)", builds)
@@ -72,7 +72,7 @@ func TestDirtyControllerRefusesANamedBuildBinary(t *testing.T) {
 // rule from the other side: only a DIRTY controller has to refuse a named
 // artifact. With a reproducible version, a named artifact deploys exactly as it
 // did before — the pre-push checks judge its evener identity and host target,
-// and the post-deploy read judges the build the host reports (errDeployUnstamped)
+// and the post-deploy read judges the build the host reports (ErrDeployUnstamped)
 // — so the rule reads "dirty AND not this controller's own executable", not
 // "artifacts are second-class".
 func TestCleanControllerDeploysANamedBuildBinary(t *testing.T) {
@@ -222,8 +222,8 @@ func TestDefaultSourceCrossTargetUnpinnableRefusesTerminally(t *testing.T) {
 	})
 
 	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"}, nil)
-	if !errors.Is(err, errOwnExecutableCannotServe) {
-		t.Fatalf("err = %v, want errOwnExecutableCannotServe", err)
+	if !errors.Is(err, ErrOwnExecutableCannotServe) {
+		t.Fatalf("err = %v, want ErrOwnExecutableCannotServe", err)
 	}
 	if !isTerminal(err) {
 		t.Fatalf("err = %v, want a terminal refusal (the same host, target, and build re-refuse identically)", err)
@@ -352,8 +352,8 @@ func TestDirtyControllerRefusesWhenTheStagingPathIsNotTheOwnExecutable(t *testin
 	})
 
 	_, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, Home: "/home/dev"}, nil)
-	if !errors.Is(err, errControllerDirty) {
-		t.Fatalf("err = %v, want errControllerDirty (a build source cannot reproduce a dirty controller)", err)
+	if !errors.Is(err, ErrControllerDirty) {
+		t.Fatalf("err = %v, want ErrControllerDirty (a build source cannot reproduce a dirty controller)", err)
 	}
 	if !isTerminal(err) {
 		t.Fatalf("err = %v, want a terminal refusal", err)
@@ -500,8 +500,8 @@ func TestDeployDisabledRefusesEveryDeployPath(t *testing.T) {
 	// The explicit operation reaches deploy directly; it must be refused rather
 	// than silently converted into the installer fallback.
 	_, err := m.deploy(context.Background(), host, facts, nil)
-	if !errors.Is(err, errDeployDisabled) {
-		t.Fatalf("deploy err = %v, want errDeployDisabled", err)
+	if !errors.Is(err, ErrDeployDisabled) {
+		t.Fatalf("deploy err = %v, want ErrDeployDisabled", err)
 	}
 	if !isTerminal(err) {
 		t.Fatalf("deploy err = %v, want a terminal refusal (retrying re-refuses the same setting)", err)
@@ -512,8 +512,8 @@ func TestDeployDisabledRefusesEveryDeployPath(t *testing.T) {
 	if !strings.Contains(err.Error(), help) {
 		t.Fatalf("refusal does not name the remedy: %v", err)
 	}
-	if _, _, err := m.DeployForOperation(context.Background(), host, facts, true, nil); !errors.Is(err, errDeployDisabled) {
-		t.Fatalf("DeployForOperation err = %v, want errDeployDisabled", err)
+	if _, _, err := m.DeployForOperation(context.Background(), host, facts, true, nil); !errors.Is(err, ErrDeployDisabled) {
+		t.Fatalf("DeployForOperation err = %v, want ErrDeployDisabled", err)
 	}
 	if runs := fr.recordedRuns(); len(runs) != 0 {
 		t.Fatalf("a disabled deploy reached the host: %v", runs)
@@ -525,7 +525,7 @@ func TestDeployDisabledRefusesEveryDeployPath(t *testing.T) {
 // dirty controller because it IS the controller's build — and when the build the
 // host ends up with is a different one after all (nothing in sshconn can prove
 // the bytes, so the check is the host's own report), the post-deploy identity
-// read still refuses terminally (errDeployUnstamped) instead of attaching the
+// read still refuses terminally (ErrDeployUnstamped) instead of attaching the
 // host to that build.
 func TestDirtyControllerOwnExecutableMismatchRefusesUnstamped(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
@@ -558,8 +558,8 @@ func TestDirtyControllerOwnExecutableMismatchRefusesUnstamped(t *testing.T) {
 	testRestartRecorder(t, m)
 
 	_, err := m.Ensure(context.Background(), "alpha")
-	if !errors.Is(err, errDeployUnstamped) {
-		t.Fatalf("Ensure err = %v, want errDeployUnstamped", err)
+	if !errors.Is(err, ErrDeployUnstamped) {
+		t.Fatalf("Ensure err = %v, want ErrDeployUnstamped", err)
 	}
 	if errors.Is(err, ErrDeploy) {
 		t.Fatalf("Ensure err = %v still wraps ErrDeploy, so the supervisor would re-push the same foreign artifact forever", err)

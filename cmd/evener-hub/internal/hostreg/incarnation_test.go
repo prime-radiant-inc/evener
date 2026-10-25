@@ -498,3 +498,29 @@ func TestSeedHighWaterCarriesALiveEntryUpToItsGenerationMark(t *testing.T) {
 		t.Fatalf("the re-add minted generation %d, want above every retained mark", re.Generation)
 	}
 }
+
+func TestSameRegistrationAndPresence(t *testing.T) {
+	base := Host{Name: "a", SSH: "a.example", Generation: 7, IncarnationID: "inc-a", PresenceEpoch: 3}
+	mutate := func(f func(*Host)) Host { h := base; f(&h); return h }
+	cases := []struct {
+		name  string
+		other Host
+		want  bool
+	}{
+		{"identical", base, true},
+		{"content differs", mutate(func(h *Host) { h.SSH = "b.example" }), false},
+		{"generation differs", mutate(func(h *Host) { h.Generation = 8 }), false},
+		{"incarnation differs", mutate(func(h *Host) { h.IncarnationID = "inc-b" }), false},
+		{"presence epoch differs", mutate(func(h *Host) { h.PresenceEpoch = 4 }), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SameRegistrationAndPresence(base, tc.other); got != tc.want {
+				t.Fatalf("SameRegistrationAndPresence = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if !SameRegistration(base, mutate(func(h *Host) { h.PresenceEpoch = 4 })) {
+		t.Fatal("SameRegistration must keep ignoring the presence epoch")
+	}
+}

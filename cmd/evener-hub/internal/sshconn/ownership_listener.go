@@ -22,7 +22,7 @@ func (m *Manager) supervisorArgvMatches(ctx context.Context, host hostreg.Host, 
 	prior, ok := m.ownerWitnesses[host.Name]
 	prior = prior.clone()
 	m.mu.Unlock()
-	if !ok || prior.report.Running == nil || prior.supervisor.kind == supervisorNone || prior.pid != pid || strconv.Itoa(prior.report.Running.PID) != pid || !host.Equal(prior.host) || host.Generation != prior.host.Generation || host.IncarnationID != prior.host.IncarnationID || host.PresenceEpoch != prior.host.PresenceEpoch || report.ConfigPath != prior.report.ConfigPath || report.HubStateRoot != prior.report.HubStateRoot || !slices.Equal(live, prior.argv) || !slices.Equal(definition, prior.launchArguments()) || !slices.Equal(env, prior.env) {
+	if !ok || prior.report.Running == nil || prior.supervisor.kind == supervisorNone || prior.pid != pid || strconv.Itoa(prior.report.Running.PID) != pid || !hostreg.SameRegistrationAndPresence(host, prior.host) || report.ConfigPath != prior.report.ConfigPath || report.HubStateRoot != prior.report.HubStateRoot || !slices.Equal(live, prior.argv) || !slices.Equal(definition, prior.launchArguments()) || !slices.Equal(env, prior.env) {
 		return false
 	}
 	var generation string
