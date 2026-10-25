@@ -73,6 +73,22 @@ child attention-transcript reconstruction. Absent live fields retain their
 saved fallbacks, and saved turns are projected only when requested and the live
 read supplied none. Remote reads never merge this hub's local saved state.
 
+When a local read fails because daemon ownership may have changed, the
+[thread read handler](../cmd/evener-hub/app_rpc.go) refreshes discovery. If that
+refresh establishes a usable local route, the same request retries its live
+read once. A child discovered by this refresh can therefore return its live
+boot generation and deliver later child-qualified events on the first
+subscribed read. Clients need neither a second read nor a periodic roster tick.
+
+The retry reuses deletion-fenced source resolution and the existing subscription
+admission and snapshot-to-live handoff. A descendant retains its own admission
+and delivery identity even though it shares its owner's upstream connection.
+Cancellation and deletion retain their typed outcomes. Incompatible owners
+remain restart-required, and an unavailable owner retains the original read's
+saved-history fallback eligibility, including when the one retry fails. This
+recovery never launches or resumes a daemon, replays mutations, or retries a
+remote ref against local saved state.
+
 The [hub relay](../cmd/evener-hub/app_relay.go) shares one canonical upstream
 connection across a session and its descendant routes. The
 [source relay](../cmd/evener-hub/internal/appsource/relay_session.go) serializes
