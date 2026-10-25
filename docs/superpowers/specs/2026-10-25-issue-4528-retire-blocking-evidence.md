@@ -9,7 +9,7 @@ Make a manual retire that lands beside a running job, a watch, a pending job-jou
 
 #4055 made `RetirementController.awaitNaming` consult a non-blocking evidence pre-check (`namingExcludedEvidence` -> `nonBlockingEvidenceRead`) before sleeping on the namer. The pre-check keeps only obligations whose read cannot block on admitted work. This change narrows the blocking set for the four sources the issue names, following the owner ruling recorded in #4528: the pre-check must not be widened to blocking reads, but in-memory counters and bounded, lock-free reads are in scope.
 
-Only `agent/retirement.go`, `agent/session_retirement_evidence.go`, `agent/jobs.go`, `agent/delegate_tree_retirement.go` (comment only), and new tests are in scope. No behavior outside the manual retire's wait decision and its diagnostic snapshot changes. The doc comments on `retirementNonBlockingEvidenceWithNaming`, `retirementLocalBlockers`, `claimSnapshotCurrent` and `nonBlockingEvidenceRead` are updated in the same change: the pre-check may now do bounded filesystem I/O and never waits on an owner lock, rather than promising no I/O at all.
+Only `agent/retirement.go`, `agent/session_retirement_evidence.go`, and new tests are in scope. No behavior outside the manual retire's wait decision and its diagnostic snapshot changes. The doc comments on `TryManualClaim`, `retirementNonBlockingEvidenceWithNaming`, `claimSnapshotCurrent` and `nonBlockingEvidenceRead` are updated in the same change: the pre-check may now do bounded filesystem I/O and never waits on an owner lock, rather than promising no I/O at all.
 
 ## The skip-wait contract
 
@@ -68,7 +68,7 @@ New tests in `agent/retirement_manual_blocking_evidence_test.go`, all built on t
 4. Attention: a pending root attention ID beside the namer refuses at once (snapshot `notification`, no parked timer). After the registry is cleared, the retire waits and claims (transition).
 5. Attention contention: with `attentionMu` held, the retire keeps waiting (timer parked); after the lock is released and the namer settles, it claims. This pins the fail-closed branch.
 6. Job-state contention: with `jm.mu` held, the retire keeps waiting (timer parked); after release and namer settlement it claims. Same fail-closed branch.
-7. No obligations: with an empty evidence set the retire does not skip the namer wait; it claims only after the namer releases.
+7. No obligations is the existing #3921 test (`TestManualRetireWaitsForTheSessionNamer`): with an empty evidence set the retire does not skip the namer wait; it claims only after the namer releases.
 8. Snapshot placeholder: a refusal taken while `attentionMu` is held names the `notification` caution without deciding the claim.
 
 Existing #4055 tests (`agent/retirement_manual_evidence_test.go`) and #3921 tests (`agent/retirement_manual_naming_test.go`) must keep passing unchanged.
@@ -88,4 +88,4 @@ Existing #4055 tests (`agent/retirement_manual_evidence_test.go`) and #3921 test
 - `make build`.
 - PAR: two independent competing reviewers receive this frozen spec and the baseline sources; legitimate findings are resolved before implementation. PAR then reviews the immutable implementation diff.
 - simplify-code over the diff, then the repository's branch RoboRev review.
-- Merge `origin/main` (`013b584c`) when it is not an ancestor before the final push. Push and open a PR; do not merge.
+- Merge the current `origin/main` when it is not an ancestor before the final push. The briefed snapshot was `013b584c`; main had moved to `794e2c7e` (two commits) by the merge, and that head was merged. Push and open a PR; do not merge.
