@@ -448,13 +448,103 @@ func TestHubRelayReconnectAfterPendingRead(t *testing.T) {
 	testHubRelayInterruptedRead(t, true)
 }
 
-func testHubRelayInterruptedRead(t *testing.T, disconnect bool) {
-	t.Helper()
-	f := newHubRelayProgressFixture(t, hubcore.RelayLifecycleHooks{})
+func TestHubRelayCanceledReadReleasesBeforeInitialFinalizer(t *testing.T) {
+	initial, hooks := newHubRelayInitialRelease()
+	f := newHubRelayProgressFixture(t, hooks)
+	t.Cleanup(initial.resume)
 	client := f.open()
 	if _, err := client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
 		t.Fatal(err)
 	}
+	// No second command exists yet, so this barrier identifies the initial RPC.
+	// Its upstream handoff has released the source gate, but its hub counter
+	// remains held until initial.resume. Neither callback holds relayMu.
+	awaitActivityRelaySignal(f.ctx, t, initial.entered, "initial finalizer did not enter")
+	readCtx, cancelRead := context.WithCancel(f.ctx)
+	t.Cleanup(cancelRead)
+	f.gateArmed.Store(true)
+	finished := make(chan error, 1)
+	go func() {
+		read, err := f.relays.readThread(readCtx, f.source, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
+		if read != nil {
+			read.finish(false)
+		}
+		finished <- err
+	}()
+	awaitActivityRelaySignal(f.ctx, t, f.gateEntered, "second read did not acquire the upstream subscription gate")
+	cancelRead()
+	select {
+	case err := <-finished:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled read returned %v", err)
+		}
+	case <-f.ctx.Done():
+		t.Fatal("canceled read did not return")
+	}
+	// Initial is still parked, so this can only be the canceled command's
+	// AfterCommandRelease. Its return and counter release are both joined.
+	awaitActivityRelaySignal(f.ctx, t, initial.released, "canceled command did not release")
+	if got := f.relays.relayCommandCount(rootRef); got != 1 {
+		t.Fatalf("parked initial command owners = %d, want 1", got)
+	}
+	initial.join(f.ctx, t)
+	if got := f.relays.relayCommandCount(rootRef); got != 0 {
+		t.Fatalf("initial finalizer retained %d command owners", got)
+	}
+}
+
+type hubRelayInitialRelease struct {
+	entered  <-chan struct{}
+	released <-chan struct{}
+	resume   func()
+}
+
+func newHubRelayInitialRelease() (hubRelayInitialRelease, hubcore.RelayLifecycleHooks) {
+	entered, permit := make(chan struct{}), make(chan struct{})
+	// These tests issue at most three commands. Keeping all release events
+	// buffered lets failure cleanup resume the finalizer without a receiver.
+	released := make(chan struct{}, 3)
+	var claimed atomic.Bool
+	hooks := hubcore.RelayLifecycleHooks{
+		BeforeCommandRelease: func(key string) {
+			if key == rootRef && claimed.CompareAndSwap(false, true) {
+				close(entered)
+				<-permit
+			}
+		},
+		AfterCommandRelease: func(key string) {
+			if key == rootRef {
+				released <- struct{}{}
+			}
+		},
+	}
+	return hubRelayInitialRelease{
+		entered: entered, released: released,
+		resume: sync.OnceFunc(func() { close(permit) }),
+	}, hooks
+}
+
+func (initial hubRelayInitialRelease) join(ctx context.Context, t *testing.T) {
+	t.Helper()
+	// Authorize the deliberately parked finalizer, then join its actual counter
+	// release. Merely receiving the RPC response does not establish that release.
+	initial.resume()
+	awaitActivityRelaySignal(ctx, t, initial.released, "initial command did not release")
+}
+
+func testHubRelayInterruptedRead(t *testing.T, disconnect bool) {
+	t.Helper()
+	initial, hooks := newHubRelayInitialRelease()
+	f := newHubRelayProgressFixture(t, hooks)
+	t.Cleanup(initial.resume)
+	client := f.open()
+	if _, err := client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatal(err)
+	}
+	// No other command has started, so the parked finalizer and this release
+	// event belong to the initial RPC, not the read we are about to interrupt.
+	awaitActivityRelaySignal(f.ctx, t, initial.entered, "initial finalizer did not enter")
+	initial.join(f.ctx, t)
 	readCtx, cancelRead := context.WithCancel(f.ctx)
 	t.Cleanup(cancelRead)
 	f.gateArmed.Store(true)
