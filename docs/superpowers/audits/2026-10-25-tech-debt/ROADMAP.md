@@ -233,7 +233,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 ### W0-20 Byte-slice truncation splits UTF-8 runes in model-facing text
 - Findings: agent-internal-state-4, x-go-duplicate-functions-5, agent-misc-root-12 (first step).
 - Files: `agent/internal/contextmgr/fork_summarize.go:104`, `context_manager.go:1092,1434,2462,2560,2614,2660`, `cmd/evener/run.go:574`, `cmd/evener-hub/app_search.go:263`, `agent/prompt_data.go:212`; route through the existing `agent/internal/runetrim.Cut`.
-- Steps: one multibyte-straddling-the-cap test per site asserting `utf8.ValidString`; route the six byte-slicing sites through `runetrim.Cut`. Do not unify the ellipsis choice (`…` vs `...`); some strings are wire values (x-go-duplicate-functions-5).
+- Steps: one multibyte-straddling-the-cap test per site asserting `utf8.ValidString`; route the agent-module byte-slicing sites through `runetrim.Cut`. `cmd/evener` and `cmd/evener-hub` cannot import `agent/internal/runetrim` (Go internal-package rule), so those two sites use a rune-safe cut in an importable place (an existing shared package, or a local helper until W1-08 picks the shared home). Do not unify the ellipsis choice (`…` vs `...`); some strings are wire values (x-go-duplicate-functions-5).
 - Tests: the straddling tests; CI.
 - Docs: none.
 - LOC: ~+60
@@ -315,7 +315,7 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 - Tests: the behavior change per caller group is explicit (durability and symlink safety improve), so each migration commit carries its own red-then-green test; fault-injection through the FS interface, not `testing.Testing()`.
 - Docs: `docs/architecture.md` module boundaries (if a new import edge appears); `docs/developing-evener/README.md` if it lists helper packages.
 - LOC: ~+250 (package and tests +350, five callers -100)
-- Risk: medium (durability change on hot state files). Gate: Q4. Deps: none; precedes W1-02, W1-03.
+- Risk: medium (durability change on hot state files). Gate: Q4 answered (DECISIONS.md: `execsupport`, durable default). Before migrating a caller, trace its call frequency; a hot path that writes rebuildable state uses the explicitly named no-sync variant, and the PR says why (GAPS.md section 3, item 1). Decide the `afero` question (GAPS.md G7) before fixing the FS-interface shape. Deps: none; precedes W1-02, W1-03.
 
 ### W1-02 Migrate the hub CreateTemp writers to the shared writer
 - Findings: hub-app-host-9, hub-hostops-appsource-10, hub-internal-small-1 (hub half), x-go-duplicate-functions-1.
@@ -502,7 +502,7 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 ### W1-22 Delete the legacy in-process spawn API
 - Findings: agent-delegates-1 (high), part 2; agent-delegates-4 prerequisites; x-dead-code-1 (`sendInput`).
 - Files: `agent/subagents.go` (`spawnAgent`, `sendInput`, `cancelAgent`, `startOrSteerSubagentRun`, `trackAndLaunchPreparedSubagent`, `prepareSubagentRun`, `prepareSubagentRunWithModelSelection`, `releasePreparedTreeSlot`, the `subagentAfterPrepare`/`subagentReserveSlot`/`subagentReserveTreeSlot` hooks, and the `!preparedEnv.stableController` gates at `subagents.go:1231,1255`; `delegate_runtime.go:2662` is the only place `stableController` is set).
-- Steps: delete the above and the now-constant-true `stableController` branches; remove the flag if it becomes always true.
+- Steps: split into three PRs that each compile on their own: (a) delete `sendInput`, `cancelAgent` and the `subagentAfterPrepare`/`subagentReserveSlot`/`subagentReserveTreeSlot` hooks; (b) delete `spawnAgent`, `startOrSteerSubagentRun`, `trackAndLaunchPreparedSubagent`, `prepareSubagentRun*` and `releasePreparedTreeSlot`; (c) remove the now-constant-true `stableController` branches and the flag. Before (a), add a delegate-lifecycle behavior test that drives the controller path, so tests move before code is deleted.
 - Tests: compile plus the converted suite from W1-21.
 - Docs: `docs/product/subsystems.md` delegates row if it names the legacy path; `docs/architecture.md:330,389,423` anchors.
 - LOC: ~-2,500 (the verifier says the surface is larger than reported; re-measure at PR start)
@@ -799,12 +799,12 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 
 ### W1-54 Delete coverage-wave test files
 - Findings: hub-root-rest-11 (40 `cov_*_test.go`, 6,031 lines, 46 Fuzz funcs), hub-app-rest-15 (39 files, 5,928 lines, 790 discarded-result statements), go-tests-agent-5 (211 sprint-labelled files), agent-delegates-19, agent-jobs-18, agent-internal-tools-5, hub-hubcore-19, hub-sshconn-18, go-tests-rest-2, internal-misc-cmds-9, llm-core-providers-21, build-gates-scripts-19 (183 gap/cov-named files).
-- Files: `cmd/evener-hub/cov_*_fuzz_test.go`, `agent/*covtest*_test.go` (17 in the delegates slice, 4,013 lines), `credentials/package_union_fuzz_test.go`, `*_covtest_test.go` elsewhere, `scripts/coverage/coverage-floors.txt`.
-- Steps: only after Q2. Per file: move assertions that test real behavior into the matching `app_*_test.go`, delete discarded-result blocks and `err != nil`-only tests, run the coverage-floor before/after report in CI, then re-bless the floors in the same PR when Jesse approves the delta. Smallest packages first; no line target (build-gates-scripts-19 verifier).
+- Files: `cmd/evener-hub/cov_*_fuzz_test.go`, `agent/*covtest*_test.go` (17 in the delegates slice, 4,013 lines), `credentials/package_union_fuzz_test.go`, `*_covtest_test.go` elsewhere, `scripts/coverage/coverage-floors.txt`, `scripts/coverage/fuzzcov-ignore.txt`, `scripts/fuzz/fuzz-targets.txt` (46 Fuzz funcs in the hub `cov_*` files are registered by name; the static gap gate fails if the rows outlive the files), `testing-budget.json` rows.
+- Steps: only after Q2. Per file: move assertions that test real behavior into the matching `app_*_test.go`, delete discarded-result blocks and `err != nil`-only tests, run the coverage before/after report in CI and attach it. Q2 answered: the floor is not a protected gate, so update or drop the floors rows in the same PR. Delete the fuzz-target and coverage-list rows together with the files. Smallest packages first; no line target (build-gates-scripts-19 verifier).
 - Tests: coverage report attached per PR.
 - Docs: `docs/developing-evener/testing.md` coverage section.
 - LOC: ~-8,000 first pass (hub 6,000 plus delegates 2,000; the 38k repo-wide figure in SYNTHESIS is not claimed) here
-- Risk: medium (coverage floors). Gate: Q2. Deps: none.
+- Risk: medium. Gate: Q2 answered (DECISIONS.md). Deps: before W1-50, so phrase-assertion conversion skips files this PR deletes.
 
 ### W1-55 Mechanical test renames and stale citations
 - Findings: go-tests-agent-5 (cheap parts), go-tests-rest-3, go-tests-rest-4, hub-hostops-appsource-14, native-tests-legacy-mobile-5/12 (labels), agent-jobs-18 (comment half), hub-app-host-17 (round files).
@@ -836,7 +836,7 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 ### W1-58 Plan and spec corpus
 - Findings: x-docs-1 (481 plans/402,756 lines, 441 specs/117,976 lines; 161 non-docs files cite `docs/superpowers`, 92 distinct paths).
 - Files: `docs/superpowers/plans/**`, `docs/superpowers/specs/**`.
-- Steps: after Q19, delete only plans not cited outside `docs/superpowers` (exact `git grep` of each basename); drop front-matter noise; leave specs that code cites. Prefer repointing code cites to evergreen docs in the same PRs as comment cleanup.
+- Steps: after Q19, delete only plans whose PR has merged to main (check with `gh pr list --search`, not by citation count) and that nobody has touched in the last 30 days, and that are not cited outside `docs/superpowers` (exact `git grep` of each basename); drop front-matter noise; leave specs that code cites. Prefer repointing code cites to evergreen docs in the same PRs as comment cleanup.
 - Tests: `make docs-check`.
 - Docs: `docs/product/README.md` gains the one-line rule if approved.
 - LOC: 0 code (docs only: about -300,000 lines of markdown; not counted in the totals)
@@ -867,11 +867,11 @@ These cannot start until their gate is answered. Each is its own PR.
 ### W1-61 Retire plugin-store migrations
 - Findings: internal-misc-cmds-5, x-compat-legacy-13, internal-misc-cmds-10 (seams), internal-misc-cmds-15.
 - Files: `internal/plugins/marketplace_migration.go` (1,282 lines, 439 comments), `metadata_migration.go` (343), `store_format.go` (94), tests (4,261 + 774 + 590 + 170), `locks.go:84-97` `lockStore` calling `migrateMarketplaceNames` and `ensureManagedContentMigrated`.
-- Steps: if no store older than 2026-09-12 can exist: delete as proposed and rewrite the S17/S18 rows of the subsystem map in the same PR; keep name validation and the preservation behavior. If yes: keep and at most take the three tree-copy implementations (`source.go:304`, `publication.go:325`, `resolve.go:412`) to one.
+- Steps: Q1 answered (DECISIONS.md): state migrations stay. Keep the marketplace-name migration, and keep the managed Git-metadata migration (`metadata_migration.go`, `store_format.go`, added 2026-10-21, with its interrupted-operation recovery and audit state). Scope this entry to simplification that keeps every migration path working: take the three tree-copy implementations (`source.go:304`, `publication.go:325`, `resolve.go:412`) to one, and trim test seams that have no behavior test behind them.
 - Tests: preservation behavior tests stay.
 - Docs: `docs/product/subsystems.md` rows S17/S18.
-- LOC: ~-5,500 (tests are most of it)
-- Risk: medium. Gate: Q1. Deps: W1-59.
+- LOC: ~-300
+- Risk: medium. Gate: Q1 answered. Deps: W1-59.
 
 ### W1-62 Retire serf-era migration tools and the MEMORY.md migration
 - Findings: internal-misc-cmds-6, x-compat-legacy-7, agent-misc-root-16, x-compat-legacy-5 (pre-union adapters; verify no producers).
@@ -1122,6 +1122,8 @@ Rules for every item here: do not start until Jesse has discussed the seams. Ord
 - Risk: low (mechanical), huge diffs. Gate: design. Deps: W1-55.
 
 ## Decisions that are Jesse's
+
+Answers so far are recorded in [DECISIONS.md](DECISIONS.md).
 
 Each is a product or policy call, not a refactor. Items marked "default" state what the roadmap assumes if he has no preference, so work can proceed on the safe reading.
 
