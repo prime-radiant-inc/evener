@@ -599,7 +599,9 @@ func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 			continue
 		}
 		aggregate := c.durable[delegateID]
-		if len(state.wakeIDs) != 0 && aggregate != nil && aggregate.Resumable && aggregate.PendingStopSeq == 0 && aggregate.Phase != delegatestore.PhaseClosed {
+		// Resumable alone excludes a closed delegate: every fold transition
+		// into PhaseClosed requires !Resumable.
+		if len(state.wakeIDs) != 0 && aggregate != nil && aggregate.Resumable && aggregate.PendingStopSeq == 0 {
 			return true
 		}
 	}

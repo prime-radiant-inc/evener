@@ -44,7 +44,10 @@ func callIDFromContext(ctx context.Context) string {
 //     would be stripped after registration.
 //
 // The default name is exempt: adopting the profile's communicate definition,
-// which is always named tool.DefaultResultToolName, is the point.
+// which is always named tool.DefaultResultToolName, is the point. A non-default
+// name removes that canonical registration after the configured result tool
+// registers: the profile registry seeded it with profilePlaceholderExecutor, so
+// leaving it would advertise a second, unwired result tool (issue #4906).
 func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 	resultToolName := deps.resultToolName()
 	if resultToolName != tool.DefaultResultToolName {
@@ -78,7 +81,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 	if deps.offersEndReason {
 		resultToolDef = tool.WithCommunicateEndReason(resultToolDef)
 	}
-	_ = reg.Register(tool.RegisteredTool{
+	if err := reg.Register(tool.RegisteredTool{
 		Definition: resultToolDef,
 		OmitIntent: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -217,7 +220,19 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 			}
 			return string(b), nil
 		},
-	})
+	}); err != nil {
+		if resultToolName != tool.DefaultResultToolName {
+			return fmt.Errorf("cannot use result tool name %q: %w; choose a different --result-tool-name", resultToolName, err)
+		}
+		return err
+	}
+	if resultToolName != tool.DefaultResultToolName {
+		// The profile registry seeded the canonical communicate definition with
+		// profilePlaceholderExecutor. This session's result tool now lives under
+		// resultToolName; leaving the canonical registration behind would
+		// advertise a second, unwired result tool (issue #4906).
+		reg.Remove(tool.DefaultResultToolName)
+	}
 	return nil
 }
 

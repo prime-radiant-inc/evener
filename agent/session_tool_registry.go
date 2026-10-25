@@ -449,12 +449,19 @@ func buildProfileToolRegistry(defs []llm.ToolDefinition) *tool.Registry {
 		_ = reg.Register(tool.RegisteredTool{
 			Definition: td,
 			OmitIntent: td.Name == "communicate",
-			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-				return nil, errors.New("tool executor not wired")
-			},
+			Exec:       profilePlaceholderExecutor,
 		})
 	}
 	return reg
+}
+
+// profilePlaceholderExecutor is the executor buildProfileToolRegistry installs
+// on every profile definition it seeds. registerCoreTools replaces each seeded
+// definition with the real handler; a definition still carrying this executor
+// was never wired. It is a named function, not a closure, so tests can identify
+// it by symbol without invoking a real tool.
+func profilePlaceholderExecutor(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+	return nil, errors.New("tool executor not wired")
 }
 
 func registerMinimalWorktreeTools(reg *tool.Registry, s *Session) error {

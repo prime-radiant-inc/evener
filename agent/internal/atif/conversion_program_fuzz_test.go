@@ -167,7 +167,7 @@ func FuzzATIFConversionProgram(f *testing.F) {
 
 		redacted := ConvertTranscriptWithOptions(header, entries, Options{ProviderHandles: ProviderHandleModeRedacted})
 		rawLocal := ConvertTranscriptWithOptions(header, entries, Options{ProviderHandles: ProviderHandleModeRawLocal})
-		atifProgramAssertTrajectory(t, redacted, rawLocal, responseID, usage, cacheRead)
+		atifProgramAssertTrajectory(t, redacted, rawLocal, responseID, usage, cacheRead, cacheWrite, cacheWrite1h)
 	})
 }
 
@@ -185,7 +185,7 @@ func atifProgramString(value, fallback string, limit int) string {
 	return value
 }
 
-func atifProgramAssertTrajectory(t *testing.T, redacted, rawLocal Trajectory, responseID string, usage, cacheRead int) {
+func atifProgramAssertTrajectory(t *testing.T, redacted, rawLocal Trajectory, responseID string, usage, cacheRead, cacheWrite, cacheWrite1h int) {
 	t.Helper()
 	for name, trajectory := range map[string]Trajectory{"redacted": redacted, "raw-local": rawLocal} {
 		if trajectory.SchemaVersion != "ATIF-v1.7" || trajectory.SessionID != "session" {
@@ -194,8 +194,14 @@ func atifProgramAssertTrajectory(t *testing.T, redacted, rawLocal Trajectory, re
 		if trajectory.FinalMetrics == nil || trajectory.FinalMetrics.TotalSteps != len(trajectory.Steps) {
 			t.Fatalf("%s final metrics = %+v, steps=%d", name, trajectory.FinalMetrics, len(trajectory.Steps))
 		}
-		if trajectory.FinalMetrics.TotalPromptTokens != usage || trajectory.FinalMetrics.TotalCompletionTokens != usage+1 || trajectory.FinalMetrics.TotalCachedTokens != cacheRead {
+		// Prompt totals are inclusive at both levels: cache-miss + cache-read +
+		// cache-write + cache-write-1h.
+		wantPrompt := usage + cacheRead + cacheWrite + cacheWrite1h
+		if trajectory.FinalMetrics.TotalPromptTokens != wantPrompt || trajectory.FinalMetrics.TotalCompletionTokens != usage+1 || trajectory.FinalMetrics.TotalCachedTokens != cacheRead {
 			t.Fatalf("%s metrics = %+v", name, trajectory.FinalMetrics)
+		}
+		if trajectory.FinalMetrics.Extra["cache_miss_tokens"] != usage || trajectory.FinalMetrics.Extra["cache_read_tokens"] != cacheRead || trajectory.FinalMetrics.Extra["prompt_wire_tokens"] != wantPrompt {
+			t.Fatalf("%s final metrics extra = %+v", name, trajectory.FinalMetrics.Extra)
 		}
 		for i, step := range trajectory.Steps {
 			if step.StepID != i+1 || step.Extra == nil {
