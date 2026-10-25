@@ -2072,6 +2072,27 @@ func TestDelegateAttentionRestore_HoldsOffIdleReleaseMidWake(t *testing.T) {
 		// must count, so this pass's exit cannot drop the other pass's hold.
 		tree.holdAttentionRestore(res.DelegateID)
 	}
+	// An index entry alone is not receiver custody and must not restore a runtime.
+	sess.delegateController.recheckNotificationReceivers()
+	if hookFired {
+		t.Fatal("attention index restored a runtime without canonical receiver custody")
+	}
+	const attentionID = "delegate:mid-wake-sentinel"
+	const content = "inspect the mid-wake sentinel"
+	receiver := coldDelegateDeliveryReceiver{stateDir: sess.cfg.StateDir, transcriptRef: res.TranscriptRef, now: tree.now}
+	if appended, err := receiver.appendDelegateNotificationDurably(attentionID, content); err != nil || !appended {
+		t.Fatalf("append cold receiver custody = %t, %v", appended, err)
+	}
+	fold, err := readExistingDelegateAttentionFold(runtime.TranscriptPath(), res.ChildSessionID)
+	if err != nil {
+		t.Fatalf("read cold receiver custody: %v", err)
+	}
+	if ids := fold.pendingIDs(); len(ids) != 1 || ids[0] != attentionID || fold.content[attentionID].Text() != content {
+		t.Fatalf("cold custody = %v, content %q, want exact sentinel", ids, fold.content[attentionID].Text())
+	}
+	if _, err := tree.openDelegateAttention(res.DelegateID, attentionID); err != nil {
+		t.Fatalf("open canonical delegate attention: %v", err)
+	}
 	sess.delegateController.recheckNotificationReceivers()
 	if !hookFired {
 		t.Fatal("wake pass restored nothing; fixture setup broken")

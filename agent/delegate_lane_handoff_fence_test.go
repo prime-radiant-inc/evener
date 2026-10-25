@@ -410,6 +410,8 @@ func seedControllerRun(t *testing.T, c *delegateTreeController, delegateID strin
 			lease:  lease,
 			cancel: func() {},
 			ready:  true,
+			// CommitStart attaches report-required evidence to every initial run.
+			evidence: &delegateGenerationEvidence{requirement: delegateCompletionReportRequired},
 		}}
 	}
 	c.mu.Unlock()
