@@ -5,9 +5,8 @@ import "time"
 // EventData is the sealed set of payloads that may ride on a SessionEvent. The
 // unexported eventKind method both (a) restricts the SessionEvent.Data field to
 // this package's payload types — a foreign type cannot satisfy the interface —
-// and (b) records which EventKind a payload belongs to, so the emit chokepoint
-// can derive Kind from the payload instead of trusting a separately passed
-// argument.
+// and (b) records which EventKind a payload belongs to, so KindOf can derive
+// Kind from the payload alone.
 //
 // What this guarantees and what it does NOT: the interface gives compile-checked
 // payload VALIDITY (you cannot put a non-payload value on the stream). It does

@@ -740,7 +740,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		var err error
 		ids, err = sub.sess.pendingDelegateAttentionIDs()
 		if err != nil {
-			s.emit(events.EventWarning, warningDataFromError("inspect delegate attention", err))
+			s.emit(warningDataFromError("inspect delegate attention", err))
 			return true
 		}
 	}
@@ -752,7 +752,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		// reconciliation launches no run, so it never claims the wake: return
 		// false and let the notification drive proceed as it did before.
 		if err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
-			s.emit(events.EventWarning, warningDataFromError("clear resolved delegate attention", err))
+			s.emit(warningDataFromError("clear resolved delegate attention", err))
 		}
 		return false
 	}
@@ -822,12 +822,12 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	} else {
 		pending, err := sub.sess.pendingDelegateAttentionIDs()
 		if err != nil {
-			s.emit(events.EventWarning, warningDataFromError("inspect delegate attention", err))
+			s.emit(warningDataFromError("inspect delegate attention", err))
 			return true
 		}
 		if len(pending) == 0 {
 			if err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
-				s.emit(events.EventWarning, warningDataFromError("clear resolved delegate attention", err))
+				s.emit(warningDataFromError("clear resolved delegate attention", err))
 			}
 			return false
 		}
@@ -836,19 +836,19 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	reservation, err := s.delegateController.ReserveAttention(sub.sess, ids[0])
 	if err != nil {
 		if !errors.Is(err, errDelegateTargetBusy) && !errors.Is(err, errTreeAtCapacity) {
-			s.emit(events.EventWarning, warningDataFromError("reserve delegate attention", err))
+			s.emit(warningDataFromError("reserve delegate attention", err))
 		}
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
 	if err := sub.sess.acceptDelegateAttention(reservation); err != nil {
-		s.emit(events.EventWarning, warningDataFromError("accept delegate attention", err))
+		s.emit(warningDataFromError("accept delegate attention", err))
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
 	started, err := s.delegateController.CommitStart(reservation)
 	if err != nil {
-		s.emit(events.EventWarning, warningDataFromError("commit delegate attention", err))
+		s.emit(warningDataFromError("commit delegate attention", err))
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
@@ -863,7 +863,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		if executeErr := s.executeDelegateMutationPlans(plans); finishErr == nil {
 			finishErr = executeErr
 		}
-		s.emit(events.EventWarning, warningDataFromError("launch delegate attention", errors.Join(launchErr, finishErr)))
+		s.emit(warningDataFromError("launch delegate attention", errors.Join(launchErr, finishErr)))
 	}
 	return true
 }
@@ -1045,7 +1045,7 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		}
 	} else if restored {
 		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
-			sub.sess.emit(events.EventWarning, warningDataFromError("restored delegate side effects incomplete", err))
+			sub.sess.emit(warningDataFromError("restored delegate side effects incomplete", err))
 		}
 	}
 	finishRestore(sub, nil)
@@ -1325,7 +1325,7 @@ func (s *Session) warnDelegateAttentionFailed(action, delegateID string, err err
 	slog.Warn("delegate attention failed", "action", action, "session", s.ID(), "delegate", delegateID, "error", cause)
 	data := warningDataFromError(action, err)
 	data.Code = events.WarningCodeDelegateAttentionRestore
-	s.emit(events.EventWarning, data)
+	s.emit(data)
 }
 
 // delegateAttentionWarningResolved ends action's failure episode for
@@ -1409,7 +1409,7 @@ func (s *Session) giveUpDelegateAttention(delegateID string, restoreErr error) {
 	data := warningDataFromError("Evener stopped trying to deliver a subagent's message until the subagent has something new or Evener restarts: it could not be restored or handed to this session", escalateErr)
 	data.Code = events.WarningCodeDelegateAttentionUndeliverable
 	data.DelegateID = delegateID
-	s.emit(events.EventWarning, data)
+	s.emit(data)
 }
 
 func (s *Session) drivePendingStableDelegateAttention() bool {
@@ -1599,7 +1599,7 @@ func (c *delegateTreeController) finishUnlaunchedGeneration(lease delegateLease,
 // delegate takes its next start, warning if the report fails.
 func (s *Session) releaseFinishedGeneration(lease delegateLease, runtime *Session) {
 	if err := s.delegateController.ReportFinalizationQuiesced(lease, runtime); err != nil {
-		s.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", err))
+		s.emit(warningDataFromError("delegate finalization quiescence report failed", err))
 	}
 }
 
@@ -1812,7 +1812,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	bindStableDelegateActivity(sub.sess, s.delegateController, started.lease)
 	if restored {
 		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
-			s.emit(events.EventWarning, warningDataFromError("restored delegate side effects incomplete", err))
+			s.emit(warningDataFromError("restored delegate side effects incomplete", err))
 		}
 	}
 	s.mu.Lock()
@@ -2867,7 +2867,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			}
 			seeded = true
 			summary := task.Summarize(childStore.View())
-			child.emit(events.EventTaskUpdated, taskUpdatedData(summary, child.taskStoreOwnerSessionID(), epoch, revision))
+			child.emit(taskUpdatedData(summary, child.taskStoreOwnerSessionID(), epoch, revision))
 			return nil
 		}); err != nil {
 			child.discardRestoredCandidate()
@@ -2898,7 +2898,6 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	sub := &subagent{
 		id:               descriptor.ChildSessionID,
 		sess:             child,
-		emit:             s.emit,
 		status:           SubagentCompleted,
 		nudgeEnabled:     descriptor.Config.AgentName == "subagent",
 		agentType:        descriptor.AgentType,
@@ -3324,11 +3323,11 @@ func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
 		// session owns, whose owner stream already carries it.
 		for _, runtime := range ancestorRuntimes {
 			if runtime != ownerRuntime {
-				runtime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)
+				runtime.emitWithProvenance(data, row.descriptor.Provenance)
 			}
 		}
 		if ownerRuntime != nil {
-			ownerRuntime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)
+			ownerRuntime.emitWithProvenance(data, row.descriptor.Provenance)
 			continue
 		}
 		s.mu.Lock()

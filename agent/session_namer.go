@@ -502,7 +502,7 @@ func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, sup
 		// state (see resetNotesProjectionAfterCompaction).
 		s.resetNotesProjectionAfterCompaction()
 		s.resetMemoryProjectionAfterCompaction()
-		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
+		s.emit(events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
 	}
 	if superseded {
 		return
@@ -521,7 +521,7 @@ func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, sup
 
 func (s *Session) reportCompactionTranscriptAppend(err error) {
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
 	}
 }
 
@@ -619,7 +619,7 @@ func (s *Session) applySessionNameResult(result sessionNameResult, publishedRevi
 	s.naming.updated = s.sclock().Now().UTC()
 	s.naming.set = true
 	s.mu.Unlock()
-	s.emit(events.EventSessionNameChanged, events.SessionNameChangedData{Name: result.Name, Source: result.Source})
+	s.emit(events.SessionNameChangedData{Name: result.Name, Source: result.Source})
 
 	s.appendSessionNamerLog(sessionlog.SessionLogEntry{
 		Kind:    "advisory",
@@ -656,7 +656,7 @@ func (s *Session) appendSessionNamerLog(entry sessionlog.SessionLogEntry) {
 	logPath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".log.jsonl")
 	log, err := sessionlog.NewSessionLog(logPath)
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("session namer log open failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("session namer log open failed: %v", err)})
 		return
 	}
 	s.reportSessionNamerLogAppend(log.Append(entry))
@@ -664,7 +664,7 @@ func (s *Session) appendSessionNamerLog(entry sessionlog.SessionLogEntry) {
 
 func (s *Session) reportSessionNamerLogAppend(err error) {
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("session namer log append failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("session namer log append failed: %v", err)})
 	}
 }
 

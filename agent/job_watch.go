@@ -3378,11 +3378,6 @@ func watchEventFilterMatches(filter *watchEventFilter, ev events.SessionEvent) b
 	switch d := ev.Data.(type) {
 	case events.ToolCallEndData:
 		data = d
-	case *events.ToolCallEndData:
-		if d == nil {
-			return false
-		}
-		data = *d
 	default:
 		return false
 	}
@@ -4355,11 +4350,6 @@ func watchFrameJob(data events.EventData) (jobID, delegateID string, ok bool) {
 	switch d := data.(type) {
 	case events.JobFinishedData:
 		return d.JobID, d.DelegateID, d.JobID != ""
-	case *events.JobFinishedData:
-		if d == nil {
-			return "", "", false
-		}
-		return d.JobID, d.DelegateID, d.JobID != ""
 	default:
 		return "", "", false
 	}
@@ -4371,10 +4361,6 @@ func jobFinishedEventData(data events.EventData) (events.JobFinishedData, bool) 
 	switch d := data.(type) {
 	case events.JobFinishedData:
 		return d, true
-	case *events.JobFinishedData:
-		if d != nil {
-			return *d, true
-		}
 	}
 	return events.JobFinishedData{}, false
 }
@@ -5774,7 +5760,7 @@ func (s *Session) renderUnreachableChildPendingsWithLoaders(
 			TS:        jm.now(),
 			WatchSend: &dropped,
 		}}); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("watch-send fallback drop failed: %v", err)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("watch-send fallback drop failed: %v", err)})
 			continue
 		}
 		jm.removeRuntimePendingWatchSend(dropped)
@@ -5912,7 +5898,7 @@ func (s *Session) settleDrivenChildForwardedPendings(childSessionID string) {
 			JobID:       rec.JobID,
 			TerminalGen: rec.TerminalGen,
 		}); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("drive settle mark failed: %v", err)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("drive settle mark failed: %v", err)})
 		}
 	}
 }
@@ -6207,28 +6193,12 @@ func writeWatchFrameEvent(b *strings.Builder, ev events.SessionEvent) {
 	switch data := ev.Data.(type) {
 	case events.CommunicateData:
 		writeCommunicateWatchEvent(b, data)
-	case *events.CommunicateData:
-		if data != nil {
-			writeCommunicateWatchEvent(b, *data)
-		}
 	case events.AssistantTextEndData:
 		writeAssistantMessageWatchEvent(b, data)
-	case *events.AssistantTextEndData:
-		if data != nil {
-			writeAssistantMessageWatchEvent(b, *data)
-		}
 	case events.ToolCallEndData:
 		writeAssistantToolWatchEvent(b, data)
-	case *events.ToolCallEndData:
-		if data != nil {
-			writeAssistantToolWatchEvent(b, *data)
-		}
 	case events.JobFinishedData:
 		writeJobNotificationWatchEvent(b, data)
-	case *events.JobFinishedData:
-		if data != nil {
-			writeJobNotificationWatchEvent(b, *data)
-		}
 	}
 }
 

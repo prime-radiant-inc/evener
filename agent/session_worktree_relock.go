@@ -64,7 +64,7 @@ func (s *Session) resumeReLockOwnLanes() {
 	var pending []isolationLane
 	for _, lane := range lanes {
 		if s.reLockOwnLane(local, lane) == reLockFailed {
-			s.emit(events.EventWarning, events.WarningData{
+			s.emit(events.WarningData{
 				Message: fmt.Sprintf("delegate lane %s at %s could not be re-locked on resume; it stays exposed to automatic residue collection until a retry succeeds", lane.delegateID, lane.path),
 			})
 			pending = append(pending, lane)
@@ -161,7 +161,7 @@ func (s *Session) retryPendingReLocks() {
 	}
 	for _, lane := range pending {
 		if s.reLockOwnLane(local, lane) == reLockFailed {
-			s.emit(events.EventWarning, events.WarningData{
+			s.emit(events.WarningData{
 				Message: fmt.Sprintf("delegate lane %s at %s could not be re-locked on retry; it remains exposed to automatic residue collection", lane.delegateID, lane.path),
 			})
 		}
