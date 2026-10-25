@@ -7,8 +7,8 @@ quiet, what its root turn last set out to do, and when the tree last moved. The
 phone Board draws its
 [pulse meter](../../mobile-native/DESIGN.md#state-marks-and-the-pulse-meter)
 and its `Quiet` and `May be stuck` lines from it. On a hub that tracks seen
-marks, the web reads it for an open, visible session pane, supplying the
-session's `lastMovedAt` to its seen mark.
+marks, the web reads it for an open, visible session pane whose row carries a
+`seen_through` mark, supplying the session's `lastMovedAt` to that mark.
 
 This is not [session activity](session-activity.md), the scoped
 `evener/thread/*` delegate, job and watch reads. It carries no resource rows
@@ -37,9 +37,9 @@ the next read.
 
 ## What the meter counts
 
-The daemon's [`activityMeter`](../../server/activity_meter.go) keeps forty-two
-ten-second slots, six to a bar. That makes seven trailing one-minute bars, not
-clock-aligned minutes: the newest bar ends when the hub last probed the daemon.
+The daemon's [`activityMeter`](../../server/activity_meter.go) keeps ten-second
+slots, six to a bar. That makes seven trailing one-minute bars, not clock-aligned
+minutes: the newest bar ends when the hub last probed the daemon.
 The root session and its in-process descendants all feed the meter, so a root's
 bars cover its whole tree.
 
@@ -103,14 +103,15 @@ minute, with a baseline that always shows, older bars fading, and gray while the
 connection is down. A working session reads `Quiet` after three minutes without
 motion and `May be stuck` after ten, when the meter goes flat and amber and the
 row rises to the top of Working, unless the session waits on subagents. The
-board row's why line prefers `latestIntent` to the running job, because the
-intent says what the job is for, and prefers a subagent wait to either.
+board row's why line puts a subagent wait first, then `Quiet` or `May be
+stuck`, then `latestIntent`, then the running job; the intent outranks the job
+because it says what the job is for.
 
 On the web,
 [`useMarkSessionSeenOnOpen`](../../cmd/evener-hub/frontend/src/panes/session/markSeen.ts)
-reads the session's `lastMovedAt` for an open, visible pane's seen mark. The
-marking rule, its visibility re-reads and its fallbacks belong to
-[session activity](session-activity.md).
+reads the session's `lastMovedAt` for an open, visible pane whose row carries a
+`seen_through` mark. The marking rule, its visibility re-reads and its
+fallbacks belong to [session activity](session-activity.md).
 
 ## Contracts
 
