@@ -86,7 +86,7 @@ type SessionConfig struct {
 	MaxTurns int `json:"max_turns,omitempty"`
 
 	// DefaultCommandTimeoutMS is the timeout applied to a shell/exec tool call
-	// when the model does not request one. Zero defaults to 10000 (10s).
+	// when the model does not request one. Zero defaults to 120000 (120s).
 	DefaultCommandTimeoutMS int `json:"default_command_timeout_ms,omitempty"`
 
 	// MaxCommandTimeoutMS is the ceiling on any per-command timeout the model
@@ -316,6 +316,9 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
+	// worktree injects failures at the manage_worktree filesystem and sandbox
+	// boundaries (see worktreeTestSeams).
+	worktree worktreeTestSeams
 	// memoryBeforeIO observes the native scope boundary without providing data.
 	memoryBeforeIO func(scope, operation string) error
 	// memoryRealBudget gives the memory boundary its production read budget
@@ -964,7 +967,7 @@ func (c *SessionConfig) applyDefaults() {
 		c.MaxToolRoundsPerInput = -1
 	}
 	if c.DefaultCommandTimeoutMS <= 0 {
-		c.DefaultCommandTimeoutMS = 10_000
+		c.DefaultCommandTimeoutMS = 120_000
 	}
 	if c.MaxCommandTimeoutMS <= 0 {
 		c.MaxCommandTimeoutMS = 600_000

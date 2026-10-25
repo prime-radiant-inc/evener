@@ -3636,9 +3636,8 @@ export interface SettingsHubOverview {
   runDir?: string;
   /**
    * SpawnTimeout is how long the hub waits for a daemon to report ready after
-   * spawn. Source: web_settings.go settingsData.SpawnTimeout — today a
-   * hardcoded "30s" literal, not derived from live spawner config (there is
-   * no configurable spawn timeout yet).
+   * spawn, rendered as a Go duration string. Source: cfg.SpawnTimeout
+   * (hub.toml spawn_timeout).
    */
   spawnTimeout?: string;
   /**

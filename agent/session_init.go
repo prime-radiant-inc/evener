@@ -353,10 +353,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}
 	profile = resolvedProfile
 	cfg.applyDefaults()
-	// Let the provider profile override the generic default command timeout.
-	if profileTimeout := profile.DefaultCommandTimeoutMS(); profileTimeout > 0 && cfg.DefaultCommandTimeoutMS == 10_000 {
-		cfg.DefaultCommandTimeoutMS = profileTimeout
-	}
 	store, ownsArtifactStore, artifactStoreErr := resolveArtifactStore(cfg.artifactStore, cfg.artifactStoreInherited)
 
 	owner := cfg.LifetimeContext

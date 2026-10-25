@@ -1873,11 +1873,6 @@ func (s *Session) completeClientMutationTurn(clientMutationID string) error {
 	return err
 }
 
-func (s *Session) completeClientMutationInterruptedTurn(clientMutationID string) error {
-	_, err := s.completeClientMutationTurnWithState(clientMutationID, "interrupted")
-	return err
-}
-
 // completeClientMutationTurnWithState settles one client-mutation turn and
 // reports whether doing so finalized an interrupt fence naming that turn --
 // i.e. whether a Stop is what ended it. The drain loop needs that fact: a turn

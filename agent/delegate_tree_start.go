@@ -927,19 +927,6 @@ func (c *delegateTreeController) beginRuntimeBoundary(lease delegateLease) error
 	return err
 }
 
-func (c *delegateTreeController) inputPersistFailureBatch(lease delegateLease, inputErr error) (delegatestore.Event, delegatestore.Event) {
-	message := "input persistence failed"
-	if inputErr != nil {
-		message += ": " + inputErr.Error()
-	}
-	if len(message) > 512 {
-		message = message[:512]
-	}
-	raw, _ := json.Marshal(message)
-	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: raw}
-	return terminalFinishBatch(lease, delegatestore.OutcomeFailed, "input_persist_failed", c.now(), packet)
-}
-
 func (c *delegateTreeController) startInputFailureBatch(lease delegateLease, failure delegateFinish) (delegatestore.Event, delegatestore.Event) {
 	failure = normalizeDelegateStartFailure(failure, "input_persist_failed", "input persistence failed", c.now())
 	return terminalFinishBatch(lease, failure.outcome, failure.reason, failure.endedAt, *failure.packet)

@@ -288,12 +288,6 @@ func SetLaneClosePassBudget(d time.Duration) (restore func()) {
 	})
 }
 
-func (jm *jobManager) setParentJobID(jobID string) {
-	jm.mu.Lock()
-	jm.parentJobID = jobID
-	jm.mu.Unlock()
-}
-
 func (jm *jobManager) bindStableDelegateParent(controller *delegateTreeController, lease delegateLease, forward func(jobstore.Event) error, owner *Session) {
 	jm.mu.Lock()
 	jm.parentJobID = ""
@@ -585,12 +579,6 @@ func (n jobNotification) isWatch() bool {
 	return n.Kind == jobNotificationKindWatch
 }
 
-type createShellOpts struct {
-	Command     string
-	Intent      string
-	Description string
-}
-
 type listFilter struct {
 	Status        jobstore.Status
 	Statuses      []jobstore.Status
@@ -703,29 +691,6 @@ func (jm *jobManager) createJobOutput() (string, string, *jobstore.OutputStore, 
 		return jobID, outputPath, output, nil
 	}
 	return "", "", nil, errJobIDAllocationExhausted
-}
-
-func (jm *jobManager) createJobOutputForID(jobID string) (string, *jobstore.OutputStore, error) {
-	ownerSessionID, err := identifier.JobOwnerSessionID(jobID)
-	if err != nil {
-		return "", nil, err
-	}
-	if ownerSessionID != jm.sessionID {
-		return "", nil, fmt.Errorf("job ID owner %q does not match session %q", ownerSessionID, jm.sessionID)
-	}
-	records, err := jm.store.Load()
-	if err != nil {
-		return "", nil, err
-	}
-	if _, exists := records[jobID]; exists {
-		return "", nil, fmt.Errorf("job ID %q already exists: %w", jobID, os.ErrExist)
-	}
-	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
-	output, err := jm.createOutput(outputPath, maxJobOutputRetentionBytes)
-	if err != nil {
-		return "", nil, err
-	}
-	return outputPath, output, nil
 }
 
 func (jm *jobManager) close() error {
@@ -919,91 +884,6 @@ func (jm *jobManager) beginRetirementMutation(category string) (func(), error) {
 		return jm.retirementOwner.beginRetirementMutation(category)
 	}
 	return func() {}, nil
-}
-
-func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, error) {
-	release, err := jm.beginRetirementMutation("job")
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	startedAt := jm.now()
-	jobID, outputPath, output, err := jm.createJobOutput()
-	if err != nil {
-		return nil, err
-	}
-	parentJobID, parentDelegateID := jm.currentJobParent()
-	jobProvenance := jm.currentCausalProvenance()
-	rec := &jobstore.JobRecord{
-		JobID:            jobID,
-		Type:             jobstore.JobShell,
-		Status:           jobstore.StatusRunning,
-		Command:          opts.Command,
-		Intent:           opts.Intent,
-		Description:      opts.Description,
-		OwnerSessionID:   jm.sessionID,
-		VisibleToSession: jm.sessionID,
-		ParentJobID:      parentJobID,
-		ParentDelegateID: parentDelegateID,
-		StartedAt:        startedAt,
-		Phase:            jobPhaseProcessRunning,
-		LastActivity:     &startedAt,
-		OutputPath:       outputPath,
-		Provenance:       provenance.Clone(jobProvenance),
-	}
-	run := &runningJob{
-		rec:            rec,
-		output:         output,
-		signal:         func() {},
-		done:           make(chan struct{}),
-		durableStarted: true,
-	}
-
-	jm.mu.Lock()
-	if jm.closing {
-		jm.mu.Unlock()
-		_ = output.Close()
-		_ = jobstore.RemoveOutputArtifacts(outputPath)
-		return nil, errJobManagerClosing
-	}
-	started := jobstore.Event{
-		Kind:             jobstore.EventJobStarted,
-		TS:               startedAt,
-		JobID:            rec.JobID,
-		Type:             rec.Type,
-		Command:          rec.Command,
-		Intent:           rec.Intent,
-		Description:      rec.Description,
-		OwnerSessionID:   rec.OwnerSessionID,
-		VisibleToSession: rec.VisibleToSession,
-		ParentJobID:      rec.ParentJobID,
-		ParentDelegateID: rec.ParentDelegateID,
-		StartedAt:        &startedAt,
-		OutputPath:       rec.OutputPath,
-		Provenance:       provenance.Clone(jobProvenance),
-	}
-	if err := jm.appendEvent(started); err != nil {
-		jm.mu.Unlock()
-		_ = output.Close()
-		_ = jobstore.RemoveOutputArtifacts(outputPath)
-		return nil, err
-	}
-	if err := jm.forwardLocked(started); err != nil {
-		_ = output.Close()
-		if terminalErr := jm.appendStartForwardFailure(rec.JobID, output, rec.Provenance); terminalErr != nil {
-			run.forwardDisabled = true
-			jm.running[jobID] = run
-			jm.mu.Unlock()
-			go jm.finalizeShellAsync(jobID, jobstore.StatusFailed, "forward_failed", nil)
-			return nil, errors.Join(err, terminalErr)
-		}
-		jm.mu.Unlock()
-		return nil, errors.Join(errDelayedShellStartForwardFailed, err)
-	}
-	jm.running[jobID] = run
-	jm.mu.Unlock()
-	jm.emitJobStarted(started, run)
-	return rec, nil
 }
 
 func (jm *jobManager) list(filter listFilter) []*jobstore.JobRecord {
@@ -1322,29 +1202,6 @@ func (jm *jobManager) appendJobOutputWithProvenance(jobID string, output *jobsto
 		jm.feedJobOutputWithProvenance(jobID, b[:n], output.Len(), p)
 	}
 	return n, err
-}
-
-func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp) ([]jobstore.Match, error) {
-	jm.mu.Lock()
-	run := jm.running[jobID]
-	jm.mu.Unlock()
-	if run != nil {
-		// Scan the full retained output: maxJobOutputRetentionBytes caps retention, so it
-		// doubles as the scan budget; the result stays bounded by maxJobGrepMatches and maxJobGrepLineBytes.
-		return run.output.GrepLimitLineBytes(re, maxJobOutputRetentionBytes, maxJobGrepMatches, maxJobGrepLineBytes)
-	}
-
-	recs, err := jm.store.Load()
-	if err != nil {
-		return nil, err
-	}
-	rec := recs[jobID]
-	if rec == nil {
-		return nil, errJobNotFound(jobID)
-	}
-	path := jm.outputPathForJob(rec, jobID)
-	// Full retained scan (same budget rationale as above).
-	return grepOutputFile(path, re, maxJobOutputRetentionBytes, rec)
 }
 
 func (jm *jobManager) reconcileLostJobs() error {

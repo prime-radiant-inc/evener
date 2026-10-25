@@ -6421,9 +6421,3 @@ func (jm *jobManager) routeWatchNotifications(notifications []jobNotification) [
 	}
 	return own
 }
-
-func (jm *jobManager) watchCount() int {
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	return len(jm.watches)
-}

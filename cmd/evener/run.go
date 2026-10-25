@@ -571,7 +571,7 @@ func drainEventsHuman(eventCh <-chan events.SessionEvent, w io.Writer) <-chan st
 				if d, ok := ev.Data.(events.ToolCallStartData); ok {
 					args := d.ArgumentsJSON
 					if len(args) > 100 {
-						args = args[:97] + "..."
+						args = strings.ToValidUTF8(args[:97], "") + "..."
 					}
 					fmt.Fprintf(w, "[tool] %s %s\n", d.ToolName, args) //nolint:errcheck
 				}

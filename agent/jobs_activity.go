@@ -401,10 +401,6 @@ func (s *Session) JobActivityTree(params appwire.JobsListParams) (appwire.JobAct
 	})
 }
 
-func projectStableLiveActivityTree(clock *jobActivityClock, rootID string, load func() (*activitySessionSnapshot, int, int, error)) (appwire.JobActivityTree, error) {
-	return projectStableLiveActivityTreeAt(clock, rootID, time.Now().UTC(), load)
-}
-
 func projectStableLiveActivityTreeAt(clock *jobActivityClock, rootID string, now time.Time, load func() (*activitySessionSnapshot, int, int, error)) (appwire.JobActivityTree, error) {
 	for range 8 {
 		before := activityCurrentRootRevision(clock)
@@ -1053,10 +1049,6 @@ func activityRecordBefore(left, right *jobstore.JobRecord) bool {
 		return left.JobID < right.JobID
 	}
 	return left.StartedAt.Before(right.StartedAt)
-}
-
-func projectActivitySession(snapshot activitySessionSnapshot, budget *activityBudget) appwire.JobActivitySession {
-	return projectActivitySessionAt(snapshot, budget, 0, nil, 0)
 }
 
 // projectActivitySessionAt renders snapshot's own entries (its owned shell

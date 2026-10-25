@@ -551,10 +551,6 @@ func (s *Session) startDelegateQuietWatchdog(ctx context.Context, lease delegate
 	return s.delegateQuietWatchNext(ctx, lease)
 }
 
-func delegateQuietAttentionID(lease delegateLease) string {
-	return delegateQuietAttentionIDForStretch(lease, 1)
-}
-
 func delegateQuietAttentionIDForStretch(lease delegateLease, sequence uint64) string {
 	return fmt.Sprintf("quiet:%s:%d:%d", lease.delegateID, lease.generation, sequence)
 }

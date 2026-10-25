@@ -93,7 +93,6 @@
   "primeradiant.com/evener/cmd/evener-transcript-v2-upgrade": 0.31,
   "primeradiant.com/evener/cmdutil": 2.23,
   "primeradiant.com/evener/hubapi": 0.0,
-  "primeradiant.com/evener/frontmatter": 0.44,
   "primeradiant.com/evener/internal/appprojector": 0.02,
   "primeradiant.com/evener/internal/appserver": 0.05,
   "primeradiant.com/evener/internal/apptranscript": 7.17,

@@ -1088,9 +1088,7 @@ func summarizeToolResult(toolName string, content any, isError bool, args json.R
 
 	case "shell":
 		cmd := getArg("command")
-		if len(cmd) > 60 {
-			cmd = cmd[:60] + "..."
-		}
+		cmd = truncate(cmd, 60)
 		exitCode := parseExitCode(contentStr)
 		return fmt.Sprintf("[shell: %q → exit %s]", cmd, exitCode)
 
@@ -1430,9 +1428,7 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 				case "shell":
 					if cmd, ok := args["command"]; ok {
 						cmdStr := fmt.Sprint(cmd)
-						if len(cmdStr) > 60 {
-							cmdStr = cmdStr[:60] + "..."
-						}
+						cmdStr = truncate(cmdStr, 60)
 						exitCode := "?"
 						for j := i + 1; j < cutoff; j++ {
 							if history[j].Kind != schema.TurnTool && history[j].Kind != schema.TurnToolResults {
@@ -2459,7 +2455,7 @@ func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 		}
 		if total+len(s) > maxChars {
 			if rem := maxChars - total; rem > 0 {
-				parts = append(parts, "[... earlier history truncated ...]\n"+s[len(s)-rem:])
+				parts = append(parts, "[... earlier history truncated ...]\n"+string(runetrim.TrimLeadingPartial([]byte(s[len(s)-rem:]))))
 			}
 			break
 		}
@@ -2556,13 +2552,6 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	// admits.
 	const maxHistoryChars = 80_000
 
-	truncText := func(s string, limit int) string {
-		if len(s) > limit {
-			return s[:limit] + "..."
-		}
-		return s
-	}
-
 	// The checkpoint at history[0] stands for checkpointed; the summary also
 	// folds whatever follows it up to cutoff, including turns the pre-compact
 	// hook pushed out of the preserved tail.
@@ -2609,12 +2598,8 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 			// MaybeCompact and ForceCompact paths the checkpoint layer has
 			// already folded these turns, so their user messages arrive inside
 			// the checkpoint (a previous compaction) instead of here.
-			text := t.Message.Text()
-			if len(text) > 5000 {
-				text = text[:5000] + "..."
-			}
 			b.WriteString("User: ")
-			b.WriteString(text)
+			b.WriteString(truncate(t.Message.Text(), 5000))
 			b.WriteString("\n")
 		case schema.TurnCheckpoint, schema.TurnSummary:
 			// A previous compaction is the only record of the conversation it
@@ -2626,7 +2611,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 			// Left-out partner messages written first take their share of
 			// the budget from it.
 			b.WriteString("Previous compaction: ")
-			b.WriteString(truncText(t.Message.Text(), min(maxCheckpointChars, max(maxHistoryChars-b.Len(), 0))))
+			b.WriteString(truncate(t.Message.Text(), min(maxCheckpointChars, max(maxHistoryChars-b.Len(), 0))))
 			b.WriteString("\n")
 		case schema.TurnAssistant:
 			// Extract communicate calls so the summarizer sees how the agent
@@ -2635,7 +2620,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 			text := t.Message.Text()
 			if text != "" {
 				b.WriteString("Assistant: ")
-				b.WriteString(truncText(text, 500))
+				b.WriteString(truncate(text, 500))
 				b.WriteString("\n")
 			}
 			for _, p := range t.Message.Content {
@@ -2655,11 +2640,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 		case schema.TurnTool, schema.TurnToolResults:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-					content := fmt.Sprint(p.ToolResult.Content)
-					if len(content) > 200 {
-						content = content[:200] + "..."
-					}
-					fmt.Fprintf(&b, "Tool(%s): %s\n", p.ToolResult.Name, content)
+					fmt.Fprintf(&b, "Tool(%s): %s\n", p.ToolResult.Name, truncate(fmt.Sprint(p.ToolResult.Content), 200))
 				}
 			}
 		case schema.TurnSteering:

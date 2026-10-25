@@ -68,11 +68,8 @@ func providerProfileProgramRefs() []providerProfileProgramRef {
 
 func assertProviderProfileCopies(t *testing.T, profile *Profile) {
 	t.Helper()
-	_ = profile.SupportsParallelToolCalls()
 	_ = profile.ProviderOptions()
 	_ = profile.SupportsReasoning()
-	_ = profile.SupportsStreaming()
-	_ = profile.DefaultCommandTimeoutMS()
 	_ = profile.KnowledgeCutoff()
 	_ = profile.CheapModel()
 	_ = profile.Cost()

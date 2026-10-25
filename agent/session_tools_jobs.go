@@ -138,10 +138,6 @@ func liveSteerWaitIgnoredReason(blockTimeoutMS int, status jobstore.Status, acti
 	return ""
 }
 
-func jobWatchTool(s *Session, args map[string]any, maxChars int) (any, error) {
-	return jobWatchToolWithContext(context.Background(), s, args, maxChars)
-}
-
 func jobWatchToolWithContext(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
 	jm, err := sessionJobManager(s)
 	if err != nil {

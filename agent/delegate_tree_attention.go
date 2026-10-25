@@ -205,20 +205,6 @@ func (c *delegateTreeController) reconcileDelegateAttentionFromTranscripts() err
 	return nil
 }
 
-func (c *delegateTreeController) noteDelegateAttention(delegateID, attentionID string) bool {
-	if c == nil {
-		return false
-	}
-	release, err := c.beginRetirementMutation()
-	if err != nil {
-		return false
-	}
-	defer release()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.noteDelegateAttentionLocked(delegateID, attentionID)
-}
-
 // openDelegateAttention serializes a transcript-derived open against accepted
 // answer consumption for the same child. Delivery opens use their larger
 // owner-open/source-ack batch; watch and quiet opens use this single-event path.
@@ -674,15 +660,6 @@ func (c *delegateTreeController) retryDelegateAttentionLater() {
 	if root != nil {
 		root.scheduleStableDelegateAttentionRetry()
 	}
-}
-
-func (c *delegateTreeController) nextIdleDelegateAttention() (string, string, bool) {
-	if c == nil {
-		return "", "", false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.nextIdleDelegateAttentionLocked()
 }
 
 // selectDelegateAttentionWake is the wake driver's selection: it returns the

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/llm"
@@ -164,3 +165,11 @@ func TestS5Cov_ProviderCauseFromError_SignInRequired(t *testing.T) {
 type stubError string
 
 func (e stubError) Error() string { return string(e) }
+
+func TestSummarizeTaskPromptKeepsRunesWhole(t *testing.T) {
+	t.Parallel()
+	got := summarizeTaskPrompt("a" + strings.Repeat("世", 100))
+	if !utf8.ValidString(got) {
+		t.Fatalf("summarizeTaskPrompt split a rune: %q", got)
+	}
+}

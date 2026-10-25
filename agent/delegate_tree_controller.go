@@ -972,25 +972,6 @@ func (c *delegateTreeController) recordTerminalSeen(lease delegateLease) error {
 	return decision.err
 }
 
-func (c *delegateTreeController) completionSnapshot(lease delegateLease) (delegateCompletionSnapshot, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	evidence, err := c.completionEvidenceLocked(lease)
-	if err != nil {
-		return delegateCompletionSnapshot{}, err
-	}
-	snapshot := delegateCompletionSnapshot{
-		requirement:  evidence.requirement,
-		outcome:      evidence.outcome,
-		terminalSeen: evidence.terminalSeen,
-	}
-	if evidence.fallback != nil {
-		fallback := cloneDelegateFinish(*evidence.fallback)
-		snapshot.fallback = &fallback
-	}
-	return snapshot, nil
-}
-
 func (c *delegateTreeController) admitLeaseLocked(lease delegateLease, phases ...delegatestore.Phase) (*delegatestore.Aggregate, *delegateLiveState, error) {
 	if c.closing {
 		return nil, nil, errDelegateTargetBusy
@@ -1247,10 +1228,4 @@ func cloneStableTerminalPacket(packet *delegatestore.TerminalPacket) *delegatest
 		clone.StructuredResultValid = &valid
 	}
 	return &clone
-}
-
-func (c *delegateTreeController) capacityInUse() (int, int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.turnsInUse, c.drivesInUse
 }

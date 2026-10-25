@@ -2030,12 +2030,6 @@ func (s *Session) communicatedReply() (string, bool) {
 	return s.comm.reply, s.comm.called
 }
 
-func (s *Session) communicateStructuredResult() (any, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.comm.structured, s.comm.structured != nil
-}
-
 // communicateEndReason is why this input's terminal communicate call ended
 // the turn: "" when none was accepted, or on a delegate.
 func (s *Session) communicateEndReason() string {

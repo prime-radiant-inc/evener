@@ -25,10 +25,6 @@ func AsideSession(stateDir, parentID string) (string, error) {
 	return asideSessionFSWithConfig(afero.NewOsFs(), stateDir, parentID, nil)
 }
 
-func asideSessionFS(fs afero.Fs, stateDir, parentID string) (string, error) {
-	return asideSessionFSWithConfig(fs, stateDir, parentID, nil)
-}
-
 // AsideSessionWithConfig creates a full-tip child with config already selected
 // for that child. The final snapshot is supplied to the child writer before its
 // transcript and metadata are published, so a restart cannot observe a stale

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/frontmatter"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
 )
@@ -209,7 +210,7 @@ func summarizeTaskPrompt(prompt string) string {
 		}
 	}
 	if len(text) > 120 {
-		return strings.TrimSpace(text[:117]) + "..."
+		return strings.TrimSpace(runetrim.Cut(text, 117)) + "..."
 	}
 	return text
 }

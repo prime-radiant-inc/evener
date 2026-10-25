@@ -591,6 +591,30 @@ func (jm *jobManager) setShellSignal(run *runningJob, signal func()) {
 	}
 }
 
+// jobStartedEvent is the durable EventJobStarted for a freshly created shell
+// job record.
+func jobStartedEvent(rec *jobstore.JobRecord) jobstore.Event {
+	startedAt := rec.StartedAt
+	return jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            rec.JobID,
+		Type:             rec.Type,
+		Command:          rec.Command,
+		Background:       rec.Background,
+		Intent:           rec.Intent,
+		Description:      rec.Description,
+		OwnerSessionID:   rec.OwnerSessionID,
+		VisibleToSession: rec.VisibleToSession,
+		ParentJobID:      rec.ParentJobID,
+		ParentDelegateID: rec.ParentDelegateID,
+		StartedAt:        &startedAt,
+		OutputPath:       rec.OutputPath,
+		WorkingDir:       rec.WorkingDir,
+		Provenance:       provenance.Clone(rec.Provenance),
+	}
+}
+
 func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] != run {
@@ -611,25 +635,7 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 	}
 	rec := cloneJobRecord(run.rec)
 
-	startedAt := rec.StartedAt
-	started := jobstore.Event{
-		Kind:             jobstore.EventJobStarted,
-		TS:               startedAt,
-		JobID:            rec.JobID,
-		Type:             rec.Type,
-		Command:          rec.Command,
-		Background:       rec.Background,
-		Intent:           rec.Intent,
-		Description:      rec.Description,
-		OwnerSessionID:   rec.OwnerSessionID,
-		VisibleToSession: rec.VisibleToSession,
-		ParentJobID:      rec.ParentJobID,
-		ParentDelegateID: rec.ParentDelegateID,
-		StartedAt:        &startedAt,
-		OutputPath:       rec.OutputPath,
-		WorkingDir:       rec.WorkingDir,
-		Provenance:       provenance.Clone(rec.Provenance),
-	}
+	started := jobStartedEvent(rec)
 	if err := jm.appendEvent(started); err != nil {
 		jm.mu.Unlock()
 		return err
@@ -726,10 +732,6 @@ func shellFinalizeBackoff(attempt int) time.Duration {
 		}
 	}
 	return delay
-}
-
-func (jm *jobManager) shellTerminal(run *runningJob, exitCode int, timedOut bool, waitErr error) (jobstore.Status, string, *int) {
-	return jm.shellTerminalWithSignal(run, exitCode, "", timedOut, waitErr)
 }
 
 func (jm *jobManager) shellTerminalWithSignal(run *runningJob, exitCode int, signalName string, timedOut bool, waitErr error) (jobstore.Status, string, *int) {

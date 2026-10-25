@@ -45,19 +45,8 @@ func resolveLiveModelProfileWithEnumerationTimeout(client *llm.Client, profile *
 	return fillLiveModelMetadata(ctx, client, profile)
 }
 
-// resolveLiveModelProfile fills profile's live model metadata (context window,
-// reasoning support, etc.) from client's model listing when available.
-// Fails open (returns profile unchanged) on a nil client/profile or any
-// enumeration error — used by callers that don't need the enumerated list or
-// fetch result; resolveLiveModelProfileValidated is the membership-checking
-// counterpart used by NewSession.
-func resolveLiveModelProfile(ctx context.Context, client *llm.Client, profile *provider.Profile) *provider.Profile {
-	filled, _ := fillLiveModelMetadata(ctx, client, profile)
-	return filled
-}
-
 // fillLiveModelMetadata is the shared fetch-and-fill core behind
-// resolveLiveModelProfile, resolveLiveModelProfileValidated, and
+// resolveLiveModelProfileValidated and
 // resolveModelSwitchTarget: it lists the profile's instance ONCE, applying a
 // live listing to the registry, then overlays the freshly resolved record onto
 // the profile. It returns the listing so a caller can additionally run a

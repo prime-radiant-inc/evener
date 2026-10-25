@@ -2140,3 +2140,30 @@ func TestPluginSelectionSnapshotRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestSessionCommandTimeoutDefaultAndExplicit pins that an unset foreground
+// wait gets the stock default and that an explicit value, including one equal
+// to a former internal default, is kept as given.
+func TestSessionCommandTimeoutDefaultAndExplicit(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		cfg  int
+		want int
+	}{
+		{"unset gets stock default", 0, 120_000},
+		{"explicit 10000 is kept", 10_000, 10_000},
+		{"explicit other is kept", 45_000, 45_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newSession(t, withConfig(SessionConfig{DefaultCommandTimeoutMS: tc.cfg}))
+			s.mu.Lock()
+			got := s.cfg.DefaultCommandTimeoutMS
+			s.mu.Unlock()
+			if got != tc.want {
+				t.Fatalf("DefaultCommandTimeoutMS = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
