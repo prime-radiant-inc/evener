@@ -225,19 +225,27 @@ func TestConfinedCwdCanonicalReadRootSpelling(t *testing.T) {
 	base := t.TempDir()
 	realDir := filepath.Join(base, "real")
 	link := filepath.Join(base, "link")
-	if err := os.MkdirAll(realDir, 0o755); err != nil {
+	alias := filepath.Join(base, "alias")
+	if err := os.MkdirAll(filepath.Join(realDir, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(realDir, link); err != nil {
 		t.Skipf("cannot create symlink: %v", err)
 	}
+	if err := os.Symlink(realDir, alias); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
 	for _, tc := range []struct {
 		name       string
 		backend    sandbox.Backend
+		roots      []string
+		cwd        string
 		wantAccept bool
 	}{
-		{name: "seatbelt", backend: sandbox.BackendSeatbelt, wantAccept: true},
-		{name: "bwrap", backend: sandbox.BackendBwrap, wantAccept: false},
+		{name: "seatbelt-symlinked-root-target", backend: sandbox.BackendSeatbelt, roots: []string{link}, cwd: realDir, wantAccept: true},
+		{name: "bwrap-symlinked-root-target", backend: sandbox.BackendBwrap, roots: []string{link}, cwd: realDir, wantAccept: false},
+		{name: "seatbelt-resolved-root-alias", backend: sandbox.BackendSeatbelt, roots: []string{realDir}, cwd: filepath.Join(alias, "sub"), wantAccept: true},
+		{name: "bwrap-resolved-root-alias", backend: sandbox.BackendBwrap, roots: []string{realDir}, cwd: filepath.Join(alias, "sub"), wantAccept: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := NewLocalExecutionEnvironment(t.TempDir())
@@ -245,9 +253,9 @@ func TestConfinedCwdCanonicalReadRootSpelling(t *testing.T) {
 			env.Sandbox = &sandbox.ResolvedPolicy{
 				Mode:    sandbox.ModeRestricted,
 				Backend: tc.backend,
-				Spawned: sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{link}},
+				Spawned: sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: tc.roots},
 			}
-			err := env.EnsureCommandWorkingDirectory(realDir)
+			err := env.EnsureCommandWorkingDirectory(tc.cwd)
 			if accepted := err == nil; accepted != tc.wantAccept {
 				t.Fatalf("canonical read-root cwd accepted = %v (err %v), want %v", accepted, err, tc.wantAccept)
 			}

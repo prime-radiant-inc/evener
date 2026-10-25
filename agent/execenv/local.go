@@ -3527,6 +3527,11 @@ func (e *LocalExecutionEnvironment) EnsureCommandWorkingDirectory(abs string) er
 			(e.Sandbox.Backend == sandbox.BackendSeatbelt && e.Sandbox.SpawnedCanReadResolved(abs))
 	} else {
 		readable = e.Sandbox.SpawnedCanRead(abs) && e.Sandbox.SpawnedCanReadResolved(resolved)
+		if !readable && e.Sandbox.Backend == sandbox.BackendSeatbelt {
+			// A system firmlink (/var -> /private/var) makes the literal
+			// spelling differ from the path Seatbelt grants.
+			readable = e.Sandbox.SpawnedCanReadResolved(resolved)
+		}
 	}
 	if readable && e.Wrapper.CommandCWDVisible(abs) &&
 		(abs == resolved || e.Wrapper.CommandCWDVisibleResolved(resolved)) {

@@ -92,6 +92,12 @@ Revision notes:
   canonical target stays refused. The real `/tmp`-root child test skips where
   the session scratch base cannot live outside the workspace; the argv unit
   test pins the bind rule.
+- **Amendment 8 (RoboRev branch review, round 9).** The exact `/dev` root is
+  also replaced by the minimal device tree and covers nothing, so a child cwd
+  under it is re-bound. On Seatbelt, a literal spelling that differs from the
+  granted path only through a system firmlink (`/var` -> `/private/var`) is
+  admitted when the resolved spelling is under a resolved read root;
+  bubblewrap keeps refusing the target spelling.
 
 ## Intent and scope
 
@@ -382,6 +388,8 @@ fixture.
    A child cwd of a session rooted at `/tmp` is re-bound after the private
    tmpfs, and a canonical restricted read-root spelling is accepted on
    Seatbelt while bubblewrap keeps refusing it.
+   A child cwd of a session rooted at `/dev` is re-bound after the minimal
+   device tree.
 8. `agent/sandbox/resolve_canread_test.go`: `SpawnedCanRead` accepts
    read-anywhere paths, rejects masked paths and `.git` under a carve-out,
    accepts restricted read roots and unmasked roots, rejects a restricted
