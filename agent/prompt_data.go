@@ -31,6 +31,10 @@ type promptData struct {
 	// background shell job still running then is stopped instead of waking the
 	// session later.
 	TurnEndsProcess bool
+	// DetachSupported gates the Background work detach guidance, like the shell
+	// schema's mode: a wrapper-backed environment refuses DetachCommand
+	// (#4922), so the prompt must not send the model to detached.
+	DetachSupported bool
 	// MemoryRead gates the memory guidance section: memory is enabled, bound,
 	// and memory_read is callable. MemorySearch additionally requires
 	// memory_search.

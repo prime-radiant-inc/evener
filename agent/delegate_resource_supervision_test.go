@@ -3718,7 +3718,7 @@ func stableSupervisionDirectRowLocked(c *delegateTreeController, root *Session, 
 	}
 	sort.Strings(ids)
 	for _, row := range c.captureDelegateSnapshotsLocked(ids) {
-		if delegateRowVisibleTo(root, row.parentID, row.descriptor.OwnerSessionID) {
+		if delegateRowVisibleTo(root, row.parentID, row.descriptor.OwnerSessionID, row.descriptor.VisibleSessionID) {
 			return row, true
 		}
 	}
