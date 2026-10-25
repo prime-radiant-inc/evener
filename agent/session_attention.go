@@ -1330,10 +1330,9 @@ type delegateAttentionFoldCursor struct {
 // The returned fold is the one the next read resumes from, so callers must not
 // change it.
 func (c *delegateAttentionFoldCursor) read(path, sessionID string) (delegateAttentionFold, error) {
-	previous := *c
-	*c = delegateAttentionFoldCursor{}
 	f, err := os.Open(path)
 	if err != nil {
+		*c = delegateAttentionFoldCursor{}
 		if os.IsNotExist(err) {
 			return newDelegateAttentionFold(), nil
 		}
@@ -1342,8 +1341,18 @@ func (c *delegateAttentionFoldCursor) read(path, sessionID string) (delegateAtte
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
+		*c = delegateAttentionFoldCursor{}
 		return delegateAttentionFold{}, fmt.Errorf("stat delegate attention transcript: %w", err)
 	}
+	return c.readFile(f, info, sessionID)
+}
+
+// readFile resumes from the caller's freshly opened handle and its identity.
+// Custody queries establish durability against this same file before folding,
+// so a second pathname open must not select a different transcript.
+func (c *delegateAttentionFoldCursor) readFile(f *os.File, info os.FileInfo, sessionID string) (delegateAttentionFold, error) {
+	previous := *c
+	*c = delegateAttentionFoldCursor{}
 	if !info.Mode().IsRegular() {
 		// Only a regular file has offsets to resume from; anything else is
 		// folded as a stream, from its start, every time.

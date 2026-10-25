@@ -2067,6 +2067,145 @@ func TestHistoricalCallbackRequiresExactDurableCustody(t *testing.T) {
 	}
 }
 
+func TestBootstrapCallbackReceiverIdentity(t *testing.T) {
+	t.Parallel()
+	snapshot := stableWatchBootstrapSnapshot{receiverByID: map[string]stableWatchReceiverSnapshot{
+		"":          {sessionID: "root", transcriptRef: "local:root"},
+		"dlg_child": {sessionID: "child", transcriptRef: "local:child"},
+	}}
+	for _, tc := range []struct {
+		name, sessionID, delegateID string
+		stable, want                bool
+	}{
+		{name: "root callback", sessionID: "root", want: true},
+		{name: "local child callback", sessionID: "child", want: true},
+		{name: "explicit child", sessionID: "child", delegateID: "dlg_child", stable: true, want: true},
+		{name: "unknown session", sessionID: "unknown"},
+		{name: "unknown delegate", sessionID: "child", delegateID: "dlg_unknown"},
+		{name: "explicit mismatch", sessionID: "root", delegateID: "dlg_child"},
+		{name: "missing session", delegateID: "dlg_child"},
+		{name: "stable child missing delegate", sessionID: "child", stable: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receiver, ok := snapshot.receiver(jobstore.WatchSendState{ReceiverSessionID: tc.sessionID, ReceiverDelegateID: tc.delegateID, CallbackFrame: true, StableReceiver: tc.stable})
+			if ok != tc.want || (ok && receiver.sessionID != tc.sessionID) {
+				t.Fatalf("receiver=%+v available=%t want=%t", receiver, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestChildLocalCallbackReplayAfterRootRestart(t *testing.T) {
+	t.Parallel()
+	for _, historical := range []bool{false, true} {
+		t.Run(fmt.Sprintf("historical=%t", historical), func(t *testing.T) {
+			fixture := newColdStableDelegateFixture(t, "")
+			jm, err := newJobManager(fixture.stateDir, fixture.childID, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { jm.close() })
+			jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+			a := watchArgs{Source: "self", Target: runtimeMessageAliasCaller, AfterSeconds: 60}
+			if historical {
+				a.AfterSeconds, a.RepeatSeconds = 0, 60
+			}
+			r, err := jm.configureWatch(a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jm.mu.Lock()
+			key, cfg, ok := jm.watchConfigByIDLocked(r.WatchID)
+			jm.mu.Unlock()
+			if !ok {
+				t.Fatal("missing live source registration")
+			}
+			if historical {
+				writer, _, err := transcript.OpenWriterForSession(transcriptPath(fixture.stateDir, fixture.childID), fixture.childID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				receiver := &Session{id: fixture.childID, stateDir: fixture.stateDir}
+				receiver.attachTranscript(writer)
+				receiver.SetNotifyFunc(func() { _ = jm.store.Close() })
+				jm.retirementOwner = receiver
+				jm.fireProgressTick(key, cfg)
+				jm.retirementOwner = nil
+				if len(notificationRawEntries(t, transcriptPath(fixture.stateDir, fixture.childID))) != 1 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 0 {
+					t.Fatal("failed source ack did not retain child-local custody")
+				}
+				reopenProducerSource(t, jm)
+				if err := receiver.closeAttachedTranscript(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// No child receiver runtime survives this firing or the root restart.
+			jm.fireProgressTick(key, cfg)
+			if historical {
+				if _, err := jm.clearWatch(key); err != nil {
+					t.Fatal(err)
+				}
+			}
+			produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+			want := 1
+			if historical {
+				want = 2
+			}
+			if len(produced) != want || jm.watchCount() != 0 {
+				t.Fatalf("produced=%d registrations=%d", len(produced), jm.watchCount())
+			}
+			for _, event := range produced {
+				state := event.WatchSend
+				if !state.CallbackFrame || state.StableReceiver || state.ReceiverDelegateID != "" || state.ReceiverSessionID != fixture.childID {
+					t.Fatal("real producer did not record child-local callback receiver")
+				}
+			}
+			if err := jm.closeStoreOnly(); err != nil {
+				t.Fatal(err)
+			}
+			root, err := RestoreSessionFromMetaWithConfig(fixture.client, fixture.profile, execenv.NewLocalExecutionEnvironment(fixture.workspace), fixture.meta, RestoreSessionConfig{
+				StateDir: fixture.stateDir, ForceRealIO: true,
+				testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, sandboxProber: bwrapCapableProber(fixture.workspace), disableDelegateIdleRelease: true},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(root.Close)
+			for range 2 {
+				if err := repairStableWatchDeliveriesForBootstrap(root.delegateController); err != nil {
+					t.Fatal(err)
+				}
+			}
+			entries := notificationRawEntries(t, transcriptPath(fixture.stateDir, fixture.childID))
+			acks := producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)
+			if len(entries) != want || len(acks) != want || len(fixture.adapter.Requests()) != 0 {
+				t.Fatalf("child records=%d receipts=%d provider requests=%d want=%d/%d/0", len(entries), len(acks), len(fixture.adapter.Requests()), want, want)
+			}
+			for _, event := range produced {
+				state := *event.WatchSend
+				matches, receipts := 0, 0
+				for _, entry := range entries {
+					if entry.Turn.AttentionID == stableWatchAttentionID(state) {
+						matches++
+						if !reflect.DeepEqual(entry.Turn.Message, llm.UserMachinery(state.Frame)) || !reflect.DeepEqual(entry.Turn.NotificationProvenance, state.Provenance) {
+							t.Fatal("bootstrap changed complete message or provenance")
+						}
+					}
+				}
+				for _, ack := range acks {
+					if exactWatchSendEvent(ack, jobstore.EventWatchSendDelivered, state) {
+						receipts++
+					}
+				}
+				if matches != 1 || receipts != 1 {
+					t.Fatalf("identity=%s records=%d receipts=%d", stableWatchAttentionID(state), matches, receipts)
+				}
+			}
+			t.Logf("historical=%t child-local records=%d exact receipts=%d provider requests=0", historical, len(entries), len(acks))
+		})
+	}
+}
+
 func TestColdDescendantCallbackReplayAfterRootRestart(t *testing.T) {
 	for _, historical := range []bool{false, true} {
 		t.Run(fmt.Sprintf("historical=%t", historical), func(t *testing.T) {

@@ -3316,7 +3316,7 @@ func classifyDurableNotifications(
 	return survivors, injected
 }
 
-func (s *Session) notificationSourceAccepted(sourceID string) (bool, error) {
+func (s *Session) notificationSourceAccepted(sourceID string) (accepted bool, err error) {
 	if sourceID == "" {
 		return false, nil
 	}
@@ -3325,30 +3325,35 @@ func (s *Session) notificationSourceAccepted(sourceID string) (bool, error) {
 	if s.stateDir != "" {
 		// A resident descriptor can outlive its pathname. Missing or replaced
 		// storage is uncertainty, not proof this source never reached custody.
-		f, err := os.Open(transcriptPath(s.stateDir, s.ID()))
-		if err != nil {
-			return false, err
+		f, openErr := os.Open(transcriptPath(s.stateDir, s.ID()))
+		if openErr != nil {
+			return false, openErr
 		}
-		defer f.Close()
-		info, err := f.Stat()
-		if err != nil {
-			return false, err
+		defer func() {
+			err = errors.Join(err, f.Close())
+			if err != nil {
+				accepted = false
+			}
+		}()
+		info, statErr := f.Stat()
+		if statErr != nil {
+			return false, statErr
 		}
 		if err := s.attachedTranscript().EstablishDurabilityForFile(info); err != nil {
 			return false, err
 		}
-		fold, _, err := extendDelegateAttentionFoldFrom(f, 0, newDelegateAttentionFold(), s.ID())
-		if err != nil {
-			return false, err
+		fold, readErr := s.attentionFoldCursor.readFile(f, info, s.ID())
+		if readErr != nil {
+			return false, readErr
 		}
-		_, accepted := fold.content[sourceID]
+		_, accepted = fold.content[sourceID]
 		return accepted, nil
 	}
 	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
 		return false, err
 	}
-	_, accepted := fold.content[sourceID]
+	_, accepted = fold.content[sourceID]
 	return accepted, nil
 }
 

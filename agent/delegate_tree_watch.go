@@ -279,6 +279,21 @@ type stableWatchReceiverSnapshot struct {
 	transcriptRef string
 }
 
+func (s stableWatchBootstrapSnapshot) receiver(state jobstore.WatchSendState) (stableWatchReceiverSnapshot, bool) {
+	receiver, ok := s.receiverByID[state.ReceiverDelegateID]
+	if state.ReceiverDelegateID == "" && state.CallbackFrame && !state.StableReceiver && receiver.sessionID != state.ReceiverSessionID {
+		// Local callbacks record the addressed session, not a delegate ID. Resolve
+		// only against known descriptors, never synthesize a transcript identity.
+		for _, candidate := range s.receiverByID {
+			if candidate.sessionID == state.ReceiverSessionID {
+				receiver, ok = candidate, true
+				break
+			}
+		}
+	}
+	return receiver, ok && receiver.sessionID != "" && receiver.transcriptRef != "" && receiver.sessionID == state.ReceiverSessionID
+}
+
 type stableWatchDeliveryIdentity struct {
 	deliveryID string
 	updateSeq  uint64
@@ -418,8 +433,8 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 		if _, isCurrent := current[identity]; isCurrent {
 			continue
 		}
-		receiver, ok := snapshot.receiverByID[state.ReceiverDelegateID]
-		if !ok || receiver.sessionID == "" || receiver.transcriptRef == "" || receiver.sessionID != state.ReceiverSessionID {
+		receiver, ok := snapshot.receiver(state)
+		if !ok {
 			continue
 		}
 		path, sessionID, err := delegateTranscriptPathFromRef(snapshot.stateDir, receiver.transcriptRef)
@@ -486,8 +501,8 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 		if exact == nil || exact.DeliveryID != state.DeliveryID || exact.UpdateSeq != state.UpdateSeq {
 			continue
 		}
-		receiver, ok := snapshot.receiverByID[state.ReceiverDelegateID]
-		if !ok || receiver.sessionID == "" || receiver.transcriptRef == "" || receiver.sessionID != state.ReceiverSessionID {
+		receiver, ok := snapshot.receiver(state)
+		if !ok {
 			return fmt.Errorf("stable watch receiver %q is unavailable", state.ReceiverDelegateID)
 		}
 		path, sessionID, err := delegateTranscriptPathFromRef(snapshot.stateDir, receiver.transcriptRef)
