@@ -107,9 +107,10 @@ which of several projections is authoritative.
   projection and gate replace it. The draft's `unconfirmed` field shrinks to
   the acceptance-window fact it actually owns.
 - `ForkScreen` keeps its one-shot `createConversationService`: it verifies the
-  source instance and performs a fork action, with no store, activity sink,
-  mutation host, or subscription. It is a modal action helper, not a second
-  live conversation binding.
+  source instance and performs a fork action, with no notification consumer,
+  store, activity sink, or mutation host. Its `readProjection` participates in
+  the shared, refcounted thread subscription and releases it on close. It is a
+  modal action helper, not a second live conversation binding.
 - The screen renders `gate(projection, clickedTurn)` and submits through the
   entry's current service. A retired entry refuses without losing the draft.
 
