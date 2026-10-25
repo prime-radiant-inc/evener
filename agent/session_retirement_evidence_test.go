@@ -2188,7 +2188,9 @@ func retirementNotificationRetryWake(t *testing.T, attachBefore bool) {
 	}
 	entered, resume := make(chan struct{}), make(chan struct{})
 	var armed atomic.Bool
+	var wakes atomic.Int32
 	root.SetNotifyFunc(func() {
+		wakes.Add(1)
 		if armed.CompareAndSwap(true, false) {
 			close(entered)
 			<-resume
@@ -2216,9 +2218,28 @@ func retirementNotificationRetryWake(t *testing.T, attachBefore bool) {
 	}
 	root.requeueJobNotifications(original)
 	clk.BlockUntil(1)
+	if attachBefore {
+		c.mu.Lock()
+		c.eligibleSince = clk.Now()
+		c.mu.Unlock()
+	}
+	wakesBefore := wakes.Load()
 	armed.Store(true)
 	clk.Advance(jobNotificationRetryInitialDelay)
 	<-entered // the retry cleared active and is still inside its external wake
+	if attachBefore {
+		state := c.Snapshot()
+		want := []RetirementBlocker{{Category: "notification", SessionID: root.ID()}}
+		if !reflect.DeepEqual(state.Blockers, want) || !state.EligibleSince.IsZero() {
+			t.Errorf("current retry did not hold admission and clear idle eligibility: %+v", state)
+		}
+	}
+	root.pendingJobNotifsMu.Lock()
+	active, delay := root.jobNotifyRetry.active, root.jobNotifyRetry.delay
+	root.pendingJobNotifsMu.Unlock()
+	if active || delay != 2*jobNotificationRetryInitialDelay || wakes.Load() != wakesBefore+1 {
+		t.Errorf("current retry did not wake and advance backoff: active=%v delay=%v wakes=%d before=%d", active, delay, wakes.Load(), wakesBefore)
+	}
 	if !attachBefore {
 		c = retirementEvidenceController(t, root)
 	}
@@ -2765,23 +2786,47 @@ func TestRetirementSafetyDurableShellNotification(t *testing.T) {
 	if claimErr != nil || claim != nil {
 		t.Fatalf("unacknowledged original durable receipt escaped: %+v %v", state, claimErr)
 	}
-	// The requeue above armed a one-shot notification retry on the session clock
-	// (scheduleJobNotificationRetryLocked). Settling the receipt reset the retry
-	// generation but nothing Stops the armed timer, so on a real clock it still
-	// fired later, and its callback registers a "notification" retirement lease
-	// (beginJobNotifyCallback) for its whole run. TryClaim refuses on any live
-	// lease, so a read landing in that window reports exactly the lone
-	// {notification, <root>} blocker #4131 saw. Fire the armed one-shot and wait
-	// for it to settle, so the eligibility read below cannot race it. Within the
-	// 250ms retry delay this is the only one-shot due: the session's other armed
-	// one-shot is the open lane-residue sweep (laneSweepDelay, 10m) and stays
-	// armed across the advance. A count that does not drop means the
-	// fixture stopped firing the retry it arms, so revisit this handshake then.
+	// Delivery invalidated the retry generation but did not cancel its timer.
+	// Join real background work before measuring admission: even a brief stale
+	// lease would increment nextLease and clear eligibleSince (#4504).
+	joinRetirementTreeEmitters(root)
+	root.pendingJobNotifsMu.Lock()
+	retryBefore := root.jobNotifyRetry
+	root.pendingJobNotifsMu.Unlock()
+	if retryBefore.active {
+		t.Fatal("delivery did not supersede the armed retry")
+	}
+	var wakes atomic.Int32
+	root.SetNotifyFunc(func() { wakes.Add(1) })
+	defer root.SetNotifyFunc(nil)
+	wakesBefore := wakes.Load()
+	eligibleSince := clk.Now()
+	c.mu.Lock()
+	c.eligibleSince = eligibleSince
+	leaseBefore := c.nextLease
+	c.mu.Unlock()
+	// Only the notification retry is due here, not the 10m lane sweep.
 	armedBefore := clk.PendingCallbacks()
 	clk.Advance(jobNotificationRetryInitialDelay)
 	clk.Drain()
 	if armedAfter := clk.PendingCallbacks(); armedAfter >= armedBefore {
 		t.Fatalf("the fixture's armed notification retry did not fire: armed before=%d after=%d", armedBefore, armedAfter)
+	}
+	c.mu.Lock()
+	leaseAfter := c.nextLease
+	c.mu.Unlock()
+	state = c.Snapshot()
+	if leaseAfter != leaseBefore || len(state.Blockers) != 0 {
+		t.Errorf("superseded retry took retirement admission: leases before=%d after=%d blockers=%+v", leaseBefore, leaseAfter, state.Blockers)
+	}
+	if !state.EligibleSince.Equal(eligibleSince) {
+		t.Errorf("superseded retry reset idle eligibility: before=%v after=%v", eligibleSince, state.EligibleSince)
+	}
+	root.pendingJobNotifsMu.Lock()
+	retryAfter, callbacks, pending := root.jobNotifyRetry, root.jobNotifyCallbacks, len(root.pendingJobNotifs)
+	root.pendingJobNotifsMu.Unlock()
+	if retryAfter != retryBefore || callbacks != 0 || pending != 0 || wakes.Load() != wakesBefore {
+		t.Errorf("superseded retry did work: retry before=%+v after=%+v callbacks=%d pending=%d wakes=%d before=%d", retryBefore, retryAfter, callbacks, pending, wakes.Load(), wakesBefore)
 	}
 	assertRetirementEvidenceEligible(t, c)
 }

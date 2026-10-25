@@ -67,12 +67,13 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 		}
 	}
 	// communicate is the only user-facing message channel.
-	// Use the profile's definition if available (it may have been modified by
-	// WithAllowedDecisions to add extra fields to the output schema).
-	// Fall back to the base definition otherwise.
+	// Profile overrides live on the canonical communicate definition, even when
+	// this session renames the result tool. Adopt it before assigning the name so
+	// output-schema replacement and allowed decisions survive the rename.
 	resultToolDef := tool.DefCommunicateNamed(resultToolName)
-	if existing := reg.Get(resultToolName); existing != nil {
+	if existing := reg.Get(tool.DefaultResultToolName); existing != nil {
 		resultToolDef = existing.Definition
+		resultToolDef.Name = resultToolName
 	}
 	if deps.offersEndReason {
 		resultToolDef = tool.WithCommunicateEndReason(resultToolDef)

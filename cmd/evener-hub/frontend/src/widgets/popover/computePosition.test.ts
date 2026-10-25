@@ -40,3 +40,12 @@ test("computePopoverPosition opens below the trigger by TRIGGER_GAP", () => {
   expect(pos.left).toBe(20);
   expect(EDGE_MARGIN).toBe(8);
 });
+
+test("a caller-supplied viewport decides the clamp, not the global window", () => {
+  // A popout larger than the opener's window: a trigger past the opener's edge
+  // still fits the popout, so it must not be flipped back inside the opener.
+  const trigger = { left: 1500, right: 1700, top: 100, bottom: 140 } as DOMRect;
+  const position = computePopoverPosition(trigger, { width: 300, height: 200 }, { width: 2000, height: 1200 });
+  expect(position.left).toBe(1500);
+  expect(position.top).toBe(144);
+});

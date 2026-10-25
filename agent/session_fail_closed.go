@@ -93,13 +93,24 @@ func (s *Session) failClosedUnlessRecorded(rec transcript.Record, err error, wha
 	return s.failClosed(fmt.Errorf("%s was not recorded: %w", what, err))
 }
 
-// failClosedOnUnhealthyTranscript fails a served session closed when its
-// transcript could not be created or its writer is poisoned. Callers hold no
-// session lock and no client-mutation store lock.
-func (s *Session) failClosedOnUnhealthyTranscript() {
+// failClosedOnTranscriptCreation fails a served session closed when its
+// transcript could not be created. It is the writer-independent half of
+// failClosedOnUnhealthyTranscript; the turn gate calls it before it samples the
+// writer, then latches the poison half only when the poisoned writer it decided
+// on is still attached.
+func (s *Session) failClosedOnTranscriptCreation() {
 	if s.transcriptCreateErr != nil {
 		_ = s.failClosed(fmt.Errorf("create transcript: %w", s.transcriptCreateErr))
 	}
+}
+
+// failClosedOnUnhealthyTranscript fails a served session closed when its
+// transcript could not be created or its writer is poisoned. Callers hold no
+// session lock and no client-mutation store lock. The turn gate does not call
+// this: it must revalidate a poison refusal against the attached writer before
+// latching (see refuseOnCurrentUnhealthyTranscript).
+func (s *Session) failClosedOnUnhealthyTranscript() {
+	s.failClosedOnTranscriptCreation()
 	if s.attachedTranscript().Poisoned() {
 		_ = s.failClosed(errTranscriptRefusesRecords())
 	}

@@ -6,6 +6,7 @@ import { act } from "react-test-renderer";
 import { lexer } from "marked";
 import { threadActivityFixture } from "./subagents/sessionActivityTestUtils";
 import { ConversationScreen } from "./screens";
+import { NativeConversationSessionsProvider } from "./session/NativeConversationSessionsProvider";
 import { TimelineItem } from "./TimelineItem";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as Clipboard from "expo-clipboard";
@@ -562,7 +563,12 @@ it("navigates Reader from actual owning ConversationScreen even when another con
 	} as ConversationScreenProps["route"];
 	navigationState.state = { index: 0, routes: [route] };
 	vi.mocked(navigation.navigate).mockClear();
-	const tree = render(<ConversationScreen route={route} navigation={navigation} />);
+	const screen = () => (
+		<NativeConversationSessionsProvider>
+			<ConversationScreen route={route} navigation={navigation} />
+		</NativeConversationSessionsProvider>
+	);
+	const tree = render(screen());
 	try {
 		await vi.waitFor(async () => {
 			await act(async () => {
@@ -595,7 +601,7 @@ it("navigates Reader from actual owning ConversationScreen even when another con
 		act(() => oldProps.onLinkLongPress({ url: oldURL }));
 		const retiredMenu = alertRequests.at(-1)!;
 		navigationState.state = { index: 0, routes: [route] };
-		act(() => tree.update(<ConversationScreen route={route} navigation={navigation} />));
+		act(() => tree.update(screen()));
 		served.cwd = "/work/replaced";
 		await act(async () => {
 			client.emitNotification({

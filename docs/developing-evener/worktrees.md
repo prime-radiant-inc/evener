@@ -112,6 +112,30 @@ or whose tree is dirty (pass `force_dirty`) — but unlike the automatic collect
 below, `dispose` *will* retire a rebase- or squash-merged lane, on the model's
 judgment that the work actually landed.
 
+`dispose` fences the whole delegate subtree for the lane handoff, not only the
+named delegate. While the lane is being unlocked and removed, a descendant
+delegate — including a non-isolated child sharing its parent's lane — cannot be
+created, started, cold-restored, or have its runtime installed. A descendant
+start or attention restore already in flight makes `dispose` refuse with the
+retryable "became active" path and leaves the lane intact. A mid-tree delegate
+session's own close applies the same fence before collecting its child lanes; a
+root session's close already refuses new delegate admission before lane
+disposal. If a close-time fence is refused, the lane is retained rather than
+destroyed under the install. It keeps its lock, because the refusal means an
+install may still be in flight into that lane; resume the owning session or
+dispose of the lane explicitly once the work settles.
+
+Disposing a resident delegate also tears its child session down, and that
+session's own close collects its delegate lanes. Those nested lanes are disposed
+under the parent's already-held subtree fence rather than acquiring a second
+fence that the parent's handoff would refuse; only an admission in flight in a
+nested lane's own subtree retains that lane, and it stays locked.
+
+The same rule applies when the close pass runs out of budget: the budget-exempt
+tail still refuses to unlock a lane whose subtree has an admission in flight,
+and reports the retained lock instead. Once the work settles, a later resume or
+explicit disposal releases it.
+
 **Behavior change: a session's own merged delegate lanes no longer survive its
 close.** A session now disposes the isolation lanes it created whose commits are
 reachable from the branch they were cut from — collecting them at its own close
