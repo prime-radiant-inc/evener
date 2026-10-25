@@ -99,7 +99,6 @@ Two carve-outs, each forced by an upstream we don't own:
   Anthropic, Ollama, and OpenRouter use snake_case (`finish_reason`,
   `display_name`, `has_more`). Google Gemini uses camelCase
   (`displayName`). These are wire formats owned by the provider.
-
 - **`mcpServers` mirrors the upstream `.mcp.json` format.** The few
   `json:"mcpServers"` tags (for example in `agent/mcpconfig/` and
   `agent/plugin/`) keep that spelling and opt out with a trailing
