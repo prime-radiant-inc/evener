@@ -237,9 +237,9 @@ func extendDelegateAttention(prior delegateAttentionFold, entries []transcript.E
 			if turn.Kind != schema.TurnSteering || turn.AttentionResolution != nil {
 				return delegateAttentionFold{}, fmt.Errorf("attention %q is not a steering turn", turn.AttentionID)
 			}
-			if previous, exists := fold.content[turn.AttentionID]; exists {
-				if !reflect.DeepEqual(previous, turn.Message) {
-					return delegateAttentionFold{}, fmt.Errorf("attention %q has conflicting content", turn.AttentionID)
+			if previous, exists := fold.turns[turn.AttentionID]; exists {
+				if err := validateDelegateAttentionIdentity(previous, turn.AttentionID, turn.Message, turn.NotificationProvenance); err != nil {
+					return delegateAttentionFold{}, err
 				}
 			} else {
 				fold.content[turn.AttentionID] = turn.Message
@@ -391,6 +391,21 @@ func appendColdDelegateNotificationDurablyWithOpen(path, expectedSessionID, atte
 	return appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, attentionID, llm.User(content), now, open)
 }
 
+// A duplicate owns the same message and provenance, including real nil
+// provenance. Neither missing metadata nor a matching body alone proves custody.
+func validateDelegateAttentionIdentity(previous schema.Turn, attentionID string, message llm.Message, causal *provenance.Causal) error {
+	if previous.AttentionID != attentionID {
+		return fmt.Errorf("attention %q has conflicting identity", attentionID)
+	}
+	if !reflect.DeepEqual(previous.Message, message) {
+		return fmt.Errorf("attention %q has conflicting content", attentionID)
+	}
+	if !reflect.DeepEqual(previous.NotificationProvenance, provenance.Clone(causal)) {
+		return fmt.Errorf("attention %q has conflicting provenance", attentionID)
+	}
+	return nil
+}
+
 func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, attentionID string, message llm.Message, now time.Time, open delegateAttentionWriterOpener, causal ...*provenance.Causal) (appended bool, err error) {
 	if expectedSessionID == "" || attentionID == "" {
 		return false, errors.New("cold delegate attention identity is incomplete")
@@ -401,13 +416,17 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	if open == nil {
 		return false, errors.New("cold delegate attention writer opener is nil")
 	}
+	var expectedProvenance *provenance.Causal
+	if len(causal) != 0 {
+		expectedProvenance = provenance.Clone(causal[0])
+	}
 	preflight, err := readDelegateAttentionFold(path, expectedSessionID)
 	if err != nil {
 		return false, err
 	}
-	if previous, exists := preflight.content[attentionID]; exists {
-		if !reflect.DeepEqual(previous, message) {
-			return false, fmt.Errorf("attention %q has conflicting content", attentionID)
+	if previous, exists := preflight.turns[attentionID]; exists {
+		if err := validateDelegateAttentionIdentity(previous, attentionID, message, expectedProvenance); err != nil {
+			return false, err
 		}
 	}
 	writer, entries, err := open(path, expectedSessionID)
@@ -419,9 +438,9 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	if err != nil {
 		return false, err
 	}
-	if previous, exists := fold.content[attentionID]; exists {
-		if !reflect.DeepEqual(previous, message) {
-			return false, fmt.Errorf("attention %q has conflicting content", attentionID)
+	if previous, exists := fold.turns[attentionID]; exists {
+		if err := validateDelegateAttentionIdentity(previous, attentionID, message, expectedProvenance); err != nil {
+			return false, err
 		}
 		if err := writer.EstablishDurability(); err != nil {
 			return false, err
@@ -432,9 +451,7 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	turn.Timestamp = now.UTC()
 	turn.AttentionID = attentionID
 	turn.StableTurnID = newQueueEntryID()
-	if len(causal) != 0 {
-		turn.NotificationProvenance = provenance.Clone(causal[0])
-	}
+	turn.NotificationProvenance = expectedProvenance
 	// The synced door is the durability owner's door: it records AND syncs,
 	// or errors. A read-back would find a retained (recorded but unsynced)
 	// line and wrongly call it durable, so this side of delegate attention asks
@@ -447,9 +464,12 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	if err != nil {
 		return false, err
 	}
-	persisted, exists := verified.content[attentionID]
-	if !exists || !reflect.DeepEqual(persisted, message) {
+	persisted, exists := verified.turns[attentionID]
+	if !exists {
 		return false, fmt.Errorf("attention %q was not durably appended", attentionID)
+	}
+	if err := validateDelegateAttentionIdentity(persisted, attentionID, message, expectedProvenance); err != nil {
+		return false, err
 	}
 	return true, nil
 }
