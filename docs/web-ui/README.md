@@ -208,7 +208,22 @@ retained bodies may also avoid a read under the existing authority rules even
 without a cache certificate. Body restoration alone creates no coverage,
 freshness or server cursor. Missing required bodies or metadata that cannot be
 reconstructed from retained history, failed writes and opening deadline expiry
-fall back to source recovery. The accepted baseline supplies the display and
+fall back to source recovery. An established view, whose last accepted local
+open still holds with no invalidation since, restores on remount without that
+deadline: the local restore keeps waiting, and only a genuinely stalled
+storage read settles the opening early. A settled stall keeps the loaded
+range only while its required bodies stay resident; a view whose release
+reclaimed them hands the open to source recovery, so the display recovers
+even though storage never answered. The late result of a settled stall acts
+only while its opening still owns the route, a live pane and the newest
+opening: it republishes the range when usable and falls back to source
+recovery when it cannot restore the required range, merging into whatever
+the repository published in the meantime — local older pages and accepted
+updates — instead of replacing it with the opening's captured snapshot, and
+the local continuation derives from bodies still missing after the merge,
+so paging that already exhausted stays exhausted. The
+accepted baseline
+supplies the display and
 cursor for subsequent older paging and live updates. Reconnect and source changes
 still reconcile, retiring obsolete cursors. Clear, deletion, final release and
 superseded openings fence late publication, and the opening hold settles on
