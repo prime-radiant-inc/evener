@@ -1,7 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createPortal } from "react-dom";
 import { expect, test, vi } from "vitest";
 import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
+import { appendPopout } from "../internal/popoutTestUtils";
 import { Sheet } from "./index";
 import sheetStyles from "./sheet.module.css";
 
@@ -336,4 +338,44 @@ test("bodyClassName is appended to the body element", () => {
     </Sheet>,
   );
   expect(screen.getByText("drawer body").className).toMatch(/flush/);
+});
+
+// --- popout realm (Dockview) ---------------------------------------------
+// A Dockview popout is a separate Window/Document. An expandable sheet's drag
+// attaches pointermove/pointerup for the gesture, so those listeners must be
+// on the drag surface's own window; the opener's window never sees the
+// popout's pointer events.
+test("a drag in a popout is driven and ended by that window's pointer events, not the opener's", () => {
+  const { frame, doc } = appendPopout();
+  const view = render(
+    createPortal(
+      <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: true }} onClose={vi.fn()} title="t">
+        Body
+      </Sheet>,
+      doc.body,
+    ),
+  );
+  try {
+    const handle = doc.querySelector<HTMLElement>('[data-testid="sheet-handle"]');
+    if (handle === null) throw new Error("popout sheet handle missing");
+    const geometry = () => doc.querySelector("[data-geometry]")?.getAttribute("data-geometry");
+    expect(geometry()).toBe("full");
+
+    fireEvent.pointerDown(handle, { clientY: 500 });
+    // The opener's window is not part of this drag.
+    fireEvent.pointerMove(document.body, { clientY: 800 });
+    expect(geometry()).toBe("full");
+
+    // The popout's own pointer events drive it.
+    fireEvent.pointerMove(handle, { clientY: 800 });
+    expect(geometry()).toBe("peek");
+
+    // pointerup in the popout ends the gesture; a later move changes nothing.
+    fireEvent.pointerUp(handle, { clientY: 800 });
+    fireEvent.pointerMove(handle, { clientY: 100 });
+    expect(geometry()).toBe("peek");
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
 });

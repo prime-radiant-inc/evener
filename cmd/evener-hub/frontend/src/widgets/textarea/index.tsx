@@ -7,7 +7,9 @@ import {
   useLayoutEffect,
   useRef,
 } from "react";
+import { ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
+import { useOwnedDocument } from "../internal/useOwnedDocument";
 import styles from "./textarea.module.css";
 
 export interface TextareaProps {
@@ -110,7 +112,9 @@ function resizeToFitContent(el: HTMLTextAreaElement): void {
     el.style.height = before;
     return;
   }
-  const maxHeight = window.innerHeight * MAX_HEIGHT_VIEWPORT_FRACTION;
+  // The field's OWN window: in a Dockview popout the clamp is a fraction of
+  // that window's viewport, not the opener's.
+  const maxHeight = ownerWindowOf(el).innerHeight * MAX_HEIGHT_VIEWPORT_FRACTION;
   el.style.height = `${Math.min(measured, maxHeight)}px`;
 }
 
@@ -142,13 +146,17 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
   forwardedRef,
 ) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // The document the field lives in, kept current across a Dockview move so
+  // the resize listener and the value measurement below rebind to the window
+  // the field is in now.
+  const ownerDocument = useOwnedDocument(textareaRef, Boolean(autoGrow));
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: value is a deliberate trigger-only dep - resizeToFitContent reads the DOM element's own (React-already-updated) value/scrollHeight, never the `value` variable directly, but the effect must still re-run on every keystroke to remeasure
   useLayoutEffect(() => {
     if (!autoGrow) return;
     const el = textareaRef.current;
     if (el) resizeToFitContent(el);
-  }, [autoGrow, value]);
+  }, [autoGrow, value, ownerDocument]);
 
   // Re-measures on the layout changes the value-keyed effect above cannot
   // see, from two complementary sources:
@@ -163,6 +171,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
   // enough to be clamped keeps its old, now-stale ceiling when the window
   // grows - the element's box never changed, so the observer alone never
   // fires.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: ownerDocument is a deliberate trigger-only dep - the effect resolves the listener's window from the element itself, and must rebind when the element's document changes
   useLayoutEffect(() => {
     if (!autoGrow) return;
     const el = textareaRef.current;
@@ -170,12 +179,13 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
     const remeasure = () => resizeToFitContent(el);
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(remeasure);
     observer?.observe(el);
-    window.addEventListener("resize", remeasure);
+    const win = ownerWindowOf(el);
+    win.addEventListener("resize", remeasure);
     return () => {
       observer?.disconnect();
-      window.removeEventListener("resize", remeasure);
+      win.removeEventListener("resize", remeasure);
     };
-  }, [autoGrow]);
+  }, [autoGrow, ownerDocument]);
 
   return (
     <textarea

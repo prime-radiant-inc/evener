@@ -20,6 +20,8 @@ systematic pass. Three changes:
 3. **Part 2: `sheet`, `directorypicker`, `textarea`** and the tooltip's own
    portal target.
 
+Part 2 resolves each widget from the node it renders; the picker renders a hidden host marker because its panel is its only DOM output.
+
 ## Problem
 
 A conversation can live in a Dockview popout, which is a separate `Window` with
