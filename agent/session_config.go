@@ -429,6 +429,10 @@ type testConfig struct {
 	// delegateAttentionOpenWriter replaces only transcript resume for attention
 	// repair. Nil preserves the production transcript opener.
 	delegateAttentionOpenWriter delegateAttentionWriterOpener
+	// afterSessionWakeRecoveryScheduled observes a cold receiver failure after
+	// scheduling, including an already-active retry. It runs outside c.mu and
+	// receives the unchanged error returned by that wake pass. Nil in production.
+	afterSessionWakeRecoveryScheduled func(sessionID string, recoveryErr error)
 	// notificationRetryCallback observes a root attention retry callback that
 	// has passed scheduleRootAttentionRetryLocked's early returns: it took
 	// ownership (beginAttentionCallback succeeded), its generation is still
