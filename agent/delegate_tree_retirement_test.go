@@ -377,7 +377,7 @@ func TestRetirementDelegateIdleEntrypointsClaimFirst(t *testing.T) {
 			return (delegateRuntime{owner: root}).send(context.Background(), d.DelegateID, "send-sentinel", 0).result.Err
 		},
 		"cold reconstruct": func(root *Session, _ *delegateTreeController, d delegateResult) error {
-			_, _, err := root.restoreColdDelegateAttentionRuntime(d.DelegateID)
+			_, _, err := restoreColdRuntimeWithHandoffForTest(root, d.DelegateID)
 			return err
 		},
 		"reserve start": func(root *Session, tree *delegateTreeController, d delegateResult) error {
@@ -1054,7 +1054,7 @@ func TestRetirementDelegateColdReconstructionAdmittedFirst(t *testing.T) {
 	done := make(chan restored, 2)
 	for range 2 {
 		go func() {
-			_, sub, err := root.restoreColdDelegateAttentionRuntime(d.DelegateID)
+			_, sub, err := restoreColdRuntimeWithHandoffForTest(root, d.DelegateID)
 			done <- restored{sub, err}
 		}()
 	}
@@ -1164,6 +1164,12 @@ func TestRetirementDelegateIdleInstallationOwnerBoundary(t *testing.T) {
 		finish(candidate, nil)
 		t.Fatal("expected genuinely cold candidate")
 	}
+	var recheck bool
+	defer func() {
+		if recheck {
+			tree.recheckNotificationReceivers()
+		}
+	}()
 	defer finish(candidate, nil)
 	// Exercise the real manager's atomic bind/publication contract, observing
 	// callbacks within its bind rather than relying on racing a notification reader.
@@ -1172,7 +1178,11 @@ func TestRetirementDelegateIdleInstallationOwnerBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer installation.release()
-	install := func(selected *subagent) error { return installation.attach(selected.sess) }
+	install := func(selected *subagent) error {
+		released, err := installation.attach(selected.sess)
+		recheck = recheck || released
+		return err
+	}
 	for len(c.changed) != 0 {
 		<-c.changed
 	}
@@ -1924,7 +1934,7 @@ func TestRetirementDelegateReleaseExactRuntime(t *testing.T) {
 				if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
 					t.Fatal(err)
 				}
-				_, sub, err := root.restoreColdDelegateAttentionRuntime(d.DelegateID)
+				_, sub, err := restoreColdRuntimeWithHandoffForTest(root, d.DelegateID)
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -75,7 +75,7 @@ func TestCovAbortOwedDelegateBootstrap(t *testing.T) {
 		restored: []owedBootstrapRuntime{first, {sub: doneSub}, second},
 		done:     map[*subagent]bool{doneSub: true},
 	}
-	if err := root.abortOwedDelegateBootstrap(gate, errors.New("test abort")); err != nil {
+	if err := abortOwedBootstrapWithHandoffForTest(root, gate, errors.New("test abort")); err != nil {
 		t.Fatalf("abort owed bootstrap: %v", err)
 	}
 
@@ -262,7 +262,7 @@ func TestCovRestoreColdDelegateOwnerRuntime_EmptyParentID(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
 	// Empty parentID — returns s itself.
-	got, err := s.restoreColdDelegateOwnerRuntime("")
+	got, _, err := s.restoreColdDelegateOwnerRuntime("")
 	if err != nil {
 		t.Fatalf("empty parentID: %v", err)
 	}
@@ -538,7 +538,7 @@ func TestCovDriveStableDelegateAttention_NilSubSession(t *testing.T) {
 func TestCovRestoreColdDelegateAttentionRuntime_NilSession(t *testing.T) {
 	t.Parallel()
 	var s *Session
-	_, _, err := s.restoreColdDelegateAttentionRuntime("dlg_1")
+	_, _, err := restoreColdRuntimeWithHandoffForTest(s, "dlg_1")
 	if err == nil {
 		t.Fatal("nil session should return error")
 	}
@@ -549,7 +549,7 @@ func TestCovRestoreColdDelegateAttentionRuntime_NilSession(t *testing.T) {
 func TestCovRestoreColdDelegateAttentionRuntime_EmptyDelegateID(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	_, _, err := s.restoreColdDelegateAttentionRuntime("")
+	_, _, err := restoreColdRuntimeWithHandoffForTest(s, "")
 	if err == nil {
 		t.Fatal("empty delegateID should return error")
 	}

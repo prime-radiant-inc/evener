@@ -2871,7 +2871,7 @@ func TestDelegateAttention_RestoringOwnerDefersColdDeliveryUntilRuntimeAttach(t 
 	t.Cleanup(func() { _ = ownerWriter.Close() })
 	owner := &Session{id: "child-dlg_parent", stateDir: c.stateDir, delegateController: c}
 	owner.attachTranscript(ownerWriter)
-	if err := c.AttachRuntime(started.lease, owner); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, started.lease, owner); err != nil {
 		t.Fatalf("AttachRuntime owner: %v", err)
 	}
 	claim, err := c.BeginStartInput(started.lease)

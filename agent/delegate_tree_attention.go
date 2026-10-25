@@ -867,8 +867,12 @@ func (c *delegateTreeController) AttachIdleRuntime(delegateID string, runtime *S
 	if err != nil {
 		return err
 	}
-	defer installation.release()
-	return installation.attach(runtime)
+	recheck, err := installation.attach(runtime)
+	installation.release()
+	if recheck {
+		c.recheckNotificationReceivers()
+	}
+	return err
 }
 
 // An installation owns admission across manager bind and publication. Its
@@ -894,19 +898,19 @@ func (c *delegateTreeController) beginIdleRuntimeInstallation(delegateID string)
 	return &delegateIdleRuntimeInstallation{controller: c, delegateID: delegateID, release: release}, nil
 }
 
-func (installation *delegateIdleRuntimeInstallation) attach(runtime *Session) error {
+func (installation *delegateIdleRuntimeInstallation) attach(runtime *Session) (bool, error) {
 	c, delegateID := installation.controller, installation.delegateID
 	if c == nil || runtime == nil || delegateID == "" {
-		return errDelegateTargetBusy
+		return false, errDelegateTargetBusy
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	aggregate := c.durable[delegateID]
 	if c.closing || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || runtime.delegateController != c || runtime.owningDelegateID != delegateID || runtime.ID() != aggregate.Descriptor.ChildSessionID {
-		return errDelegateTargetBusy
+		return false, errDelegateTargetBusy
 	}
 	if c.laneHandoffCoversLocked(delegateID) {
-		return errDelegateTargetBusy
+		return false, errDelegateTargetBusy
 	}
 	live := c.live[delegateID]
 	if live == nil {
@@ -914,13 +918,13 @@ func (installation *delegateIdleRuntimeInstallation) attach(runtime *Session) er
 		c.live[delegateID] = live
 	}
 	if live.binding != nil || live.recoveryRequired || live.runtime != nil && live.runtime != runtime {
-		return errDelegateTargetBusy
+		return false, errDelegateTargetBusy
 	}
 	ownerID, owner, err := c.runtimeOwnerLocked(runtime)
 	if err != nil || owner != nil && owner != live || ownerID != "" && ownerID != delegateID {
-		return errDelegateTargetBusy
+		return false, errDelegateTargetBusy
 	}
-	c.setResidentRuntimeLocked(live, runtime)
+	recheck := c.setResidentRuntimeLocked(live, runtime)
 	c.evidenceVersion++
-	return nil
+	return recheck, nil
 }

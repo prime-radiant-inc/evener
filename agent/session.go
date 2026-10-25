@@ -1305,6 +1305,8 @@ func (s *Session) jobNotificationsDelivered() uint64 {
 // when a job notification is pending. It mirrors SetKickFunc: the agent module
 // must not import server, so serve.go wires this callback into the server's input
 // channel.
+// The callback hands off the wake and returns. It must not call this Session's
+// Close inline: shutdown belongs to an external owner, after the handoff.
 func (s *Session) SetNotifyFunc(f func()) {
 	s.mu.Lock()
 	s.notifyFunc = f

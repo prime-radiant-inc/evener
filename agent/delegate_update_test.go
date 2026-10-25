@@ -589,7 +589,7 @@ func TestDelegateControllerPostedUpdateHeadLeavesTheInlineWaiter(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
-	if err := c.AttachRuntime(lease, &Session{}); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, lease, &Session{}); err != nil {
 		t.Fatalf("AttachRuntime: %v", err)
 	}
 	if _, err := c.AdmitStartInput(lease, func() error { return nil }); err != nil {

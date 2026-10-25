@@ -509,7 +509,7 @@ func TestDelegateControllerRunFinishedAppendFailureKeepsPreparedAndWaiter(t *tes
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
 	runtime := &Session{}
-	if err := c.AttachRuntime(lease, runtime); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, lease, runtime); err != nil {
 		t.Fatalf("AttachRuntime: %v", err)
 	}
 	if _, err := c.AdmitStartInput(lease, func() error { return nil }); err != nil {

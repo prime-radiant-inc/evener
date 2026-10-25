@@ -424,10 +424,21 @@ func (c *delegateTreeController) enqueueNotification(ownerSessionID string, n no
 
 // requestSessionWake restores only the addressed receiver. The restore hold
 // excludes a cold writer or retirement until the resident adapter owns it.
+type notificationWakeClosingError struct{}
+
+func (notificationWakeClosingError) Error() string { return errDelegateTargetBusy.Error() }
+func (notificationWakeClosingError) Unwrap() error { return errDelegateTargetBusy }
+
 func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 	if c == nil {
 		return errDelegateDeliveryReceiverUnavailable
 	}
+	var recheck bool
+	defer func() {
+		if recheck {
+			c.recheckNotificationReceivers()
+		}
+	}()
 	release, err := c.beginRetirementMutation()
 	if err != nil {
 		return err
@@ -436,7 +447,7 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 	c.mu.Lock()
 	if c.closing {
 		c.mu.Unlock()
-		return errDelegateTargetBusy
+		return notificationWakeClosingError{}
 	}
 	if sessionID == c.rootSessionID {
 		root := c.rootRuntime
@@ -477,7 +488,8 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		if len(fold.pendingIDs()) == 0 {
 			return nil
 		}
-		_, sub, restoreErr := root.restoreColdDelegateAttentionRuntime(id)
+		_, sub, released, restoreErr := root.restoreColdDelegateAttentionRuntime(id)
+		recheck = recheck || released
 		if restoreErr != nil {
 			c.scheduleSessionWakeRetry(sessionID)
 			return restoreErr
@@ -560,7 +572,9 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 	}
 	var sub *subagent
 	if err == nil {
-		_, sub, err = root.restoreColdDelegateAttentionRuntime(id)
+		var released bool
+		_, sub, released, err = root.restoreColdDelegateAttentionRuntime(id)
+		recheck = recheck || released
 	}
 	if err != nil {
 		root.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, id, err)

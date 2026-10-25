@@ -2104,7 +2104,7 @@ func TestDelegateAttentionRestoreHold_RefusesSubtreeBeforeLiveEntry(t *testing.T
 	if err != nil {
 		t.Fatalf("commit parent start: %v", err)
 	}
-	if err := c.AttachRuntime(parentStarted.lease, &Session{}); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, parentStarted.lease, &Session{}); err != nil {
 		t.Fatalf("attach parent runtime: %v", err)
 	}
 	if _, err := c.AdmitStartInput(parentStarted.lease, func() error { return nil }); err != nil {
@@ -2206,7 +2206,7 @@ func finishHarnessDelegateGeneration(t *testing.T, c *delegateTreeController, ac
 	if err != nil {
 		t.Fatalf("commit %s start: %v", id, err)
 	}
-	if err := c.AttachRuntime(started.lease, &Session{}); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, started.lease, &Session{}); err != nil {
 		t.Fatalf("attach %s runtime: %v", id, err)
 	}
 	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {

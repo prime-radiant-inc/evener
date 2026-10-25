@@ -46,6 +46,19 @@ and serve loop. Delegate callbacks use the existing restore and leased start
 admission, not a parallel executor. Cold writers, restore and execution retain
 their existing exclusion and lifecycle fences.
 
+Wake callbacks hand off a message and return. They must not call their own
+`Session.Close` inline, because shutdown joins the operation delivering the
+wake. An external owner closes the session after the handoff.
+
+Releasing a finalization fence permits waiting admissions to retry immediately.
+The operation that released it carries its notification recheck past enclosing
+locks, reconstruction publication and restore/start admissions, then runs the
+recheck synchronously before it completes. The admission-release channel is not
+a tail-completion channel. An already-closing controller or root ends that old
+runtime's traversal, leaving persisted custody for restoration. Only the exact
+early controller-close refusal is classified as shutdown. Storage, target and
+retirement failures remain diagnostic errors.
+
 With nonempty `StateDir`, the transcript is canonical and its attention cursor
 is only a derived cache. Configured persistence with a missing, closed or failed
 writer cannot fall back to memory. With intentionally empty `StateDir`, after

@@ -290,6 +290,12 @@ func (c *delegateTreeController) retirementNonBlockingEvidenceRead(includeNaming
 // releaseRetiredRuntimes changes only exact process pointers after their owner
 // reports release. It never closes resumability or appends durable events.
 func (c *delegateTreeController) releaseRetiredRuntimes(exact map[string]*Session) error {
+	var recheck bool
+	defer func() {
+		if recheck {
+			c.recheckNotificationReceivers()
+		}
+	}()
 	defer c.retirementChanged()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -298,7 +304,8 @@ func (c *delegateTreeController) releaseRetiredRuntimes(exact map[string]*Sessio
 	}
 	for id, s := range exact {
 		if live := c.live[id]; s != nil && live != nil && live.binding == nil && live.runtime == s {
-			c.setResidentRuntimeLocked(live, nil)
+			released := c.setResidentRuntimeLocked(live, nil)
+			recheck = recheck || released
 		}
 	}
 	c.evidenceVersion++

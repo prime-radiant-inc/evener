@@ -92,7 +92,7 @@ func TestDelegateLaneHandoffFencesNestedRestore(t *testing.T) {
 	if installation != nil {
 		installation.release()
 	}
-	_, _, restoreErr := r.s.restoreColdDelegateAttentionRuntime(nestedID)
+	_, _, restoreErr := restoreColdRuntimeWithHandoffForTest(r.s, nestedID)
 
 	close(seamRelease)
 	var disposeErr error
@@ -291,7 +291,7 @@ func TestDelegateLaneHandoffRefusesInstallationAttach(t *testing.T) {
 	}
 	defer c.endSubtreeLaneHandoff(parentID)
 	runtime := &Session{id: "child-" + nestedID, owningDelegateID: nestedID, delegateController: c}
-	if err := installation.attach(runtime); !errors.Is(err, errDelegateTargetBusy) {
+	if _, err := installation.attach(runtime); !errors.Is(err, errDelegateTargetBusy) {
 		t.Errorf("attach during the handoff = %v, want errDelegateTargetBusy", err)
 	}
 }
@@ -321,7 +321,7 @@ func TestDelegateLaneHandoffRefusesWhileColdRestoreInFlight(t *testing.T) {
 	}
 	restoreDone := make(chan struct{}, 1)
 	go func() {
-		_, _, err := r.s.restoreColdDelegateAttentionRuntime(nestedID)
+		_, _, err := restoreColdRuntimeWithHandoffForTest(r.s, nestedID)
 		// The fixture has no saved child metadata, so this restore fails after
 		// its commit. The subject here is the window: it must hold through that
 		// commit and release on return, not whether the restore succeeds.
@@ -500,7 +500,7 @@ func TestDelegateLaneHandoffAdditionalAdmissions(t *testing.T) {
 	t.Run("attach runtime under a handoff", func(t *testing.T) {
 		c := newFencedPair(t)
 		lease := seedControllerRun(t, c, nestedID)
-		if err := c.AttachRuntime(lease, &Session{id: "child-" + nestedID, owningDelegateID: nestedID, delegateController: c}); !errors.Is(err, errDelegateTargetBusy) {
+		if err := attachRuntimeWithHandoffForTest(c, lease, &Session{id: "child-" + nestedID, owningDelegateID: nestedID, delegateController: c}); !errors.Is(err, errDelegateTargetBusy) {
 			t.Errorf("runtime attach under the handoff = %v, want errDelegateTargetBusy", err)
 		}
 	})

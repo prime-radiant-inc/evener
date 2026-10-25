@@ -186,6 +186,12 @@ func (c *delegateTreeController) ClaimRuntimeReclamation(required int) (*delegat
 // CompleteRuntimeReclamation clears only the exact runtime pointers that the
 // caller reports closed. A replacement installed after the claim survives.
 func (c *delegateTreeController) CompleteRuntimeReclamation(claim *delegateRuntimeReclamationClaim, closed map[string]*Session) error {
+	var recheck bool
+	defer func() {
+		if recheck {
+			c.recheckNotificationReceivers()
+		}
+	}()
 	defer c.retirementChanged()
 	if c == nil {
 		return errors.New("delegate controller is unavailable")
@@ -203,7 +209,8 @@ func (c *delegateTreeController) CompleteRuntimeReclamation(claim *delegateRunti
 			continue
 		}
 		if live := c.live[entry.delegateID]; live != nil && live.binding == nil && live.runtime == entry.runtime {
-			c.setResidentRuntimeLocked(live, nil)
+			released := c.setResidentRuntimeLocked(live, nil)
+			recheck = recheck || released
 		}
 	}
 	c.releaseRuntimeReclamationLocked(claim)

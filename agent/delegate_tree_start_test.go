@@ -254,7 +254,7 @@ func TestDelegateControllerCommittedUnreadyStartAdmitsOnlyStopOrFinish(t *testin
 		t.Fatalf("BeginTool unready error = %v, want busy", err)
 	}
 	runtime := &Session{}
-	if err := c.AttachRuntime(started.lease, runtime); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, started.lease, runtime); err != nil {
 		t.Fatalf("AttachRuntime: %v", err)
 	}
 	if _, err := c.BeginModelRequest(started.lease); !errors.Is(err, errDelegateTargetBusy) {
@@ -422,7 +422,7 @@ func TestDelegateControllerInputPersistFailureClaimsWaiterAndReturnsDelivery(t *
 	if err != nil {
 		t.Fatalf("CommitStart: %v", err)
 	}
-	if err := c.AttachRuntime(started.lease, &Session{}); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, started.lease, &Session{}); err != nil {
 		t.Fatalf("AttachRuntime: %v", err)
 	}
 	inputErr := errors.New("injected input persistence failure")
@@ -523,7 +523,7 @@ func TestDelegateControllerInputPersistFinishAppendFailureDoesNotClaimWaiter(t *
 	if err != nil {
 		t.Fatalf("CommitStart: %v", err)
 	}
-	if err := c.AttachRuntime(started.lease, &Session{}); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, started.lease, &Session{}); err != nil {
 		t.Fatalf("AttachRuntime: %v", err)
 	}
 	before := readDelegateControllerFile(t, path)
@@ -710,14 +710,14 @@ func TestDelegateControllerRuntimeAttachmentIsOneToOne(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CommitStart: %v", err)
 		}
-		if err := c.AttachRuntime(second.lease, &Session{}); !errors.Is(err, errDelegateTargetBusy) {
+		if err := attachRuntimeWithHandoffForTest(c, second.lease, &Session{}); !errors.Is(err, errDelegateTargetBusy) {
 			t.Fatalf("AttachRuntime replacement error = %v, want busy", err)
 		}
 		live := c.live["dlg_target"]
 		if live.runtime != retained || live.binding == nil || live.binding.runtime != nil {
 			t.Fatalf("live state after rejected replacement = %#v, want retained runtime and unattached binding", live)
 		}
-		if err := c.AttachRuntime(second.lease, retained); err != nil {
+		if err := attachRuntimeWithHandoffForTest(c, second.lease, retained); err != nil {
 			t.Fatalf("AttachRuntime exact retained runtime: %v", err)
 		}
 	})
@@ -744,10 +744,10 @@ func TestDelegateControllerRuntimeAttachmentIsOneToOne(t *testing.T) {
 		}
 
 		runtime := &Session{}
-		if err := c.AttachRuntime(first.lease, runtime); err != nil {
+		if err := attachRuntimeWithHandoffForTest(c, first.lease, runtime); err != nil {
 			t.Fatalf("AttachRuntime first: %v", err)
 		}
-		if err := c.AttachRuntime(second.lease, runtime); !errors.Is(err, errDelegateTargetBusy) {
+		if err := attachRuntimeWithHandoffForTest(c, second.lease, runtime); !errors.Is(err, errDelegateTargetBusy) {
 			t.Fatalf("AttachRuntime second owner error = %v, want busy", err)
 		}
 		if live := c.live["dlg_second"]; live.runtime != nil || live.binding == nil || live.binding.runtime != nil {
@@ -790,7 +790,7 @@ func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t
 	// until its immutable identity, controller and empty transcript are ready.
 	runtime := &Session{}
 	attachDelegateAttentionTranscriptForTest(t, c, runtime, "dlg_target", "")
-	if err := c.AttachRuntime(started.lease, runtime); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, started.lease, runtime); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
@@ -1022,7 +1022,7 @@ func commitAttachedDelegateControllerStart(t *testing.T, c *delegateTreeControll
 		t.Fatalf("CommitStart: %v", err)
 	}
 	runtime := &Session{}
-	if err := c.AttachRuntime(started.lease, runtime); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, started.lease, runtime); err != nil {
 		t.Fatalf("AttachRuntime: %v", err)
 	}
 	return started, runtime

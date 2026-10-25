@@ -307,6 +307,8 @@ type delegateUpdatePlan struct {
 }
 
 type delegateMutationPlans struct {
+	// Consumed only after the operation's enclosing locks and admissions end.
+	recheckNotifications bool
 	// Reconcile retains admission until its caller applies the returned effects.
 	retirementRelease     func()
 	updates               []delegateUpdatePlan

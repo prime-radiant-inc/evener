@@ -491,6 +491,9 @@ type testConfig struct {
 	// released. An inline result can be acknowledged while this seam is held.
 	// Nil in production.
 	subagentBeforeGenerationReleased func(*subagent, delegateLease)
+	// notificationRecheckBeforeDispatch observes the unlocked receiver snapshot.
+	// Nil in production, tests attribute the finalization release's handoff here.
+	notificationRecheckBeforeDispatch func()
 	// delegateFinalizationWaitCeiling overrides how long a send waits for a
 	// finished generation's finalize tail to release the delegate
 	// (delegateFinalizationWaitCeiling), so a test can exercise a tail that
