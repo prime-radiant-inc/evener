@@ -4,7 +4,7 @@
 // gives each server a run directory under os.tmpdir() and removes it on close.
 
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -13,17 +13,12 @@ import { loadPairingModules } from "./pairingModules.mjs";
 
 const frontend = fileURLToPath(new URL("../", import.meta.url));
 const nodeModules = path.join(frontend, "node_modules");
-const cachePrefix = "evener-pairing-vite-";
 
 // isUnder reports whether child is parent or sits inside it, by path
 // components - so "/a/node_modules" does not match "/a/node_modulesX".
 function isUnder(parent, child) {
   const rel = path.relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-}
-
-function runCacheDirs() {
-  return readdirSync(tmpdir()).filter((name) => name.startsWith(cachePrefix));
 }
 
 test("the pairing dep cache is a per-run directory outside node_modules", async () => {
@@ -73,9 +68,10 @@ test("the pairing modules still load through the server", async () => {
 });
 
 test("a rejected server start removes its run cache", async () => {
-  const before = new Set(runCacheDirs());
   const failure = new Error("synthetic pairing server failure");
-  const pending = loadPairingModules(async () => {
+  let rejectedCacheDir;
+  const pending = loadPairingModules(async (options) => {
+    rejectedCacheDir = options.cacheDir;
     throw failure;
   });
   try {
@@ -88,6 +84,6 @@ test("a rejected server start removes its run cache", async () => {
     await server?.close();
     throw error;
   }
-  const added = runCacheDirs().filter((name) => !before.has(name));
-  assert.deepEqual(added, [], `a rejected createServer must remove ${cachePrefix}* directories`);
+  assert.ok(rejectedCacheDir, "the injected factory must receive the run cacheDir");
+  assert.equal(existsSync(rejectedCacheDir), false, `a rejected createServer must remove ${rejectedCacheDir}`);
 });
