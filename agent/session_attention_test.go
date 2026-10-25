@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -3313,18 +3314,54 @@ func TestDelegateAttention_FailedTerminalDeliveryRetriesFromRootPump(t *testing.
 }
 
 func TestDelegateAttention_DeliveryDuringProcessingTakesCustodyAndArmsWake(t *testing.T) {
+	newProcessingDelegateDeliveryFixture(t, agenttest.NewFakeClock())
+}
+
+func newProcessingDelegateDeliveryFixture(t *testing.T, clock *agenttest.FakeClock) *Session {
+	t.Helper()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
+	// SetNotifyFunc also scans this resumable child, whose descriptor names
+	// an existing transcript even though this delivery is bound for the root.
+	childWriter, err := transcript.NewWriter(transcriptPath(c.stateDir, "child-dlg_target"), transcript.Header{SessionID: "child-dlg_target"})
+	if err != nil {
+		t.Fatalf("create child transcript: %v", err)
+	}
+	if err := childWriter.Close(); err != nil {
+		t.Fatalf("close child transcript: %v", err)
+	}
 	path := transcriptPath(c.stateDir, "root-session")
 	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: "root-session"})
 	if err != nil {
 		t.Fatalf("create root transcript: %v", err)
 	}
 	t.Cleanup(func() { _ = writer.Close() })
-	root := &Session{id: "root-session", stateDir: c.stateDir, delegateController: c, state: SessionProcessing}
+	root := &Session{id: "root-session", stateDir: c.stateDir, delegateController: c, state: SessionProcessing, clock: clock}
 	root.attachTranscript(writer)
 	c.rootRuntime = root
+	var recoveries atomic.Int64
+	root.cfg.testOnly.afterSessionWakeRecoveryScheduled = func(string, error) {
+		// The counter remains safe even if a broken fixture lets this callback
+		// escape cleanup, unlike a callback into the producer subtest's T.
+		recoveries.Add(1)
+	}
+	t.Cleanup(func() {
+		// Fence and join the controller before writer, store and directory
+		// cleanup. Drain already dispatched callbacks as well as delayed ones.
+		if err := c.Close(context.Background()); err != nil {
+			t.Errorf("close processing fixture controller: %v", err)
+		}
+		clock.Drain()
+		clock.Advance(jobNotificationRetryMaxDelay)
+		clock.Drain()
+		if got := clock.PendingCallbacks(); got != 0 {
+			t.Errorf("processing fixture callbacks after Close=%d, want 0", got)
+		}
+		if got := recoveries.Load(); got != 0 {
+			t.Errorf("processing fixture scheduled %d unexpected receiver recoveries", got)
+		}
+	})
 	wakes := make(chan struct{}, 1)
 	root.SetNotifyFunc(func() {
 		select {
@@ -3348,6 +3385,14 @@ func TestDelegateAttention_DeliveryDuringProcessingTakesCustodyAndArmsWake(t *te
 	if !root.sessionWorkPending() {
 		t.Fatal("processing deferral did not expose autonomous work")
 	}
+	ids, err := root.pendingNotificationIDs()
+	if err != nil || len(ids) != 1 || ids[0] != delegateAttentionID(delegateDeliveryID("dlg_target", 1)) {
+		t.Fatalf("processing delivery canonical custody: ids=%v err=%v", ids, err)
+	}
+	if pending := pendingDeliveryIDs(c, "dlg_target"); len(pending) != 0 {
+		t.Fatalf("processing delivery retained source debt: %v", pending)
+	}
+	return root
 }
 
 func TestRootDelegateAttention_DurableAppendWaitsForSourceSettlementBeforeWake(t *testing.T) {

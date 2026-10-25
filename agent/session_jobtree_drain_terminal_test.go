@@ -728,12 +728,46 @@ func TestEphemeralNotificationDrainShell(t *testing.T) {
 }
 
 func TestEphemeralNotificationFailureCompactionAndDuplicate(t *testing.T) {
+	requireEphemeralNotificationFailureRecovery(t, nil)
+}
+
+func TestProcessingDelegateDeliveryCleanupIsolatesAuthenticationLog(t *testing.T) {
+	clock := agenttest.NewFakeClock()
+	var producer *Session
+	t.Run("producer", func(owner *testing.T) {
+		producer = newProcessingDelegateDeliveryFixture(owner, clock)
+	})
+	if producer == nil {
+		t.Fatal("producer did not reach acceptance")
+	}
+	_, statErr := os.Stat(producer.TranscriptPath())
+	producer.delegateController.mu.Lock()
+	closing := producer.delegateController.closing
+	producer.delegateController.mu.Unlock()
+	if !closing || clock.PendingCallbacks() != 0 || !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("producer cleanup: closing=%t callbacks=%d transcript stat=%v, want fenced controller, no callbacks and removed transcript", closing, clock.PendingCallbacks(), statErr)
+	}
+	t.Run("authentication_receiver", func(receiver *testing.T) {
+		requireEphemeralNotificationFailureRecovery(receiver, func() {
+			// A leaked producer retry would now write into the actual strict
+			// authentication capture, without a sleep or fabricated log record.
+			clock.Advance(jobNotificationRetryInitialDelay)
+			clock.Drain()
+		})
+	})
+}
+
+func requireEphemeralNotificationFailureRecovery(t *testing.T, afterCapture func()) {
+	t.Helper()
 	// This test is not parallel: capture the deliberately failed provider's
 	// daemon warning as well as its session event, rather than leaking stderr.
 	var logged bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logged, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
+	if afterCapture != nil {
+		afterCapture()
+	}
 	base := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("initial") },
 		func(req llm.Request) llm.Response {
