@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/plugin"
@@ -334,6 +335,54 @@ func TestRestoredDelegateDropsUnfollowablePreloadRecord(t *testing.T) {
 	}
 	if inventory[followablePreloadName].Preload == nil {
 		t.Fatalf("followable preload record was not preserved: %+v", inventory[followablePreloadName])
+	}
+}
+
+// A restored inventory record can outlive the spawn carrier that delivered it.
+// Construction prunes it by the same capability answer even when no carrier
+// names it, so the durable record cannot claim a permanent body this session
+// does not have.
+func TestRestoredInventoryPreloadPrunedWithoutCarrier(t *testing.T) {
+	t.Parallel()
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	profile := NewOpenAIProfile("gpt-5.2")
+	parentID := identifier.MustNewSessionID()
+	childID := identifier.MustNewSessionID()
+	gardenMetadata := preloadMetadataFixture(gardeningMemorySkillName)
+	meta := schema.SessionMeta{
+		ID:              childID,
+		ProfileID:       "openai",
+		Model:           "gpt-5.2",
+		IsSubagent:      true,
+		ParentSessionID: parentID,
+		Config:          SessionConfig{MaxSubagentDepth: 1}.toSnapshot(),
+		Skills: &schema.SkillLifecycleSnapshot{
+			Inventory: map[string]schema.SkillInventoryEntry{
+				gardeningMemorySkillName: {Preload: &gardenMetadata},
+			},
+		},
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(client, profile,
+		execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
+			StateDir:        t.TempDir(),
+			MemoryStateRoot: t.TempDir(),
+			AgentsDocPath:   filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+			testOnly: testConfig{
+				skipGitSnapshot: true,
+				noSyncJobStore:  true,
+			},
+			spawn: spawnConfig{parentSessionID: parentID},
+		})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+	if restored.skillAvailableToSession(gardeningMemorySkillName) {
+		t.Fatal("restored delegate unexpectedly can save memory")
+	}
+	if entry, ok := lifecycleInventory(restored)[gardeningMemorySkillName]; ok {
+		t.Fatalf("preload record survived without a carrier: %+v", entry)
 	}
 }
 

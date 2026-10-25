@@ -663,17 +663,30 @@ func (s *Session) dropUnavailableSkillPreloads() {
 	names := s.cfg.spawn.activatedSkillNames
 	bodies := s.cfg.spawn.activatedSkillBodies
 	pairsAligned := len(names) > 0 && len(names) == len(bodies)
-	dropped := make(map[string]bool)
+	candidates := make([]string, 0, len(names)+len(s.cfg.spawn.frozenSkillMetadata))
 	if pairsAligned {
-		for _, name := range names {
-			if !s.skillAvailableToSession(name) {
-				dropped[name] = true
-			}
-		}
+		candidates = append(candidates, names...)
 	}
 	for _, metadata := range s.cfg.spawn.frozenSkillMetadata {
-		if !s.skillAvailableToSession(metadata.Name) {
-			dropped[metadata.Name] = true
+		candidates = append(candidates, metadata.Name)
+	}
+	// A preload record restored from SessionMeta.Skills can outlive the spawn
+	// carrier that delivered it; include it in the same capability pass.
+	s.mu.Lock()
+	for name, entry := range s.skillLifecycle.Inventory {
+		if entry.Preload != nil {
+			candidates = append(candidates, name)
+		}
+	}
+	s.mu.Unlock()
+	if len(candidates) == 0 {
+		return
+	}
+	availability := s.skillAvailability()
+	dropped := make(map[string]bool)
+	for _, name := range candidates {
+		if !availability.SkillAvailable(name) {
+			dropped[name] = true
 		}
 	}
 	if len(dropped) == 0 {

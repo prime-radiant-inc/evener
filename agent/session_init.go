@@ -1815,11 +1815,9 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
 	}
 	s.filterUnavailableMemoryTools()
-	// A role preload is prepared by the creating parent, and a frozen descriptor
-	// replays the body frozen at creation, so neither can consult this session's
-	// own capability. The registry is final here and the permanent prompt and
-	// skill inventory are not built yet: drop the preloads this session cannot
-	// follow before either carries them.
+	// A role preload is prepared on the creating parent and a frozen descriptor
+	// replays the body frozen at creation; drop what this session cannot follow
+	// before the permanent prompt and inventory carry it.
 	s.dropUnavailableSkillPreloads()
 
 	// Cache instruction docs once; reused every round for system prompt rebuilds.
