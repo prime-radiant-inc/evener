@@ -116,9 +116,9 @@ func TestRealPlugin_Superpowers_Skills(t *testing.T) {
 
 	// Verify skill body can be loaded.
 	if meta, ok := lp.Skills["superpowers:brainstorming"]; ok {
-		body, err := skill.LoadSkillBody(meta)
+		body, err := loadSkillBody(meta)
 		if err != nil {
-			t.Fatalf("LoadSkillBody(brainstorming): %v", err)
+			t.Fatalf("Load(brainstorming): %v", err)
 		}
 		if !strings.Contains(body, "Brainstorming") {
 			t.Error("brainstorming skill body should contain 'Brainstorming'")
