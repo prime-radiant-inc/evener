@@ -88,10 +88,10 @@ func mcpProgramResidualEdges(t *testing.T, variant uint8) {
 	if _, err := productionDialWithEnv(invalid, nil, mcpProgramFixedEnvironment)(ctx); err == nil {
 		t.Fatal("invalid production dial unexpectedly succeeded")
 	}
-	if _, err := transportForConfig(invalid); err == nil {
+	if _, err := transportForConfigWithEnv(invalid, os.Environ); err == nil {
 		t.Fatal("invalid production transport unexpectedly succeeded")
 	}
-	if got := mergeEnv(map[string]string{"MCP_PROGRAM_RESIDUAL": strconv.FormatUint(uint64(variant), 10)}); mcpProgramEnvValue(got, "MCP_PROGRAM_RESIDUAL") == "" {
+	if got := mergeEnvInto(os.Environ(), map[string]string{"MCP_PROGRAM_RESIDUAL": strconv.FormatUint(uint64(variant), 10)}); mcpProgramEnvValue(got, "MCP_PROGRAM_RESIDUAL") == "" {
 		t.Fatal("production environment merge dropped explicit value")
 	}
 
@@ -201,14 +201,13 @@ func mcpProgramLifecycle(t *testing.T, payload string, variant uint8) {
 	}
 
 	now := time.Unix(1_700_000_000, 0)
-	mgr, outcomes := NewManagerWithClock(ctx,
+	mgr, outcomes := newManagerWithClock(ctx,
 		[]mcpconfig.ServerConfig{
 			{Name: configName, Type: "stdio"},
 			{Name: "offline", Type: "stdio"},
 		},
 		[]func(context.Context) (mcpsdk.Transport, error){dial, failedDial},
-		func() time.Time { return now },
-	)
+		func() time.Time { return now })
 	if mgr == nil {
 		t.Fatal("NewManagerWithClock returned nil for non-empty configs")
 	}
@@ -412,7 +411,7 @@ func mcpProgramConstructionCases(t *testing.T) {
 	if mgr, outcomes := NewManager(ctx, nil, nil); mgr != nil || outcomes != nil {
 		t.Fatalf("empty NewManager = %#v, %#v", mgr, outcomes)
 	}
-	if mgr, outcomes := NewManagerWithClock(ctx, nil, nil, func() time.Time { return time.Unix(0, 0) }); mgr != nil || outcomes != nil {
+	if mgr, outcomes := newManagerWithClock(ctx, nil, nil, func() time.Time { return time.Unix(0, 0) }); mgr != nil || outcomes != nil {
 		t.Fatalf("empty NewManagerWithClock = %#v, %#v", mgr, outcomes)
 	}
 
@@ -435,12 +434,12 @@ func mcpProgramConstructionCases(t *testing.T) {
 		transport, err := transportForConfigWithEnv(tc.cfg, mcpProgramFixedEnvironment)
 		if tc.wantErr {
 			if err == nil || transport != nil {
-				t.Fatalf("transportForConfig(%+v) = %T, %v; want error", tc.cfg, transport, err)
+				t.Fatalf("transportForConfigWithEnv(%+v, os.Environ) = %T, %v; want error", tc.cfg, transport, err)
 			}
 			continue
 		}
 		if err != nil || transport == nil {
-			t.Fatalf("transportForConfig(%+v): %T, %v", tc.cfg, transport, err)
+			t.Fatalf("transportForConfigWithEnv(%+v, os.Environ): %T, %v", tc.cfg, transport, err)
 		}
 		switch tc.wantType {
 		case "command":

@@ -7,7 +7,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 )
 
-// FuzzATIFConvert drives ConvertTranscriptWithOptions — the package's real
+// FuzzATIFConvert drives Convert — the package's real
 // transcript→trajectory conversion seam, including the per-turn assistant
 // conversion that json.Unmarshals tool-call arguments. Input is a JSON object
 // {"header":..,"entries":[..]} decoded into the transcript types the converter
@@ -76,14 +76,13 @@ func FuzzATIFConvert(f *testing.F) {
 			return // not a transcript doc: no-panic floor proven, stop
 		}
 
-		// The public wrappers a caller reaches for must also never panic.
-		_ = Convert(doc.Header, doc.Entries)
-		_ = ConvertWithOptions(doc.Header, doc.Entries, Options{})
+		// The zero Options (default provider-handle mode) must also never panic.
+		_ = Convert(doc.Header, doc.Entries, Options{})
 
 		// Convert under BOTH provider-handle modes: raw-local exercises the raw
 		// response-id / conversation-id disclosure branches that redacted skips.
 		for _, mode := range []ProviderHandleMode{ProviderHandleModeRedacted, ProviderHandleModeRawLocal} {
-			traj := ConvertTranscriptWithOptions(doc.Header, doc.Entries, Options{ProviderHandles: mode})
+			traj := Convert(doc.Header, doc.Entries, Options{ProviderHandles: mode})
 
 			if traj.SchemaVersion == "" {
 				t.Fatalf("converted trajectory missing schema version")

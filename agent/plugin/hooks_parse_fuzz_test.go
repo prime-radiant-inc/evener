@@ -13,7 +13,7 @@ import (
 // placeholders against, so the oracle can assert no placeholder survived.
 const hooksFuzzPluginDir = "/PLUGIN_ROOT_SENTINEL"
 
-// FuzzParsePluginHooks drives parsePluginHooks (via parsePluginHooksDiagWithSource)
+// FuzzParsePluginHooks drives parsePluginHooksDiag (via parsePluginHooksDiagWithSource)
 // and its helpers (dropHookMetaKeys, captureUnknownFields, expandPluginRootArgs)
 // over arbitrary hook-config JSON in both the wrapper ({"hooks":{...}}) and direct
 // (events at top level) shapes. This is evener's Claude-compatible hook classifier;
@@ -34,8 +34,8 @@ const hooksFuzzPluginDir = "/PLUGIN_ROOT_SENTINEL"
 //   - indices are well-formed and determinism holds: re-parsing the same bytes
 //     yields a byte-identical hooks map.
 //
-// SAFETY: pure JSON parse + string expansion. The fuzzer calls parsePluginHooks
-// directly (not discoverPluginHooks), so it never reads a file or spawns a hook.
+// SAFETY: pure JSON parse + string expansion. The fuzzer calls parsePluginHooksDiag
+// directly (not discoverPluginHooksDiag), so it never reads a file or spawns a hook.
 func FuzzParsePluginHooks(f *testing.F) {
 	seeds := []string{
 		`{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"${CLAUDE_PLUGIN_ROOT}/h.sh","args":["${PLUGIN_ROOT}/x","y"]}]}]}}`,

@@ -119,10 +119,9 @@ func discoverPluginCommands(pluginDir string, commandsOverride json.RawMessage, 
 // ("plugin:command") map, such as the union of every loaded plugin's Commands.
 // It tries an exact match first (the fully-qualified "plugin:command" form the
 // map is keyed by), then falls back to matching name against the unqualified
-// suffix of each key — mirroring skill.ResolveSkillContent's bare-name lookup.
-// As with skill resolution, an unqualified name matching more than one
-// plugin's command resolves to whichever is found first in map iteration
-// order; the fully-qualified form disambiguates.
+// suffix of each key. An unqualified name matching more than one plugin's
+// command resolves to whichever is found first in map iteration order; the
+// fully-qualified form disambiguates.
 func ResolveCommand(commands map[string]Command, name string) (Command, bool) {
 	if cmd, ok := commands[name]; ok {
 		return cmd, true

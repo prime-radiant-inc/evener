@@ -86,7 +86,7 @@ func TestSessionScrubClearsOnlyTheControllerSeenMarker(t *testing.T) {
 	web, store := newSessionSeenWeb(t)
 	through := time.Date(2026, 9, 26, 11, 58, 0, 0, time.UTC)
 	for _, source := range []string{"", "host-a"} {
-		if _, err := store.MarkSeen(source, "th_1", through); err != nil {
+		if _, err := markSeenForTest(store, source, "th_1", through); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -119,10 +119,16 @@ func TestRunMainWiresTheSeenMarkerStore(t *testing.T) {
 		t.Fatal("the hub started without a seen-marker store")
 	}
 	_, before, _ := web.navigation.snapshotPendingHint()
-	if changed, err := web.cfg.SessionSeen.MarkSeen("", "01A", time.Now()); err != nil || !changed {
+	if changed, err := markSeenForTest(web.cfg.SessionSeen, "", "01A", time.Now()); err != nil || !changed {
 		t.Fatalf("MarkSeen = %v, %v; want a change", changed, err)
 	}
 	if _, after, _ := web.navigation.snapshotPendingHint(); after <= before {
 		t.Fatal("a seen mark did not invalidate navigation")
 	}
+}
+
+// markSeenForTest applies a single mark through MarkBatch, the only path
+// production writes marks through.
+func markSeenForTest(store *hubcore.SessionSeenStore, source, sessionID string, through time.Time) (bool, error) {
+	return store.MarkBatch([]hubcore.SessionSeenMark{{Source: source, SessionID: sessionID, SeenThrough: through}})
 }

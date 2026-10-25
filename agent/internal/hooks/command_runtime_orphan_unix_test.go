@@ -35,7 +35,7 @@ func TestCommandHookDeadlineDoesNotWaitForAnOrphanedPipeHolder(t *testing.T) {
 	}()
 	done := make(chan hookRun, 1)
 	go func() {
-		result, err := executeCommandHook(ctx, orphaningHook(h.Spawn()+"\nwait"), Input{CWD: "/tmp", HookEventName: "PreToolUse"})
+		result, err := executeCommandHook(ctx, orphaningHook(h.Spawn()+"\nwait"), Input{CWD: "/tmp", HookEventName: "PreToolUse"}, newSystemCommandHookRuntime())
 		done <- hookRun{result, err}
 	}()
 	if got := orphanpipetest.Await(t, h, done); got.err == nil {
@@ -51,7 +51,7 @@ func TestCommandHookSuccessSurvivesAnOrphanedPipeHolder(t *testing.T) {
 	h := orphanpipetest.New(t)
 	done := make(chan hookRun, 1)
 	go func() {
-		result, err := executeCommandHook(context.Background(), orphaningHook("echo answer\n"+h.Spawn()), Input{CWD: "/tmp", HookEventName: "PreToolUse"})
+		result, err := executeCommandHook(context.Background(), orphaningHook("echo answer\n"+h.Spawn()), Input{CWD: "/tmp", HookEventName: "PreToolUse"}, newSystemCommandHookRuntime())
 		done <- hookRun{result, err}
 	}()
 	got := orphanpipetest.Await(t, h, done)

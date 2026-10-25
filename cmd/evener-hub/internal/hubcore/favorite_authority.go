@@ -22,8 +22,8 @@ const (
 // navigation layer. ID is the canonical session identity; Aliases are already
 // known local/ref spellings for that same identity. TopLevel and Lineage are
 // facts from the full metadata lineage set, not from a rendered or capped
-// tree. The caller should derive TopLevel with TopLevelSessionIDs so tree and
-// favorite policy share the same nestedSessionIDs rule.
+// tree. The caller should derive TopLevel from a RootIndex so tree and favorite
+// policy share the same nestedSessionIDs rule.
 type FavoriteSessionAuthority struct {
 	ID       string
 	Aliases  []string

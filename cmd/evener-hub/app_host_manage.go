@@ -724,9 +724,9 @@ func parseLegacyHostSidecar(data []byte) ([]hostreg.Host, error) {
 	return entries, nil
 }
 
-// writeHubTOMLHosts rewrites path in place with the machine-managed banner at
-// its top and entries as its [[hosts]] tables, preserving every other key the
-// file already holds — the operator's addr, provider, and plugin settings are
+// writeHubTOMLHostsRecords is the one hub.toml writer. It rewrites path in place
+// with the machine-managed banner at its top and entries as its [[hosts]]
+// tables, preserving every other key the file already holds — the operator's addr, provider, and plugin settings are
 // data, and a rewrite must never drop them. The produced bytes are re-parsed
 // through the loader's own decode before anything reaches disk, so a hub.toml
 // this function writes is always one the hub can read back at boot; a file that
@@ -744,50 +744,22 @@ func parseLegacyHostSidecar(data []byte) ([]hostreg.Host, error) {
 // decision keeps the operator's mode until the hub's first rewrite. An empty
 // path (no config file) skips the write; the in-memory store stays
 // authoritative for the process lifetime.
-func writeHubTOMLHosts(path string, entries []hostreg.Host) error {
-	return writeHubTOMLHostsKnown(path, entries, nil, nil, nil, false)
-}
-
-// writeHubTOMLHostsMarked is writeHubTOMLHosts plus the migration's marker:
-// when migrated is true the same atomic write records
-// legacySidecarMigratedKey, so the rewritten file itself says the retired
-// sidecar has been folded in.
-func writeHubTOMLHostsMarked(path string, entries []hostreg.Host, migrated bool) error {
-	return writeHubTOMLHostsKnown(path, entries, nil, nil, nil, migrated)
-}
-
-// writeHubTOMLHostsKnown is the one writer. known is the set the rewrite is
-// derived from — the store's pre-mutation snapshot — and it is what lets the
-// writer tell a hand-added entry from an entry the mutation deliberately
-// removed: only file entries whose names are absent from known are carried
-// through as extras. A nil known disables preservation entirely (an exact
-// write), which the exact-write entry points below use; a store snapshot is
-// never nil, even when the store is empty — an empty snapshot must still
-// preserve hand-added file entries, and nil would silently drop them.
 //
-// highWater carries the retained per-name generation high-water records for
-// names this write does not carry a live entry for (a removal's record); nil
-// means the write carries none, and every other record the file holds for a
-// name the write does not own is preserved verbatim, exactly as the entries
-// are.
+// known is the set the rewrite is derived from — the store's pre-mutation
+// snapshot — and it is what lets the writer tell a hand-added entry from an
+// entry the mutation deliberately removed: only file entries whose names are
+// absent from known are carried through as extras. A nil known disables
+// preservation entirely (an exact write); a store snapshot is never nil, even
+// when the store is empty — an empty snapshot must still preserve hand-added
+// file entries, and nil would silently drop them.
 //
-// receipts is the mutation-receipt set this write carries, keyed by the scoped
-// receipt key: the store's own set, plus — for a commit's single atomic write —
-// the receipt of the mutation this write is committing. In preservation mode
-// (known non-nil) the file's receipts for names this write does not own ride
-// through untouched, exactly as its records do; a nil known is the exact-write
-// sentinel and the set is written as given, so nil there writes no section.
-func writeHubTOMLHostsKnown(path string, entries, known []hostreg.Host, highWater map[string]HostGeneration, receipts map[string]HostMutationReceipt, migrated bool) error {
-	return writeHubTOMLHostsRecords(path, entries, known, hostTOMLRecords{highWater: highWater, receipts: receipts}, migrated)
-}
-
-// writeHubTOMLHostsRecords is the one writer, carrying every machine-managed
-// record set this build writes: the per-host records and high-water marks, the
-// mutation receipts, the removed-host tombstones, and the pruned markers. The
-// manager's persist path builds the set with deriveHostTOMLRecords (which has
-// already applied retention, capacity, and compaction) and installs the same
-// set on success; the small wrappers above are the boot-migration and
-// exact-write entry points.
+// records carries every machine-managed record set this build writes: the
+// per-host records and high-water marks, the mutation receipts, the
+// removed-host tombstones, and the pruned markers. The manager's persist path
+// builds the set with deriveHostTOMLRecords (which has already applied
+// retention, capacity, and compaction) and installs the same set on success.
+// migrated records legacySidecarMigratedKey in the same atomic write, so the
+// rewritten file itself says the retired sidecar has been folded in.
 func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, records hostTOMLRecords, migrated bool) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
@@ -2425,14 +2397,6 @@ func hostEntryToHost(name string, entry appwire.HostEntry) hostreg.Host {
 		Addr:       entry.Addr,
 		Roots:      entry.Roots,
 	}
-}
-
-// Add is the pre-union adapter over AddResult: it returns the committed row and
-// reports a non-committed arm as the error that arm means, so a caller that
-// speaks only the shipped shape never reads a teardown failure or a dropped
-// commit as success. The wire handlers call the Result methods directly.
-func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) (appwire.HostRow, error) {
-	return committedHostRow(m.AddResult(ctx, params))
 }
 
 // addHostToRegistry inserts entry into the live registry. With the SSH

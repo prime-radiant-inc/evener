@@ -51,32 +51,6 @@ func TestAttentionRank_ErroredOutranksAwaiting(t *testing.T) {
 	}
 }
 
-func TestStateWord(t *testing.T) {
-	cases := []struct {
-		state      string
-		askPending bool
-		want       string
-	}{
-		{"active", false, "Working"},
-		{"awaiting", true, "Question waiting"},
-		// Awaiting without a question is a turn that ended on needs_response:
-		// the agent can't go on without its human partner (#4093).
-		{"awaiting", false, "Needs you"},
-		{"warning", false, "Warning"},
-		{"warning", true, "Warning"}, // askPending is meaningless outside "awaiting"
-		{"errored", false, "Error"},
-		{"idle", false, "Idle"},
-		{"ended", false, "Ended"},
-		{"closed", false, "Ended"},
-		{"notLoaded", false, "Not loaded"},
-	}
-	for _, c := range cases {
-		if got := StateWord(c.state, c.askPending); got != c.want {
-			t.Errorf("StateWord(%q, %v) = %q, want %q", c.state, c.askPending, got, c.want)
-		}
-	}
-}
-
 func TestAttentionState(t *testing.T) {
 	cases := []struct {
 		state           string

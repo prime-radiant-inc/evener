@@ -160,10 +160,6 @@ func dispatchHubItemList(ctx context.Context, t *testing.T, source appsource.Sou
 	return response, nil
 }
 
-func (s *itemPackingRPCSource) ReadThreadWithItemCandidates(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, appsource.ItemCandidateResult, error) {
-	return s.read, s.readCandidates, nil
-}
-
 type legacyItemListRPCSource struct {
 	relayLifecycleSource
 	id        string

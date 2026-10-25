@@ -35,7 +35,7 @@ func TestCommandHookCancellationReapsTheWholeProcessGroup(t *testing.T) {
 	defer cancel()
 	done := make(chan hookRun, 1)
 	go func() {
-		result, err := executeCommandHook(ctx, orphaningHook(script), Input{CWD: "/tmp", HookEventName: "PreToolUse"})
+		result, err := executeCommandHook(ctx, orphaningHook(script), Input{CWD: "/tmp", HookEventName: "PreToolUse"}, newSystemCommandHookRuntime())
 		done <- hookRun{result, err}
 	}()
 
@@ -61,7 +61,7 @@ func TestCommandHookCompletionReapsABackgroundedDescendant(t *testing.T) {
 	childPIDFile := filepath.Join(dir, "child.pid")
 	script := "echo answer; sleep 300 & echo $! > " + shellquote.Literal(childPIDFile)
 
-	result, err := executeCommandHook(context.Background(), orphaningHook(script), Input{CWD: "/tmp", HookEventName: "PreToolUse"})
+	result, err := executeCommandHook(context.Background(), orphaningHook(script), Input{CWD: "/tmp", HookEventName: "PreToolUse"}, newSystemCommandHookRuntime())
 	if err != nil {
 		t.Fatalf("a hook that answered and exited 0 was reported as: %v", err)
 	}

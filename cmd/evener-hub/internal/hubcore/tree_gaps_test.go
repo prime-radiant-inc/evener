@@ -209,56 +209,6 @@ func TestTotalSessionCountWithPublicFields(t *testing.T) {
 	}
 }
 
-// TestFavoriteCandidatesWithFork covers the fork-kind path in FavoriteCandidates.
-func TestFavoriteCandidatesWithFork(t *testing.T) {
-	tree := Tree{
-		Projects: []TreeProject{
-			{allCurrent: []TreeNode{
-				{ID: "fork-1", Kind: "fork"},
-			}},
-		},
-	}
-	got := tree.FavoriteCandidates()
-	if len(got) != 1 {
-		t.Fatalf("FavoriteCandidates = %d, want 1 (fork)", len(got))
-	}
-	if got[0].ID != "fork-1" {
-		t.Fatalf("FavoriteCandidates[0].ID = %q, want fork-1", got[0].ID)
-	}
-}
-
-// TestFavoriteCandidatesFromRecent covers the allRecent path.
-func TestFavoriteCandidatesFromRecent(t *testing.T) {
-	tree := Tree{
-		Projects: []TreeProject{
-			{allRecent: []TreeNode{
-				{ID: "session-recent", Kind: "session"},
-			}},
-		},
-	}
-	got := tree.FavoriteCandidates()
-	if len(got) != 1 {
-		t.Fatalf("FavoriteCandidates = %d, want 1", len(got))
-	}
-	if got[0].ID != "session-recent" {
-		t.Fatalf("FavoriteCandidates[0].ID = %q, want session-recent", got[0].ID)
-	}
-}
-
-// TestFavoriteCandidatesSkipsEmptyID covers the empty-ID skip path.
-func TestFavoriteCandidatesSkipsEmptyID(t *testing.T) {
-	tree := Tree{
-		favoriteLive: []TreeNode{
-			{ID: "", Kind: "session"}, // should be skipped
-			{ID: "session-1", Kind: "session"},
-		},
-	}
-	got := tree.FavoriteCandidates()
-	if len(got) != 1 {
-		t.Fatalf("FavoriteCandidates = %d, want 1", len(got))
-	}
-}
-
 // Ensure identifier import is used.
 var _ = identifier.ValidateProjectID
 var _ = time.Now

@@ -114,12 +114,6 @@ type ItemReadCandidateSource interface {
 	ItemCandidatesFromRead(context.Context, appwire.ThreadReadParams, appwire.ThreadReadResponse) (ItemCandidateResult, error)
 }
 
-// CombinedItemReadSource returns an item-mode read and the private candidate
-// identity derived from that exact response in one source-owned operation.
-type CombinedItemReadSource interface {
-	ReadThreadWithItemCandidates(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, ItemCandidateResult, error)
-}
-
 func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	ctx context.Context,
 	params appwire.ThreadReadParams,

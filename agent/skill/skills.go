@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
-	"strings"
 
 	"primeradiant.com/evener/agent/execenv"
 )
@@ -28,33 +26,6 @@ type SkillMeta struct {
 	SkillFile    string         // absolute path to SKILL.md
 }
 
-// DiscoverSkills walks from git root to cwd looking for .agents/skills/ and
-// skills/ directories. Live sessions use Discover for the full diagnostic catalog.
-// Extra directories are scanned after the root→cwd walk, so they shadow
-// project skills with the same name.
-// Returns a deduplicated map[name]SkillMeta (later entries shadow earlier).
-func DiscoverSkills(env execenv.ExecutionEnvironment, extraDirs ...string) map[string]SkillMeta {
-	if env == nil {
-		return nil
-	}
-
-	if strings.TrimSpace(env.WorkingDirectory()) == "" {
-		return nil
-	}
-	out := map[string]SkillMeta{}
-	for _, dir := range projectSkillDirs(env) {
-		ScanSkillsDir(dir, out)
-	}
-	for _, dir := range extraDirs {
-		if strings.TrimSpace(dir) == "" {
-			continue
-		}
-		ScanSkillsDir(dir, out)
-	}
-
-	return out
-}
-
 // ScanSkillsDir scans a directory for skill subdirectories containing SKILL.md.
 // Found skills are added to out, overwriting any existing entry with the same name.
 func ScanSkillsDir(dir string, out map[string]SkillMeta) {
@@ -74,67 +45,6 @@ func ScanSkillsDir(dir string, out map[string]SkillMeta) {
 		}
 		out[meta.Name] = meta
 	}
-}
-
-// LoadSkillBody reads a SKILL.md and returns the markdown body (after frontmatter).
-func LoadSkillBody(meta SkillMeta) (string, error) {
-	loaded, _, err := Load(Descriptor{CatalogName: meta.Name, Meta: meta})
-	if err != nil {
-		return "", err
-	}
-	return loaded.Body, nil
-}
-
-// CatalogEntries returns path-free skill metadata in canonical map-key order.
-func CatalogEntries(skills map[string]SkillMeta) []SkillMeta {
-	entries := make([]SkillMeta, 0, len(skills))
-	for key, meta := range skills {
-		entries = append(entries, SkillMeta{
-			Name:         key,
-			Description:  meta.Description,
-			AllowedTools: append([]string(nil), meta.AllowedTools...),
-			Metadata:     cloneMetadata(meta.Metadata),
-		})
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-	return entries
-}
-
-// ResolveSkill resolves an exact catalog key, or a uniquely matching plugin
-// suffix for an unqualified name.
-func ResolveSkill(skills map[string]SkillMeta, name string) (catalogName string, meta SkillMeta, ok bool) {
-	if meta, ok := skills[name]; ok {
-		return name, meta, true
-	}
-	if strings.Contains(name, ":") {
-		return "", SkillMeta{}, false
-	}
-	for key, candidate := range skills {
-		parts := strings.SplitN(key, ":", 2)
-		if len(parts) != 2 || parts[1] != name {
-			continue
-		}
-		if ok {
-			return "", SkillMeta{}, false
-		}
-		catalogName, meta, ok = key, candidate, true
-	}
-	return catalogName, meta, ok
-}
-
-// ResolveSkillContent looks up a skill by name in a skills map and returns its body content.
-// Tries exact match first, then tries unnamespaced match (e.g., "tdd" matches "myplugin:tdd").
-// Returns ("", nil) if not found.
-func ResolveSkillContent(skills map[string]SkillMeta, name string) (string, error) {
-	catalogName, meta, ok := ResolveSkill(skills, name)
-	if ok {
-		loaded, _, err := Load(Descriptor{CatalogName: catalogName, Meta: meta})
-		if err != nil {
-			return "", err
-		}
-		return loaded.Body, nil
-	}
-	return "", nil
 }
 
 // parseSkillFile reads a SKILL.md, parses frontmatter, and extracts required fields.

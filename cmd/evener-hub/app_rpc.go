@@ -1399,9 +1399,7 @@ func registerThreadHandlers(
 		resp := read.response
 		liveItemCandidatesEmpty := false
 		if params.IncludeTurns {
-			if read.hasItemCandidates {
-				liveItemCandidatesEmpty = len(read.itemCandidates.Candidates.Candidates) == 0
-			} else if candidates, candidateErr := itemCandidateResultFromReadResponse(resp); candidateErr == nil {
+			if candidates, candidateErr := itemCandidateResultFromReadResponse(resp); candidateErr == nil {
 				liveItemCandidatesEmpty = len(candidates.Candidates.Candidates) == 0
 			}
 		}
@@ -1443,14 +1441,10 @@ func registerThreadHandlers(
 				resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 				annotateThreadProjects([]appwire.Thread{resp.Thread})
 			} else {
-				candidates := transcriptItemCandidateResultFromSource(read.itemCandidates)
-				if !read.hasItemCandidates {
-					var candidateErr error
-					candidates, candidateErr = sourceItemCandidateResultForRead(ctx, source, params, resp)
-					if candidateErr != nil {
-						read.finish(false)
-						return appwire.ThreadReadResponse{}, candidateErr
-					}
+				candidates, candidateErr := sourceItemCandidateResultForRead(ctx, source, params, resp)
+				if candidateErr != nil {
+					read.finish(false)
+					return appwire.ThreadReadResponse{}, candidateErr
 				}
 				packed, packErr := packThreadReadItemCandidates(candidates, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
 					response.Thread = threadWithPackedTurns(resp.Thread, response.Thread.Turns)

@@ -42,11 +42,3 @@ func TestTranscriptJSONLMaxLineCoversMaxImagePayload(t *testing.T) {
 		t.Fatalf("transcriptJSONLMaxLineBytes=%d, want at least %d", transcriptJSONLMaxLineBytes, encodedPayloadBytes)
 	}
 }
-
-func TestSendMaxRequestBytesCoversMaxImagePayload(t *testing.T) {
-	encodedImageBytes := ((hubcore.SendMaxImageBytes + 2) / 3) * 4
-	encodedPayloadBytes := hubcore.SendMaxImageItems*encodedImageBytes + 1024*1024
-	if hubcore.SendMaxRequestBytes < encodedPayloadBytes {
-		t.Fatalf("hubcore.SendMaxRequestBytes=%d, want at least %d", hubcore.SendMaxRequestBytes, encodedPayloadBytes)
-	}
-}

@@ -97,7 +97,7 @@ func pipelineEntry(name string, generation uint64) hostreg.Host {
 // path.
 func pipelineToken(t *testing.T, store *hostops.Store, host string, generation uint64) hostops.Token {
 	t.Helper()
-	token, err := store.MintToken(hostops.MintRequest{
+	token, err := store.MintTokenIfQuiescent(hostops.MintRequest{
 		Host:               host,
 		Generation:         generation,
 		IncarnationID:      "inc-" + host,
@@ -111,9 +111,9 @@ func pipelineToken(t *testing.T, store *hostops.Store, host string, generation u
 		RunningHealthy:     true,
 		FreshnessBound:     hostops.DefaultFreshnessBound,
 		TTL:                hostops.DefaultTokenTTL,
-	})
+	}, store.Sequence())
 	if err != nil {
-		t.Fatalf("MintToken(%s): %v", host, err)
+		t.Fatalf("MintTokenIfQuiescent(%s): %v", host, err)
 	}
 	return token
 }
