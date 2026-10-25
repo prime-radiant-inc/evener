@@ -229,12 +229,9 @@ func (s *Session) emit(data events.EventData) {
 	// Task mutations are emitted by transport-neutral tool handlers. Stamp the
 	// owning session at this Session boundary so shared descendants name the
 	// durable root store without leaking Session into the handler dependency.
-	switch update := data.(type) {
-	case events.TaskUpdatedData:
-		if update.TaskStoreOwnerSessionID == "" {
-			update.TaskStoreOwnerSessionID = s.taskStoreOwnerSessionID()
-			data = update
-		}
+	if update, ok := data.(events.TaskUpdatedData); ok && update.TaskStoreOwnerSessionID == "" {
+		update.TaskStoreOwnerSessionID = s.taskStoreOwnerSessionID()
+		data = update
 	}
 	s.emitWithProvenance(data, s.activeCausalProvenance())
 }
@@ -563,8 +560,7 @@ func (s *Session) fireNotificationHook(message string) {
 }
 
 func warningHookMessage(data events.EventData) string {
-	switch v := data.(type) {
-	case events.WarningData:
+	if v, ok := data.(events.WarningData); ok {
 		return v.Message
 	}
 	return fmt.Sprint(data)

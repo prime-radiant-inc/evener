@@ -4358,11 +4358,8 @@ func watchFrameJob(data events.EventData) (jobID, delegateID string, ok bool) {
 // jobFinishedEventData extracts the EventJobFinished payload off a session
 // event's data, or ok=false for any other event kind.
 func jobFinishedEventData(data events.EventData) (events.JobFinishedData, bool) {
-	switch d := data.(type) {
-	case events.JobFinishedData:
-		return d, true
-	}
-	return events.JobFinishedData{}, false
+	d, ok := data.(events.JobFinishedData)
+	return d, ok
 }
 
 func (jm *jobManager) deliverPendingWatchSend(cfg *watchConfig, state jobstore.WatchSendState, ensurePending bool) (bool, error) {
