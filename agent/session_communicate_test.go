@@ -423,14 +423,18 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 		"message":  "Starting observer delegate and watch flow.",
 		"end_turn": false,
 	})
-	const reportBody = "child-report-9c73"
+	const (
+		reportBody   = "child-report-9c73"
+		beforeResult = "before-result-6d92"
+		parentResult = "parent-result-f45a"
+	)
 	childDone := communicateCall("child_done", reportBody)
-	parentDone := communicateCall("parent_done", "parent-result-f45a")
+	parentDone := communicateCall("parent_done", parentResult)
 	f := &communicateSessionRoutedAdapter{
 		delegate:   delegate,
 		status:     status,
 		childDone:  childDone,
-		beforeDone: communicateCall("before_report", "before-result-6d92"),
+		beforeDone: communicateCall("before_report", beforeResult),
 		parentDone: parentDone,
 	}
 	c.Register(f)
@@ -483,9 +487,12 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	// contention under a loaded suite.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "start the observer flow", nil)
+	out, err := sess.ProcessInput(ctx, "start the observer flow", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
+	}
+	if want := strings.Join([]string{beforeResult, parentResult}, "\n"); out != want {
+		t.Fatalf("ProcessInput output = %q, want %q", out, want)
 	}
 	if total, root, child := f.requestCounts(); total != 4 || root != 3 || child != 1 {
 		t.Fatalf("requests: total=%d root=%d child=%d, want 4/3/1", total, root, child)
