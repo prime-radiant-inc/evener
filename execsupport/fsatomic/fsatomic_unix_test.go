@@ -129,3 +129,23 @@ func TestWriteSetsPerm(t *testing.T) {
 		t.Fatalf("perm = %v, want 0600", info.Mode().Perm())
 	}
 }
+
+// The same directory reached through a different spelling is still the
+// directory whose parent sync is outstanding.
+func TestMkdirAllRetryThroughAnotherSpellingStillSyncs(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens any directory")
+	}
+	base := t.TempDir()
+	if err := os.Chmod(base, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(base, 0o700) }()
+
+	if err := fsatomic.MkdirAll(base+"//a", 0o700); err == nil {
+		t.Fatal("expected the unreadable parent to fail its sync")
+	}
+	if err := fsatomic.MkdirAll(filepath.Join(base, ".", "a"), 0o700); err == nil {
+		t.Fatal("retry through another spelling skipped the parent sync")
+	}
+}

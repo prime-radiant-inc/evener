@@ -76,20 +76,37 @@ var (
 	unsyncedDirs = map[string]bool{}
 )
 
+// dirKey names a directory the same way however the caller spelled its path:
+// absolute and cleaned, with symlinks resolved in the parent (which exists even
+// before the directory itself is created).
+func dirKey(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return filepath.Clean(dir)
+	}
+	parent, base := filepath.Split(abs)
+	if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+		parent = resolved
+	}
+	return filepath.Join(parent, base)
+}
+
 func setUnsynced(dir string, unsynced bool) {
+	key := dirKey(dir)
 	unsyncedMu.Lock()
 	defer unsyncedMu.Unlock()
 	if unsynced {
-		unsyncedDirs[dir] = true
+		unsyncedDirs[key] = true
 	} else {
-		delete(unsyncedDirs, dir)
+		delete(unsyncedDirs, key)
 	}
 }
 
 func isUnsynced(dir string) bool {
+	key := dirKey(dir)
 	unsyncedMu.Lock()
 	defer unsyncedMu.Unlock()
-	return unsyncedDirs[dir]
+	return unsyncedDirs[key]
 }
 
 // MkdirAll creates dir and any missing ancestors like os.MkdirAll, but one
