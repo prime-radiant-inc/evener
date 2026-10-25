@@ -1058,12 +1058,6 @@ func (m *Manager) existingInstallableEvener(ctx context.Context, host hostreg.Ho
 	return p
 }
 
-// deploySelected preserves selected launch intent across an installation while
-// main's callback retains write acknowledgement and entry authorization.
-func (m *Manager) deploySelected(ctx context.Context, host hostreg.Host, facts Preflight, recorders ...func(string) error) (string, error) {
-	return m.deploySelectedWithAuthority(ctx, host, facts, false, recorders...)
-}
-
 func (m *Manager) deploySelectedWithAuthority(ctx context.Context, host hostreg.Host, facts Preflight, realEndpointAuthority bool, recorders ...func(string) error) (string, error) {
 	return m.deploySelectedWithSupersession(ctx, host, facts, realEndpointAuthority, nil, recorders...)
 }

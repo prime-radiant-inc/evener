@@ -1511,9 +1511,9 @@ func (r *restartRecoveryRunner) Run(ctx context.Context, argv []string, stdin io
 			return []byte("4242\n"), nil
 		}
 		if r.portState == "occupied-port" || r.noSupervisor && r.runningVersion != "" {
-			return []byte(sshconn.ListenerPresentMarker), nil
+			return []byte(hostListenerPresentMarker), nil
 		}
-		return []byte(sshconn.NoListenerMarker), nil
+		return []byte(hostNoListenerMarker), nil
 	case r.bareProcess && strings.Contains(command, "/proc/4242/cmdline"):
 		return []byte("/opt/evener/bin/evener\x00hub\x00-addr\x00127.0.0.1:9180\x00-config\x00/srv/recovered.toml\x00"), nil
 	case r.bareProcess && strings.Contains(command, "lsof -nP -p 4242"):

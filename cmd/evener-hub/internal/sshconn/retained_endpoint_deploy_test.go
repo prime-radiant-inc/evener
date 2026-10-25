@@ -332,11 +332,6 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 			repair, selected.executableAbsent = true, true
 			selected.initialUnavailable = mode == "live-unresponsive"
 			selected.stopped = strings.HasPrefix(mode, "stopped")
-			if mode == "live" {
-				if argv, err := m.recoverHubArgv(t.Context(), host, "4242"); err == nil || argv != nil || missingResolutions != 1 {
-					t.Fatalf("ordinary argv recovery accepted absent executable: argv=%q err=%v missing-resolutions=%d", argv, err, missingResolutions)
-				}
-			}
 			if mode == "target-mismatch" {
 				host.EvenerPath = "/other/bin/evener"
 				m.setResolvedTarget(host.Name, host.EvenerPath)
@@ -349,9 +344,9 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 				if (mode == "live" || strings.HasPrefix(mode, "live-unresponsive")) && procReads < 2 || mode == "stopped" && procReads != 0 {
 					t.Fatalf("wrong resolver authority: proc=%d mode=%s", procReads, mode)
 				}
-				if mode == "live" && missingResolutions != 3 {
-					// Ordinary recovery and both pre/post-build destination probes refuse
-					// the absent file before resolving its existing parent directory.
+				if mode == "live" && missingResolutions != 2 {
+					// Both pre/post-build destination probes refuse the absent file
+					// before resolving its existing parent directory.
 					t.Fatalf("unexpected absent executable resolutions: missing-resolutions=%d", missingResolutions)
 				}
 				if realPaths {
