@@ -233,8 +233,9 @@ func (w *Wrapper) CommandCWDVisible(cwd string) bool {
 	if tree := scratchTreeOf(w.sessionTmp); tree != "" && pathUnder(cwd, tree) {
 		return true
 	}
-	roots := slices.Concat(w.policy.Spawned.ReadRoots, w.policy.Spawned.WriteRoots, w.policy.UnmaskedRoots)
-	if isUnderAnyRoot(cwd, roots) {
+	if isUnderAnyRoot(cwd, w.policy.Spawned.ReadRoots) ||
+		isUnderAnyRoot(cwd, w.policy.Spawned.WriteRoots) ||
+		isUnderAnyRoot(cwd, w.policy.UnmaskedRoots) {
 		return true
 	}
 	// Cache roots are visible only when the overlay strategy actually mounts
