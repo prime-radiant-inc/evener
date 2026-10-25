@@ -278,9 +278,15 @@ func (w *Wrapper) commandCWDVisible(cwd string, resolveRoots bool) bool {
 func survivingRoots(roots []string) []string {
 	out := make([]string, 0, len(roots))
 	for _, root := range roots {
-		if root != "" && root != "/tmp" && root != "/dev" {
-			out = append(out, root)
+		if root == "" || root == "/tmp" || root == "/dev" {
+			continue
 		}
+		// The minimal /dev replaces everything under it; only /dev/shm is
+		// re-bound after that replacement.
+		if root != "/dev/shm" && pathUnder(root, "/dev") {
+			continue
+		}
+		out = append(out, root)
 	}
 	return out
 }

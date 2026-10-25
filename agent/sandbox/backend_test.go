@@ -199,6 +199,15 @@ func TestCommandCWDVisible(t *testing.T) {
 	if anchoredAtPrivateRoot.CommandCWDVisible("/tmp/alias") {
 		t.Error("a workspace anchored at the replaced /tmp must not expose its descendants")
 	}
+
+	devGrants := anywhere()
+	devGrants.policy.Spawned.ReadRoots = []string{"/dev/shm", "/dev/hidden-root"}
+	if !devGrants.CommandCWDVisible("/dev/shm/other") {
+		t.Error("/dev/shm is re-bound after the minimal /dev and must be visible")
+	}
+	if devGrants.CommandCWDVisible("/dev/hidden-root") {
+		t.Error("a read root under /dev other than /dev/shm is replaced and must stay hidden")
+	}
 }
 
 // TestConfineWrapsBwrapAndLeavesDir pins that Confine rewrites the command's argv
