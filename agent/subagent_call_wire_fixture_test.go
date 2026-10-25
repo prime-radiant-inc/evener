@@ -63,8 +63,9 @@ const (
 
 // The waiting send's question, and the reply the delegate gives it.
 const (
-	subagentWireQuestion = "Is drain ordering safe now?"
-	subagentWireReply    = "Yes: tree settle now waits for the drain, and a test pins the order."
+	subagentWireQuestion   = "Is drain ordering safe now?"
+	subagentWireReply      = "Yes: tree settle now waits for the drain, and a test pins the order."
+	subagentWireFirstReply = "Fixed the race between tree settle and the drain."
 )
 
 // subagentWireSession is a session that can delegate, whose children block
@@ -73,15 +74,21 @@ const (
 // answer. The channel it returns closes when a child reaches that call. A
 // child answers through its result tool, and answers the waiting send's
 // question with subagentWireReply.
-func subagentWireSession(t *testing.T) (*Session, string, <-chan struct{}, func()) {
+func subagentWireSession(t *testing.T, inspectParent ...func(llm.Request)) (*Session, string, <-chan struct{}, func()) {
 	t.Helper()
 	stateDir := realTempDirForTest(t)
 	reached := make(chan struct{})
 	var reachedOnce, releaseOnce sync.Once
 	release := make(chan struct{})
 	answer := func() { releaseOnce.Do(func() { close(release) }) }
+	var s *Session
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(req llm.Request) llm.Response {
+		if s != nil && req.SessionID == s.ID() {
+			for _, inspect := range inspectParent {
+				inspect(req)
+			}
+		}
 		reachedOnce.Do(func() { close(reached) })
 		<-release
 		// The request carries the whole history, so only the generation the
@@ -89,11 +96,12 @@ func subagentWireSession(t *testing.T) (*Session, string, <-chan struct{}, func(
 		if requestContainsText(req, subagentWireQuestion) {
 			return finalResponse(subagentWireReply)
 		}
-		return finalResponse("Fixed the race between tree settle and the drain.")
+		return finalResponse(subagentWireFirstReply)
 	}})
 	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
 	workspace := realTempDirForTest(t)
-	s, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
+	var err error
+	s, err = NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
 		ForceRealIO:      true,
@@ -166,11 +174,13 @@ func TestSubagentCallWireFixtures(t *testing.T) {
 	// Let the child answer, and send the question once the delegate is idle.
 	answer()
 	awaitDelegateIdle(t, s, receipt.DelegateID)
+	awaitSubagentWireCustody(t, s, receipt.DelegateID)
 	waiting := subagentWireCall{
 		id:   "call_send_2",
 		tool: "delegate_send",
 		args: map[string]any{"to": receipt.DelegateID, "message": subagentWireQuestion, "max_wait_ms": 60000, "intent": "Ask whether drain ordering is safe"},
 	}.run(t, s)
+	memoryWaitChild(t, s, receipt.ChildSessionID)
 	calls := []subagentWireCall{
 		delegate,
 		steer,
@@ -217,6 +227,71 @@ func TestSubagentCallWireFixtures(t *testing.T) {
 		Note:  "One ASSISTANT entry announcing delegate, two delegate_sends, shell (with an intent) and task_list (without one), and the TOOL_RESULTS entry answering them, projected through apptranscript. The delegate and delegate_send calls ran for real (the delegate's id, its child session's id and the state directory fixed): the first send steered the running delegate, and the second, sent once it was idle, waited for and returned its reply (its run times fixed too). The shell and task_list outputs are hand-written text.",
 		Items: toolWireRelocated(t, items, func(encoded string) string { return subagentWireRunTimesFixed(t, relocate.Replace(encoded)) }),
 	}, "the mobile-native tests that read it")
+}
+
+// Transport acknowledgement is not model observation. A later waiting send
+// carries the older report until a real parent request/response observes it.
+func TestSubagentCallWireEarlierResultsRequireParentObservation(t *testing.T) {
+	t.Parallel()
+	for _, observed := range []bool{false, true} {
+		name := "unobserved"
+		if observed {
+			name = "observed"
+		}
+		t.Run(name, func(t *testing.T) {
+			parentRequests := 0
+			s, _, _, answer := subagentWireSession(t, func(req llm.Request) {
+				parentRequests++
+				observationRequest(t, req, []string{subagentWireFirstReply}, []string{subagentWireReply})
+			})
+			created := subagentWireCall{id: "create", tool: "delegate", args: map[string]any{"prompt": "first-report-37a1"}}.run(t, s)
+			var receipt stableDelegateCreateResult
+			if err := json.Unmarshal([]byte(created.output), &receipt); err != nil {
+				t.Fatal(err)
+			}
+			answer()
+			awaitDelegateIdle(t, s, receipt.DelegateID)
+			awaitSubagentWireCustody(t, s, receipt.DelegateID)
+			id := "delegate:" + receipt.DelegateID + "/delivery/1"
+			observationReceipts(t, s, nil)
+			if observed {
+				if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+					t.Fatal(err)
+				}
+				observationReceipts(t, s, [][]string{{id}})
+			} else {
+				assertNotificationPending(t, s, []string{id})
+			}
+			sent := subagentWireCall{id: "send", tool: "delegate_send", args: map[string]any{"to": receipt.DelegateID, "message": subagentWireQuestion, "max_wait_ms": 60000}}.run(t, s)
+			var result delegateSendResult
+			if err := json.Unmarshal(sent.state, &result); err != nil {
+				t.Fatal(err)
+			}
+			wantEarlier := 1
+			if observed {
+				wantEarlier = 0
+			}
+			if len(result.EarlierResults) != wantEarlier || result.DelegateID != receipt.DelegateID || result.Output == nil || *result.Output != subagentWireReply {
+				t.Fatalf("waiting result = %+v, want earlier=%d and latest scripted reply", result, wantEarlier)
+			}
+			if !observed && (result.EarlierResults[0].DelegateID != receipt.DelegateID || result.EarlierResults[0].Output == nil || *result.EarlierResults[0].Output != subagentWireFirstReply) {
+				t.Fatalf("earlier result does not carry the first generation: %+v", result.EarlierResults)
+			}
+			if parentRequests != 1-wantEarlier {
+				t.Fatalf("parent requests = %d, want %d", parentRequests, 1-wantEarlier)
+			}
+			memoryWaitChild(t, s, receipt.ChildSessionID)
+		})
+	}
+}
+
+func awaitSubagentWireCustody(t *testing.T, s *Session, delegateID string) {
+	t.Helper()
+	want := "delegate:" + delegateID + "/delivery/1"
+	waitForCondition(t, 30*time.Second, "first-generation report custody", func() bool {
+		ids, err := s.pendingNotificationIDs()
+		return err == nil && len(ids) == 1 && ids[0] == want
+	})
 }
 
 // awaitDelegateIdle waits until delegateID's generation has finished and the

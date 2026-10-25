@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -284,44 +285,122 @@ func TestRootDelegateAttentionKeepsDeliveryOrderAcrossCompactionRestart(t *testi
 	}
 }
 
-// An accepted generation's trigger is resolved as consumed before its first
-// request presents it. A fold in that first request must keep the trigger's
-// turn, or the model never sees what woke it and no pending wake remains.
+// Accepting a generation is not observation. A fold before its first request
+// must keep the trigger and the later pending body.
 func TestAcceptedDelegateAttentionTriggerSurvivesCompactionBeforeItsFirstRequest(t *testing.T) {
 	t.Parallel()
-	sess := acceptedTriggerSession(t)
+	sess, _, _ := acceptedTriggerSession(t)
+	appendAcceptedTriggerLater(t, sess)
 	if err := sess.Compact(context.Background()); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 	if indexOfTurnText(currentHistory(t, sess), acceptedTriggerText) < 0 {
 		t.Fatal("the fold dropped the accepted generation's trigger before any request presented it")
 	}
+	assertAcceptedTriggerLaterPending(t, sess)
+	observationReceipts(t, sess, nil)
 }
 
 // Once a settled request has presented the trigger, a later fold may summarize
 // it away like any other consumed turn.
 func TestAcceptedDelegateAttentionTriggerFoldsAwayOncePresented(t *testing.T) {
 	t.Parallel()
-	sess := acceptedTriggerSession(t)
-	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, delegateLease{delegateID: "dlg_target", generation: 1})
-	sess.stagePresentedAttentionCoverage(ctx, currentHistory(t, sess))
-	sess.promoteStagedAttentionCoverage(llm.Request{})
+	sess, main, ctx := acceptedTriggerSession(t)
+	main.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+		observationRequest(t, req, []string{"TRIGGER_ITEM"}, []string{"LATER_ITEM"})
+		appendAcceptedTriggerLater(t, sess)
+		return finalResponse("trigger response")
+	}}
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("trigger request: %v", err)
+	}
+	if len(main.Requests()) != 1 {
+		t.Fatalf("model requests = %d, want 1", len(main.Requests()))
+	}
+	observationReceipts(t, sess, [][]string{{acceptedTriggerID}})
+	// Move both bodies out of the recent tail so retention cannot pass merely
+	// because the fold never reached the later pending item.
+	seedNumberedSessionHistory(t, sess, 12)
 	if err := sess.Compact(context.Background()); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 	if indexOfTurnText(currentHistory(t, sess), acceptedTriggerText) >= 0 {
 		t.Fatal("the fold kept a trigger a settled request already presented")
 	}
+	assertAcceptedTriggerLaterPending(t, sess)
 }
 
-const acceptedTriggerText = `<delegate-notification delegate_id="dlg_worker" kind="update">TRIGGER_ITEM</delegate-notification>`
+func TestAcceptedDelegateAttentionTriggerFailedResponseDoesNotObserve(t *testing.T) {
+	t.Parallel()
+	sess, _, ctx := acceptedTriggerSession(t)
+	main := &skillContinuationAdapter{steps: []func(llm.Request) (llm.Response, error){func(req llm.Request) (llm.Response, error) {
+		observationRequest(t, req, []string{"TRIGGER_ITEM"}, []string{"LATER_ITEM"})
+		appendAcceptedTriggerLater(t, sess)
+		return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 401, "", nil, nil)
+	}}}
+	sess.client.Register(main)
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err == nil {
+		t.Fatal("failed provider response succeeded")
+	}
+	if len(main.Requests()) != 1 {
+		t.Fatalf("model requests = %d, want 1 failed request", len(main.Requests()))
+	}
+	observationReceipts(t, sess, nil)
+	seedNumberedSessionHistory(t, sess, 12)
+	if err := sess.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if indexOfTurnText(currentHistory(t, sess), acceptedTriggerText) < 0 {
+		t.Fatal("the fold dropped the trigger after a failed response")
+	}
+	assertAcceptedTriggerLaterPending(t, sess)
+}
+
+const (
+	acceptedTriggerID   = "delegate:dlg_worker/delivery/1"
+	acceptedTriggerText = `<delegate-notification delegate_id="dlg_worker" kind="update">TRIGGER_ITEM</delegate-notification>`
+	acceptedLaterID     = "delegate:dlg_worker/delivery/2"
+	acceptedLaterText   = `<delegate-notification delegate_id="dlg_worker" kind="update">LATER_ITEM</delegate-notification>`
+)
+
+func appendAcceptedTriggerLater(t *testing.T, sess *Session) {
+	t.Helper()
+	if _, err := sess.appendDelegateNotificationDurably(acceptedLaterID, acceptedLaterText); err != nil {
+		t.Fatal(err)
+	}
+	sess.delegateController.noteDelegateAttention("dlg_target", acceptedLaterID)
+}
+
+func assertAcceptedTriggerLaterPending(t *testing.T, sess *Session) {
+	t.Helper()
+	if indexOfTurnText(currentHistory(t, sess), acceptedLaterText) < 0 {
+		t.Fatal("fold dropped the later unobserved body")
+	}
+	fold, err := readDelegateAttentionFold(sess.TranscriptPath(), sess.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, observed := fold.observed[acceptedLaterID]; observed {
+		t.Fatal("later body was observed without appearing in a request")
+	}
+	if _, pending := fold.content[acceptedLaterID]; !pending {
+		t.Fatal("later body has no durable custody")
+	}
+	if !slices.Contains(fold.pendingIDs(), acceptedLaterID) {
+		t.Fatalf("later body is not pending: %v", fold.pendingIDs())
+	}
+}
 
 // acceptedTriggerSession is a delegate runtime that has accepted an attention
-// generation whose trigger is old enough for a fold to summarize away, with a
-// later item still pending.
-func acceptedTriggerSession(t *testing.T) *Session {
+// generation whose trigger is old enough for a fold to summarize away. The
+// caller controls when a later item arrives relative to the real request.
+func acceptedTriggerSession(t *testing.T) (*Session, *fakeAdapter, context.Context) {
 	t.Helper()
-	sess, _ := newCompactableSession(t)
+	sess, main := newCompactableSession(t)
+	if err := sess.closeOwnedDelegateStore(); err != nil {
+		t.Fatal(err)
+	}
+	sess.ownsDelegateController = false
 	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, controller, "dlg_target", "")
 	controller.mu.Lock()
@@ -330,24 +409,29 @@ func acceptedTriggerSession(t *testing.T) *Session {
 	sess.delegateController = controller
 	sess.owningDelegateID = "dlg_target"
 
-	const triggerID, laterID = "delegate:dlg_worker/delivery/1", "delegate:dlg_worker/delivery/2"
-	const laterText = `<delegate-notification delegate_id="dlg_worker" kind="update">LATER_ITEM</delegate-notification>`
-	if _, err := sess.appendDelegateNotificationDurably(triggerID, acceptedTriggerText); err != nil {
+	if _, err := sess.appendDelegateNotificationDurably(acceptedTriggerID, acceptedTriggerText); err != nil {
 		t.Fatalf("append trigger: %v", err)
 	}
-	controller.noteDelegateAttention("dlg_target", triggerID)
+	controller.noteDelegateAttention("dlg_target", acceptedTriggerID)
 	seedNumberedSessionHistory(t, sess, 12)
-	if _, err := sess.appendDelegateNotificationDurably(laterID, laterText); err != nil {
-		t.Fatalf("append later item: %v", err)
-	}
-	controller.noteDelegateAttention("dlg_target", laterID)
 
-	reservation, err := controller.ReserveAttention(sess, triggerID)
+	reservation, err := controller.ReserveAttention(sess, acceptedTriggerID)
 	if err != nil {
 		t.Fatalf("ReserveAttention: %v", err)
 	}
 	if err := sess.acceptDelegateAttention(reservation); err != nil {
 		t.Fatalf("acceptDelegateAttention: %v", err)
 	}
-	return sess
+	commit, err := controller.CommitStart(reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sess.Close)
+	t.Cleanup(func() {
+		if _, err := controller.FinishGeneration(commit.lease, delegateFinish{outcome: delegatestore.OutcomeCancelled, reason: "cancelled"}); err != nil {
+			t.Errorf("finish fixture generation: %v", err)
+		}
+	})
+	ctx := context.WithValue(commit.ctx, delegateRunLeaseContextKey{}, commit.lease)
+	return sess, main, ctx
 }
