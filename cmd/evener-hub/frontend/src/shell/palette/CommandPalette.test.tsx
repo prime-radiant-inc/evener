@@ -35,6 +35,7 @@ import { chordLabel, Dialog, Toast } from "../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { currentAttentionEntryToken } from "../attentionHistory";
 import { NeedsYouProvider } from "../NeedsYouProvider";
+import { updateNeedsYouPage } from "../needsYouTestUtils";
 import { navigate } from "../routing";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
@@ -295,6 +296,94 @@ test.each(["Enter", "click"] as const)(
     ).toBe(sourcePaneId);
   },
 );
+
+test.each(["Enter", "click"] as const)(
+  "%s on a refreshing needs-you row is refused until the page settles",
+  async (activation) => {
+    const user = userEvent.setup();
+    setNeedsYouRows(needsYouRows());
+    focusSession("ref_source");
+    // The controller publishes this row as selectable:false, refreshState
+    // "refreshing" while its page revalidates.
+    updateNeedsYouPage(0, { stale: true, loading: true });
+    render(
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>,
+    );
+    act(() => openPalette());
+    const historyLength = window.history.length;
+    const refused = screen.getByRole("option", { name: /Session A/i });
+
+    expect(refused.getAttribute("aria-disabled")).toBe("true");
+    expect(refused.getAttribute("data-refresh-state")).toBe("refreshing");
+
+    if (activation === "Enter") await user.keyboard("{Enter}");
+    else await user.click(refused);
+
+    expect(paletteStore.getState().open).toBe(true);
+    expect(screen.getByRole("dialog", { name: "Command palette" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/");
+    expect(window.history.length).toBe(historyLength);
+
+    act(() => updateNeedsYouPage(0, { stale: false, loading: false, error: null }));
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /Session A/i }).getAttribute("aria-disabled")).toBeNull(),
+    );
+    const settled = screen.getByRole("option", { name: /Session A/i });
+    expect(settled.getAttribute("data-refresh-state")).toBeNull();
+
+    if (activation === "Enter") await user.keyboard("{Enter}");
+    else await user.click(settled);
+
+    await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Any1"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(window.history.length).toBe(historyLength + 1);
+  },
+);
+
+test("a failed needs-you page is refused in place", () => {
+  setNeedsYouRows(needsYouRows());
+  updateNeedsYouPage(0, { stale: true, loading: false, error: new Error("refresh failed") });
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  const refused = screen.getByRole("option", { name: /Session A/i });
+
+  expect(refused.getAttribute("aria-disabled")).toBe("true");
+  expect(refused.getAttribute("data-refresh-state")).toBe("failed");
+
+  fireEvent.click(refused);
+  expect(paletteStore.getState().open).toBe(true);
+  expect(window.location.pathname).toBe("/");
+});
+
+test("a page that turns stale before the next paint still refuses activation", () => {
+  setNeedsYouRows(needsYouRows());
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  const row = screen.getByRole("option", { name: /Session A/i });
+  expect(row.getAttribute("aria-disabled")).toBeNull();
+
+  // Keep the page change and the click in one synchronous act: React flushes
+  // act work only when the outer scope exits, so the click still runs the
+  // handler from the pre-update render and must be refused by the live
+  // controller snapshot read.
+  act(() => {
+    updateNeedsYouPage(0, { stale: true, loading: true });
+    fireEvent.click(row);
+  });
+
+  expect(paletteStore.getState().open).toBe(true);
+  expect(window.location.pathname).toBe("/");
+});
 
 test("a newer route wins over a needs-you selection deferred until the real modal closes", async () => {
   setNeedsYouRows(needsYouRows());
