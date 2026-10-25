@@ -64,6 +64,9 @@ const (
 // ~shellDigestHalfBytes with the middle elided. The full output stays in the
 // OutputStore, reachable via the job transcript_ref.
 func shellInlineDigest(full string, total, dropped int64) string {
+	if window, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, dropped > 0); ok {
+		return renderDiffDigest(full, window, total, dropped)
+	}
 	b := []byte(full)
 	headRaw := b
 	if len(headRaw) > shellDigestHalfBytes {
