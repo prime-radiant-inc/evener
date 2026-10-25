@@ -1,4 +1,4 @@
-import { type RefObject, useEffect, useState } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useState } from "react";
 import { ownerDocumentOf } from "./documentRealm";
 
 interface DocumentWatch {
@@ -67,7 +67,13 @@ export function useOwnedDocument<T extends Node>(ref: RefObject<T | null>, enabl
   // every later render, and the watch below catches a move while live. Running
   // this on every commit put one extra effect on every consumer render (the
   // composer's textarea re-renders per keystroke).
-  useEffect(() => {
+  //
+  // Layout, not passive: the ref attaches during commit, after this render
+  // resolved a null node, so a widget mounted directly in a popout is corrected
+  // and re-rendered before paint. A passive correction left the opener's
+  // document observable until after the frame, and portal-only widgets had to
+  // force their own pre-paint render to avoid mounting in the wrong window.
+  useLayoutEffect(() => {
     const next = ownerDocumentOf(ref.current);
     if (next !== doc) setDoc(next);
   }, [doc, ref]);
