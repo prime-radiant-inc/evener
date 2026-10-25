@@ -886,6 +886,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.spawn.parentWatchGranted = false
 	if frozen != nil {
 		subCfg.spawn.rolePromptOverride = ""
+		subCfg.spawn.activatedSkillNames = nil
 		subCfg.spawn.activatedSkillBodies = nil
 		subCfg.spawn.frozenSkillMetadata = nil
 		subCfg.spawn.allowedToolNames = nil
@@ -992,21 +993,24 @@ func (s *Session) prepareSubagentRunFromSelection(
 		(agent == nil && childCanDelegate) {
 		subCfg.spawn.rolePromptOverride = rolePrompt
 	}
-	var activatedSkillNames []string
-	var activatedSkillBodies []string
 	if frozen != nil {
-		var err error
 		// Frozen restoration uses the saved names/bodies exactly — never a
 		// disk reload of legacy frozen bytes. The typed metadata is optional:
 		// a legacy descriptor without it keeps unknown provenance.
-		activatedSkillBodies, err = restoreFrozenSkillBodies(frozen.FrozenSkillNames, frozen.FrozenSkillBodies)
+		bodies, err := restoreFrozenSkillBodies(frozen.FrozenSkillNames, frozen.FrozenSkillBodies)
 		if err != nil {
 			return nil, err
 		}
-		activatedSkillNames = append([]string(nil), frozen.FrozenSkillNames...)
-		subCfg.spawn.activatedSkillBodies = append([]string(nil), activatedSkillBodies...)
+		subCfg.spawn.activatedSkillNames = append([]string(nil), frozen.FrozenSkillNames...)
+		subCfg.spawn.activatedSkillBodies = bodies
 		subCfg.spawn.frozenSkillMetadata = append([]schema.FrozenSkillPreload(nil), frozen.FrozenSkillMetadata...)
 	} else if agent != nil && len(agent.Skills) > 0 {
+		// A delegate parent's preload slices are shared with this spawn by the
+		// struct copy above. Clone them before appending so concurrent sibling
+		// spawns cannot write through the same spare capacity.
+		subCfg.spawn.activatedSkillNames = append([]string(nil), subCfg.spawn.activatedSkillNames...)
+		subCfg.spawn.activatedSkillBodies = append([]string(nil), subCfg.spawn.activatedSkillBodies...)
+		subCfg.spawn.frozenSkillMetadata = append([]schema.FrozenSkillPreload(nil), subCfg.spawn.frozenSkillMetadata...)
 		for _, skillName := range agent.Skills {
 			// Fresh role preloads use the shared loader/renderer: the
 			// permanent prompt carries the complete rendered document, and
@@ -1031,9 +1035,8 @@ func (s *Session) prepareSubagentRunFromSelection(
 			}
 			item := batch.Items[0]
 			if strings.TrimSpace(item.Rendered.Content) != "" {
+				subCfg.spawn.activatedSkillNames = append(subCfg.spawn.activatedSkillNames, item.Loaded.Descriptor.CatalogName)
 				subCfg.spawn.activatedSkillBodies = append(subCfg.spawn.activatedSkillBodies, item.Rendered.Content)
-				activatedSkillNames = append(activatedSkillNames, item.Loaded.Descriptor.CatalogName)
-				activatedSkillBodies = append(activatedSkillBodies, item.Rendered.Content)
 				subCfg.spawn.frozenSkillMetadata = append(subCfg.spawn.frozenSkillMetadata, frozenPreloadRecord(item))
 			}
 		}
@@ -1319,8 +1322,8 @@ func (s *Session) prepareSubagentRunFromSelection(
 		reasoningEffort:    reasoningEffort,
 		frozenRolePrompt:   rolePrompt,
 		frozenToolNames:    frozenSubagentToolNames(allTools, allowedTools, deniedTools),
-		frozenSkillNames:   append([]string(nil), activatedSkillNames...),
-		frozenSkillBodies:  append([]string(nil), activatedSkillBodies...),
+		frozenSkillNames:   append([]string(nil), subCfg.spawn.activatedSkillNames...),
+		frozenSkillBodies:  append([]string(nil), subCfg.spawn.activatedSkillBodies...),
 		workingDir:         subEnv.WorkingDirectory(),
 		localEnvPolicy:     localEnvPolicyName(subEnv),
 		sandboxSnapshot:    sandboxSnapshotFromEnv(subEnv),

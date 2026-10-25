@@ -2828,6 +2828,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			sharedTaskStore:               sharedStore,
 			sharedTaskStoreOwnerSessionID: descriptor.SharedTaskStoreOwnerSessionID,
 			rolePromptOverride:            descriptor.FrozenRolePrompt,
+			activatedSkillNames:           append([]string(nil), descriptor.FrozenSkillNames...),
 			activatedSkillBodies:          activatedSkillBodies,
 			frozenSkillMetadata:           append([]schema.FrozenSkillPreload(nil), descriptor.FrozenSkillMetadata...),
 			toolNameCeiling:               append([]string(nil), descriptor.ToolNameCeiling...),

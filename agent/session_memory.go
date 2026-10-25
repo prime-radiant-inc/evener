@@ -105,7 +105,14 @@ const gardeningMemorySkillName = skill.GardeningMemorySkillName
 // profile that denies a save tool) must neither see it in its catalog nor
 // activate it. Every other skill is available as the catalog advertises it.
 func (s *Session) skillAvailableToSession(name string) bool {
-	return skill.SessionAvailability{MemorySaveAvailable: s.memorySaveInstructionsEnabled()}.SkillAvailable(name)
+	return s.skillAvailability().SkillAvailable(name)
+}
+
+// skillAvailability is the capability verdict this session's own registry
+// supports. skillAvailableToSession is its name-scoped form; the role-preload
+// filter computes it once for every name it checks.
+func (s *Session) skillAvailability() skill.SessionAvailability {
+	return skill.SessionAvailability{MemorySaveAvailable: s.memorySaveInstructionsEnabled()}
 }
 
 // memorySaveInstructionsEnabled gates text that tells the model to write or
