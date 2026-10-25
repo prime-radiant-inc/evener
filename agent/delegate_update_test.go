@@ -1032,13 +1032,23 @@ func TestDelegateUpdatesArriveInOrderBeforeTheReportInOneTurn(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("warm") },
-		func(llm.Request) llm.Response { return communicateResponse(false, "FIRST_UPDATE") },
-		func(llm.Request) llm.Response { return communicateResponse(false, "SECOND_UPDATE") },
+		func(llm.Request) llm.Response { return finalResponse("WARM_OBSERVED_731") },
+		func(llm.Request) llm.Response { return updateResponse("ordered-first-731", "FIRST_UPDATE") },
+		func(llm.Request) llm.Response { return updateResponse("ordered-second-731", "SECOND_UPDATE") },
 		func(llm.Request) llm.Response { return finalResponse("THE_REPORT") },
 		func(llm.Request) llm.Response { return finalResponse("noted all three") },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	warmStableDelegateUnservedRoot(t, root, fixture)
+	// TRIPWIRE: all provider responses are scripted locally, only a hang reaches this bound.
+	warmCtx, cancelWarm := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelWarm()
+	if _, err := root.ProcessInputKind(warmCtx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("observe warmup: %v", err)
+	}
+	if warm := rootAttentionFold(t, root); len(warm.observed) != 1 || len(warm.pendingIDs()) != 0 {
+		t.Fatalf("warmup receipt = %+v, want one observed and no pending", warm)
+	}
 	if outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "go on", 0); outcome.result.Err != nil {
 		t.Fatalf("send: %v", outcome.result.Err)
 	}

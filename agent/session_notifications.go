@@ -190,14 +190,27 @@ func (s *Session) scheduleNotificationRetry() {
 			s.scheduleNotificationRetry()
 			return
 		}
-		defer release()
-		if !s.notificationStopHeld() {
-			if observe := s.cfg.testOnly.notificationRetryCallback; observe != nil {
-				observe()
+		func() {
+			defer release()
+			if !s.notificationStopHeld() {
+				if observe := s.cfg.testOnly.notificationRetryCallback; observe != nil {
+					observe()
+				}
 			}
-		}
-		if err := s.dispatchNotificationWake(); err != nil {
+			err = s.dispatchNotificationWake()
+		}()
+		if err != nil {
 			slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
+			return
+		}
+		// Repair can settle the last resource without making model input ready.
+		// Publish that progress only after callback custody and locks are released.
+		state := s.notificationExecutionState()
+		s.mu.Lock()
+		hinted := s.notificationSchedule.hinted
+		s.mu.Unlock()
+		if !state.held && !state.running && !state.recovering && !hinted {
+			s.notify()
 		}
 	})
 }
