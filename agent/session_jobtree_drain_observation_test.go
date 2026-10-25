@@ -170,10 +170,29 @@ func TestDrainAnnouncementDoesNotPromoteHousekeeping(t *testing.T) {
 		}
 		for _, mode := range []string{"announcement_only", "prior_observed", "failed_provider", "input_error", "empty_answer"} {
 			t.Run(name+"/"+mode, func(t *testing.T) {
-				var logged bytes.Buffer
+				var logged diagnosticLogCapture
+				var sess *Session
 				previous := slog.Default()
 				slog.SetDefault(slog.New(slog.NewJSONHandler(&logged, nil)))
-				t.Cleanup(func() { slog.SetDefault(previous) })
+				// Register before any resources, so their LIFO cleanup completes
+				// before validation. Restore even if validation calls Fatal.
+				t.Cleanup(func() {
+					defer slog.SetDefault(previous)
+					captured := logged.String()
+					if mode == "failed_provider" {
+						var record struct {
+							Level   string `json:"level"`
+							Session string `json:"session"`
+						}
+						// One JSON object pins exactly one log record, including
+						// teardown. Failure copy is not a classification API.
+						if err := json.Unmarshal([]byte(captured), &record); err != nil || record.Level != "WARN" || record.Session != sess.ID() {
+							t.Fatalf("expected one provider warning: %q, err=%v", captured, err)
+						}
+					} else if captured != "" {
+						t.Fatalf("unexpected daemon log: %s", captured)
+					}
+				})
 				adapter := newMessagingAdapter()
 				answer := func(context.Context, llm.Request) (llm.Response, error) {
 					return finalResponse("housekeeping-is-not-the-answer-731a"), nil
@@ -190,7 +209,7 @@ func TestDrainAnnouncementDoesNotPromoteHousekeeping(t *testing.T) {
 					}
 				}
 				adapter.finiteScript("root", steps...)
-				sess := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
+				sess = newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
 					cfg.TurnEndsProcess = true
 					if !persistent {
 						cfg.StateDir = ""
@@ -211,6 +230,7 @@ func TestDrainAnnouncementDoesNotPromoteHousekeeping(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				completed := false
+				var providerErr error
 				process := func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
 					if mode == "failed_provider" || mode == "input_error" || mode == "empty_answer" {
 						if !completed {
@@ -219,6 +239,9 @@ func TestDrainAnnouncementDoesNotPromoteHousekeeping(t *testing.T) {
 						}
 					}
 					res, err := sess.ProcessInputKind(ctx, input, images, kind)
+					if mode == "failed_provider" {
+						providerErr = err
+					}
 					if mode == "input_error" && err == nil {
 						return res, errors.New("post-response input failure-731a")
 					}
@@ -261,6 +284,16 @@ func TestDrainAnnouncementDoesNotPromoteHousekeeping(t *testing.T) {
 					if pending := fold.pendingIDs(); len(pending) != 1 || pending[0] != id {
 						t.Fatalf("failed request pending IDs = %v, want %s", pending, id)
 					}
+					var typed llm.Error
+					if llm.Kind(providerErr) != llm.KindAuthentication || !errors.As(providerErr, &typed) || typed.StatusCode() != 401 {
+						t.Fatalf("provider error = %v, want typed HTTP 401 authentication failure", providerErr)
+					}
+					sess.mu.Lock()
+					paused := sess.notificationSchedule.paused
+					sess.mu.Unlock()
+					if !paused || sess.notificationsRunnable() {
+						t.Fatal("permanent provider failure did not pause pending receiver work")
+					}
 				}
 				warnings := collectStallWarnings(sess)
 				wantWarnings := 1 // declining both announcements, or injected input error
@@ -276,20 +309,13 @@ func TestDrainAnnouncementDoesNotPromoteHousekeeping(t *testing.T) {
 				if mode == "failed_provider" {
 					paused := 0
 					for _, warning := range warnings {
-						if data, ok := warning.Data.(events.WarningData); ok && data.Code == events.WarningCodeAttentionPaused && data.Hint == "HTTP 401 (authentication)" {
+						if data, ok := warning.Data.(events.WarningData); ok && data.Code == events.WarningCodeAttentionPaused {
 							paused++
 						}
 					}
-					var record struct {
-						Level   string `json:"level"`
-						Session string `json:"session"`
-						Failure string `json:"failure"`
+					if paused != 1 {
+						t.Fatalf("pause warning events=%d, want exactly one", paused)
 					}
-					if err := json.Unmarshal(bytes.TrimSpace(logged.Bytes()), &record); err != nil || paused != 1 || record.Level != "WARN" || record.Session != sess.ID() || record.Failure != "HTTP 401 (authentication)" {
-						t.Fatalf("expected one authentication warning: %q, paused=%d, err=%v", logged.String(), paused, err)
-					}
-				} else if logged.Len() != 0 {
-					t.Fatalf("unexpected daemon log: %s", logged.String())
 				}
 			})
 		}

@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -682,9 +683,19 @@ func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
 			if len(reqs) != 1 {
 				t.Fatalf("model calls = %d, want exactly 1: the announcement carrying the completion", len(reqs))
 			}
-			if !requestsContain(reqs, jobID, "cannot finish") || !requestsContain(reqs, jobID, "<job-notification") {
-				t.Fatalf("the one request must carry both the announcement and the completion, got: %v", reqs[0].Messages[1:])
+			announcements := 0
+			for _, turn := range sessionHistory(sess) {
+				if turn.Kind == schema.TurnSteering && turn.SteeringKind == events.SteeringKindNotification && turn.AttentionID == "" {
+					announcements++
+					if turn.Message.Role != llm.RoleUser || !strings.Contains(turn.Message.Text(), jobID) || !requestContainsText(reqs[0], turn.Message.Text()) {
+						t.Fatal("typed announcement did not name the shell and reach the provider request")
+					}
+				}
 			}
+			if announcements != 1 {
+				t.Fatalf("typed announcement turns = %d, want exactly one", announcements)
+			}
+			drainRequestNotice(t, reqs[0], map[string]string{"job_id": jobID, "job_type": "shell", "status": "command_exited_nonzero", "exit_code": "143"})
 			requireDrainShellObserved(t, sess, jobID)
 			if d.res != answer {
 				t.Fatalf("drain result = %q, want %q: the reply to a request that delivered the completion is the run's answer", d.res, answer)
