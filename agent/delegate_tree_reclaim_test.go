@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime/pprof"
 	"sort"
 	"strings"
 	"sync"
@@ -585,6 +586,13 @@ type wideSubtreeReleaseProbe struct {
 func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDeadline time.Duration) *wideSubtreeReleaseProbe {
 	t.Helper()
 
+	// These existing hooks only record progress, never gate a runner. Keep
+	// stages per runner so a sibling cannot overwrite the awaited member's tail.
+	var runnerStages sync.Map
+	recordStage := func(stage string) func(*subagent) {
+		return func(sub *subagent) { runnerStages.Store(sub, stage) }
+	}
+
 	workspace := t.TempDir()
 	// The adapter scripts the parent's turn as ONE response carrying
 	// every delegate spawn; each later step is an identical finish. The
@@ -680,12 +688,83 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 			idleTeardownConcurrency:    &limit,
 			idleTeardownMemberStarted:  memberStarted,
 			idleTeardownMemberSettled:  memberSettled,
+			subagentRunIteration: func(sub *subagent, iteration int) {
+				runnerStages.Store(sub, fmt.Sprintf("run iteration %d", iteration))
+			},
+			subagentBeforeSettlement:          recordStage("before settlement"),
+			subagentAfterFinalStatePublish:    recordStage("after final state publish"),
+			subagentBeforeGenerationAnnounced: recordStage("before generation announcement"),
+			subagentBeforeGenerationReleased: func(sub *subagent, _ delegateLease) {
+				runnerStages.Store(sub, "before generation release")
+			},
 		},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(sess.Close)
+
+	waitForRunner := func(label, delegateID string, sub *subagent) {
+		t.Helper()
+		sub.mu.Lock()
+		done := sub.done
+		sub.mu.Unlock()
+		tree := sess.delegateController
+		generation := "unavailable, tree.mu busy"
+		if tree.mu.TryLock() {
+			generation = fmt.Sprint(tree.durable[delegateID].Generation)
+			tree.mu.Unlock()
+		}
+		select {
+		case <-done:
+			return
+		case <-time.After(20 * time.Second): // TRIPWIRE: scripted turns take seconds; this only bounds a deadlock.
+		}
+
+		// Capture stacks before cleanup or optional state reads. A busy runtime
+		// lock must not prevent the original timeout from reporting its evidence.
+		var stacks strings.Builder
+		if err := pprof.Lookup("goroutine").WriteTo(&stacks, 2); err != nil {
+			t.Logf("goroutine dump: %v", err)
+		}
+		t.Logf("runner timeout goroutines:\n%s", stacks.String())
+		t.Logf("awaited delegate=%s session=%s sub=%p generation=%s done=%p", delegateID, sub.id, sub, generation, done)
+		runnerStages.Range(func(key, value any) bool {
+			runner := key.(*subagent)
+			t.Logf("runner stage session=%s sub=%p stage=%s", runner.id, runner, value)
+			return true
+		})
+		if sub.mu.TryLock() {
+			state := fmt.Sprintf("current done=%p running=%t driving=%t finalizing=%t settlementClaimed=%t status=%s err=%v", sub.done, sub.running, sub.driving, sub.finalizing, sub.settlementClaimed, sub.status, sub.err)
+			sub.mu.Unlock()
+			t.Log(state)
+		} else {
+			t.Log("runner state unavailable: sub.mu busy")
+		}
+		if tree.mu.TryLock() {
+			state := fmt.Sprintf("current generation=%d", tree.durable[delegateID].Generation)
+			if live := tree.live[delegateID]; live != nil {
+				state += fmt.Sprintf(" binding=%p finalizing=%p", live.binding, live.finalizing)
+			}
+			for sourceID, aggregate := range tree.durable {
+				for _, pending := range aggregate.PendingDeliveries {
+					receiverID := tree.rootSessionID
+					if owner := tree.durable[pending.OwnerDelegateID]; owner != nil {
+						receiverID = owner.Descriptor.ChildSessionID
+					}
+					state += fmt.Sprintf("\npending delivery=%s generation=%d source=%s source_session=%s owner=%q receiver_session=%s observed=unknown, transcript not read", pending.DeliveryID, pending.Generation, sourceID, aggregate.Descriptor.ChildSessionID, pending.OwnerDelegateID, receiverID)
+					if receipt := tree.deliveryReceiptLocked(pending.DeliveryID); receipt != nil {
+						state += fmt.Sprintf(" receipt=%+v", *receipt)
+					}
+				}
+			}
+			tree.mu.Unlock()
+			t.Log(state)
+		} else {
+			t.Log("controller state unavailable: tree.mu busy")
+		}
+		t.Fatalf("%s did not finish", label)
+	}
 
 	allowance := wideChildren
 	parentRes := sess.createDelegate(context.Background(), delegateArgs{
@@ -699,14 +778,7 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 	if sub == nil {
 		t.Fatalf("parent delegate missing from root manager: %+v", parentRes)
 	}
-	sub.mu.Lock()
-	done := sub.done
-	sub.mu.Unlock()
-	select {
-	case <-done:
-	case <-time.After(20 * time.Second): // TRIPWIRE: the scripted turn takes seconds; this only bounds a deadlock.
-		t.Fatal("parent delegate runner did not finish")
-	}
+	waitForRunner("parent delegate runner", parentRes.DelegateID, sub)
 
 	// The parent's single scripted turn spawned the whole wave, so the
 	// tree's shape is already fixed; the children finish on their own
@@ -736,14 +808,7 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 		if childSub == nil {
 			t.Fatalf("child %s missing from the parent runtime's manager", csid)
 		}
-		childSub.mu.Lock()
-		childDone := childSub.done
-		childSub.mu.Unlock()
-		select {
-		case <-childDone:
-		case <-time.After(20 * time.Second): // TRIPWIRE: the children's scripted turns take seconds; this only bounds a deadlock.
-			t.Fatalf("child delegate runner %d did not finish", i)
-		}
+		waitForRunner(fmt.Sprintf("child delegate runner %d", i), childIDs[i], childSub)
 	}
 
 	childRuntimes := make(map[string]*Session, wideChildren)
@@ -847,6 +912,110 @@ func TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently(t *testing.T)
 		t.Fatalf("idle release settled the same-depth members serially: max concurrent child teardowns = %d, want %d", probe.maxInFlight, wideChildren)
 	}
 	assertWideSubtreeReleaseSettled(t, probe)
+}
+
+func TestDelegateLeafFinalizationDoesNotWaitForForeignReceiverDelivery(t *testing.T) {
+	t.Parallel()
+	foreignBeforeAnnouncement := make(chan struct{})
+	allowForeignAnnouncement := make(chan struct{})
+	leafDrainEntered := make(chan struct{})
+	var announcementSeen, failRootRead atomic.Bool
+	var drainEntries, rootReadFailures atomic.Int32
+	var rootID atomic.Value
+	root := newSession(t, withoutGitSnapshot(), withClock(agenttest.NewFakeClock()), withConfig(SessionConfig{
+		StateDir: t.TempDir(), MaxSubagentDepth: 1, ForceRealIO: true,
+		testOnly: testConfig{
+			minimalSystemPrompt: true, disableDelegateIdleRelease: true,
+			subagentBeforeGenerationAnnounced: func(*subagent) {
+				if announcementSeen.CompareAndSwap(false, true) {
+					close(foreignBeforeAnnouncement)
+					<-allowForeignAnnouncement
+				}
+			},
+			jobTreeDrainEntered: func() {
+				if drainEntries.Add(1) == 2 {
+					close(leafDrainEntered)
+				}
+			},
+			delegateAttentionReadFold: func(path, sessionID string) (delegateAttentionFold, error) {
+				if sessionID == rootID.Load() && failRootRead.Load() {
+					rootReadFailures.Add(1)
+					return delegateAttentionFold{}, errInjectedTranscriptWrite
+				}
+				return readDelegateAttentionFold(path, sessionID)
+			},
+		},
+	}), withSteps(func(llm.Request) llm.Response { return finalResponse("foreign result") }, func(llm.Request) llm.Response { return finalResponse("leaf result") }))
+	rootID.Store(root.id)
+	var releaseForeign sync.Once
+	unblockForeign := func() { releaseForeign.Do(func() { close(allowForeignAnnouncement) }) }
+	t.Cleanup(unblockForeign)
+	await := func(ch <-chan struct{}, boundary string) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-time.After(20 * time.Second): // TRIPWIRE: bounds a deadlock, not normal work.
+			var stacks strings.Builder
+			if err := pprof.Lookup("goroutine").WriteTo(&stacks, 2); err != nil {
+				t.Logf("goroutine dump: %v", err)
+			}
+			t.Logf("goroutines:\n%s", stacks.String())
+			t.Fatalf("%s did not finish", boundary)
+		}
+	}
+	create := func(task string) (delegateResult, *subagent, <-chan struct{}) {
+		t.Helper()
+		result := root.createDelegate(context.Background(), delegateArgs{Task: task})
+		if result.Err != nil {
+			t.Fatalf("createDelegate: %v", result.Err)
+		}
+		sub := root.subagents.get(result.ChildSessionID)
+		sub.mu.Lock()
+		done := sub.done
+		sub.mu.Unlock()
+		return result, sub, done
+	}
+	foreign, _, foreignDone := create("foreign root receiver sentinel")
+	await(foreignBeforeAnnouncement, "foreign pre-announcement")
+	failRootRead.Store(true)
+	unblockForeign()
+	await(foreignDone, "foreign runner")
+	if rootReadFailures.Load() == 0 {
+		t.Fatal("foreign delivery did not exercise the real receiver failure")
+	}
+	c := root.delegateController
+	plans := c.ReplayDeliveries()
+	if len(plans) != 1 || plans[0].delegateID != foreign.DelegateID || plans[0].ownerDelegateID != "" {
+		t.Fatalf("foreign pending plans = %+v", plans)
+	}
+	// Retain an actual in-flight admission, so the leaf cannot accidentally
+	// repair the foreign receiver's fault and erase the premise during its kick.
+	token, admitted, err := c.BeginDelivery(plans[0])
+	if err != nil || !admitted {
+		t.Fatalf("BeginDelivery foreign: admitted=%t err=%v", admitted, err)
+	}
+	t.Cleanup(func() { _, _ = c.CompleteDelivery(token, false) })
+	leaf, leafSub, leafDone := create("independent leaf sentinel")
+	await(leafDrainEntered, "leaf drain entry")
+	t.Cleanup(func() {
+		ids := pendingDeliveryIDs(c, foreign.DelegateID)
+		fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, root.id), root.id)
+		attentionID := delegateAttentionID(plans[0].deliveryID)
+		_, observed := fold.observed[attentionID]
+		_, accepted := fold.content[attentionID]
+		if err != nil || len(ids) != 1 || ids[0] != plans[0].deliveryID || observed || accepted {
+			t.Errorf("foreign custody changed: pending=%v accepted=%t observed=%t err=%v", ids, accepted, observed, err)
+		}
+		t.Logf("foreign delivery=%s source=%s receiver=%s pending=%v accepted=%t observed=%t", plans[0].deliveryID, foreign.DelegateID, root.id, ids, accepted, observed)
+	})
+	t.Logf("leaf=%s session=%s must finish independently of foreign delivery=%s receiver=%s", leaf.DelegateID, leaf.ChildSessionID, plans[0].deliveryID, root.id)
+	await(leafDone, "independent leaf runner")
+	leafSub.mu.Lock()
+	status, runErr := leafSub.status, leafSub.err
+	leafSub.mu.Unlock()
+	if status != SubagentCompleted || runErr != nil {
+		t.Fatalf("leaf outcome: status=%s err=%v", status, runErr)
+	}
 }
 
 // TestDelegateIdleRelease_CapsConcurrentMemberTeardown pins the bound
