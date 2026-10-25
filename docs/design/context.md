@@ -151,8 +151,10 @@ tail cannot lose the steering. It captures that forced operation and calls
 `Manager.ForceCompact(ctx, history, instructions, emitFn)` and publishes the
 folded history. The winning publication claims the captured operation when the
 fold staged a compaction and the captured operation still matches the live pending
-operation; a supersede or cancellation claims nothing. If the captured operation
-is never claimed, it is retired so the cycle does not wedge. This is the
+operation; a supersede or cancellation claims nothing. Losing the publication race
+on every retry retires a captured forced operation so the cycle does not wedge. A
+transcript refusal is not retried and does not cancel: the operation stays pending,
+and a restart re-arms its round trigger from the persisted record. This is the
 `Manager.ForceCompact` seam documented under *ForceCompact* below.
 
 `ForceCompact` returns a `bool` indicating whether a summary turn was actually
