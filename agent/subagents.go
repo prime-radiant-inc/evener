@@ -886,6 +886,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.spawn.parentWatchGranted = false
 	if frozen != nil {
 		subCfg.spawn.rolePromptOverride = ""
+		subCfg.spawn.activatedSkillNames = nil
 		subCfg.spawn.activatedSkillBodies = nil
 		subCfg.spawn.frozenSkillMetadata = nil
 		subCfg.spawn.allowedToolNames = nil
@@ -1004,6 +1005,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 			return nil, err
 		}
 		activatedSkillNames = append([]string(nil), frozen.FrozenSkillNames...)
+		subCfg.spawn.activatedSkillNames = append([]string(nil), activatedSkillNames...)
 		subCfg.spawn.activatedSkillBodies = append([]string(nil), activatedSkillBodies...)
 		subCfg.spawn.frozenSkillMetadata = append([]schema.FrozenSkillPreload(nil), frozen.FrozenSkillMetadata...)
 	} else if agent != nil && len(agent.Skills) > 0 {
@@ -1031,6 +1033,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 			}
 			item := batch.Items[0]
 			if strings.TrimSpace(item.Rendered.Content) != "" {
+				subCfg.spawn.activatedSkillNames = append(subCfg.spawn.activatedSkillNames, item.Loaded.Descriptor.CatalogName)
 				subCfg.spawn.activatedSkillBodies = append(subCfg.spawn.activatedSkillBodies, item.Rendered.Content)
 				activatedSkillNames = append(activatedSkillNames, item.Loaded.Descriptor.CatalogName)
 				activatedSkillBodies = append(activatedSkillBodies, item.Rendered.Content)
