@@ -19,6 +19,12 @@ with it open) marks it seen through the later of an unseen turn end and motion
 after that mark. The web reads that session's activity once per open for this,
 and a read whose connection was replaced is read again through the new one.
 
+The phone Board's pulse meter and quiet presentation, and the `lastMovedAt`
+behind the web's seen mark, come from a different, hub-level read:
+`evener/activity/read` — see the [session pulse meter](pulse-meter.md). It is
+not one of the `evener/thread/*` activity reads below and carries no delegate,
+job or watch rows.
+
 Transcript delegate cards and status indicators use the same
 owner-qualified delegate entity projection as Activity. Retained transcripts do
 not require a live diagnostics roster to display authoritative delegate state.
