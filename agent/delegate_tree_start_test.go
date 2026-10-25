@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 // AdmitStartInput is the test-only callback adapter used by controller fuzz
@@ -407,6 +408,7 @@ func TestDelegateControllerInputPersistFailureUsesCanonicalAtomicFinish(t *testi
 
 func TestDelegateControllerInputPersistFailureClaimsWaiterAndReturnsDelivery(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	receiver := delegateControllerRootReceiverForTest(t, c)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
 	if err != nil {
@@ -437,16 +439,73 @@ func TestDelegateControllerInputPersistFailureClaimsWaiterAndReturnsDelivery(t *
 	if remaining != nil {
 		t.Fatalf("claimed waiter remains registered: %#v", remaining)
 	}
-	if _, err := deliverDelegatePacket(plans.deliveries[0], nil); err != nil {
+	if _, err := deliverDelegatePacket(plans.deliveries[0], receiver); err != nil {
 		t.Fatalf("deliverDelegatePacket: %v", err)
 	}
 	resolution := <-waiter.resolution
-	if resolution.fallback || resolution.packet == nil || resolution.packet.Kind != delegatestore.PacketTerminalError || !strings.Contains(string(resolution.packet.Message), "input persistence failed") || resolution.commit == nil {
+	if resolution.fallback || resolution.packet == nil || resolution.packet.Kind != delegatestore.PacketTerminalError || resolution.commit == nil || !reflect.DeepEqual(*resolution.packet, plans.deliveries[0].packet) {
 		t.Fatalf("input-failure waiter resolution = %#v", resolution)
+	}
+	id := delegateAttentionID(plans.deliveries[0].deliveryID)
+	assertNotificationPending(t, receiver, []string{id})
+	if got := notificationCanonicalCount(t, receiver, id); got != 1 {
+		t.Fatalf("canonical custody before inline completion = %d, want 1", got)
+	}
+	if got := len(c.durable["dlg_target"].PendingDeliveries); got != 0 {
+		t.Fatalf("source debt after canonical custody = %d, want 0", got)
 	}
 	if _, err := resolution.commit.Complete(false); err != nil {
 		t.Fatalf("Complete(false): %v", err)
 	}
+	assertNotificationPending(t, receiver, []string{id})
+}
+
+func TestDelegateControllerInputPersistFailureUnavailableReceiverRetries(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	receiver := delegateControllerRootReceiverForTest(t, c)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+	inputErr := errors.New("input-failure-72")
+	plans, err := c.AdmitStartInput(started.lease, func() error { return inputErr })
+	if !errors.Is(err, inputErr) || len(plans.deliveries) != 1 {
+		t.Fatalf("input failure: deliveries=%d err=%v", len(plans.deliveries), err)
+	}
+	plan := plans.deliveries[0]
+	if _, err := deliverDelegatePacket(plan, nil); !errors.Is(err, errDelegateDeliveryReceiverUnavailable) {
+		t.Fatalf("unavailable receiver error=%v", err)
+	}
+	if !c.deliveryPending(plan.delegateID, plan.deliveryID) {
+		t.Fatal("unavailable receiver acknowledged source debt")
+	}
+	assertNotificationPending(t, receiver, []string{})
+	retries := c.ReplayDeliveries()
+	if len(retries) != 1 || retries[0].deliveryID != plan.deliveryID {
+		t.Fatalf("unavailable receiver replay=%#v, want exact delivery %q", retries, plan.deliveryID)
+	}
+	plan = retries[0]
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := deliverDelegatePacket(plan, receiver); err != nil {
+			t.Fatalf("receiver retry %d: %v", attempt, err)
+		}
+	}
+	id := delegateAttentionID(plan.deliveryID)
+	assertNotificationPending(t, receiver, []string{id})
+	if c.deliveryPending(plan.delegateID, plan.deliveryID) || notificationCanonicalCount(t, receiver, id) != 1 {
+		t.Fatal("receiver retry lost custody or duplicated the canonical ID")
+	}
+}
+
+func delegateControllerRootReceiverForTest(t *testing.T, c *delegateTreeController) *Session {
+	t.Helper()
+	writer, err := transcript.NewWriter(transcriptPath(c.stateDir, c.rootSessionID), transcript.Header{SessionID: c.rootSessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	receiver := &Session{id: c.rootSessionID, stateDir: c.stateDir, delegateController: c}
+	receiver.attachTranscript(writer)
+	c.rootRuntime = receiver
+	return receiver
 }
 
 func TestDelegateControllerInputPersistFinishAppendFailureDoesNotClaimWaiter(t *testing.T) {
@@ -719,7 +778,21 @@ func TestDelegateControllerRuntimeAttachmentIsOneToOne(t *testing.T) {
 func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
-	started, runtime := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Finalization release may immediately dispatch a wake. Publish no runtime
+	// until its immutable identity, controller and empty transcript are ready.
+	runtime := &Session{}
+	attachDelegateAttentionTranscriptForTest(t, c, runtime, "dlg_target", "")
+	if err := c.AttachRuntime(started.lease, runtime); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
 		t.Fatalf("AdmitStartInput: %v", err)
 	}
@@ -734,7 +807,7 @@ func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t
 	if _, err := c.ReserveAttention(runtime, ""); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("ReserveAttention empty ID error = %v, want busy", err)
 	}
-	reservation, err := c.ReserveAttention(runtime, "attention-1")
+	reservation, err = c.ReserveAttention(runtime, "attention-1")
 	if err != nil {
 		t.Fatalf("ReserveAttention exact runtime: %v", err)
 	}
@@ -794,16 +867,20 @@ func TestDelegateControllerAttentionCommitBindsSelectedPendingTranscriptEntry(t 
 	}
 	fold, err := readDelegateAttentionFold(transcriptPath, sessionID)
 	if err != nil {
-		t.Fatalf("read consumed attention: %v", err)
+		t.Fatalf("read selected pending attention: %v", err)
 	}
-	if fold.resolutions[attentionID] != delegateAttentionConsumed || fold.resumeGenerations[attentionID] != 1 {
-		t.Fatalf("consumed marker = %q generation %d, want exact selected ID/generation 1", fold.resolutions[attentionID], fold.resumeGenerations[attentionID])
+	if got := fold.pendingIDs(); !reflect.DeepEqual(got, []string{attentionID}) || len(fold.resolutions) != 0 || len(fold.observed) != 0 {
+		t.Fatalf("failed start invented observation: pending=%v resolutions=%v observed=%v", got, fold.resolutions, fold.observed)
+	}
+	selectedID, generation, err := c.attentionReservationIdentity(reservation, runtime)
+	if err != nil || selectedID != attentionID || generation != 1 {
+		t.Fatalf("retained reservation = %s/%d err=%v, want selected ID/generation 1", selectedID, generation, err)
 	}
 	if got := readDelegateControllerFile(t, storePath); !bytes.Equal(got, beforeJournal) {
-		t.Fatal("failed post-consumption append changed delegate journal")
+		t.Fatal("failed generation append changed delegate journal")
 	}
 	if aggregate := c.durable["dlg_target"]; aggregate.Generation != 0 || !aggregate.NeedsAttention || aggregate.CurrentRunOpen {
-		t.Fatalf("failed post-consumption append published aggregate: %#v", aggregate)
+		t.Fatalf("failed generation append published aggregate: %#v", aggregate)
 	}
 	if len(c.reservations) != 1 || len(attentionWakeIDsOf(c, "dlg_target")) != 1 || c.live["dlg_target"].binding != nil {
 		t.Fatalf("failed acceptance did not retain narrow retry state: reservations=%#v unresolved=%#v live=%#v", c.reservations, attentionWakeIDsOf(c, "dlg_target"), c.live["dlg_target"])
@@ -834,9 +911,10 @@ func TestDelegateControllerAttentionCommitBindsSelectedPendingTranscriptEntry(t 
 			resolutionCount++
 		}
 	}
-	if resolutionCount != 1 {
-		t.Fatalf("attention retry appended %d exact resolution markers, want 1", resolutionCount)
+	if resolutionCount != 0 {
+		t.Fatalf("launch retry appended %d observation markers, want 0", resolutionCount)
 	}
+	assertNotificationPending(t, runtime, []string{attentionID})
 }
 
 func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) {

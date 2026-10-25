@@ -458,6 +458,14 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		}
 		return sub.sess.releaseNotificationAdmission()
 	}
+	// Restore can replay a committed receiver's still-unacknowledged source
+	// packet. Its deferred wake must not join the reconstruction it is inside.
+	// The existing owner dispatches again after attachment, or schedules recovery
+	// on failure. This hold is receiver-scoped, not a fence on other receivers.
+	if c.attentionRestoreHeldLocked(id) {
+		c.mu.Unlock()
+		return nil
+	}
 	state := c.attention[id]
 	paused := state != nil && state.parked
 	ready := c.delegateAttentionWakeEligibleLocked(id) && !c.hasColdDeliveryWorkForOwnerLocked(id)

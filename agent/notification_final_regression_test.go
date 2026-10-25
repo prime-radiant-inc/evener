@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,8 +17,140 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
+
+func TestFinalCorrectionNonpersistentAutonomy(t *testing.T) {
+	t.Parallel()
+	for _, hold := range []string{"none", "stop", "question"} {
+		t.Run(hold, func(t *testing.T) {
+			const id = "nonpersistent-autonomy-72"
+			a := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response {
+					if hold == "question" {
+						return toolCallResponse(askUserCall("autonomy-ask-72", askUserArgsValid()))
+					}
+					return finalResponse("initialized-72")
+				},
+				func(req llm.Request) llm.Response {
+					observationRequest(t, req, []string{"autonomy-payload-72"}, nil)
+					return finalResponse("observed-72")
+				},
+			}}
+			s := newSession(t, withoutGitSnapshot(), withAdapter(a))
+			if _, err := s.ProcessInput(context.Background(), "initialize-72", nil); err != nil {
+				t.Fatal(err)
+			}
+			if s.stateDir != "" || s.attachedTranscript() != nil {
+				t.Fatal("autonomy fixture is persistent")
+			}
+			if err := s.enqueueNotification(notification{ID: id, Message: llm.User("autonomy-payload-72")}); err != nil {
+				t.Fatal(err)
+			}
+			if hold == "stop" {
+				if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{ClientMutationID: "autonomy-stop-72"}, func() {}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertNotificationPending(t, s, []string{id})
+			if hold == "none" {
+				if !s.autonomyInFlight() || !s.notificationsRunnable() {
+					t.Fatal("canonical nonpersistent acceptance did not establish autonomy")
+				}
+			} else if s.notificationsRunnable() {
+				t.Fatal("accepted content bypassed an execution hold")
+			}
+			if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			if hold != "none" {
+				if got := len(a.Requests()); got != 1 {
+					t.Fatalf("held provider requests=%d, want 1", got)
+				}
+				assertNotificationPending(t, s, []string{id})
+				if hold == "stop" {
+					if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{ClientMutationID: "autonomy-release-72", Input: []appwire.InputItem{{Type: "text", Text: "release-72"}}}); err != nil {
+						t.Fatal(err)
+					}
+					if _, ran, err := s.ProcessClientMutationStart(context.Background(), nil); err != nil || !ran {
+						t.Fatalf("release execution ran=%t err=%v", ran, err)
+					}
+				} else if _, err := s.ProcessInput(context.Background(), "answer-72", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertNotificationPending(t, s, []string{})
+			if s.autonomyInFlight() || len(a.Requests()) != 2 {
+				t.Fatalf("settled autonomy=%t requests=%d, want false/2", s.autonomyInFlight(), len(a.Requests()))
+			}
+			s.attentionMu.Lock()
+			fold, err := s.delegateAttentionFoldLocked()
+			s.attentionMu.Unlock()
+			if _, observed := fold.observed[id]; err != nil || !observed {
+				t.Fatalf("successful response omitted observation receipt: observed=%t err=%v", observed, err)
+			}
+		})
+	}
+}
+
+func TestFinalCorrectionNonpersistentApprovalCustody(t *testing.T) {
+	t.Parallel()
+	a := &fakeAdapter{name: "openai"}
+	s := escalatableSession(t, withAdapter(a), withoutGitSnapshot())
+	var requests atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+	a.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			requests.Add(1)
+			res, _ := deniedResult("/etc/hosts")
+			s.escalateOnSandboxDenial(ctx, "write_file", res, noRerun(t))
+			return finalResponse("denied-72")
+		},
+		func(req llm.Request) llm.Response {
+			requests.Add(1)
+			observationRequest(t, req, []string{"approval-payload-72"}, nil)
+			return finalResponse("observed-72")
+		},
+	}
+	done := make(chan error, 1)
+	joined := false
+	go func() { _, err := s.ProcessInput(ctx, "approval-72", nil); done <- err }()
+	defer func() {
+		cancel()
+		if !joined {
+			<-done
+		}
+	}()
+	ids := awaitPending(t, s, 1)
+	if s.stateDir != "" || s.attachedTranscript() != nil {
+		t.Fatal("approval fixture is persistent")
+	}
+	if err := s.enqueueNotification(notification{ID: "approval-custody-72", Message: llm.User("approval-payload-72")}); err != nil {
+		t.Fatal(err)
+	}
+	assertNotificationPending(t, s, []string{"approval-custody-72"})
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("approval bypassed running executor, requests=%d", got)
+	}
+	if err := s.ResolveSandboxEscalation(ids[0], false); err != nil {
+		t.Fatal(err)
+	}
+	err := <-done
+	joined = true
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.hasPendingNotifications() {
+		if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertNotificationPending(t, s, []string{})
+	if got := len(a.Requests()); got != 2 {
+		t.Fatalf("approval release requests=%d, want 2", got)
+	}
+}
 
 func TestFinalCorrectionSelfWatchWait(t *testing.T) {
 	for _, mode := range []struct{ child, persistent bool }{{false, false}, {false, true}, {true, true}} {
