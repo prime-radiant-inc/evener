@@ -412,7 +412,7 @@ func TestRawArgs_Stream_FallbackOnBadFragment(t *testing.T) {
 func TestRawArgs_NonStream_MultipleToolCallsPreserveIndex(t *testing.T) {
 	first := `{ "first" : "` + "\xff" + `" }`
 	second := `{ "second" : "` + "\xfe" + `" }`
-	body := []byte(`{"id":"chatcmpl-1","model":"m-wire","choices":[{"index":0,"message":{"role":"assistant","content":"hello","tool_calls":[` +
+	body := []byte(`{"id":"chatcmpl-1","model":"m-wire","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[` +
 		`{"id":"call_1","type":"function","function":{"name":"first","arguments":` + string(jsonStringToken(first)) + `}},` +
 		`{"id":"call_2","type":"function","function":{"name":"second","arguments":` + string(jsonStringToken(second)) + `}}` +
 		`]},"finish_reason":"tool_calls"}]}`)
@@ -514,7 +514,7 @@ func TestRawArgs_RecordedJSON_DecodesBodyOnce(t *testing.T) {
 	first := `{ "first" : "` + "\xff" + `" }`
 	second := `{ "second" : "` + "\xfe" + `" }`
 	third := `{ "third" : "` + "\xfd" + `" }`
-	body := []byte(`{"id":"chatcmpl-1","model":"m-wire","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[` +
+	body := []byte(`{"id":"chatcmpl-1","model":"m-wire","choices":[{"index":0,"message":{"role":"assistant","content":"hello","tool_calls":[` +
 		`{"id":"call_1","type":"function","function":{"name":"first","arguments":` + string(jsonStringToken(first)) + `}},` +
 		`{"id":"call_2","type":"function","function":{"name":"second","arguments":` + string(jsonStringToken(second)) + `}},` +
 		`{"id":"call_3","type":"function","function":{"name":"third","arguments":` + string(jsonStringToken(third)) + `}}` +
