@@ -62,7 +62,7 @@ func TestIncompatibleDeployRequiresRealEndpointEvidence(t *testing.T) {
 			testDeployRecorder(t, m)
 			testRestartRecorder(t, m)
 			if mode == "ordinary-deploy" {
-				_, err := m.deploySelected(t.Context(), host, Preflight{OS: "linux"})
+				_, err := m.deploySelectedWithAuthority(t.Context(), host, Preflight{OS: "linux"}, false)
 				if !errors.Is(err, ErrEndpointMigration) || !isTerminal(err) || reads != 0 || writes != 0 || lifecycle != 0 {
 					t.Fatalf("ordinary deploy: err=%v reads=%d writes=%d lifecycle=%d", err, reads, writes, lifecycle)
 				}
