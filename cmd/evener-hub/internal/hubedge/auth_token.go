@@ -87,7 +87,7 @@ func loadOrCreateAuthToken(hubStateRoot string, random io.Reader) (string, error
 	if strings.TrimSpace(hubStateRoot) == "" {
 		return "", errors.New("hub state root not configured")
 	}
-	if err := os.MkdirAll(hubStateRoot, 0o700); err != nil {
+	if err := fsatomic.MkdirAll(hubStateRoot, 0o700); err != nil {
 		return "", fmt.Errorf("auth token: mkdir %s: %w", hubStateRoot, err)
 	}
 	path := filepath.Join(hubStateRoot, TokenFileName)

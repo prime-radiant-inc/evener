@@ -45,7 +45,7 @@ func saveQueues(stateDir, id string, steering []steeringMessage, input []queuedI
 	}
 	path := queuesFilePath(stateDir, id)
 	if len(steering) == 0 && len(input) == 0 {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		if err := fsatomic.Remove(path); err != nil {
 			return fmt.Errorf("remove empty queue snapshot: %w", err)
 		}
 		return nil

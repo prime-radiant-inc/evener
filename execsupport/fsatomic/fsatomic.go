@@ -65,12 +65,14 @@ func Write(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-// MkdirAll creates dir and any missing ancestors like os.MkdirAll, then syncs
-// the parent of every directory it created so the new directory entries are
-// durable. Write syncs only the directory that holds the file, so a caller
-// whose first save also creates the directory runs this before Write.
+// MkdirAll creates dir and any missing ancestors like os.MkdirAll, but one
+// component at a time, syncing each new directory's parent before creating the
+// next, so the new directory entries are durable and a failure part-way leaves
+// only ancestors that are already synced. Write syncs only the directory that
+// holds the file, so a caller whose first save also creates the directory runs
+// this before Write.
 func MkdirAll(dir string, perm os.FileMode) error {
-	var created []string
+	var missing []string // innermost first
 	for p := dir; ; p = filepath.Dir(p) {
 		_, err := os.Stat(p)
 		if err == nil {
@@ -79,24 +81,35 @@ func MkdirAll(dir string, perm os.FileMode) error {
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		created = append(created, p)
+		missing = append(missing, p)
 		if filepath.Dir(p) == p {
 			break
 		}
 	}
-	if err := os.MkdirAll(dir, perm); err != nil {
-		return err
-	}
-	for _, p := range created {
-		if err := syncDir(filepath.Dir(p)); err != nil {
-			// Take the new directories back out, innermost first, so a retry
-			// creates and syncs them again instead of finding them and
-			// skipping the sync.
-			for _, q := range created {
-				_ = os.Remove(q)
-			}
+	for i := len(missing) - 1; i >= 0; i-- {
+		p := missing[i]
+		if err := os.Mkdir(p, perm); err != nil && !errors.Is(err, os.ErrExist) {
 			return err
 		}
+		if err := syncDir(filepath.Dir(p)); err != nil {
+			// Take the new directory back out so a retry creates and syncs it
+			// again instead of finding it and skipping the sync.
+			_ = os.Remove(p)
+			return err
+		}
+	}
+	return nil
+}
+
+// Remove deletes the file at path and syncs its directory so the deletion is
+// durable. A file that is already gone is not an error, but its directory is
+// still synced: the earlier attempt may have removed it and failed to sync.
+func Remove(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", path, err)
+	}
+	if err := syncDir(filepath.Dir(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	return nil
 }

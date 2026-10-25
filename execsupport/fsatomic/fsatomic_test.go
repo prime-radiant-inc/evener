@@ -177,3 +177,52 @@ func TestMkdirAllRetryAfterFailedParentSyncSyncsAgain(t *testing.T) {
 		t.Fatalf("retry: %v", err)
 	}
 }
+
+func TestRemoveDeletesFileAndToleratesMissingOnes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsatomic.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("file still present: %v", err)
+	}
+	if err := fsatomic.Remove(path); err != nil {
+		t.Fatalf("removing a missing file: %v", err)
+	}
+	if err := fsatomic.Remove(filepath.Join(dir, "missing-dir", "state.json")); err != nil {
+		t.Fatalf("removing under a missing directory: %v", err)
+	}
+}
+
+// The deletion is only durable once the directory entry is synced, so a failed
+// directory sync is reported even though the file is already gone.
+func TestRemoveReportsFailedDirectorySync(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens any directory")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o700) }()
+	if err := fsatomic.Remove(path); err == nil {
+		t.Fatal("expected the unreadable directory to fail its sync")
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("file still present: %v", err)
+	}
+	if err := fsatomic.Remove(path); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+}
