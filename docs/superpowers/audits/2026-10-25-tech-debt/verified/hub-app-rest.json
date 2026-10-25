@@ -1,0 +1,326 @@
+[
+ {
+  "id": "hub-app-rest-1",
+  "title": "Mutation-id correlation layer; ErrorData/map dual-shape decode copied 7 times",
+  "category": "duplication",
+  "original_severity": "high",
+  "locations": [
+   "cmd/evener-hub/app_rpc.go:487-917",
+   "cmd/evener-hub/app_restart_required.go:295-333",
+   "cmd/evener-hub/web_api.go:60-100",
+   "cmd/evener-hub/app_retirement_resume.go:22-38",
+   "cmd/evener-hub/internal/appsource/source.go:612"
+  ],
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Verified: the typed-vs-map switch exists at app_rpc.go:677 and 903 (stamp), app_restart_required.go:301 (read) and 318 (stamp three fields), web_api.go:62 and 82 (read), appsource/source.go:612 (read), plus the re-marshal variant at app_retirement_resume.go:22 and clientMutationIDFromData. 8 'clientMutationId is required' checks confirmed (app_rpc.go:1664..1934). app_rpc.go has 102 commits / 29 'fix' since Sep 1. Overstated: it is ~430 lines (487-917), and the sites are two operations (read a field, stamp fields), not 7 identical copies; the stamp variants stamp different field sets, and the policy prose is mostly legitimate rules. Drift risk is real but modest, so high is too strong.",
+  "revised_fix_plan": "Add appwire helpers: ErrorDataOf(WireError) (typed/map/embedded) for the read sites and a WithErrorData(wire, func(*ErrorData) / map setter) for the stamp sites; migrate the 7 sites. Add a requireClientMutationID helper for the 8 checks. Do NOT bother moving the 14 correlation functions into a new file unless a PR touches them anyway. Table test over typed/map/embedded shapes first."
+ },
+ {
+  "id": "hub-app-rest-2",
+  "title": "newHubRelayFunctions 1,829-line closure bag with test-only members and observation globals",
+  "category": "complexity",
+  "original_severity": "high",
+  "locations": [
+   "cmd/evener-hub/app_relay.go:471-2299",
+   "cmd/evener-hub/app_relay.go:357-378",
+   "cmd/evener-hub/app_rpc.go:1191"
+  ],
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "Verified: newHubRelayFunctions spans app_relay.go:471-2299 (1,828 lines) with relayMu/relayedThreads/pendingRelays/canonicalRelays/relayGenerations declared at 491-495 and ~29 closures; startRelayOnce is at 1629. relayCommandCount/relayPublished (app_relay.go:365-366, 2268-2286) have no non-test reference (24 test refs). Six observe* globals at 369-378 are referenced 79 times in tests. 22 commits / 10 fixes since Sep 1. Note cfg.RelayHooks is a separate production-config hook set that should stay or be folded deliberately."
+ },
+ {
+  "id": "hub-app-rest-3",
+  "title": "registerThreadHandlers repeats one handler skeleton and re-implements resume-retry for turn/start",
+  "category": "duplication",
+  "original_severity": "medium",
+  "locations": [
+   "cmd/evener-hub/app_rpc.go:1304-1986",
+   "cmd/evener-hub/app_rpc.go:1660-1775",
+   "cmd/evener-hub/app_session_resume.go:83"
+  ],
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Skeleton repetition confirmed (8 id checks, same withDeletionTargetOwnership + adoptCallerMutationResult shape). But turn/start is NOT a duplicate of withSessionResume: its first attempt resolves the source inside the retried closure and resumes even when resolution failed (app_rpc.go:1763-1770), it has a distinct resumeAfterConfirmedRetirement branch (1773-1790) and a different initial-failure filter. Folding it into withSessionResume, or 'deleting the quirk', changes behavior on the hottest path.",
+  "revised_fix_plan": "Add requireClientMutationID plus a small helper owning the trailing adoptCallerMutationResult for the 7 non-start mutation handlers. For turn/start, only share the retry tail (retryAfterResume correlation) with withSessionResume after hub-app-rest-5 removes the dead firstAttemptPreDispatch branch; keep the resolve-failure-resumes and retiring-daemon paths as they are. Behavior-pinning table test for missing id -> InvalidParams across the 8 handlers (assert code, not copy)."
+ },
+ {
+  "id": "hub-app-rest-4",
+  "title": "Five hand-copied resume-once-then-retry wrappers and pass-through predicates",
+  "category": "duplication",
+  "original_severity": "medium",
+  "locations": [
+   "cmd/evener-hub/app_compact.go:11-60",
+   "cmd/evener-hub/app_model.go:11-39",
+   "cmd/evener-hub/app_vision_model.go:11-39",
+   "cmd/evener-hub/app_session_resume.go:303-359",
+   "cmd/evener-hub/app_rpc.go:334"
+  ],
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: compactThreadWithResume/setThreadModelWithResume/setThreadVisionModelWithResume have identical bodies (diff of model vs vision-model differs only in the action string); the *Once functions are the same skeleton. relayWithResume (app_session_resume.go:341) with clientMutationID \"\" is behaviorally equivalent (withSessionResume uses withSessionActionOwnership when id is empty, adoptCallerMutationID is a no-op on empty id, resumeErr returned raw). setGoalWithResume (298) and clearThreadWithResume (app_compact.go:62) spell relayWithResume's body. shouldResumeAfterTurnStartError has one caller (app_rpc.go:1771), shouldResumeAfterSessionUnavailable one (app_session_resume.go:119) both pure pass-throughs to isSessionUnavailableError. hostQualifiedImageRoute (app_rpc.go:334) is a one-line pass-through. compactThreadOnce is only otherwise referenced by cov_rpc_threads_helpers_fuzz_test.go:197-202."
+ },
+ {
+  "id": "hub-app-rest-5",
+  "title": "preDispatchRefusalError not-accepted branch documented as unreachable forward-compatibility",
+  "category": "dead-code",
+  "original_severity": "medium",
+  "locations": [
+   "cmd/evener-hub/app_session_resume.go:12-81",
+   "cmd/evener-hub/app_session_resume.go:152-176",
+   "cmd/evener-hub/app_session_resume.go:309",
+   "cmd/evener-hub/app_compact.go:69",
+   "cmd/evener-hub/app_rpc.go:1857"
+  ],
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: the doc (app_session_resume.go:30-41) and 109-113/166-170 say the branch is 'not a production outcome'. Independently confirmed: sourceForThread (app_sources.go:16-40) can return only a registry-unavailable plain error, an InvalidParams parse error, or 'source not found', never a session-unavailable WireError, so withSessionResume's retry is never reached with firstAttemptPreDispatch true. Wrap sites: app_compact.go:68, app_session_resume.go:309 and 351, app_rpc.go:1862. The parity test at app_rpc_parity_test.go:658 reaches the branch only with a synthetic firstErr. Removing it deletes a stated invariant, so Jesse must approve."
+ },
+ {
+  "id": "hub-app-rest-6",
+  "title": "Dead and no-op production code: delegate reconcile chain, test-only helpers, resumeRequired flag",
+  "category": "dead-code",
+  "original_severity": "medium",
+  "locations": [
+   "cmd/evener-hub/app_threadread.go:1635-1710",
+   "cmd/evener-hub/app_threadread.go:73",
+   "cmd/evener-hub/app_threadread.go:181",
+   "cmd/evener-hub/app_threadread.go:1528",
+   "cmd/evener-hub/app_threadread.go:778-796",
+   "cmd/evener-hub/app_force_stop.go:746",
+   "cmd/evener-hub/app_navigation.go:51"
+  ],
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified by repo-wide git grep: reconcileDelegateThreadItem body is '_ = rec; return item' (app_threadread.go:1676-1679); reconcileDelegateThreadItems, delegateJobIDFromRaw, isTerminalHistoricalJobStatus, reconcileDelegateThreadItemForTest have no non-test callers. pastThreadForRead, pastThreadReadResponse (a pass-through to pastThreadItemReadResponse), decodeTranscriptTurn, forceStopOwnershipUnchanged (wrapper over forceStopRereadEntry with nil), navigationReadKey (wrapper over ...WithFields nil) are definition-only in production. The resumeRequiredActiveFlag comment itself says nothing emits it. Caveat: ActiveFlags is a wire field (appwire/types.go:1051) that another daemon version could emit, so plumbing removal is a protocol decision; treat as a separate PR needing Jesse.",
+  "revised_fix_plan": "Delete the delegate-reconcile chain and its tests (app_threadread_gaps_test.go, app_threadread_test.go:512-746, cov_threadread_images_fuzz_test.go:140-152). Inline or delete the other test-only wrappers, pointing tests at the real entry points. Delete resumeRequiredActiveFlag and its slices.Contains clause. Leave ActiveFlags plumbing alone unless Jesse agrees to a wire change."
+ },
+ {
+  "id": "hub-app-rest-7",
+  "title": "Test-only wrappers and constructors live in production files",
+  "category": "slop",
+  "original_severity": "low",
+  "locations": [
+   "cmd/evener-hub/app_auth.go:1390",
+   "cmd/evener-hub/app_auth.go:1476",
+   "cmd/evener-hub/app_auth.go:1620",
+   "cmd/evener-hub/app_auth.go:1707",
+   "cmd/evener-hub/app_auth.go:134",
+   "cmd/evener-hub/app_rpc.go:1000-1006",
+   "cmd/evener-hub/app_plugins.go:45",
+   "cmd/evener-hub/app_daemons.go:60"
+  ],
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: verifyEndpointFingerprint, verifyFlowEndpoint, instanceStatus, newHubAuthController, newHubPluginsController, newHubAppServer, newHubAppServerWithNavigation, setRetireOwnershipCapability have only comment or test references (test counts 5/9/7/8/17/136/19/6, larger than reported). Correction: openAIInstanceStatusByName IS used in production (app_auth.go:515,582,1203 as a method value for statusAfterWrite) and exists to adapt the variadic openAIInstanceStatus signature; the real smell is the variadic 'resolved ...registry.Resolved'."
+ },
+ {
+  "id": "hub-app-rest-8",
+  "title": "~25 package-level mutable function variables exist only for tests",
+  "category": "architecture",
+  "original_severity": "medium",
+  "locations": [
+   "cmd/evener-hub/app_rpc.go:192-204",
+   "cmd/evener-hub/app_auth.go:102",
+   "cmd/evener-hub/app_auth.go:590",
+   "cmd/evener-hub/app_plugins.go:191",
+   "cmd/evener-hub/app_models.go:19",
+   "cmd/evener-hub/app_sources.go:183",
+   "cmd/evener-hub/app_threadread_repair.go:49",
+   "cmd/evener-hub/app_restart.go:44",
+   "cmd/evener-hub/app_update.go:27-54",
+   "cmd/evener-hub/app_relay.go:369-378"
+  ],
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: authLoginComplete/authDevicePoll/launchTrustRepo (app_rpc.go:195-203) are wrappers that only call a method; the only non-production writers are app_rpc_auth_origin_test.go:141-144 and cov_exact_app_rpc_fuzz_test.go:414-462 (stubbing, which asserts mocked behavior). A grep of app_*.go found 26 function-valued package vars. The 'inject the real boundary for the rest' half is vague and large; limit scope.",
+  "revised_fix_plan": "Do only the three wrapper vars now: call the methods directly and rewrite the two test sites to drive the real controllers with a scripted HTTP boundary. Convert the other seams case by case when a PR already touches them; do not run a repo-wide injection campaign."
+ },
+ {
+  "id": "hub-app-rest-9",
+  "title": "Endpoint-fingerprint guard ~900 lines with near-identical verifiers and fail-closed default",
+  "category": "complexity",
+  "original_severity": "high",
+  "locations": [
+   "cmd/evener-hub/app_instances.go:336-780",
+   "cmd/evener-hub/app_instances_key_unix.go",
+   "cmd/evener-hub/app_instances_key_windows.go",
+   "cmd/evener-hub/app_auth.go:1240-1530",
+   "cmd/evener-hub/app_auth.go:402",
+   "cmd/evener-hub/app_auth.go:1092",
+   "cmd/evener-hub/app_credentials.go:145-170",
+   "cmd/evener-hub/internal/hubcore/registry.go:425-465"
+  ],
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Verified: verifyEndpointFingerprintWithKey (app_auth.go:1404), verifyFlowEndpointWithKey (1486) and verifyConfigRevision share the empty-assertion / empty-current / mismatch shape; LoginStart (app_auth.go:402-405) and DeviceStart (1092-1095) carry the identical start-time guard; platform key files total 245 lines (31+94+120). resolveEndpointFingerprintKey has 22 non-test and 45 total references (not 19). Corrections: docs/product/subsystems.md S15 already states a guarantee ('an endpoint change refuses the pending completion', the in-flight probe fence), so 'docs/product has no entry' is wrong for flows; only the key-file mechanism and fail-closed-on-unkeyable behavior are undocumented. Churn is low (one endpoint-related commit since Sep 1), so severity high is not supported. Phase 2 (replace mechanism) touches a credential-safety boundary and must be Jesse's call.",
+  "revised_fix_plan": "Phase 1 only: one endpointGuard.Check(asserted, current, keyErr, messages) shared by the three verifiers, hoist the duplicated start-time check into one helper, drop the unkeyed wrappers that only tests call (hub-app-rest-7). Phase 2: ask Jesse whether the HMAC key-file mechanism and its fail-closed refusal on unkeyable state match the recovery-over-lockdown stance; document the decision in S15 before any removal."
+ },
+ {
+  "id": "hub-app-rest-10",
+  "title": "Four 'load or create 0600 secret' implementations",
+  "category": "duplication",
+  "original_severity": "medium",
+  "locations": [
+   "cmd/evener-hub/app_instances.go:557-778",
+   "llm/continuation_secret.go:104-182",
+   "cmd/evener-hub/internal/hubedge/auth_token.go:80-112",
+   "agent/internal/installid/installation_id.go:29-43"
+  ],
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Four load-or-create-under-state-dir functions exist, but they implement different policies: the hub key rotates a wrong-mode/foreign-owner/empty file under a cross-process lock (app_instances.go:611-778); llm/continuation_secret.go:readContinuationSecret FAILS on a non-0600 mode (opposite policy); hubedge writes a trimmed base64 token via temp+rename with no mode check; installid is an afero-based installation id with its own advisory lock, not a secret. A common helper needs a policy option for exactly the behavior that differs, and the -300 LOC estimate is optimistic. Consolidating would also change which failure each caller surfaces.",
+  "revised_fix_plan": "Skip the four-way consolidation. If anything, share only the publish primitive (O_EXCL temp 0600 + fsync + link/rename) between the hub key and hubedge, leaving each caller's validation policy in place. Revisit only if a fifth copy appears."
+ },
+ {
+  "id": "hub-app-rest-11",
+  "title": "Handlers registered twice; registration split across two homes",
+  "category": "inconsistency",
+  "original_severity": "medium",
+  "locations": [
+   "cmd/evener-hub/app_rpc.go:1224",
+   "cmd/evener-hub/app_rpc.go:1226",
+   "cmd/evener-hub/web.go:250-252",
+   "cmd/evener-hub/app_archive.go:16",
+   "cmd/evener-hub/app_session_delete.go:15",
+   "cmd/evener-hub/app_project_delete.go:1-10",
+   "cmd/evener-hub/internal/appserver/router.go:29"
+  ],
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: router.go:29-31 is a silent overwrite. registerArchiveHandler is called at app_rpc.go:1224 and web.go:250; registerSessionDeleteHandler(server, nil) at app_rpc.go:1226 installs the Unavailable placeholder that web.go:252 overwrites. register{Auth,Instance,Launch,Plugin}Handlers sit in app_rpc.go (1989, 2100, 2200, 2233) while most others live in their own files. Risks to check before the duplicate-panic: the first archive registration receives the constructor-local cfg, the second web.cfg (verify they are the same value), and tests that build servers through newHubAppServer then register again would panic."
+ },
+ {
+  "id": "hub-app-rest-12",
+  "title": "Instance mutations repeat a lock preamble; edit and Remove are monoliths",
+  "category": "complexity",
+  "original_severity": "medium",
+  "locations": [
+   "cmd/evener-hub/app_instances.go:951-1089",
+   "cmd/evener-hub/app_instances.go:1097-1436",
+   "cmd/evener-hub/app_instances.go:1808-2199",
+   "cmd/evener-hub/app_instances.go:2619",
+   "cmd/evener-hub/app_instances.go:2680"
+  ],
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: create (951), edit (1097-1431, 335 lines), Remove (1808-2199, 391 lines), SetModelDisabled (2619) and SetDefault (2680) all start refuseWhenBroken -> requireAuth -> name trim -> lockForWrite -> defer captureApplied -> credMu.Lock. Detail correction: the fingerprint-key resolve-before-locks step appears only in create/edit/Remove, not in SetModelDisabled/SetDefault, so a single mutate() must keep that optional. Lock order key-resolve, c.mu, credMu must be preserved."
+ },
+ {
+  "id": "hub-app-rest-13",
+  "title": "Giant lifecycle functions with repeated alias-group fencing",
+  "category": "complexity",
+  "original_severity": "medium",
+  "locations": [
+   "cmd/evener-hub/app_force_stop.go:53-455",
+   "cmd/evener-hub/app_force_stop.go:544-742",
+   "cmd/evener-hub/app_threadlifecycle.go:1076-1300",
+   "cmd/evener-hub/app_threadlifecycle.go:634-806",
+   "cmd/evener-hub/app_threadlist.go:76-237",
+   "cmd/evener-hub/app_retirement_resume.go:129-283",
+   "cmd/evener-hub/app_daemons.go:282-370"
+  ],
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Sizes confirmed: forceStopThread is app_force_stop.go:53-450 (398 lines), hubThreadFork 1076-1304 (229). Refuted part: the 'validate every alias deletion fence then take reservations' pattern is not four copies of one thing. The fence check is already one shared helper (deletionFenceErrorForGroup, used at app_force_stop.go:120,258,374,571,598,673, app_daemons.go:344, app_retirement_resume.go:217, app_threadlifecycle.go:552,659); only force-stop takes tryLockForceStopReservations; fork uses sorted lockDeletionTarget and deletionFenceErrorNaming; retire/resume do not reserve. A lockAliasGroup helper would unify things that deliberately differ in ordering.",
+  "revised_fix_plan": "Split forceStopThread (and, separately, hubThreadFork) into named phase functions guarded by the existing force-stop and fork tests. Drop the lockAliasGroup extraction."
+ },
+ {
+  "id": "hub-app-rest-14",
+  "title": "Fork capability fences defined twice with a manual parity contract",
+  "category": "duplication",
+  "original_severity": "medium",
+  "locations": [
+   "cmd/evener-hub/app_threadread.go:754-1025",
+   "cmd/evener-hub/app_threadlifecycle.go:1076-1630"
+  ],
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Parity comments confirmed (app_threadread.go:755 and :801 'a fence added here is owed there too'). But the two sides already share the core predicates (hubForkLiveDelegateFenced, hubForkIdentityFenced, hubForkRecoveryFenced are used by both capability and RPC; the comments say so). What remains duplicated is which predicates are called per identity. The RPC also does lock-time epoch sampling, ownership recheck and deletion-before-recovery ordering (app_threadlifecycle.go:1100-1215) that a lock-free capability projection cannot reuse, so a single forkAdmission returning a refusal is not a drop-in and -150 LOC is unrealistic.",
+  "revised_fix_plan": "Add only a parity table test: for each fence input (live delegate, recovery flag, roster recovery, resolved-session fence, deletion fence), assert the capability projection is false exactly when the RPC refuses. No new abstraction."
+ },
+ {
+  "id": "hub-app-rest-15",
+  "title": "39 cov_*_fuzz_test.go files are coverage padding",
+  "category": "test-debt",
+  "original_severity": "medium",
+  "locations": [
+   "cmd/evener-hub/cov_exact_app_rpc_fuzz_test.go",
+   "cmd/evener-hub/cov_auth_instances_fuzz_test.go:20-60",
+   "cmd/evener-hub/cov_threadread_images_fuzz_test.go:120-150"
+  ],
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: 39 files, 5,928 lines (report said 6,031), 790 discarded-result statements (report 760), 45 f.Fuzz targets; many take 'func(t *testing.T, _ byte)'; cov_threadread_images_fuzz_test.go:140-152 calls the dead delegate-reconcile chain; cov_auth_instances_fuzz_test.go:45 uses 'panic-net'. Some files do contain assertions (239 t.Fatal/t.Error lines). docs/developing-evener/coverage.md:31-48 already states these count as EXECUTED, not TESTED, and feed make coverage-floor (non-CI, floors in scripts/coverage/coverage-floors.txt).",
+  "revised_fix_plan": "Per file: move real assertions into the matching app_*_test.go, delete the discarded-result blocks, then re-bless the cmd/evener-hub floor (BLESS=1 make coverage-floor, run on CI/Jesse's decision) and update coverage.md. Needs Jesse's agreement that the floor may drop."
+ },
+ {
+  "id": "hub-app-rest-16",
+  "title": "Pointer-clone helpers copied across the repo",
+  "category": "duplication",
+  "original_severity": "low",
+  "locations": [
+   "cmd/evener-hub/app_threadread.go:1309",
+   "cmd/evener-hub/app_threadread.go:1317",
+   "server/appwire_runtime.go:2858",
+   "cmd/evener/serve.go:2347",
+   "agent/status.go:569",
+   "agent/jobs_activity.go:1293",
+   "internal/appprojector/appwire_projection.go:573"
+  ],
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: identical 6-line clones at the cited locations (11 functions across 6 places). Correction: appwire/clone.go:125 already defines an unexported generic clonePointer[T any], and agent/internal/jobstore/event_clone.go:32 has another generic clonePtr; agent/status.go and agent/jobs_activity.go already import appwire, so layering is fine.",
+  "revised_fix_plan": "Export the existing generic as appwire.ClonePointer and replace the cloneXxx copies; also point jobstore at it if its module allows."
+ },
+ {
+  "id": "hub-app-rest-17",
+  "title": "Narrating comments citing issues/specs/kata ids; orphaned doc comments",
+  "category": "doc-drift",
+  "original_severity": "low",
+  "locations": [
+   "cmd/evener-hub/app_relay.go:292-297",
+   "cmd/evener-hub/app_archive.go:208-218",
+   "cmd/evener-hub/app_update.go:536-540",
+   "cmd/evener-hub/app_rpc.go:164",
+   "cmd/evener-hub/app_rpc.go:1270",
+   "cmd/evener-hub/app_threadread.go:1527"
+  ],
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Counts reproduced exactly: 24,595 lines, 6,687 comment lines, 46 comments citing #NNNN, 11 citing kata ids. Orphans confirmed: stampResyncTarget's doc (app_relay.go:266-270) sits above relayGaveUpNotice's own doc at 271; validateDecisionSource's prose (app_archive.go:219-227) sits above errUnknownDecisionSource; app_update.go:535-546 doc for the one-line scheduleHubRestartAfterResponse describes behavior owned by scheduleRestartAfterResponse. Line numbers in the report are slightly off."
+ },
+ {
+  "id": "hub-app-rest-18",
+  "title": "Self-update/restart spread over three files with globals and a label string as behavior switch",
+  "category": "architecture",
+  "original_severity": "low",
+  "locations": [
+   "cmd/evener-hub/app_update.go:27-612",
+   "cmd/evener-hub/app_restart.go:20-266",
+   "cmd/evener-hub/app_upgrade.go:11-52"
+  ],
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Confirmed: scheduleRestartAfterResponse(..., label string, useInstallLock bool) branches on label == \"restart\" at app_update.go:577; both callers (app_restart.go:51, app_update.go:543) pass literals; hubUpgrade (app_upgrade.go:28) and hubUpdateApply (app_update.go:310) build the same selfupdate.Options literal. The proposed selfUpdater struct in an internal package is a rewrite with no demonstrated bug and conflicts with YAGNI.",
+  "revised_fix_plan": "Replace the label-as-switch with an explicit parameter (bool or small enum, label kept for logs only) and extract one installOptions(channel) helper. Nothing more."
+ },
+ {
+  "id": "hub-app-rest-19",
+  "title": "Small repeated tails: plugin mutate-then-list, navigation decision refresh, model normalization",
+  "category": "duplication",
+  "original_severity": "low",
+  "locations": [
+   "cmd/evener-hub/app_plugins.go:366-425",
+   "cmd/evener-hub/app_archive.go:127-135",
+   "cmd/evener-hub/app_favorite.go:41-47",
+   "cmd/evener-hub/app_pin_section.go:160-164",
+   "cmd/evener-hub/app_models.go:471-560"
+  ],
+  "verdict": "partial",
+  "severity": "low",
+  "note": "There are 7 plugin methods (CheckUpdates, Install, Upgrade, Remove, Enable, Disable, SetAutoUpgrade) of 6 lines each; a helper saves ~1 line each. Archive/favorite/pin share Refresh + pokeMutationAttention but differ in hint, nil-navigation behavior and error text. sanitizeModelDescriptors and withDisplayNames are not the same loop: withDisplayNames returns nil on empty, fills DisplayName via prettifyModelDisplayName, and enrichModelListResponse relies on that. The -85 LOC estimate is optimistic (likely ~-30).",
+  "revised_fix_plan": "Optional: extract refreshNavigationAfterDecision for the three navigation handlers only. Leave plugin methods and model loops."
+ }
+]

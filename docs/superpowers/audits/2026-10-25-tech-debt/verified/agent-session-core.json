@@ -1,0 +1,164 @@
+{
+ "verdicts": [
+  {
+   "id": "agent-session-core-1",
+   "title": "NewSession and RestoreSessionFromMetaWithConfig are two copies of one constructor",
+   "category": "duplication",
+   "original_severity": "high",
+   "verdict": "confirmed",
+   "severity": "high",
+   "note": "session_init.go: NewSession 298-685 (388 lines), Restore 852-1628 (777). Verified identical delegation-allowance/tree-counter blocks with the same 4-line comment (:375-390 vs :1100-1115), 13 matching jm.* assignments, three closeXOnError flag pairs (485/505/542 vs 1208/1223/1374). The 'drift' (nil then jm.enqueue set at :1231) is deliberate ordering around loadQueues at :1244, so it is a symptom of the shared-step problem rather than a bug. Counts exact."
+  },
+  {
+   "id": "agent-session-core-2",
+   "title": "processInputKindWithProvenance and processOneInput nested flow with repeated session-end bookkeeping",
+   "category": "complexity",
+   "original_severity": "high",
+   "verdict": "confirmed",
+   "severity": "high",
+   "note": "session_lifecycle.go: 1118-1701 (584 lines), 1945-2607 (663), releaseRuntimeOnce 409-769. sessionEndEmitted=false resets at :1173,1413,1579,1587,1665; emit-once EventSessionEnd blocks at :1352, :1687, :1718. strings.Join(outputs) returns at 1248,1453,1506,1518,1538,1699 (5-6). 25-line 'This used to read' comment at 1458-1485 confirmed. 534 commits holds with git log --follow (265 without). Plan is sound if strictly incremental."
+  },
+  {
+   "id": "agent-session-core-3",
+   "title": "Seven client-mutation handlers hand-copy one skeleton, plus five pass-through Accept wrappers",
+   "category": "duplication",
+   "original_severity": "high",
+   "verdict": "confirmed",
+   "severity": "high",
+   "note": "Opened clientMutationQueue (queue.go:112) and clientMutationSteer (:742): identical lease/normalize/ensureStore/newRequest/executeAtomic/fence-reject/json.Marshal/rejected-mapping, replay branch differs (queueResponseFromRecord vs replayClientMutationResult plus wake). 'turn interrupt is pending' at exactly the six cited sites. Five Accept* wrappers (queue.go:566,861,973,1103,1188) are one-line returns; AcceptClientMutationStart is a real implementation, not a wrapper. Production caller is cmd/evener/serve.go:1509-1524. Correction: private handlers have ~54 test call sites, not ~90 (Accept* has ~300). Wake wiring differs per handler (queue wakes on replay, steer wakes after reconcile), so the hook design must keep those."
+  },
+  {
+   "id": "agent-session-core-4",
+   "title": "Three parallel claim-announce-run-give-back drivers for durable input",
+   "category": "duplication",
+   "original_severity": "high",
+   "verdict": "confirmed",
+   "severity": "high",
+   "note": "ProcessClientMutationStart (mutation.go:745-) and ProcessPendingUserInput (queue.go:249-) share the lease-free probe comment, WhileHealthy announce plus give-back, withQueuedClientMutation/contextWithSelectedSkills, ProcessInputKind and transcriptRefusedClaim give-back. Give-back rules legitimately differ (queue path also checks clientMutationUserTranscriptIncorporated; carrier uses releaseSteeringCarrierClaim; start uses returnUnrunStartClaim), and the three wake funcs feed distinct serve-loop channels (serve.go:1344-1352), so 'collapse into claim.giveBack' is plausible but must preserve the incorporated check. High risk; do after finding 3 as stated."
+  },
+  {
+   "id": "agent-session-core-5",
+   "title": "A legacy public Session API with no production callers is kept alive by tests",
+   "category": "dead-code",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Repo-wide grep of non-test Go: no callers of Session.Enqueue, EnqueueWithImages (only Enqueue), SteerFromUser(+WithImages), QueuePreview/IDs/Texts, SteeringQueueSnapshot, WithQueuedInputDrainOnInterrupt, DroppedModelFallbacksFromLastSwitch (defined session.go:1940, tests only), completeClientMutationInterruptedTurn, communicateStructuredResult (session.go:2033), RestoreSessionFromMeta. DrainAsSteer/PromoteQueuedAsSteer/CancelQueued hits in cmd/evener-hub are the appsource interface, a different type. No interface in the repo requires these methods. 5 'legacy_' ids at queue.go:283,493,541,584,623. Test counts: Enqueue 165 (not 155), RestoreSessionFromMeta 182, FollowUp 41. Note DroppedModelFallbacksFromLastSwitch is in session.go not session_queue.go and its doc says a future marker will use it, so confirm with Jesse. QueueDepth is production-used and must stay."
+  },
+  {
+   "id": "agent-session-core-6",
+   "title": "FollowUp is production-dead but wired through the drain ladder and retirement check",
+   "category": "dead-code",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "FollowUp (queue.go:401-416) has no non-test caller; popFollowUp queue.go:1617, runFollowUp rung lifecycle.go:1022/1079, pop at :1496, retirement check session_retirement_admission.go:31 all verified. docs/product has no mention of follow-ups. Needs Jesse's call since it is a public method, but YAGNI supports deletion. Do together with finding 5 since tests need the replacement helper."
+  },
+  {
+   "id": "agent-session-core-7",
+   "title": "releaseRuntimeOnce fuses terminal close and retirement release with 16 policy branches",
+   "category": "complexity",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Function is 409-769 (361 lines) with 16 'if retirement'/'if !retirement' tests and a bare '{' block at :420. Core confirmed. The proposed ordered releaseStep table is new mechanism (against the simplicity-over-mechanism preference) and the finding itself says ordering is the spec.",
+   "revised_fix_plan": "Do the no-op move commit, delete the bare block, then split into two methods (closeTerminal, releaseForRetirement) that call shared helper methods in the same order; skip the generic releaseStep slice unless the split leaves duplicated sequencing. Guard with session_retirement_release_race_test.go and close tests."
+  },
+  {
+   "id": "agent-session-core-8",
+   "title": "Session struct is a 274-field, 22-mutex god object whose lock contract lives in a comment",
+   "category": "architecture",
+   "original_severity": "high",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Verified: struct session.go:109-1125, 22 Mutex/RWMutex fields (exact names match), 8 Once/WaitGroup, ~274 field lines. The 'mu guards' list (session.go:293-312) omits restGeneration/restOwedGeneration/quietRestBeforeInput/endReasonBeforeInput/resumeQuietRest (lines 657-682) and pendingSessionStart*. It also still names Enqueue/DrainAsSteer as external callers (dead per finding 5). Real drag, but no concrete bug evidenced, and the four-sub-struct decomposition (~600 lines moved) is speculative structure; severity high is not supported.",
+   "revised_fix_plan": "First PR: correct the mu-guards comment and lock-order notes (comment-only, small). Then peel only restState (finding 10) because it has its own mutex and a documented lock order; defer the other sub-structs until a concrete change needs them."
+  },
+  {
+   "id": "agent-session-core-9",
+   "title": "Queue state has three representations reconciled by reflect functions",
+   "category": "architecture",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "reflectDurableInputQueue (queue.go:665), reflectDurableClientSteering (:1352), daemonSourcedSteering (session_queue_persist.go:138, excludes SteeringKindHookContext) and queues/<id>.json confirmed. Marked as a decision for Jesse; the '~150 removed' estimate for Option B is unsupported since the mirror is read under s.mu and carries consumed-id events. No code before design discussion and a spec under docs."
+  },
+  {
+   "id": "agent-session-core-10",
+   "title": "Awaiting vs idle resting state is derived in several places with documented drift",
+   "category": "inconsistency",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Verified: settleTerminalState (state.go:634), finishProcessingAtFailureBoundary (:458), finishProcessingAtRestoredFailureBoundary (:472, re-reads the whole transcript under attentionMu), recomputeRestoredState (:657), deriveRestoredState (tools_ask.go), armAwaitingAtSettle (:693); comment at lifecycle.go:1429-1436 records a real live-vs-restore divergence. But restore derives from transcript history (deriveRestoredAskPending walks turns) while live uses counters, so a single pure restingState(facts) over booleans cannot absorb deriveRestoredState; the plan overstates.",
+   "revised_fix_plan": "Write the equivalence property test first (replay a transcript through the live settle path and through restore, compare states); fix any divergence it finds. Only then consider extracting a shared predicate for the final facts-to-state step. Skip the restState struct until finding 8's trimmed plan."
+  },
+  {
+   "id": "agent-session-core-11",
+   "title": "A third of the slice is comments, many narrating history, incident ids or reviewer findings",
+   "category": "slop",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Recount over the 14 non-test files: 6,712 comment lines of 19,396 (34.6%, exact). kata ids 45 (claimed 39), PR/issue/par/WS refs 62, history words 32. Cited examples verified (config.go:340, 1047, init.go:1270-1272, lifecycle ProcessInput doc says 'thin delegate to ProcessInputKind' while calling processInputKindWithProvenance at :1099, queue.go:656 'both UIs'). Fold-in approach is right."
+  },
+  {
+   "id": "agent-session-core-12",
+   "title": "Test seams and testing.Testing() forks live inside production code",
+   "category": "architecture",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Verified: testConfig session_config.go:318-798 with 91 fields, 152 testOnly refs in agent non-test code vs 337 in tests, testSpeedIO session_init.go:63 uses testing.Testing(), sclock nil fallback session.go:2649, SimulateCrashMidExecutionForTest used only by server/transcript_parity_test.go:728, ForceRealIO set by agent tests only. Core right. But the testing.Testing() speed fork is a deliberate suite-speed measure (see test-suite-slowness work); removing it risks slowing CI and needs Jesse's call, and deleting hooks used by 0-1 tests is test-rewrite work, not a cheap audit item.",
+   "revised_fix_plan": "Do the pure move of testConfig to session_testhooks.go, remove SimulateCrashMidExecutionForTest by moving it to a test-support file, and delete hooks with zero users. Leave testing.Testing() alone unless Jesse decides fsync parity matters; keep BenchmarkNewSession as the real-IO check."
+  },
+  {
+   "id": "agent-session-core-13",
+   "title": "SessionConfig, schema.ConfigSnapshot and RestoreSessionConfig are hand-synced copies",
+   "category": "duplication",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Verified: 34 fields in ConfigSnapshot, toSnapshot/configFromSnapshot at session_config.go:1005-1085 (~80 lines), ~25 inline assignments in Restore (init.go:905-975). A converter round-trip test already exists. A reflection-based copier replaces explicit code with a clever one, against 'simplest thing'. Severity low: explicit and compile-checked in the struct-literal direction.",
+   "revised_fix_plan": "Add only a reflection parity test (SessionConfig json-tagged fields equal ConfigSnapshot fields) so a missed field fails CI; keep the explicit converters. Move the restore copy block into a named method as part of finding 1."
+  },
+  {
+   "id": "agent-session-core-14",
+   "title": "consumeModelStream is a 207-line closure state machine; communicate-preview reset implemented three times",
+   "category": "complexity",
+   "original_severity": "low",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "session_stream.go:306-512 (207 lines). Reset emits at stream.go:48 (resetCommunicatePreviews), :325 (recover, iterates communicatePreviewOrder, re-panics) and lifecycle.go:1949 (defer, iterates map, does not delete). The sites differ slightly in what they iterate, so unify carefully."
+  },
+  {
+   "id": "agent-session-core-15",
+   "title": "Small duplicates and pass-through wrappers across the slice",
+   "category": "duplication",
+   "original_severity": "low",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Spot-checked: clientMutationInput forwards to ...WithMentions (queue.go:714); clientMutationQueueIDs vs ...ClientMutationIDs differ only in field read (:1275); emitSteeringCarrierTurnFailure has one caller (lifecycle.go:3141); ExecutionState = \"accepted\" 16 production sites; closingOrClosedLocked 45 sites (claimed 37); 'transcript write failed: %v' 15 sites (claimed 18); 'steering admission failed' 6. abortIfClosing/errIfClosing return context.Canceled and are not interchangeable with isClosingOrClosed, so that cluster is smaller than stated. A grab-bag item; each cluster is trivial.",
+   "revised_fix_plan": "Split into tiny independent PRs: drop the two one-line forwarders, typed constants for execution states, warning helpers. Skip the closing-check consolidation unless a bug appears."
+  },
+  {
+   "id": "agent-session-core-16",
+   "title": "Files are organized by history rather than responsibility",
+   "category": "architecture",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "File sizes verified: lifecycle 3413, init 2672, session.go 2784; SetModel lives in session.go:1647 while session_set_model.go exists; modelFallbackEligible/retryLoopDeclined in session_init.go:1905/1930. Valid navigation cost, but a ~6,000-line move sweeps blame and collides with every in-flight branch and with findings 1, 2, 7 (which rewrite the same functions). Doc links: subsystems.md S09 row links only session.go and session_execution.go, so a docs update is only needed if session.go content moves.",
+   "revised_fix_plan": "Sequence moves after the structural refactors of findings 1, 2 and 7 touch each file, or do the two smallest ones (SetModel into session_set_model.go, close/teardown into session_close.go) now. Verify with a name-only diff."
+  },
+  {
+   "id": "agent-session-core-17",
+   "title": "Slice tests assert on human-readable copy",
+   "category": "test-debt",
+   "original_severity": "low",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Opened every cited line: lifecycle_test 650, 728, 769 ('session is closing'), 1163/1166 (loop-detector message text), 1921 ('held work'); capabilities_test 169/197/238 (rendered prompt text; this is model-facing text, still copy); execution_test:305 ('invalid notice'); poisoned_wake_gate_test:499 ('transcript write failed'). AGENTS.md forbids these. Fix plan fine, pair with typed warning data."
+  }
+ ]
+}
