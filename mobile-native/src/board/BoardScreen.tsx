@@ -143,6 +143,9 @@ type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
 
 const MINUTE = 60_000;
+/** How far each project tree level indents a Board row, in points. The tree's
+ * own rows use ProjectTreeRow.projectIndent's same 16 per level. */
+const BOARD_ROW_INDENT_PT = 16;
 const BAND_HEADERS: Record<Exclude<Band, "idle">, string> = {
 	needsYou: "Needs you",
 	working: "Working",
@@ -1029,9 +1032,10 @@ function Board({
 				/>
 			);
 			onLayout = measure("idle");
-		} else if (item.kind === "row")
+		} else if (item.kind === "row") {
+			const indent = BOARD_ROW_INDENT_PT * item.depth;
 			content = (
-				<View style={{ marginLeft: 16 * item.depth }}>
+				<View style={{ marginLeft: indent }}>
 					{item.separated && previous?.kind === "row" ? <Hairline inset={TITLE_INSET} /> : null}
 					<BoardListRow
 						item={item.item}
@@ -1040,11 +1044,12 @@ function Board({
 						archived={item.archived}
 						wash={settled.washed.get(item.key) ?? 0}
 						context={listContext}
+						edgeInset={indent}
 						onSwipeActive={(active) => list.setInteraction(`swipe:${item.key}`, active)}
 					/>
 				</View>
 			);
-		else if (item.kind === "pinEmpty") content = <PinnedEmptyHint />;
+		} else if (item.kind === "pinEmpty") content = <PinnedEmptyHint />;
 		else if (item.kind === "tree") content = treeItem(item.section, item.tree);
 		else return null;
 		return (

@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
@@ -94,8 +95,9 @@ func (s *Session) memoryContextEnabled() bool {
 }
 
 // gardeningMemorySkillName is the bundled skill whose instructions correct
-// memory pages with memory_write, memory_edit and memory_delete.
-const gardeningMemorySkillName = "gardening-memory"
+// memory pages with memory_write, memory_edit and memory_delete. The shared
+// skill package owns the name and the availability mapping.
+const gardeningMemorySkillName = skill.GardeningMemorySkillName
 
 // skillAvailableToSession reports whether this session may advertise and load a
 // catalog skill. The gardening-memory skill corrects pages with the memory save
@@ -103,10 +105,14 @@ const gardeningMemorySkillName = "gardening-memory"
 // profile that denies a save tool) must neither see it in its catalog nor
 // activate it. Every other skill is available as the catalog advertises it.
 func (s *Session) skillAvailableToSession(name string) bool {
-	if name == gardeningMemorySkillName {
-		return s.memorySaveInstructionsEnabled()
-	}
-	return true
+	return s.skillAvailability().SkillAvailable(name)
+}
+
+// skillAvailability is the capability verdict this session's own registry
+// supports. skillAvailableToSession is its name-scoped form; the role-preload
+// filter computes it once for every name it checks.
+func (s *Session) skillAvailability() skill.SessionAvailability {
+	return skill.SessionAvailability{MemorySaveAvailable: s.memorySaveInstructionsEnabled()}
 }
 
 // memorySaveInstructionsEnabled gates text that tells the model to write or

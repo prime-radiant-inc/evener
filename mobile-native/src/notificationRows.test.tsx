@@ -52,12 +52,34 @@ function delegate(over: Partial<EvenerDelegateInfo> & { delegateId: string }): E
 // The subagents the session knows: dlg_2's frame carries no name, so its
 // title can only come from here, and every tap target comes from here.
 const DELEGATES = [
-	delegate({ delegateId: "dlg_1", description: "Fix race in tree settle", transcriptRef: "local:child1" }),
+	delegate({
+		delegateId: "dlg_1",
+		description: "Fix race in tree settle",
+		transcriptRef: "local:child1",
+		// A finished delegate can still carry its last run's start; the card
+		// must not pass it on.
+		runStartedAt: new Date(T0).toISOString(),
+	}),
 	delegate({ delegateId: "dlg_2", description: "Split the retry loop", transcriptRef: "local:child2" }),
 	delegate({ delegateId: "dlg_3", description: "Check drain ordering", transcriptRef: "local:child3" }),
 ];
 
-function thread(items = notificationWireItems()): Thread {
+// The same roster a moment earlier: dlg_1's report has arrived but its run has
+// not been marked terminal yet, so its row is still running.
+const RUNNING_DELEGATES = DELEGATES.map((entry, index) =>
+	index === 0
+		? {
+				...entry,
+				lifecycle: "running",
+				phase: "running",
+				status: "running",
+				terminal: false,
+				runStartedAt: new Date(T0).toISOString(),
+			}
+		: entry,
+);
+
+function thread(items = notificationWireItems(), roster = DELEGATES): Thread {
 	return {
 		id: "thread-1",
 		sessionId: "session-1",
@@ -80,14 +102,14 @@ function thread(items = notificationWireItems()): Thread {
 				items: [{ id: "u1", turnId: "turn_1", type: "userMessage", text: "Fix the flaky test" }, ...items],
 			},
 		],
-		evener: { ref: "ref-1", queue: { revision: 0 }, diagnostics: { delegates: DELEGATES } },
+		evener: { ref: "ref-1", queue: { revision: 0 }, diagnostics: { delegates: roster } },
 	} as unknown as Thread;
 }
 
 const LEVELS = ["chat", "intent", "tools", "full"] as const;
 
-function rowsAt(level: (typeof LEVELS)[number], items = notificationWireItems()) {
-	const model = hydrateThread({ thread: thread(items) }, "ref-1", 0);
+function rowsAt(level: (typeof LEVELS)[number], items = notificationWireItems(), roster = DELEGATES) {
+	const model = hydrateThread({ thread: thread(items, roster) }, "ref-1", 0);
 	const { config, justTheConversation } = displayForLevel(level, null);
 	const conversation = projectConversation(model, undefined, config ?? undefined);
 	const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
@@ -97,13 +119,13 @@ function rowsAt(level: (typeof LEVELS)[number], items = notificationWireItems())
 	};
 }
 
-function show(name: NotificationWireCase, openSubagent = vi.fn()) {
-	return showItem(notificationWireItem(name), openSubagent);
+function show(name: NotificationWireCase, openSubagent = vi.fn(), roster = DELEGATES) {
+	return showItem(notificationWireItem(name), openSubagent, roster);
 }
 
-function showItem(item: ThreadItem, openSubagent = vi.fn()) {
+function showItem(item: ThreadItem, openSubagent = vi.fn(), roster = DELEGATES) {
 	const name = item.id;
-	const { rows, delegates } = rowsAt("intent", [item]);
+	const { rows, delegates } = rowsAt("intent", [item], roster);
 	const row = rows.find((candidate) => candidate.id === item.id);
 	if (!row) throw new Error(`no row for ${name}`);
 	const tree = render(
@@ -177,7 +199,16 @@ describe("delegate and job notifications", () => {
 		expect(detail(tree)).toContain("Done: the settle pass now waits for the drain.");
 		expect(tree.root.findAllByType("SymbolView" as never)[0]?.props.name).toBe("diamond");
 		press(tree);
-		expect(openSubagent).toHaveBeenCalledWith("local:child1", "Fix race in tree settle");
+		// A finished delegate's card opens its subagent without a run start: an
+		// old start is no Working time (#2988).
+		expect(openSubagent).toHaveBeenCalledWith("local:child1", "Fix race in tree settle", undefined);
+	});
+
+	it("carries a running delegate's run start from its report card to the screen it opens (#2988)", () => {
+		const openSubagent = vi.fn();
+		const { tree } = show("delegate-reported", openSubagent, RUNNING_DELEGATES);
+		press(tree);
+		expect(openSubagent).toHaveBeenCalledWith("local:child1", "Fix race in tree settle", new Date(T0).toISOString());
 	});
 
 	it("names an unnamed subagent from the session's subagents and shows its failure in red", () => {

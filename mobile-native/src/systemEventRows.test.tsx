@@ -149,7 +149,18 @@ describe("a failed turn (G5)", () => {
 		if (failure?.kind !== "failure") throw new Error("not a failure row");
 		expect(failure.title).toContain("Evener error");
 		expect(failure.detail).toContain("Provider exploded: 529 overloaded");
-		expect(errorAction(failure, model, true)).toBe("retry");
+		expect(
+			errorAction(
+				failure,
+				{
+					canonical: model,
+					displayedLatestTurnId: model.turns.at(-1)?.id,
+					pendingMutations: [],
+					pendingMutationsReady: true,
+				},
+				true,
+			),
+		).toEqual({ kind: "retry", failedTurnId: "turn_2", disabled: false });
 	});
 
 	// Only the error that echoes turn.error goes: an earlier, distinct error in

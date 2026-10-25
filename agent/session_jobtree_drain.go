@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
@@ -485,8 +484,7 @@ func undisposedBackgroundJobsFinalWarning(jobIDs []string, canDetach bool) strin
 // capability is treated as unable: recommending a call that returns
 // ErrDetachUnsupported is worse than not offering it.
 func (s *Session) detachedShellAvailable() bool {
-	reporter, ok := s.currentEnv().(execenv.DetachSupportReporter)
-	return ok && reporter.DetachSupported()
+	return detachSupportedBy(s.currentEnv())
 }
 
 // describeUndisposedJobs renders the killed-jobs report: id, command text,

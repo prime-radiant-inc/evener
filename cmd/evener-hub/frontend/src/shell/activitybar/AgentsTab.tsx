@@ -29,7 +29,7 @@ function drill(sub: SessionDelegate): void {
   else enterAgentCascade(sub);
 }
 
-export function AgentsTab({ scope, onDrill = drill }: ActivityTabBodyProps) {
+export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps) {
   const foldID = `${scope.leaf.ref}\0inactive-delegates`;
   const foldOpen = isDisclosureOpen(foldID, false);
   const shown = useActivitySidebarStore((state) => state.views.get(scope.leaf.ref)?.categories.agents?.shown ?? PAGE);
@@ -62,7 +62,7 @@ export function AgentsTab({ scope, onDrill = drill }: ActivityTabBodyProps) {
         <EmptyState size="compact" title="No subagents at this level." />
       ) : null}
       {current.map((sub) => (
-        <AgentRow key={activityNodeID({ ...sub, kind: "delegate" })} sub={sub} onDrill={() => onDrill(sub)} />
+        <AgentRow key={activityNodeID({ ...sub, kind: "delegate" })} sub={sub} now={now} onDrill={() => onDrill(sub)} />
       ))}
       {inactive.length > 0 ? (
         <>
@@ -74,7 +74,12 @@ export function AgentsTab({ scope, onDrill = drill }: ActivityTabBodyProps) {
           {foldOpen ? (
             <>
               {inactive.slice(0, visible).map((sub) => (
-                <AgentRow key={activityNodeID({ ...sub, kind: "delegate" })} sub={sub} onDrill={() => onDrill(sub)} />
+                <AgentRow
+                  key={activityNodeID({ ...sub, kind: "delegate" })}
+                  sub={sub}
+                  now={now}
+                  onDrill={() => onDrill(sub)}
+                />
               ))}
               {visible < inactive.length ? (
                 <Button

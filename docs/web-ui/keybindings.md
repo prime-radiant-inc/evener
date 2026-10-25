@@ -151,7 +151,7 @@ is on (see the cheatsheet section below).
 | ⌘K / Ctrl+K | `palette.open` | global | `allowInEditable`, `allowInModal` | Open the command palette |
 | ⌘B / Ctrl+B | `rail.toggle` | global | `allowInModal`, `ignoreIfDefaultPrevented: false` | Toggle the sidebar |
 | ⌘I / Ctrl+I | `composer.focus` | global | `allowInEditable` | Focus the composer |
-| ⌘J / Ctrl+J | `next-needs-you` | global | `allowInEditable` | Go to the next session needing you |
+| ⌘J / Ctrl+J | `next-needs-you` | global | `allowInEditable` | Go to the next session needing you — one shell-wide needs-you controller reads the shared `needs_you` section, demands at most one page and owns cancellation |
 | ⌘' / Ctrl+' | `selection.quote` | global | `allowInEditable`, `allowInModal` | Quote the selection into the composer |
 | ⌘, / Ctrl+, | `settings` | global | `allowInEditable` | Open settings (the action id IS the palette's `settings` command id) |
 | Alt+ArrowRight | `session.next` | global | — | Focus the next session pane |
