@@ -366,11 +366,6 @@ func (s *Session) inspectDescendantReceiverWatchByID(watchID string) (jobWatchIn
 	return jobWatchInspectToolResult{}, false
 }
 
-//nolint:unused // retained for tagged stable receiver-watch state-machine owners.
-func (s *Session) clearDescendantReceiverWatchByID(watchID string) (watchResult, bool, error) {
-	return s.clearStableReceiverWatchByID(watchID)
-}
-
 func (s *Session) clearStableReceiverWatchByID(watchID string) (watchResult, bool, error) {
 	receiverDelegateID := s.owningDelegateID
 	for _, child := range s.watchHolderSessions() {
@@ -2573,37 +2568,6 @@ func stringArrayArg(args map[string]any, key string) ([]string, error) {
 	return out, nil
 }
 
-//nolint:unused // retained for internal watch-send parsing; public job_watch currently rejects send.
-func watchSendArg(args map[string]any) (*watchSendArgs, error) {
-	raw, ok := args["send"]
-	if !ok {
-		return nil, nil
-	}
-	values, ok := raw.(map[string]any)
-	if !ok {
-		return nil, errors.New("send must be an object")
-	}
-	if isEmptyWatchSend(values) {
-		return nil, nil
-	}
-	to := strings.TrimSpace(stringArg(values, "to"))
-	if to == "" {
-		return nil, errors.New("invalid_request: send.to is required")
-	}
-	return &watchSendArgs{
-		To:             to,
-		Message:        stringArg(values, "message"),
-		IncludeExcerpt: shellBoolArg(values, "include_excerpt"),
-	}, nil
-}
-
-//nolint:unused // retained with watchSendArg for internal watch-send parsing.
-func isEmptyWatchSend(values map[string]any) bool {
-	return strings.TrimSpace(stringArg(values, "to")) == "" &&
-		stringArg(values, "message") == "" &&
-		!shellBoolArg(values, "include_excerpt")
-}
-
 func jobTypeArrayArg(args map[string]any, key string) ([]jobstore.JobType, error) {
 	raw, ok := args[key]
 	if !ok {
@@ -2668,11 +2632,6 @@ func jobDone(jm *jobManager, jobID string) (<-chan struct{}, bool) {
 		return nil, false
 	}
 	return run.done, true
-}
-
-//nolint:unused // retained for tagged job projection state-machine owners.
-func projectJobRecord(s *Session, rec *jobstore.JobRecord) jobListEntry {
-	return projectJobRecordForViewer(s, s, rec)
 }
 
 func projectJobRecordForViewer(viewer *Session, assessor *Session, rec *jobstore.JobRecord) jobListEntry {
