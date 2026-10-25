@@ -1607,6 +1607,56 @@ describe("ConversationStore", () => {
 			expect(store.getState().failedSubmission).toMatchObject({ kind: "send" });
 		});
 
+		it("a synchronous reset from an admission subscriber cannot receive the attempt's completion", async () => {
+			const service = serviceFor("send");
+			const store = createConversationStore({
+				mutationHubId: "hub-1",
+				mutationSubmitter: {
+					submit: async () => ({ clientMutationId: "cmid-sync-reset" }),
+				},
+			});
+			await store.getState().open(service, "ref-1");
+			store.getState().setDraft("in flight");
+			const unsubscribe = store.subscribe((state) => {
+				if (state.pendingSubmission?.admittedMutationId === "cmid-sync-reset") {
+					store.getState().reset();
+				}
+			});
+			await store.getState().send(service, textInput("in flight"));
+			unsubscribe();
+			// The reset retired the attempt inside the admission notification;
+			// its completion must not publish into the cleared state.
+			expect(store.getState().conversation).toBeNull();
+			expect(store.getState().lastAcceptedMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
+		});
+
+		it("a synchronous reset from a read-state subscriber cannot receive the failure's retained state", async () => {
+			const service = serviceFor("send");
+			service.sendShouldReject = new WireError("action unavailable", -32000, {
+				evenerErrorInfo: "actionUnavailable",
+			});
+			const store = createConversationStore();
+			// A projected open binds the live sink, so the failure handler's
+			// rehydrate request really fires the synchronous read-state
+			// notification (a plain open has no sink and no read pipeline).
+			const sink = createFakeSink();
+			await store.getState().openProjected(service, sink, "ref-1");
+			store.getState().setDraft("draft to restore");
+			const unsubscribe = store.subscribe((state) => {
+				if (state.latestReadState === "reading") store.getState().reset();
+			});
+			await store.getState().send(service, textInput("draft to restore"));
+			unsubscribe();
+			// The reset retired the attempt inside the rehydrate request's
+			// synchronous read-state notification; the stale failure must not
+			// install its retained state or restore its draft.
+			expect(store.getState().failedSubmission).toBeNull();
+			expect(store.getState().error).toBeNull();
+			expect(store.getState().draft).toBe("");
+		});
+
 		it.each(["send", "queue"] as const)(
 			"forwards %s composition context without changing encoded input",
 			async (kind) => {

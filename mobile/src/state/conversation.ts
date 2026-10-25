@@ -680,15 +680,25 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	}
 
 	let conversationGen = 0;
-	// The store's mutation ownership token: bumped at every mutation press, so
-	// an attempt is current exactly while no newer press has happened. Each
-	// action captures the value at its press as its mutationId, and the
+	// The store's mutation ownership token: bumped at every mutation press and
+	// at every lifecycle retirement of an attempt, so an attempt is current
+	// exactly while nothing newer has happened to the binding. Each action
+	// captures the value at its press as its mutationId, and the
 	// admission/completion guards compare against the current value, so an
 	// out-of-order completion, admission, or failure cannot touch a newer
-	// attempt. (Every lifecycle clear of the markers also advances the binding
-	// epoch, which fences an in-flight attempt from the old binding before any
-	// guard runs — the record that used to carry this token in state is gone.)
+	// attempt, and an attempt whose binding was retired mid-flight cannot
+	// publish into the cleared state. A subscriber can reset the store
+	// synchronously inside any store notification (an admission or read-state
+	// set) between an attempt's binding check and its completion guard; the
+	// binding epoch alone cannot fence that window, so the token must die with
+	// the markers exactly as the removed record's null used to.
 	let currentMutationId = 0;
+	// Retires any in-flight attempt's ownership. Called before every lifecycle
+	// transition and the rebind settle clear the mutation markers, so the
+	// token dies with the markers.
+	const retireMutationAttempt = (): void => {
+		currentMutationId += 1;
+	};
 	// Draft revision: a monotonically increasing counter incremented on every
 	// setDraft call. When a mutation clears the draft on submit, it captures the
 	// current revision. On failure, the snapshot is restored ONLY if the revision
@@ -2043,6 +2053,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				trailingReread = null;
 				transientWarnings.length = 0;
 				releaseBoundedTextCache();
+				retireMutationAttempt();
 				set({
 					status: "opening",
 					ref,
@@ -2117,6 +2128,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// now lives outside the store (in live-ui-store).
 				// F4: reset the activity sink on thread change.
 				sink.reset();
+				retireMutationAttempt();
 				set({
 					status: "opening",
 					ref,
@@ -2205,6 +2217,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				trailingReread = null;
 				boundService = null;
 				boundSink = null;
+				retireMutationAttempt();
 				set({
 					status: "opening",
 					error: null,
@@ -2239,6 +2252,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				activitySink = sink;
 				boundService = service;
 				boundSink = sink;
+				retireMutationAttempt();
 				set({
 					status: "opening",
 					error: null,
@@ -2345,6 +2359,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// Settle the old pending mutation — it belongs to A's binding.
 						// Do NOT write error (a newer error owner may own it). Just
 						// clear the pending state so it's not permanently stuck.
+						retireMutationAttempt();
 						set({ pendingSubmission: null });
 					}
 					// I5: Settle held loadingOlder from the old binding.
@@ -3406,6 +3421,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				}
 				boundService = null;
 				boundSink = null;
+				retireMutationAttempt();
 				set({
 					status: "closed",
 					latestReadState: "unknown",
@@ -3637,6 +3653,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				}
 				boundService = null;
 				boundSink = null;
+				retireMutationAttempt();
 				set({
 					ref: null,
 					profileId: null,
