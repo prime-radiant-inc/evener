@@ -156,9 +156,9 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// through the read baseline, a read root, or its own re-bind above.
 	if rp.WorkspaceRoot != "" && rp.WorkspaceRootResolved != "" && rp.WorkspaceRoot != rp.WorkspaceRootResolved {
 		hidden := sp.Read != ReadAnywhere || inPrivateMount(rp.WorkspaceRoot)
-		exposed := isUnderAnyRoot(rp.WorkspaceRoot, sp.ReadRoots) ||
+		exposed := isUnderAnyRoot(rp.WorkspaceRoot, survivingRoots(sp.ReadRoots)) ||
 			isUnderAnyRoot(rp.WorkspaceRoot, rp.UnmaskedRoots) ||
-			isUnderAnyRoot(rp.WorkspaceRoot, []string{rp.Git.WorktreeRoot}) ||
+			isUnderAnyRoot(rp.WorkspaceRoot, survivingRoots([]string{rp.Git.WorktreeRoot})) ||
 			isUnderAnyRoot(rp.WorkspaceRoot, slices.Collect(maps.Keys(reboundRO))) ||
 			(sessionTmp != "" && pathUnder(rp.WorkspaceRoot, sessionTmp))
 		if hidden && !exposed {

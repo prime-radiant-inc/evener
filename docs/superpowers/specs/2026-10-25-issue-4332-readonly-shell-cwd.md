@@ -103,6 +103,19 @@ Revision notes:
   scratch-tree bind takes no link; the link would land on an existing path
   and abort bubblewrap. The real-backend regression uses a workspace reached
   through a symlink inside the shared scratch tree.
+- **Amendment 10 (RoboRev branch review, round 10).** The exact `/tmp` and
+  `/dev` roots never survive as mounts, so they also expose nothing. Cwd
+  visibility filters them out of the read root set (a write root or carve-out
+  is bound in its own pass and still counts), so a read-only session anchored
+  at `/tmp` refuses an alias that resolves outside the workspace instead of
+  binding it as an independent cwd that would bypass masks applied at the
+  canonical path. The workspace-link exposure check filters the same read
+  roots: a restricted session rooted at `/tmp/link` with an explicit `/tmp`
+  read root now recreates the link, because the read root was replaced by the
+  private tmpfs. The High regression runs the real spawn path against a masked
+  child under the alias and asserts the refusal before the process starts; the
+  Medium regression runs a real wrapped `pwd` at the literal symlinked
+  workspace.
 
 ## Intent and scope
 

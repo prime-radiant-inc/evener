@@ -246,12 +246,8 @@ func (w *Wrapper) commandCWDVisible(cwd string, resolveRoots bool) bool {
 	if tree := scratchTreeOf(w.sessionTmp); tree != "" && pathUnder(cwd, tree) {
 		return true
 	}
-	readRoots := slices.Clone(w.policy.Spawned.ReadRoots)
-	for _, root := range []string{w.policy.WorkspaceRoot, w.policy.WorkspaceRootResolved, w.policy.Git.WorktreeRoot} {
-		if root != "" {
-			readRoots = append(readRoots, root)
-		}
-	}
+	readRoots := survivingRoots(slices.Concat(w.policy.Spawned.ReadRoots,
+		[]string{w.policy.WorkspaceRoot, w.policy.WorkspaceRootResolved, w.policy.Git.WorktreeRoot}))
 	writeRoots, unmaskedRoots := w.policy.Spawned.WriteRoots, w.policy.UnmaskedRoots
 	if resolveRoots {
 		readRoots, writeRoots, unmaskedRoots = resolveRootSlice(readRoots), resolveRootSlice(writeRoots), resolveRootSlice(unmaskedRoots)
@@ -273,6 +269,20 @@ func (w *Wrapper) commandCWDVisible(cwd string, resolveRoots bool) bool {
 		}
 	}
 	return false
+}
+
+// survivingRoots drops the exact private-mount roots from a READ root set. bwrap
+// replaces /tmp and /dev with a fresh tmpfs and a minimal device tree rather
+// than binding them, so they expose nothing; a root beneath either, an explicit
+// write root, or a carve-out is bound in its own pass and stays.
+func survivingRoots(roots []string) []string {
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if root != "" && root != "/tmp" && root != "/dev" {
+			out = append(out, root)
+		}
+	}
+	return out
 }
 
 // resolveRootSlice returns each root's symlink-resolved spelling, preserving

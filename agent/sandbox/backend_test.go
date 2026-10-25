@@ -191,6 +191,14 @@ func TestCommandCWDVisible(t *testing.T) {
 	if !nilWrapper.CommandCWDVisible("/tmp/other") {
 		t.Error("a nil wrapper leaves the host filesystem unchanged and must report visible")
 	}
+
+	anchoredAtPrivateRoot := anywhere()
+	anchoredAtPrivateRoot.policy.WorkspaceRoot = "/tmp"
+	anchoredAtPrivateRoot.policy.WorkspaceRootResolved = "/tmp"
+	anchoredAtPrivateRoot.policy.Git.WorktreeRoot = "/tmp"
+	if anchoredAtPrivateRoot.CommandCWDVisible("/tmp/alias") {
+		t.Error("a workspace anchored at the replaced /tmp must not expose its descendants")
+	}
 }
 
 // TestConfineWrapsBwrapAndLeavesDir pins that Confine rewrites the command's argv

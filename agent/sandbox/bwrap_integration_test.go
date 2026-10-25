@@ -138,6 +138,61 @@ func TestBwrapWorkspaceInScratchTreeDoesNotLinkExistingPath(t *testing.T) {
 	}
 }
 
+// TestBwrapSymlinkedWorkspaceWithPrivateTmpReadRoot covers the Medium finding
+// at agent/sandbox/bwrap.go:159: a read root of /tmp is replaced by the private
+// tmpfs, so it must not count as exposing the workspace's literal spelling.
+// Without the workspace link, --chdir into the literal path fails.
+func TestBwrapSymlinkedWorkspaceWithPrivateTmpReadRoot(t *testing.T) {
+	facts := requireRealBwrap(t)
+	project, err := os.MkdirTemp("/var/tmp", "evener-link-target-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(project) })
+	gitHarness(t, project, "init", "-q")
+
+	linkBase, err := os.MkdirTemp("/tmp", "evener-link-")
+	if err != nil {
+		t.Skipf("no writable /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(linkBase) })
+	link := filepath.Join(linkBase, "link")
+	if err := os.Symlink(project, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	sessionTmp := filepath.Join(linkBase, "session")
+	if err := os.MkdirAll(sessionTmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	net := true
+	rp, err := Resolve(SandboxPolicy{
+		Mode:           ModeRestricted,
+		Network:        &net,
+		ExtraReadRoots: []string{"/tmp"},
+	}, facts, link)
+	if err != nil {
+		t.Fatalf("Resolve(restricted at %s): %v", link, err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, sessionTmp)
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+	argv := w.Wrap([]string{"/bin/bash", "-c", "pwd"}, link)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("symlinked workspace with a /tmp read root failed to start: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != link && got != project {
+		t.Fatalf("pwd = %q, want the literal %q or physical %q", got, link, project)
+	}
+}
+
 // TestBwrapReadOnlyTmpWorktreeStarts covers MED finding #5 end-to-end: a
 // read-only session whose worktree lives under /tmp must still start. Read-only
 // mode grants no write root, so without re-binding the cwd read-only after the
