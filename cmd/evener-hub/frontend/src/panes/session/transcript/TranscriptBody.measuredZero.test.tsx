@@ -22,7 +22,7 @@
 // unmeasured row still vetoes (the sibling scrollMetrics tests).
 import type { ThreadModel } from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { shouldAutoLoadOlder } from "./flow/scrollMetrics";
@@ -88,8 +88,10 @@ afterEach(() => {
   if (offsetHeightDescriptor) Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
 });
 
-test("a rendered empty turn alongside a visible turn does not veto short-page paging", () => {
-  render(<TranscriptBody model={model} config={CHAT} surface="readOnly" disclosureScope="measured-zero:test" />);
+test("a rendered empty turn alongside a visible turn does not veto short-page paging", async () => {
+  await act(async () =>
+    render(<TranscriptBody model={model} config={CHAT} surface="readOnly" disclosureScope="measured-zero:test" />),
+  );
 
   const section = screen.getByTestId("transcript-virtual-list");
   const port = section.firstElementChild as HTMLElement;

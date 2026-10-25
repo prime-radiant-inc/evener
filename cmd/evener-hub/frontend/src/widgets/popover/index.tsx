@@ -78,6 +78,23 @@ export function Popover({
   const triggerRef = useRef<HTMLSpanElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<PopoverPosition | null>(null);
+  // The document the trigger lives in. A Dockview popout is a separate window:
+  // portaling into the opener's body would put the panel in the wrong one, and
+  // listeners on the opener's window never see the popout's scroll, resize, or
+  // outside click.
+  // The trigger's document, read on every render: Dockview moves an existing
+  // panel's DOM into a popout window, so an already-mounted trigger can belong
+  // to a different document by the time its panel opens. A popover that mounts
+  // already open has no element yet on that first render; the mount re-render
+  // below supplies it, before paint.
+  const panelDocument = triggerRef.current?.ownerDocument ?? null;
+  const [, setMounted] = useState(0);
+  // One re-render, only when this popover mounted before its trigger element
+  // existed (a panel opened from the start).
+  useLayoutEffect(() => {
+    if (panelDocument === null) setMounted((renders) => renders + 1);
+  }, [panelDocument]);
+  const panelWindow = panelDocument?.defaultView ?? null;
 
   // Measure the trigger and the panel's own natural size and set the actual
   // flipped/clamped position - see computePopoverPosition. This is a layout
@@ -111,11 +128,18 @@ export function Popover({
       // settled size on the first frame with no wait and no reposition flash.
       // (The trigger keeps its rect: that one is wanted in viewport
       // coordinates, and the trigger is never mid-animation here.)
+      const viewport = panelWindow
+        ? { width: panelWindow.innerWidth, height: panelWindow.innerHeight }
+        : { width: window.innerWidth, height: window.innerHeight };
       setPosition(
-        computePopoverPosition(triggerEl.getBoundingClientRect(), {
-          width: panelEl.offsetWidth,
-          height: panelEl.offsetHeight,
-        }),
+        computePopoverPosition(
+          triggerEl.getBoundingClientRect(),
+          {
+            width: panelEl.offsetWidth,
+            height: panelEl.offsetHeight,
+          },
+          viewport,
+        ),
       );
     }
     measure();
@@ -130,11 +154,14 @@ export function Popover({
     // describes the panel actually on screen. Feature-detected: jsdom (the
     // test environment) implements no ResizeObserver, and the open-time
     // measure above is the whole behavior without it.
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
+    // The observer belongs to the panel's own window: a popout's element cannot
+    // be observed through the opener's constructor.
+    const Observer = panelWindow?.ResizeObserver;
+    if (typeof Observer === "undefined") return;
+    const observer = new Observer(measure);
     observer.observe(panelEl);
     return () => observer.disconnect();
-  }, [open]);
+  }, [open, panelWindow]);
 
   // Outside click closes. A click on the trigger is inside triggerRef, so this
   // never fights the consumer's own trigger toggle; a click inside the panel
@@ -147,22 +174,24 @@ export function Popover({
       if (triggerRef.current?.contains(target) || panelRef.current?.contains(target)) return;
       onClose();
     }
-    document.addEventListener("mousedown", onDocumentMouseDown);
-    return () => document.removeEventListener("mousedown", onDocumentMouseDown);
-  }, [open, onClose]);
+    if (!panelDocument) return;
+    panelDocument.addEventListener("mousedown", onDocumentMouseDown);
+    return () => panelDocument.removeEventListener("mousedown", onDocumentMouseDown);
+  }, [open, onClose, panelDocument]);
 
   // A scroll anywhere (capture-phase) or a viewport resize closes the popover -
   // simpler than continuously repositioning, matching Menu. Consumers whose
   // panel content scrolls opt out with closeOnScroll={false}.
   useEffect(() => {
     if (!open || !closeOnScroll) return;
-    window.addEventListener("scroll", onClose, true);
-    window.addEventListener("resize", onClose);
+    if (!panelWindow) return;
+    panelWindow.addEventListener("scroll", onClose, true);
+    panelWindow.addEventListener("resize", onClose);
     return () => {
-      window.removeEventListener("scroll", onClose, true);
-      window.removeEventListener("resize", onClose);
+      panelWindow.removeEventListener("scroll", onClose, true);
+      panelWindow.removeEventListener("resize", onClose);
     };
-  }, [open, onClose, closeOnScroll]);
+  }, [open, onClose, closeOnScroll, panelWindow]);
 
   function handlePanelKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") {
@@ -178,6 +207,7 @@ export function Popover({
     <span ref={triggerRef} className={`${CLASS.trigger} ${stretchTrigger ? CLASS.triggerStretch : ""}`}>
       {trigger}
       {open &&
+        panelDocument !== null &&
         createPortal(
           <FocusScope trap autoFocus={autoFocus}>
             {/* biome-ignore lint/a11y/noStaticElementInteractions: keydown only closes on Escape; the panel is a portaled overlay container, not itself interactive */}
@@ -191,7 +221,7 @@ export function Popover({
               {children}
             </div>
           </FocusScope>,
-          document.body,
+          panelDocument.body,
         )}
     </span>
   );

@@ -101,7 +101,7 @@ export function TimelineItem({
 	 * reads its outcome from; the screen holds it (useTranscriptSubagentTree). */
 	subagentTree?: ActivityTree | null;
 	/** Opens a subagent's own transcript. */
-	openSubagent?: (ref: string, title: string) => void;
+	openSubagent?: (ref: string, title: string, runStartedAt?: string) => void;
 	/** Your answer to the question an ask_user row asked, when you gave one. */
 	answerFor?: (itemId: string) => string | undefined;
 	/** The one action an error row offers (errorAction), and running it. */
@@ -548,7 +548,7 @@ function Subagent({
 	row: Extract<TimelineRow, { kind: "activity" }>;
 	delegates: readonly EvenerDelegateInfo[] | undefined;
 	tree: ActivityTree | null | undefined;
-	openSubagent: ((ref: string, title: string) => void) | undefined;
+	openSubagent: ((ref: string, title: string, runStartedAt?: string) => void) | undefined;
 }) {
 	// The state's time ("failed · 6m") moves on with the minute clock, and
 	// its line turns Quiet the moment a silent subagent crosses into it.

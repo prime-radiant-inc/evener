@@ -106,10 +106,13 @@ export function mountReaderScene(
                   {model.turns[index]?.items[0]?.text}
                 </div>
               )}
-              onChange={flow.restoreViewAnchorAfterMeasurement}
+              onChange={() => flow.restoreViewAnchorAfterMeasurement()}
               onLayout={(value) => {
                 layout = value;
                 registration.restoreAfterLayout(value);
+                if (!registration.isPlacementPending() && value.isCurrent()) {
+                  flow.restoreViewAnchorAfterMeasurement(value);
+                }
               }}
             />
           </section>

@@ -119,6 +119,20 @@ func (k TurnKind) TranscriptOnly() bool {
 	}
 }
 
+// HarnessContext reports whether entries of this kind are context the harness
+// projects into the model conversation rather than conversation a person or the
+// model produced: model-bound, text-only user-role messages that are only ever
+// appended. Consumers that pass conversation through, count it, or label it
+// derive that set here rather than listing the kinds again.
+func (k TurnKind) HarnessContext() bool {
+	switch k {
+	case TurnEnvironment, TurnNotesContext, TurnMemoryContext:
+		return true
+	default:
+		return false
+	}
+}
+
 // TurnSpanKind is the kind of turn an entry opens. It is persisted on the
 // first entry of each turn only.
 type TurnSpanKind string

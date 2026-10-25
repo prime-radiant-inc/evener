@@ -229,6 +229,7 @@ it("keeps a terminal parent's running child and stop identity reachable with his
 		ref: "local:repro",
 		title: "Reproduce the race",
 		coordinator: COORDINATOR,
+		runStartedAt: ago(4 * MIN),
 	});
 	act(() => pressable(tree, "Done · 23")?.props.onPress());
 	const parent = tree.root.find((node) => node.props.row?.id === "race").props.row;

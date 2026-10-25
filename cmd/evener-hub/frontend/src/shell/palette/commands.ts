@@ -21,21 +21,18 @@ import {
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { controlsFor } from "../../stores/liveControls";
-import { selectNeedsYouRows } from "../../stores/navigation/selectors";
-import { navigationStore } from "../../stores/navigation/store";
 import { prefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import type { ToastKind } from "../../widgets";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
-import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "../rail/needsYouCycle";
 import { revealSessionInRail } from "../rail/railController";
 import { navigate } from "../routing";
 import { workspaceStore } from "../workspace";
 import { blocked } from "./blocked";
 import { commandScore } from "./commandScore";
-import { focusedModel, type OnPage, type PaletteContext } from "./paletteContext";
+import { focusedModel, type OnPage, type PaletteContext, type PaletteNeedsYouAction } from "./paletteContext";
 import { readRecentCommandIds } from "./recentCommands";
 
 // A command is either global (no session needed) or session-scoped (a session
@@ -96,6 +93,10 @@ export interface PaletteUi {
 export interface PaletteRunContext extends PaletteContext {
   toasts: { push(kind: ToastKind, text: string): void };
   ui: PaletteUi;
+  // Supplied by CommandPalette.tsx from useNeedsYou(). Only the palette runs
+  // app-global commands; the composer and spawn contexts build session-scoped
+  // command contexts and leave this absent.
+  needsYou?: PaletteNeedsYouAction;
 }
 
 export interface CommandArgsFree {
@@ -363,20 +364,17 @@ export function buildCommands(): Command[] {
       scope: "global",
       run: (ctx) => upgrade(ctx),
     },
-    // UX fix: cycles the needs-you sessions in tree order, wrapping from
-    // whichever session is currently focused (Mod+J's own palette-visible
-    // counterpart - see AppShell.tsx's chord and needsYouCycle.ts, which
-    // both this and it share).
+    // UX fix: Mod+J's own palette-visible counterpart. The action is the
+    // shell's single needs-you owner (NeedsYouProvider -> useNeedsYou), so
+    // this command shares the chord's bounded page demand, freshness checks
+    // and cancellation fence instead of selecting from palette-local rows.
     {
       id: "next-needs-you",
       title: "Go to next session needing you",
       hint: "cycle needs-you sessions",
       keywords: ["needs you", "attention", "next"],
       scope: "global",
-      run: (ctx) => {
-        const next = nextNeedsYouRef(needsYouRefs(selectNeedsYouRows(navigationStore.getState())), ctx.sessionRef);
-        if (next !== null) openNeedsYouSession(next);
-      },
+      run: (ctx) => ctx.needsYou?.next(),
     },
 
     // --- session: mutations, each carrying the capability that authorizes it ---

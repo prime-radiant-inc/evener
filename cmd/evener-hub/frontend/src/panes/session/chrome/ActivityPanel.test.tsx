@@ -55,7 +55,7 @@ test("closed trigger counts subagents at every depth while an open recursive tre
   const mounted = render(
     <>
       <ActivityPanel sessionRef={ref} model={model()} />
-      <JobsTab scope={deriveScope(navigationStore.getState(), ref, null, null)} />
+      <JobsTab now={0} scope={deriveScope(navigationStore.getState(), ref, null, null)} />
     </>,
   );
   await screen.findByRole("button", { name: "Activity · 9 active" });
