@@ -34,7 +34,7 @@ function goToNewSession(): void {
 
 function goToSession(ref: string): void {
   const url = paneToURL("session", { ref });
-  if (url) navigate(url);
+  if (url) navigate(url, { ordinary: true });
 }
 
 /** tbk8: the one session this cold pane offers to resume, when there is one.

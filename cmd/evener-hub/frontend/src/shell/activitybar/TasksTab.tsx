@@ -3,20 +3,21 @@
 // subscription (stores/useThreadModel.ts). Counts live in the tab label;
 // the body starts with the task groups.
 
+import { TaskActivityTime } from "../../panes/session/chrome/activityTime";
 import { TasksPanelBody, taskDisclosureId } from "../../panes/session/chrome/TasksPanel";
 import { useTasksPanelStore } from "../../stores/tasksPanel";
 import { useThreadModel } from "../../stores/useThreadModel";
 import { Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import type { ActivityScope } from "../statusbar/statusScope";
 import { useActivityScrollProgress } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
+import type { ActivityTabBodyProps } from "./activityTabs";
 
 const CLASS = {
   stack: requireClass(styles.stack, "activitybar.module.css", "stack"),
 };
 
-export function TasksTab({ scope }: { scope: ActivityScope }) {
+export function TasksTab({ scope, now }: ActivityTabBodyProps) {
   const ref = scope.leaf.ref;
   const model = useThreadModel(ref);
   const entry = useTasksPanelStore((state) => state.entries.get(ref));
@@ -29,7 +30,12 @@ export function TasksTab({ scope }: { scope: ActivityScope }) {
   }
   return (
     <div className={CLASS.stack}>
-      <TasksPanelBody sessionRef={ref} model={model} showSummary={false} />
+      <TasksPanelBody
+        sessionRef={ref}
+        model={model}
+        showSummary={false}
+        renderTime={(task) => <TaskActivityTime task={task} now={now} />}
+      />
     </div>
   );
 }

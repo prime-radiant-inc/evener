@@ -186,6 +186,13 @@ type SessionMeta struct {
 	// IsSubagent is true on sessions spawned as a subagent (i.e. the session
 	// has a parent spawn). Written by the spawn path at session initialisation.
 	IsSubagent bool `json:"is_subagent,omitempty"`
+	// MemorySaveUnavailable records that this session's registry cannot serve
+	// the memory save tools, so a skill advertisement omits gardening-memory
+	// even when the source catalog offers it. It is recomputed on every meta
+	// save. False is the backward-compatible value for every meta written
+	// before the field existed; a delegate or disabled session is still
+	// identified by IsSubagent and Config.DisableMemory.
+	MemorySaveUnavailable bool `json:"memory_save_unavailable,omitempty"`
 	// Origin marks how the session was launched: "test" for agentic-testing
 	// runs (set via EVENER_SESSION_ORIGIN), empty for normal sessions. The hub
 	// classifies an all-"test" project into the "Test runs" group.
