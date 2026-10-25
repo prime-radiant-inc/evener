@@ -2387,8 +2387,7 @@ func (s *Session) conversationSignals() (historyTurns, modelResponses int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.history {
-		switch t.Kind {
-		case schema.TurnHookCompleted, schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
+		if t.Kind == schema.TurnHookCompleted || t.Kind.HarnessContext() {
 			continue
 		}
 		if t.Kind.TranscriptOnly() {

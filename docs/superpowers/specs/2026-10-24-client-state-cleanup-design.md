@@ -24,8 +24,6 @@ several owners is the in-flight and read bookkeeping around a submission:
 - native keeps a second in-flight record in `ConversationMutationState` and in
   the draft's `unconfirmed` field;
 - the mutation outbox owns the durable pending row and its recovery record;
-- one native screen (`ForkScreen`) creates its own conversation service instead
-  of borrowing the registry entry;
 - transcript, pending-projection, activity, and list reads each coalesce
   separately for the same binding.
 
@@ -53,7 +51,9 @@ which of several projections is authoritative.
    projection contract, not to a second in-flight record.
 3. **One projection per hub/session binding.** Canonical turns, pending rows,
    readiness, markers, and the live client come from one registry entry. A
-   screen borrows that entry; it does not create a second service.
+   live conversation screen borrows that entry; it does not create a second
+   live service. A one-shot modal read/action service is not a live binding and
+   is not a second owner.
 4. **One submission gate.** Eligibility is a pure predicate over the projection
    and the clicked turn, returning allowed plus a reason. Components render the
    answer and do not repeat the checks at activation.
@@ -106,8 +106,11 @@ which of several projections is authoritative.
 - `ConversationMutationState.pendingMutation` is removed after the durable
   projection and gate replace it. The draft's `unconfirmed` field shrinks to
   the acceptance-window fact it actually owns.
-- `ForkScreen` borrows the registry entry's service instead of
-  `createConversationService` at the screen.
+- `ForkScreen` keeps its one-shot `createConversationService`: it verifies the
+  source instance and performs a fork action, with no notification consumer,
+  store, activity sink, or mutation host. Its `readProjection` participates in
+  the shared, refcounted thread subscription and releases it on close. It is a
+  modal action helper, not a second live conversation binding.
 - The screen renders `gate(projection, clickedTurn)` and submits through the
   entry's current service. A retired entry refuses without losing the draft.
 
@@ -128,7 +131,9 @@ which of several projections is authoritative.
 - Remove native `ConversationMutationState.pendingMutation` after the durable
   projection and gate cover its readers; reduce draft `unconfirmed` to the
   acceptance window.
-- Route `ForkScreen` through `NativeConversationSessions`.
+- Keep `ForkScreen`'s one-shot service. Do not add a registry borrow API for
+  it; reusing the live entry's `readProjection` would clear the shared
+  ref/capabilities and fence the conversation underneath.
 - Keep `submittingRefs`, `submittedHere`, and `loadedRefs`; they are not
   derivable from the outbox. Give them one documented home in the projection.
 - Exit when each concern has one writer and one reader contract, and the
