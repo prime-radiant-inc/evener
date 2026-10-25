@@ -1,0 +1,198 @@
+{
+  "repository": "https://github.com/microsoft/comic-chat",
+  "revision": "48a162249484ab8d116c243e8203b0956d350c09",
+  "files": [
+    {
+      "local_path": "LICENSE",
+      "upstream_path": "LICENSE",
+      "bytes": 1073,
+      "git_blob_sha1": "7c2dd1c57eade37be7637988261a79418ea62852",
+      "sha256": "722262cd04696639f0f65df38d792fb4e08a28309ff5cee15f10bdd9b66411a3",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/LICENSE"
+    },
+    {
+      "local_path": "source/README.md",
+      "upstream_path": "README.md",
+      "bytes": 11288,
+      "git_blob_sha1": "a95b972786e757dfbc79c3db043865fbeccc5a7f",
+      "sha256": "fb554d55a3a8f2760f3e095557203bb77c187f41b6d86e5298a9cbd416ff2207",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/README.md"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/avatar.cpp",
+      "upstream_path": "v1.0-pre/client/avatar.cpp",
+      "bytes": 28105,
+      "git_blob_sha1": "94d7cdb9ea08d39a92f069c31cc8a96c5598a16d",
+      "sha256": "ae718f0a2ea317c29abeb46132859c6f10cf5f01ebddd525f0f1da0c2bf2aafb",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/avatar.cpp"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/avatar.h",
+      "upstream_path": "v1.0-pre/client/avatar.h",
+      "bytes": 10363,
+      "git_blob_sha1": "bfb878ee1a4825f21be3a1dc3c1cae0c5e83546e",
+      "sha256": "891adfd344b02f2b1130521a8ec2d02605491679271317c74ed86962bc073dc4",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/avatar.h"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/avatario.cpp",
+      "upstream_path": "v1.0-pre/client/avatario.cpp",
+      "bytes": 7181,
+      "git_blob_sha1": "79f42486eb5ad386b3cb5308d632fe61c599d55e",
+      "sha256": "e0648971b1595eb32b66b9e7608019ee11a95d8111dc6dcf027a520fa5762499",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/avatario.cpp"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/avatario.h",
+      "upstream_path": "v1.0-pre/client/avatario.h",
+      "bytes": 422,
+      "git_blob_sha1": "cc411b1cd4734dbfda43e064db42e854f869ecbe",
+      "sha256": "d674cdbf296f7e10f63e3915cf685875cbca21491980e0be4d6065fc1cad24c0",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/avatario.h"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/bodycam.cpp",
+      "upstream_path": "v1.0-pre/client/bodycam.cpp",
+      "bytes": 27044,
+      "git_blob_sha1": "576ffdd5e0cca3f9d3dcf938299a1a9e9b7e1f95",
+      "sha256": "8f337c7e74b05fa581bc376f1aad205501070d7a0ef72925a74aa8e014dd4cd7",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/bodycam.cpp"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/comicart/avatars/anna.avb",
+      "upstream_path": "v1.0-pre/client/comicart/avatars/anna.avb",
+      "bytes": 296085,
+      "git_blob_sha1": "c78f7636077a91127f870cf839bfc4d8c6a44fd8",
+      "sha256": "ae25e5e67449d9fbf22ff8e5c132af210d8c013749a3be6cfbcacbeba4c45313",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/comicart/avatars/anna.avb"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/comicart/avatars/fc_ang_s.bmp",
+      "upstream_path": "v1.0-pre/client/comicart/avatars/fc_ang_s.bmp",
+      "bytes": 1368,
+      "git_blob_sha1": "e6aa0f8846972f342cd346a4860a01168e8fb316",
+      "sha256": "4c3bc10454805d9f98823744c250df41a495607e331b258ac93acbd32949061b",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/comicart/avatars/fc_ang_s.bmp"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/comicart/avatars/fc_bor_s.bmp",
+      "upstream_path": "v1.0-pre/client/comicart/avatars/fc_bor_s.bmp",
+      "bytes": 1368,
+      "git_blob_sha1": "d6b1a9ef7a3a20ce39b156bc8de4173b1923e57e",
+      "sha256": "329c9bd23bb3ef53d0a7dbb7eceeb15174d4d09a8936bef3700d1934b15453af",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/comicart/avatars/fc_bor_s.bmp"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/comicart/avatars/fc_hap_s.bmp",
+      "upstream_path": "v1.0-pre/client/comicart/avatars/fc_hap_s.bmp",
+      "bytes": 1368,
+      "git_blob_sha1": "0374106dd23870972d08adbc7bd2a09ea2b22538",
+      "sha256": "322e9c27201643059e3c7523a4a692fdc526ceaa71829d36dc70eee1932c6bc7",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/comicart/avatars/fc_hap_s.bmp"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/comicart/avatars/fc_laf_s.bmp",
+      "upstream_path": "v1.0-pre/client/comicart/avatars/fc_laf_s.bmp",
+      "bytes": 1368,
+      "git_blob_sha1": "9519ac9553b3ae918be9786147b3a9941451a766",
+      "sha256": "f00045012fa8ed9f70e37c194afa706671a6f445c6f4d37a7a6971e5903a20aa",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/comicart/avatars/fc_laf_s.bmp"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/comicart/avatars/fc_neu_s.bmp",
+      "upstream_path": "v1.0-pre/client/comicart/avatars/fc_neu_s.bmp",
+      "bytes": 1368,
+      "git_blob_sha1": "ede68197c1949ef33e8e9bc3962d5df64a84cb45",
+      "sha256": "08a0064cb090f4a8bc1df7778916bb3126c4ed7f65d55c7edfa01ca1d82de2c0",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/comicart/avatars/fc_neu_s.bmp"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/comicart/avatars/fc_sca_s.bmp",
+      "upstream_path": "v1.0-pre/client/comicart/avatars/fc_sca_s.bmp",
+      "bytes": 1368,
+      "git_blob_sha1": "c95a03bb21d3d9bfa0406d52360432bbc9123f61",
+      "sha256": "c169e6179921d654d8713eff19419082dfecdf6e78bff0b8472ff4ce88eb092f",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/comicart/avatars/fc_sca_s.bmp"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/comicart/avatars/xeno.avb",
+      "upstream_path": "v1.0-pre/client/comicart/avatars/xeno.avb",
+      "bytes": 214668,
+      "git_blob_sha1": "ccf40f1f0e6047b44c0424128cf80029e2f021c8",
+      "sha256": "d37634748fc732d428ce5c46505a36cb582c7894800d9d64bfc3c6f80749bfc8",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/comicart/avatars/xeno.avb"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/comicart/backdrop/field.bmp",
+      "upstream_path": "v1.0-pre/client/comicart/backdrop/field.bmp",
+      "bytes": 34526,
+      "git_blob_sha1": "38bf80e683e9e9fd548f83f226affe4af363dda7",
+      "sha256": "25a3d3f47717001f0c52cb376a3c5a1203d7e38dc905282f5e4607fe1b61a0cb",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/comicart/backdrop/field.bmp"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/comicart/backdrop/room8bs.bmp",
+      "upstream_path": "v1.0-pre/client/comicart/backdrop/room8bs.bmp",
+      "bytes": 39562,
+      "git_blob_sha1": "a3fcc9a55c8056904662e901b273653b5d3015d1",
+      "sha256": "37bc1174b5634130afc5205f5ac3223473332ce4fe0e53cab3368e100cf25544",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/comicart/backdrop/room8bs.bmp"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/dib.cpp",
+      "upstream_path": "v1.0-pre/client/dib.cpp",
+      "bytes": 33803,
+      "git_blob_sha1": "b9a2769673c06d4b87a47720ca6eadd667ec9fb1",
+      "sha256": "a0031c03eb39198483cb88361894ef279c791a44344939a6e1f000dd7b34eb9d",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/dib.cpp"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/dib.h",
+      "upstream_path": "v1.0-pre/client/dib.h",
+      "bytes": 2616,
+      "git_blob_sha1": "047b65b7ac02a11f873f5550f22fdc5498e24133",
+      "sha256": "d31baf905487716221dc667f0a463bc20880f4937bfde7c1e1347df187f083c7",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/dib.h"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/license.txt",
+      "upstream_path": "v1.0-pre/client/license.txt",
+      "bytes": 6983,
+      "git_blob_sha1": "69c18ce921e37adeb890f3decb0cc4a0ce2502a0",
+      "sha256": "ec479007ef8a3e76764b514d90c76854f6005f8764a4679485e7e59cdb199052",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/license.txt"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/comicart/avatars/armando.avb",
+      "upstream_path": "v1.0-pre/client/comicart/avatars/armando.avb",
+      "bytes": 191819,
+      "git_blob_sha1": "3bcead4f8f68ffd07454adbaf18702e4170493db",
+      "sha256": "6e888208eafeb8320cbd775ab3b732a2405eadb65107d3470299780a02f8a0b2",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/comicart/avatars/armando.avb"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/comicart/avatars/bolo.avb",
+      "upstream_path": "v1.0-pre/client/comicart/avatars/bolo.avb",
+      "bytes": 423250,
+      "git_blob_sha1": "6af8ff07f51f599210b45f1ce4ea29ea9ef6eef8",
+      "sha256": "3095c303afbae3ab6c4027318bd34ba6e4a3ded1720b2fd2d3e00f7bba072538",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/comicart/avatars/bolo.avb"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/comicart/avatars/denise.avb",
+      "upstream_path": "v1.0-pre/client/comicart/avatars/denise.avb",
+      "bytes": 349126,
+      "git_blob_sha1": "c7afc105714e3a29cd1c0c76617e14426797ceb9",
+      "sha256": "033fec7b64f9d8cbaf242697e2a00cbf66e742f062a79af3fd266c2578bda288",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/comicart/avatars/denise.avb"
+    },
+    {
+      "local_path": "source/v1.0-pre/client/comicart/avatars/tiki.avb",
+      "upstream_path": "v1.0-pre/client/comicart/avatars/tiki.avb",
+      "bytes": 325827,
+      "git_blob_sha1": "63a46148e91702da2bd0e8a1bd338a51ce4834fa",
+      "sha256": "59697ec8534ccdc45ba6eb760d92ee735512e52e8382f5ad4abb656f2579b714",
+      "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/v1.0-pre/client/comicart/avatars/tiki.avb"
+    }
+  ]
+}

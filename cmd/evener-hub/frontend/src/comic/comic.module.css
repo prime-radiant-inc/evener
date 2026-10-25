@@ -1,0 +1,201 @@
+@font-face {
+  font-family: "Comic Sans Comic";
+  src: url("/webassets/comic-local/Comic.TTF") format("truetype");
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Comic Sans Comic";
+  src: url("/webassets/comic-local/Comicbd.TTF") format("truetype");
+  font-weight: 700;
+  font-display: swap;
+}
+
+/* Only the /comic root receives the illustration's own lettering and palette. */
+.comicRoot {
+  --comic-paper: var(--surface-0);
+  --comic-ink: var(--ink-hi);
+  --comic-yellow: color-mix(in srgb, var(--ansi-bright-yellow) 40%, var(--surface-0));
+  --comic-font: "Comic Sans Comic", var(--font-sans);
+  min-height: 100vh;
+  background: var(--comic-paper);
+  color: var(--comic-ink);
+  font-family: var(--comic-font);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 15px;
+  align-items: stretch;
+  margin-bottom: 15px;
+}
+
+.row > :only-child { grid-column: 1 / -1; }
+
+.panel {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-width: 0;
+  border: 3px solid var(--comic-ink);
+  background: var(--comic-paper);
+  font-size: var(--font-size-prose);
+  overflow: hidden;
+}
+
+.panel::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border: 1px solid color-mix(in srgb, var(--comic-ink) 10%, transparent);
+  pointer-events: none;
+}
+
+.label {
+  align-self: flex-start;
+  position: relative;
+  z-index: var(--z-raised);
+  max-width: 100%;
+  min-width: 0;
+  padding: 5px 9px;
+  background: var(--comic-yellow);
+  border-right: 2px solid var(--comic-ink);
+  border-bottom: 2px solid var(--comic-ink);
+  font-size: 61.1111%;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.panel[data-comic-speaker="assistant"] .label {
+  align-self: flex-end;
+  border-right: 0;
+  border-left: 2px solid var(--comic-ink);
+  background: var(--comic-paper);
+}
+
+.source {
+  min-width: 0;
+  padding: 7px 14px 0;
+  font-size: 66.6667%;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.balloon {
+  box-sizing: border-box;
+  position: relative;
+  z-index: var(--z-raised);
+  align-self: center;
+  width: calc(100% - 40px);
+  max-width: 720px;
+  margin: 16px 20px 0;
+  padding: 19px 27px;
+  background: var(--comic-paper);
+  border: 2px solid var(--comic-ink);
+  border-radius: 48px 52px 46px 50px / 26px 30px 25px 29px;
+}
+
+.balloonText {
+  margin: 0;
+  font: 400 100%/1.45 var(--comic-font);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.balloon:not(.thought, .captionBalloon)::before,
+.balloon:not(.thought, .captionBalloon)::after {
+  content: "";
+  position: absolute;
+  top: calc(100% - 3px);
+  left: 24%;
+  width: 25px;
+  height: 36px;
+  background: var(--comic-ink);
+  clip-path: polygon(0 0, 100% 0, 10% 100%);
+}
+
+.balloon:not(.thought, .captionBalloon)::after {
+  top: calc(100% - 4px);
+  left: calc(24% + 2px);
+  width: 20px;
+  height: 31px;
+  background: var(--comic-paper);
+}
+
+.panel[data-comic-speaker="assistant"] .balloon:not(.thought, .captionBalloon)::before,
+.panel[data-comic-speaker="assistant"] .balloon:not(.thought, .captionBalloon)::after {
+  left: 72%;
+  transform: scaleX(-1);
+}
+
+.thought {
+  border-radius: 45% 43% 47% 41% / 37% 44% 39% 43%;
+  padding: 24px 33px;
+  box-shadow: 7px -5px 0 -3px var(--comic-paper), 9px -6px 0 -3px var(--comic-ink);
+}
+
+.thoughtTrail {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 21%;
+  display: flex;
+  gap: 13px;
+  align-items: flex-start;
+  transform: rotate(-22deg);
+}
+
+.thoughtTrail span {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--comic-ink);
+  border-radius: 50%;
+  background: var(--comic-paper);
+}
+
+.thoughtTrail span + span { width: 9px; height: 9px; margin-top: 18px; }
+.panel[data-comic-speaker="assistant"] .thoughtTrail { left: auto; right: 21%; transform: rotate(22deg); }
+
+.captionBalloon { border-radius: 18px; }
+.images { z-index: var(--z-raised); margin: 14px 20px 0; }
+.stage { position: relative; flex: 1; min-height: 193px; margin-top: 16px; isolation: isolate; }
+.stage::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 32px 0 0;
+  background: linear-gradient(var(--comic-paper), transparent 70%), url("/webassets/comic/backgrounds/room8bs.png") center 68% / cover;
+  opacity: .4;
+}
+.stage[data-comic-scene="field"]::before { background-image: linear-gradient(var(--comic-paper), transparent 70%), url("/webassets/comic/backgrounds/field.png"); }
+.stage[data-comic-scene="white"]::before { background: none; }
+.figure { position: absolute; z-index: var(--z-raised); bottom: -37px; left: 4%; width: 45%; height: 226px; object-fit: contain; object-position: center bottom; }
+.panel[data-comic-speaker="assistant"] .figure { left: auto; right: 4%; transform: scaleX(-1); }
+.continuation .stage { min-height: 154px; }
+.continuation .figure { height: 204px; bottom: -40px; }
+.spotlight { min-height: 345px; }
+.spotlight .balloon { margin: 23px auto 0; max-width: 600px; border-width: 3px; padding: 18px 35px; text-align: center; transform: rotate(-1deg); }
+.spotlight .balloonText { font-size: 166.6667%; font-weight: 700; line-height: 1.3; }
+.spotlight .stage { min-height: 225px; }
+.spotlight .stage::before { opacity: .22; }
+.spotlight .figure { height: 327px; bottom: -97px; width: 35%; left: 13%; }
+.spotlight.panel[data-comic-speaker="assistant"] .figure { left: auto; right: 13%; }
+
+@media (max-width: 760px) {
+  .row { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .row > :only-child { grid-column: auto; }
+  .balloon { margin: 15px 13px 0; width: calc(100% - 26px); padding: 17px 20px; }
+  .thought { padding: 22px 25px; }
+  .balloonText { font-size: 94.4444%; }
+  .stage { min-height: 180px; }
+  .figure { height: 216px; bottom: -34px; }
+  .spotlight { min-height: 320px; }
+  .spotlight .balloon { margin: 20px 12px 0; width: calc(100% - 24px); padding: 18px 16px; transform: none; }
+  .spotlight .balloonText { font-size: 133.3333%; }
+  .spotlight .figure { height: 280px; bottom: -56px; width: 47%; left: 1%; }
+  .spotlight.panel[data-comic-speaker="assistant"] .figure { left: auto; right: 1%; }
+}
