@@ -54,7 +54,10 @@ func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 					report.State, report.Running = "unavailable", nil
 				}
 				if remote == selectedLockRemote(currentRoot) {
-					if name == "retarget-primary-symlink-lock" {
+					// Only the refusal of the symlinked lock runs the real command: it
+					// stops at its symlink test before reading /proc/locks, which
+					// can duplicate or omit records under ambient lock churn.
+					if name == "retarget-primary-symlink-lock" && fallback {
 						return exec.CommandContext(ctx, "/bin/sh", "-c", remote).Output()
 					}
 					if fallback && name != "primary-lock-path" {
