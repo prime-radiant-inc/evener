@@ -115,9 +115,11 @@ function visibleSectionPages(section: "live" | "needs_you", state: NavigationSto
  * A settled page owns completion: once a visible page has answered and is
  * neither loading nor re-validating, the section's own reported `remaining`
  * decides. An answer with no data is a settled tombstone, not an absent page,
- * so it owns completion too. The manifest count refreshes on its own schedule
- * and can lag a queue that has drained, so it may only justify demand before
- * any page has settled. A failed page keeps demand of its own, even while the
+ * so it owns completion too. Visibility scopes that answer because a hidden
+ * live page belongs to a background lease, not to the reader; a needs-you page
+ * is always the reader's. The manifest count refreshes on its own schedule and
+ * can lag a queue that has drained, so it may only justify demand before any
+ * page has settled. A failed page keeps demand of its own, even while the
  * reader cannot see it, and so does a positive remaining count.
  *
  * Before any manifest has reported a count, nothing says the section is
