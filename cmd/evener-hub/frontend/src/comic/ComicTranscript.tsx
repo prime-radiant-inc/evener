@@ -73,6 +73,7 @@ export function ComicTranscript({
   const restoring = useRef(!!reader.position);
   const commanded = useRef<number | undefined>(undefined);
   const moving = useRef(false);
+  const movementStart = useRef<number | undefined>(undefined);
   const [scene, setScene] = useState<ComicScene>("room");
   const [expression, setExpression] = useState<ComicExpression>("neutral");
   const [font, setFont] = useState<"loading" | "ready" | "unavailable">("loading");
@@ -95,9 +96,26 @@ export function ComicTranscript({
     latest.current.reader.save(position);
   }, []);
 
+  const captureMovement = useCallback(
+    (port: HTMLElement) => {
+      // Native scrolling may start after the gesture's first animation frame.
+      if (movementStart.current !== undefined && port.scrollTop === movementStart.current) return;
+      const point = capturePoint(port, latest.current.sessionRef);
+      if (!point) return;
+      save(point);
+      moving.current = false;
+      movementStart.current = undefined;
+      restoring.current = false;
+      commanded.current = undefined;
+    },
+    [save],
+  );
+
   useLayoutEffect(() => {
     anchor.current = reader.position ?? { mode: "end", sessionRef, path: [] };
     restoring.current = !!reader.position;
+    moving.current = false;
+    movementStart.current = undefined;
     lastPage.current = undefined;
     revision.current += 1;
     return () => {
@@ -201,7 +219,7 @@ export function ComicTranscript({
     };
     const next = [...compose(items), ...compose(errors)];
     const position = anchor.current;
-    if (position.mode === "away" && !entries.some((entry) => entry.id === position.entryId)) {
+    if (!moving.current && position.mode === "away" && !entries.some((entry) => entry.id === position.entryId)) {
       const previous = priorEntries.current;
       const index = previous.findIndex((entry) => entry.id === position.entryId);
       if (index >= 0) {
@@ -235,11 +253,15 @@ export function ComicTranscript({
         current.rows !== rows ||
         !current.reader.reader.alive ||
         !layout.isCurrent() ||
-        layout.virtualizer.scrollElement !== port ||
-        moving.current
+        layout.virtualizer.scrollElement !== port
       )
         return;
       committed.current = layout;
+      if (moving.current) {
+        // A valid commit replaces the cancelled anchor before any placement.
+        captureMovement(port);
+        return;
+      }
       const position = anchor.current;
       const rowIndex = findComicAnchorRow(current.rows, position);
       if (rowIndex === undefined) return;
@@ -272,18 +294,19 @@ export function ComicTranscript({
       commanded.current = port.scrollTop;
       restoring.current = false;
     },
-    [reader, rows],
+    [reader, rows, captureMovement],
   );
 
   useLayoutEffect(() => {
     const port = list.current?.getScrollElement();
     if (!port) return;
     let frame = 0;
-    const cancel = () => {
+    const cancel = (event?: Event) => {
       revision.current += 1;
       const requestedRevision = revision.current;
       restoring.current = false;
       moving.current = true;
+      movementStart.current = event ? port.scrollTop : undefined;
       setTailSpace(0);
       commanded.current = undefined;
       committed.current?.cancelPendingScroll();
@@ -291,11 +314,7 @@ export function ComicTranscript({
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         if (revision.current !== requestedRevision || latest.current.reader !== reader) return;
-        if (list.current?.isLayoutCurrent()) {
-          const point = capturePoint(port, latest.current.sessionRef);
-          if (point) save(point);
-        }
-        moving.current = false;
+        if (list.current?.isLayoutCurrent()) captureMovement(port);
       });
     };
     const scroll = () => {
@@ -305,14 +324,18 @@ export function ComicTranscript({
       if (commanded.current !== undefined && Math.abs(port.scrollTop - commanded.current) <= 1) return;
       if (!list.current?.isLayoutCurrent()) return;
       if (restoring.current && !moving.current) return;
-      const point = capturePoint(port, latest.current.sessionRef);
-      if (point) save(point);
+      captureMovement(port);
     };
     const selection = () => {
       if (port.contains(document.getSelection()?.anchorNode ?? null)) cancel();
     };
     const key = (event: KeyboardEvent) => {
-      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) cancel();
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
+        cancel(event);
+        if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) {
+          list.current?.noteBackwardMovement?.();
+        }
+      }
     };
     port.addEventListener("wheel", cancel, { passive: true });
     port.addEventListener("touchstart", cancel, { passive: true });
@@ -329,7 +352,7 @@ export function ComicTranscript({
       port.removeEventListener("scroll", scroll);
       document.removeEventListener("selectionchange", selection);
     };
-  }, [save, reader]);
+  }, [captureMovement, reader]);
 
   useEffect(() => {
     if (
@@ -359,6 +382,7 @@ export function ComicTranscript({
     revision.current += 1;
     restoring.current = false;
     moving.current = false;
+    movementStart.current = undefined;
     history.cancelOlder();
     setTailSpace(0);
     save({ mode: "end", sessionRef, path: [] });

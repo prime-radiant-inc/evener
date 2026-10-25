@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useImperativeHandle, useRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { UseTranscriptResult } from "../panes/session/transcript/useTranscript";
+import * as widgets from "../widgets";
 import { ComicTranscript } from "./ComicTranscript";
 import type { ComicEntry } from "./projection";
 import { readComicPosition, writeComicPosition } from "./readerPosition";
@@ -258,6 +260,7 @@ test("keeps an item-backed point fixed with itemless errors across prepend, resi
   act(() => onScroll.call(port!, new Event("scroll")));
   expect(readComicPosition("local:test")?.mode).toBe("end");
   fireEvent.wheel(port);
+  port.scrollTop -= 10;
   act(() => onScroll.call(port!, new Event("scroll")));
   expect(readComicPosition("local:test")?.mode).toBe("away");
   mounted.unmount();
@@ -270,6 +273,124 @@ test("mounts bounded source rows rather than the whole loaded history", async ()
   expect(mounted.container.querySelectorAll("[data-comic-entry]").length).toBeLessThan(30);
   mounted.unmount();
 });
+
+test.each(["invalid capture", "delayed backward key"] as const)(
+  "does not revive a cancelled anchor after %s",
+  async (ordering) => {
+    // Consumer protocol seam: control validity and delivery of committed layouts,
+    // not the widget implementation. Existing tests above retain the real widget.
+    let valid = true;
+    let publish: (() => void) | undefined;
+    let port: HTMLDivElement;
+    const place = vi.fn((offset: number) => {
+      port.scrollTop = offset;
+    });
+    vi.spyOn(widgets, "VirtualList").mockImplementation(function ControlledList(props) {
+      const element = useRef<HTMLDivElement>(null);
+      useImperativeHandle(props.ref, () => ({
+        getScrollElement: () => element.current,
+        isLayoutCurrent: () => valid,
+        getVisibleRange: () => ({ startIndex: 0, endIndex: props.count - 1 }),
+        scrollToIndex: vi.fn(),
+      }));
+      publish = () => {
+        port = element.current!;
+        props.onLayout?.({
+          virtualizer: { scrollElement: port } as widgets.CommittedVirtualListLayout["virtualizer"],
+          isCurrent: () => valid,
+          scrollToOffset: place,
+          cancelPendingScroll: vi.fn(),
+          syncReaderMovement: vi.fn(),
+        });
+      };
+      return (
+        <div ref={element}>
+          {Array.from({ length: props.count }, (_, index) => (
+            <div key={props.getItemKey?.(index) ?? index}>{props.renderRow(index)}</div>
+          ))}
+        </div>
+      );
+    });
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(500);
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(2000);
+    const tops: Record<string, number> = { m: 120, older: 900 };
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return new DOMRect(0, this.dataset.comicEntry ? tops[this.dataset.comicEntry]! - port.scrollTop : 0, 760, 20);
+    });
+    vi.spyOn(document, "createRange").mockImplementation(() => {
+      let source: HTMLElement;
+      return {
+        setStart(node: Node) {
+          source = node.parentElement!.closest<HTMLElement>("[data-comic-entry]")!;
+        },
+        setEnd() {},
+        getBoundingClientRect: () => source.getBoundingClientRect(),
+      } as unknown as Range;
+    });
+    if (ordering === "invalid capture") {
+      writeComicPosition("local:test", {
+        mode: "away",
+        sessionRef: "local:test",
+        path: [],
+        entryId: "older",
+        offset: 7,
+        viewportOffset: 24,
+      });
+    } else {
+      writeComicPosition("local:test", { mode: "end", sessionRef: "local:test", path: [] });
+    }
+    const older = { ...history(), hasOlder: true };
+    const mounted = render(<Reader older={older} />);
+    port = mounted.container.querySelector("[data-comic-scroll]")!.firstElementChild as HTMLDivElement;
+    await waitFor(() => expect(port.querySelector('[data-comic-entry="m"]')).not.toBeNull());
+    act(() => publish!());
+    port.scrollTop = ordering === "invalid capture" ? 80 : 1500;
+    place.mockClear();
+    const frames = new Map<number, FrameRequestCallback>();
+    let frameID = 0;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.set(++frameID, callback);
+      return frameID;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+    const frame = () =>
+      act(() => {
+        const pending = [...frames.values()];
+        frames.clear();
+        for (const callback of pending) callback(0);
+      });
+    if (ordering === "invalid capture") {
+      valid = false;
+      fireEvent.wheel(port);
+      port.scrollTop = 100;
+    } else {
+      fireEvent.keyDown(port, { key: "ArrowUp" });
+    }
+    frame(); // No replacement geometry, or no native movement yet.
+    expect(older.cancelOlder).toHaveBeenCalledTimes(1);
+    valid = true;
+    mounted.rerender(<Reader older={older} entries={[entry, { ...entry, id: "older" }]} />);
+    act(() => publish!()); // Late valid rows include the cancelled source.
+    if (ordering === "delayed backward key") {
+      port.scrollTop = 100; // Native key movement starts AFTER that frame/layout.
+      fireEvent.scroll(port);
+      act(() => publish!());
+    }
+    expect(place).not.toHaveBeenCalled();
+    expect(port.scrollTop).toBe(100);
+    expect(readComicPosition("local:test")).toMatchObject({ mode: "away", entryId: "m", viewportOffset: 20 });
+    // A replacement point still participates in ordinary reflow restoration.
+    tops.m = 220;
+    act(() => publish!());
+    expect(port.scrollTop).toBe(200);
+    fireEvent.keyDown(port, { key: "ArrowUp" });
+    frame(); // Still no native movement when explicit navigation supersedes it.
+    fireEvent.click(screen.getByRole("button", { name: /latest/i }));
+    expect(port.scrollTop).toBe(1500);
+    expect(readComicPosition("local:test")?.mode).toBe("end");
+    mounted.unmount();
+  },
+);
 
 test("settles an unavailable saved source when history is exhausted", async () => {
   writeComicPosition("local:test", {
