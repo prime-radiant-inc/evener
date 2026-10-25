@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 type stableShellAttentionBootstrapTarget struct {
@@ -106,7 +107,7 @@ func repairStableShellAttentionTarget(target stableShellAttentionBootstrapTarget
 		}
 		attentionID := stableShellAttentionID(record.JobID, record.TerminalGen)
 		content := stableShellAttentionContent(target.storePath, target.descriptor, record)
-		if _, err := appendColdDelegateNotificationDurablyWithOpen(path, sessionID, attentionID, content, now(), open); err != nil {
+		if _, err := appendColdDelegateAttentionMessageDurablyWithOpen(path, sessionID, attentionID, llm.UserMachinery(content), now(), open, jobNotificationFromRecord(record).Provenance); err != nil {
 			return err
 		}
 		if err := store.Append(jobstore.Event{

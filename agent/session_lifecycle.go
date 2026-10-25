@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -3325,6 +3326,19 @@ func (s *Session) notificationSourceAccepted(sourceID string) (bool, error) {
 		if err := s.attachedTranscript().EstablishDurability(); err != nil {
 			return false, err
 		}
+		// A resident descriptor can outlive its pathname. Missing storage is
+		// uncertainty, not proof that this source never reached custody.
+		f, err := os.Open(transcriptPath(s.stateDir, s.ID()))
+		if err != nil {
+			return false, err
+		}
+		defer f.Close()
+		fold, _, err := extendDelegateAttentionFoldFrom(f, 0, newDelegateAttentionFold(), s.ID())
+		if err != nil {
+			return false, err
+		}
+		_, accepted := fold.content[sourceID]
+		return accepted, nil
 	}
 	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {

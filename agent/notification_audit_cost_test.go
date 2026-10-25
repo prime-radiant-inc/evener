@@ -160,11 +160,18 @@ func TestNotificationAuditCost(t *testing.T) {
 			loads := 0
 			start = time.Now()
 			err = s.retryRestoredPendingWatchSendsFrom(func() (jobstore.WatchSendRecord, error) { loads++; return restored.store.LoadWatchSends() })
-			if (count == 1 && err != nil) || (count > 1 && !errors.Is(err, fs.syncErr)) {
+			if !errors.Is(err, fs.syncErr) {
 				t.Fatalf("candidate query error=%v, want exact held durability boundary for predecessors", err)
 			}
-			if loads != 1 || queries == 0 || fs.syncs == 0 {
+			if loads != 1 || queries != count || fs.syncs != count {
 				t.Fatalf("source_loads=%d receiver_queries=%d receiver_barriers=%d", loads, queries, fs.syncs)
+			}
+			after, err := restored.store.LoadWatchSends()
+			if err != nil || len(after.Pending) != 1 || len(after.Superseded) != count-1 {
+				t.Fatalf("retained pending=%d predecessors=%d err=%v", len(after.Pending), len(after.Superseded), err)
+			}
+			if len(producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)) != 0 || len(producerSourceEvents(t, restored, jobstore.EventWatchSendDropped)) != 0 || len(notificationRawEntries(t, transcriptPath(s.stateDir, id))) != 0 {
+				t.Fatal("failed receiver barrier manufactured custody or settled source debt")
 			}
 			t.Logf("source_candidates=%d source_loads=%d receiver_queries=%d receiver_fs_opens=%d receiver_fs_reads=%d receiver_read_bytes=%d receiver_barriers=%d source_reopen=%s dispatch=%s", candidates, loads, queries, fs.opens, fs.reads, fs.bytes, fs.syncs, reopenElapsed, time.Since(start))
 		})

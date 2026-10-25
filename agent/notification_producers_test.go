@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -1636,6 +1638,8 @@ func TestCallbackCustodyAckRetrySurvivesNextFiring(t *testing.T) {
 			if producerRecordCount(t, s) != 1 {
 				t.Fatal("crash cut must retain A's custody without accepting B")
 			}
+			produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+			first, second := *produced[0].WatchSend, *produced[1].WatchSend
 			restored, err := newJobManager(s.stateDir, s.ID(), s.enqueueJobNotificationAndNotify)
 			if err != nil {
 				t.Fatal(err)
@@ -1646,13 +1650,20 @@ func TestCallbackCustodyAckRetrySurvivesNextFiring(t *testing.T) {
 			if err := os.Rename(path, path+".held"); err != nil {
 				t.Fatal(err)
 			}
+			accepted, queryErr := s.notificationSourceAccepted(stableWatchAttentionID(first))
 			restored.dispatchProducedWatchSends()
 			if err := os.Rename(path+".held", path); err != nil {
 				t.Fatal(err)
 			}
+			if accepted || !errors.Is(queryErr, os.ErrNotExist) {
+				t.Fatalf("missing resident pathname custody=%t err=%v, want unavailable", accepted, queryErr)
+			}
 			fold, err := restored.store.LoadWatchSends()
 			if err != nil || len(fold.Pending) != 1 || len(fold.Superseded) != 1 || len(producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)) != 0 {
 				t.Fatalf("uncertain custody query changed current or predecessor work: %+v, %v", fold, err)
+			}
+			if !reflect.DeepEqual(fold.Pending[second.Key], &second) || !reflect.DeepEqual(fold.Superseded[first.DeliveryID], &first) || len(producerSourceEvents(t, restored, jobstore.EventWatchSendDropped)) != 0 || len(adapter.requestsFor("root")) != 0 {
+				t.Fatal("uncertainty changed exact A predecessor/B head or settled/executed source work")
 			}
 			restored.dispatchProducedWatchSends()
 			restored.dispatchProducedWatchSends()
@@ -1864,6 +1875,240 @@ func TestCandidateOnlyWatchReceiptsRecoverThroughHostPumps(t *testing.T) {
 				}
 			}
 			t.Log("candidate-only reconstruction: heads=0 candidates=1 canonical=2 receipts=1; uncertain Sync and failed source ack retained receipt; repaired host pumps: candidates=0 canonical=2 exact receipts=2 provider requests=0 new payloads=0")
+		})
+	}
+}
+
+func TestColdDescendantCallbackReplayAfterRootRestart(t *testing.T) {
+	for _, historical := range []bool{false, true} {
+		t.Run(fmt.Sprintf("historical=%t", historical), func(t *testing.T) {
+			fixture := newColdStableDelegateFixture(t, "")
+			store, err := delegatestore.Open(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, err := openDelegateTreeController(delegateTreeControllerConfig{store: store, rootSessionID: fixture.meta.ID, stateDir: fixture.stateDir, turnLimit: 2, driveLimit: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			jm, err := newJobManager(fixture.stateDir, fixture.childID, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jm.delegateController = c
+			jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+			a := watchArgs{Source: "self", Target: runtimeMessageAliasCaller, ReceiverSessionID: fixture.meta.ID, Note: "callback-payload-8c21", AfterSeconds: 60}
+			if historical {
+				a.AfterSeconds, a.RepeatSeconds = 0, 60
+			}
+			r, err := jm.configureWatch(a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jm.mu.Lock()
+			key, cfg, ok := jm.watchConfigByIDLocked(r.WatchID)
+			jm.mu.Unlock()
+			if !ok {
+				t.Fatal("missing live source registration")
+			}
+			if historical {
+				// A crosses real receiver custody but the source descriptor closes on wake.
+				writer, _, err := transcript.OpenWriterForSession(transcriptPath(fixture.stateDir, fixture.meta.ID), fixture.meta.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				receiver := &Session{id: fixture.meta.ID, stateDir: fixture.stateDir, delegateController: c}
+				receiver.attachTranscript(writer)
+				receiver.SetNotifyFunc(func() { _ = jm.store.Close() })
+				c.rootRuntime = receiver
+				jm.fireProgressTick(key, cfg)
+				receiver.SetNotifyFunc(nil)
+				if len(notificationRawEntries(t, transcriptPath(fixture.stateDir, fixture.meta.ID))) != 1 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 0 {
+					t.Fatal("failed-ack cut did not preserve actual A custody")
+				}
+				reopenProducerSource(t, jm)
+				c.rootRuntime = nil
+				if err := receiver.closeAttachedTranscript(); err != nil {
+					t.Fatal(err)
+				}
+				appendOne := jm.store.Append
+				jm.appendEvent = func(e jobstore.Event) error {
+					if err := appendOne(e); err != nil {
+						return err
+					}
+					if e.Kind == jobstore.EventWatchSendPending {
+						return jm.store.Close()
+					}
+					return nil
+				}
+			}
+			// The root receiver is absent. This firing must remain real source debt.
+			jm.fireProgressTick(key, cfg)
+			produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+			want := 1
+			if historical {
+				want = 2
+				reopenProducerSource(t, jm)
+				if _, err := jm.clearWatch(key); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if len(produced) != want || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 0 {
+				t.Fatalf("source cut produced=%d want=%d", len(produced), want)
+			}
+			for _, e := range produced {
+				if !e.WatchSend.CallbackFrame || e.WatchSend.StableReceiver || e.WatchSend.ReceiverSessionID != fixture.meta.ID {
+					t.Fatal("fixture did not produce exact descendant callback kind and receiver")
+				}
+			}
+			if jm.watchCount() != 0 {
+				t.Fatal("retired registration survived production/clear")
+			}
+			if err := jm.closeStoreOnly(); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			// No descendant runtime, controller or source manager survives the restart.
+			jm, c = nil, nil
+			var restoredEntries []transcript.Entry
+			root, err := RestoreSessionFromMetaWithConfig(fixture.client, fixture.profile, execenv.NewLocalExecutionEnvironment(fixture.workspace), fixture.meta, RestoreSessionConfig{
+				StateDir: fixture.stateDir, ForceRealIO: true,
+				OnRestoredTranscript: func(_ transcript.Header, entries []transcript.Entry, _ bool) { restoredEntries = entries },
+				testOnly:             testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, sandboxProber: bwrapCapableProber(fixture.workspace), disableDelegateIdleRelease: true},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(root.Close)
+			entries := notificationRawEntries(t, transcriptPath(fixture.stateDir, fixture.meta.ID))
+			sourcePath := filepath.Join(jobsDir(fixture.stateDir, fixture.childID), "jobs.jsonl")
+			sourceEvents, err := jobstore.ReadEvents(sourcePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			acks := 0
+			for _, e := range sourceEvents {
+				if e.Kind == jobstore.EventWatchSendDelivered {
+					acks++
+				}
+			}
+			if len(entries) != want || acks != want {
+				t.Fatalf("cold callback records=%d source receipts=%d, want %d/%d", len(entries), acks, want, want)
+			}
+			if len(fixture.adapter.Requests()) != 0 {
+				t.Fatal("bootstrap custody became model observation")
+			}
+			for _, p := range produced {
+				id := stableWatchAttentionID(*p.WatchSend)
+				exactAcks := 0
+				for _, e := range sourceEvents {
+					if exactWatchSendEvent(e, jobstore.EventWatchSendDelivered, *p.WatchSend) {
+						exactAcks++
+					}
+				}
+				if exactAcks != 1 {
+					t.Fatalf("callback %s exact source receipts=%d want 1", id, exactAcks)
+				}
+				snapshotMatches := 0
+				for _, e := range restoredEntries {
+					if e.Turn.AttentionID == id {
+						snapshotMatches++
+						if !reflect.DeepEqual(e.Turn.Message, llm.UserMachinery(p.WatchSend.Frame)) {
+							t.Errorf("restored snapshot changed callback %s", id)
+						}
+					}
+				}
+				t.Logf("historical=%t seq=%d id=%s restored snapshot matches=%d", historical, p.WatchSend.UpdateSeq, id, snapshotMatches)
+				if snapshotMatches != 1 {
+					t.Errorf("restored snapshot callback %s matches=%d, want 1", id, snapshotMatches)
+				}
+				matches := 0
+				for _, e := range entries {
+					if e.Turn.AttentionID == id {
+						matches++
+						if !reflect.DeepEqual(e.Turn.Message, llm.UserMachinery(p.WatchSend.Frame)) {
+							t.Fatal("callback complete message changed at restart")
+						}
+					}
+				}
+				if matches != 1 {
+					t.Fatal("cold callback identity missing or duplicated")
+				}
+				assertAttentionResponseReceipts(t, root, id, 0)
+			}
+			// Reopen the real source and repeat bootstrap, without resurrecting watches.
+			if err := repairStableWatchDeliveriesForBootstrap(root.delegateController); err != nil {
+				t.Fatal(err)
+			}
+			again, err := newJobManager(fixture.stateDir, fixture.childID, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if again.watchCount() != 0 || len(again.pendingWatchSendDeliveries(nil)) != 0 {
+				t.Fatal("reopen resurrected source registration or current debt")
+			}
+			if err := again.closeStoreOnly(); err != nil {
+				t.Fatal(err)
+			}
+			fixture.adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+				used := make(map[int]bool)
+				for _, p := range produced {
+					found := false
+					for i, m := range req.Messages {
+						if !used[i] && reflect.DeepEqual(m, llm.UserMachinery(p.WatchSend.Frame)) {
+							found = true
+							used[i] = true
+							break
+						}
+					}
+					t.Logf("request historical=%t seq=%d id=%s covered=%t", historical, p.WatchSend.UpdateSeq, stableWatchAttentionID(*p.WatchSend), found)
+					if !found {
+						t.Errorf("notification-only request omitted callback %s", stableWatchAttentionID(*p.WatchSend))
+					}
+				}
+				return communicateResponse(true, "callback observed")
+			}}
+			wakes := make(chan struct{}, 1)
+			root.SetNotifyFunc(func() {
+				select {
+				case wakes <- struct{}{}:
+				default:
+				}
+			})
+			defer root.SetNotifyFunc(nil)
+			select {
+			case <-wakes:
+			// TRIPWIRE: bounds a missing automatic host wake, not its ordering.
+			case <-time.After(10 * time.Second):
+				t.Fatal("restored callback did not wake its root receiver")
+			}
+			if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			if len(fixture.adapter.Requests()) != 1 {
+				t.Fatal("callback replay did not run exactly one notification-only request")
+			}
+			for _, p := range produced {
+				assertAttentionResponseReceipts(t, root, stableWatchAttentionID(*p.WatchSend), 1)
+			}
+			finalEntries := notificationRawEntries(t, transcriptPath(fixture.stateDir, fixture.meta.ID))
+			for _, p := range produced {
+				id := stableWatchAttentionID(*p.WatchSend)
+				matches := 0
+				for _, e := range finalEntries {
+					if e.Turn.AttentionID == id {
+						matches++
+						if !reflect.DeepEqual(e.Turn.Message, llm.UserMachinery(p.WatchSend.Frame)) {
+							t.Fatalf("callback %s message changed after observation", id)
+						}
+					}
+				}
+				if matches != 1 {
+					t.Fatalf("repeated reopen/observation callback %s canonical=%d want=1", id, matches)
+				}
+			}
 		})
 	}
 }

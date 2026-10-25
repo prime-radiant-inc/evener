@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -528,4 +530,77 @@ func loadStableShellRecord(t *testing.T, jm *jobManager, jobID string) *jobstore
 		t.Fatalf("shell record %q missing", jobID)
 	}
 	return rec
+}
+
+// A receiver wake closes the real source descriptor after custody, before ack.
+func TestShellReplayPreservesAcceptedMachineryMessage(t *testing.T) {
+	tree := newStableDelegateShellTree(t)
+	rec := createStableDelegateShell(t, tree.childJM, "opaque-shell-4c72")
+	tree.child.SetNotifyFunc(func() { _ = tree.childJM.store.Close() })
+	code := 0
+	if err := tree.childJM.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err == nil {
+		t.Fatal("closed source acknowledged custody")
+	}
+	tree.child.SetNotifyFunc(nil)
+	path := transcriptPath(tree.controller.stateDir, tree.child.ID())
+	entries := notificationRawEntries(t, path)
+	if len(entries) != 1 || !entries[0].Turn.Message.Content[0].Machinery {
+		t.Fatalf("live canonical entries=%+v", entries)
+	}
+	accepted := entries[0].Turn.Message
+	id := entries[0].Turn.AttentionID
+	storePath := filepath.Join(jobsDir(tree.controller.stateDir, tree.child.ID()), "jobs.jsonl")
+	records, _ := readDelegateShellStore(t, storePath)
+	if records[rec.JobID].NotifyState != jobstore.NotifyPending {
+		t.Fatal("source debt lost before replay")
+	}
+	if err := tree.child.closeAttachedTranscript(); err != nil {
+		t.Fatal(err)
+	}
+	// Crash teardown does not issue explicit Stop or turn accepted work into observation.
+	tree.controller.mu.Lock()
+	descriptor := cloneDelegateStartDescriptor(tree.controller.durable["dlg_child"].Descriptor)
+	tree.controller.rootRuntime = nil
+	tree.controller.live = nil
+	tree.controller.mu.Unlock()
+	if err := tree.controller.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if run := tree.childJM.running[rec.JobID]; run != nil {
+		_ = run.output.Close()
+	}
+	plan := stableShellAttentionBootstrapTarget{delegateID: "dlg_child", descriptor: descriptor, storePath: storePath}
+	held := errors.New("shell replay receiver barrier held")
+	failedOpen := func(path, id string) (*transcript.Writer, []transcript.Entry, error) {
+		return transcript.OpenWriterForSessionWithFS(producerQueryFaultFS{Fs: afero.NewOsFs(), syncErr: held}, path, id)
+	}
+	if err := repairStableShellAttentionTarget(plan, tree.controller.stateDir, time.Now, failedOpen); !errors.Is(err, held) {
+		t.Fatalf("held receiver barrier error=%v", err)
+	}
+	records, _ = readDelegateShellStore(t, storePath)
+	if records[rec.JobID].NotifyState != jobstore.NotifyPending {
+		t.Fatal("failed custody barrier acknowledged shell source")
+	}
+	for range 2 {
+		if err := repairStableShellAttentionTarget(plan, tree.controller.stateDir, func() time.Time { return time.Unix(400, 0).UTC() }, transcript.OpenWriterForSession); err != nil {
+			t.Fatalf("cold replay: %v", err)
+		}
+	}
+	entries = notificationRawEntries(t, path)
+	if len(entries) != 1 || entries[0].Turn.AttentionID != id || !reflect.DeepEqual(entries[0].Turn.Message, accepted) {
+		t.Fatal("replay changed complete accepted message or canonical identity")
+	}
+	records, _ = readDelegateShellStore(t, storePath)
+	if records[rec.JobID].NotifyState != jobstore.NotifyDelivered {
+		t.Fatal("cold custody did not settle exact source")
+	}
+	mismatched := accepted
+	mismatched.Content = append([]llm.ContentPart(nil), accepted.Content...)
+	mismatched.Content[0].Machinery = false
+	if _, err := appendColdDelegateAttentionMessageDurablyWithOpen(path, tree.child.ID(), id, mismatched, time.Unix(401, 0).UTC(), transcript.OpenWriterForSession, nil); err == nil {
+		t.Fatal("same ID with different metadata accepted")
+	}
+	if countAttentionEntries(t, path, id) != 1 {
+		t.Fatal("integrity refusal appended duplicate")
+	}
 }

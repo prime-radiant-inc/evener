@@ -20,7 +20,7 @@ import (
 // With the claim, B stands down before it touches the store.
 func TestWatchSendDeliveryConcurrentExecutorsClaimOnce(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
-	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "concurrent delivery"})
+	fixture.persistFrameBeforeTransport(t, "concurrent delivery")
 	cfg := fixture.onlyWatchConfig(t)
 	state := fixture.requireOnePending(t).state
 

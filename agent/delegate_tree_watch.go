@@ -298,7 +298,7 @@ func exactUnacknowledgedStableWatchSends(events []jobstore.Event) []jobstore.Wat
 		identity := stableWatchDeliveryIdentity{deliveryID: state.DeliveryID, updateSeq: state.UpdateSeq}
 		switch event.Kind {
 		case jobstore.EventWatchSendPending:
-			if !state.StableReceiver {
+			if !state.StableReceiver && !state.CallbackFrame {
 				continue
 			}
 			if _, settled := terminal[identity]; settled {
@@ -401,7 +401,7 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 	pending := make([]jobstore.WatchSendState, 0, len(folded.Pending))
 	current := make(map[stableWatchDeliveryIdentity]struct{}, len(folded.Pending))
 	for _, state := range folded.Pending {
-		if state != nil && state.StableReceiver {
+		if state != nil && (state.StableReceiver || state.CallbackFrame) {
 			pending = append(pending, *state)
 			current[stableWatchDeliveryIdentity{deliveryID: state.DeliveryID, updateSeq: state.UpdateSeq}] = struct{}{}
 		}
