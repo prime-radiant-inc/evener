@@ -1040,3 +1040,16 @@ func TestCheckedInTimingBudgetEnforcesPackageRatios(t *testing.T) {
 		t.Fatalf("the over-budget package was not reported as a FAIL:\n%s", out)
 	}
 }
+
+// TestCheckedInTimingBudgetAcceptsHealthyWebMeasurement pairs with the test
+// above: with the ratios armed, the "web" row must be a CI-class number, so a
+// healthy web-unit measurement (the slowest seen was 547.26s) passes.
+func TestCheckedInTimingBudgetAcceptsHealthyWebMeasurement(t *testing.T) {
+	dir := t.TempDir()
+	measured := filepath.Join(dir, "measured.tsv")
+	writeAuditScriptFixture(t, measured, "SUM\tweb\t547.26\n")
+	out, err := runTimingBudgetFixture(t, measured, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
+	if err != nil {
+		t.Fatalf("a healthy CI web measurement must pass the strict check:\n%s", out)
+	}
+}
