@@ -6,7 +6,10 @@ input and the spec used for implementation PAR.
 
 Lane base after merging `origin/main`:
 `1e37237d8e64410a73cedba6292681b27bb9fadd`, which contains the required
-`f6900f5d8ff3e436a474054a7211fff746d1f451`.
+`f6900f5d8ff3e436a474054a7211fff746d1f451`. The final lane merged
+`origin/main` at `d2863d2b92d5a5c674849f205791c50702f3612c` (PR #4970,
+unrelated agent skill handling) before the final push, and the focused checks
+were rerun against it.
 
 ## Intent and scope
 
