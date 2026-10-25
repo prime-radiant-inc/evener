@@ -30,10 +30,9 @@ import (
 // with no kind visible to the completeness check.
 func eventPayloadFields(tb testing.TB) []reflect.StructField {
 	tb.Helper()
-	eventType := reflect.TypeOf(Event{})
+	eventType := reflect.TypeFor[Event]()
 	var fields []reflect.StructField
-	for i := 0; i < eventType.NumField(); i++ {
-		field := eventType.Field(i)
+	for field := range eventType.Fields() {
 		if field.Type.Kind() != reflect.Pointer {
 			continue
 		}
