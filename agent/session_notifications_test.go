@@ -182,8 +182,7 @@ func TestNotificationColdRetryHandoff(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var scheduledErr, oldRetryErr error
-			checkLogs := captureReceiverErrorLogs(t, os.ErrNotExist, func() error { return scheduledErr }, func() error { return oldRetryErr })
-			defer checkLogs()
+			captureReceiverErrorLogs(t, os.ErrNotExist, func() error { return scheduledErr }, func() error { return oldRetryErr })
 			fixture := newColdStableDelegateFixture(t, "")
 			const id, payload = "retry-handoff-id-91", "retry-handoff-payload-91"
 			n := notification{ID: id, Message: llm.User(payload)}

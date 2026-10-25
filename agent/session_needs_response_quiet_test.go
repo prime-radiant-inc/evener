@@ -692,8 +692,7 @@ func TestFilteredWakeAfterATurnThatMovedOnStaysIdle(t *testing.T) {
 // legacy queue. Pending work suppresses awaiting until storage recovers.
 func TestFilteredWakeWithRetainedCustodyInsideTheQuietPeriodStaysIdle(t *testing.T) {
 	// Serial: capture the process-wide logger during intentional missing storage.
-	checkLogs := captureReceiverErrorLogs(t, os.ErrNotExist)
-	defer checkLogs()
+	captureReceiverErrorLogs(t, os.ErrNotExist)
 	fake := agenttest.NewFakeClock()
 	calls := 0
 	sess := newSession(t, withClock(fake), withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(

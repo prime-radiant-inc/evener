@@ -226,8 +226,7 @@ func TestRefusedNotificationWakeAnnouncesNoBoundary(t *testing.T) {
 func TestRefusedDurableAppendAnnouncesNoBoundary(t *testing.T) {
 	// Serial: capture the process-wide logger during intentional storage failure.
 	syncErr := errors.New("controlled receiver sync failure")
-	checkLogs := captureReceiverErrorLogs(t, syncErr)
-	defer checkLogs()
+	captureReceiverErrorLogs(t, syncErr)
 	a := &skillContinuationAdapter{}
 	s := observationSession(t, a, false)
 	rec := serveAndRecord(t, s)
@@ -313,15 +312,16 @@ func (f *receiverBoundarySyncFile) Sync() error {
 }
 
 // Storage-failure tests run serially and retain typed errors instead of
-// comparing warning prose. Any warning without the injected cause fails.
-func captureReceiverErrorLogs(t *testing.T, cause error, stringified ...func() error) func() {
+// comparing warning prose. Install capture before session cleanups so its final
+// validation sees their logs too. Any warning without the injected cause fails.
+func captureReceiverErrorLogs(t *testing.T, cause error, stringified ...func() error) {
 	t.Helper()
 	logged := &reclaimLogCapture{Handler: slog.NewTextHandler(io.Discard, nil)}
 	previous := slog.Default()
 	slog.SetDefault(slog.New(logged))
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	return func() {
+	t.Cleanup(func() {
 		t.Helper()
+		defer slog.SetDefault(previous)
 		logged.mu.Lock()
 		defer logged.mu.Unlock()
 		for _, record := range logged.records {
@@ -348,7 +348,7 @@ func captureReceiverErrorLogs(t *testing.T, cause error, stringified ...func() e
 				t.Errorf("unexpected receiver log level=%v cause=%v, want %v", record.Level, loggedErr, cause)
 			}
 		}
-	}
+	})
 }
 
 // TestWakeStandsDownWhileAUserTurnIsClaimed is the ordinary-usage race, not an
