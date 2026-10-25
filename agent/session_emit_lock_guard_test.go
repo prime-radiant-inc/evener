@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -8,6 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
+
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // The rule these tests protect, and the reason it is enforceable at all.
@@ -84,7 +90,8 @@ func TestEmitReacquiresSessionMu(t *testing.T) {
 // TestEmitWithProvenanceReacquiresJobManagerMu pins the second guard, which is
 // the one that covers every jobManager emit — jm.emit is wired to
 // emitWithProvenance, and emitWithProvenance hands the event to
-// jobManager.onSessionEvent, which locks jm.mu.
+// jobManager.onSessionEvent, whose first statement synchronously enters
+// enterWatchCallback, which locks jm.mu even when terminal production is fenced.
 //
 // It matters most at the four jm.emit call sites in agent/jobs.go,
 // agent/job_shell.go and agent/job_delegate.go, each of which unlocks jm.mu on
@@ -101,9 +108,78 @@ func TestEmitWithProvenanceReacquiresJobManagerMu(t *testing.T) {
 	}
 
 	onEvent := methodDecl(t, files, "jobManager", "onSessionEvent")
-	if !acquiresBeforeAnyReturn(onEvent, "mu") {
-		t.Error("jobManager.onSessionEvent no longer takes jm.mu unconditionally: " +
+	if !entersWatchCallbackFirst(onEvent) {
+		t.Error("jobManager.onSessionEvent no longer synchronously enters jm.enterWatchCallback in its first statement: " +
+			"an early return or asynchronous entry bypasses the emitting-goroutine lock guard")
+	}
+	entry := methodDecl(t, files, "jobManager", "enterWatchCallback")
+	if !acquiresBeforeAnyReturn(entry, "mu") {
+		t.Error("jobManager.enterWatchCallback no longer takes jm.mu before every return, including terminal fencing: " +
 			"emitWithProvenance stops being self-guarding, and an emit under jobManager.mu becomes a silent daemon wedge")
+	}
+}
+
+// Pin only the known delegation, not an interprocedural approximation:
+// if !jm.enterWatchCallback() { return } must be the first statement.
+func entersWatchCallbackFirst(fn *ast.FuncDecl) bool {
+	if len(fn.Body.List) == 0 {
+		return false
+	}
+	guard, ok := fn.Body.List[0].(*ast.IfStmt)
+	if !ok || guard.Init != nil || guard.Else != nil || len(guard.Body.List) != 1 {
+		return false
+	}
+	negation, ok := guard.Cond.(*ast.UnaryExpr)
+	if !ok || negation.Op != token.NOT {
+		return false
+	}
+	call, ok := negation.X.(*ast.CallExpr)
+	if !ok || exprText(call.Fun) != "jm.enterWatchCallback" || len(call.Args) != 0 {
+		return false
+	}
+	ret, ok := guard.Body.List[0].(*ast.ReturnStmt)
+	return ok && len(ret.Results) == 0
+}
+
+func TestEmissionGuardASTFixtures(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"synchronous", "if !jm.enterWatchCallback() { return }; defer jm.leaveWatchCallback()", true},
+		{"early_return", "if skip { return }; if !jm.enterWatchCallback() { return }", false},
+		{"async_entry", "go jm.enterWatchCallback()", false},
+		{"deferred_entry", "defer jm.enterWatchCallback()", false},
+		{"conditional_entry", "if enabled { if !jm.enterWatchCallback() { return } }", false},
+		{"other_receiver", "if !other.enterWatchCallback() { return }", false},
+		{"initializer", "if work(); !jm.enterWatchCallback() { return }", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", "package agent; func (jm *jobManager) onSessionEvent() {"+tc.body+"}", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := entersWatchCallbackFirst(methodDecl(t, []*ast.File{file}, "jobManager", "onSessionEvent")); got != tc.want {
+				t.Fatalf("entry guard=%t, want %t", got, tc.want)
+			}
+		})
+	}
+	// A test-local negative because session_events.go is not a mutation seam.
+	for _, prefix := range []string{"", "go "} {
+		name := "emit_synchronous"
+		if prefix != "" {
+			name = "emit_async"
+		}
+		t.Run(name, func(t *testing.T) {
+			file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", "package agent; func (s *Session) emitWithProvenance() {"+prefix+"jm.onSessionEvent(ev)}", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := callsOnTheSameGoroutine(methodDecl(t, []*ast.File{file}, "Session", "emitWithProvenance"), "onSessionEvent"); got != (prefix == "") {
+				t.Fatalf("%qonSessionEvent synchronous=%t", prefix, got)
+			}
+		})
 	}
 }
 
@@ -296,5 +372,161 @@ func exprText(expr ast.Expr) string {
 		return exprText(v.X) + "." + v.Sel.Name
 	default:
 		return "a non-selector expression"
+	}
+}
+
+func emissionGuardManager(t *testing.T) *jobManager {
+	t.Helper()
+	jm, err := newJobManagerNoSync(t.TempDir(), "emission-guard-owner", func(jobNotification) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := jm.close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return jm
+}
+
+// Hold a real terminal fence at its join by keeping an entered callback alive.
+func emissionGuardHoldFence(t *testing.T, jm *jobManager) func() {
+	t.Helper()
+	if !jm.enterWatchCallback() {
+		t.Fatal("initial callback rejected")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- jm.fenceTerminalWatchProduction(ctx) }()
+	released := false
+	release := func() {
+		if released {
+			return
+		}
+		released = true
+		jm.leaveWatchCallback()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+		cancel()
+	}
+	t.Cleanup(release)
+	synctest.Wait()
+	jm.watchCallbackMu.Lock()
+	fenced := jm.watchProductionFenced
+	jm.watchCallbackMu.Unlock()
+	if !fenced {
+		t.Fatal("terminal fence did not close before joining entered callback")
+	}
+	return release
+}
+
+func TestEmissionGuardFenceProduction(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		jm := emissionGuardManager(t)
+		res, err := jm.configureWatch(watchArgs{Target: "caller", Events: []string{"assistant.tool"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		jm.mu.Lock()
+		_, cfg, ok := jm.watchConfigByIDLocked(res.WatchID)
+		jm.mu.Unlock()
+		if !ok {
+			t.Fatal("real event watch missing")
+		}
+		release := emissionGuardHoldFence(t, jm)
+		jm.mu.Lock()
+		callbacksDone := jm.watchCallbacksDone
+		jm.mu.Unlock()
+		before := len(producerSourceEvents(t, jm, jobstore.EventWatchSendPending))
+		s := &Session{id: jm.sessionID, events: make(chan events.SessionEvent, 2), jobManager: jm}
+		s.emitWithProvenance(events.EventToolCallEnd, events.ToolCallEndData{ToolName: "guard-tool"}, nil)
+		if got := len(s.events); got != 1 {
+			t.Fatalf("published events=%d, want 1 despite watch production fencing", got)
+		}
+		jm.mu.Lock()
+		callbacks, count, fires, done := jm.watchCallbacks, cfg.eventCount, cfg.conditionFires, jm.watchCallbacksDone
+		jm.mu.Unlock()
+		after := len(producerSourceEvents(t, jm, jobstore.EventWatchSendPending))
+		if callbacks != 1 || done != callbacksDone || count != 0 || fires != 0 || after != before {
+			t.Fatalf("fenced production changed: callbacks=%d done unchanged=%t count=%d fires=%d pending=%d/%d", callbacks, done == callbacksDone, count, fires, before, after)
+		}
+		release()
+		jm.watchCallbackMu.Lock()
+		fenced := jm.watchProductionFenced
+		jm.watchCallbackMu.Unlock()
+		jm.mu.Lock()
+		callbacks = jm.watchCallbacks
+		jm.mu.Unlock()
+		if fenced || callbacks != 0 || jm.watchCount() != 0 {
+			t.Fatalf("cleanup: fenced=%t callbacks=%d watches=%d", fenced, callbacks, jm.watchCount())
+		}
+		if _, err := jm.configureWatch(watchArgs{Target: "caller", Events: []string{"assistant.tool"}}); err != nil {
+			t.Fatal(err)
+		}
+		s.emitWithProvenance(events.EventToolCallEnd, events.ToolCallEndData{ToolName: "guard-tool"}, nil)
+		if got := len(producerSourceEvents(t, jm, jobstore.EventWatchSendPending)); got != before+1 {
+			t.Fatalf("reopened production pending=%d, want %d", got, before+1)
+		}
+		t.Logf("real fence: event published, no production or accounting, cleanup completed, fresh watch produced pending %d -> %d -> %d", before, after, before+1)
+	})
+}
+
+func TestEmissionGuardFenceReopensOnError(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"cancelled_join", "clear_persistence_error"} {
+		t.Run(name, func(t *testing.T) {
+			jm := emissionGuardManager(t)
+			if _, err := jm.configureWatch(watchArgs{Target: "caller", Events: []string{"assistant.tool"}}); err != nil {
+				t.Fatal(err)
+			}
+			if name == "cancelled_join" {
+				if !jm.enterWatchCallback() {
+					t.Fatal("initial callback rejected")
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				err := jm.fenceTerminalWatchProduction(ctx)
+				jm.leaveWatchCallback()
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancelled fence=%v", err)
+				}
+			} else {
+				appendEvents := jm.appendEvents
+				defer func() { jm.appendEvents = appendEvents }()
+				failure := errors.New("injected watch clear persistence failure")
+				jm.appendEvents = func(evs []jobstore.Event) error {
+					for _, ev := range evs {
+						if ev.Kind == jobstore.EventWatchCleared {
+							return failure
+						}
+					}
+					return appendEvents(evs)
+				}
+				err := jm.fenceTerminalWatchProduction(context.Background())
+				jm.appendEvents = appendEvents
+				if !errors.Is(err, failure) {
+					t.Fatalf("clear-error fence=%v", err)
+				}
+			}
+			jm.watchCallbackMu.Lock()
+			fenced := jm.watchProductionFenced
+			jm.watchCallbackMu.Unlock()
+			if fenced || jm.watchCount() != 1 {
+				t.Fatalf("error cleanup: fenced=%t watches=%d, want reopened gate with retained registration", fenced, jm.watchCount())
+			}
+			s := &Session{id: jm.sessionID, events: make(chan events.SessionEvent, 1), jobManager: jm}
+			s.emitWithProvenance(events.EventToolCallEnd, events.ToolCallEndData{ToolName: "guard-tool"}, nil)
+			if got := len(producerSourceEvents(t, jm, jobstore.EventWatchSendPending)); got != 1 {
+				t.Fatalf("production after error=%d pending, want 1", got)
+			}
+			if err := jm.fenceTerminalWatchProduction(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if jm.watchCount() != 0 {
+				t.Fatal("successful retry left watch installed")
+			}
+		})
 	}
 }

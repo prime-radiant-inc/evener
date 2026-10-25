@@ -3230,15 +3230,16 @@ func watchEventFilterSummary(filter *watchEventFilter) string {
 func (jm *jobManager) enterWatchCallback() bool {
 	jm.watchCallbackMu.Lock()
 	defer jm.watchCallbackMu.Unlock()
+	// Even a fenced emission must retain the emit-under-jm.mu deadlock guard.
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
 	if jm.watchProductionFenced {
 		return false
 	}
-	jm.mu.Lock()
 	if jm.watchCallbacks == 0 {
 		jm.watchCallbacksDone = make(chan struct{})
 	}
 	jm.watchCallbacks++
-	jm.mu.Unlock()
 	return true
 }
 
