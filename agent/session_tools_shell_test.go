@@ -1599,7 +1599,12 @@ func TestShellToolConfinedCwdRefusalPreservesWorkViaCd(t *testing.T) {
 	s := newSession(t, withDir(t.TempDir()), withoutGitSnapshot())
 	s.env.(*execenv.LocalExecutionEnvironment).Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}
 
-	outside := t.TempDir()
+	// A space and a quote in the path pin the suggested command's shell quoting;
+	// the cd form below runs it for real.
+	outside := filepath.Join(t.TempDir(), "my project's dir")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	const payload = "preserved-through-cd"
 	if err := os.WriteFile(filepath.Join(outside, "marker.txt"), []byte(payload), 0o644); err != nil {
 		t.Fatal(err)
@@ -1617,7 +1622,7 @@ func TestShellToolConfinedCwdRefusalPreservesWorkViaCd(t *testing.T) {
 		t.Fatalf("refused command still read the outside file: %s", res.Output)
 	}
 
-	cdArgs, err := json.Marshal(map[string]any{"command": fmt.Sprintf("cd %q && cat marker.txt", outside)})
+	cdArgs, err := json.Marshal(map[string]any{"command": fmt.Sprintf("cd %s && cat marker.txt", shellSingleQuote(outside))})
 	if err != nil {
 		t.Fatal(err)
 	}
