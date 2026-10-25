@@ -260,7 +260,9 @@ const retirementNonBlockingJournalMaxBytes = 4 << 20
 // the end. An empty journal is a genuine clear read. Any error or mismatch
 // contributes no evidence, so the pre-check keeps today's wait; it never treats
 // an unreadable journal as clear. The strict reader still decides the actual
-// refusal.
+// refusal. MaxLineBytes is set to the same bound because jobstore checks
+// MaxBytes only after a whole line decodes: an append that grows one line past
+// the cap is refused instead of buffering the default 128 MiB line limit.
 func (jm *jobManager) retirementNonBlockingJournalPending(sessionID string) bool {
 	if jm == nil || jm.dir == "" {
 		return false
@@ -273,7 +275,10 @@ func (jm *jobManager) retirementNonBlockingJournalPending(sessionID string) bool
 	if before.Size() == 0 {
 		return false
 	}
-	events, offset, err := jobstore.ScanEventsFrom(context.Background(), path, 0, jobstore.ScanLimits{MaxBytes: retirementNonBlockingJournalMaxBytes})
+	events, offset, err := jobstore.ScanEventsFrom(context.Background(), path, 0, jobstore.ScanLimits{
+		MaxBytes:     retirementNonBlockingJournalMaxBytes,
+		MaxLineBytes: retirementNonBlockingJournalMaxBytes,
+	})
 	if err != nil {
 		return false
 	}
