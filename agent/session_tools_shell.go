@@ -406,7 +406,7 @@ func resolveShellWorkingDir(env execenv.ExecutionEnvironment, raw string) (strin
 	abs = filepath.Clean(abs)
 	if rb, ok := env.(execenv.CommandWorkingDirectoryBoundary); ok {
 		if err := rb.EnsureCommandWorkingDirectory(abs); err != nil {
-			return "", fmt.Errorf("cwd %q resolves to %s, which escapes the sandbox: %w", raw, abs, err)
+			return "", fmt.Errorf("cwd %q resolves to %s, which escapes the sandbox: %w; run the command with `cd %s && <command>` instead", raw, abs, err, abs)
 		}
 	}
 	if info, err := os.Stat(abs); err != nil || !info.IsDir() {
