@@ -564,6 +564,15 @@ export type { GroupedSearch, GroupedSearchRow } from "./searchGrouping";
 export { countSearchMatches, groupSearchResults } from "./searchGrouping";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
+export type {
+  SendQueueAction,
+  SendQueueDecision,
+  SendQueueGateInput,
+  SendQueuePolicy,
+  SendQueueReason,
+  SendQueueRecovery,
+} from "./sendQueueGate";
+export { BROWSER_SEND_QUEUE_POLICY, NATIVE_SEND_QUEUE_POLICY, sendQueueGate } from "./sendQueueGate";
 export type { QuietState } from "./sessionActivity";
 export { decodeActivityRead, QUIET_AFTER_MS, quietState, STUCK_AFTER_MS } from "./sessionActivity";
 export { projectSessionActivity, type SessionActivityPresentation } from "./sessionActivityPresentation";
