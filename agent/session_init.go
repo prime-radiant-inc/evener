@@ -274,14 +274,6 @@ func selectStrategy(cfg SessionConfig, cm *contextmgr.Manager, sess *Session) (c
 		return contextmgr.NewSessionLogStrategy(cm, host)
 	case "ooda":
 		return contextmgr.NewOODAStrategy(cm, host)
-	case "obs-mask":
-		return contextmgr.NewObsMaskStrategy(cm), nil
-	case "checkpoint-pred":
-		return contextmgr.NewCheckpointPredStrategy(cm), nil
-	case "memory-crystals":
-		return contextmgr.NewMemoryCrystalsStrategy(cm), nil
-	case "recursive-distill":
-		return contextmgr.NewRecursiveDistillStrategy(cm), nil
 	default:
 		return nil, fmt.Errorf("unknown context strategy: %q", cfg.ContextStrategy)
 	}

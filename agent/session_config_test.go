@@ -876,7 +876,7 @@ func TestSession_ObservationMaskOnlyQueuesNoTranscriptReminder(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, ContextStrategy: "obs-mask"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, ContextStrategy: "session-log"})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
