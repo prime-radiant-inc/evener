@@ -64,6 +64,12 @@ The details below were Bot's implementation proposals, accepted with this amendm
   page keeps the same persona when ownership is proven by canonical context. Do not
   guess ownership for an unresolved direct link; keep it readable with truthful
   attribution and adopt the proven persona when the shared owner resolves it.
+- The existing shared activity context carries the stored delegate name for the
+  addressed child and proven delegate ancestors. Use these names for direct-page
+  and parent-instruction attribution without acquiring parent activity or paging a
+  roster for labels. Names remain bounded display data; existing ancestor titles
+  and qualified routing identities retain their meanings. Unnamed or unresolved
+  identities keep truthful attribution without an invented name.
 - A child's parent instructions are attributed to its actual parent. They are not
   relabeled as something Jesse said. Poses never imply success or inferred emotion.
 
