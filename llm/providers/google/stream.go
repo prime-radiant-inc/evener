@@ -122,15 +122,11 @@ func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc
 									name, _ := fc["name"].(string)
 									argsAny := normalizeJSONNumbers(fc["args"])
 									argsRaw, _ := json.Marshal(argsAny)
-									// Capture the args tokens from the raw
-									// event data once — for objects, the token
-									// IS the content (byte-identical). Degrade,
-									// never drop.
+									// Capture this event's raw args once;
+									// index this part.
 									if !rawCaptured {
 										rawCaptured = true
-										if len(ev.Data) > 0 {
-											rawArgs = captureGeminiArgsRaw(ev.Data)
-										}
+										rawArgs = captureGeminiArgsRaw(ev.Data)
 									}
 									if partIdx < len(rawArgs) && rawArgs[partIdx] != nil {
 										argsRaw = rawArgs[partIdx]

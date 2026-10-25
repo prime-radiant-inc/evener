@@ -96,17 +96,11 @@ func fromGeminiResponse(raw map[string]any, requestedModel string, body []byte) 
 							name, _ := fc["name"].(string)
 							argsAny := fc["args"]
 							argsRaw, _ := json.Marshal(argsAny)
-							// When the raw body is available, decode it
-							// once on the first functionCall part and
-							// index this part's args token — for objects,
-							// the token IS the content (byte-identical,
-							// preserves key-order/spacing/invalid-UTF-8).
-							// Degrade, never drop.
+							// Decode the raw body once; index this part's
+							// byte-faithful args token.
 							if !rawCaptured {
 								rawCaptured = true
-								if len(body) > 0 {
-									rawArgs = captureGeminiArgsRaw(body)
-								}
+								rawArgs = captureGeminiArgsRaw(body)
 							}
 							if partIdx < len(rawArgs) && rawArgs[partIdx] != nil {
 								argsRaw = rawArgs[partIdx]
@@ -264,6 +258,9 @@ var rawArgsBodyDecode = json.Unmarshal
 // It returns nil if the focused decode fails, so callers fall back to the
 // existing re-marshal path.
 func captureGeminiArgsRaw(body []byte) []json.RawMessage {
+	if len(body) == 0 {
+		return nil
+	}
 	type partRaw struct {
 		FunctionCall struct {
 			Args json.RawMessage `json:"args,omitempty"`

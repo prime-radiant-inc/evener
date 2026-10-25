@@ -301,11 +301,8 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 				}
 				if tc.Function.Arguments != "" {
 					deltaArgs := []byte(tc.Function.Arguments)
-					// Capture the arguments fragments from the chunk's raw
-					// data (ev.Data) once to preserve bytes that
-					// json.Unmarshal into string would coerce to U+FFFD.
-					// Degrade, never drop: fall back to the string-form args
-					// when the focused capture fails.
+					// Capture this chunk's raw fragments once; index this
+					// delta.
 					if !rawCaptured {
 						rawCaptured = true
 						rawFragments = captureChunkArgsRaw(ev.Data)
@@ -344,6 +341,9 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 // with protocolhttp.RawStringContent. It returns nil if the focused decode
 // fails, so the caller falls back to the string-form args.
 func captureChunkArgsRaw(chunkData []byte) []json.RawMessage {
+	if len(chunkData) == 0 {
+		return nil
+	}
 	type chunkFunctionRaw struct {
 		Arguments json.RawMessage `json:"arguments"`
 	}

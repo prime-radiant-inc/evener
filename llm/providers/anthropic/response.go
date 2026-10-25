@@ -40,16 +40,11 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string, body []byt
 				name, _ := it["name"].(string)
 				argsAny := it["input"]
 				argsRaw, _ := json.Marshal(argsAny)
-				// When the raw body is available, decode it once on the first
-				// tool_use block and index this block's input token — for
-				// objects, the token IS the content (byte-identical,
-				// preserves key-order/spacing/invalid-UTF-8). Degrade, never
-				// drop: fall back to the existing re-marshal path on failure.
+				// Decode the raw body once; index this block's byte-faithful
+				// input token.
 				if !rawCaptured {
 					rawCaptured = true
-					if len(body) > 0 {
-						rawInputs = captureAnthropicInputRaw(body)
-					}
+					rawInputs = captureAnthropicInputRaw(body)
 				}
 				if contentIdx < len(rawInputs) && rawInputs[contentIdx] != nil {
 					argsRaw = rawInputs[contentIdx]
@@ -274,6 +269,9 @@ var rawArgsBodyDecode = json.Unmarshal
 // if the focused decode fails, so the caller falls back to the existing
 // re-marshal path.
 func captureAnthropicInputRaw(body []byte) []json.RawMessage {
+	if len(body) == 0 {
+		return nil
+	}
 	type contentItemRaw struct {
 		Type  string          `json:"type"`
 		Input json.RawMessage `json:"input,omitempty"`

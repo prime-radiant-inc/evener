@@ -297,15 +297,10 @@ func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string,
 	var rawCaptured bool
 	for tcIdx, tc := range choice.Message.ToolCalls {
 		args := rescueClaudeXMLArgs(tc.Function.Arguments)
-		// When the raw body is available, decode it once on the first tool
-		// call and index this call's byte-faithful arguments token. Degrade,
-		// never drop: a failed decode keeps the existing string-form args
-		// (already coerced by the map decode).
+		// Decode the raw body once; index this call's byte-faithful token.
 		if !rawCaptured {
 			rawCaptured = true
-			if len(body) > 0 {
-				rawArgs = captureChatArgsRaw(body)
-			}
+			rawArgs = captureChatArgsRaw(body)
 		}
 		if tcIdx < len(rawArgs) && rawArgs[tcIdx] != nil {
 			// rawArgs is the RawMessage string token; unescape it to get
@@ -391,6 +386,9 @@ var rawArgsBodyDecode = json.Unmarshal
 // protocolhttp.RawStringContent. It returns nil if the focused decode fails,
 // so the caller keeps the existing string-form args (degrade, never drop).
 func captureChatArgsRaw(body []byte) []json.RawMessage {
+	if len(body) == 0 {
+		return nil
+	}
 	var focused chatCompletionResponseRaw
 	if err := rawArgsBodyDecode(body, &focused); err != nil {
 		return nil

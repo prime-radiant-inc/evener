@@ -469,6 +469,14 @@ func countRawArgsBodyDecodes(t *testing.T) *int {
 	return &decodes
 }
 
+// chatManyBody builds a Chat Completions body whose message carries a content
+// part before the given tool-call fragments.
+func chatManyBody(calls ...string) []byte {
+	return []byte(`{"id":"chatcmpl-1","model":"m-wire","choices":[{"index":0,"message":{"role":"assistant","content":"hello","tool_calls":[` +
+		strings.Join(calls, ",") +
+		`]},"finish_reason":"tool_calls"}]}`)
+}
+
 // TestRawArgs_NonStream_DecodesBodyOnce pins that one response with several
 // tool calls runs the focused raw-args body decode once, not once per call.
 // Not parallel: it swaps the package-level rawArgsBodyDecode seam.
@@ -477,11 +485,11 @@ func TestRawArgs_NonStream_DecodesBodyOnce(t *testing.T) {
 	first := `{ "first" : "` + "\xff" + `" }`
 	second := `{ "second" : "` + "\xfe" + `" }`
 	third := `{ "third" : "` + "\xfd" + `" }`
-	body := []byte(`{"id":"chatcmpl-1","model":"m-wire","choices":[{"index":0,"message":{"role":"assistant","content":"hello","tool_calls":[` +
-		`{"id":"call_1","type":"function","function":{"name":"first","arguments":` + string(jsonStringToken(first)) + `}},` +
-		`{"id":"call_2","type":"function","function":{"name":"second","arguments":` + string(jsonStringToken(second)) + `}},` +
-		`{"id":"call_3","type":"function","function":{"name":"third","arguments":` + string(jsonStringToken(third)) + `}}` +
-		`]},"finish_reason":"tool_calls"}]}`)
+	body := chatManyBody(
+		`{"id":"call_1","type":"function","function":{"name":"first","arguments":`+string(jsonStringToken(first))+`}}`,
+		`{"id":"call_2","type":"function","function":{"name":"second","arguments":`+string(jsonStringToken(second))+`}}`,
+		`{"id":"call_3","type":"function","function":{"name":"third","arguments":`+string(jsonStringToken(third))+`}}`,
+	)
 
 	got := decodeRawArgsCompleteMany(t, body)
 	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second), []byte(third)})
@@ -514,11 +522,11 @@ func TestRawArgs_RecordedJSON_DecodesBodyOnce(t *testing.T) {
 	first := `{ "first" : "` + "\xff" + `" }`
 	second := `{ "second" : "` + "\xfe" + `" }`
 	third := `{ "third" : "` + "\xfd" + `" }`
-	body := []byte(`{"id":"chatcmpl-1","model":"m-wire","choices":[{"index":0,"message":{"role":"assistant","content":"hello","tool_calls":[` +
-		`{"id":"call_1","type":"function","function":{"name":"first","arguments":` + string(jsonStringToken(first)) + `}},` +
-		`{"id":"call_2","type":"function","function":{"name":"second","arguments":` + string(jsonStringToken(second)) + `}},` +
-		`{"id":"call_3","type":"function","function":{"name":"third","arguments":` + string(jsonStringToken(third)) + `}}` +
-		`]},"finish_reason":"tool_calls"}]}`)
+	body := chatManyBody(
+		`{"id":"call_1","type":"function","function":{"name":"first","arguments":`+string(jsonStringToken(first))+`}}`,
+		`{"id":"call_2","type":"function","function":{"name":"second","arguments":`+string(jsonStringToken(second))+`}}`,
+		`{"id":"call_3","type":"function","function":{"name":"third","arguments":`+string(jsonStringToken(third))+`}}`,
+	)
 
 	resp, err := ExtractRecordedResponse(body, "m-wire")
 	if err != nil {
