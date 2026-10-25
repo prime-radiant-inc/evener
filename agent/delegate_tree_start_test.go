@@ -483,7 +483,7 @@ func TestDelegateControllerInputPersistFailureUnavailableReceiverRetries(t *test
 		t.Fatalf("unavailable receiver replay=%#v, want exact delivery %q", retries, plan.deliveryID)
 	}
 	plan = retries[0]
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		if _, err := deliverDelegatePacket(plan, receiver); err != nil {
 			t.Fatalf("receiver retry %d: %v", attempt, err)
 		}

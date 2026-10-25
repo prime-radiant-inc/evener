@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -40,42 +41,80 @@ func pausedWarnings(t *testing.T, s *Session) func() []events.WarningData {
 // provider and how to resume. A second failure in the same episode says
 // nothing new.
 func TestPermanentFailureDeferringAttentionWarnsOnceWithHowToResume(t *testing.T) {
-	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil))
+	s, _, notifies, adapter := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil))
 	warnings := pausedWarnings(t, s)
 
 	armOneRootAttention(t, s, "dlg_401", "delegate:dlg_401/delivery/1")
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {
 		t.Fatal("the 401 notification turn unexpectedly succeeded")
 	}
+	assertNotificationPending(t, s, []string{"delegate:dlg_401/delivery/1"})
+	assertAttentionResponseReceipts(t, s, "delegate:dlg_401/delivery/1", 0)
+	baseline := notifies.Load()
 	armOneRootAttention(t, s, "dlg_401b", "delegate:dlg_401b/delivery/1")
+	if wake, _, pending := attentionRailState(s); !wake || pending != 2 || notifies.Load() <= baseline {
+		t.Fatalf("fresh arrival did not rearm both pending IDs: wake=%t pending=%d notifies=%d baseline=%d", wake, pending, notifies.Load(), baseline)
+	}
+	s.deferNotificationAdmission()
+	baseline = notifies.Load()
+	if err := s.releaseNotificationAdmission(); err != nil {
+		t.Fatalf("release notification admission: %v", err)
+	}
+	if wake, retry, pending := attentionRailState(s); !wake || retry || pending != 2 || notifies.Load() <= baseline {
+		t.Fatalf("released admission lost fresh work: wake=%t retry=%t pending=%d notifies=%d baseline=%d", wake, retry, pending, notifies.Load(), baseline)
+	}
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {
 		t.Fatal("the second 401 notification turn unexpectedly succeeded")
+	}
+	assertNotificationPending(t, s, []string{"delegate:dlg_401/delivery/1", "delegate:dlg_401b/delivery/1"})
+	assertAttentionResponseReceipts(t, s, "delegate:dlg_401/delivery/1", 0)
+	assertAttentionResponseReceipts(t, s, "delegate:dlg_401b/delivery/1", 0)
+	if _, calls := adapter.Counts(); calls != 2 {
+		t.Fatalf("failed provider attempts=%d, want both genuine wakes attempted", calls)
 	}
 
 	got := warnings()
 	if len(got) != 1 {
 		t.Fatalf("paused warnings = %+v, want exactly one for the episode", got)
 	}
-	if !strings.Contains(got[0].Message, "Sign in to openai, then send a message to continue") {
-		t.Fatalf("paused warning = %q, want it to say how to resume", got[0].Message)
+	if got[0].Source != string(diagnostic.SourceEvener) || got[0].Code != events.WarningCodeAttentionPaused {
+		t.Fatalf("paused warning lacks structured source/code routing: %+v", got[0])
 	}
 }
 
 // The episode ends when a root attention turn delivers: a later permanent
 // failure is a new pause, worth saying again.
 func TestAttentionPauseWarnsAgainAfterADelivery(t *testing.T) {
-	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil))
+	failure := llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil)
+	s, _, _, adapter := newAttentionLivelockSession(t, failure)
 	warnings := pausedWarnings(t, s)
 
 	armOneRootAttention(t, s, "dlg_a", "delegate:dlg_a/delivery/1")
-	_, _ = s.ProcessInputKind(context.Background(), "", nil, EntryNotification)
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {
+		t.Fatal("first failed episode unexpectedly succeeded")
+	}
+	assertNotificationPending(t, s, []string{"delegate:dlg_a/delivery/1"})
+	assertAttentionResponseReceipts(t, s, "delegate:dlg_a/delivery/1", 0)
 	// The deferred attention rides a later turn that succeeds (a user's
 	// message, say) and resolves.
-	if err := s.finishAttentionTurn([]string{"delegate:dlg_a/delivery/1"}, nil); err != nil {
-		t.Fatalf("resolve the deferred attention: %v", err)
+	adapter.mu.Lock()
+	adapter.streamErr = llm.ErrStreamUnsupported
+	adapter.completeResult = finalResponse("recovered")
+	adapter.mu.Unlock()
+	if _, err := s.ProcessInput(context.Background(), "resume", nil); err != nil {
+		t.Fatalf("recover through a successful user response: %v", err)
 	}
+	assertAttentionResponseReceipts(t, s, "delegate:dlg_a/delivery/1", 1)
+	assertNotificationPending(t, s, []string{})
+	adapter.mu.Lock()
+	adapter.streamErr = failure
+	adapter.mu.Unlock()
 	armOneRootAttention(t, s, "dlg_b", "delegate:dlg_b/delivery/1")
-	_, _ = s.ProcessInputKind(context.Background(), "", nil, EntryNotification)
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {
+		t.Fatal("later independent failed episode unexpectedly succeeded")
+	}
+	assertNotificationPending(t, s, []string{"delegate:dlg_b/delivery/1"})
+	assertAttentionResponseReceipts(t, s, "delegate:dlg_b/delivery/1", 0)
 
 	if got := warnings(); len(got) != 2 {
 		t.Fatalf("paused warnings = %d, want one per deferral episode (2)", len(got))

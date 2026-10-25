@@ -13,6 +13,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
@@ -23,6 +24,80 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
+
+func TestNotificationColdAcceptanceDuringEmptyWakePass(t *testing.T) {
+	// Not parallel: the barrier wraps the package-wide filesystem fold seam.
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			observationRequest(t, req, []string{"cold-empty-payload-83"}, nil)
+			return finalResponse("cold-empty-response-83")
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	c := root.delegateController
+	if _, err := c.openDelegateAttention(fixture.delegateID, "stale-empty-wake-83"); err != nil {
+		t.Fatal(err)
+	}
+	path := transcriptPath(root.stateDir, fixture.childID)
+	if err := os.Chtimes(path, time.Unix(1, 0), time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	compute := readExistingDelegateAttentionFoldCompute
+	entered, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	var once sync.Once
+	readExistingDelegateAttentionFoldCompute = func(readPath, sessionID string) (delegateAttentionFold, int64, error) {
+		fold, consumed, err := compute(readPath, sessionID)
+		if readPath == path && err == nil && len(fold.pendingIDs()) == 0 {
+			once.Do(func() { close(entered); <-release })
+		}
+		return fold, consumed, err
+	}
+	restoreRead := sync.OnceFunc(func() { readExistingDelegateAttentionFoldCompute = compute })
+	done := make(chan error, 1)
+	joined := false
+	go func() { done <- c.requestSessionWake(fixture.childID) }()
+	defer func() {
+		unblock()
+		if !joined {
+			<-done
+		}
+		root.sendersWG.Wait()
+		restoreRead()
+	}()
+	notificationAwait(t, entered)
+	const id = "cold-empty-acceptance-83"
+	if err := c.enqueueNotification(fixture.childID, notification{ID: id, Message: llm.User("cold-empty-payload-83")}); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	held := c.attentionRestoreHeldLocked(fixture.delegateID)
+	cold := c.live[fixture.delegateID] == nil || c.live[fixture.delegateID].runtime == nil
+	c.mu.Unlock()
+	if !held || !cold {
+		t.Fatalf("acceptance missed the cold held empty-read boundary: held=%t cold=%t", held, cold)
+	}
+	assertNotificationRecords(t, path, id, llm.User("cold-empty-payload-83"), 1)
+	restoreRead()
+	unblock()
+	err := <-done
+	joined = true
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No clock advance, fresh input or unrelated recheck may rescue this ID.
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	root.sendersWG.Wait()
+	c.mu.Lock()
+	runtime := c.live[fixture.delegateID].runtime
+	c.mu.Unlock()
+	assertAttentionResponseReceipts(t, runtime, id, 1)
+	assertNotificationPending(t, runtime, []string{})
+	if got := supervisionRequestCount(fixture.adapter); got != 1 {
+		t.Fatalf("provider requests=%d, want one automatically observed acceptance", got)
+	}
+}
 
 func TestNotificationColdStopWaitsForWriterClose(t *testing.T) {
 	t.Parallel()

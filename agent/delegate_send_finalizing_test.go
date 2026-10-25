@@ -514,17 +514,15 @@ func TestDelegateControllerReleasesAFinalizationWhoseRuntimeIsReplaced(t *testin
 	assertStartAdmitted(t, c, "dlg_target", "once the finalizing runtime was replaced")
 }
 
-// sessionOnHarness is a session whose delegate controller is the harness's,
-// for driving the send's reservation directly. Its own controller goes back
-// before it closes (cleanups run last-registered first), or closing would
-// tear down the harness tree.
+// sessionOnHarness borrows the harness's controller for its entire lifetime.
+// Constructor inheritance leaves tree ownership with the harness, so Close
+// does not tear down that tree or replace a pointer still used by a wake.
 func sessionOnHarness(t *testing.T, c *delegateTreeController) *Session {
 	t.Helper()
-	s := newSession(t)
-	own := s.delegateController
-	s.delegateController = c
-	t.Cleanup(func() { s.delegateController = own })
-	return s
+	cfg := minimalTestSessionConfig(t)
+	cfg.spawn.delegateController = c
+	cfg.spawn.delegateRootSessionID = c.rootSessionID
+	return newSession(t, withConfig(cfg))
 }
 
 // A send that waited out one finalization and finds the delegate finalizing
