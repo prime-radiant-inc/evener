@@ -131,7 +131,7 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 // and returns the abort error alongside the partial results.
 func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, profile *provider.Profile, finishReason string) ([]tool.ExecResult, error) {
 	results := make([]tool.ExecResult, len(calls))
-	if profile.SupportsParallelToolCalls() && len(calls) > 1 {
+	if len(calls) > 1 {
 		// Ordered-group algorithm: batch consecutive read-only calls for
 		// parallel execution; serialize everything else.
 		flushReadBatch := func(batch []int) error {

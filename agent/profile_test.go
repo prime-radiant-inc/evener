@@ -40,9 +40,6 @@ func TestProviderProfiles_ToolsetsAndDocSelection(t *testing.T) {
 	if openai.ID() != "openai" {
 		t.Fatalf("openai id: %q", openai.ID())
 	}
-	if !openai.SupportsParallelToolCalls() {
-		t.Fatalf("openai should support parallel tool calls")
-	}
 	if got := strings.Join(openai.ProjectDocFiles(), ","); got != "AGENTS.md,.codex/instructions.md" {
 		t.Fatalf("openai docs: %q", got)
 	}
@@ -53,18 +50,12 @@ func TestProviderProfiles_ToolsetsAndDocSelection(t *testing.T) {
 	if anthropic.ID() != "anthropic" {
 		t.Fatalf("anthropic id: %q", anthropic.ID())
 	}
-	if !anthropic.SupportsParallelToolCalls() {
-		t.Fatalf("anthropic should support parallel tool calls")
-	}
 	assertHasTool(t, anthropic, "edit_file")
 	assertMissingTool(t, anthropic, "apply_patch")
 
 	gemini := newGeminiProfile("gemini-test")
 	if gemini.ID() != "google" {
 		t.Fatalf("gemini id: %q", gemini.ID())
-	}
-	if !gemini.SupportsParallelToolCalls() {
-		t.Fatalf("gemini should support parallel tool calls")
 	}
 	assertHasTool(t, gemini, "edit_file")
 	assertHasTool(t, gemini, "list_dir")
@@ -747,26 +738,6 @@ func TestProviderProfile_SupportsReasoning(t *testing.T) {
 	}
 }
 
-func TestProviderProfile_SupportsStreaming(t *testing.T) {
-	t.Parallel()
-	if !NewOpenAIProfile("gpt-5.2").SupportsStreaming() {
-		t.Fatal("OpenAI should support streaming")
-	}
-}
-
-func TestProviderProfile_DefaultCommandTimeout(t *testing.T) {
-	t.Parallel()
-	if got := NewOpenAIProfile("gpt-5.2").DefaultCommandTimeoutMS(); got != 120_000 {
-		t.Fatalf("OpenAI timeout = %d, want 120000", got)
-	}
-	if got := newAnthropicProfile("claude-opus-4-6").DefaultCommandTimeoutMS(); got != 120_000 {
-		t.Fatalf("Anthropic timeout = %d, want 120000", got)
-	}
-	if got := newGeminiProfile("gemini-2.5-pro").DefaultCommandTimeoutMS(); got != 120_000 {
-		t.Fatalf("Gemini timeout = %d, want 120000", got)
-	}
-}
-
 func TestProviderProfile_KnowledgeCutoff(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1234,9 +1205,6 @@ func TestMiniMaxProfile_BasicProperties(t *testing.T) {
 	}
 	if !p.SupportsReasoning() {
 		t.Fatal("should support reasoning")
-	}
-	if !p.SupportsStreaming() {
-		t.Fatal("should support streaming")
 	}
 }
 

@@ -646,9 +646,6 @@ func TestWorktreeOrdering_ReadBeforeSeesOldEnvReadAfterSeesNewEnv(t *testing.T) 
 	}
 
 	profile := r.s.currentProfile()
-	if !profile.SupportsParallelToolCalls() {
-		t.Fatal("test profile must support parallel tool calls to exercise the read-batch grouping path")
-	}
 
 	results, err := r.s.execToolBatch(t.Context(), calls, profile, "")
 	if err != nil {

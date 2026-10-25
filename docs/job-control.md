@@ -381,8 +381,8 @@ Defaults and timeout semantics:
 
 Foreground-wait bounds:
 
-- The foreground wait is the session command timeout (`DefaultCommandTimeoutMS`, 120000 in stock provider profiles), clamped to `MaxCommandTimeoutMS`. Shell has no per-call wait parameter; `mode` selects foreground (wait, then promote), session-owned background, or immediate detached return where the environment supports detaching.
-- These values belong to the internal [session Config](../agent/session_config.go) (`default_command_timeout_ms` and `max_command_timeout_ms`), not job-watch policy or per-call wait arguments. Provider profiles supply the normal default; the session fallback before profile selection is 10000 ms. These field names are not advertised CLI options.
+- The foreground wait is the session command timeout (`DefaultCommandTimeoutMS`, 120000 by default), clamped to `MaxCommandTimeoutMS`. Shell has no per-call wait parameter; `mode` selects foreground (wait, then promote), session-owned background, or immediate detached return where the environment supports detaching.
+- These values belong to the internal [session Config](../agent/session_config.go) (`default_command_timeout_ms` and `max_command_timeout_ms`), not job-watch policy or per-call wait arguments. The session default is 120000 ms. These field names are not advertised CLI options.
 
 Compatibility runtime-limit bounds:
 

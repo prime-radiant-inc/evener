@@ -253,17 +253,6 @@ func (p *Profile) ProjectDocFiles() []string {
 	return append([]string{}, p.docFiles...)
 }
 
-// SupportsParallelToolCalls reports whether the model may emit multiple tool
-// calls in a single response. Every protocol the agent drives does.
-func (p *Profile) SupportsParallelToolCalls() bool { return true }
-
-// SupportsStreaming reports whether the model streams. Every protocol the
-// agent drives does.
-func (p *Profile) SupportsStreaming() bool { return true }
-
-// DefaultCommandTimeoutMS is the default shell command timeout.
-func (p *Profile) DefaultCommandTimeoutMS() int { return 120_000 }
-
 // ContextWindowSize is the row's window, or 0 when unknown (spec §7.3). The
 // context manager budgets an unknown window against a conservative assumed
 // window instead of running without one (issue #4564); callers that need the
