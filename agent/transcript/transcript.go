@@ -876,8 +876,36 @@ func (w *Writer) EstablishDurability() error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	return w.establishDurabilityLocked(nil)
+}
+
+// EstablishDurabilityForFile establishes durability only when info identifies
+// this writer's actual descriptor. A reader can then use the same opened file
+// without mistaking a replacement pathname for the writer's durable contents.
+func (w *Writer) EstablishDurabilityForFile(info os.FileInfo) error {
+	if w == nil || w.file == nil {
+		return errors.New("transcript writer is nil")
+	}
+	if info == nil {
+		return errors.New("transcript reader file identity is nil")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.establishDurabilityLocked(info)
+}
+
+func (w *Writer) establishDurabilityLocked(info os.FileInfo) error {
 	if w.closed.Load() {
 		return errors.New("transcript writer is closed")
+	}
+	if info != nil {
+		actual, err := w.file.Stat()
+		if err != nil {
+			return fmt.Errorf("stat transcript writer: %w", err)
+		}
+		if !os.SameFile(actual, info) {
+			return errors.New("transcript reader and writer refer to different files")
+		}
 	}
 	if err := w.file.Sync(); err != nil {
 		return fmt.Errorf("sync transcript durability barrier: %w", err)

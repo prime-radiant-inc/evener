@@ -89,6 +89,7 @@ type producerQueryFaultFS struct {
 	afero.Fs
 	syncErr, closeErr error
 	syncCount         *int
+	truncateErr       error
 }
 
 func (fs producerQueryFaultFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
@@ -96,13 +97,21 @@ func (fs producerQueryFaultFS) OpenFile(name string, flag int, perm os.FileMode)
 	if err != nil {
 		return nil, err
 	}
-	return producerQueryFaultFile{File: file, syncErr: fs.syncErr, closeErr: fs.closeErr, syncCount: fs.syncCount}, nil
+	return producerQueryFaultFile{File: file, syncErr: fs.syncErr, closeErr: fs.closeErr, syncCount: fs.syncCount, truncateErr: fs.truncateErr}, nil
 }
 
 type producerQueryFaultFile struct {
 	afero.File
 	syncErr, closeErr error
 	syncCount         *int
+	truncateErr       error
+}
+
+func (file producerQueryFaultFile) Truncate(size int64) error {
+	if file.truncateErr != nil {
+		return file.truncateErr
+	}
+	return file.File.Truncate(size)
 }
 
 func (file producerQueryFaultFile) Close() error {
@@ -1598,92 +1607,109 @@ func TestWatchSourceFailureRetainsAllMatchedFirings(t *testing.T) {
 
 func TestCallbackCustodyAckRetrySurvivesNextFiring(t *testing.T) {
 	for _, send := range []bool{false, true} {
-		t.Run(map[bool]string{false: "callback", true: "caller send"}[send], func(t *testing.T) {
-			adapter := newMessagingAdapter()
-			s := newMessagingRoot(t, adapter, nil)
-			jm := s.jobManager
-			jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
-			a := watchArgs{Source: "self", Target: runtimeMessageAliasCaller, RepeatSeconds: 60}
-			if send {
-				a.Send = &watchSendArgs{To: runtimeMessageAliasCaller, Message: "repeat"}
-			}
-			r, err := jm.configureWatch(a)
-			if err != nil {
-				t.Fatal(err)
-			}
-			jm.mu.Lock()
-			key, cfg, _ := jm.watchConfigByIDLocked(r.WatchID)
-			jm.mu.Unlock()
-			s.SetNotifyFunc(func() { _ = jm.store.Close() })
-			jm.fireProgressTick(key, cfg)
-			s.SetNotifyFunc(nil)
-			if producerRecordCount(t, s) != 1 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 0 {
-				t.Fatal("failed to hold source ack after custody")
-			}
-			reopenProducerSource(t, jm)
-			appendOne := jm.store.Append
-			jm.appendEvent = func(event jobstore.Event) error {
-				if err := appendOne(event); err != nil {
-					return err
+		for _, replacement := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/replacement=%t", map[bool]string{false: "callback", true: "caller send"}[send], replacement), func(t *testing.T) {
+				adapter := newMessagingAdapter()
+				s := newMessagingRoot(t, adapter, nil)
+				jm := s.jobManager
+				jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+				a := watchArgs{Source: "self", Target: runtimeMessageAliasCaller, RepeatSeconds: 60}
+				if send {
+					a.Send = &watchSendArgs{To: runtimeMessageAliasCaller, Message: "repeat"}
 				}
-				if event.Kind == jobstore.EventWatchSendPending {
-					return jm.store.Close() // B is durable, A's receipt is still faulted.
+				r, err := jm.configureWatch(a)
+				if err != nil {
+					t.Fatal(err)
 				}
-				return nil
-			}
-			jm.fireProgressTick(key, cfg)
-			if rows, acks := producerSourceEvents(t, jm, jobstore.EventWatchSendPending), producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered); len(rows) != 2 || len(acks) != 0 {
-				t.Fatalf("crash cut durable pending=%d receipts=%d, want 2/0", len(rows), len(acks))
-			}
-			if producerRecordCount(t, s) != 1 {
-				t.Fatal("crash cut must retain A's custody without accepting B")
-			}
-			produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
-			first, second := *produced[0].WatchSend, *produced[1].WatchSend
-			restored, err := newJobManager(s.stateDir, s.ID(), s.enqueueJobNotificationAndNotify)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { restored.close() })
-			s.jobManager, restored.retirementOwner, restored.delegateController = restored, s, s.delegateController
-			path := transcriptPath(s.stateDir, s.ID())
-			if err := os.Rename(path, path+".held"); err != nil {
-				t.Fatal(err)
-			}
-			accepted, queryErr := s.notificationSourceAccepted(stableWatchAttentionID(first))
-			restored.dispatchProducedWatchSends()
-			if err := os.Rename(path+".held", path); err != nil {
-				t.Fatal(err)
-			}
-			if accepted || !errors.Is(queryErr, os.ErrNotExist) {
-				t.Fatalf("missing resident pathname custody=%t err=%v, want unavailable", accepted, queryErr)
-			}
-			fold, err := restored.store.LoadWatchSends()
-			if err != nil || len(fold.Pending) != 1 || len(fold.Superseded) != 1 || len(producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)) != 0 {
-				t.Fatalf("uncertain custody query changed current or predecessor work: %+v, %v", fold, err)
-			}
-			if !reflect.DeepEqual(fold.Pending[second.Key], &second) || !reflect.DeepEqual(fold.Superseded[first.DeliveryID], &first) || len(producerSourceEvents(t, restored, jobstore.EventWatchSendDropped)) != 0 || len(adapter.requestsFor("root")) != 0 {
-				t.Fatal("uncertainty changed exact A predecessor/B head or settled/executed source work")
-			}
-			restored.dispatchProducedWatchSends()
-			restored.dispatchProducedWatchSends()
-			acks := producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)
-			entries := notificationRawEntries(t, transcriptPath(s.stateDir, s.ID()))
-			if len(acks) != 2 || len(entries) != 2 || len(adapter.requestsFor("root")) != 0 {
-				t.Fatalf("after real crash accepted records=%d source acks=%d provider requests=%d, want 2/2/0", len(entries), len(acks), len(adapter.requestsFor("root")))
-			}
-			for _, entry := range entries {
-				matches := 0
-				for _, ack := range acks {
-					if entry.Turn.AttentionID == stableWatchAttentionID(*ack.WatchSend) {
-						matches++
+				jm.mu.Lock()
+				key, cfg, _ := jm.watchConfigByIDLocked(r.WatchID)
+				jm.mu.Unlock()
+				s.SetNotifyFunc(func() { _ = jm.store.Close() })
+				jm.fireProgressTick(key, cfg)
+				s.SetNotifyFunc(nil)
+				if producerRecordCount(t, s) != 1 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 0 {
+					t.Fatal("failed to hold source ack after custody")
+				}
+				reopenProducerSource(t, jm)
+				appendOne := jm.store.Append
+				jm.appendEvent = func(event jobstore.Event) error {
+					if err := appendOne(event); err != nil {
+						return err
+					}
+					if event.Kind == jobstore.EventWatchSendPending {
+						return jm.store.Close() // B is durable, A's receipt is still faulted.
+					}
+					return nil
+				}
+				jm.fireProgressTick(key, cfg)
+				if rows, acks := producerSourceEvents(t, jm, jobstore.EventWatchSendPending), producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered); len(rows) != 2 || len(acks) != 0 {
+					t.Fatalf("crash cut durable pending=%d receipts=%d, want 2/0", len(rows), len(acks))
+				}
+				if producerRecordCount(t, s) != 1 {
+					t.Fatal("crash cut must retain A's custody without accepting B")
+				}
+				produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+				first, second := *produced[0].WatchSend, *produced[1].WatchSend
+				restored, err := newJobManager(s.stateDir, s.ID(), s.enqueueJobNotificationAndNotify)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { restored.close() })
+				s.jobManager, restored.retirementOwner, restored.delegateController = restored, s, s.delegateController
+				path := transcriptPath(s.stateDir, s.ID())
+				if err := os.Rename(path, path+".held"); err != nil {
+					t.Fatal(err)
+				}
+				if replacement {
+					writer, err := transcript.NewWriter(path, transcript.Header{SessionID: s.ID()})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := writer.Close(); err != nil {
+						t.Fatal(err)
 					}
 				}
-				if matches != 1 {
-					t.Fatal("accepted identity lost its unique source acknowledgement")
+				accepted, queryErr := s.notificationSourceAccepted(stableWatchAttentionID(first))
+				restored.dispatchProducedWatchSends()
+				if replacement {
+					if err := os.Remove(path); err != nil {
+						t.Fatal(err)
+					}
 				}
-			}
-		})
+				if err := os.Rename(path+".held", path); err != nil {
+					t.Fatal(err)
+				}
+				if accepted || queryErr == nil || (!replacement && !errors.Is(queryErr, os.ErrNotExist)) {
+					t.Errorf("unavailable resident pathname replacement=%t custody=%t err=%v, want uncertainty", replacement, accepted, queryErr)
+				}
+				fold, err := restored.store.LoadWatchSends()
+				if err != nil || len(fold.Pending) != 1 || len(fold.Superseded) != 1 || len(producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)) != 0 {
+					t.Errorf("uncertain custody query changed current or predecessor work: %+v, %v", fold, err)
+				}
+				t.Logf("replacement=%t A=%s B=%s pending=%d predecessors=%d delivered=%d dropped=%d requests=%d", replacement, stableWatchAttentionID(first), stableWatchAttentionID(second), len(fold.Pending), len(fold.Superseded), len(producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)), len(producerSourceEvents(t, restored, jobstore.EventWatchSendDropped)), len(adapter.requestsFor("root")))
+				if !reflect.DeepEqual(fold.Pending[second.Key], &second) || !reflect.DeepEqual(fold.Superseded[first.DeliveryID], &first) || len(producerSourceEvents(t, restored, jobstore.EventWatchSendDropped)) != 0 || len(adapter.requestsFor("root")) != 0 {
+					t.Error("uncertainty changed exact A predecessor/B head or settled/executed source work")
+				}
+				restored.dispatchProducedWatchSends()
+				restored.dispatchProducedWatchSends()
+				acks := producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)
+				entries := notificationRawEntries(t, transcriptPath(s.stateDir, s.ID()))
+				if len(acks) != 2 || len(entries) != 2 || len(adapter.requestsFor("root")) != 0 {
+					t.Fatalf("after real crash accepted records=%d source acks=%d provider requests=%d, want 2/2/0", len(entries), len(acks), len(adapter.requestsFor("root")))
+				}
+				for _, entry := range entries {
+					matches := 0
+					for _, ack := range acks {
+						if entry.Turn.AttentionID == stableWatchAttentionID(*ack.WatchSend) {
+							matches++
+						}
+					}
+					if matches != 1 {
+						t.Fatal("accepted identity lost its unique source acknowledgement")
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -1875,6 +1901,168 @@ func TestCandidateOnlyWatchReceiptsRecoverThroughHostPumps(t *testing.T) {
 				}
 			}
 			t.Log("candidate-only reconstruction: heads=0 candidates=1 canonical=2 receipts=1; uncertain Sync and failed source ack retained receipt; repaired host pumps: candidates=0 canonical=2 exact receipts=2 provider requests=0 new payloads=0")
+		})
+	}
+}
+
+func TestHistoricalCallbackRequiresExactDurableCustody(t *testing.T) {
+	for _, fault := range []string{"sync", "content", "metadata", "provenance", "absent"} {
+		t.Run(fault, func(t *testing.T) {
+			adapter := newMessagingAdapter()
+			s := newMessagingRoot(t, adapter, nil)
+			jm := s.jobManager
+			jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+			r, err := jm.configureWatch(watchArgs{Source: "self", Target: runtimeMessageAliasCaller, RepeatSeconds: 60, Note: "historical-callback-39d2"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			jm.mu.Lock()
+			key, cfg, _ := jm.watchConfigByIDLocked(r.WatchID)
+			jm.mu.Unlock()
+			for range 2 {
+				appendOne := jm.store.Append
+				jm.appendEvent = func(event jobstore.Event) error {
+					if err := appendOne(event); err != nil {
+						return err
+					}
+					if event.Kind == jobstore.EventWatchSendPending {
+						return jm.store.Close()
+					}
+					return nil
+				}
+				jm.fireProgressTick(key, cfg)
+				reopenProducerSource(t, jm)
+			}
+			if _, err := jm.clearWatch(key); err != nil {
+				t.Fatal(err)
+			}
+			produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+			if len(produced) != 2 || !produced[0].WatchSend.CallbackFrame || producerRecordCount(t, s) != 0 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 0 {
+				t.Fatal("source did not retain unaccepted historical A/current B")
+			}
+			first, second := *produced[0].WatchSend, *produced[1].WatchSend
+			if first.Provenance == nil {
+				t.Fatal("real callback source omitted causal provenance")
+			}
+			path := transcriptPath(s.stateDir, s.ID())
+			if err := s.closeAttachedTranscript(); err != nil {
+				t.Fatal(err)
+			}
+			if err := jm.closeStoreOnly(); err != nil {
+				t.Fatal(err)
+			}
+			original := schema.NewTurn(schema.TurnSteering, llm.UserMachinery(first.Frame))
+			original.AttentionID, original.NotificationProvenance = stableWatchAttentionID(first), provenance.Clone(first.Provenance)
+			original.StableTurnID = newQueueEntryID()
+			held := errors.New("historical receiver sync held")
+			install := func(turn *schema.Turn, failSync bool) {
+				t.Helper()
+				writer, err := transcript.NewWriter(path, transcript.Header{SessionID: s.ID()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if turn == nil {
+					return
+				}
+				fs := producerQueryFaultFS{Fs: afero.NewOsFs()}
+				if failSync {
+					fs.syncErr = held
+					fs.truncateErr = held
+				}
+				writer, _, err = transcript.OpenWriterForSessionWithFS(fs, path, s.ID())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := writer.AppendDurable(*turn); err != nil {
+					t.Fatal(err)
+				}
+				warnings := writer.DrainWarnings()
+				closeErr := writer.Close()
+				if failSync {
+					if len(warnings) != 1 || !errors.Is(warnings[0], held) || !errors.Is(closeErr, held) {
+						t.Fatalf("retained sync debt warnings=%v close=%v", warnings, closeErr)
+					}
+				} else if len(warnings) != 0 || closeErr != nil {
+					t.Fatalf("install custody warnings=%v close=%v", warnings, closeErr)
+				}
+			}
+			corrupt := original
+			switch fault {
+			case "content":
+				corrupt.Message = llm.UserMachinery("different-opaque-payload-e834")
+			case "metadata":
+				corrupt.Message = llm.User(first.Frame)
+			case "provenance":
+				corrupt.NotificationProvenance = provenance.WithWatch(nil, "opaque-other-watch", "opaque-other-generation", "opaque-other-delivery", s.ID(), "")
+			}
+			if fault == "absent" {
+				install(nil, false)
+			} else {
+				install(&corrupt, fault == "sync")
+			}
+			syncs := 0
+			fs := producerQueryFaultFS{Fs: afero.NewOsFs(), syncCount: &syncs}
+			if fault == "sync" || fault == "absent" {
+				fs.syncErr = held
+			}
+			snapshot := stableWatchBootstrapSnapshot{stateDir: s.stateDir, receiverByID: map[string]stableWatchReceiverSnapshot{"": {sessionID: s.ID(), transcriptRef: "local:" + s.ID()}}, attentionOpen: func(path, id string) (*transcript.Writer, []transcript.Entry, error) {
+				return transcript.OpenWriterForSessionWithFS(fs, path, id)
+			}}
+			storePath := filepath.Join(jm.dir, "jobs.jsonl")
+			err = repairStableWatchStoreForBootstrap(snapshot, storePath)
+			if err == nil || ((fault == "sync" || fault == "absent") && !errors.Is(err, held)) {
+				t.Errorf("historical %s recovery err=%v syncs=%d, want exact custody refusal", fault, err, syncs)
+			}
+			eventsLog, err := jobstore.ReadEvents(storePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fold := jobstore.FoldWatchSends(eventsLog)
+			acks, drops := producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered), producerSourceEvents(t, jm, jobstore.EventWatchSendDropped)
+			t.Logf("fault=%s A=%s B=%s syncs=%d ack=%d drop=%d pending=%d predecessors=%d", fault, stableWatchAttentionID(first), stableWatchAttentionID(second), syncs, len(acks), len(drops), len(fold.Pending), len(fold.Superseded))
+			if !reflect.DeepEqual(fold.Pending[second.Key], &second) || !reflect.DeepEqual(fold.Superseded[first.DeliveryID], &first) || len(acks) != 0 || len(drops) != 0 || len(adapter.requestsFor("root")) != 0 {
+				t.Error("uncertain historical custody changed exact A/B, acknowledged, dropped or executed")
+			}
+			if fault != "absent" {
+				install(&original, false)
+			}
+			fs.syncErr = nil
+			for range 2 {
+				if err := repairStableWatchStoreForBootstrap(snapshot, storePath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			entries := notificationRawEntries(t, path)
+			acks = producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)
+			for i, state := range []jobstore.WatchSendState{first, second} {
+				want := 1
+				if i == 0 && fault == "absent" {
+					want = 0
+				}
+				matches, receipts := 0, 0
+				for _, entry := range entries {
+					if entry.Turn.AttentionID == stableWatchAttentionID(state) {
+						matches++
+						if !reflect.DeepEqual(entry.Turn.Message, llm.UserMachinery(state.Frame)) || !reflect.DeepEqual(entry.Turn.NotificationProvenance, state.Provenance) {
+							t.Error("repaired historical callback changed full message/provenance")
+						}
+					}
+				}
+				for _, ack := range acks {
+					if exactWatchSendEvent(ack, jobstore.EventWatchSendDelivered, state) {
+						receipts++
+					}
+				}
+				if matches != want || receipts != want {
+					t.Errorf("recovered %s canonical=%d acknowledgments=%d want=%d", stableWatchAttentionID(state), matches, receipts, want)
+				}
+			}
+			if len(adapter.requestsFor("root")) != 0 {
+				t.Fatal("transport recovery executed provider")
+			}
 		})
 	}
 }

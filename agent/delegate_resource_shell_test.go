@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
@@ -330,6 +331,8 @@ func TestStableDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testin
 	}
 	childJM.parentDelegateID = fixture.delegateID
 	childJM.now = func() time.Time { return time.Unix(300, 0).UTC() }
+	causal := provenance.WithWatch(nil, "opaque-cold-watch-681c", "opaque-cold-generation-923d", "opaque-cold-delivery-c549", fixture.childID, "opaque-cold-origin-7f25")
+	childJM.currentProvenance = func() *provenance.Causal { return causal }
 	rec, err := childJM.createShell(createShellOpts{Command: "true", Description: "cold shell attention"})
 	if err != nil {
 		_ = childJM.closeStoreOnly()
@@ -340,6 +343,7 @@ func TestStableDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testin
 		_ = childJM.closeStoreOnly()
 		t.Fatalf("finish cold stable shell: %v", err)
 	}
+	attentionID := stableShellAttentionID(rec.JobID, loadStableShellRecord(t, childJM, rec.JobID).TerminalGen)
 	if err := childJM.closeStoreOnly(); err != nil {
 		t.Fatalf("close cold child job manager: %v", err)
 	}
@@ -366,6 +370,23 @@ func TestStableDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testin
 	if got := len(fixture.adapter.Requests()); got != 0 {
 		t.Fatalf("provider requests during cold shell repair = %d, want 0", got)
 	}
+	for range 2 {
+		matches := 0
+		for _, entry := range notificationRawEntries(t, transcriptPath(fixture.stateDir, fixture.childID)) {
+			if entry.Turn.AttentionID == attentionID {
+				matches++
+				if !reflect.DeepEqual(entry.Turn.NotificationProvenance, causal) {
+					t.Fatal("cold first custody/replay changed persisted notification provenance")
+				}
+			}
+		}
+		if matches != 1 {
+			t.Fatalf("cold shell canonical identities=%d want1", matches)
+		}
+		if err := repairStableShellAttentionForBootstrap(root.delegateController); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// The child owns this notification. Root readiness is not permission for
 	// selecting its executor, and the parent's model need not run first.
 	wake := drainWakeForTest(root)
@@ -384,7 +405,7 @@ func TestStableDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testin
 	}
 	t.Cleanup(func() { _ = restoredJM.closeStoreOnly() })
 	stored := loadStableShellRecord(t, restoredJM, rec.JobID)
-	attentionID := stableShellAttentionID(rec.JobID, stored.TerminalGen)
+	attentionID = stableShellAttentionID(rec.JobID, stored.TerminalGen)
 	fold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.childID), fixture.childID)
 	if err != nil {
 		t.Fatalf("read cold shell attention: %v", err)
@@ -535,6 +556,8 @@ func loadStableShellRecord(t *testing.T, jm *jobManager, jobID string) *jobstore
 // A receiver wake closes the real source descriptor after custody, before ack.
 func TestShellReplayPreservesAcceptedMachineryMessage(t *testing.T) {
 	tree := newStableDelegateShellTree(t)
+	causal := provenance.WithWatch(nil, "opaque-shell-watch-59bf", "opaque-shell-generation-723a", "opaque-shell-delivery-b453", tree.child.ID(), "opaque-origin-job-26ea")
+	tree.childJM.currentProvenance = func() *provenance.Causal { return causal }
 	rec := createStableDelegateShell(t, tree.childJM, "opaque-shell-4c72")
 	tree.child.SetNotifyFunc(func() { _ = tree.childJM.store.Close() })
 	code := 0
@@ -546,6 +569,9 @@ func TestShellReplayPreservesAcceptedMachineryMessage(t *testing.T) {
 	entries := notificationRawEntries(t, path)
 	if len(entries) != 1 || !entries[0].Turn.Message.Content[0].Machinery {
 		t.Fatalf("live canonical entries=%+v", entries)
+	}
+	if causal == nil || !reflect.DeepEqual(entries[0].Turn.NotificationProvenance, causal) {
+		t.Fatalf("first shell custody provenance=%+v want=%+v", entries[0].Turn.NotificationProvenance, causal)
 	}
 	accepted := entries[0].Turn.Message
 	id := entries[0].Turn.AttentionID
@@ -589,6 +615,9 @@ func TestShellReplayPreservesAcceptedMachineryMessage(t *testing.T) {
 	entries = notificationRawEntries(t, path)
 	if len(entries) != 1 || entries[0].Turn.AttentionID != id || !reflect.DeepEqual(entries[0].Turn.Message, accepted) {
 		t.Fatal("replay changed complete accepted message or canonical identity")
+	}
+	if !reflect.DeepEqual(entries[0].Turn.NotificationProvenance, causal) {
+		t.Fatal("cold shell replay changed persisted notification provenance")
 	}
 	records, _ = readDelegateShellStore(t, storePath)
 	if records[rec.JobID].NotifyState != jobstore.NotifyDelivered {

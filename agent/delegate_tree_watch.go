@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"time"
 
@@ -438,6 +439,34 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 		now := time.Now().UTC()
 		if snapshot.now != nil {
 			now = snapshot.now()
+		}
+		open := snapshot.attentionOpen
+		if open == nil {
+			open = transcript.OpenWriterForSession
+		}
+		existingOpen := func(path, id string) (*transcript.Writer, []transcript.Entry, error) {
+			writer, entries, err := open(path, id)
+			if err != nil {
+				return nil, nil, err
+			}
+			found := false
+			for _, entry := range entries {
+				if entry.Turn.AttentionID != stableWatchAttentionID(state) {
+					continue
+				}
+				found = true
+				if !reflect.DeepEqual(entry.Turn.NotificationProvenance, state.Provenance) {
+					return nil, nil, errors.Join(fmt.Errorf("attention %q has conflicting provenance", entry.Turn.AttentionID), writer.Close())
+				}
+			}
+			if !found {
+				// A predecessor that never reached custody must not be redelivered.
+				return nil, nil, errors.Join(fmt.Errorf("historical attention %q is no longer present", stableWatchAttentionID(state)), writer.Close())
+			}
+			return writer, entries, nil
+		}
+		if _, err := appendColdDelegateAttentionMessageDurablyWithOpen(path, sessionID, stableWatchAttentionID(state), llm.UserMachinery(stableWatchNotificationContent(state)), now, existingOpen, state.Provenance); err != nil {
+			return err
 		}
 		acknowledged := state
 		if err := store.Append(jobstore.Event{

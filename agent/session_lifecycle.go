@@ -3323,16 +3323,20 @@ func (s *Session) notificationSourceAccepted(sourceID string) (bool, error) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	if s.stateDir != "" {
-		if err := s.attachedTranscript().EstablishDurability(); err != nil {
-			return false, err
-		}
-		// A resident descriptor can outlive its pathname. Missing storage is
-		// uncertainty, not proof that this source never reached custody.
+		// A resident descriptor can outlive its pathname. Missing or replaced
+		// storage is uncertainty, not proof this source never reached custody.
 		f, err := os.Open(transcriptPath(s.stateDir, s.ID()))
 		if err != nil {
 			return false, err
 		}
 		defer f.Close()
+		info, err := f.Stat()
+		if err != nil {
+			return false, err
+		}
+		if err := s.attachedTranscript().EstablishDurabilityForFile(info); err != nil {
+			return false, err
+		}
 		fold, _, err := extendDelegateAttentionFoldFrom(f, 0, newDelegateAttentionFold(), s.ID())
 		if err != nil {
 			return false, err
