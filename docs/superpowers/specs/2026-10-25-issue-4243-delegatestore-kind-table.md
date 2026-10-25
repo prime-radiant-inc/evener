@@ -52,6 +52,12 @@ Spec PAR round 2 approved both revisions. The one remaining minor was the
 payload-field predicate below; the reviewers supplied its wording, so this
 revision applies it without reopening the design.
 
+Implementation note (after implementation PAR and simplify-code): the eight
+flat-payload clone bodies share one `clonePointee` helper, and `cloneEvent`
+clones into a caller-owned destination (`cloneEventInto`) so the journal
+read/write paths do not allocate a fresh `Event` per clone. Both are
+behavior-preserving; the table still drives every kind.
+
 ## The five hand-kept lists today
 
 At `f6900f5d8f`, adding an `EventKind` means editing all of these by hand:

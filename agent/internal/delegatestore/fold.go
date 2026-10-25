@@ -173,8 +173,19 @@ type eventKindSpec struct {
 	apply   func(State, Event) error
 }
 
+// clonePointee replaces *dst with a copy of *src's pointee when present. Kinds
+// whose payload holds no nested mutable state use it so the "copy the struct
+// and take its address" rule has one home.
+func clonePointee[T any](dst, src **T) {
+	if *src == nil {
+		return
+	}
+	payload := **src
+	*dst = &payload
+}
+
 // eventKindSpecs is every delegate journal event kind, in Event payload-field
-// order. FuzzDelegateEventEnvelope's seed indices follow this order.
+// order.
 var eventKindSpecs = []eventKindSpec{
 	{
 		kind:    EventDelegateCreated,
@@ -189,13 +200,8 @@ var eventKindSpecs = []eventKindSpec{
 	{
 		kind:    EventDelegateRunStarted,
 		present: func(event *Event) bool { return event.RunStarted != nil },
-		clone: func(dst, src *Event) {
-			if src.RunStarted != nil {
-				payload := *src.RunStarted
-				dst.RunStarted = &payload
-			}
-		},
-		apply: applyRunStarted,
+		clone:   func(dst, src *Event) { clonePointee(&dst.RunStarted, &src.RunStarted) },
+		apply:   applyRunStarted,
 	},
 	{
 		kind:    EventDelegateTerminalPrepared,
@@ -225,79 +231,44 @@ var eventKindSpecs = []eventKindSpec{
 	{
 		kind:    EventDelegateResumabilityClosed,
 		present: func(event *Event) bool { return event.ResumabilityClosed != nil },
-		clone: func(dst, src *Event) {
-			if src.ResumabilityClosed != nil {
-				payload := *src.ResumabilityClosed
-				dst.ResumabilityClosed = &payload
-			}
-		},
-		apply: applyResumabilityClosed,
+		clone:   func(dst, src *Event) { clonePointee(&dst.ResumabilityClosed, &src.ResumabilityClosed) },
+		apply:   applyResumabilityClosed,
 	},
 	{
 		kind:    EventDelegateSubtreeStopRequested,
 		present: func(event *Event) bool { return event.SubtreeStopRequested != nil },
-		clone: func(dst, src *Event) {
-			if src.SubtreeStopRequested != nil {
-				payload := *src.SubtreeStopRequested
-				dst.SubtreeStopRequested = &payload
-			}
-		},
-		apply: applySubtreeStopRequested,
+		clone:   func(dst, src *Event) { clonePointee(&dst.SubtreeStopRequested, &src.SubtreeStopRequested) },
+		apply:   applySubtreeStopRequested,
 	},
 	{
 		kind:    EventDelegateSubtreeStopCompleted,
 		present: func(event *Event) bool { return event.SubtreeStopCompleted != nil },
-		clone: func(dst, src *Event) {
-			if src.SubtreeStopCompleted != nil {
-				payload := *src.SubtreeStopCompleted
-				dst.SubtreeStopCompleted = &payload
-			}
-		},
-		apply: applySubtreeStopCompleted,
+		clone:   func(dst, src *Event) { clonePointee(&dst.SubtreeStopCompleted, &src.SubtreeStopCompleted) },
+		apply:   applySubtreeStopCompleted,
 	},
 	{
 		kind:    EventDelegateDeliveryAcknowledged,
 		present: func(event *Event) bool { return event.DeliveryAcknowledged != nil },
-		clone: func(dst, src *Event) {
-			if src.DeliveryAcknowledged != nil {
-				payload := *src.DeliveryAcknowledged
-				dst.DeliveryAcknowledged = &payload
-			}
-		},
-		apply: applyDeliveryAcknowledged,
+		clone:   func(dst, src *Event) { clonePointee(&dst.DeliveryAcknowledged, &src.DeliveryAcknowledged) },
+		apply:   applyDeliveryAcknowledged,
 	},
 	{
 		kind:    EventDelegateAttentionChanged,
 		present: func(event *Event) bool { return event.AttentionChanged != nil },
-		clone: func(dst, src *Event) {
-			if src.AttentionChanged != nil {
-				payload := *src.AttentionChanged
-				dst.AttentionChanged = &payload
-			}
-		},
-		apply: applyAttentionChanged,
+		clone:   func(dst, src *Event) { clonePointee(&dst.AttentionChanged, &src.AttentionChanged) },
+		apply:   applyAttentionChanged,
 	},
 	{
 		kind:    EventDelegateUpdatePosted,
 		present: func(event *Event) bool { return event.UpdatePosted != nil },
-		clone: func(dst, src *Event) {
-			if src.UpdatePosted != nil {
-				payload := *src.UpdatePosted
-				dst.UpdatePosted = &payload
-			}
-		},
-		apply: applyUpdatePosted,
+		clone:   func(dst, src *Event) { clonePointee(&dst.UpdatePosted, &src.UpdatePosted) },
+		apply:   applyUpdatePosted,
 	},
 	{
 		kind:    EventDelegateIntentStated,
 		present: func(event *Event) bool { return event.IntentStated != nil },
-		clone: func(dst, src *Event) {
-			if src.IntentStated != nil {
-				payload := *src.IntentStated
-				dst.IntentStated = &payload
-			}
-		},
-		apply: applyIntentStated,
+		clone:   func(dst, src *Event) { clonePointee(&dst.IntentStated, &src.IntentStated) },
+		apply:   applyIntentStated,
 	},
 }
 

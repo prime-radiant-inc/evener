@@ -3,7 +3,6 @@
 package delegatestore
 
 import (
-	"reflect"
 	"testing"
 )
 
@@ -23,28 +22,15 @@ type envelopePayload struct {
 
 func envelopePayloads(tb testing.TB) []envelopePayload {
 	tb.Helper()
-	eventType := reflect.TypeOf(Event{})
-	payloads := make([]envelopePayload, 0, eventType.NumField())
-	for i := 0; i < eventType.NumField(); i++ {
-		field := eventType.Field(i)
-		if field.Type.Kind() != reflect.Pointer {
-			continue
-		}
-		name := jsonFieldName(field)
-		if name == "" {
-			tb.Fatalf("Event payload field %s has no JSON name", field.Name)
-		}
-		index := i
-		payloadType := field.Type
+	fields := eventPayloadFields(tb)
+	payloads := make([]envelopePayload, 0, len(fields))
+	for _, field := range fields {
 		payloads = append(payloads, envelopePayload{
-			kind: EventKind("delegate_" + name),
+			kind: eventKindForField(field),
 			attach: func(event *Event) {
-				reflect.ValueOf(event).Elem().Field(index).Set(reflect.New(payloadType.Elem()))
+				attachEventPayloadField(event, field)
 			},
 		})
-	}
-	if len(payloads) == 0 {
-		tb.Fatal("Event has no pointer payload fields")
 	}
 	return payloads
 }

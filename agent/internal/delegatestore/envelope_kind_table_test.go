@@ -53,19 +53,17 @@ func jsonFieldName(field reflect.StructField) string {
 	return name
 }
 
-func eventKindForField(tb testing.TB, field reflect.StructField) EventKind {
-	tb.Helper()
-	name := jsonFieldName(field)
-	if name == "" {
-		tb.Fatalf("Event field %s has no JSON name", field.Name)
-	}
-	return EventKind("delegate_" + name)
+// eventKindForField derives a payload field's kind from its JSON name. Callers
+// pass fields from eventPayloadFields, which already rejects a field without a
+// JSON name.
+func eventKindForField(field reflect.StructField) EventKind {
+	return EventKind("delegate_" + jsonFieldName(field))
 }
 
 func eventPayloadField(tb testing.TB, kind EventKind) (reflect.StructField, bool) {
 	tb.Helper()
 	for _, field := range eventPayloadFields(tb) {
-		if eventKindForField(tb, field) == kind {
+		if eventKindForField(field) == kind {
 			return field, true
 		}
 	}
@@ -75,6 +73,12 @@ func eventPayloadField(tb testing.TB, kind EventKind) (reflect.StructField, bool
 // attachEventPayload attaches a fresh zero payload of field's type to event.
 func attachEventPayload(tb testing.TB, event *Event, field reflect.StructField) reflect.Value {
 	tb.Helper()
+	return attachEventPayloadField(event, field)
+}
+
+// attachEventPayloadField is attachEventPayload without testing.TB. A fuzz
+// target's callback may not call *testing.F methods, so it uses this directly.
+func attachEventPayloadField(event *Event, field reflect.StructField) reflect.Value {
 	payload := reflect.New(field.Type.Elem())
 	reflect.ValueOf(event).Elem().FieldByIndex(field.Index).Set(payload)
 	return payload
@@ -129,26 +133,61 @@ func eventKindConsts(tb testing.TB, file *ast.File) []EventKind {
 			case valueSpec.Type != nil:
 				inEventKindBlock = false
 				continue
-			case !inEventKindBlock:
+			case !inEventKindBlock && !declaresEventKindByConversion(valueSpec):
 				continue
 			}
 			for _, expression := range valueSpec.Values {
-				literal, ok := expression.(*ast.BasicLit)
-				if !ok || literal.Kind != token.STRING {
-					continue
+				if kind, ok := eventKindLiteral(tb, expression); ok {
+					kinds = append(kinds, kind)
 				}
-				kind, err := strconv.Unquote(literal.Value)
-				if err != nil {
-					tb.Fatalf("unquote EventKind literal %s: %v", literal.Value, err)
-				}
-				kinds = append(kinds, EventKind(kind))
 			}
 		}
 	}
 	return kinds
 }
 
+// eventKindLiteral reads an EventKind string literal, including the conversion
+// spelling EventKind("delegate_x"). Any other value in an EventKind
+// declaration is a form this scan cannot read, so it fails loudly rather than
+// letting a kind escape the completeness check.
+func eventKindLiteral(tb testing.TB, expression ast.Expr) (EventKind, bool) {
+	tb.Helper()
+	switch value := expression.(type) {
+	case *ast.BasicLit:
+		if value.Kind != token.STRING {
+			tb.Fatalf("EventKind value %s is not a string literal", value.Value)
+		}
+		kind, err := strconv.Unquote(value.Value)
+		if err != nil {
+			tb.Fatalf("unquote EventKind literal %s: %v", value.Value, err)
+		}
+		return EventKind(kind), true
+	case *ast.CallExpr:
+		if !isEventKindIdent(value.Fun) || len(value.Args) != 1 {
+			tb.Fatalf("EventKind value is not an EventKind(\"...\") conversion")
+		}
+		return eventKindLiteral(tb, value.Args[0])
+	default:
+		tb.Fatalf("EventKind value %T is not a string literal or EventKind conversion", expression)
+		return "", false
+	}
+}
+
+// declaresEventKindByConversion reports whether an untyped spec's value is the
+// EventKind("...") spelling, which declares a kind outside a typed const block.
+func declaresEventKindByConversion(spec *ast.ValueSpec) bool {
+	for _, expression := range spec.Values {
+		if call, ok := expression.(*ast.CallExpr); ok && isEventKindIdent(call.Fun) {
+			return true
+		}
+	}
+	return false
+}
+
 func isEventKindIdent(expression ast.Expr) bool {
+	if parenthesized, ok := expression.(*ast.ParenExpr); ok {
+		return isEventKindIdent(parenthesized.X)
+	}
 	ident, ok := expression.(*ast.Ident)
 	return ok && ident.Name == "EventKind"
 }
@@ -172,7 +211,7 @@ func TestEventKindTableComplete(t *testing.T) {
 	}
 	fieldKinds := make(map[EventKind]bool, len(fields))
 	for _, field := range fields {
-		kind := eventKindForField(t, field)
+		kind := eventKindForField(field)
 		if fieldKinds[kind] {
 			t.Errorf("Event has more than one payload field for kind %q", kind)
 		}

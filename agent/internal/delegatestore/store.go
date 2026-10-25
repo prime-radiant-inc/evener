@@ -343,15 +343,23 @@ func decodeJSONLine(line []byte, target any) error {
 func cloneEvents(events []Event) []Event {
 	clones := make([]Event, len(events))
 	for i := range events {
-		clones[i] = cloneEvent(events[i])
+		cloneEventInto(&clones[i], &events[i])
 	}
 	return clones
 }
 
 func cloneEvent(event Event) Event {
-	clone := event
-	for _, spec := range eventKindSpecs {
-		spec.clone(&clone, &event)
-	}
+	var clone Event
+	cloneEventInto(&clone, &event)
 	return clone
+}
+
+// cloneEventInto replaces dst with a deep copy of src. Callers that already own
+// both values pass their addresses, so the journal read and write paths do not
+// allocate a fresh Event for each cloned event.
+func cloneEventInto(dst, src *Event) {
+	*dst = *src
+	for _, spec := range eventKindSpecs {
+		spec.clone(dst, src)
+	}
 }
