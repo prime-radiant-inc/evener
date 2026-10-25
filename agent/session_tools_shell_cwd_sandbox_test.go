@@ -345,13 +345,100 @@ func TestShellToolRestrictedCwdSymlinkedReadRoot(t *testing.T) {
 	literal := filepath.Join(link, "sub")
 	res := executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"pwd","cwd":%q}`, literal))
 	out := decodeSandboxedShellOutput(t, res)
-	if got := strings.TrimSpace(*out.Output); got != literal {
-		t.Fatalf("shell pwd under a symlinked read root = %q, want the literal binding %q", got, literal)
+	want := literal
+	if env.Wrapper.Policy().Backend == sandbox.BackendSeatbelt {
+		// Seatbelt leaves the host symlink intact, so the shell reports the
+		// physical target rather than the literal bind path.
+		if physical, err := filepath.EvalSymlinks(literal); err == nil {
+			want = physical
+		}
+	}
+	if got := strings.TrimSpace(*out.Output); got != want {
+		t.Fatalf("shell pwd under a symlinked read root = %q, want %q", got, want)
 	}
 
 	resolved := filepath.Join(realDir, "sub")
 	res = executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"pwd","cwd":%q}`, resolved))
 	if !res.IsError {
 		t.Fatalf("resolved spelling of a symlinked read root was accepted: %s", res.Output)
+	}
+}
+
+// TestShellToolReadOnlyOutsideCwdKeepsTmpWorkspaceVisible pins that the
+// workspace under host /tmp stays readable from an accepted outside cwd. The
+// wrapper rebinds the workspace anchor independently of the chosen cwd.
+func TestShellToolReadOnlyOutsideCwdKeepsTmpWorkspaceVisible(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("bubblewrap private /tmp is Linux-only")
+	}
+	base, err := os.MkdirTemp("/tmp", "evener-4332-tmp-workspace-")
+	if err != nil {
+		t.Skipf("no writable /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	root := filepath.Join(base, "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workspaceFile := filepath.Join(root, "workspace.txt")
+	if err := os.WriteFile(workspaceFile, []byte("workspace-readable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside, err := os.MkdirTemp("/var/tmp", "evener-4332-outside-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+	env := newSandboxedShellEnv(t, sandbox.SandboxPolicy{Mode: sandbox.ModeReadOnly}, root)
+	requireBwrapPrivateMounts(t, env)
+	s := newSandboxedShellSession(t, env)
+
+	res := executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"cat %s","cwd":%q}`, workspaceFile, outside))
+	out := decodeSandboxedShellOutput(t, res)
+	if !strings.Contains(*out.Output, "workspace-readable") {
+		t.Fatalf("workspace file unreadable from an outside cwd: %q", *out.Output)
+	}
+}
+
+// TestShellToolWorkspaceWriteCwdSymlinkedWritableRoot pins that a literal cwd
+// under a symlinked writable root is accepted and writable, while the target's
+// own spelling is not bound by bubblewrap.
+func TestShellToolWorkspaceWriteCwdSymlinkedWritableRoot(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("bubblewrap private /tmp is Linux-only")
+	}
+	root, _ := issue4332Fixture(t, "/var/tmp")
+	base, err := os.MkdirTemp("/tmp", "evener-4332-write-link-")
+	if err != nil {
+		t.Skipf("no writable /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	realDir := filepath.Join(base, "real")
+	link := filepath.Join(base, "link")
+	if err := os.MkdirAll(filepath.Join(realDir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	env := newSandboxedShellEnv(t, sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, ExtraWritableRoots: []string{link}}, root)
+	requireBwrapPrivateMounts(t, env)
+	s := newSandboxedShellSession(t, env)
+
+	literal := filepath.Join(link, "sub")
+	res := executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"touch made && pwd","cwd":%q}`, literal))
+	out := decodeSandboxedShellOutput(t, res)
+	if got := strings.TrimSpace(*out.Output); got != literal {
+		t.Fatalf("shell pwd under a symlinked writable root = %q, want %q", got, literal)
+	}
+	if _, err := os.Stat(filepath.Join(realDir, "sub", "made")); err != nil {
+		t.Fatalf("write under the symlinked writable root: %v", err)
+	}
+
+	res = executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"pwd","cwd":%q}`, filepath.Join(realDir, "sub")))
+	if !res.IsError {
+		t.Fatalf("target spelling of a symlinked writable root was accepted: %s", res.Output)
 	}
 }

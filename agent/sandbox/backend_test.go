@@ -136,6 +136,31 @@ func TestCommandCWDVisible(t *testing.T) {
 		if !overlaid.CommandCWDVisible(cacheRoot) {
 			t.Error("an overlay-served cache root must be visible")
 		}
+
+		linkBase, err := os.MkdirTemp("/tmp", "evener-4332-root-link-")
+		if err != nil {
+			t.Skipf("no writable /tmp: %v", err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(linkBase) })
+		realDir := filepath.Join(linkBase, "real")
+		link := filepath.Join(linkBase, "link")
+		if err := os.MkdirAll(filepath.Join(realDir, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(realDir, link); err != nil {
+			t.Skipf("cannot create symlink: %v", err)
+		}
+		symlinked := anywhere()
+		symlinked.policy.Spawned.WriteRoots = []string{link}
+		if !symlinked.CommandCWDVisible(filepath.Join(link, "sub")) {
+			t.Error("a literal cwd under a symlinked writable root must be visible")
+		}
+		if !symlinked.CommandCWDVisibleResolved(filepath.Join(realDir, "sub")) {
+			t.Error("the resolved spelling of a symlinked writable root must be visible to the resolved check")
+		}
+		if symlinked.CommandCWDVisible(filepath.Join(realDir, "sub")) {
+			t.Error("the target's own spelling is not bound at that path and must stay invisible")
+		}
 	}
 
 	restricted := &Wrapper{

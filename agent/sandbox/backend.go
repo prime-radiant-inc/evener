@@ -219,6 +219,19 @@ func (w *Wrapper) SessionTmp() string { return w.sessionTmp }
 // mode binds every grant explicitly, and a nil wrapper leaves the host
 // filesystem unchanged: all report true.
 func (w *Wrapper) CommandCWDVisible(cwd string) bool {
+	return w.commandCWDVisible(cwd, false)
+}
+
+// CommandCWDVisibleResolved answers CommandCWDVisible for an already
+// symlink-resolved path, judging the explicit grants by their resolved
+// spelling. A literal cwd under a symlinked grant is enterable at the literal
+// spelling the backend binds; its resolved spelling must resolve under the
+// grant's resolved spelling, not the literal one.
+func (w *Wrapper) CommandCWDVisibleResolved(cwd string) bool {
+	return w.commandCWDVisible(cwd, true)
+}
+
+func (w *Wrapper) commandCWDVisible(cwd string, resolveRoots bool) bool {
 	if w == nil || w.policy.Backend != BackendBwrap || w.policy.Spawned.Read != ReadAnywhere {
 		return true
 	}
@@ -233,19 +246,37 @@ func (w *Wrapper) CommandCWDVisible(cwd string) bool {
 	if tree := scratchTreeOf(w.sessionTmp); tree != "" && pathUnder(cwd, tree) {
 		return true
 	}
-	if isUnderAnyRoot(cwd, w.policy.Spawned.ReadRoots) ||
-		isUnderAnyRoot(cwd, w.policy.Spawned.WriteRoots) ||
-		isUnderAnyRoot(cwd, w.policy.UnmaskedRoots) {
+	readRoots, writeRoots, unmaskedRoots := w.policy.Spawned.ReadRoots, w.policy.Spawned.WriteRoots, w.policy.UnmaskedRoots
+	if resolveRoots {
+		readRoots, writeRoots, unmaskedRoots = resolveRootSlice(readRoots), resolveRootSlice(writeRoots), resolveRootSlice(unmaskedRoots)
+	}
+	if isUnderAnyRoot(cwd, readRoots) || isUnderAnyRoot(cwd, writeRoots) || isUnderAnyRoot(cwd, unmaskedRoots) {
 		return true
 	}
 	// Cache roots are visible only when the overlay strategy actually mounts
 	// them. Under CacheSessionPrivate the env floor redirects the cache
 	// variables into the session tmp and nothing is bound at the host path, so
 	// a host /tmp cache root must stay hidden.
-	if w.policy.CacheStrategy == CacheOverlay && isUnderAnyRoot(cwd, liveCacheRoots(w.policy)) {
-		return true
+	if w.policy.CacheStrategy == CacheOverlay {
+		caches := liveCacheRoots(w.policy)
+		if resolveRoots {
+			caches = resolveRootSlice(caches)
+		}
+		if isUnderAnyRoot(cwd, caches) {
+			return true
+		}
 	}
 	return false
+}
+
+// resolveRootSlice returns each root's symlink-resolved spelling, preserving
+// order. It is the resolved companion of the literal grant checks.
+func resolveRootSlice(roots []string) []string {
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		out = append(out, resolveExistingPrefix(root))
+	}
+	return out
 }
 
 // Confine rewrites cmd to run under the wrapper's backend confinement: it prepends

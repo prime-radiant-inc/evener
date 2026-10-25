@@ -3521,7 +3521,7 @@ func (e *LocalExecutionEnvironment) EnsureCommandWorkingDirectory(abs string) er
 	readable := e.Sandbox.SpawnedCanRead(abs) &&
 		(abs == resolved || e.Sandbox.SpawnedCanReadResolved(resolved))
 	if readable && e.Wrapper.CommandCWDVisible(abs) &&
-		(abs == resolved || e.Wrapper.CommandCWDVisible(resolved)) {
+		(abs == resolved || e.Wrapper.CommandCWDVisibleResolved(resolved)) {
 		return nil
 	}
 	if scratch := e.allocatedSessionScratchPath(); scratch != "" && pathWithinRoot(abs, scratch) {

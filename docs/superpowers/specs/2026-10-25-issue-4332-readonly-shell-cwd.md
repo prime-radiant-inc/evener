@@ -48,6 +48,16 @@ Revision notes:
   symlink that resolves outside the read set. The cache-root test fixture uses
   an explicit `/tmp` directory and is Linux-gated, so it does not depend on
   where `t.TempDir()` lands.
+- **Amendment 4 (RoboRev branch review, round 2).** Two further consequences
+  surfaced. First, a read-only workspace under host `/tmp` was preserved only
+  through the cwd re-bind; an accepted outside cwd removed that bind and hid
+  workspace files that `cd` from the default cwd could still read. The
+  file-tool anchor now joins the bwrap candidates independently of cwd.
+  Second, the resolved visibility check must judge explicit grants by their
+  resolved spelling too, so a literal cwd under a symlinked writable root
+  under `/tmp` is accepted. The symlinked-read-root test's `pwd` expectation
+  is backend-specific (bubblewrap binds the literal path, Seatbelt keeps the
+  host link).
 
 ## Intent and scope
 
@@ -63,6 +73,9 @@ Intended tracked deliverables:
   spawned-layer read predicate beside `FileToolCanRead`.
 - `agent/sandbox/backend.go` — `Wrapper.CommandCWDVisible`, the
   backend-namespace companion for the private `/tmp` and `/dev` mounts.
+- `agent/sandbox/bwrap.go` — the file-tool workspace anchor joins the cwd
+  re-bind candidates, so a workspace under `/tmp` stays visible when the
+  chosen cwd is elsewhere.
 - `agent/sandbox/backend_test.go` and
   `agent/sandbox/resolve_canread_test.go` — predicate matrices.
 - `agent/execenv/local.go` — `EnsureCommandWorkingDirectory` canonicalises,
@@ -179,6 +192,9 @@ then applies, in this order:
      `CacheRoots` entry only when the strategy is `CacheOverlay` and the
      overlay serves that entry (`liveCacheRoots`); false for a path under
      the private `/tmp` or `/dev` (`inPrivateMount`); true otherwise.
+     `CommandCWDVisibleResolved` applies the same checks with each explicit
+     grant's resolved spelling, which is how a literal cwd under a symlinked
+     grant is accepted without accepting the target's own spelling.
 
    The resolved spelling is judged against the roots' resolved spelling, not
    their literal spelling: bubblewrap binds a symlinked read root at its
@@ -235,6 +251,9 @@ read"), replacing today's "which escapes the sandbox".
   re-bind it, but exposing host shared memory is not needed for this defect,
   so it stays refused unless it is an explicit grant. Seatbelt has no
   private mount namespace and accepts an unmasked path there.
+- The workspace stays visible from an accepted outside cwd, including a
+  workspace under host `/tmp`: the wrapper re-binds the file-tool anchor
+  independently of the chosen cwd.
 - Restricted mode accepts a `cwd` in a spawned read root or an unmasked
   carve-out (for example the worktree or a system root) instead of
   requiring it under the workspace root. The shell could already `cd`
@@ -309,6 +328,11 @@ fixture.
 7. Same file: a root under host `/tmp` accepts a subdirectory inside the
    root (the wrapper's re-bind path) and refuses a sibling outside the root
    (private namespace). Both run only when the resolved backend is bwrap.
+   A read-only session rooted under `/tmp` reads a workspace file from an
+   accepted `/var/tmp` cwd, proving the workspace anchor survives the cwd
+   change. A workspace-write session accepts a literal cwd under a symlinked
+   extra writable root under `/tmp`, writes there, and refuses the target's
+   own spelling.
 8. `agent/sandbox/resolve_canread_test.go`: `SpawnedCanRead` accepts
    read-anywhere paths, rejects masked paths and `.git` under a carve-out,
    accepts restricted read roots and unmasked roots, rejects a restricted
@@ -324,7 +348,9 @@ fixture.
    root under an explicit `/tmp` fixture while `CacheSessionPrivate`
    redirects it and accepts the same root under `CacheOverlay` (Linux only),
    is always true for Seatbelt, for bwrap worktree-only, and for a nil
-   wrapper.
+   wrapper. `CommandCWDVisibleResolved` accepts the resolved spelling of a
+   symlinked writable root while `CommandCWDVisible` refuses that spelling
+   against the literal grant.
 10. `agent/execenv/sandbox_off_scope_test.go`: the confined-cwd matrix now
     accepts an outside root for read-only, workspace-write and the
     write-blocked off degrade (including the detached entry point when the

@@ -105,7 +105,11 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// sandbox already allows, and an unsandboxed root's TMPDIR is not in the tree.
 	// Binding only chosen files would not avoid it (a socket is a file), and
 	// hiding the tree is what #4170 reported as friction.
+	// The file-tool anchor joins the cwd candidates: read-anywhere modes carry
+	// no spawned read roots, and a workspace under /tmp must stay visible when
+	// the chosen cwd is elsewhere.
 	candidates := append([]string{cwd}, sp.ReadRoots...)
+	candidates = append(candidates, rp.FileTool.ReadRoots...)
 	if sp.Read == ReadAnywhere {
 		candidates = append(candidates, scratchTreeOf(sessionTmp))
 	}
