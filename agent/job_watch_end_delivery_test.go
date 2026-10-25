@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // The final firing and the budget notice are separate obligations even when
@@ -111,6 +112,7 @@ func TestWatchBudgetEndPreservesFiringThroughReceiverReopen(t *testing.T) {
 			if producerRecordCount(t, s) != 2 || restored.hasPendingWatchSends() || len(adapter.requestsFor("root")) != 0 {
 				t.Fatal("reopen did not transfer exactly two frames without executing the provider")
 			}
+			canonical := make(map[string]string)
 			for _, entry := range notificationRawEntries(t, transcriptPath(s.stateDir, s.ID())) {
 				if len(entry.Turn.ObservedNotificationIDs) != 0 {
 					t.Fatal("custody fabricated model observation")
@@ -120,6 +122,7 @@ func TestWatchBudgetEndPreservesFiringThroughReceiverReopen(t *testing.T) {
 					if !ok || entry.Turn.Message.Text() != want {
 						t.Fatalf("canonical ID/content differs from source: id=%q content=%q", entry.Turn.AttentionID, entry.Turn.Message.Text())
 					}
+					canonical[entry.Turn.AttentionID] = entry.Turn.Message.Text()
 					delete(expected, entry.Turn.AttentionID)
 				}
 			}
@@ -133,13 +136,19 @@ func TestWatchBudgetEndPreservesFiringThroughReceiverReopen(t *testing.T) {
 			if len(requests) != 1 {
 				t.Fatalf("provider requests=%d, want 1", len(requests))
 			}
-			requestText := fmt.Sprint(requests[0].Messages)
-			firingText := "event: COMMUNICATE"
-			if send {
-				firingText = "budget-firing-b826"
+			for _, id := range ids {
+				matches := 0
+				for _, msg := range requests[0].Messages {
+					if msg.Role == llm.RoleUser && strings.Contains(msg.Text(), canonical[id]) {
+						matches++
+					}
+				}
+				if matches != 1 {
+					t.Fatalf("provider request covers canonical delivery %s in %d user messages, want 1", id, matches)
+				}
 			}
-			if !strings.Contains(requestText, firingText) || !strings.Contains(requestText, "watch cleared:") || !strings.Contains(requestText, "budget-custody-a914") {
-				t.Fatal("real provider request lost firing, budget notice, or caller note")
+			if !requestMessagesContainText(requests[0].Messages, args.Note) || (send && !requestMessagesContainText(requests[0].Messages, args.Send.Message)) {
+				t.Fatal("provider request lost caller-supplied note or send payload")
 			}
 			for _, id := range ids {
 				assertNotificationObservedOnce(t, transcriptPath(s.stateDir, s.ID()), id)
