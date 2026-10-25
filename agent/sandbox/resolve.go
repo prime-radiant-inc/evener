@@ -259,6 +259,41 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 	return false
 }
 
+// SpawnedCanRead reports whether a command spawned under this policy may read
+// the absolute path — the question the shell's cwd check asks, because a
+// command's working directory must be one its process can enter. It models
+// the spawned-process layer's grants: masked paths deny in every mode,
+// ReadAnywhere allows everything else, and ReadWorktreeOnly requires the
+// path to fall under a spawned read root or a carved-out root. A write-only
+// root is not enough: Seatbelt grants it file-write* but not file-read*, so
+// accepting it would not work on every backend. A relative path cannot be
+// proved inside any root and reads false. This predicate is lexical, like
+// FileToolCanRead; the caller canonicalises the path first when it needs the
+// symlink-resolved spelling judged too. Masks deny before any unenforced
+// short-circuit, so the write-blocked off degrade keeps the same credential
+// floor as its file tools; a plain off policy has no masks and allows any
+// absolute path.
+func (rp ResolvedPolicy) SpawnedCanRead(path string) bool {
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	if rp.Masks(path) {
+		return false
+	}
+	if !rp.Enforced() {
+		return true
+	}
+	if rp.Spawned.Read == ReadAnywhere {
+		return true
+	}
+	for _, root := range slices.Concat(rp.Spawned.ReadRoots, rp.UnmaskedRoots) {
+		if filepath.IsAbs(root) && pathUnder(path, root) {
+			return true
+		}
+	}
+	return false
+}
+
 // Masks reports whether path is denied by the masked set: at or beneath a
 // masked path and not inside one of the UnmaskedRoots carved out of it. Inside
 // a carve-out, any .git stays masked: an installed copy cloned from git keeps

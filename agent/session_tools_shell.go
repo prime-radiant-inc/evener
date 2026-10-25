@@ -392,7 +392,8 @@ func parseShellMode(args map[string]any) (shellMode, error) {
 // resolveShellWorkingDir defaults an omitted cwd to the working directory,
 // resolves relative paths against it, and checks explicit paths against the
 // environment's command boundary and the filesystem before spawning. Off
-// sessions permit cwd outside the workspace; confined policies keep their scope.
+// sessions permit cwd outside the workspace; a confined session accepts a cwd
+// its spawned-process layer can read and its backend namespace exposes.
 // Errors name the resolved path so the caller can correct the actual target.
 func resolveShellWorkingDir(env execenv.ExecutionEnvironment, raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
@@ -406,7 +407,7 @@ func resolveShellWorkingDir(env execenv.ExecutionEnvironment, raw string) (strin
 	abs = filepath.Clean(abs)
 	if rb, ok := env.(execenv.CommandWorkingDirectoryBoundary); ok {
 		if err := rb.EnsureCommandWorkingDirectory(abs); err != nil {
-			return "", fmt.Errorf("cwd %q resolves to %s, which escapes the sandbox: %w", raw, abs, err)
+			return "", fmt.Errorf("cwd %q resolves to %s, which the sandbox cannot read: %w", raw, abs, err)
 		}
 	}
 	if info, err := os.Stat(abs); err != nil || !info.IsDir() {

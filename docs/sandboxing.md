@@ -42,9 +42,14 @@ unchanged; turn it on when you want a session's blast radius contained.
 With sandbox off, built-in file writes, edits, patches, and the shell's `cwd`
 may target paths outside the session working directory. Relative paths still
 resolve against that working directory, and an omitted `cwd` defaults to it.
-Operating-system permissions and user instructions still apply. Explicit
-sandbox policies retain their boundaries, and allocated session scratch keeps
-its separate access contract.
+A sandboxed shell's `cwd` must be a directory its spawned-process layer can
+read and its backend already exposes: any unmasked path in `read-only` and
+`workspace-write`, or a spawned read root in `restricted`, matching what `cd`
+inside the command can reach. A masked path, a restricted path outside its
+read roots, and a host path hidden by bubblewrap's private `/tmp` or `/dev`
+are refused before the command starts. Writes stay confined to the policy's
+write roots, and allocated session scratch keeps its separate access
+contract. Operating-system permissions and user instructions still apply.
 
 ### Implicit delegate safety floor
 

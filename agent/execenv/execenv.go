@@ -110,7 +110,8 @@ type ArgvExecutor interface {
 
 // CommandWorkingDirectoryBoundary is an optional execution-environment capability
 // for checking a resolved command cwd against its active sandbox policy. Off
-// sessions permit any cwd; confined sessions retain their workspace boundary.
+// sessions permit any cwd; a confined session accepts a cwd its spawned-process
+// layer can read and its backend namespace already exposes.
 type CommandWorkingDirectoryBoundary interface {
 	EnsureCommandWorkingDirectory(abs string) error
 }

@@ -204,6 +204,39 @@ func (w *Wrapper) Policy() ResolvedPolicy { return w.policy }
 // SessionTmp returns the per-session writable tmp directory (the child's TMPDIR).
 func (w *Wrapper) SessionTmp() string { return w.sessionTmp }
 
+// CommandCWDVisible reports whether the namespace this wrapper builds already
+// exposes cwd, without relying on the wrapper's cwd re-bind. It answers the
+// one backend-specific gap left by ResolvedPolicy.SpawnedCanRead: in
+// read-anywhere mode bwrap replaces /tmp with a private tmpfs and /dev with a
+// minimal tree, so a host directory there is not visible to a spawned command
+// even though the policy reads anywhere. buildBwrapArgv re-binds the command's
+// cwd when it lies under those trees; accepting an arbitrary host path there
+// would therefore expose the directory (and any Unix socket in it, which a
+// read-only bind does not block) that the private mount deliberately hides.
+// The session tmp, its root scratch tree, and every explicitly bound root are
+// already visible. Seatbelt has no private mount namespace, worktree-only mode
+// binds every grant explicitly, and a nil wrapper leaves the host filesystem
+// unchanged: all report true.
+func (w *Wrapper) CommandCWDVisible(cwd string) bool {
+	if w == nil || w.policy.Backend != BackendBwrap || w.policy.Spawned.Read != ReadAnywhere {
+		return true
+	}
+	if cwd == "" {
+		return true
+	}
+	if w.sessionTmp != "" && pathUnder(cwd, w.sessionTmp) {
+		return true
+	}
+	if tree := scratchTreeOf(w.sessionTmp); tree != "" && pathUnder(cwd, tree) {
+		return true
+	}
+	roots := slices.Concat(w.policy.Spawned.ReadRoots, w.policy.Spawned.WriteRoots, w.policy.UnmaskedRoots, w.policy.CacheRoots)
+	if isUnderAnyRoot(cwd, roots) {
+		return true
+	}
+	return !inPrivateMount(cwd)
+}
+
 // Confine rewrites cmd to run under the wrapper's backend confinement: it prepends
 // the backend invocation to cmd.Args (updating cmd.Path via Wrap) and, for the
 // Seatbelt backend, sets cmd.Dir to dir. sandbox-exec has no chdir flag (unlike

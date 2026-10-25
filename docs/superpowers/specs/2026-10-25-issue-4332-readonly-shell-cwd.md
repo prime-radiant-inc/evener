@@ -23,6 +23,13 @@ Revision notes:
   stricter-than-bwrap statement, the refusal needs a defined precedence and
   composition point, and the verification needs the root-under-`/tmp`,
   scratch and symlink cases. Those are incorporated.
+- **Amendment 1 (implementation).** The ordered rule already puts masks first.
+  This makes that precedence explicit for the write-blocked off degrade:
+  `SpawnedCanRead` checks the absolute-path and mask tests before its
+  unenforced short-circuit, so the degrade keeps the same credential floor as
+  its file tools even though its shell is unconfined. A plain off policy has
+  no masks and still allows any absolute path. This matches the existing
+  `FileToolCanRead` behavior for a write-blocked policy.
 
 ## Intent and scope
 
@@ -130,8 +137,9 @@ then applies, in this order:
 3. **Outside the root, both the literal and resolved spellings must be in
    the spawned read set and visible in the backend namespace.**
    `ResolvedPolicy.SpawnedCanRead` models:
-   - no enforced policy (plain off, or the write-blocked off degrade):
-     any absolute path; there is no kernel wrapper;
+   - no enforced policy, after the masks above: any absolute path. Plain off
+     has no masks; the write-blocked off degrade keeps its credential mask.
+     There is no kernel wrapper in either case;
    - `Spawned.Read == ReadAnywhere`: any absolute path the policy does not
      mask;
    - `Spawned.Read == ReadWorktreeOnly`: an absolute path under
@@ -208,12 +216,12 @@ read"), replacing today's "which escapes the sandbox".
   carve-out (for example the worktree or a system root) instead of
   requiring it under the workspace root. The shell could already `cd`
   there, so no read capability is added. A write-only root is not promised.
-- The write-blocked off degrade accepts a `cwd` anywhere, matching its
-  unconfined shell and its already read-anywhere file tools. Its shell was
-  already unconfined, so this replaces the last deliberate cwd role
-  boundary with the shell's actual access; its file-tool write boundary
-  (session scratch only) is unchanged. The docs must not claim the degraded
-  shell's writes are confined.
+- The write-blocked off degrade accepts a `cwd` anywhere its denylist admits,
+  matching its unconfined shell and its already read-anywhere file tools
+  (masks still deny both). Its shell was already unconfined, so this replaces
+  the last deliberate cwd role boundary with the shell's actual access; its
+  file-tool write boundary (session scratch only) is unchanged. The docs must
+  not claim the degraded shell's writes are confined.
 - Relative `cwd`, the omitted-`cwd` default, and the `cd` path are
   unchanged.
 - A masked path, an unreadable restricted path, a private-mount path, a

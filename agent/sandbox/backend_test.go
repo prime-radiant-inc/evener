@@ -70,6 +70,80 @@ func TestWrapNilIsIdentity(t *testing.T) {
 	}
 }
 
+func TestCommandCWDVisible(t *testing.T) {
+	t.Parallel()
+	const sessionTmp = "/tmp/evener-scratch-ROOT/SESSION"
+	tree := filepath.Dir(sessionTmp)
+	anywhere := func() *Wrapper {
+		return &Wrapper{
+			policy: ResolvedPolicy{
+				Mode:    ModeReadOnly,
+				Backend: BackendBwrap,
+				Spawned: AccessScope{Read: ReadAnywhere},
+			},
+			sessionTmp: sessionTmp,
+		}
+	}
+
+	w := anywhere()
+	for _, tc := range []struct {
+		name string
+		cwd  string
+		want bool
+	}{
+		{"host var tmp", "/var/tmp/worktree", true},
+		{"host tmp", "/tmp/other", false},
+		{"host tmp root", "/tmp", false},
+		{"host dev shm", "/dev/shm/other", false},
+		{"session tmp", sessionTmp, true},
+		{"session scratch tree", tree, true},
+		{"session scratch tree child", filepath.Join(tree, "sibling"), true},
+	} {
+		if got := w.CommandCWDVisible(tc.cwd); got != tc.want {
+			t.Errorf("%s: CommandCWDVisible(%q) = %v, want %v", tc.name, tc.cwd, got, tc.want)
+		}
+	}
+
+	bound := anywhere()
+	bound.policy.Spawned.WriteRoots = []string{"/tmp/write"}
+	bound.policy.UnmaskedRoots = []string{"/tmp/carve"}
+	bound.policy.CacheRoots = []string{"/tmp/cache"}
+	for _, path := range []string{"/tmp/write/sub", "/tmp/carve/sub", "/tmp/cache/sub"} {
+		if !bound.CommandCWDVisible(path) {
+			t.Errorf("explicitly bound root %q must be visible", path)
+		}
+	}
+
+	restricted := &Wrapper{
+		policy: ResolvedPolicy{
+			Mode:    ModeRestricted,
+			Backend: BackendBwrap,
+			Spawned: AccessScope{Read: ReadWorktreeOnly, ReadRoots: []string{"/work"}},
+		},
+		sessionTmp: sessionTmp,
+	}
+	if !restricted.CommandCWDVisible("/tmp/other") {
+		t.Error("worktree-only mode binds its roots explicitly and must report visible")
+	}
+
+	seatbelt := &Wrapper{
+		policy: ResolvedPolicy{
+			Mode:    ModeReadOnly,
+			Backend: BackendSeatbelt,
+			Spawned: AccessScope{Read: ReadAnywhere},
+		},
+		sessionTmp: sessionTmp,
+	}
+	if !seatbelt.CommandCWDVisible("/tmp/other") {
+		t.Error("Seatbelt has no private mount namespace and must report visible")
+	}
+
+	var nilWrapper *Wrapper
+	if !nilWrapper.CommandCWDVisible("/tmp/other") {
+		t.Error("a nil wrapper leaves the host filesystem unchanged and must report visible")
+	}
+}
+
 // TestConfineWrapsBwrapAndLeavesDir pins that Confine rewrites the command's argv
 // with the backend invocation but does NOT touch cmd.Dir for bwrap — bwrap carries
 // the working directory in its own argv (--chdir), so the caller's cmd.Dir is left

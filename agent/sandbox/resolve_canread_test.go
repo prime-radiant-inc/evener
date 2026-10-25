@@ -92,3 +92,77 @@ func TestFileToolCanReadRootSlashContainsEverything(t *testing.T) {
 		t.Fatal("root / must contain every absolute path")
 	}
 }
+
+func TestSpawnedCanReadUnenforcedAllowsAnyPath(t *testing.T) {
+	t.Parallel()
+	for _, rp := range []ResolvedPolicy{
+		{}, // plain off
+		{WriteBlocked: true, Spawned: AccessScope{Read: ReadWorktreeOnly}},
+	} {
+		if !rp.SpawnedCanRead("/anything/at/all") {
+			t.Fatalf("policy %+v must spawn with plain OS access", rp)
+		}
+	}
+	masked := ResolvedPolicy{
+		WriteBlocked: true,
+		MaskedPaths:  []string{"/home/me/.ssh"},
+		Spawned:      AccessScope{Read: ReadWorktreeOnly},
+	}
+	if masked.SpawnedCanRead("/home/me/.ssh/id_rsa") {
+		t.Fatal("the write-blocked degrade must keep the file tools' mask floor")
+	}
+	if !masked.SpawnedCanRead("/var/tmp/worktree") {
+		t.Fatal("an unmasked path on the write-blocked degrade must stay readable")
+	}
+}
+
+func TestSpawnedCanReadReadAnywhere(t *testing.T) {
+	t.Parallel()
+	rp := ResolvedPolicy{
+		Mode:        ModeReadOnly,
+		Spawned:     AccessScope{Read: ReadAnywhere},
+		MaskedPaths: []string{"/home/me/.ssh"},
+	}
+	for _, path := range []string{"/var/tmp/worktree", "/home/me/project/file"} {
+		if !rp.SpawnedCanRead(path) {
+			t.Errorf("SpawnedCanRead(%q) = false, want true", path)
+		}
+	}
+	for _, path := range []string{"/home/me/.ssh/id_rsa", "relative/path"} {
+		if rp.SpawnedCanRead(path) {
+			t.Errorf("SpawnedCanRead(%q) = true, want false", path)
+		}
+	}
+}
+
+func TestSpawnedCanReadRestrictedRoots(t *testing.T) {
+	t.Parallel()
+	rp := ResolvedPolicy{
+		Mode: ModeRestricted,
+		Spawned: AccessScope{
+			Read:       ReadWorktreeOnly,
+			ReadRoots:  []string{"/work"},
+			WriteRoots: []string{"/write-only"},
+		},
+		UnmaskedRoots: []string{"/home/me/.config/evener/skills"},
+		MaskedPaths:   []string{"/home/me/.config/evener"},
+	}
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/work", true},
+		{"/work/sub/dir", true},
+		{"/home/me/.config/evener/skills/foo", true},
+		{"/home/me/.config/evener/skills/.git/config", false},
+		{"/home/me/.config/evener/other", false},
+		{"/write-only", false},
+		{"/outside", false},
+		{"work", false},
+	}
+	for _, tc := range cases {
+		if got := rp.SpawnedCanRead(tc.path); got != tc.want {
+			t.Errorf("SpawnedCanRead(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}

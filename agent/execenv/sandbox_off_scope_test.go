@@ -151,41 +151,68 @@ func TestConfinedCommandWorkingDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, policy := range []sandbox.ResolvedPolicy{
-		{Mode: sandbox.ModeReadOnly}, {Mode: sandbox.ModeWorkspaceWrite}, {Mode: sandbox.ModeRestricted}, {Mode: sandbox.ModeOff, WriteBlocked: true},
+	for _, tc := range []struct {
+		name          string
+		policy        sandbox.ResolvedPolicy
+		acceptOutside bool
+	}{
+		{name: "read-only", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeReadOnly}, acceptOutside: true},
+		{name: "workspace-write", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite}, acceptOutside: true},
+		{name: "write-blocked-off", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}, acceptOutside: true},
+		{name: "restricted", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}, acceptOutside: false},
 	} {
-		name := policy.Mode.String()
-		if policy.WriteBlocked {
-			name += "-write-blocked"
-		}
-		t.Run(name, func(t *testing.T) {
-			env := NewLocalExecutionEnvironment(t.TempDir())
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			policy := tc.policy
+			if policy.Mode == sandbox.ModeRestricted {
+				// A hand-built scope's zero Read is ReadAnywhere; state the
+				// restricted scope explicitly so this case tests the read roots.
+				policy.Spawned = sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{root}}
+			}
+			env := NewLocalExecutionEnvironment(root)
 			t.Cleanup(env.Cleanup)
 			env.Sandbox = &policy
 			outside := t.TempDir()
-			boundaryErr := env.EnsureCommandWorkingDirectory(outside)
-			if boundaryErr == nil {
-				t.Fatal("confined cwd outside root was accepted")
-			}
-			assertBoundaryError := func(err error) {
-				t.Helper()
-				if err == nil || !strings.HasSuffix(err.Error(), boundaryErr.Error()) {
-					t.Fatalf("cwd error = %v; want containment error %v", err, boundaryErr)
+
+			if tc.acceptOutside {
+				if err := env.EnsureCommandWorkingDirectory(outside); err != nil {
+					t.Fatalf("cwd outside root was refused: %v", err)
 				}
+				if got, err := env.resolveCommandWorkingDir(outside); err != nil || got != outside {
+					t.Fatalf("resolved outside cwd = %q, %v; want %q", got, err, outside)
+				}
+				if res, err := env.ExecArgv(context.Background(), executable, []string{"-test.run=^$"}, 5000, outside, nil); err != nil || res.ExitCode != 0 {
+					t.Fatalf("allowed outside argv = %+v, %v", res, err)
+				}
+				if _, err := env.DetachCommand(context.Background(), "exit 0", outside, nil); err != nil && !errors.Is(err, ErrDetachUnsupported) {
+					t.Fatalf("detached outside cwd = %v, want started or ErrDetachUnsupported", err)
+				}
+			} else {
+				boundaryErr := env.EnsureCommandWorkingDirectory(outside)
+				if boundaryErr == nil {
+					t.Fatal("restricted cwd outside its read roots was accepted")
+				}
+				assertBoundaryError := func(err error) {
+					t.Helper()
+					if err == nil || !strings.HasSuffix(err.Error(), boundaryErr.Error()) {
+						t.Fatalf("cwd error = %v; want containment error %v", err, boundaryErr)
+					}
+				}
+				_, err := env.resolveCommandWorkingDir(outside)
+				assertBoundaryError(err)
+				_, err = env.ExecCommand(context.Background(), "exit 0", 1000, outside, nil)
+				assertBoundaryError(err)
+				_, err = env.ExecArgv(context.Background(), executable, []string{"-test.run=^$"}, 5000, outside, nil)
+				assertBoundaryError(err)
+				_, err = env.StreamCommand(context.Background(), "exit 0", outside, nil, &bytes.Buffer{})
+				assertBoundaryError(err)
+				_, err = env.DetachCommand(context.Background(), "exit 0", outside, nil)
+				assertBoundaryError(err)
 			}
+
 			if res, err := env.ExecArgv(context.Background(), executable, []string{"-test.run=^$"}, 5000, env.RootDir, nil); err != nil || res.ExitCode != 0 {
 				t.Fatalf("allowed argv = %+v, %v", res, err)
 			}
-			_, err := env.resolveCommandWorkingDir(outside)
-			assertBoundaryError(err)
-			_, err = env.ExecCommand(context.Background(), "exit 0", 1000, outside, nil)
-			assertBoundaryError(err)
-			_, err = env.ExecArgv(context.Background(), executable, []string{"-test.run=^$"}, 5000, outside, nil)
-			assertBoundaryError(err)
-			_, err = env.StreamCommand(context.Background(), "exit 0", outside, nil, &bytes.Buffer{})
-			assertBoundaryError(err)
-			_, err = env.DetachCommand(context.Background(), "exit 0", outside, nil)
-			assertBoundaryError(err)
 			if got, err := env.resolveCommandWorkingDir(""); err != nil || got != env.RootDir {
 				t.Fatalf("default cwd = %q, %v", got, err)
 			}

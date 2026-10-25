@@ -178,7 +178,7 @@ func DefShellWithDetach(detachAvailable bool) llm.ToolDefinition {
 				"command":     map[string]any{"type": "string", "description": "The shell command to run (POSIX: Bash with pipefail)."},
 				"description": map[string]any{"type": "string", "description": "Optional human-facing summary of the command, shown on job surfaces."},
 				"mode":        ShellModeProperty(detachAvailable),
-				"cwd":         map[string]any{"type": "string", "description": "Optional working directory for the command. Relative paths resolve against your current working directory. With sandbox off, paths may be outside it; confined policies require paths inside it. Must already exist. Default: your current working directory."},
+				"cwd":         map[string]any{"type": "string", "description": "Optional working directory for the command. Relative paths resolve against your current working directory. With sandbox off, paths may be outside it. A sandboxed session accepts a directory the sandbox can read: an unmasked path in read-only and workspace-write, or a readable root in restricted. Masked paths, paths outside the readable roots, and paths hidden by the sandbox's private /tmp or /dev are refused. Must already exist. Default: your current working directory."},
 			},
 			"required": []string{"command"},
 		},

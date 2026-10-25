@@ -2899,8 +2899,9 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 }
 
 // ExecCommand runs command through the platform shell in its own process group,
-// rooted at workingDir, defaulting to RootDir. Confined policies require cwd
-// under RootDir; unrestricted off sessions may point elsewhere.
+// rooted at workingDir, defaulting to RootDir. Confined policies accept a cwd
+// their spawned-process layer can read and their backend namespace exposes;
+// unrestricted off sessions may point anywhere.
 // The environment is built from EnvPolicy plus envVars, with any local
 // virtualenv bin directory prepended to PATH. The command is terminated if ctx
 // is cancelled or timeoutMS elapses (default 10000ms), escalating from SIGTERM
@@ -3497,14 +3498,39 @@ func pathWithinRoot(abs, root string) bool {
 	return strings.HasPrefix(abs, root+string(filepath.Separator))
 }
 
-// EnsureCommandWorkingDirectory applies workspace containment to command cwd
-// only when the environment carries a confined policy. A write-blocked off
-// delegate keeps its chosen role boundary even without a kernel wrapper.
+// EnsureCommandWorkingDirectory checks a command cwd against the active
+// sandbox. A masked path is refused everywhere. Otherwise a path that
+// resolves at or under the workspace root keeps today's symlink-aware
+// containment; outside it, both the cleaned spelling and its symlink-resolved
+// spelling must be readable by the spawned-process layer and already visible
+// in the backend's namespace, or be the session scratch the environment has
+// already provisioned. A cwd outside that set is refused before the process
+// starts. Off sessions permit any cwd; the write-blocked off degrade has no
+// kernel wrapper, so its shell also reads anywhere.
 func (e *LocalExecutionEnvironment) EnsureCommandWorkingDirectory(abs string) error {
 	if e.Sandbox == nil || !e.Sandbox.FileToolConfined() {
 		return nil
 	}
-	return e.ensureUnderRoot(abs)
+	resolved := resolveSymlinksBestEffort(abs)
+	if e.Sandbox.Masks(abs) || e.Sandbox.Masks(resolved) {
+		return errors.New("is masked by the sandbox denylist; choose a directory the sandbox can read")
+	}
+	if e.ensureUnderRoot(abs) == nil {
+		return nil
+	}
+	readable := e.Sandbox.SpawnedCanRead(abs) && e.Sandbox.SpawnedCanRead(resolved)
+	visible := e.Wrapper == nil || (e.Wrapper.CommandCWDVisible(abs) && e.Wrapper.CommandCWDVisible(resolved))
+	if readable && visible {
+		return nil
+	}
+	if scratch := e.allocatedSessionScratchPath(); scratch != "" &&
+		(pathWithinRoot(abs, scratch) || pathWithinRoot(resolved, scratch)) {
+		return nil
+	}
+	if !readable {
+		return errors.New("is outside the sandbox's readable roots; choose a directory the sandbox can read")
+	}
+	return errors.New("is hidden by the sandbox's private temporary namespace; choose a directory the sandbox can read")
 }
 
 // EnsureUnderRoot validates an already-resolved absolute path against the working

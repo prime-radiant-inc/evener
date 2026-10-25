@@ -1030,7 +1030,10 @@ func TestShellToolCwdEscapingSandboxRootRejected(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
 	root := s.env.WorkingDirectory()
-	s.env.(*execenv.LocalExecutionEnvironment).Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}
+	s.env.(*execenv.LocalExecutionEnvironment).Sandbox = &sandbox.ResolvedPolicy{
+		Mode:    sandbox.ModeRestricted,
+		Spawned: sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{root}},
+	}
 	// The "resolved" path per this kata is the joined+cleaned path (not a
 	// symlink-canonicalized one) — resolveShellWorkingDir joins raw against
 	// env.WorkingDirectory() and filepath.Clean's the result before validating.
@@ -1574,15 +1577,33 @@ func TestShellToolSandboxOffCwdOutsideWorkingDirectory(t *testing.T) {
 
 func TestShellToolConfinedCwdOutsideWorkingDirectory(t *testing.T) {
 	t.Parallel()
-	for _, policy := range []sandbox.ResolvedPolicy{
-		{Mode: sandbox.ModeReadOnly}, {Mode: sandbox.ModeWorkspaceWrite}, {Mode: sandbox.ModeRestricted}, {Mode: sandbox.ModeOff, WriteBlocked: true},
+	root := t.TempDir()
+	for _, tc := range []struct {
+		name    string
+		policy  sandbox.ResolvedPolicy
+		refused bool
+	}{
+		{name: "read-only", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeReadOnly}},
+		{name: "workspace-write", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite}},
+		{name: "write-blocked-off", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}},
+		{
+			name: "restricted",
+			policy: sandbox.ResolvedPolicy{
+				Mode:    sandbox.ModeRestricted,
+				Spawned: sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{root}},
+			},
+			refused: true,
+		},
 	} {
-		env := execenv.NewLocalExecutionEnvironment(t.TempDir())
-		t.Cleanup(env.Cleanup)
-		env.Sandbox = &policy
-		if _, err := resolveShellWorkingDir(env, t.TempDir()); err == nil {
-			t.Fatalf("policy %+v accepted external cwd", policy)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			env := execenv.NewLocalExecutionEnvironment(root)
+			t.Cleanup(env.Cleanup)
+			env.Sandbox = &tc.policy
+			_, err := resolveShellWorkingDir(env, t.TempDir())
+			if refused := err != nil; refused != tc.refused {
+				t.Fatalf("policy %+v: refused = %v (err %v), want %v", tc.policy, refused, err, tc.refused)
+			}
+		})
 	}
 }
 
