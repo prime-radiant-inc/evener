@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -22,6 +23,9 @@ func TestNewEvalCollector_SetsInitialFields(t *testing.T) {
 	}
 	if m.TurnCount != 0 {
 		t.Errorf("expected 0 turns, got %d", m.TurnCount)
+	}
+	if m.Completed {
+		t.Error("expected Completed false before any terminal boundary")
 	}
 }
 
@@ -250,6 +254,138 @@ func TestEvalCollector_ConcurrentAccess(t *testing.T) {
 	m := c.Metrics()
 	if m.TurnCount != 100 {
 		t.Errorf("expected 100 turns, got %d", m.TurnCount)
+	}
+}
+
+func evalSessionEnd(reason string) events.SessionEvent {
+	return events.SessionEvent{Kind: events.EventSessionEnd, Data: events.SessionEndData{Reason: reason, State: "idle"}}
+}
+
+func TestEvalCollector_CompletedRequiresSuccessfulInputBoundary(t *testing.T) {
+	t.Parallel()
+
+	activity := []events.SessionEvent{
+		{Kind: events.EventSessionStart, Data: events.SessionStartData{Profile: "openai", Model: "gpt-4"}},
+		{Kind: events.EventAssistantTextEnd, Data: events.AssistantTextEndData{Usage: llm.Usage{InputTokens: 3, OutputTokens: 2}}},
+	}
+	untypedEnd := events.SessionEvent{Kind: events.EventSessionEnd, Data: events.UserInputData{Text: "wrong-type"}}
+	communicateEndTurn := events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{EndTurn: true}}
+
+	tests := []struct {
+		name   string
+		events []events.SessionEvent
+		want   bool
+	}{
+		{"input complete", []events.SessionEvent{evalSessionEnd("input_complete")}, true},
+		{"turn failed", []events.SessionEvent{evalSessionEnd("turn_failed")}, false},
+		{"interrupted", []events.SessionEvent{evalSessionEnd("interrupted")}, false},
+		{"session closed", []events.SessionEvent{evalSessionEnd("session_closed")}, false},
+		{"no terminal event", nil, false},
+		{"untyped payload", []events.SessionEvent{untypedEnd}, false},
+		{"communicate end turn is not completion", []events.SessionEvent{communicateEndTurn}, false},
+		{
+			"session teardown does not erase completion",
+			[]events.SessionEvent{evalSessionEnd("input_complete"), evalSessionEnd("session_closed")},
+			true,
+		},
+		{
+			"untyped payload does not erase completion",
+			[]events.SessionEvent{evalSessionEnd("input_complete"), untypedEnd},
+			true,
+		},
+		{
+			"turn failed clears an earlier completion",
+			[]events.SessionEvent{evalSessionEnd("input_complete"), evalSessionEnd("turn_failed")},
+			false,
+		},
+		{
+			"interrupted clears an earlier completion",
+			[]events.SessionEvent{evalSessionEnd("input_complete"), evalSessionEnd("interrupted")},
+			false,
+		},
+		{
+			"a later completion wins",
+			[]events.SessionEvent{evalSessionEnd("turn_failed"), evalSessionEnd("input_complete")},
+			true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			collector := newEvalCollector("compact", "gpt-4", "task")
+			for _, ev := range activity {
+				collector.ProcessEvent(ev)
+			}
+			for _, ev := range tt.events {
+				collector.ProcessEvent(ev)
+			}
+			if got := collector.Metrics().Completed; got != tt.want {
+				t.Fatalf("Completed = %v after %s, want %v", got, tt.name, tt.want)
+			}
+		})
+	}
+}
+
+func TestEvalCollector_ScriptedProviderEndTurnSetsCompleted(t *testing.T) {
+	t.Parallel()
+
+	sess := newSession(t,
+		withDir(t.TempDir()),
+		withSteps(func(llm.Request) llm.Response {
+			return wrapCommunicateResponse(llm.Response{
+				Message: llm.Assistant("finished"),
+				Finish:  llm.FinishReason{Reason: "stop"},
+			})
+		}),
+	)
+	seen, stop := captureEvents(sess)
+	t.Cleanup(stop)
+
+	if _, err := sess.ProcessInput(t.Context(), "finish the task", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	stop()
+
+	collector := newEvalCollector("memory-pair", "scripted", "stage")
+	for _, ev := range *seen {
+		collector.ProcessEvent(ev)
+	}
+	if !collector.Metrics().Completed {
+		t.Fatal("Completed = false after a successful scripted input settled")
+	}
+}
+
+func TestEvalCollector_ScriptedProviderBudgetTerminationNotCompleted(t *testing.T) {
+	t.Parallel()
+
+	loop := func(llm.Request) llm.Response {
+		return toolCallResponse(llm.ToolCallData{ID: "loop-1", Name: "eval_loop_tool", Arguments: []byte(`{}`), Type: "function"})
+	}
+	sess := newSession(t,
+		withDir(t.TempDir()),
+		withConfig(SessionConfig{MaxToolRoundsPerInput: 1}),
+		withSteps(loop),
+	)
+	sess.RegisterTool("eval_loop_tool", "loops", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+		return "ok", nil
+	})
+	seen, stop := captureEvents(sess)
+	t.Cleanup(stop)
+
+	_, err := sess.ProcessInput(t.Context(), "loop", nil)
+	requireBudgetExhaustion(t, err, exhaustedBudgetToolRounds, 1, true)
+	stop()
+
+	if !hasEventKind(*seen, events.EventSessionEnd) {
+		t.Fatal("budget-terminated input emitted no session terminal event")
+	}
+	collector := newEvalCollector("memory-pair", "scripted", "stage")
+	for _, ev := range *seen {
+		collector.ProcessEvent(ev)
+	}
+	if collector.Metrics().Completed {
+		t.Fatal("Completed = true after tool-round budget exhaustion")
 	}
 }
 

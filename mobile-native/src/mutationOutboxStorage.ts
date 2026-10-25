@@ -647,6 +647,21 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			);
 			if (rows.length === 0) return [];
 			const ids = rows.map((row) => row.client_mutation_id);
+			// A recovery resend's receipt is the draft owner's proof that its
+			// captured sources were consumed. Its source rows move below, so the
+			// receipt must move with them in this same savepoint: a receipt left
+			// on the retired ref can never be read by the resumed draft, and the
+			// moved sources could never reconcile.
+			const sourceReceipts = this.recoveryResendsOf(ref);
+			if (sourceReceipts.length) {
+				const destinationReceipts = this.recoveryResendsOf(to.ref);
+				const merged = new Map(destinationReceipts.map((receipt) => [receipt.clientMutationId, receipt]));
+				for (const receipt of sourceReceipts)
+					if (!merged.has(receipt.clientMutationId))
+						merged.set(receipt.clientMutationId, { ...receipt, targetRef: to.ref });
+				this.writeRecoveryResends(to.ref, [...merged.values()]);
+				this.writeRecoveryResends(ref, []);
+			}
 			// Each row's target and sequence move in ONE write. Moving the target
 			// first would keep the source sequence, and both refs can already hold
 			// that number: the unique (target_ref, intent_sequence) index would
@@ -844,11 +859,19 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	}
 
 	private writeRecoveryResends(targetRef: string, receipts: RecoveryResendCommit[]): void {
-		this.db.runSync(
+		const updated = this.db.runSync(
 			"UPDATE mutation_sequence SET recovery_resends = ? WHERE target_ref = ?",
 			JSON.stringify(receipts),
 			targetRef,
 		);
+		// A destination ref can have no sequence row yet; its receipt still has
+		// to land. The UPDATE first keeps the resend rollback boundary truthful.
+		if (changedRows(updated) === 0)
+			this.db.runSync(
+				"INSERT INTO mutation_sequence (target_ref, last_sequence, recovery_resends) VALUES (?, 0, ?)",
+				targetRef,
+				JSON.stringify(receipts),
+			);
 	}
 
 	async getOptimistic(clientMutationId: string): Promise<MutationOptimisticRecord<A> | undefined> {

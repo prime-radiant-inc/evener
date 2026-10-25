@@ -44,11 +44,14 @@ import {
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useClient } from "../clientContext";
+import { useNeedsYou } from "../NeedsYouProvider";
+import type { NeedsYouController, NeedsYouSnapshot } from "../needsYouActions";
 import { openInNewTab } from "../openInNewTab";
-import { openNeedsYouSession } from "../rail/needsYouCycle";
 import { displayState } from "../rail/railNodes";
-import { navigate } from "../routing";
+import { observeRouteHistory } from "../routing";
+import { openSessionByRef } from "../sessionPlacement";
 import { cadenceStateFor } from "../sessionStatus";
+import { workspaceStore } from "../workspace";
 import { isBlocked } from "./blocked";
 import styles from "./commandpalette.module.css";
 import {
@@ -65,7 +68,7 @@ import {
 } from "./commands";
 import { computeMode } from "./mode";
 import { buildPaletteContext, focusedModel } from "./paletteContext";
-import { closePalette, usePaletteStore } from "./paletteController";
+import { closePalette, paletteStore, usePaletteStore } from "./paletteController";
 import { rememberCommand } from "./recentCommands";
 import { fetchSearch, findInSessionMatches, type HighlightPart, highlightParts, type InSessionMatch } from "./search";
 
@@ -218,18 +221,121 @@ function Highlighted({ parts }: { parts: HighlightPart[] }) {
   );
 }
 
+// deferNeedsYouAction closes the palette, waits until the controller reports
+// itself unblocked, then runs one intended needs-you action. The palette's own
+// dialog is an aria-modal surface, and the controller observes modal
+// transitions on a MutationObserver microtask, so acting immediately after
+// closePalette cannot work. Both the needs-you result row and the
+// next-needs-you command go through this one helper, so they share one
+// deferral rule and one cancellation fence: a newer palette activation, a
+// navigation generation change, any workspace write (including a host
+// transition's host-scoped pane rewrite), an accepted route event, popstate,
+// a newer modal, or unmount discards the intent before it acts.
+function deferNeedsYouAction(
+  controller: NeedsYouController,
+  pendingSelection: { current: (() => void) | null },
+  act: (snapshot: NeedsYouSnapshot) => void,
+): void {
+  pendingSelection.current?.();
+  // A modal opening after this activation is a newer modal intent and
+  // supersedes the deferred action. The controller counts opens and does not
+  // count closes, so a dialog that was already open under the palette cannot
+  // expire this intent when it closes.
+  const modalOpenCount = controller.getSnapshot().modalOpenCount;
+  let active = true;
+  let unsubscribeController = () => {};
+  let unsubscribeNavigation = () => {};
+  let unsubscribeWorkspace = () => {};
+  let unsubscribeRoute = () => {};
+  let unsubscribePalette = () => {};
+  const cleanup = () => {
+    if (!active) return;
+    active = false;
+    unsubscribeController();
+    unsubscribeNavigation();
+    unsubscribeWorkspace();
+    unsubscribeRoute();
+    unsubscribePalette();
+    window.removeEventListener("popstate", cancel);
+    if (pendingSelection.current === cleanup) pendingSelection.current = null;
+  };
+  const cancel = () => cleanup();
+  const generation = navigationStore.getState().clientGenerationID;
+  unsubscribeNavigation = navigationStore.subscribe((state) => {
+    if (state.clientGenerationID !== generation) cancel();
+  });
+  unsubscribeWorkspace = workspaceStore.subscribe(cancel);
+  unsubscribeRoute = observeRouteHistory(cancel);
+  // A new palette activation supersedes whatever this palette had deferred:
+  // it is a newer modal intent, so it must not inherit the old intent.
+  unsubscribePalette = paletteStore.subscribe((state) => {
+    if (state.open) cancel();
+  });
+  window.addEventListener("popstate", cancel);
+  const attempt = () => {
+    if (!active) return;
+    const snapshot = controller.getSnapshot();
+    if (snapshot.modalOpenCount !== modalOpenCount) {
+      cleanup();
+      return;
+    }
+    if (snapshot.blocked) return;
+    cleanup();
+    act(snapshot);
+  };
+  unsubscribeController = controller.subscribe(attempt);
+  pendingSelection.current = cleanup;
+  closePalette();
+  attempt();
+}
+
 export function CommandPalette() {
+  const { controller } = useNeedsYou();
   const open = usePaletteStore((s) => s.open);
   const query = usePaletteStore((s) => s.query);
   const openSeq = usePaletteStore((s) => s.openSeq);
+  const pendingSelection = useRef<(() => void) | null>(null);
+  useEffect(
+    () => () => {
+      pendingSelection.current?.();
+      pendingSelection.current = null;
+    },
+    [],
+  );
+  const selectNeedsYou = (ref: string) => {
+    deferNeedsYouAction(controller, pendingSelection, (snapshot) => {
+      const choice = snapshot.choices.find((item) => item.summary.ref === ref);
+      if (choice?.selectable) controller.select(ref);
+    });
+  };
+  const nextNeedsYou = () => {
+    deferNeedsYouAction(controller, pendingSelection, () => {
+      void controller.next();
+    });
+  };
   return (
     <Dialog open={open} onClose={closePalette} title="Command palette">
-      {open ? <PaletteBody key={openSeq} initialQuery={query} /> : null}
+      {open ? (
+        <PaletteBody
+          key={openSeq}
+          initialQuery={query}
+          onNeedsYouSelect={selectNeedsYou}
+          onNeedsYouNext={nextNeedsYou}
+        />
+      ) : null}
     </Dialog>
   );
 }
 
-function PaletteBody({ initialQuery }: { initialQuery: string }) {
+function PaletteBody({
+  initialQuery,
+  onNeedsYouSelect,
+  onNeedsYouNext,
+}: {
+  initialQuery: string;
+  onNeedsYouSelect: (ref: string) => void;
+  onNeedsYouNext: () => void;
+}) {
   const toasts = useToasts();
   const catalogCommands = useCommandCatalog((state) => state.commands);
   const searchClient = useClient();
@@ -301,7 +407,7 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   };
 
   function runContext(): PaletteRunContext {
-    return { ...ctx, toasts, ui };
+    return { ...ctx, toasts, ui, needsYou: { next: onNeedsYouNext } };
   }
 
   // Debounced search (§2.3): an empty query clears locally with no backend
@@ -540,8 +646,7 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       // No new-tab semantics here (unlike live/past below) - this row isn't
       // a plain URL open, it's the same top-level/nested-aware seam Mod+J
       // uses, so a Mod+Enter on it just opens same-tab like a bare Enter.
-      closePalette();
-      openNeedsYouSession(item.node.ref);
+      onNeedsYouSelect(item.node.ref);
       return;
     }
     if (item.kind === "insession") {
@@ -561,7 +666,7 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       // which carries the per-client mutation identity, and a shared identity
       // would let both tabs claim each other's durable sends.
       if (newTab) openInNewTab(url);
-      else navigate(url);
+      else openSessionByRef(item.row.result.ref);
     }
   }
 
@@ -951,6 +1056,7 @@ function Row({
       className={className}
       role="option"
       data-kind={item.kind}
+      data-ref={item.kind === "needsYou" ? item.node.ref : undefined}
       data-nested={nested || undefined}
       data-indirect={indirect || undefined}
       aria-selected={active}

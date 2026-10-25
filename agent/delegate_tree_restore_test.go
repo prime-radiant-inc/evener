@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -82,6 +83,238 @@ func TestDelegateColdAttentionResolutionIsDurableAndIdempotent(t *testing.T) {
 	if resolutions != 1 {
 		t.Fatalf("durable resolution count = %d, want 1", resolutions)
 	}
+}
+
+func countAttentionResolutionTurns(t *testing.T, path, attentionID string) int {
+	t.Helper()
+	count := 0
+	for _, entry := range readAttentionTranscriptEntries(t, path) {
+		if resolution := entry.Turn.AttentionResolution; resolution != nil && resolution.AttentionID == attentionID {
+			count++
+		}
+	}
+	return count
+}
+
+func delegateTranscriptRef(t *testing.T, c *delegateTreeController, delegateID string) string {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.durable[delegateID].Descriptor.TranscriptRef
+}
+
+// newAttentionResolutionFixture seeds one idle delegate whose only attention
+// item is pending in a closed transcript.
+func newAttentionResolutionFixture(t *testing.T, attentionID string) (c *delegateTreeController, path, sessionID, ref string) {
+	t.Helper()
+	const delegateID = "dlg_target"
+	sessionID = "child-dlg_target"
+	c, _ = newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, delegateID, "")
+	path = transcriptPath(c.stateDir, sessionID)
+	writeDelegateAttentionTranscript(t, path, sessionID, attentionID)
+	return c, path, sessionID, delegateTranscriptRef(t, c, delegateID)
+}
+
+// assertAttentionResolution requires one recorded resolution for attentionID
+// with the given disposition and resume generation, and exactly one marker.
+func assertAttentionResolution(t *testing.T, path, sessionID, attentionID string, want delegateAttentionResolution, wantGeneration uint64) {
+	t.Helper()
+	fold, err := readDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		t.Fatalf("read attention after cleanup: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != want || fold.resumeGenerations[attentionID] != wantGeneration {
+		t.Fatalf("recorded resolution = %q generation %d, want %q/%d", got, fold.resumeGenerations[attentionID], want, wantGeneration)
+	}
+	if got := countAttentionResolutionTurns(t, path, attentionID); got != 1 {
+		t.Fatalf("resolution turns = %d, want exactly 1", got)
+	}
+}
+
+// A stop keeps attention the transcript already resolved as recorded. The
+// resolver mode must keep the recorded disposition and resume generation and
+// append nothing, or the transcript would hold a conflicting second marker and
+// the stop could never complete.
+func TestDelegateAttentionDiscardUnlessResolvedKeepsARecordedResolution(t *testing.T) {
+	t.Parallel()
+	const attentionID = "attention-recorded"
+	c, path, sessionID, ref := newAttentionResolutionFixture(t, attentionID)
+	if err := appendColdAttentionResolutionForGenerationWithOpen(path, sessionID, []string{attentionID}, delegateAttentionConsumed, 2, transcript.OpenWriterForSession); err != nil {
+		t.Fatalf("record consumed attention: %v", err)
+	}
+	if err := c.resolveDelegateAttentionDurably(nil, ref, []string{attentionID}, delegateAttentionDiscardUnlessResolved); err != nil {
+		t.Fatalf("discard-unless-resolved cleanup: %v", err)
+	}
+	assertAttentionResolution(t, path, sessionID, attentionID, delegateAttentionConsumed, 2)
+}
+
+func TestDelegateAttentionDiscardUnlessResolvedRecordsOneDiscard(t *testing.T) {
+	t.Parallel()
+	const attentionID = "attention-pending"
+	c, path, sessionID, ref := newAttentionResolutionFixture(t, attentionID)
+	for range 2 {
+		if err := c.resolveDelegateAttentionDurably(nil, ref, []string{attentionID}, delegateAttentionDiscardUnlessResolved); err != nil {
+			t.Fatalf("discard-unless-resolved cleanup: %v", err)
+		}
+	}
+	assertAttentionResolution(t, path, sessionID, attentionID, delegateAttentionDiscarded, 0)
+}
+
+// A resolution can land between the stop's earlier read of the transcript and
+// the resolver's writer fold. The mode must decide from the writer's own fold,
+// not an earlier read, or the stop would request a different disposition and
+// fail with a conflicting resolution.
+func TestDelegateAttentionDiscardUnlessResolvedDecidesAtTheWriter(t *testing.T) {
+	t.Parallel()
+	const attentionID = "attention-resolved-during-cleanup"
+	c, path, sessionID, ref := newAttentionResolutionFixture(t, attentionID)
+	opened := false
+	c.attentionOpen = func(path, sessionID string) (*transcript.Writer, []transcript.Entry, error) {
+		if !opened {
+			opened = true
+			if err := appendColdAttentionResolutionForGenerationWithOpen(path, sessionID, []string{attentionID}, delegateAttentionConsumed, 2, transcript.OpenWriterForSession); err != nil {
+				return nil, nil, err
+			}
+		}
+		return transcript.OpenWriterForSession(path, sessionID)
+	}
+	if err := c.resolveDelegateAttentionDurably(nil, ref, []string{attentionID}, delegateAttentionDiscardUnlessResolved); err != nil {
+		t.Fatalf("discard-unless-resolved cleanup: %v", err)
+	}
+	assertAttentionResolution(t, path, sessionID, attentionID, delegateAttentionConsumed, 2)
+}
+
+func TestDelegateAttentionDiscardUnlessResolvedUsesTheResidentWriter(t *testing.T) {
+	t.Parallel()
+	const (
+		delegateID  = "dlg_target"
+		sessionID   = "child-dlg_target"
+		attentionID = "attention-resident-recorded"
+	)
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, delegateID, "")
+	ref := delegateTranscriptRef(t, c, delegateID)
+	path := transcriptPath(c.stateDir, sessionID)
+	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	// The resident path must use the runtime's writer. The cold branch is the
+	// only caller of attentionOpen, so failing here proves it was not taken.
+	c.attentionOpen = func(string, string) (*transcript.Writer, []transcript.Entry, error) {
+		t.Fatal("cold writer used for a resident cleanup")
+		return nil, nil, nil
+	}
+	runtime := &Session{id: sessionID, stateDir: c.stateDir, transcript: writer, transcriptReady: true}
+	t.Cleanup(func() {
+		runtime.mu.Lock()
+		attached := runtime.transcript
+		runtime.mu.Unlock()
+		if attached != nil {
+			_ = attached.Close()
+		}
+	})
+	attention := schema.NewTurn(schema.TurnSteering, llm.User("attention"))
+	attention.AttentionID = attentionID
+	if err := runtime.writeTranscriptDurable(attention); err != nil {
+		t.Fatalf("write attention: %v", err)
+	}
+	if err := runtime.resolveAttentionDurablyForGeneration([]string{attentionID}, delegateAttentionConsumed, 2); err != nil {
+		t.Fatalf("record consumed attention: %v", err)
+	}
+	if err := c.resolveDelegateAttentionDurably(runtime, ref, []string{attentionID}, delegateAttentionDiscardUnlessResolved); err != nil {
+		t.Fatalf("discard-unless-resolved cleanup: %v", err)
+	}
+	assertAttentionResolution(t, path, sessionID, attentionID, delegateAttentionConsumed, 2)
+
+	const pendingAttentionID = "attention-resident-pending"
+	pending := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
+	pending.AttentionID = pendingAttentionID
+	if err := runtime.writeTranscriptDurable(pending); err != nil {
+		t.Fatalf("write pending attention: %v", err)
+	}
+	if err := c.resolveDelegateAttentionDurably(runtime, ref, []string{pendingAttentionID}, delegateAttentionDiscardUnlessResolved); err != nil {
+		t.Fatalf("discard-unless-resolved cleanup of a pending item: %v", err)
+	}
+	assertAttentionResolution(t, path, sessionID, pendingAttentionID, delegateAttentionDiscarded, 0)
+}
+
+func TestDelegateAttentionDiscardUnlessResolvedRequiresTheTranscript(t *testing.T) {
+	t.Parallel()
+	const delegateID = "dlg_target"
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, delegateID, "")
+	ref := delegateTranscriptRef(t, c, delegateID)
+	err := c.resolveDelegateAttentionDurably(nil, ref, []string{"attention-missing"}, delegateAttentionDiscardUnlessResolved)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("discard-unless-resolved against a missing transcript = %v, want not-exist", err)
+	}
+}
+
+// The resident cursor treats a missing transcript as an empty fold, so the
+// resident cleanup reports the item as not pending rather than a file error.
+// The stop still fails and retries; this pins the documented error class.
+func TestDelegateAttentionDiscardUnlessResolvedResidentMissingTranscript(t *testing.T) {
+	t.Parallel()
+	const (
+		delegateID  = "dlg_target"
+		sessionID   = "child-dlg_target"
+		attentionID = "attention-resident-missing"
+	)
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, delegateID, "")
+	path := transcriptPath(c.stateDir, sessionID)
+	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	runtime := &Session{id: sessionID, stateDir: c.stateDir, transcript: writer, transcriptReady: true}
+	t.Cleanup(func() { _ = writer.Close() })
+	attention := schema.NewTurn(schema.TurnSteering, llm.User("attention"))
+	attention.AttentionID = attentionID
+	if err := runtime.writeTranscriptDurable(attention); err != nil {
+		t.Fatalf("write attention: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove transcript: %v", err)
+	}
+	ref := delegateTranscriptRef(t, c, delegateID)
+	err = c.resolveDelegateAttentionDurably(runtime, ref, []string{attentionID}, delegateAttentionDiscardUnlessResolved)
+	if err == nil {
+		t.Fatal("resident cleanup against a missing transcript succeeded")
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("resident cleanup reported a file-not-exist error, want the fold's not-pending refusal: %v", err)
+	}
+}
+
+// A stop that finds a recorded consumed marker whose line landed but whose
+// fsync failed must renew that marker's durability barrier without appending a
+// second resolution.
+func TestDelegateAttentionDiscardUnlessResolvedRenewsARecordedConsumption(t *testing.T) {
+	t.Parallel()
+	const (
+		attentionID  = "attention-consumed-unsynced"
+		syncFailures = 2
+	)
+	c, path, sessionID, ref := newAttentionResolutionFixture(t, attentionID)
+	fs := newAttentionAmbiguousSyncFS()
+	open := func(path, expectedSessionID string) (*transcript.Writer, []transcript.Entry, error) {
+		return transcript.OpenWriterForSessionWithFS(fs, path, expectedSessionID)
+	}
+	fs.failNextAmbiguousDurability(syncFailures)
+	if err := appendColdAttentionResolutionForGenerationWithOpen(path, sessionID, []string{attentionID}, delegateAttentionConsumed, 2, open); err == nil {
+		t.Fatal("consumed marker with a failed fsync unexpectedly succeeded")
+	}
+	c.attentionOpen = open
+	if err := c.resolveDelegateAttentionDurably(nil, ref, []string{attentionID}, delegateAttentionDiscardUnlessResolved); err != nil {
+		t.Fatalf("discard-unless-resolved cleanup: %v", err)
+	}
+	if got := fs.successfulSyncsAfterFailure(); got == 0 {
+		t.Fatal("the cleanup completed without renewing durability for the unsynced consumption")
+	}
+	assertAttentionResolution(t, path, sessionID, attentionID, delegateAttentionConsumed, 2)
 }
 
 func TestDelegateAttentionAppendFailureLeavesStopPending(t *testing.T) {

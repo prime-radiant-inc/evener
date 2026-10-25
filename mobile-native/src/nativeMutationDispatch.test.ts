@@ -19,7 +19,7 @@ import { WireError } from "@evener/appwire-client";
 import type { AppwireClientLike, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createConversationService } from "../../mobile/src/services/conversation";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { createConversationStore, type ConversationMutationState } from "../../mobile/src/state/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
@@ -235,6 +235,45 @@ test("a durable send clears the composer's durable unconfirmed draft at enqueue,
 		turn: { id: "turn-1" },
 	});
 	await runtime.stop();
+});
+
+test("the store records the durable row id the runtime admitted on the pending record", async () => {
+	const { runtime, client, host, service, store, targetKey } = compose({
+		createMutationId: () => "durable-row-42",
+	});
+	let releaseTurn: ((value: unknown) => void) | undefined;
+	client.on(
+		"turn/start",
+		() =>
+			new Promise((resolve) => {
+				releaseTurn = resolve;
+			}) as never,
+	);
+	await open(host, client, store, service);
+
+	const pendingRecords: ConversationMutationState[] = [];
+	const unsubscribe = store.subscribe((state) => {
+		if (state.pendingMutation !== null && state.pendingMutation !== undefined)
+			pendingRecords.push(state.pendingMutation);
+	});
+	store.getState().setDraft("my message");
+	await store.getState().send(service, [{ type: "text", text: "my message" }]);
+
+	// The row the production runtime committed is the identity the store
+	// recorded on the pending record.
+	const [row] = (await runtime.read(targetKey)).outbox;
+	expect(row?.clientMutationId).toBe("durable-row-42");
+	const admittedId = row!.clientMutationId;
+	expect(pendingRecords).toContainEqual(
+		expect.objectContaining({ kind: "send", status: "pending", admittedMutationId: admittedId }),
+	);
+	// It still settles on admission, and the durable path invents no receipt.
+	expect(store.getState().pendingMutation).toBeNull();
+	expect(store.getState().lastAcceptedMutation).toEqual({ kind: "send" });
+
+	releaseTurn?.(appliedReceipt({ clientMutationId: admittedId }));
+	await runtime.stop();
+	unsubscribe();
 });
 
 test("a failed host startup keeps the registration so a later admission still dispatches", async () => {

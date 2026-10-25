@@ -40,7 +40,7 @@ var shownMetaFields = []string{
 var notShownMetaFields = []string{
 	"ProfileID", "CheapModel", "VisionModel", "Config", "Revision",
 	"TurnBudgetWarningEmitted", "LastInputTokens", "NameSource", "NameUpdatedAt",
-	"DivergenceTurn", "Goal", "PinnedNote", "Skills", "HumanNote", "AgentNote",
+	"DivergenceTurn", "Goal", "PinnedNote", "Skills", "MemorySaveUnavailable", "HumanNote", "AgentNote",
 	"SessionURLs", "EnvContext", "ReasoningEffortEscalated", "CumulativeUsage",
 	"WorkMillis", "JobTreeRevision", "ScratchTempDir", "ScratchTreeRootID",
 	"EnvInfo.Platform", "EnvInfo.OSVersion", "EnvInfo.Today", "EnvInfo.KnowledgeCutoff",

@@ -1815,6 +1815,10 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
 	}
 	s.filterUnavailableMemoryTools()
+	// A role preload is prepared on the creating parent and a frozen descriptor
+	// replays the body frozen at creation; drop what this session cannot follow
+	// before the permanent prompt and inventory carry it.
+	s.dropUnavailableSkillPreloads()
 
 	// Cache instruction docs once; reused every round for system prompt rebuilds.
 	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
@@ -2383,8 +2387,7 @@ func (s *Session) conversationSignals() (historyTurns, modelResponses int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.history {
-		switch t.Kind {
-		case schema.TurnHookCompleted, schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
+		if t.Kind == schema.TurnHookCompleted || t.Kind.HarnessContext() {
 			continue
 		}
 		if t.Kind.TranscriptOnly() {

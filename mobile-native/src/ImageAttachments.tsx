@@ -14,16 +14,19 @@ export function ImageAttachments({
 	selection,
 	uncertain = false,
 	disabled = false,
+	images,
 }: {
 	document: Pick<DraftDocument, "subscribe" | "getSnapshot" | "imagePreviews" | "removeImage">;
 	selection: ImageSelection;
 	uncertain?: boolean;
 	disabled?: boolean;
+	/** References to show instead of the current or uncertain composition. */
+	images?: DraftImage[];
 }) {
 	const colors = useColors();
 	const draft = useSyncExternalStore(document.subscribe, document.getSnapshot);
 	const picking = useSyncExternalStore(selection.subscribe, selection.getSnapshot);
-	const references = (uncertain ? draft.record.unconfirmedImages : draft.record.images) ?? EMPTY;
+	const references = images ?? (uncertain ? draft.record.unconfirmedImages : draft.record.images) ?? EMPTY;
 	const previews = useMemo(() => {
 		try {
 			return { items: document.imagePreviews(references), error: null };

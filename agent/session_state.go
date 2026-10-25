@@ -147,8 +147,9 @@ func (s *Session) restingFailureLocked() (schema.Turn, bool) {
 // writes as it runs: user input, steering (the interrupt marker included), an
 // assistant response, tool results. Bookkeeping records (TurnSystem,
 // TurnCheckpoint, TurnSummary, TurnModelSwitch, TurnHookCompleted,
-// TurnEnvironment, TurnNotesContext, TurnAttentionResolution) are skipped, so
-// a model switch or a hook line after the failure leaves the session failed.
+// TurnEnvironment, TurnNotesContext, TurnMemoryContext,
+// TurnAttentionResolution) are skipped, so a model switch or a hook line
+// after the failure leaves the session failed.
 func historyTurnFailure(history []schema.Turn) (schema.Turn, bool) {
 	for i := range slices.Backward(history) {
 		switch history[i].Kind {
@@ -281,6 +282,10 @@ func (s *Session) Meta() schema.SessionMeta {
 // and lose the mutation on the next restore.
 func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionURL) schema.SessionMeta {
 	originalPrompt := s.extractOriginalPrompt()
+	// Read the registry-derived verdict before taking s.mu: the predicate reads
+	// s.cfg and the tool registry, and every meta save must persist the current
+	// answer rather than a value cached at construction.
+	memorySaveUnavailable := !s.memorySaveInstructionsEnabled()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -343,6 +348,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		DivergenceTurn:           divergence,
 		ForkLabel:                s.fork.label,
 		IsSubagent:               isSubagent,
+		MemorySaveUnavailable:    memorySaveUnavailable,
 		Origin:                   s.origin,
 		Goal:                     s.goalSnapshotForMeta(),
 		PinnedNote:               s.pinnedNote,

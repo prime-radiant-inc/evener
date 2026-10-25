@@ -26,6 +26,11 @@ interface ConversationMutationTarget extends ConversationMutationContext {
 	// What the message's ghost shows when the input doesn't say: the queued
 	// messages a promote or drain steers with, which the hub already holds.
 	readonly display?: InputItem[];
+	/** A local, non-wire recheck run immediately before the durable enqueue and
+	 * again before a direct fallback request. A Retry passes one so a
+	 * retirement or a newer canonical outcome refuses before anything is
+	 * written or sent. Ordinary Send/Queue omit it. */
+	readonly precondition?: () => boolean;
 }
 
 // A promote steers with one queued message, which it must name; the hub
@@ -38,8 +43,27 @@ export type ConversationMutationRequest = ConversationMutationTarget &
 
 export type ConversationMutationKind = ConversationMutationRequest["kind"];
 
+/** A mutation a local precondition proved was not sent: no durable row and no
+ * wire request were made. Distinct from an ordinary refusal or an uncertain
+ * wire outcome, so the draft can clear only this operation's own marker. */
+export class MutationNotSentError extends Error {
+	constructor(message = "This message was not sent.") {
+		super(message);
+		this.name = "MutationNotSentError";
+	}
+}
+
+/** The local result of a durable admission: the clientMutationId of the row
+ * the outbox committed at the enqueue boundary. The production runtime
+ * settles before the daemon answers, so the receipt is absent there and
+ * present only on the direct service path, which still returns one. */
+export interface ConversationMutationAdmission {
+	readonly clientMutationId: string;
+	readonly receipt?: MutationReceipt;
+}
+
 export interface ConversationMutationSubmitter {
-	submit(request: ConversationMutationRequest): Promise<MutationReceipt | undefined>;
+	submit(request: ConversationMutationRequest): Promise<ConversationMutationAdmission | undefined>;
 }
 
 // The durable pending-row seam a host wires for one conversation: the scoped

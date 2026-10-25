@@ -44,12 +44,17 @@ function driver(tree: ReactTestRenderer) {
 	const open = (direction: "left" | "right") => openSwipeRow(swipeable, direction);
 	return { swipeable, tracker, touchStart, release, open };
 }
-function mount(options: { leading?: SwipeAction | null } = {}) {
+function mount(options: { leading?: SwipeAction | null; edgeInset?: number } = {}) {
 	const leading = action("archive", "Archive");
 	const pin = action("pin", "Pin");
 	const onActiveChange = vi.fn();
 	const tree: ReactTestRenderer = render(
-		<SwipeRow leading={options.leading === null ? undefined : leading} trailing={[pin]} onActiveChange={onActiveChange}>
+		<SwipeRow
+			leading={options.leading === null ? undefined : leading}
+			trailing={[pin]}
+			edgeInset={options.edgeInset}
+			onActiveChange={onActiveChange}
+		>
 			<Text>row</Text>
 		</SwipeRow>,
 	);
@@ -155,8 +160,42 @@ it("a swipe that began in the left edge band closes without acting, whichever wa
 	expect(swipeableCalls.closes).toBe(4);
 });
 
-it("takes the left edge band out of the row's hit frame", () => {
+it("takes the screen's left edge band out of an unindented row's hit frame", () => {
 	expect(mount().swipeable.props.hitSlop).toEqual({ left: -24 });
+});
+
+it("shifts the edge band by the row's inset, so an indented row keeps only the screen's 24 points", () => {
+	const { swipeable, tracker } = mount({ edgeInset: 16 });
+	expect(swipeable.props.hitSlop).toEqual({ left: -8 });
+	expect(tracker?.config.hitSlop).toEqual({ left: -8 });
+});
+
+it("leaves no edge band on a row whose frame already starts past it", () => {
+	const { swipeable, tracker } = mount({ edgeInset: 32 });
+	expect(swipeable.props.hitSlop).toBeUndefined();
+	expect(tracker?.config.hitSlop).toBeUndefined();
+});
+
+it("rebuilds the release tracker when the row's inset changes", () => {
+	const tree = render(
+		<SwipeRow edgeInset={16} trailing={[action("pin", "Pin")]}>
+			<Text>row</Text>
+		</SwipeRow>,
+	);
+	expect(
+		(tree.root.findByType("ReanimatedSwipeable" as never).props.simultaneousWithExternalGesture as PanGestureMock)
+			.config.hitSlop,
+	).toEqual({ left: -8 });
+	act(() =>
+		tree.update(
+			<SwipeRow edgeInset={32} trailing={[action("pin", "Pin")]}>
+				<Text>row</Text>
+			</SwipeRow>,
+		),
+	);
+	const swipeable = tree.root.findByType("ReanimatedSwipeable" as never);
+	expect(swipeable.props.hitSlop).toBeUndefined();
+	expect((swipeable.props.simultaneousWithExternalGesture as PanGestureMock).config.hitSlop).toBeUndefined();
 });
 
 it("a revealed action acts and closes the row", () => {

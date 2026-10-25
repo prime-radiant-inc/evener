@@ -56,6 +56,7 @@ const outbox = vi.hoisted(() => ({ bind: vi.fn() }));
 vi.mock("./src/outbox/nativeOutboxFlush", () => ({ outboxFlush: outbox }));
 vi.mock("./src/NativePreferencesProvider", () => ({
 	NativePreferencesProvider: (props: { children?: ReactNode }) => props.children ?? null,
+	useNativePreferences: () => ({ hubId: null, config: null }),
 }));
 
 // The keyboard controller reports the keyboard's frames to the screens
