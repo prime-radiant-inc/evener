@@ -189,14 +189,12 @@ export interface ConversationPendingSubmission {
  * resumeProjected/close/reset). A rebind settle keeps it — the failed attempt
  * belongs to the same conversation. Failed-retention readers — the rehydrate
  * error guard — read this marker. The error text itself stays in `error` and
- * the draft restore in `draft`; the marker carries only the failed attempt's
- * identity, plus the durable row's id when the attempt was admitted. */
+ * the draft restore in `draft`; the marker names only which action failed.
+ * The attempt's own identity is the store's private ownership token, and a
+ * durable row id never coexists with a terminal failure (the transport
+ * settles once, so admission and failure are mutually exclusive). */
 export interface ConversationFailedSubmission {
 	readonly kind: ConversationStoreMutationKind;
-	/** @internal — the failed attempt's own monotonic id. */
-	readonly mutationId: number;
-	/** @internal — the durable row's clientMutationId once admitted. */
-	readonly admittedMutationId?: string;
 }
 
 /** Display-safe local acknowledgement of a completed production mutation. A
@@ -1550,18 +1548,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		storeGet?.().applyNotification(notification);
 	}
 
-	// Returns the current draft revision — passed to handleMutationError so it
-	// can detect post-clear edits (type-then-delete) without exposing the
-	// revision in public state.
-	function getDraftRevision(): number {
-		return draftRevision;
-	}
-	// I1: Returns the current error-owner revision — passed to
-	// handleMutationError so it can compare against the captured
-	// entryErrorRev without exposing the revision in public state.
-	function getErrorOwnerRev(): number {
-		return errorOwnerRev;
-	}
 	// F9: Rehydrate operation token — incremented on each rehydrate call so
 	// a stale rehydrate (from an older operation) cannot overwrite a newer
 	// rehydrate's state within the same generation.
@@ -1792,10 +1778,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		// This is the single chokepoint for ownership transitions; all set()
 		// calls inside the store go through this wrapper.
 		const set = (partial: Partial<ConversationState>) => {
-			// The marker writes fire on exactly the transitions that used to
-			// write the removed in-flight record (press, admission, settle,
-			// failure, lifecycle clear), so the mutation-owner revision
-			// stream is unchanged.
 			if ("pendingSubmission" in partial || "failedSubmission" in partial) mutationOwnerRev += 1;
 			if ("error" in partial) errorOwnerRev += 1;
 			// A conversation write is the one model change the reconciliation has to
@@ -1832,6 +1814,74 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		) => {
 			if (admission === undefined || mutationId !== currentMutationId) return;
 			set({ pendingSubmission: { kind, admittedMutationId: admission.clientMutationId } });
+		};
+		// Shared mutation failure handler. On failure, the failed marker
+		// PERSISTS (the click-to-commit marker is cleared; failedSubmission
+		// stays). The draft is only restored if the user has not edited since
+		// the mutation cleared the draft — detected via draftRevision, so
+		// type-then-delete (which produces "" but increments the revision)
+		// counts as an edit and prevents restore. F4/F10: the ownership token
+		// (currentMutationId) keeps an out-of-order failure from overwriting a
+		// newer attempt.
+		const handleMutationError = (
+			err: unknown,
+			ref: string | null,
+			mutationId: number,
+			kind: ConversationStoreMutationKind,
+			draftSnapshot: string | null,
+			revisionAtSubmit: number,
+			entryErrorRev: number,
+		) => {
+			// F10: Check active mutation first. If a newer mutation has already
+			// started, this error is stale — bail out.
+			if (mutationId !== currentMutationId) return;
+
+			// The hub refused because its capabilities moved on without a status frame
+			// this client saw. The web's rule (decision 2): surface the typed error and
+			// let the model converge through the reducer — one coalesced reread of the
+			// authoritative snapshot — rather than a bespoke capability read and write.
+			if (isActionUnavailableError(err) && ref !== null) requestRehydrate(ref);
+
+			// F10: Re-check ownership — out-of-order failure cannot change a newer
+			// mutation, error, or draft.
+			if (mutationId === currentMutationId) {
+				// The failed marker PERSISTS — install it; do NOT leave the attempt
+				// looking settled-and-clean.
+				// Task 2A-Ops-4: Draft revision prevents type-delete restore — only
+				// restore if the draft revision has NOT changed since the mutation
+				// cleared the draft. Type-then-delete produces "" but increments the
+				// revision, so it counts as an edit and prevents restore.
+				// I1: A current mutation failure may install the failed marker/draft
+				// restoration, but must NOT overwrite a newer error owner. Only write
+				// error if the captured error-owner revision is unchanged — revision
+				// equality ONLY, no || currentError === null shortcut. Revision
+				// equality preserves ANY newer error owner including a clear-to-null
+				// (which increments errorOwnerRev but writes null) and an ABA same
+				// text/null re-set. A stale rehydrate that tries to CLEAR a newer
+				// mutation's error is handled in the rehydrate success path via
+				// entryErrorRev comparison. Here, the mutation failure owns the error
+				// write only when no newer owner (null or non-null) advanced the
+				// revision during the await.
+				const shouldRestore = draftSnapshot !== null && draftRevision === revisionAtSubmit;
+				const newError = err instanceof Error ? err.message : String(err);
+				if (entryErrorRev === errorOwnerRev) {
+					set({
+						pendingSubmission: null,
+						failedSubmission: { kind },
+						...(shouldRestore ? { draft: draftSnapshot } : {}),
+						error: newError,
+					});
+				} else {
+					// A newer error owner published (non-null error, null clear, or ABA
+					// same text/null re-set) — preserve it. Only install the failed
+					// marker/draft restoration.
+					set({
+						pendingSubmission: null,
+						failedSubmission: { kind },
+						...(shouldRestore ? { draft: draftSnapshot } : {}),
+					});
+				}
+			}
 		};
 		storeGet = get;
 		// The one chokepoint for canonical-read validity transitions. Guarded so
@@ -3206,21 +3256,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					}
 					// C1: Recheck the exact operation binding after the await.
 					if (!isBindingCurrent(opBinding)) return;
-					handleMutationError(
-						err,
-						state.ref,
-						mutationId,
-						"send",
-						draftText,
-						revisionAtSubmit,
-						entryErrorRev,
-						getDraftRevision,
-						getErrorOwnerRev,
-						() => mutationId === currentMutationId,
-						set,
-						get,
-						requestRehydrate,
-					);
+					handleMutationError(err, state.ref, mutationId, "send", draftText, revisionAtSubmit, entryErrorRev);
 					// I1: mutation settled (failed terminal) — drain deferred trailing
 					// reread after handleMutationError sets the failed state.
 					drainTrailingReread();
@@ -3287,21 +3323,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					}
 					// C1: Recheck the exact operation binding after the await.
 					if (!isBindingCurrent(opBinding)) return;
-					handleMutationError(
-						err,
-						state.ref,
-						mutationId,
-						"queue",
-						draftText,
-						revisionAtSubmit,
-						entryErrorRev,
-						getDraftRevision,
-						getErrorOwnerRev,
-						() => mutationId === currentMutationId,
-						set,
-						get,
-						requestRehydrate,
-					);
+					handleMutationError(err, state.ref, mutationId, "queue", draftText, revisionAtSubmit, entryErrorRev);
 					// I1: mutation settled (failed terminal) — drain deferred trailing
 					// reread after handleMutationError sets the failed state.
 					drainTrailingReread();
@@ -3355,21 +3377,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				} catch (err) {
 					// C1: Recheck the exact operation binding after the await.
 					if (!isBindingCurrent(opBinding)) return;
-					handleMutationError(
-						err,
-						state.ref,
-						mutationId,
-						"interrupt",
-						null,
-						revisionAtSubmit,
-						entryErrorRev,
-						getDraftRevision,
-						getErrorOwnerRev,
-						() => mutationId === currentMutationId,
-						set,
-						get,
-						requestRehydrate,
-					);
+					handleMutationError(err, state.ref, mutationId, "interrupt", null, revisionAtSubmit, entryErrorRev);
 					// I1: mutation settled (failed terminal) — drain deferred trailing
 					// reread after handleMutationError sets the failed state.
 					drainTrailingReread();
@@ -3669,89 +3677,4 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			},
 		};
 	});
-}
-
-// Shared mutation error handler. On failure, the failed marker PERSISTS (the
-// click-to-commit marker is cleared; failedSubmission stays). The draft is
-// only restored if the user has not edited since the mutation cleared the
-// draft — detected via draftRevision, so type-then-delete (which produces ""
-// but increments the revision) counts as an edit and prevents restore.
-// F4/F10: the ownsMutation callback (the store's closure ownership token)
-// keeps an out-of-order failure from overwriting a newer mutation's error.
-function handleMutationError(
-	err: unknown,
-	ref: string | null,
-	mutationId: number,
-	kind: ConversationStoreMutationKind,
-	draftSnapshot: string | null,
-	revisionAtSubmit: number,
-	entryErrorRev: number,
-	getDraftRevision: () => number,
-	getErrorOwnerRev: () => number,
-	ownsMutation: () => boolean,
-	set: (partial: Partial<ConversationState>) => void,
-	get: () => ConversationState,
-	requestRehydrate: (ref: string) => void,
-): void {
-	// F10: Check active mutation first. If a newer mutation has already
-	// started, this error is stale — bail out.
-	if (!ownsMutation()) return;
-
-	// The hub refused because its capabilities moved on without a status frame
-	// this client saw. The web's rule (decision 2): surface the typed error and
-	// let the model converge through the reducer — one coalesced reread of the
-	// authoritative snapshot — rather than a bespoke capability read and write.
-	if (isActionUnavailableError(err) && ref !== null) requestRehydrate(ref);
-
-	// F10: Re-check ownership — out-of-order failure cannot change a newer
-	// mutation, error, or draft.
-	if (ownsMutation()) {
-		// The failed marker PERSISTS — install it; do NOT leave the attempt
-		// looking settled-and-clean.
-		// Task 2A-Ops-4: Draft revision prevents type-delete restore — only
-		// restore if the draft revision has NOT changed since the mutation
-		// cleared the draft. Type-then-delete produces "" but increments the
-		// revision, so it counts as an edit and prevents restore.
-		// I1: A current mutation failure may install the failed marker/draft
-		// restoration, but must NOT overwrite a newer error owner. Only write
-		// error if the captured error-owner revision is unchanged — revision
-		// equality ONLY, no || currentError === null shortcut. Revision
-		// equality preserves ANY newer error owner including a clear-to-null
-		// (which increments errorOwnerRev but writes null) and an ABA same
-		// text/null re-set. A stale rehydrate that tries to CLEAR a newer
-		// mutation's error is handled in the rehydrate success path via
-		// entryErrorRev comparison. Here, the mutation failure owns the error
-		// write only when no newer owner (null or non-null) advanced the
-		// revision during the await.
-		const shouldRestore = draftSnapshot !== null && getDraftRevision() === revisionAtSubmit;
-		const newError = err instanceof Error ? err.message : String(err);
-		// The durable row's id, when the attempt was admitted before it failed.
-		// Admission and terminal failure are mutually exclusive per attempt
-		// (the transport settles once), so this is absent in every failure
-		// reachable today — sourced from the click-to-commit marker, which
-		// recordAdmittedMutation keeps in step with the row identity.
-		const admittedMutationId = get().pendingSubmission?.admittedMutationId;
-		const failedSubmission: ConversationFailedSubmission = {
-			kind,
-			mutationId,
-			...(admittedMutationId !== undefined ? { admittedMutationId } : {}),
-		};
-		if (entryErrorRev === getErrorOwnerRev()) {
-			set({
-				pendingSubmission: null,
-				failedSubmission,
-				...(shouldRestore ? { draft: draftSnapshot } : {}),
-				error: newError,
-			});
-		} else {
-			// A newer error owner published (non-null error, null clear, or ABA
-			// same text/null re-set) — preserve it. Only install the failed
-			// marker/draft restoration.
-			set({
-				pendingSubmission: null,
-				failedSubmission,
-				...(shouldRestore ? { draft: draftSnapshot } : {}),
-			});
-		}
-	}
 }

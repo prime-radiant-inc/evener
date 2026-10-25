@@ -48,6 +48,7 @@ import { createActivityStore } from "./activity";
 import {
 	createConversationStore,
 	type ConversationPendingSubmission,
+	type ConversationStoreMutationKind,
 	type LiveActivitySink,
 	MAX_ITEM_BYTES,
 	olderPageKey,
@@ -1048,7 +1049,7 @@ describe("ConversationStore", () => {
 	// --- mutation-state tests (Step 3) ------------------------------------------
 
 	describe("mutation state — parameterized send/queue/interrupt", () => {
-		type MutationKind = "send" | "queue" | "interrupt";
+		type MutationKind = ConversationStoreMutationKind;
 
 		const mutationCases: {
 			kind: MutationKind;
@@ -1213,7 +1214,7 @@ describe("ConversationStore", () => {
 				}
 			});
 
-			it(`${kind}: the in-flight attempt belongs to the generation that pressed it`, async () => {
+			it(`${kind}: an in-flight attempt keeps the pressing generation and its marker open`, async () => {
 				const service = serviceFor(kind);
 				let resolveFn: (() => void) | null = null as (() => void) | null;
 				const hangPromise = new Promise<MutationReceipt>((resolve) => {
@@ -1445,10 +1446,7 @@ describe("ConversationStore", () => {
 		// itself stays in `error` and the draft restore in `draft`, so the
 		// marker carries only the failed attempt's identity.
 		const expectFailedMarker = (store: ReturnType<typeof createConversationStore>) => {
-			expect(store.getState().failedSubmission).toEqual({
-				kind: "send",
-				mutationId: expect.any(Number),
-			});
+			expect(store.getState().failedSubmission).toEqual({ kind: "send" });
 		};
 		it("a failed send retains the failedSubmission marker beside the error and restored draft", async () => {
 			const service = serviceFor("send");
@@ -1459,9 +1457,8 @@ describe("ConversationStore", () => {
 
 			await store.getState().send(service, textInput("draft to restore"));
 
-			// The marker is exactly the failed attempt's identity — its kind and
-			// its own monotonic id. This refusal settled before any row was
-			// admitted, so it carries no durable admission.
+			// The marker names exactly which action failed; the attempt's own
+			// identity stays in the store's private ownership token.
 			expectFailedMarker(store);
 			// The retained failure keeps its error and restores the draft per
 			// the unchanged revision rule.
