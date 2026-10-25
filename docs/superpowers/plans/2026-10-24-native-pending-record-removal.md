@@ -33,12 +33,20 @@ already carries the admitted identity.
 
 ### Stage A: admitted identity
 
-- On a successful submit, record `receipt.clientMutationId` as the pending
+- The native runtime currently returns `undefined` from `submit()` after an
+  ordinary enqueue, interrupt, recovery resend, or direct fallback. Stage A
+  must add a local admission result that carries the durable row's
+  `clientMutationId` through the runtime and submitter, while preserving
+  acknowledgement at the enqueue boundary. A service receipt's id is not
+  available on the production path.
+- Keep a per-attempt token for ownership checks before admission and for
+  `MutationNotSentError`; those failures happen before a row exists.
+- On a successful admitted submit, record the row identity as the pending
   record's identity (or a store-local `admittedId` beside it).
 - Key the completion/out-of-order/not-sent guards to the admitted id.
 - Keep `pendingMutation` and all UI behavior.
-- Tests: an older completion cannot clear a newer mutation; not-sent clears
-  only its own; receipt identity matches the durable outbox row.
+- Tests: the production runtime admission returns the durable row id; an older
+  completion cannot clear a newer mutation; not-sent clears only its own.
 
 ### Stage B: click-to-commit marker
 
