@@ -718,6 +718,7 @@ export {
   parseJSONObject,
   str,
   tailFold,
+  tailFoldNote,
   tailSlice,
   trailingBracketFooter,
 } from "./toolCallText";
