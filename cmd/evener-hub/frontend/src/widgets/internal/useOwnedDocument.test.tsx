@@ -155,3 +155,41 @@ test("a widget mounted directly in another document resolves it after mount", as
     frame.remove();
   }
 });
+
+// Observation can be off while a widget moves (a closed menu). Resuming has
+// to reconcile with the node, not trust the state: otherwise the watch
+// subscribes to the document the widget left, and a move back to it is
+// invisible.
+test("a move while observation is off is reconciled when it resumes", async () => {
+  const { frame, doc } = appendPopout();
+  const seen: Document[] = [];
+  function Toggle({ enabled }: { enabled: boolean }) {
+    const ref = useRef<HTMLDivElement>(null);
+    seen.push(useOwnedDocument(ref, enabled));
+    return <div ref={ref} />;
+  }
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    act(() => root.render(<Toggle enabled={false} />));
+    act(() => host.remove());
+    await act(async () => {});
+    act(() => {
+      doc.body.appendChild(host);
+    });
+    act(() => root.render(<Toggle enabled />));
+    await act(async () => {});
+    expect(seen.at(-1)).toBe(doc);
+
+    act(() => {
+      document.body.appendChild(host);
+    });
+    await act(async () => {});
+    expect(seen.at(-1)).toBe(document);
+  } finally {
+    act(() => root.unmount());
+    frame.remove();
+    host.remove();
+  }
+});
