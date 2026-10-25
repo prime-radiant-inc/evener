@@ -111,7 +111,7 @@ func pipelineToken(t *testing.T, store *hostops.Store, host string, generation u
 		RunningHealthy:     true,
 		FreshnessBound:     hostops.DefaultFreshnessBound,
 		TTL:                hostops.DefaultTokenTTL,
-	}, 0)
+	}, store.Sequence())
 	if err != nil {
 		t.Fatalf("MintTokenIfQuiescent(%s): %v", host, err)
 	}

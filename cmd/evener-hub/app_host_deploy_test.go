@@ -283,7 +283,7 @@ func mintDeployToken(t *testing.T, store *hostops.Store, m *hubHostManager, entr
 		RunningHealthy:     healthy,
 		FreshnessBound:     hostops.DefaultFreshnessBound,
 		TTL:                hostops.DefaultTokenTTL,
-	}, 0)
+	}, store.Sequence())
 	if err != nil {
 		t.Fatalf("MintTokenIfQuiescent: %v", err)
 	}

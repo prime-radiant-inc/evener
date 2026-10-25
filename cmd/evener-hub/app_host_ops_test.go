@@ -606,7 +606,7 @@ func TestHostRemoveRevokesOutstandingTokens(t *testing.T) {
 		ControllerRevision: buildinfo.Version(),
 		RunningVersion:     "v0.9.0",
 		RunningHealthy:     true,
-	}, 0)
+	}, store.Sequence())
 	if err != nil {
 		t.Fatalf("MintTokenIfQuiescent: %v", err)
 	}
