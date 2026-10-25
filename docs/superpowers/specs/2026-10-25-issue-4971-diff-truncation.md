@@ -129,6 +129,15 @@ window: a hunk of 2-byte blank-line insertions can exceed 200 lines well inside
 bounds the window. Head, optional tail, and marker stay below the existing
 `FuzzArShellInlineDigest` bound of `2*shellDigestHalfBytes + digestMarkerBudget`.
 
+The registry applies its own line limit to the final rendered shell result
+(default 512 lines). A 512-byte tail of one-byte lines plus a many-line head can
+exceed that, and the registry's line truncator would then cut the selected hunks
+again. The digest counts its head lines, marker, tail lines, and the shell
+footer; when that total exceeds the registry's line bound, it drops the optional
+tail and advertises the whole remainder as omitted. The head alone is small
+enough at the default 512-byte budget. The advertised range therefore describes
+the final model-facing output, not an intermediate one.
+
 ### Omitted-range statement
 
 The rendered marker keeps the existing `elided` + `read_transcript` wording
@@ -154,8 +163,10 @@ family and adds structural facts, not a rewritten diff:
   returned job `transcript_ref`.
 
 The marker is the only new prose. Tests assert the boundary offsets, the
-range, and the source-derived file and hunk values, never the sentence
-phrasing.
+range through the structured window fields, and the source-derived file and
+hunk values. The complete rendered digest prose is pinned by whole-output
+goldens under `agent/testdata/diffdigest/`, not by fragment assertions or
+regexes over marker wording.
 
 ### Residual limitation
 
@@ -237,9 +248,10 @@ This case is documented rather than guessed at.
    - mixed diff/log output ending in an unterminated line longer than 512
      bytes: the inline digest keeps a rune-safe byte suffix containing the
      final line.
-   Each boundary assertion uses the parsed `diffLine` state and reads the
-   source bytes at the chosen offset; range assertions compare numeric offsets
-   and source-derived file and hunk strings. Record the red run.
+   Each boundary assertion reads the source bytes at the chosen offset; the
+   window's `HeadStart`, `HeadEnd`, and `TailStart` and the source-derived file
+   and hunk values are compared directly, while rendered prose is pinned by the
+   goldens in item 3. Record the red run.
 2. Add diff seeds to `FuzzArShellInlineDigest` and run its seed corpus under
    the `evenerfuzz` tag.
 3. Add one session-level test through the real shell tool: write a synthetic
@@ -248,6 +260,15 @@ This case is documented rather than guessed at.
    carries a `job_id`, `truncated=true`, boundary-aligned head and tail, and
    the omitted range. The full output remains readable through the existing
    job transcript path.
+   Add a second session-level case whose diff ends in a 512-line run of blank
+   log lines: the rendered model-facing `ExecResult.Output` must equal the
+   tool's own `formatShellResult` (the registry did not truncate it), stay
+   within the registry's 512-line bound, and show the tail as dropped with the
+   range ending at the output total. Inspect `ExecResult.Output`, not only the
+   structured state.
+   Pin the complete rendered digests for the standard, hunkless, and
+   retained-prefix markers with `agenttest.CheckGolden`; do not parse marker
+   prose in assertions.
 4. Run the focused tests before and after the fix:
    `go test ./agent -run 'ShellInlineDigest|DiffDigest|CompleteOrHandle|ShellRideWhole|LargeDiff' -count=1`,
    `go test -tags evenerfuzz ./agent -run 'FuzzArShellInlineDigest' -count=1`,

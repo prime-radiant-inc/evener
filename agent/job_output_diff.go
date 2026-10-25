@@ -239,11 +239,27 @@ func lastLineBoundaryAtOrBefore(lines []diffLine, limit int) int {
 	return end
 }
 
+// textLineCount counts the lines in a rendered text slice: newline separators
+// plus a non-terminated final line.
+func textLineCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	if !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
+}
+
 // unifiedDiffWindow selects boundary-aligned windows for a completed shell
 // output that is a git-style unified diff. headBudget and tailBudget are byte
 // bounds. startsMidStream says the retention cap evicted the output's prefix,
 // so a hunk header without a visible file header can still identify a diff.
-func unifiedDiffWindow(full string, headBudget, tailBudget int, startsMidStream, startsMidLine bool) (diffWindow, bool) {
+// lineBudget bounds the rendered digest including its footer (0 = unbounded);
+// the optional tail is dropped when it would push the registry past that
+// bound, because the registry would otherwise cut the selected hunk again.
+func unifiedDiffWindow(full string, headBudget, tailBudget int, startsMidStream, startsMidLine bool, lineBudget int) (diffWindow, bool) {
 	if full == "" || headBudget <= 0 || tailBudget <= 0 {
 		return diffWindow{}, false
 	}
@@ -347,6 +363,16 @@ func unifiedDiffWindow(full string, headBudget, tailBudget int, startsMidStream,
 			tailStart = tailByteStart(full, tailBudget)
 		}
 		if tailStart <= headEnd {
+			tailStart = len(full)
+		}
+	}
+	if lineBudget > 0 && tailStart < len(full) {
+		// The rendered digest is head lines + marker + tail lines + footer. The
+		// head alone is always small enough at the default 512-byte budget; the
+		// tail is the optional part, so drop it and advertise the whole
+		// remainder as omitted rather than let truncateLines cut its hunks.
+		renderedLines := textLineCount(full[headStart:headEnd]) + 1 + textLineCount(full[tailStart:]) + 1
+		if renderedLines > lineBudget {
 			tailStart = len(full)
 		}
 	}

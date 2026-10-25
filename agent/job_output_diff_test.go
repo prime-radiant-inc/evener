@@ -6,12 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -44,7 +43,7 @@ func syntheticUnifiedDiff(file string, hunks, linesPerHunk int) string {
 
 func testDiffWindow(t *testing.T, full string, startsMidStream bool) diffWindow {
 	t.Helper()
-	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, startsMidStream, false)
+	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, startsMidStream, false, 0)
 	if !ok {
 		t.Fatalf("unifiedDiffWindow did not recognize a git-style unified diff")
 	}
@@ -79,33 +78,6 @@ func markerBetween(digest, head, tail string) string {
 		return ""
 	}
 	return digest[start:end]
-}
-
-var (
-	omittedRangePattern = regexp.MustCompile(`omitted \[(\d+),(\d+)\)`)
-	headStartPattern    = regexp.MustCompile(`head starts at byte (\d+)`)
-)
-
-func assertOmittedRange(t *testing.T, digest string, start, end int) {
-	t.Helper()
-	match := omittedRangePattern.FindStringSubmatch(digest)
-	if match == nil {
-		t.Fatalf("digest has no omitted byte range:\n%s", digest)
-	}
-	if match[1] != strconv.Itoa(start) || match[2] != strconv.Itoa(end) {
-		t.Fatalf("omitted range = [%s,%s), want [%d,%d)", match[1], match[2], start, end)
-	}
-}
-
-func assertHeadStartsAt(t *testing.T, digest string, want int) {
-	t.Helper()
-	match := headStartPattern.FindStringSubmatch(digest)
-	if match == nil {
-		t.Fatalf("digest does not state the visible head's byte offset:\n%s", digest)
-	}
-	if match[1] != strconv.Itoa(want) {
-		t.Fatalf("head starts at byte %s, want %d", match[1], want)
-	}
 }
 
 // digestSourcePrefix returns the length of the longest prefix of full the
@@ -171,7 +143,6 @@ func TestShellInlineDigestLargeDiffCutsAtHunkBoundaries(t *testing.T) {
 		t.Fatalf("digest does not end with the boundary-aligned tail:\n%s", digest)
 	}
 	marker := markerBetween(digest, head, tail)
-	assertOmittedRange(t, marker, w.HeadEnd, w.TailStart)
 	if !strings.Contains(marker, w.Hunk) {
 		t.Fatalf("marker does not name the first omitted hunk %q:\n%s", w.Hunk, marker)
 	}
@@ -219,7 +190,6 @@ func TestShellInlineDigestSingleHugeHunkCutsBeforeTheHunk(t *testing.T) {
 	if !strings.Contains(digest, "@@ -1,400 +1,400 @@ func h0()") {
 		t.Fatalf("digest does not name the omitted hunk:\n%s", digest)
 	}
-	assertOmittedRange(t, digest, w.HeadEnd, w.TailStart)
 	if strings.Contains(full[:w.HeadEnd], "removed h00") || strings.Contains(full[:w.HeadEnd], "added h00") {
 		t.Fatalf("head contains a body line from the single huge hunk:\n%s", full[:w.HeadEnd])
 	}
@@ -284,7 +254,7 @@ func TestShellInlineDigestQuotedDiffInsideLogIsNotADiff(t *testing.T) {
 		fmt.Fprintf(&b, "later log line %03d %s\n", i, strings.Repeat("M", 24))
 	}
 	full := b.String()
-	if _, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, false, false); ok {
+	if _, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, false, false, 0); ok {
 		t.Fatal("a quoted diff inside ordinary output was treated as the output's own diff")
 	}
 	digest := shellInlineDigest(full, int64(len(full)), 0)
@@ -305,7 +275,7 @@ func TestShellInlineDigestHunklessSectionReportsRangeWithoutFile(t *testing.T) {
 	b.WriteString("diff --git a/later.go b/later.go\nindex 1..2 100644\n--- a/later.go\n+++ b/later.go\n@@ -1,2 +1,2 @@\n-old\n+new\n")
 	full := b.String()
 	modeAt := offsetOf(t, full, "diff --git a/mode.go b/mode.go")
-	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, false, false)
+	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, false, false, 0)
 	if !ok {
 		t.Fatal("unifiedDiffWindow did not recognize the diff")
 	}
@@ -318,8 +288,6 @@ func TestShellInlineDigestHunklessSectionReportsRangeWithoutFile(t *testing.T) {
 	if w.Hunk != "" {
 		t.Fatalf("cut hunk = %q, want none in a hunkless section", w.Hunk)
 	}
-	digest := shellInlineDigest(full, int64(len(full)), 0)
-	assertOmittedRange(t, digest, w.HeadEnd, w.TailStart)
 }
 
 func TestShellInlineDigestHunkBodyPathLikeLinesStayBody(t *testing.T) {
@@ -389,7 +357,7 @@ func TestShellInlineDigestEvictedPrefixStartsAtABoundary(t *testing.T) {
 	const dropped = 500
 	total := int64(len(full) + dropped)
 
-	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, true, false)
+	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, true, false, 0)
 	if !ok {
 		t.Fatal("unifiedDiffWindow did not recognize a mid-stream hunk")
 	}
@@ -402,8 +370,6 @@ func TestShellInlineDigestEvictedPrefixStartsAtABoundary(t *testing.T) {
 	if !strings.HasPrefix(digest, full[w.HeadStart:w.HeadEnd]) {
 		t.Fatalf("digest does not begin with the post-eviction head:\n%s", digest)
 	}
-	assertHeadStartsAt(t, digest, dropped+w.HeadStart)
-	assertOmittedRange(t, digest, dropped+w.HeadEnd, dropped+w.TailStart)
 }
 
 func TestShellInlineDigestMidStreamHunkStartDoesNotCutBody(t *testing.T) {
@@ -413,7 +379,7 @@ func TestShellInlineDigestMidStreamHunkStartDoesNotCutBody(t *testing.T) {
 	b.WriteString(strings.Repeat("+x\n", 3000))
 	b.WriteString("diff --git a/z.go b/z.go\nindex 1..2 100644\n--- a/z.go\n+++ b/z.go\n@@ -1,2 +1,2 @@\n-old\n+new\n")
 	full := b.String()
-	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, true, false)
+	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, true, false, 0)
 	if !ok {
 		t.Fatal("unifiedDiffWindow did not recognize a mid-stream hunk start")
 	}
@@ -431,13 +397,12 @@ func TestShellInlineDigestMidStreamHunkStartDoesNotCutBody(t *testing.T) {
 	if !strings.HasSuffix(digest, full[w.TailStart:]) {
 		t.Fatalf("digest does not end with the tail beginning at %d:\n%s", w.TailStart, digest)
 	}
-	assertOmittedRange(t, digest, dropped+w.HeadEnd, dropped+w.TailStart)
 }
 
 func TestShellInlineDigestEvictedPrefixStartsOnGitMetadata(t *testing.T) {
 	t.Parallel()
 	full := "index 1111111..2222222 100644\n--- a/meta.go\n+++ b/meta.go\n@@ -1,2 +1,2 @@\n-old\n+new\n@@ -10,2 +10,2 @@\n-older\n+newer\n"
-	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, true, false)
+	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, true, false, 0)
 	if !ok {
 		t.Fatal("a retained diff starting on a git metadata line was not recognized")
 	}
@@ -466,7 +431,7 @@ func TestShellInlineDigestRetainedPathLikeBodyIsNotAFileName(t *testing.T) {
 		fmt.Fprintf(&b, " context omitted %02d %s\n", i, strings.Repeat("o", 24))
 	}
 	full := b.String()
-	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, true, false)
+	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, true, false, 0)
 	if !ok {
 		t.Fatal("unifiedDiffWindow did not recognize the retained diff")
 	}
@@ -500,7 +465,7 @@ func TestShellInlineDigestRetainedPartialLineIsNotMetadata(t *testing.T) {
 		fmt.Fprintf(&b, " context omitted %02d %s\n", i, strings.Repeat("o", 24))
 	}
 	full := b.String()
-	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, true, true)
+	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, true, true, 0)
 	if !ok {
 		t.Fatal("unifiedDiffWindow did not recognize the retained diff")
 	}
@@ -511,7 +476,7 @@ func TestShellInlineDigestRetainedPartialLineIsNotMetadata(t *testing.T) {
 		t.Fatalf("head start = %d, want the first complete boundary %d", w.HeadStart, want)
 	}
 	const dropped = 500
-	digest := shellInlineDigestFrom(full, int64(len(full)+dropped), dropped, true)
+	digest := shellInlineDigestFrom(full, int64(len(full)+dropped), dropped, true, 0)
 	if strings.Contains(digest, "old sql comment") || strings.Contains(digest, "new sql comment") {
 		t.Fatalf("digest reports a retained body fragment as a filename:\n%s", digest)
 	}
@@ -521,7 +486,7 @@ func TestShellInlineDigestRetainedPartialDiffHeaderStillNamesFile(t *testing.T) 
 	t.Parallel()
 	// The retention cut removed only the leading "diff " of the file header.
 	full := "git a/legit.go b/legit.go\nindex 1111111..2222222 100644\n--- a/legit.go\n+++ b/legit.go\n@@ -1,2 +1,2 @@\n-old\n+new\n@@ -10,2 +10,2 @@\n-older\n+newer\n"
-	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, true, true)
+	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, true, true, 0)
 	if !ok {
 		t.Fatal("unifiedDiffWindow did not recognize the retained header after a fragment")
 	}
@@ -543,7 +508,7 @@ func TestShellInlineDigestLeadingHunklessSectionKeepsFileUnknown(t *testing.T) {
 	}
 	full := b.String()
 	textAt := offsetOf(t, full, "diff --git a/text.go")
-	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, false, false)
+	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, false, false, 0)
 	if !ok {
 		t.Fatal("unifiedDiffWindow did not recognize the diff")
 	}
@@ -561,7 +526,6 @@ func TestShellInlineDigestLeadingHunklessSectionKeepsFileUnknown(t *testing.T) {
 	if strings.Contains(marker, "b/bin.dat") || strings.Contains(marker, "b/text.go") {
 		t.Fatalf("marker guesses a filename for a hunkless section:\n%s", marker)
 	}
-	assertOmittedRange(t, marker, w.HeadEnd, w.TailStart)
 }
 
 func TestShellInlineDigestHunklessSectionKeepsFileUnknown(t *testing.T) {
@@ -582,7 +546,7 @@ func TestShellInlineDigestHunklessSectionKeepsFileUnknown(t *testing.T) {
 			full := small + tc.header + "\nold mode 100644\nnew mode 100755\n" +
 				strings.Repeat("literal 0000000 mode padding padding padding padding\n", 30) + later
 			sectionAt := offsetOf(t, full, tc.header)
-			w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, false, false)
+			w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, false, false, 0)
 			if !ok {
 				t.Fatal("unifiedDiffWindow did not recognize the diff")
 			}
@@ -604,7 +568,6 @@ func TestShellInlineDigestHunklessSectionKeepsFileUnknown(t *testing.T) {
 				strings.Contains(marker, "unquoted") {
 				t.Fatalf("marker guesses a hunkless filename: %q", marker)
 			}
-			assertOmittedRange(t, marker, w.HeadEnd, w.TailStart)
 		})
 	}
 }
@@ -638,7 +601,7 @@ func TestShellInlineDigestMidStreamHunkTooFarIsNotADiff(t *testing.T) {
 	}
 	b.WriteString("@@ -100,2 +100,2 @@\n-old\n+new\n")
 	full := b.String()
-	if _, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, true, false); ok {
+	if _, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, true, false, 0); ok {
 		t.Fatal("a hunk header more than one head budget from the retained start reclassified log output")
 	}
 }
@@ -647,7 +610,7 @@ func TestShellInlineDigestMultiFileCutNamesNextFile(t *testing.T) {
 	t.Parallel()
 	full := syntheticUnifiedDiff("a.go", 2, 8) + syntheticUnifiedDiff("b.go", 1, 8)
 	bAt := offsetOf(t, full, "diff --git a/b.go b/b.go")
-	w, ok := unifiedDiffWindow(full, bAt, 100, false, false)
+	w, ok := unifiedDiffWindow(full, bAt, 100, false, false, 0)
 	if !ok {
 		t.Fatal("unifiedDiffWindow did not recognize the multi-file diff")
 	}
@@ -673,7 +636,7 @@ func TestShellInlineDigestRejectsLooseDiffMarkers(t *testing.T) {
 		lines = append(lines, fmt.Sprintf("ordinary output line %03d %s", i, strings.Repeat("x", 24)))
 	}
 	full := strings.Join(lines, "\n") + "\n"
-	if _, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, false, false); ok {
+	if _, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, false, false, 0); ok {
 		t.Fatal("loose @@/---/+++ markers without a diff --git header were treated as a diff")
 	}
 	digest := shellInlineDigest(full, int64(len(full)), 0)
@@ -739,7 +702,6 @@ func TestShellToolLargeDiffInlineWindowCutsAtHunkBoundaries(t *testing.T) {
 	if !strings.HasSuffix(*out.Output, tail) {
 		t.Fatalf("inline diff window does not end with the boundary-aligned tail:\n%s", *out.Output)
 	}
-	assertOmittedRange(t, *out.Output, w.HeadEnd, w.TailStart)
 	if strings.Contains(*out.Output, "added h15") || strings.Contains(*out.Output, "removed h15") {
 		t.Fatalf("inline diff window contains a body line from the omitted middle:\n%s", *out.Output)
 	}
@@ -755,5 +717,98 @@ func TestShellToolLargeDiffPreservesDefaultLimit(t *testing.T) {
 	}
 	if limit := reg.Get("shell").Limit; limit.MaxChars != 30_000 || limit.MaxLines != 512 || limit.Strategy != schema.TruncHeadTail {
 		t.Fatalf("shell registry limit = %+v, want the unchanged default", limit)
+	}
+}
+
+func checkDiffDigestGolden(t *testing.T, name, digest string) {
+	t.Helper()
+	agenttest.CheckGolden(t, filepath.Join("testdata", "diffdigest", name+".md"), []byte(digest+"\n"), *updatePromptGoldens,
+		"Regenerate with `go test ./agent -run '^TestDiffDigestGoldens$' -count=1 -update-prompt` and read the diff.")
+}
+
+// TestDiffDigestGoldens pins the complete model-facing digest prose for the
+// standard, hunkless, and retained-prefix variants. The golden is the whole
+// rendered digest, not fragment assertions against marker wording.
+func TestDiffDigestGoldens(t *testing.T) {
+	t.Parallel()
+	plain := syntheticUnifiedDiff("big.go", 30, 8)
+	checkDiffDigestGolden(t, "multi-hunk", shellInlineDigest(plain, int64(len(plain)), 0))
+
+	var hunkless strings.Builder
+	hunkless.WriteString("diff --git a/small.go b/small.go\nindex 1..2 100644\n--- a/small.go\n+++ b/small.go\n@@ -1,2 +1,2 @@\n-old\n+new\n")
+	hunkless.WriteString("diff --git a/mode.go b/mode.go\nold mode 100644\nnew mode 100755\n")
+	hunkless.WriteString(strings.Repeat("literal 0000000 mode padding padding padding padding\n", 30))
+	hunkless.WriteString("diff --git a/later.go b/later.go\nindex 1..2 100644\n--- a/later.go\n+++ b/later.go\n@@ -1,2 +1,2 @@\n-old\n+new\n")
+	hunklessFull := hunkless.String()
+	checkDiffDigestGolden(t, "hunkless", shellInlineDigest(hunklessFull, int64(len(hunklessFull)), 0))
+
+	var retained strings.Builder
+	retained.WriteString(" context from an evicted hunk\n")
+	retained.WriteString("@@ -10,4 +10,4 @@ func kept()\n")
+	for i := range 4 {
+		fmt.Fprintf(&retained, " kept line %02d %s\n", i, strings.Repeat("k", 24))
+	}
+	retained.WriteString("@@ -20,4 +20,4 @@ func omitted()\n")
+	for i := range 4 {
+		fmt.Fprintf(&retained, " omitted line %02d %s\n", i, strings.Repeat("o", 24))
+	}
+	retainedFull := retained.String()
+	const dropped = 500
+	checkDiffDigestGolden(t, "retained-prefix", shellInlineDigestFrom(retainedFull, int64(len(retainedFull)+dropped), dropped, false, 0))
+}
+
+// TestShellToolDiffDigestStaysWithinRegistryLines drives the real shell tool and
+// inspects the model-facing rendered output. A 512-line tail of blank log lines
+// would push the digest past the registry's line limit and make its truncator
+// cut the selected hunks again; the digest must drop the optional tail instead
+// and advertise the whole remainder as omitted.
+func TestShellToolDiffDigestStaysWithinRegistryLines(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	full := syntheticUnifiedDiff("big.go", 30, 8) + strings.Repeat("\n", 600)
+	path := filepath.Join(t.TempDir(), "big.diff")
+	if err := os.WriteFile(path, []byte(full), 0o600); err != nil {
+		t.Fatalf("write diff fixture: %v", err)
+	}
+	args, err := json.Marshal(map[string]string{"command": "cat -- " + shellSingleQuote(path)})
+	if err != nil {
+		t.Fatalf("marshal shell args: %v", err)
+	}
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "diff-lines",
+		Name:      "shell",
+		Arguments: args,
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out shellToolResult
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal shell result: %v (output: %s)", err, res.Output)
+	}
+	if out.Output == nil {
+		t.Fatal("large diff result carries no inline output")
+	}
+	maxLines := shellToolResultMaxLines(s.reg)
+	if maxLines != 512 {
+		t.Fatalf("shell line limit = %d, want the unchanged 512", maxLines)
+	}
+	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, false, false, maxLines)
+	if !ok {
+		t.Fatal("unifiedDiffWindow did not recognize the diff")
+	}
+	if w.TailStart != len(full) {
+		t.Fatalf("tail start = %d, want the tail dropped (%d) to fit %d lines", w.TailStart, len(full), maxLines)
+	}
+	if !strings.HasPrefix(*out.Output, full[:w.HeadEnd]) {
+		t.Fatalf("digest does not begin with the boundary-aligned head:\n%s", *out.Output)
+	}
+	if got := strings.Count(*out.Output, "\n") + 1; got > maxLines {
+		t.Fatalf("digest has %d lines, want at most %d", got, maxLines)
+	}
+	// The registry must not have re-truncated the digest. formatShellResult is
+	// the tool's own render; a registry cut would differ from it.
+	if res.Output != formatShellResult(out) {
+		t.Fatalf("registry changed the rendered shell result:\nwant:\n%s\ngot:\n%s", formatShellResult(out), res.Output)
 	}
 }

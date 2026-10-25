@@ -551,7 +551,7 @@ func TestBackgroundShellReplyWithTerminalStatusLeavesNotificationPending(t *test
 		Status:              string(jobstore.StatusFailed),
 		Reason:              "finalize_failed",
 		RunningInBackground: true,
-	}, 100000, false)
+	}, 100000, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
