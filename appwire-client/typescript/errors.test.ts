@@ -5,6 +5,8 @@ import appwireErrorsGo from "../../appwire/errors.go?raw";
 import appwireTypesGo from "../../appwire/types.go?raw";
 import {
   ClientNotReadyError,
+  CODE_INVALID_REQUEST,
+  CODE_UNAVAILABLE,
   ConnectionClosedError,
   ErrorEndpointConflict,
   ErrorInstanceRemoveApplied,
@@ -513,6 +515,13 @@ function code(name: string): number {
   if (value === undefined) throw new Error(`appwire/errors.go has no ${name} constant`);
   return Number(value);
 }
+
+describe("the exported wire codes are bound to appwire/errors.go", () => {
+  test("each constant equals the Go code it names", () => {
+    expect(CODE_INVALID_REQUEST).toBe(code("CodeInvalidRequest"));
+    expect(CODE_UNAVAILABLE).toBe(code("CodeUnavailable"));
+  });
+});
 
 describe("a refusal before running is bound to appwire/errors.go's codes", () => {
   test("a validation refusal or a malformed request ran nothing", () => {

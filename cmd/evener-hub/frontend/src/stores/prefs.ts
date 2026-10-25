@@ -234,11 +234,6 @@ export function removeTranscriptDisplayLocal(layout: TranscriptViewportClass): v
   removeRaw(TRANSCRIPT_DISPLAY_LOCAL_KEYS[layout]);
 }
 
-export const readLegacyPref = readLegacyPreference;
-export const hasLegacyPref = hasLegacyPreference;
-export const writeLegacyBool = writeLegacyBooleanPreference;
-export const removeLegacyPref = removeLegacyPreference;
-
 /**
  * Convert the six pre-v1 global transcript keys once, before the new
  * layout-specific store loads. Existing keys are intentionally retained.
@@ -255,14 +250,10 @@ export function migrateLegacyTranscriptDisplay(): TranscriptDisplayConfigV1 | un
   return config;
 }
 
-export const migrateLegacyPrefs = migrateLegacyTranscriptDisplay;
-
 /** Keep old transcript consumers in sync without changing their 1/0 wire. */
 export function dualWriteTranscriptDisplayLegacy(config: TranscriptDisplayConfigV1): void {
   dualWriteLegacyPreferences(config, writeLegacyBooleanPreference);
 }
-
-export const dualWriteLegacyPrefs = dualWriteTranscriptDisplayLegacy;
 
 // "1"/"0", not JS's "true"/"false": every boolean this store persists
 // (enterToSend, showCost, every transcript.* and notifications.* member)
