@@ -3,6 +3,7 @@ package anthropic
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -326,6 +327,60 @@ func decodeRawArgsCompleteMany(t *testing.T, body []byte) [][]byte {
 		t.Fatalf("Complete: %v", err)
 	}
 	return anthropicToolCallArguments(resp)
+}
+
+// countRawArgsBodyDecodes swaps the package-level focused raw-args body
+// decode seam for a counter. Tests that use it must stay serial (not
+// t.Parallel); t.Cleanup restores the seam.
+func countRawArgsBodyDecodes(t *testing.T) *int {
+	t.Helper()
+	decodes := 0
+	previous := rawArgsBodyDecode
+	rawArgsBodyDecode = func(body []byte, v any) error {
+		decodes++
+		return json.Unmarshal(body, v)
+	}
+	t.Cleanup(func() { rawArgsBodyDecode = previous })
+	return &decodes
+}
+
+// TestRawArgs_NonStream_DecodesBodyOnce pins that one response with several
+// tool_use blocks runs the focused raw-args body decode once, with the
+// content index aligned past a text block.
+// Not parallel: it swaps the package-level rawArgsBodyDecode seam.
+func TestRawArgs_NonStream_DecodesBodyOnce(t *testing.T) {
+	decodes := countRawArgsBodyDecodes(t)
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	third := `{ "third" : "` + "\xfd" + `" }`
+	body := []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-x-wire","content":[` +
+		`{"type":"text","text":"hello"},` +
+		`{"type":"tool_use","id":"toolu_1","name":"first","input":` + first + `},` +
+		`{"type":"tool_use","id":"toolu_2","name":"second","input":` + second + `},` +
+		`{"type":"tool_use","id":"toolu_3","name":"third","input":` + third + `}` +
+		`],"stop_reason":"tool_use"}`)
+
+	got := decodeRawArgsCompleteMany(t, body)
+	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second), []byte(third)})
+	if *decodes != 1 {
+		t.Fatalf("focused raw-args body decodes = %d, want 1", *decodes)
+	}
+}
+
+// TestRawArgs_NonStream_NoToolUseDecodesNothing pins that a tool-free
+// response performs no focused raw-args decode.
+// Not parallel: it swaps the package-level rawArgsBodyDecode seam.
+func TestRawArgs_NonStream_NoToolUseDecodesNothing(t *testing.T) {
+	decodes := countRawArgsBodyDecodes(t)
+	body := []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-x-wire","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn"}`)
+
+	got := decodeRawArgsCompleteMany(t, body)
+	if len(got) != 0 {
+		t.Fatalf("got %d tool calls, want 0", len(got))
+	}
+	if *decodes != 0 {
+		t.Fatalf("focused raw-args body decodes = %d, want 0", *decodes)
+	}
 }
 
 func decodeRawArgsStreamMany(t *testing.T, sseBody string) [][]byte {

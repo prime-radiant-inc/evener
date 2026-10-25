@@ -454,6 +454,105 @@ func decodeRawArgsCompleteMany(t *testing.T, body []byte) [][]byte {
 	return toolCallArguments(resp)
 }
 
+// countRawArgsBodyDecodes swaps the package-level focused raw-args body
+// decode seam for a counter. Tests that use it must stay serial (not
+// t.Parallel); t.Cleanup restores the seam.
+func countRawArgsBodyDecodes(t *testing.T) *int {
+	t.Helper()
+	decodes := 0
+	previous := rawArgsBodyDecode
+	rawArgsBodyDecode = func(body []byte, v any) error {
+		decodes++
+		return json.Unmarshal(body, v)
+	}
+	t.Cleanup(func() { rawArgsBodyDecode = previous })
+	return &decodes
+}
+
+// TestRawArgs_NonStream_DecodesBodyOnce pins that one response with several
+// tool calls runs the focused raw-args body decode once, not once per call.
+// Not parallel: it swaps the package-level rawArgsBodyDecode seam.
+func TestRawArgs_NonStream_DecodesBodyOnce(t *testing.T) {
+	decodes := countRawArgsBodyDecodes(t)
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	third := `{ "third" : "` + "\xfd" + `" }`
+	body := []byte(`{"id":"chatcmpl-1","model":"m-wire","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[` +
+		`{"id":"call_1","type":"function","function":{"name":"first","arguments":` + string(jsonStringToken(first)) + `}},` +
+		`{"id":"call_2","type":"function","function":{"name":"second","arguments":` + string(jsonStringToken(second)) + `}},` +
+		`{"id":"call_3","type":"function","function":{"name":"third","arguments":` + string(jsonStringToken(third)) + `}}` +
+		`]},"finish_reason":"tool_calls"}]}`)
+
+	got := decodeRawArgsCompleteMany(t, body)
+	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second), []byte(third)})
+	if *decodes != 1 {
+		t.Fatalf("focused raw-args body decodes = %d, want 1", *decodes)
+	}
+}
+
+// TestRawArgs_NonStream_NoToolCallsDecodesNothing pins that a tool-free
+// response performs no focused raw-args decode.
+// Not parallel: it swaps the package-level rawArgsBodyDecode seam.
+func TestRawArgs_NonStream_NoToolCallsDecodesNothing(t *testing.T) {
+	decodes := countRawArgsBodyDecodes(t)
+	body := []byte(`{"id":"chatcmpl-1","model":"m-wire","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`)
+
+	got := decodeRawArgsCompleteMany(t, body)
+	if len(got) != 0 {
+		t.Fatalf("got %d tool calls, want 0", len(got))
+	}
+	if *decodes != 0 {
+		t.Fatalf("focused raw-args body decodes = %d, want 0", *decodes)
+	}
+}
+
+// TestRawArgs_RecordedJSON_DecodesBodyOnce pins the recorded-response JSON
+// branch to one focused body decode for several tool calls.
+// Not parallel: it swaps the package-level rawArgsBodyDecode seam.
+func TestRawArgs_RecordedJSON_DecodesBodyOnce(t *testing.T) {
+	decodes := countRawArgsBodyDecodes(t)
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	third := `{ "third" : "` + "\xfd" + `" }`
+	body := []byte(`{"id":"chatcmpl-1","model":"m-wire","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[` +
+		`{"id":"call_1","type":"function","function":{"name":"first","arguments":` + string(jsonStringToken(first)) + `}},` +
+		`{"id":"call_2","type":"function","function":{"name":"second","arguments":` + string(jsonStringToken(second)) + `}},` +
+		`{"id":"call_3","type":"function","function":{"name":"third","arguments":` + string(jsonStringToken(third)) + `}}` +
+		`]},"finish_reason":"tool_calls"}]}`)
+
+	resp, err := ExtractRecordedResponse(body, "m-wire")
+	if err != nil {
+		t.Fatalf("ExtractRecordedResponse: %v", err)
+	}
+	assertRawArgsByIndex(t, toolCallArguments(resp), [][]byte{[]byte(first), []byte(second), []byte(third)})
+	if *decodes != 1 {
+		t.Fatalf("focused raw-args body decodes = %d, want 1", *decodes)
+	}
+}
+
+// TestRawArgs_Stream_DecodesChunkOnce pins one streamed chunk with several
+// tool-call deltas to one focused chunk decode.
+// Not parallel: it swaps the package-level rawArgsBodyDecode seam.
+func TestRawArgs_Stream_DecodesChunkOnce(t *testing.T) {
+	decodes := countRawArgsBodyDecodes(t)
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	third := `{ "third" : "` + "\xfd" + `" }`
+	sseBody := "data: {\"id\":\"c1\",\"model\":\"m-wire\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[" +
+		`{"index":0,"id":"call_1","type":"function","function":{"name":"first","arguments":` + string(jsonStringToken(first)) + `}},` +
+		`{"index":1,"id":"call_2","type":"function","function":{"name":"second","arguments":` + string(jsonStringToken(second)) + `}},` +
+		`{"index":2,"id":"call_3","type":"function","function":{"name":"third","arguments":` + string(jsonStringToken(third)) + `}}` +
+		"]}}]}\n\n" +
+		"data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	got := decodeRawArgsStreamMany(t, sseBody)
+	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second), []byte(third)})
+	if *decodes != 1 {
+		t.Fatalf("focused raw-args chunk decodes = %d, want 1", *decodes)
+	}
+}
+
 func decodeRawArgsStreamMany(t *testing.T, sseBody string) [][]byte {
 	t.Helper()
 	srv, _ := server(t, http.StatusOK, sseBody)
