@@ -67,9 +67,16 @@ Within a `diff --git ` section, the scanner tracks whether a hunk is open:
 
 - `diff --git ` closes any hunk and opens a file section;
 - a valid `@@ ` header opens a hunk;
-- `--- ` and `+++ ` lines outside an open hunk are file-header path lines;
+- `--- ` and `+++ ` lines are file-header path lines only when a file-header
+  section is established, by a `diff --git ` line or a git metadata line
+  (`index `, modes, rename/copy, binary markers);
 - `--- ` and `+++ ` lines inside an open hunk are body lines. A deleted line
   beginning `-- ` renders as `--- ` and must never become a cut boundary.
+
+A retained prefix that starts inside a hunk has no file-header evidence, so its
+path-like body lines (for example a deleted `-- old SQL comment` line rendered
+as `--- old SQL comment`) stay body and the marker leaves the filename unknown
+rather than reporting the comment as a file.
 
 Boundaries are `diff --git ` file starts and valid `@@ ` hunk headers only.
 `--- ` and `+++ ` are path sources, never boundaries.
@@ -186,6 +193,9 @@ This case is documented rather than guessed at.
    - an evicted-prefix output that starts on a git metadata line (`index `)
      with a hunk header inside the head budget: it is recognized, while one
      whose only hunk header is beyond the head budget keeps the old digest.
+   - a retained prefix that starts with path-like hunk body lines (`--- old
+     comment`, `+++ new comment`) followed by surviving hunks: the marker does
+     not report either comment as the filename.
    Each boundary assertion uses the parsed `diffLine` state and reads the
    source bytes at the chosen offset; range assertions compare numeric offsets
    and source-derived file and hunk strings. Record the red run.

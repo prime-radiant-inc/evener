@@ -425,6 +425,37 @@ func TestShellInlineDigestEvictedPrefixStartsOnGitMetadata(t *testing.T) {
 	}
 }
 
+func TestShellInlineDigestRetainedPathLikeBodyIsNotAFileName(t *testing.T) {
+	t.Parallel()
+	var b strings.Builder
+	b.WriteString("--- old sql comment\n")
+	b.WriteString("+++ new sql comment\n")
+	for i := range 4 {
+		fmt.Fprintf(&b, " context padding %02d %s\n", i, strings.Repeat("c", 24))
+	}
+	b.WriteString("@@ -10,4 +10,4 @@ func later()\n")
+	for i := range 4 {
+		fmt.Fprintf(&b, " context kept %02d %s\n", i, strings.Repeat("k", 24))
+	}
+	b.WriteString("@@ -20,4 +20,4 @@ func omitted()\n")
+	for i := range 4 {
+		fmt.Fprintf(&b, " context omitted %02d %s\n", i, strings.Repeat("o", 24))
+	}
+	full := b.String()
+	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, true)
+	if !ok {
+		t.Fatal("unifiedDiffWindow did not recognize the retained diff")
+	}
+	if w.File != "" {
+		t.Fatalf("cut file = %q, want unknown; path-like body lines are not a file header", w.File)
+	}
+	const dropped = 500
+	digest := shellInlineDigest(full, int64(len(full)+dropped), dropped)
+	if strings.Contains(digest, "old sql comment") || strings.Contains(digest, "new sql comment") {
+		t.Fatalf("digest reports a path-like body line as a filename:\n%s", digest)
+	}
+}
+
 func TestShellInlineDigestMidStreamHunkTooFarIsNotADiff(t *testing.T) {
 	t.Parallel()
 	var b strings.Builder

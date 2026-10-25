@@ -80,32 +80,40 @@ func isUnifiedHunkHeader(text string) bool {
 // classifyDiffLines assigns each line's kind and returns the first hunk header
 // and the first hunk header that follows a "diff --git " file start (-1 when
 // none does). inHunk tracks whether a hunk is open so a deleted line rendered
-// as "--- " stays body, not a file header.
+// as "--- " stays body, not a file header. inHeader is set only by evidence of
+// a git file-header section (a diff --git line or a git metadata line), so a
+// retained prefix that starts inside a hunk never reads its path-like body
+// lines as a filename.
 func classifyDiffLines(full string, lines []diffLine) (firstHunk, firstHunkAfterFile int) {
 	firstFile := -1
 	firstHunk, firstHunkAfterFile = -1, -1
 	inHunk := false
+	inHeader := false
 	for i := range lines {
 		text := diffLineText(full, lines[i])
 		switch {
 		case strings.HasPrefix(text, "diff --git "):
 			lines[i].kind = diffLineFile
 			inHunk = false
+			inHeader = true
 			if firstFile < 0 {
 				firstFile = i
 			}
 		case isUnifiedHunkHeader(text):
 			lines[i].kind = diffLineHunk
 			inHunk = true
+			inHeader = false
 			if firstHunk < 0 {
 				firstHunk = i
 			}
 			if firstFile >= 0 && firstHunkAfterFile < 0 {
 				firstHunkAfterFile = i
 			}
-		case !inHunk && strings.HasPrefix(text, "+++ "):
+		case !inHunk && isGitHeaderMetadata(text):
+			inHeader = true
+		case !inHunk && inHeader && strings.HasPrefix(text, "+++ "):
 			lines[i].kind = diffLineNewPath
-		case !inHunk && strings.HasPrefix(text, "--- "):
+		case !inHunk && inHeader && strings.HasPrefix(text, "--- "):
 			lines[i].kind = diffLineOldPath
 		}
 	}
@@ -128,6 +136,14 @@ func isDiffContentStart(line string) bool {
 		strings.HasPrefix(line, `\`) {
 		return true
 	}
+	return isGitHeaderMetadata(line)
+}
+
+// isGitHeaderMetadata reports whether a line is evidence that a git file-header
+// section is open (or was, before the retention cap evicted its diff --git
+// line). A body line has an added/removed/context prefix and never matches
+// these column-zero prefixes.
+func isGitHeaderMetadata(line string) bool {
 	for _, prefix := range []string{
 		"index ",
 		"old mode ",
