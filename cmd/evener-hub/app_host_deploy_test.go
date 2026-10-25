@@ -269,7 +269,7 @@ func mintDeployToken(t *testing.T, store *hostops.Store, m *hubHostManager, entr
 	if !ok {
 		t.Fatal("the test hub.toml does not fingerprint")
 	}
-	token, err := store.MintToken(hostops.MintRequest{
+	token, err := store.MintTokenIfQuiescent(hostops.MintRequest{
 		Host:               entry.Name,
 		Generation:         entry.Generation,
 		IncarnationID:      entry.IncarnationID,
@@ -283,9 +283,9 @@ func mintDeployToken(t *testing.T, store *hostops.Store, m *hubHostManager, entr
 		RunningHealthy:     healthy,
 		FreshnessBound:     hostops.DefaultFreshnessBound,
 		TTL:                hostops.DefaultTokenTTL,
-	})
+	}, store.Sequence())
 	if err != nil {
-		t.Fatalf("MintToken: %v", err)
+		t.Fatalf("MintTokenIfQuiescent: %v", err)
 	}
 	return token
 }

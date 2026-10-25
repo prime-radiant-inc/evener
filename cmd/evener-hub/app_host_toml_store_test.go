@@ -384,7 +384,7 @@ func TestHubTOMLMigrationIgnoresAStaleReappearedSidecar(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
 	migrated := []hostreg.Host{{Name: "alpha", SSH: "alpha.example"}}
-	if err := writeHubTOMLHostsMarked(configPath, migrated, true); err != nil {
+	if err := writeHubTOMLHostsRecords(configPath, migrated, nil, hostTOMLRecords{}, true); err != nil {
 		t.Fatalf("seed migrated hub.toml: %v", err)
 	}
 	// The retired sidecar reappears, still carrying a host the UI removed while

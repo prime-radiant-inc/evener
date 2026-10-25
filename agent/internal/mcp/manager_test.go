@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -342,7 +343,7 @@ func TestTransportForConfig_Types(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			transport, err := transportForConfig(tt.cfg)
+			transport, err := transportForConfigWithEnv(tt.cfg, os.Environ)
 			if tt.wantErr {
 				if err == nil {
 					t.Error("expected error")
@@ -501,7 +502,7 @@ func TestMCPManager_Servers_Nil(t *testing.T) {
 func TestMergeEnv(t *testing.T) {
 	// mergeEnv uses os.Environ so we can only test that extra vars appear
 	// and that overriding works correctly.
-	result := mergeEnv(map[string]string{"MCP_TEST_UNIQUE_KEY_42": "value42"})
+	result := mergeEnvInto(os.Environ(), map[string]string{"MCP_TEST_UNIQUE_KEY_42": "value42"})
 
 	found := slices.Contains(result, "MCP_TEST_UNIQUE_KEY_42=value42")
 	if !found {
@@ -509,7 +510,7 @@ func TestMergeEnv(t *testing.T) {
 	}
 
 	// Setting PATH should replace, not duplicate, and must carry the override value.
-	result2 := mergeEnv(map[string]string{"PATH": "/custom/path"})
+	result2 := mergeEnvInto(os.Environ(), map[string]string{"PATH": "/custom/path"})
 	pathCount := 0
 	for _, e := range result2 {
 		key, val, _ := strings.Cut(e, "=")
@@ -523,4 +524,20 @@ func TestMergeEnv(t *testing.T) {
 	if pathCount != 1 {
 		t.Errorf("expected exactly 1 PATH entry, got %d", pathCount)
 	}
+}
+
+// newManagerWithClock builds the manager exactly as NewManager does, then
+// overrides every conn's clock with now, so a test can make reconnect's
+// backoff-window comparison deterministic under a fake, non-advancing clock
+// instead of racing real wall-clock time (see
+// TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry).
+func newManagerWithClock(ctx context.Context, configs []mcpconfig.ServerConfig, dials []func(context.Context) (mcpsdk.Transport, error), now func() time.Time, opts ...Option) (*Manager, []ServerOutcome) {
+	mgr, outcomes := NewManager(ctx, configs, dials, opts...)
+	if mgr == nil {
+		return nil, outcomes
+	}
+	for i := range mgr.conns {
+		mgr.conns[i].now = now
+	}
+	return mgr, outcomes
 }

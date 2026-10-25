@@ -534,8 +534,8 @@ func lcycDecodeInit(data []byte) (specs []lcycPluginSpec, kind plugin.SessionSta
 		plugin.SessionStartKindClear, plugin.SessionStartKindCompact, "",
 	}
 	kind = kinds[r.intn(len(kinds))]
-	// A collide bit forces two dirs to share a name so LoadAll's duplicate-name
-	// error branch is reachable.
+	// A collide bit forces two dirs to share a name so the duplicate-name skip
+	// branch is reachable.
 	collide := r.intn(3) == 0
 	for i := 0; i < n; i++ {
 		name := fmt.Sprintf("lcyc-plugin-%d", i)

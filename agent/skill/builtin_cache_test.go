@@ -941,38 +941,15 @@ func TestEmbeddedSkillsDir_FallsBackToAProcessLifetimeCopy(t *testing.T) {
 		t.Fatalf("process copy changed between calls: %q, %q, %q", first, second, third)
 	}
 
-	// EmbeddedSkills resolves the same copy's filesystem-backed metadata.
-	meta, err := EmbeddedSkills()
-	if err != nil {
-		t.Fatalf("EmbeddedSkills: %v", err)
-	}
-	if len(meta) == 0 {
-		t.Fatal("EmbeddedSkills returned no skills from the process copy")
-	}
+	// Every skill in the process copy is readable and loads.
 	prefix := first + string(filepath.Separator)
-	var name string
-	for key, m := range meta {
-		name = key
+	for name, m := range skills {
 		if !strings.HasPrefix(m.SkillFile, prefix) {
 			t.Fatalf("embedded skill %q resolves outside the process copy: %q", name, m.SkillFile)
 		}
-		if _, err := LoadSkillBody(m); err != nil {
-			t.Fatalf("LoadSkillBody(%q): %v", name, err)
+		if _, _, err := Load(Descriptor{CatalogName: m.Name, Meta: m}); err != nil {
+			t.Fatalf("Load(%q): %v", name, err)
 		}
-	}
-
-	// The tree is scanned once and every caller gets its own copy: a later call
-	// still reports the skills a caller mutated out of its own result.
-	delete(meta, name)
-	againMeta, err := EmbeddedSkills()
-	if err != nil {
-		t.Fatalf("EmbeddedSkills (again): %v", err)
-	}
-	if len(againMeta) != len(skills) {
-		t.Fatalf("EmbeddedSkills (again) = %d entries, want the %d in %q", len(againMeta), len(skills), first)
-	}
-	if _, ok := againMeta[name]; !ok {
-		t.Fatalf("EmbeddedSkills handed back a cached map alias: %q missing", name)
 	}
 }
 
@@ -982,7 +959,6 @@ func resetProcessSkills() {
 	processSkillsMu.Lock()
 	dir := processSkillsDir
 	processSkillsDir = ""
-	processSkillsMeta = nil
 	processSkillsMu.Unlock()
 	if dir != "" {
 		_ = os.RemoveAll(dir)
@@ -1015,14 +991,6 @@ func TestEmbeddedSkillsDir_ReExtractsWhenTheProcessCopyDisappears(t *testing.T) 
 	ScanSkillsDir(second, skills)
 	if len(skills) == 0 {
 		t.Fatalf("re-extracted copy %q holds no skills", second)
-	}
-
-	meta, err := EmbeddedSkills()
-	if err != nil {
-		t.Fatalf("EmbeddedSkills: %v", err)
-	}
-	if len(meta) != len(skills) {
-		t.Fatalf("metadata after re-extraction has %d skills, want %d", len(meta), len(skills))
 	}
 }
 
@@ -1149,9 +1117,6 @@ func TestEmbeddedSkillsDir_DoesNotRepeatAFailedPublishPath(t *testing.T) {
 		if again != first {
 			t.Fatalf("degraded copy changed between calls: %q, then %q", first, again)
 		}
-	}
-	if _, err := EmbeddedSkills(); err != nil {
-		t.Fatalf("EmbeddedSkills (degraded): %v", err)
 	}
 	if resolutions != 1 {
 		t.Fatalf("repeated degraded calls resolved the base %d times, want 1", resolutions)

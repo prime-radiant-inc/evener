@@ -2114,11 +2114,9 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 // dirs before they ever reach here): resume replays a PluginDirs list
 // persisted in the session's ConfigSnapshot, which can name a plugin that was
 // edited, broken, or uninstalled since the session started, bypassing that
-// CLI-side gate entirely. plugin.LoadAll itself is fail-hard (aborts on the
-// first bad or duplicate-named dir) by design for direct/explicit callers, so
-// this instead calls the shared plugin.LoadAllFailSoft and turns each skip
-// into a queued warning (delivered through the normal SESSION_START warning
-// stream, see emitSessionStartEnvelope) instead of aborting.
+// CLI-side gate entirely. This calls the shared plugin.LoadAllFailSoft and turns
+// each skip into a queued warning (delivered through the normal SESSION_START
+// warning stream, see emitSessionStartEnvelope) instead of aborting.
 func (s *Session) loadPluginsFailSoft(dirs []string) []plugin.Instance {
 	plugins, skipped := plugin.LoadAllFailSoft(dirs)
 	for _, sk := range skipped {

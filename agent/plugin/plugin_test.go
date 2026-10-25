@@ -322,48 +322,6 @@ func TestLoadPlugin_NonExistentDir(t *testing.T) {
 	}
 }
 
-func TestLoadPlugins_Multiple(t *testing.T) {
-	dir1 := makePluginDir(t, "plugin-a")
-	dir2 := makePluginDir(t, "plugin-b")
-
-	plugins, err := LoadAll([]string{dir1, dir2})
-	if err != nil {
-		t.Fatalf("LoadAll: %v", err)
-	}
-	if len(plugins) != 2 {
-		t.Fatalf("got %d plugins, want 2", len(plugins))
-	}
-	if plugins[0].Manifest.Name != "plugin-a" {
-		t.Errorf("plugins[0].Name = %q, want %q", plugins[0].Manifest.Name, "plugin-a")
-	}
-	if plugins[1].Manifest.Name != "plugin-b" {
-		t.Errorf("plugins[1].Name = %q, want %q", plugins[1].Manifest.Name, "plugin-b")
-	}
-}
-
-func TestLoadPlugins_DuplicateName(t *testing.T) {
-	dir1 := makePluginDir(t, "same-name")
-	dir2 := makePluginDir(t, "same-name")
-
-	_, err := LoadAll([]string{dir1, dir2})
-	if err == nil {
-		t.Fatal("expected error for duplicate plugin name")
-	}
-	if !strings.Contains(err.Error(), "same-name") {
-		t.Errorf("error %q should mention duplicate name", err.Error())
-	}
-}
-
-func TestLoadPlugins_Empty(t *testing.T) {
-	plugins, err := LoadAll(nil)
-	if err != nil {
-		t.Fatalf("LoadAll(nil): %v", err)
-	}
-	if len(plugins) != 0 {
-		t.Errorf("got %d plugins, want 0", len(plugins))
-	}
-}
-
 // --- LoadAllFailSoft (finding #4: a broken/duplicate dir must not brick the
 // whole batch for callers like session init and the hub's command catalog) ---
 
@@ -396,13 +354,20 @@ func TestLoadAllFailSoft_DuplicateNameSkipped(t *testing.T) {
 	}
 }
 
+func TestLoadAllFailSoft_NoDirs(t *testing.T) {
+	plugins, skipped := LoadAllFailSoft(nil)
+	if len(plugins) != 0 || len(skipped) != 0 {
+		t.Fatalf("plugins = %+v, skipped = %+v, want neither", plugins, skipped)
+	}
+}
+
 func TestLoadAllFailSoft_AllHealthyNoneSkipped(t *testing.T) {
 	dir1 := makePluginDir(t, "plugin-a")
 	dir2 := makePluginDir(t, "plugin-b")
 
 	plugins, skipped := LoadAllFailSoft([]string{dir1, dir2})
-	if len(plugins) != 2 {
-		t.Fatalf("got %d plugins, want 2", len(plugins))
+	if len(plugins) != 2 || plugins[0].Manifest.Name != "plugin-a" || plugins[1].Manifest.Name != "plugin-b" {
+		t.Fatalf("plugins = %+v, want plugin-a then plugin-b", plugins)
 	}
 	if len(skipped) != 0 {
 		t.Fatalf("skipped = %+v, want none", skipped)

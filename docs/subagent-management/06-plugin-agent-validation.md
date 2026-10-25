@@ -33,12 +33,11 @@ Make plugin and plugin-agent loading fail predictably, with diagnostics that tel
 - `agent/plugin/plugin.go` defines `Manifest` with fixed string fields and raw JSON component fields for `author`, `commands`, `agents`, `hooks`, and `mcpServers` (`agent/plugin/plugin.go:19-35`).
 - `agent/plugin/plugin.go` already has the canonical kebab-case validator for plugin names (`agent/plugin/plugin.go:37-50`) and applies it in `ParseManifest` (`agent/plugin/plugin.go:53-64`).
 - `agent/plugin/plugin.go` loads `.claude-plugin/plugin.json` first, then falls back to `.codex-plugin/plugin.json` (`agent/plugin/plugin.go` `Load`).
-- `agent/plugin/plugin.go` loads skills, agents, hooks, and MCP configs in `Load` (`agent/plugin/plugin.go:188-207`) and detects duplicate plugin names in `LoadAll` (`agent/plugin/plugin.go:212-230`).
+- `agent/plugin/plugin.go` loads skills, agents, hooks, and MCP configs in `Load` (`agent/plugin/plugin.go:188-207`) and skips duplicate plugin names in `LoadAllFailSoft`.
 - `agent/plugin/plugin.go` resolves component directories by adding the default directory plus string or string-list overrides (`agent/plugin/plugin.go:233-260`).
 - `agent/plugin/agents.go` defines plugin agent fields: `Name`, `Description`, `Model`, `Color`, `AllTools`, `Tools`, `Skills`, `Tasks`, `SystemPrompt`, and `PluginName` (`agent/plugin/agents.go:16-28`).
 - `agent/plugin/agents.go` currently requires only non-empty string `name` and `description` (`agent/plugin/agents.go:39-58`), defaults `model` and `color` to `inherit` and `blue` (`agent/plugin/agents.go:60-68`), parses `tools` as scalar `all` or a list (`agent/plugin/agents.go:70-101`), parses `skills` as a list of strings (`agent/plugin/agents.go:103-116`), and parses `tasks` from object lists with optional fields (`agent/plugin/agents.go:118-147`).
 - `agent/plugin/agents.go` discovers `.md` files, parses each agent, and currently assigns `agents[pluginName+":"+agent.Name] = agent`, which can overwrite duplicate names silently (`agent/plugin/agents.go:163-201`).
-- `agent/plugin/settings.go` loads plugin-local project settings from `.claude/<plugin-name>.local.md` frontmatter/body (`agent/plugin/settings.go:10-39`); diagnostics must avoid echoing sensitive settings values.
 
 ## Validation model
 
@@ -192,7 +191,6 @@ Diagnostics must not include secret values. Redact or omit:
 - env variable values;
 - HTTP headers, especially `Authorization`, `Cookie`, and `X-*Token`/`*-Key` variants;
 - MCP command environment values;
-- plugin settings values loaded from `.claude/<plugin-name>.local.md`;
 - hook payloads that may contain tool input with secrets.
 
 It is acceptable to include secret-bearing field names and source paths. It is not acceptable to print the secret value itself.

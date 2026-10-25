@@ -60,10 +60,7 @@ func TestInitPlugins_BuildsHookRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plugins, err := plugin.LoadAll([]string{dir})
-	if err != nil {
-		t.Fatal(err)
-	}
+	plugins := loadPluginDirs(t, []string{dir})
 
 	// Simulate what initPlugins does: build runner from plugin hooks
 	runner := hooks.NewRunner(nil, "test-model")
@@ -215,16 +212,15 @@ func TestInitPlugins_MergesAgents(t *testing.T) {
 	}
 }
 
-func TestInitPlugins_NoPlugins(t *testing.T) {
-	t.Parallel()
-	// Simulates initPlugins with empty PluginDirs — should be a no-op
-	plugins, err := plugin.LoadAll(nil)
-	if err != nil {
-		t.Fatal(err)
+// loadPluginDirs loads every dir as a plugin and fails the test if any is
+// skipped.
+func loadPluginDirs(t *testing.T, dirs []string) []plugin.Instance {
+	t.Helper()
+	plugins, skipped := plugin.LoadAllFailSoft(dirs)
+	if len(skipped) != 0 {
+		t.Fatalf("plugins skipped: %+v", skipped)
 	}
-	if len(plugins) != 0 {
-		t.Errorf("expected 0 plugins, got %d", len(plugins))
-	}
+	return plugins
 }
 
 func TestInitPlugins_CombinesMultiplePlugins(t *testing.T) {
@@ -243,10 +239,7 @@ func TestInitPlugins_CombinesMultiplePlugins(t *testing.T) {
 	os.WriteFile(filepath.Join(hooksDir, "hooks.json"),
 		[]byte(`{"hooks":{"PostToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"echo post"}]}]}}`), 0644)
 
-	plugins, err := plugin.LoadAll([]string{dirA, dirB})
-	if err != nil {
-		t.Fatal(err)
-	}
+	plugins := loadPluginDirs(t, []string{dirA, dirB})
 
 	// Simulate initPlugins: merge skills from all plugins
 	allSkills := map[string]skill.SkillMeta{}
