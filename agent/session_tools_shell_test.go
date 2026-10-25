@@ -1583,9 +1583,9 @@ func TestShellToolConfinedCwdOutsideWorkingDirectory(t *testing.T) {
 		policy  sandbox.ResolvedPolicy
 		refused bool
 	}{
-		{name: "read-only", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeReadOnly}},
-		{name: "workspace-write", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite}},
-		{name: "write-blocked-off", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}},
+		{name: "read-only", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeReadOnly, Spawned: sandbox.AccessScope{Read: sandbox.ReadAnywhere}}},
+		{name: "workspace-write", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite, Spawned: sandbox.AccessScope{Read: sandbox.ReadAnywhere}}},
+		{name: "write-blocked-off", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true, Spawned: sandbox.AccessScope{Read: sandbox.ReadAnywhere}}},
 		{
 			name: "restricted",
 			policy: sandbox.ResolvedPolicy{

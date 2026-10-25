@@ -222,7 +222,9 @@ func (w *Wrapper) CommandCWDVisible(cwd string) bool {
 	if w == nil || w.policy.Backend != BackendBwrap || w.policy.Spawned.Read != ReadAnywhere {
 		return true
 	}
-	if cwd == "" {
+	// Only a path under the private mounts needs a grant to be visible; the
+	// read-anywhere baseline already shows every other path.
+	if cwd == "" || !inPrivateMount(cwd) {
 		return true
 	}
 	if w.sessionTmp != "" && pathUnder(cwd, w.sessionTmp) {
@@ -242,7 +244,7 @@ func (w *Wrapper) CommandCWDVisible(cwd string) bool {
 	if w.policy.CacheStrategy == CacheOverlay && isUnderAnyRoot(cwd, liveCacheRoots(w.policy)) {
 		return true
 	}
-	return !inPrivateMount(cwd)
+	return false
 }
 
 // Confine rewrites cmd to run under the wrapper's backend confinement: it prepends

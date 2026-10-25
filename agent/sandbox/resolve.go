@@ -239,19 +239,25 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 	if !rp.FileToolConfined() {
 		return true
 	}
-	// Containment is lexical (pathUnder) and both sides must be absolute:
-	// a relative path cannot be proved inside any root, and a relative
-	// root grants nothing.
+	return rp.readGrantAllows(path, rp.FileTool.Read, rp.FileTool.ReadRoots)
+}
+
+// readGrantAllows applies one enforcement layer's read grant to path. The
+// caller has already settled its own confinement gate. Containment is lexical
+// (pathUnder) and both sides must be absolute: a relative path cannot be
+// proved inside any root, and a relative root grants nothing. Masked paths
+// deny in every mode, and ReadAnywhere allows everything else.
+func (rp ResolvedPolicy) readGrantAllows(path string, read ReadScope, roots []string) bool {
 	if !filepath.IsAbs(path) {
 		return false
 	}
 	if rp.Masks(path) {
 		return false
 	}
-	if rp.FileTool.Read == ReadAnywhere {
+	if read == ReadAnywhere {
 		return true
 	}
-	for _, root := range rp.FileTool.ReadRoots {
+	for _, root := range roots {
 		if filepath.IsAbs(root) && pathUnder(path, root) {
 			return true
 		}
@@ -274,24 +280,10 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 // floor as its file tools; a plain off policy has no masks and allows any
 // absolute path.
 func (rp ResolvedPolicy) SpawnedCanRead(path string) bool {
-	if !filepath.IsAbs(path) {
-		return false
-	}
-	if rp.Masks(path) {
-		return false
-	}
 	if !rp.Enforced() {
-		return true
+		return filepath.IsAbs(path) && !rp.Masks(path)
 	}
-	if rp.Spawned.Read == ReadAnywhere {
-		return true
-	}
-	for _, root := range slices.Concat(rp.Spawned.ReadRoots, rp.UnmaskedRoots) {
-		if filepath.IsAbs(root) && pathUnder(path, root) {
-			return true
-		}
-	}
-	return false
+	return rp.readGrantAllows(path, rp.Spawned.Read, slices.Concat(rp.Spawned.ReadRoots, rp.UnmaskedRoots))
 }
 
 // Masks reports whether path is denied by the masked set: at or beneath a

@@ -156,9 +156,9 @@ func TestConfinedCommandWorkingDirectory(t *testing.T) {
 		policy        sandbox.ResolvedPolicy
 		acceptOutside bool
 	}{
-		{name: "read-only", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeReadOnly}, acceptOutside: true},
-		{name: "workspace-write", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite}, acceptOutside: true},
-		{name: "write-blocked-off", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}, acceptOutside: true},
+		{name: "read-only", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeReadOnly, Spawned: sandbox.AccessScope{Read: sandbox.ReadAnywhere}}, acceptOutside: true},
+		{name: "workspace-write", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite, Spawned: sandbox.AccessScope{Read: sandbox.ReadAnywhere}}, acceptOutside: true},
+		{name: "write-blocked-off", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true, Spawned: sandbox.AccessScope{Read: sandbox.ReadAnywhere}}, acceptOutside: true},
 		{name: "restricted", policy: sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}, acceptOutside: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -3518,13 +3518,12 @@ func (e *LocalExecutionEnvironment) EnsureCommandWorkingDirectory(abs string) er
 	if e.ensureUnderRoot(abs) == nil {
 		return nil
 	}
-	readable := e.Sandbox.SpawnedCanRead(abs) && e.Sandbox.SpawnedCanRead(resolved)
-	visible := e.Wrapper == nil || (e.Wrapper.CommandCWDVisible(abs) && e.Wrapper.CommandCWDVisible(resolved))
-	if readable && visible {
+	readable := e.Sandbox.SpawnedCanRead(abs) && (abs == resolved || e.Sandbox.SpawnedCanRead(resolved))
+	if readable && e.Wrapper.CommandCWDVisible(abs) &&
+		(abs == resolved || e.Wrapper.CommandCWDVisible(resolved)) {
 		return nil
 	}
-	if scratch := e.allocatedSessionScratchPath(); scratch != "" &&
-		(pathWithinRoot(abs, scratch) || pathWithinRoot(resolved, scratch)) {
+	if scratch := e.allocatedSessionScratchPath(); scratch != "" && pathWithinRoot(abs, scratch) {
 		return nil
 	}
 	if !readable {
