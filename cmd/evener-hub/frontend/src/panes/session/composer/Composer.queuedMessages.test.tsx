@@ -786,7 +786,15 @@ test("two offline edits consolidate one durable owner and preserve typing during
   const hold = holdNextWriteTransaction(["recovery"]);
   try {
     await user.click(screen.getByRole("button", { name: "Edit message" }));
-    await hold.reached;
+    // The press's own continuation is fire-and-forget (QueueStrip's handler),
+    // and its edit mutation publishes a projection refresh plus the activation
+    // state before the held recovery write reaches its gate. A projection flush
+    // here would wait on this test's own held completion and could not settle,
+    // so the gate wait itself owns the act scope: restored composer text is not
+    // evidence that those earlier publications finished.
+    await act(async () => {
+      await hold.reached;
+    });
     selectEditorText(screen.getByRole("textbox", { name: "Message" }), source.getSnapshot().text.length);
     await user.keyboard(" newer");
     await act(async () => hold.release());
