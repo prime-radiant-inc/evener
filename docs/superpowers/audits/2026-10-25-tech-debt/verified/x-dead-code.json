@@ -1,0 +1,139 @@
+[
+ {
+  "id": "x-dead-code-1",
+  "title": "75 production functions are referenced only by tests",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Spot-checked 13 named symbols (jobWatchTool, noteDelegateAttention, nextIdleDelegateAttention, completionSnapshot, watchCount, sendInput, reconcileDelegateThreadItems, cloneNavigationSnapshot, localEnvPolicyFromName, writeAPIWireError, grepOutput, abandonRunningJob, createJobOutputForID): each has exactly 1 non-test word-match (the declaration) and 3-85 test refs. jobWatchTool is a one-line context.Background() wrapper (agent/session_tools_jobs.go:141); sendInput begins `_ = ctx` (agent/subagents.go:1440). Total 75 not re-derived."
+ },
+ {
+  "id": "x-dead-code-2",
+  "title": "jobManager.createShell is a test-only second shell-job start",
+  "original_severity": "high",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Confirmed: agent/jobs.go:991 createShell has zero non-test callers, 197 test call sites (not 238; the 238 likely counts the createShellOpts literals too) and builds record + EventJobStarted + registers runningJob, parallel to the commit path in agent/job_shell.go ~616-690. But it is a test fixture helper that creates a job with no process, not a competing production path, so it does not cause drift in prod; high is overstated.",
+  "revised_fix_plan": "Move createShell and createShellOpts verbatim into an agent/*_test.go helper file (about 85+10 lines moved, zero call-site churn). Do NOT convert 197 tests to spawn real shell commands: that adds processes and timing nondeterminism, contrary to deterministic-tests rules. Optionally extract the shared EventJobStarted construction (duplicated at jobs.go:1033-1049 and job_shell.go:~614-634) into one builder used by both, which is the only real drift risk."
+ },
+ {
+  "id": "x-dead-code-3",
+  "title": "Path-based job-output snapshot readers are a test-only twin of fd-based readers",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Confirmed: ReadOutputSnapshot/ReadOutputWindowSnapshot/ReadOutputPageSnapshot (agent/internal/jobstore/output_snapshot.go:63,91,109) have no non-test caller. But the 'delete the chain' scope is overstated: observeOutputSnapshot is NOT path-only (output_snapshot_fd.go:242 calls it) and readOutputMetaForSnapshot, outputSnapshotWindow, trimOutputSnapshotWindow are shared (fd.go:140,246,251). Realistic deletion is ~250 lines (readOutputSnapshotOnce/Attempt, readOutputRangeSnapshotOnce/Attempt, readOutputRawSnapshotWindow, readOutputSnapshotWindow, WithRetry wrappers, three public entry points). Real stale doc: agent/retained_output_read.go:88-90 searchSource comment names jobstore.ReadOutputWindowSnapshot.",
+  "revised_fix_plan": "Delete only the functions with no caller from output_snapshot_fd.go after grep-checking each; keep observeOutputSnapshot and the shared window helpers. Port unique race/rotation cases from output_snapshot_test.go to the fd tests first. Fix the retained_output_read.go comment. Size about -250 prod."
+ },
+ {
+  "id": "x-dead-code-4",
+  "title": "llm StreamGenerate/StreamGenerateObject have no production caller",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Non-test grep: StreamGenerate referenced only at its definition (llm/stream_generate.go:135) and the seam var llm/generate_object.go:23; StreamGenerateObject only at :117. stream_generate.go 425 lines, generate_object.go 300 (total 725). Caveat: docs/subagent-management/08-standalone-llm-calls.md:15,18,38 states llm.StreamGenerate/StreamGenerateObject as intended reuse paths, so this is a product/SDK decision (llm is its own go module), as the finding says. Also stream_retry.go is shared with other paths (FuzzRetryStream exists), so only the StreamGenerate half can go.",
+  "revised_fix_plan": "Ask Jesse whether llm is a public SDK. If not, delete stream_generate.go and the streaming half of generate_object.go plus seam var, tests, any fuzz target tied only to them, and update the 08-standalone-llm-calls.md doc rows; keep stream_retry.go pieces still used elsewhere."
+ },
+ {
+  "id": "x-dead-code-5",
+  "title": "Root frontmatter package duplicates agent/internal/frontmatter",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Only importer of primeradiant.com/evener/frontmatter is internal/bundled/bundled_test.go:9 (uses frontmatter.Parse at :51). Package is 364 lines incl. tests; its doc comment says it matches agent/internal/frontmatter which this module cannot import (agent is a separate go.mod). CI wiring confirmed: scripts/fuzz/fuzz-targets.txt:191, testing-budget.json:96, fuzz/mutations/frontmatter-determinism-naive.patch, scripts/fuzz/fuzz-mutation-score.sh:67. Caveat: the test runs in the root module so it cannot use agent/internal either; moving the assertion into an agent package test (agent already imports internal/bundled) works."
+ },
+ {
+  "id": "x-dead-code-6",
+  "title": "Zero-reference exported API and constants",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: ValidateDelegateID/ValidateWatchID/MustNewInstallationID/MustNewClientMutationID have 1 non-test word match and 2-6 test refs; finishStalePropagate, structuredResultReasonProjectionTooLarge, jobKindAgent, jobPhaseStarting have 1 match total; CloseStopJoinBudget has 0 test refs (agent/session_worktree_close.go:282); appwire.IsTerminalItemStatus/IsActiveItemStatus (appwire/status.go:29-40) are byte-identical to the Turn variants and only referenced in status_test.go; BuildAPILogCredentialMaterial (llm/api_attempt_sanitize.go:42) has no caller, doc claims adapters use it; the 7 appwire.Client wrappers have 1 match each. Where tests exist, deletion means deleting those tests too."
+ },
+ {
+  "id": "x-dead-code-7",
+  "title": "sshconn legacy probe/health-wait ladder",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "waitHealthy (version.go:1040) is declared but never called (only comments/strings elsewhere); it is the sole caller of waitForHealthyHub (:1071), which has 0 test refs; comments at :53,:62,:102,:1068 say legacy/retained for tests. hostAddrFor has 2 test refs and non-test refs at :64-72. Package 44,036 lines in 111 files (includes tests) confirmed. The 33 funcs/396 lines figure from deadcode not re-run. Needs the finding's own caution about dev/dirty-version proof rules."
+ },
+ {
+  "id": "x-dead-code-8",
+  "title": "Unused hub REST proxy and tree-builder wrappers",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "RESTProxy (cmd/evener-hub/internal/hubcore/proxy.go) has no non-test reference and no /live route outside proxy.go itself: confirmed. Correction: the production seam var is hubBuildNavigationTree = hubcore.BuildTreeWithProjects (web_api_tree.go:34), a thin wrapper that calls BuildTreeAtWithProjects, not BuildTreeAtWithProjects directly. BuildTree/BuildTreeAt/BuildProjectTree have no non-test caller (BuildTreeAt has 89 test refs); BuildProjectTreeAt is a distinct function with its own logic, so only the wrappers should go.",
+  "revised_fix_plan": "Delete proxy.go and its tests. Move BuildTree, BuildTreeAt, BuildProjectTree into a hubcore _test.go helper (they are tiny time.Now/ResolveProjectMap adapters); do not touch BuildTreeWithProjects or BuildProjectTreeAt."
+ },
+ {
+  "id": "x-dead-code-9",
+  "title": "serve process-wide API logger path is dead",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "newServeLLMClient (cmd/evener/serve.go:305) and serveAttachAPILogger (:96) have only test refs (serve_test.go:819, serve_coverage_fuzz_test.go:14-26); prod uses newUnloggedServeLLMClient + serveAttachSessionAPILogger (:270-271): confirmed. Correction: dropping the variadic resumedSessionID on cmdutil.AttachAPILogger is not free: tests pass it (cmdutil/api_logging_test.go:111, api_logging_gaps_test.go:15, cmd/evener/fresh_session_ownership_test.go:180) and the only prod caller (tools/tool-fluency main.go:1186) passes none.",
+  "revised_fix_plan": "Delete newServeLLMClient/serveAttachAPILogger and repoint the tests at defaultServeDeps().newClient + attachAPILogger. Leave the variadic alone unless AttachAPILogger's tests are first moved to AttachSessionAPILogger."
+ },
+ {
+  "id": "x-dead-code-10",
+  "title": "Dead alias exports and compatibility seam in web frontend and shared client",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "prefs.ts:237-240 and :258,:265 are plain `export const x = y` aliases; readLegacyPref, hasLegacyPref, writeLegacyBool, removeLegacyPref, migrateLegacyPrefs, dualWriteLegacyPrefs, snapshotFromTree (attention.ts:54-55 'Compatibility seam') and RailRenderObserverProvider each occur exactly once across frontend/mobile/appwire-client. isToolResultItemId/isToolCallItemId are aliases at appwire-client/typescript/reducer.ts:400-401, re-exported at index.ts:530-531 with no consumer. Remaining 'single-occurrence' totals not re-derived."
+ },
+ {
+  "id": "x-dead-code-11",
+  "title": "ForTests-style exports in production TS and Go",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "TS count is right (80 exports in 53 non-test files by my regex vs claimed 78/52; threads.ts is 8,990 lines). Go count is about 5 (`^func (recv)? \\w*ForTest(s|ing)` in non-test files), not 20, so the Go half is overstated. Recommendation to move hooks into *.testSupport.ts is only possible where the hook needs exported state; it does not delete anything and the finding itself says optional."
+ },
+ {
+  "id": "x-dead-code-12",
+  "title": "Design-review mockup pages for shipped features",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Counted 2,728 lines in the 8 mockup files plus html/configs (mockups.html 11, vite.mockups.config.ts 27, taskcardmockups.html 12, taskcardmockups.vite.config.ts 13, mockups-entry.tsx 1216, taskcardmockups-entry.tsx 297, variants 407, fixture 389, css 189+167). Nothing outside those files and token-contract.test.ts:504-585 references them (grep of repo excluding frontend, docs/superpowers, node_modules finds none; no Makefile/package.json/vite.config entry). mockups-entry.tsx:1-2 says it is NOT product code; its two proposals (Host picker, Organize by) now exist (stores/hosts.ts, shell/rail/Rail.tsx). Note fixture.ts and token-contract exception tests must be removed together.",
+  "revised_fix_plan": "Confirm with Jesse the designs are final, then delete all of it including the token-contract exception entry (:504-510) and its scoping test (:580-585)."
+ },
+ {
+  "id": "x-dead-code-13",
+  "title": "Dead and stale npm dependencies (IBM Plex)",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "@ibm/plex-mono and @ibm/plex-sans are devDependencies (package.json:55-56); global.css:1-15 loads only fontsource-variable fonts and mentions 'static Plex files of the pre-retheme system'; plex-sans is used only as an arbitrary woff2 in scripts/editorial-preview.test.mjs:68,88-89. @types/dompurify at :59 unverified (dompurify ^3.4.16 at :36 ships its own types, so likely redundant, but not confirmed). Fix-plan correction: npm ci in web-preflight does not regenerate the lockfile; removal needs `npm uninstall` in a real (non-symlinked) node_modules.",
+  "revised_fix_plan": "Point editorial-preview.test.mjs at a fontsource-variable woff2, run `npm uninstall @ibm/plex-mono @ibm/plex-sans` from the frontend dir only after confirming node_modules is not a symlink, then run make test-web. Check @types/dompurify separately."
+ },
+ {
+  "id": "x-dead-code-14",
+  "title": "One-shot migration and measurement scripts still in the tree",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "scripts/sdk/rewrite-package-imports.mjs is 460 lines and its header (:1-12) says it is a one-time rewrite, not a gate: confirmed. Caution: its test cmd/evener-hub/frontend/scripts/rewrite-package-imports.test.mjs runs in the frontend gate (`node --test scripts/*.test.mjs`, package.json:12), so delete both together; shared module-specifiers.mjs is used by other scripts and must stay. measure-transcript-* , seatbelt-smoke.sh, test-cost.sh (listed in scriptmktemp_audit_test.go:231, so audit tests need updating), and the mobile smokes have no references outside themselves. 'Look maintained' claim fine; the -1500 total not re-derived.",
+  "revised_fix_plan": "Delete rewrite-package-imports.mjs + its .test.mjs; for the others ask Jesse. If test-cost.sh or others are deleted, update scriptmktemp_audit_test.go table in the same change."
+ },
+ {
+  "id": "x-dead-code-15",
+  "title": "appwire-client index re-exports 294 names no consumer imports",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Could not cheaply re-derive the 294/1,073 numbers. Spot-check of the reducer.ts aliases confirms the pattern. Counts consumers inside this repo only and the package is a deliberate shared-client contract (AGENTS.md: shared client owns shared derivations), so many unused exports may be intentional extension points. Treat as exploratory.",
+  "revised_fix_plan": "Fold into x-dead-code-10; do not mass-unexport without Jesse reviewing the list."
+ },
+ {
+  "id": "x-dead-code-16",
+  "title": "Test-support packages and dead helper chains hold unused helpers",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Spot-checked: parseBootGeneration, runOneProbe, ItemTurnProjectionFromFile have 0 test refs and only transitive non-test refs (3-5 matches, within unreachable chains). The 77 agenttest funcs / 515 lines figure not re-run. seatbelt.go caveat is correct. Low value and compiler-guided."
+ }
+]

@@ -1,0 +1,208 @@
+[
+ {
+  "id": "hub-root-rest-1",
+  "title": "runMain is a 775-line composition root",
+  "category": "complexity",
+  "original_severity": "high",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "runMain spans main.go:253-1028 (775 lines). archive/favorite SetOnChange at 470-471 is plain assignment (hubcore/archive.go:106, favorite.go:33) and is overwritten at 828-829. NewPinSectionStore (hubcore/pin_section.go:96) never returns nil, so the pinSections nil guard at main.go:840 is dead. Core evidence holds. Shutdown-order risk is real; refactor must keep defer order."
+ },
+ {
+  "id": "hub-root-rest-2",
+  "title": "hub.toml doubles as machine database",
+  "category": "architecture",
+  "original_severity": "high",
+  "verdict": "partial",
+  "severity": "high",
+  "note": "Reserved sections exist (config.go toml tags: host_records..mirror_commits, PendingStoreSync :120, MirrorCommits :127; validators at :566-569; Undecoded refusal at ~:581-586). app_host_* is 14,242 non-test / 32,682 test lines; hostops 9,751. Drag is real, but this is a product/architecture decision, not an actionable cleanup: migration is backward-compat code needing Jesse's approval, and crash-recovery semantics are a product guarantee (subsystems S07). Treat as a design discussion, not a PR.",
+  "revised_fix_plan": "Do not schedule as a refactor. Raise as a decision with Jesse: single source of truth for host records. Only after approval, write a design record; implementation is a separate multi-PR effort with recovery tests first."
+ },
+ {
+  "id": "hub-root-rest-3",
+  "title": "~30 undocumented host retention knobs",
+  "category": "complexity",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "config.go has 26 host_* toml keys, not ~30-34; 3 documented in docs/evener-hub.md:290-292 (probe timeout, min free space, tombstone retention), so 23 are undocumented. The doc claims the rest are documented in product/subsystems.md (evener-hub.md:306) but grep of docs/ finds none of host_keyless/host_tombstone_max/host_operation_terminal; only config.go and main.go reference e.g. HostOperationTerminalPerHost. Plumbing claim (HostTombstoneMaxRowBytes at config.go:184,262,347,723; main.go:729; hubcore/config.go:210; app_host_record_pruning.go:109,133) verified. Removing keys silently ignores old configs, but reserved-record sections still refuse unknown fields; unrelated.",
+  "revised_fix_plan": "Delete the 23 undocumented knobs per original plan; also fix evener-hub.md:306 sentence pointing at nonexistent docs. Confirm with Jesse they are not tuned in any deployed hub.toml."
+ },
+ {
+  "id": "hub-root-rest-4",
+  "title": "Config defaults repeated, dead keys, Settings hardcoded 30s, stale Version",
+  "category": "inconsistency",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "web_settings.go:20-24 hardcodes settingsSpawnTimeoutDisplay=\"30s\" and says no configurable spawn timeout, but spawn.go:167,226 use Cfg.SpawnTimeout (config.go:67, default 30s at 338 and 705). app_rpc_settings_overview.go:56 shows the literal: real user-visible bug. StatusPollInterval (config.go:65,336,699) has no production reader and is documented at docs/evener-hub.md:293. Providers/ProviderConfig (config.go:21,69) unused outside config.go and one fuzz test. Correction: const Version is also used at app_rpc_settings_overview.go:52 (Settings), not only the main.go:1009 banner; replace both."
+ },
+ {
+  "id": "hub-root-rest-5",
+  "title": "Memoized tree path and sync fallback production-dead",
+  "category": "dead-code",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Dead in production: memoTree and memoTreeWithAuthority (web_api_tree.go:223,228; no callers), s.treeCache/hubcore.TreeCache (web.go:85,195), remoteTreeThreads (:667), refreshRemoteThreads (:678), navigationTreeInputs (:613), rowRenameable (:1514), liveEntry (:1523), remoteFetchGeneration (web.go:56; sole use :636 in the no-cache fallback). WRONG part: refreshRemoteThreadSnapshot and listThreadsWithFallback are production code: main_background.go:188 calls web.refreshRemoteThreadSnapshot for the cache refresher. The synchronous walk is therefore not 'unreachable'; only the cache==nil branch in remoteThreadFetch (:624-637) is test-only. Also remoteThreadFetch is used in prod by navigation snapshot (:465) and app_pin_section.go:197. hubTreeAttentionRank (:37,40) has 'var _ =' placeholder (confirmed).",
+  "revised_fix_plan": "Delete memoTree, memoTreeWithAuthority, treeCache, hubcore.TreeCache(+test), remoteTreeThreads, refreshRemoteThreads, navigationTreeInputs, rowRenameable, liveEntry, remoteFetchGeneration, hubTreeAttentionRank, and the cache==nil fallback branch in remoteThreadFetch (default RemoteThreadCache in newWebServer). KEEP refreshRemoteThreadSnapshot and listThreadsWithFallback (used by main_background.go:188). Fix stale comments at web_api_tree.go:618-623 and main.go:505,939-945."
+ },
+ {
+  "id": "hub-root-rest-6",
+  "title": "Spawn/Resume duplication and three optional-interface tiers",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "SpawnDaemon (spawn.go:435) and ResumeDaemon (:556) have zero production callers anywhere in the repo (only defs, comments, tests); spawnDaemon->spawnDaemonWithProviderConfig (:443-447) is a pure forward. EvenerLaunchModelLister/ContractLister/ContractWorkingDirLister (spawn.go:83-93) are type-asserted via selectEvenerLaunchModelListers (app_models.go:453) with a legacy tier; production implementer is only HubSpawner. Collapsing requires updating test fakes. Duplication in Spawn/Resume is plausible, not exhaustively compared."
+ },
+ {
+  "id": "hub-root-rest-7",
+  "title": "Launch-check subprocess handling duplicated",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "validateEvenerLaunchContract (spawn.go:1152-1189) confirmed to own default binary, timeout, CommandContext, runLaunchCheck, redaction, JSON decode and protocol check; listEvenerLaunchModelContract (:1191+) repeats the same shape. Did not exhaustively diff the credential-gate branches (940-1000); treat that sub-point as likely."
+ },
+ {
+  "id": "hub-root-rest-8",
+  "title": "Doc and image routes resolve paths divergently; remote image-by-path misses artifacts root",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Asymmetry real: local resolveLocalDocTarget (doc_serve.go:57-110) tries cwd then artifactsDocTarget for absolute paths, while sessionImageByPath (image_serve.go:281-307) uses only sessionCWD+ResolveInRoot. But the doc comment at image_serve.go:277-280 documents cwd-only as the contract, so it may be intentional; it must be confirmed with Jesse before treating as a bug. supportedOutputImageMedia(data, _ string) (output_images.go:303) unused second param confirmed; sessionImageByPath still passes filepath.Base(abs).",
+  "revised_fix_plan": "Step 1: decide whether remote image-by-path should serve artifacts root (product call). Then extract shared resolveSessionFile only if so; otherwise only drop the unused param, unify readOutputImageFile/InRoot, merge proxy-status tables."
+ },
+ {
+  "id": "hub-root-rest-9",
+  "title": "Navigation layer works around upstream grouping defect; re-validation; Context twins",
+  "category": "complexity",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Merge code (navigation_projection.go:312-357, comment explains the shared 'no-project' key from hubcore/tree.go:910,1013,1491) and repeated validateNavigationResourceSnapshot calls (normalize:159, delta:16,19,73, history:42, plus delta.Validate :66) confirmed. buildNavigationProjection (:155) and applyNavigationDelta's nil error (delta:84) confirmed; validNavigationTimestamp and cloneNavigationSnapshot have only test callers. But calling no-project multiplicity an 'upstream defect' is a judgment: the tree deliberately presents separate groups per grouping path, so changing hubcore to emit one project per Key alters tree presentation for other consumers. Validation at the publication boundary is a deliberate fence.",
+  "revised_fix_plan": "Do the safe parts: delete test-only twins (take ctx everywhere), unused helpers, always-nil error, and 'V3'/Context naming. Treat the upstream-merge move and validation reduction as a separate design discussion; if done, keep reconstruction equality and publish-time validation."
+ },
+ {
+  "id": "hub-root-rest-10",
+  "title": "Split the 56k-line main package",
+  "category": "architecture",
+  "original_severity": "high",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Counts verified: 56,197 non-test / 192,767 test lines, 463 test files; sole production importer cmd/evener/main.go:20. Other references to the package path: cmd/evener-fuzzcov/main_test.go:15, cmd/evener-dev/webbrowser.go:66-117, deploy_flags_test.go:904-917 (go list assertion on package name 'hub'). Splitting is mechanical but huge (~64k moved lines) and AGENTS.md requires architectural discussion with Jesse first. A package split causes no bugs by itself, so high is overstated.",
+  "revised_fix_plan": "Not a standalone PR. Do the prerequisite deletions (findings 5, 16, 9 safe parts) first; then, with Jesse's approval, pick at most the cheapest seam (hubconfig, ~934 lines with no WebServer dependency) as a pilot."
+ },
+ {
+  "id": "hub-root-rest-11",
+  "title": "40 cov_*_fuzz_test.go files chase coverage",
+  "category": "test-debt",
+  "original_severity": "high",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "40 cov_*_test.go files, 6,031 lines, 46 Fuzz funcs (verified). web_covtest_test.go:20 test named after 'web.go:96' line number. handleIndex/handleSettings/handleCredentials/handleThreadDocument are called outside their mux registration only by cov_provider_render_pass4_fuzz_test.go:63-67 and cov_web_views_spawn_fuzz_test.go:84-97. Deleting lowers coverage; needs Jesse's approval per rules."
+ },
+ {
+  "id": "hub-root-rest-12",
+  "title": "~44 package-level mutable seams for impossible faults",
+  "category": "complexity",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Seams verified: output_images.go:16-23 (outputImageMarshal=json.Marshal, outputImageRel=filepath.Rel, etc.), doc_serve.go:28-31 ('variables so coverage tests can fail them'), token.go:9 hubTokenRead=rand.Read, http_recorder.go:21-22, main_background.go:14-35 lambdas. Exact count of 44 not re-derived."
+ },
+ {
+  "id": "hub-root-rest-13",
+  "title": "Tests assert on copy",
+  "category": "test-debt",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "deploy_flags_test.go:488 compares help to hubDeployHelpDefaultedDirtySource; :497 and :561 use strings.Contains on help text; :244 Contains(err.Error(),\"execut\"). deploy_flags.go is 515 lines; remedy const at :195. Violates AGENTS.md 'Copy Is Not a Test Oracle'. Package-wide count is larger than claimed: 229 strings.Contains(err.Error()...) sites in tests, not 96."
+ },
+ {
+  "id": "hub-root-rest-14",
+  "title": "Five CLI subcommands re-implement flag parsing",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "fs.Visit copies verified at main.go:1205, attach.go:82, endpoint.go:42, login_url.go:36, restart.go:45. login_url.go:50-54 reads the token inline instead of readAuthToken (attach.go:270). --version scan at main.go:254-258 covers all args. endpoint.go:67 branches on deps.loadConfig==nil. Caveat: login_url maps token failures to the ErrLoginURLToken sentinel, so reuse must keep that mapping."
+ },
+ {
+  "id": "hub-root-rest-15",
+  "title": "Four hand-rolled run-once-then-tick loops",
+  "category": "duplication",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "main_background.go has hubTicker seam (:15-18) and several watchers; pattern plausible. Not exhaustively diffed; low value."
+ },
+ {
+  "id": "hub-root-rest-16",
+  "title": "Pass-through wrappers and production-unused helpers",
+  "category": "dead-code",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Zero-production-caller confirmed for resolveEvenerStateDir (spawn.go:815, 1 prod ref = def), envLookup, splitProviderModel, writeAPIWireError; resolveEvenerStateDirWithStateHome has 2 prod refs (def + forward); NewWebServer is called in prod only inside web.go. openai_state_dir.go is a two-layer forward to cmdutil.StateRootFromLookup with a history comment. transcript_limits.go is a 3-line file. supportedOutputImageMedia's second param unused (output_images.go:303). Note NewWebServer is the public constructor used by 297 test sites; keep."
+ },
+ {
+  "id": "hub-root-rest-17",
+  "title": "Two Ref types and route-id helpers",
+  "category": "inconsistency",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "hubapi.Ref{HostID,SessionID} (hubapi/refs.go:13) and appwire.Ref{SourceID,ThreadID} (appwire/refs.go:22) both exist; hubapi already has LocalRef. Counts in cmd/evener-hub non-test: 54 appwire.ParseRef, 10 hubapi.ParseRef (not 12). Route-id helpers at web.go:413-432 and web_api_tree.go:1299,1516 confirmed. Caveat: hubapi's refPattern allows ':' while appwire's refPartPattern is per-part, so merging parsers is not behavior-preserving at edges; needs characterization tests.",
+  "revised_fix_plan": "Add characterization tests for both ParseRef grammars first; then converge helpers (IsLocal, Canonical) in appwire without changing the grammar; remove hubapi.Ref only after callers migrate."
+ },
+ {
+  "id": "hub-root-rest-18",
+  "title": "Redundant SPA shell handlers and misnamed files",
+  "category": "slop",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "handleIndex (web.go:375), handleSettings (web_settings.go:28), handleCredentials (web_launchconfig.go:9), handleThreadDocument (web_workspace.go:37) are identical serveSPAIndex one-liners; mux registrations at web.go:322-336; auth wraps the whole mux (web.go:347-348) so deleting registrations keeps the guard. Handler doc comment at web.go:269-272 is stranded above validAssetPath (confirmed)."
+ },
+ {
+  "id": "hub-root-rest-19",
+  "title": "History/spec narration is 21% of the slice",
+  "category": "slop",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Comment lines 3,642 of 17,360 in the non-app_ slice (verified) but that is ALL comments; only 11 'kata xxxx' and 12 round/'used to' phrases found in the slice by grep, so the headline 21% is not narration. Narration exists (openai_state_dir.go:7-17, main_background.go comments) and a stale comment is false (spawn timeout) but severity is low and the plan (opportunistic cleanup while touching code) is right."
+ },
+ {
+  "id": "hub-root-rest-20",
+  "title": "Session on-disk layout re-spelled in many places",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "29 non-test '.transcript.jsonl\"' spellings verified across repo (agent/, doctor, tools, hub image_serve.go:60, app_threadread.go:1491, project_delete.go:668); agent's helper transcriptPath (agent/transcript_lookup.go:437) is unexported. project_delete.go:657-697 hard-codes mutations/queues/tasks/api sidecars. Cross-module change touching a destructive path; do with tests listing every sidecar."
+ },
+ {
+  "id": "hub-root-rest-21",
+  "title": "82 hand-rolled [hub] stderr writes",
+  "category": "inconsistency",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "grep '[hub]' counts: main.go 47, restart.go 12, main_background.go 6 (writes os.Stderr directly at :48,97,100,145,159,161), login_url.go 4, attach.go 2, project_delete.go 3 (os.Stderr at :46,54,647), app_plugin_autoupgrade.go 3; 104 package-wide. Confirmed."
+ },
+ {
+  "id": "hub-root-rest-22",
+  "title": "HTTP recorder writes credentials; origin selectors",
+  "category": "other",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "http_recorder.go:57-62 records Headers: r.Header before auth (web.go:348 record(auth(...))), so Authorization/Cookie land in hub-http.jsonl (opt-in, 0600). Also records Query (RawQuery) which can carry ?token= and Body, so redacting headers alone is incomplete. Origin-selector and pairing-flow parts are product questions, not verified here.",
+  "revised_fix_plan": "Redact Authorization/Cookie/Set-Cookie headers and the token query param (red test first); leave origin/pairing consolidation as a Jesse decision."
+ }
+]

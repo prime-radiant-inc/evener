@@ -1,0 +1,172 @@
+[
+ {
+  "id": "hub-hostops-appsource-1",
+  "title": "Remote capability probe does 5+N wire reads per attach and nothing reads the result",
+  "category": "dead-code",
+  "original_severity": "high",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "Verified: app_host_attach.go:198 discards the value; the only consumer of the cached snapshot is cachedCapabilityFeatures (remote_hub_refs.go:138), which already falls back to client.Features() (same initialize response; probe line 'caps.Features = client.Features()'). Models/Plugins/Auth/Instances/LaunchGlobal/LaunchResolved/Roots have zero non-test readers. Product doc docs/product/remote-sessions.md:19 mentions 'An explicit Connect probes the host's capability snapshot', so the doc must change with the code. Nuance: the probe also refuses (caches nothing) when the handshake seam cannot answer for this client generation; that refusal is logged only, not an attach failure.",
+  "revised_fix_plan": "Delete the whole probe, not just its payload: HostCapabilities, CapabilitySource, remoteHubProbe cache, cachedProbe/cachedCapabilities/cachedCapabilityFeatures, clone helpers, the attach block at app_host_attach.go:~196 plus hostCapabilityProbeBudget, and forwardedThreadCapabilitiesFor reads client.Features() directly. Check whether SetHostFacts/SetHostHandshake have any other reader (grep shows only app_rpc.go:67-68 setting them) and delete them too if not. Update docs/product/remote-sessions.md:19 in the same change. Keep feature-mask tests, rewritten to use client.Features()."
+ },
+ {
+  "id": "hub-hostops-appsource-2",
+  "title": "About 55 hand-written RPC forwarder methods across LocalDaemonSource and RemoteHubSource",
+  "category": "duplication",
+  "original_severity": "high",
+  "verdict": "partial",
+  "severity": "high",
+  "note": "Pattern confirmed (local_daemon.go:471-640, remote_hub_mutations.go:73-260 are repetitive entryForRef/toRemoteRef + request boilerplate). Overstated in two ways: 'same six lines' ignores real differences (gateSkillInputOnClient on StartTurn/SteerTurn/QueueTurn/DrainAsSteer, localDaemonMutationEntryError vs plain error, threadID '' vs params.ThreadID, StartThread/ForkThread special handling, typed client helpers vs client.Request), and the '55' counts every LocalDaemonSource method in local_daemon.go. Go generics cannot set params.Ref on an unconstrained P, so a helper needs a closure/setter argument, which reduces the savings (realistically -250 to -300).",
+  "revised_fix_plan": "Introduce two small helpers taking explicit closures: remoteForward[P,R](s, params P, ref string, threadID string, setRef func(*P, appwire.Ref), call func(P,*R) error) and localForward analogously with the mutation id and optional pre-call gate as arguments. Convert only the uniform methods (SetThread*, ListTasks/ListJobs/JobGet/JobOutput, Compact/Shutdown/Rename, Cancel/Promote). Leave gated/special methods explicit. Add a table test that each forwarder rewrites the ref and maps errors, first."
+ },
+ {
+  "id": "hub-hostops-appsource-3",
+  "title": "Transport and mutation error mapping duplicated between local and remote sources, with drifted sentinel lists",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Duplication real (localDaemonMutationCallError local_daemon.go:1030 vs remoteHubMutationCallError remote_hub_mutations.go:51 are the same shape and the same Automatic WireError literal; 'remote hub unavailable: '+s.id appears 11 times in non-test appsource). But the claim that the third copy (hubAdminMutationOutcomeUnknown, remote_hub_source.go:1883) is the same is wrong: it uses RetryDispositionBlocked and has no ClientMutationID, plus extra branches (RequestNotSentError, callerContextEnded). And the sentinel-list drift is partly legitimate: local dials a websocket (websocket.CloseError, local-only) and remote runs over SSH stdio (io.ErrClosedPipe, os.ErrClosed, sshconn.ErrSSHStart/ErrRestart); remote also has an 'eof' word matcher local lacks. Union-ing the lists changes local retry classification and needs Jesse's decision.",
+  "revised_fix_plan": "Step 1 (behavior-preserving): one mutationOutcomeUnknown(msg, clientMutationID, disposition) builder used by all three sites, and one unavailable(label,id,err) constructor. Step 2 (behavior change, ask Jesse first): extract a shared isTransportLoss core (syscall, EOF, deadline, net timeout, text fallbacks) and let each source add its transport-specific extras; red-test local picking up io.ErrClosedPipe/net.ErrClosed first."
+ },
+ {
+  "id": "hub-hostops-appsource-4",
+  "title": "Item paging has two parallel engines, duplicated LRUs, and four position comparators (one ignores Sub)",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Confirmed: remotePositionCompare (remote_hub_source.go:1158) and hubcore.compareItemPositions (message_search.go:693) are byte-identical to appitempaging.ComparePosition; comparePosition (page.go:194) is a pass-through; inline Entry/Item-only comparisons at source.go:511, 555 and item_paging_state.go:188-189, 215 ignore Sub. Two caches exist (itemSnapshotStateCache cap 32 with container/list; remoteItemPagingCache cap 64). Corrections: localDaemonCandidatesBefore takes a limit and trims to the newest `limit`, while remoteCandidatesBefore has no limit, so a shared helper needs the limit parameter (remote passes len). The local engine is source.go lines ~123-783 (~660 lines) named source.go although local_daemon_item_paging_test.go exists. Whether Sub can be nonzero in practice was not verified, so the latent bug is plausible, not demonstrated.",
+  "revised_fix_plan": "Step 1: delete comparePosition, remotePositionCompare and compareItemPositions (hubcore importing appitempaging is fine if no cycle; otherwise leave that one), replace inline Entry/Item comparisons with ComparePosition after a Sub-only-difference test; add appitempaging.CandidatesBefore(candidates, before, limit) used by both. Step 2: single bounded LRU type only if the two caches' eviction semantics are confirmed equal. Step 3: rename source.go's local item engine into local_daemon_item_paging.go. Engine merge out of scope."
+ },
+ {
+  "id": "hub-hostops-appsource-5",
+  "title": "CombinedItemReadSource has no production implementer; hub branch is dead outside tests",
+  "category": "dead-code",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Grep over the whole repo for ReadThreadWithItemCandidates/CombinedItemReadSource finds only source.go:117-120, the type assertion at app_relay.go:1451, and the test fake app_rpc_item_paging_test.go:163. Neither LocalDaemonSource nor RemoteHubSource implements it, so the branch is dead in production. The sibling-interface remark is accurate but speculative (OnlineSource has two callers, CapabilitySource disappears with finding 1).",
+  "revised_fix_plan": "Delete CombinedItemReadSource, the combined branch at app_relay.go:1451-1457, and rewrite the one test that uses itemPackingRPCSource to drive the real ReadItemCandidates path. Leave the other optional interfaces alone."
+ },
+ {
+  "id": "hub-hostops-appsource-6",
+  "title": "Three separate ref/URL translation walkers (typed, raw JSON, untyped tree) plus an unapproved legacy jobs path",
+  "category": "complexity",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Walkers exist as described (remote_hub_refs.go and remote_hub_images.go have typed visitors, raw-JSON twins, and map[string]any activity walkers). But translateLegacyJobRefs (remote_hub_refs.go:791) is 11 lines plus a two-line case at :711 and two tests, and the legacy array is documented in docs/appwire-protocol.md as an old-daemon shape; the '-250' saving and '~900 lines' framing is inflated. A new declarative path-rewriter would ADD a mechanism to code under byte-for-byte preservation contracts, against 'delete before adding'. No evidence of an actual drift bug was given.",
+  "revised_fix_plan": "Ask Jesse whether pre-activity-tree daemons must still be supported; if not, delete translateLegacyJobRefs, its case, and its tests (~40 lines). Do not build the path-template rewriter unless a concrete missed-field bug shows up."
+ },
+ {
+  "id": "hub-hostops-appsource-7",
+  "title": "Store methods only tests call (or nobody calls), with mirror-write logic duplicated",
+  "category": "dead-code",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Verified no production callers outside tests: RecordOrReplay (store.go:444; zero callers anywhere), RemovedHosts() getter (retention.go:382; 2 test lines), RevokeTokens (token.go:522), ConsumeToken (token.go:377; prod uses ConsumeTokenAndCreateOperation, which does not call tokenPass), MintToken (token.go:221; prod MintTokenIfQuiescent), Store.CursorEpoch() (cursor.go:458; internal code uses cursorEpochLocked). Only ValidateToken calls tokenPass in prod (consume=false), so the consume flag is removable with ConsumeToken. Overstated: MirrorBoundaries (boundary.go:132) is not a ~40 line duplicate of MirrorHostState; the latter adds skipBoundaryProposal, retention policy, Live set and removal markers, so only the validation prelude overlaps, and migrating 53 test lines to MirrorHostState changes what those tests exercise.",
+  "revised_fix_plan": "Delete RecordOrReplay, RemovedHosts(), RevokeTokens, ConsumeToken (and tokenPass's consume branch), MintToken, and the CursorEpoch() method (keep the CursorEpoch type). Treat MirrorBoundaries separately: migrate its tests to MirrorHostState{Boundaries,Remove} and delete it only if those tests still pin the same behavior, otherwise leave it. Update comments naming the deleted functions (boundary.go:31, 115; retention.go:401)."
+ },
+ {
+  "id": "hub-hostops-appsource-8",
+  "title": "Store schema maintained by hand in four places with duplicated decode blocks",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: recordFile.record (store.go:831) and tombstoneFile.tombstone (store.go:766) repeat the progress/result decode nearly line for line; ownedObjectKeys (store.go:1290-1330) lists the 16 token keys twice (tokens[] and pendingCompensation[].rows[]) and the attestation/result/progress sets for records and tombstones; hostops.go:288 loops over a one-element literal slice. Reflection-derived allowlist is optional and riskier; the cheap wins are the shared decode helper, the one-element loop, and a shared tokenKeys var.",
+  "revised_fix_plan": "Extract decodeProgressAndResult(kind, id, progress, result) used by both; replace the one-element loop with a direct call; hoist the duplicated key lists into shared vars (tokenKeys, attestationKeys, progressKeys). Skip reflection. Ask Jesse separately about validateKeys' value."
+ },
+ {
+  "id": "hub-hostops-appsource-9",
+  "title": "Retired prior-build vocabulary kept decodable and in the state machine",
+  "category": "compat-legacy",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified retired fields and comments in custody.go (~30, 79, 327), store.go (recordFile OrphanBoundary/OrphanResolved/Attestation/PendingSpawns), intent.go:166 compensationSidecarLegacy, hostops StateOrphanUnverified (app_host_deploy.go:185 maps it to appwire.OperationStateOrphanUnverified at appwire/types.go:5360); retired_keys_test.go is 159 lines. Grep of .ts/.tsx/.go finds no client reference to 'orphan-unverified' outside appwire/types.go, main.go message and the dated spec, so the wire-enum removal is less risky than the finding assumed. Still a backward-compat decision that needs Jesse's approval.",
+  "revised_fix_plan": "Ask Jesse whether any pre-comp08 store or custody file can still exist on a live hub. If no, delete the retired fields, the sidecar alias, StateOrphanUnverified and the appwire enum value, plus retired_keys_test.go and the main.go message. If yes, record the removal condition in docs/product/subsystems.md."
+ },
+ {
+  "id": "hub-hostops-appsource-10",
+  "title": "Durable atomic write and post-rename error handling re-implemented in at least four places",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Duplication is real, but evidence is imprecise: fsdurability lives at cmd/evener-hub/internal/fsdurability (not internal/fsdurability) and hubcore already has one shared helper, writeStateFileAtomic (state_file.go:35), used by keybindings, transcript-display and deletion stores. Remaining independent copies: hostops saveFS (store.go:~1127-1255), hostops writeQuarantineFile (quarantine.go:~868), hubcore recoveryStore.write (recovery_store.go:158; documented as intentionally separate, line 128), and internal/plugins/atomic.go (different module area, os-based, perm and entropy suffix, different contract). So the real consolidation is hostops -> a shared helper, and maybe hubcore's helper moving into fsdurability.",
+  "revised_fix_plan": "Move hubcore's writeStateFileAtomic into cmd/evener-hub/internal/fsdurability (keeping its renamed/err contract and fault hooks), have hostops saveFS and writeQuarantineFile call it, keep recoveryStore and internal/plugins out of scope. Unify the three 'rename landed' error types only after design agreement. Rely on existing fault-injection tests; run them in CI."
+ },
+ {
+  "id": "hub-hostops-appsource-11",
+  "title": "LocalDaemonEntry mirrors hubcore.LiveEntry field-for-field and is copied by hand at each hop",
+  "category": "duplication",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Cycle claim verified (hubcore/config.go imports appsource). But 'field-for-field' is wrong: LiveEntry has many more fields (ActiveFlags, Crashed, RunningSubagentIDs/States, ChildWatches, etc.), LocalDaemonEntry adds alias-only fields (ReadOnlyAlias, OwnerSessionID), and the copy at app_rpc.go:129-160 converts types (LastTurnEnded time -> UnixMilliseconds). Aliases are built from owned fields only on purpose (#2589 comment). Embedding a shared struct would couple LiveEntry's layout to alias semantics and touch roster fingerprinting for ~20 saved lines.",
+  "revised_fix_plan": "Defer. If a field-propagation bug appears, extract the shared projection fields into an appsource-owned struct embedded by LiveEntry; do not do it speculatively."
+ },
+ {
+  "id": "hub-hostops-appsource-12",
+  "title": "Stale, false and history-narrating comments; spec section citations to a dated spec",
+  "category": "doc-drift",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: cursor.go:66 'CursorEpoch returns zero until that slice lands' contradicts cursor.go:469-470 (returns live values); store.go:95-96 'Retention and compaction (\u00a74) are a later slice' while retention.go exists; hostops.go package doc narrates slices that 'have landed'; round/issue N comments exist in both packages (hostops cursor.go 5, quarantine.go 2; appsource remote_hub_source.go 5). Comment-only.",
+  "revised_fix_plan": "Fix the two false comments and rewrite the hostops package doc in present tense; stop adding new dated-spec section citations; move invariants into an evergreen doc incrementally rather than one 400-line sweep."
+ },
+ {
+  "id": "hub-hostops-appsource-13",
+  "title": "Remote subscription and admin-mutation contracts live in 40-100 line comment blocks around oversized functions",
+  "category": "complexity",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: remote_hub_subscription.go has 663 comment lines of 1290; SubscribeThread spans lines 170-332 (~163 lines); AdminMutationCall's doc block is ~59 comment lines. Splitting is safe with the existing subscription tests but is pure readability.",
+  "revised_fix_plan": "Split SubscribeThread into target/params derivation and the awaiting select; trim review-round narration from the comments. Do after finding 3's constructor consolidation."
+ },
+ {
+  "id": "hub-hostops-appsource-14",
+  "title": "Tests named for review rounds and coverage chasing, with message-copy assertions",
+  "category": "test-debt",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: quarantine_round1..6_test.go total 1,500 lines (529+319+461+68+74+49), remote_hub_subscription_round{nine,ten,eleven,twelve}_test.go total 1,071, plus coverage_completion_test.go (224) and local_daemon_covtest_test.go (119). 17 strings.Contains(...Error()) assertions in test files, including 'source not found: other' (remote_hub_mutations_test.go:508, remote_hub_refs_test.go:341, remote_hub_subscription_test.go:425), 'strictly increasing' (paging_test.go:1549), 'skips item positions' (:1595, :1607), hostops gate_test.go:61 and retention_test.go:824 against AGENTS.md 'Copy Is Not a Test Oracle'.",
+  "revised_fix_plan": "Replace string matches with errors.Is/As or wire Code/EvenerErrorInfo (introduce a typed sentinel where none exists); rename/merge round and coverage files by behavior as separate move-only commits; dedupe fixtures. Verify on CI."
+ },
+ {
+  "id": "hub-hostops-appsource-15",
+  "title": "Nil-store checks at both layers, repeated host validation, and test-only ProcessGate in the production package",
+  "category": "slop",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: 29 'store is not configured' checks in hostops; production hub always has a non-nil store (main.go:656 returns the error and aborts boot if openHostOpsStore fails) and always has an sshconn manager (main.go:592), so hostGateFor's NewGate fallback (app_host_probe.go:103-108) is reached only from tests. ops == nil checks in app_host_*.go number 14, not 17. ProcessGate (gate.go:118-235) is exercised by gate_test.go.",
+  "revised_fix_plan": "Move ProcessGate/NewGate to a _test.go helper and make hostGateFor require a manager; drop receiver nil checks only after confirming no test constructs a nil store intentionally."
+ },
+ {
+  "id": "hub-hostops-appsource-16",
+  "title": "LocalDaemonSource legacy two-step relay hand-off appears bypassed by the hub's atomic relay path",
+  "category": "dead-code",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Traced: app_relay.go readThread/prepareRelayOnce send any RelaySessionSource (LocalDaemonSource) through the lease path and set Subscribe=true only inside that path (app_relay.go:1590); every other production ReadThread call passes Subscribe false. subscribeRelayRecovery (app_relay.go:180-184) calls SubscribeThread without a prior ReadThread(Subscribe), which takes the lease==nil branch of local_daemon.go:785+, so the legacyRelays hand-off (local_daemon.go:362-390, 788-795) is only reachable by direct tests.",
+  "revised_fix_plan": "Delete legacyRelays/legacyRelayRead and the AfterFunc, make ReadThread(Subscribe=true) on the local source an error, and simplify SubscribeThread to acquire-read-listen; migrate the 4 local_daemon_test.go callers to the lease path."
+ },
+ {
+  "id": "hub-hostops-appsource-17",
+  "title": "Operation pagination (cursor envelope, compaction ledger, floor) is heavyweight for a store capped at 500 terminal records",
+  "category": "architecture",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified sizes (cursor.go 1,244 lines, retention.go 957) and caps (DefaultTerminalPerHost 50, DefaultTerminalStoreWide 500). This is a wire-contract design question, not a cleanup; the pinned envelope is also referenced by product-level recovery promises, so it needs Jesse's discussion before anything moves.",
+  "revised_fix_plan": "No action in the audit PR; raise with Jesse as a design question."
+ }
+]

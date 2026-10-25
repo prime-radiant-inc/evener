@@ -681,6 +681,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		KeybindingsStore:          keybindingsStore,
 		KeybindingsStoreErr:       keybindingsStoreErr,
 		RunDir:                    runDir,
+		SpawnTimeout:              cfg.SpawnTimeout,
 		DaemonIdleTimeout:         cfg.DaemonIdleTimeout,
 		PastIndexPath:             pastIndexDB,
 		Roster:                    roster,
