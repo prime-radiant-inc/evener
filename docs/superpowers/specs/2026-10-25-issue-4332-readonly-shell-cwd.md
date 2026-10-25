@@ -30,6 +30,15 @@ Revision notes:
   its file tools even though its shell is unconfined. A plain off policy has
   no masks and still allows any absolute path. This matches the existing
   `FileToolCanRead` behavior for a write-blocked policy.
+- **Amendment 2 (implementation PAR).** `CommandCWDVisible` must not treat
+  every `CacheRoots` entry as bound. Bubblewrap mounts cache roots only under
+  `CacheStrategy == CacheOverlay`, and only the live-served subset; under
+  `CacheSessionPrivate` the environment redirects the cache variables into the
+  session tmp and binds nothing at the host path. A host `/tmp` cache root
+  (an absolute `GOCACHE`/`GOMODCACHE` survives the resolver's root guard) would
+  otherwise be accepted and then re-bound through the cwd, the widening this
+  spec forbids. The predicate consults `CacheRoots` only when the strategy is
+  overlay, through the same live-served check the argv uses.
 
 ## Intent and scope
 
@@ -155,10 +164,11 @@ then applies, in this order:
    - bwrap `ReadWorktreeOnly`: true (every read, write, carved-out and
      scratch root is explicitly bound);
    - bwrap `ReadAnywhere`: true for the session tmp, the session scratch
-     tree, and any path under `Spawned.ReadRoots`, `Spawned.WriteRoots`,
-     `UnmaskedRoots` or `CacheRoots` (all explicitly bound); false for a
-     path under the private `/tmp` or `/dev` (`inPrivateMount`); true
-     otherwise.
+     tree, and any path under `Spawned.ReadRoots`, `Spawned.WriteRoots` or
+     `UnmaskedRoots` (all explicitly bound), plus a path under a
+     `CacheRoots` entry only when the strategy is `CacheOverlay` and the
+     overlay serves that entry (`liveCacheRoots`); false for a path under
+     the private `/tmp` or `/dev` (`inPrivateMount`); true otherwise.
 
    Requiring both spellings means a symlink inside the workspace that
    resolves to a masked path, a path outside the restricted read roots, or a
@@ -292,8 +302,10 @@ fixture.
 9. `agent/sandbox/backend_test.go`: `CommandCWDVisible` accepts a host
    `/var/tmp` path under bwrap read-anywhere, rejects a host `/tmp` or
    `/dev` path, accepts the session tmp and its scratch tree, accepts an
-   explicitly granted read/write/unmasked/cache root under `/tmp`, is always
-   true for Seatbelt, for bwrap worktree-only, and for a nil wrapper.
+   explicitly granted read/write/unmasked root under `/tmp`, rejects a cache
+   root under `/tmp` while `CacheSessionPrivate` redirects it and accepts the
+   same root under `CacheOverlay`, is always true for Seatbelt, for bwrap
+   worktree-only, and for a nil wrapper.
 10. `agent/execenv/sandbox_off_scope_test.go`: the confined-cwd matrix now
     accepts an outside root for read-only, workspace-write and the
     write-blocked off degrade (including the detached entry point when the

@@ -107,11 +107,24 @@ func TestCommandCWDVisible(t *testing.T) {
 	bound := anywhere()
 	bound.policy.Spawned.WriteRoots = []string{"/tmp/write"}
 	bound.policy.UnmaskedRoots = []string{"/tmp/carve"}
-	bound.policy.CacheRoots = []string{"/tmp/cache"}
-	for _, path := range []string{"/tmp/write/sub", "/tmp/carve/sub", "/tmp/cache/sub"} {
+	for _, path := range []string{"/tmp/write/sub", "/tmp/carve/sub"} {
 		if !bound.CommandCWDVisible(path) {
 			t.Errorf("explicitly bound root %q must be visible", path)
 		}
+	}
+
+	cacheRoot := t.TempDir()
+	private := anywhere()
+	private.policy.CacheStrategy = CacheSessionPrivate
+	private.policy.CacheRoots = []string{cacheRoot}
+	if private.CommandCWDVisible(cacheRoot) {
+		t.Error("a cache root under the private /tmp must stay hidden while CacheSessionPrivate redirects it")
+	}
+	overlaid := anywhere()
+	overlaid.policy.CacheStrategy = CacheOverlay
+	overlaid.policy.CacheRoots = []string{cacheRoot}
+	if !overlaid.CommandCWDVisible(cacheRoot) {
+		t.Error("an overlay-served cache root must be visible")
 	}
 
 	restricted := &Wrapper{

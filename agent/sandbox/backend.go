@@ -214,9 +214,10 @@ func (w *Wrapper) SessionTmp() string { return w.sessionTmp }
 // would therefore expose the directory (and any Unix socket in it, which a
 // read-only bind does not block) that the private mount deliberately hides.
 // The session tmp, its root scratch tree, and every explicitly bound root are
-// already visible. Seatbelt has no private mount namespace, worktree-only mode
-// binds every grant explicitly, and a nil wrapper leaves the host filesystem
-// unchanged: all report true.
+// already visible; a cache root is visible only when the overlay strategy
+// actually mounts it. Seatbelt has no private mount namespace, worktree-only
+// mode binds every grant explicitly, and a nil wrapper leaves the host
+// filesystem unchanged: all report true.
 func (w *Wrapper) CommandCWDVisible(cwd string) bool {
 	if w == nil || w.policy.Backend != BackendBwrap || w.policy.Spawned.Read != ReadAnywhere {
 		return true
@@ -230,8 +231,15 @@ func (w *Wrapper) CommandCWDVisible(cwd string) bool {
 	if tree := scratchTreeOf(w.sessionTmp); tree != "" && pathUnder(cwd, tree) {
 		return true
 	}
-	roots := slices.Concat(w.policy.Spawned.ReadRoots, w.policy.Spawned.WriteRoots, w.policy.UnmaskedRoots, w.policy.CacheRoots)
+	roots := slices.Concat(w.policy.Spawned.ReadRoots, w.policy.Spawned.WriteRoots, w.policy.UnmaskedRoots)
 	if isUnderAnyRoot(cwd, roots) {
+		return true
+	}
+	// Cache roots are visible only when the overlay strategy actually mounts
+	// them. Under CacheSessionPrivate the env floor redirects the cache
+	// variables into the session tmp and nothing is bound at the host path, so
+	// a host /tmp cache root must stay hidden.
+	if w.policy.CacheStrategy == CacheOverlay && isUnderAnyRoot(cwd, liveCacheRoots(w.policy)) {
 		return true
 	}
 	return !inPrivateMount(cwd)

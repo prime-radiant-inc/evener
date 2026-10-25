@@ -3506,7 +3506,7 @@ func pathWithinRoot(abs, root string) bool {
 // in the backend's namespace, or be the session scratch the environment has
 // already provisioned. A cwd outside that set is refused before the process
 // starts. Off sessions permit any cwd; the write-blocked off degrade has no
-// kernel wrapper, so its shell also reads anywhere.
+// kernel wrapper, so its shell also reads anywhere its denylist admits.
 func (e *LocalExecutionEnvironment) EnsureCommandWorkingDirectory(abs string) error {
 	if e.Sandbox == nil || !e.Sandbox.FileToolConfined() {
 		return nil
