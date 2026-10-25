@@ -146,8 +146,7 @@ func TestInvalidResultToolNameRefusesSession(t *testing.T) {
 		sess.Close()
 		t.Fatalf("NewSession accepted the invalid result tool name %q; advertised tools: %v", "respond-result", names)
 	}
-	var configErr *llm.ConfigurationError
-	if !errors.As(err, &configErr) {
-		t.Fatalf("NewSession error is %T, want a *llm.ConfigurationError naming the invalid tool name", err)
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
+		t.Fatalf("NewSession error is %T, want a *llm.ConfigurationError for the invalid tool name", err)
 	}
 }
