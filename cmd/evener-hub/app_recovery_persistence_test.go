@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
@@ -126,7 +127,7 @@ func TestHubRecoveryRequirementSurvivesRecreation(t *testing.T) {
 				t.Fatalf("automatic resume calls=%d", *resumes)
 			}
 			if outcome == "wait failed" || outcome == "signal denied" {
-				if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: ref}); err == nil {
+				if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: ref}); err == nil {
 					t.Fatal("explicit resume replaced an owner whose exit was unconfirmed")
 				}
 				if *resumes != 0 {
@@ -166,7 +167,7 @@ func TestHubRecoveryRequirementSurvivesRecreation(t *testing.T) {
 			}
 			if outcome == "clear write failed" {
 				restore := obstructRecoveryDirectory(t, cfg.HubStateRoot)
-				if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: ref}); err == nil {
+				if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: ref}); err == nil {
 					t.Fatal("resume hid durable-clear failure")
 				}
 				restore()
@@ -194,7 +195,7 @@ func TestHubRecoveryRequirementSurvivesRecreation(t *testing.T) {
 					t.Fatalf("failed-clear automatic launches=%d", *resumes)
 				}
 			}
-			resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: ref})
+			resumed, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: ref})
 			if err != nil {
 				t.Fatal(err)
 			}

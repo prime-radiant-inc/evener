@@ -1665,7 +1665,6 @@ func TestContextSubscriptionRegistrationRejectsRemovedConnection(t *testing.T) {
 		register func(context.Context, string) bool
 	}{
 		{name: "subscribe", register: Subscribe},
-		{name: "replace", register: ReplaceSubscriptions},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
@@ -1688,9 +1687,6 @@ func TestContextSubscriptionRegistrationWithoutConnectionRemainsNoop(t *testing.
 	if !Subscribe(context.Background(), "th_no_connection") {
 		t.Fatal("Subscribe without connection should preserve no-op success")
 	}
-	if !ReplaceSubscriptions(context.Background(), "th_no_connection") {
-		t.Fatal("ReplaceSubscriptions without connection should preserve no-op success")
-	}
 }
 
 func TestContextSubscriptionRegistrationSerializesWithConnectionTeardown(t *testing.T) {
@@ -1699,7 +1695,6 @@ func TestContextSubscriptionRegistrationSerializesWithConnectionTeardown(t *test
 		register func(context.Context, string) bool
 	}{
 		{name: "subscribe", register: Subscribe},
-		{name: "replace", register: ReplaceSubscriptions},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})

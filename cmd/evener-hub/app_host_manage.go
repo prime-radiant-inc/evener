@@ -2278,8 +2278,6 @@ func (m *hubHostManager) registerSource(entry hostreg.Host) {
 	registerRemoteHubSource(m.cfg.sources, m.cfg.remoteCache, entry, remoteHostSourceSeams{
 		client:           client,
 		clientIfAttached: m.cfg.clientIfAttached,
-		handshake:        m.cfg.handshake,
-		facts:            m.cfg.facts,
 		online:           m.cfg.online,
 	})
 }

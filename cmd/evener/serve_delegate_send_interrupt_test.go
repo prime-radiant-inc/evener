@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/server"
 )
@@ -442,7 +443,7 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 		requestCtx := appwire.WithRequestIDObserver(interruptCtx, func(id appwire.ID) {
 			daemon.interruptResponseID.Store(id.String())
 		})
-		interruptResult <- daemon.client.TurnInterrupt(requestCtx, interrupt)
+		interruptResult <- appwiretest.TurnInterrupt(requestCtx, daemon.client, interrupt)
 	}()
 	awaitWaiterInterruptSignal(daemon.ctx, t, daemon.server.processingFalseEntered, "runner SetProcessing(false) barrier")
 	select {
@@ -523,7 +524,7 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 		t.Fatalf("turn %q was not terminalized after SESSION_END projection: %#v", started.Turn.ID, turns.Thread.Turns)
 	}
 	t.Logf("after SESSION_END projection: turns=%v", waiterInterruptTurnStatuses(turns.Thread.Turns))
-	if err := daemon.client.TurnInterrupt(daemon.ctx, interrupt); err != nil {
+	if err := appwiretest.TurnInterrupt(daemon.ctx, daemon.client, interrupt); err != nil {
 		t.Fatalf("replay terminal interrupt: %v", err)
 	}
 
@@ -545,7 +546,7 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 	// Queueing is a user re-engagement and clears both durable held gates in the
 	// same accepted mutation. Reading the snapshot again proves later client
 	// mutations are no longer trapped behind the completed interrupt.
-	if err := daemon.client.TurnQueue(daemon.ctx, appwire.TurnQueueParams{
+	if err := appwiretest.TurnQueue(daemon.ctx, daemon.client, appwire.TurnQueueParams{
 		ClientMutationID:   "reengage-after-stop",
 		ExpectedInstanceID: strings.TrimPrefix(daemon.ref, "local:"),
 		Ref:                daemon.ref,

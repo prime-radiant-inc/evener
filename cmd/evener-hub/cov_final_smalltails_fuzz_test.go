@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -74,8 +75,8 @@ func FuzzFinalSmalltails(f *testing.F) {
 		resolved.Effective.SystemPromptText = "x"
 		_, _, _ = prepareResolvedForSpawn(bad, resolved)
 		_, _, _ = prepareResolvedForSpawn("", resolved)
-		_, _ = SpawnDaemon(context.Background(), "", root, hubcore.SpawnRequest{}, time.Millisecond)
-		_, _ = ResumeDaemon(context.Background(), "", root, hubcore.ResumeRequest{}, time.Millisecond)
+		_, _ = spawnDaemonWithProviderConfig(context.Background(), "", root, hubcore.SpawnRequest{}, time.Millisecond, io.Discard, nil)
+		_, _ = resumeDaemon(context.Background(), "", root, hubcore.ResumeRequest{}, time.Millisecond, io.Discard)
 		_ = validateEvenerLaunchContract(context.Background(), "", "", nil)
 		_, _ = listEvenerLaunchModelContract(context.Background(), "", nil)
 

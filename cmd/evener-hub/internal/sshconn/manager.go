@@ -1114,10 +1114,10 @@ func (m *Manager) PreflightIfAttached(name string) (Preflight, bool) {
 // generation guard (`ch.Client() == client`) at the call site. This accessor
 // has no non-test caller; it is retained for tests and as a convenience for a
 // caller that does not need the generation guard. appwire.Client keeps its
-// Features privately, so component 05's capability probe reads
-// ProtocolVersion/SourceID/Features through the channel value directly;
-// HubVersion stays preflight-owned (the handshake's ServerInfo.Version is the
-// hub's package constant, not its build identity). Like ClientIfAttached it
+// Features privately, so ProtocolVersion/SourceID/Features are read through
+// the channel value directly; HubVersion stays preflight-owned (the
+// handshake's ServerInfo.Version is the hub's package constant, not its build
+// identity). Like ClientIfAttached it
 // takes the manager-wide mutex, not the per-host gate, and never dials.
 func (m *Manager) HandshakeIfAttached(name string) (appwire.InitializeResponse, bool) {
 	ch, ok := m.attachedChannel(name)
@@ -3740,14 +3740,13 @@ func (c *Channel) Preflight() Preflight {
 
 // Handshake returns the InitializeResponse captured when this channel attached:
 // ProtocolVersion, ServerInfo, SourceID, and the peer's advertised Features.
-// appwire.Client keeps its own Features copy privately, so component 05's
-// capability probe reads ProtocolVersion/SourceID/Features here (reached by
-// host name through Manager.ChannelIfAttached and the
-// remoteHostHandshakeForChannel closure, not through
-// Manager.HandshakeIfAttached) rather than re-running the connection-scoped
-// initialize. ServerInfo is carried but not consumed: its Version is the hub's
-// package constant, not its build identity, so the probe's HubVersion stays
-// preflight-owned.
+// appwire.Client keeps its own Features copy privately, so attach reads
+// ProtocolVersion/SourceID/Features here (reached by host name through
+// Manager.ChannelIfAttached and the remoteHostHandshakeForChannel closure, not
+// through Manager.HandshakeIfAttached) rather than re-running the
+// connection-scoped initialize. ServerInfo is carried but not consumed: its
+// Version is the hub's package constant, not its build identity, so HubVersion
+// stays preflight-owned.
 func (c *Channel) Handshake() appwire.InitializeResponse { return c.handshake }
 
 // Host returns the registry entry this channel was built from. The value owns

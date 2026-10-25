@@ -26,6 +26,17 @@ type scriptedReply struct {
 	closeConn bool
 }
 
+// wireCalls drops the initialize handshake so a test can count request methods.
+func wireCalls(calls []remoteCall) []remoteCall {
+	out := make([]remoteCall, 0, len(calls))
+	for _, call := range calls {
+		if call.method != appwire.MethodInitialize {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
 // newScriptedClient builds an initialized AppWire client backed by an in-memory
 // StreamTransport whose server side answers canned responses and records every
 // request. No SSH, no network, no host. It is the shared body behind

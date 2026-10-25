@@ -1625,8 +1625,8 @@ func (w *WebServer) navigationSubagentParent(ref string) (parent, kind string, o
 }
 
 // webNavigationSource takes a fresh deep snapshot at the service clock. It
-// deliberately bypasses the legacy 30-second TreeCache: tier classification and
-// scheduler boundaries must agree exactly at 24h and 14d.
+// takes no cached tree: tier classification and scheduler boundaries must
+// agree exactly at 24h and 14d.
 type webNavigationSource struct{ web *WebServer }
 
 func (s webNavigationSource) Revision() navigationSourceRevision {

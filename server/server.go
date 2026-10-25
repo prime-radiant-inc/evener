@@ -227,61 +227,12 @@ func (s DetailedStatus) MarshalJSON() ([]byte, error) {
 // StatusInfo is the daemon's materialized root-session state used to build
 // AppWire snapshots and notifications.
 type StatusInfo struct {
-	SessionID        string             `json:"session_id"`
-	State            string             `json:"state"`
-	Turns            int                `json:"turns"`
-	Model            string             `json:"model"`
-	Profile          string             `json:"profile"`
-	WorkingDir       string             `json:"working_dir,omitempty"`
-	ContextPressure  float64            `json:"context_pressure"`
-	ContextUsed      int                `json:"context_used,omitempty"`
-	ContextWindow    int                `json:"context_window,omitempty"`
-	ContextRemaining int                `json:"context_remaining,omitempty"`
-	Detailed         *DetailedStatus    `json:"detailed,omitempty"`
-	Capabilities     ActionCapabilities `json:"capabilities"`
-	// DescendantSessionIDs lists every non-closed in-process descendant currently
-	// projected by this daemon. It is separate from Detailed.Jobs because a
-	// nested descendant's delegate job is owned by its immediate parent and does
-	// not appear in the root session's job store.
-	DescendantSessionIDs []string `json:"descendant_session_ids,omitempty"`
-	// DescendantStates carries each listed descendant's own projected thread
-	// status ("active", "idle", "awaiting", ...). The IDs list alone is a
-	// liveness set — a settled-but-resumable delegate stays on it — so without
-	// the per-descendant state a consumer can only guess, and "listed" guessed
-	// wrong as "working" for every idle delegate. Absent on old daemons;
-	// consumers treat a missing entry as unknown, never as idle.
-	DescendantStates map[string]string `json:"descendant_states,omitempty"`
-	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
-	// working-state/token metrics (WS2 A7), served from the materialized thread
-	// envelope. Usage is a pointer (unlike the other
-	// two scalars) because appwire.EvenerUsage is a value struct whose
-	// omitempty would never omit — nil is how a fresh/unwired daemon signals
-	// "no token data" rather than rendering ↑0 ↓0.
-	// ActiveTurnStartedAt is Unix epoch MILLISECONDS (like WorkMillis's scale
-	// and the web reducer's epoch-ms read), 0 when no turn is running.
-	Usage               *appwire.EvenerUsage `json:"usage,omitempty"`
-	WorkMillis          int64                `json:"work_millis,omitempty"`
-	ActiveTurnStartedAt int64                `json:"active_turn_started_at,omitempty"`
-	// FailedToolCalls is how many of the session's tool calls have failed, over
-	// the WHOLE session — counted by the transcript writer as it records them
-	// and seeded on resume from the file, so a running session's figure is
-	// complete rather than a floor (kata 12rq). A pointer because 0 and unknown
-	// are different claims: 0 means the session was measured and nothing failed,
-	// nil means nobody counted (no transcript, an old daemon, or a source-backed
-	// thread that omits the field).
-	// Consumers render nil as nothing, never as a fabricated zero.
-	FailedToolCalls *int `json:"failed_tool_calls,omitempty"`
-	// PendingAsk mirrors the session's HasPendingAsk() — true while an
-	// ask_user question is unanswered (Track A §2 ask-tiering). Additive,
-	// daemon-truth: old daemons and source-backed threads that omit the field
-	// never set it, so absence decodes as false everywhere downstream.
-	PendingAsk bool `json:"pending_ask,omitempty"`
-	// PendingEscalation mirrors the session's HasPendingEscalations() — true while a
-	// sandbox-exemption escalation (M7) is blocked awaiting a human. The hub's
-	// prober polls it so the owning session lights up cross-session (needs-you
-	// badge) even mid-turn (an escalation blocks WHILE the status is "active").
-	// Additive/daemon-truth, absent-decodes-false like PendingAsk.
-	PendingEscalation bool `json:"pending_escalation,omitempty"`
+	SessionID  string
+	State      string
+	Turns      int
+	Model      string
+	Profile    string
+	WorkingDir string
 }
 
 // ContextMetrics describes the estimated size of the active session context.
@@ -290,21 +241,6 @@ type ContextMetrics struct {
 	Window    int
 	Remaining int
 	Assumed   bool
-}
-
-// ActionCapabilities reports which mutating session actions are currently
-// supported by this daemon.
-type ActionCapabilities struct {
-	Send              bool   `json:"send"`
-	Steer             bool   `json:"steer"`
-	Interrupt         bool   `json:"interrupt"`
-	Compact           bool   `json:"compact"`
-	Clear             bool   `json:"clear"`
-	Shutdown          bool   `json:"shutdown"`
-	ChangeModel       bool   `json:"change_model"`
-	ChangeVisionModel bool   `json:"change_vision_model"`
-	Queue             bool   `json:"queue"`
-	ReadOnlyReason    string `json:"read_only_reason,omitempty"`
 }
 
 // ServerConfig holds configuration for the HTTP server.
@@ -388,8 +324,7 @@ type Server struct {
 	appEnvelopeSource ThreadEnvelopeSource
 	// appActivity is the root tree's pulse meter (S5). The projection commits
 	// feed it and the thread list reads it, all under mu; see activityMeter.
-	appActivity       activityMeter
-	appReservedTurnID string
+	appActivity activityMeter
 	// appPushedFailedToolCalls is the failure count the root's last
 	// thread/status/changed carried, nil when none carried one: a running
 	// execution pushes the count when the envelope's moves past it.
@@ -857,7 +792,6 @@ func (s *Server) SetProcessingTurn(turnID string) {
 		// terminal status still queued from the input before it must not be
 		// published over this one (RecordAppEvent defers it).
 		s.appPendingStableTurnID = turnID
-		s.appReservedTurnID = ""
 		threadID, ref := s.appRootIdentityLocked()
 		s.mu.Unlock()
 		return s.recordAppNotifications(threadID, []pendingAppNotification{{

@@ -78,8 +78,7 @@ func FuzzCovWebTreeSessionHandlers(f *testing.F) {
 
 		_ = sb.Web.archiveDecisions()
 		_, _ = sb.Web.favoriteDecisions()
-		_, _ = sb.Web.memoTree(t.Context())
 		_, _, _ = sb.Web.navigationTreeInputs(t.Context())
-		_ = sb.Web.remoteTreeThreads(t.Context())
+		_ = sb.Web.remoteThreadFetch(t.Context()).threads
 	})
 }

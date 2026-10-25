@@ -128,7 +128,7 @@ func TestRemoteOriginatedRequestStillReadsCachedSnapshotRows(t *testing.T) {
 	// background subscription has nothing to do with this assertion.
 	web := &WebServer{cfg: cfg}
 
-	rows := web.remoteTreeThreads(withHostRoutingOrigin(context.Background(), hostRoutingOriginBridge))
+	rows := web.remoteThreadFetch(withHostRoutingOrigin(context.Background(), hostRoutingOriginBridge)).threads
 	if len(rows) != 1 || rows[0].ID != "alpha-thread" {
 		t.Fatalf("cached snapshot rows = %+v, want the cached host row", rows)
 	}

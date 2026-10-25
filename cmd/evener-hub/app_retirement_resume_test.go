@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
@@ -884,13 +885,13 @@ func TestRetirementResumeFences(t *testing.T) {
 		// lifecycle race. None of them may wait on exit or launch a replacement.
 		_, _ = client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: f.ref})
 		_ = client.ThreadShutdown(ctx, appwire.ThreadShutdownParams{Ref: f.ref})
-		_ = client.TurnQueue(ctx, appwire.TurnQueueParams{
+		_ = appwiretest.TurnQueue(ctx, client, appwire.TurnQueueParams{
 			Ref:                f.ref,
 			ClientMutationID:   "queue-while-retiring",
 			ExpectedInstanceID: f.sessionID,
 			Input:              []appwire.InputItem{{Type: "text", Text: "must not run"}},
 		})
-		_ = client.TurnSteer(ctx, appwire.TurnSteerParams{
+		_ = appwiretest.TurnSteer(ctx, client, appwire.TurnSteerParams{
 			Ref:                f.ref,
 			ClientMutationID:   "steer-while-retiring",
 			ExpectedInstanceID: f.sessionID,

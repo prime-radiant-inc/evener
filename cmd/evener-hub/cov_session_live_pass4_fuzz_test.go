@@ -41,7 +41,7 @@ func FuzzSessionLivePass4(f *testing.F) {
 			}
 			_ = web.apiTreeSources()
 		case 1:
-			threads := web.refreshRemoteThreads(context.Background())
+			threads := web.refreshRemoteThreadSnapshot(context.Background()).threads
 			if len(threads) != 1 || threads[0].Evener.Ref == "" {
 				t.Fatalf("remote threads=%+v", threads)
 			}

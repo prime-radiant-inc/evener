@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -91,13 +92,13 @@ func TestLaunchPreviewRPCExistingMalformedGitErrorClassification(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := client.PluginPreview(context.Background(), appwire.PluginPreviewParams{CWD: cwd})
+	_, err := appwiretest.PluginPreview(context.Background(), client, appwire.PluginPreviewParams{CWD: cwd})
 	assertWireCode(t, err, appwire.CodeInvalidParams)
 	var previewErr appwire.WireError
 	if !errors.As(err, &previewErr) || !wireErrorInfoIs(previewErr.Data, appwire.ErrorInvalidParams) {
 		t.Fatalf("plugin preview error = %v, want invalid-params shape", err)
 	}
-	_, err = client.SpawnSlashCatalog(context.Background(), appwire.SpawnSlashCatalogParams{CWD: cwd})
+	_, err = appwiretest.SpawnSlashCatalog(context.Background(), client, appwire.SpawnSlashCatalogParams{CWD: cwd})
 	assertWireCode(t, err, appwire.CodeInternalError)
 	var slashErr appwire.WireError
 	if !errors.As(err, &slashErr) || !wireErrorInfoIs(slashErr.Data, appwire.ErrorInternal) {

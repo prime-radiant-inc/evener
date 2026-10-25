@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/internal/appserver"
@@ -464,7 +465,7 @@ func TestSkillInputHubColdStartGatesInitialInputOnTargetCapability(t *testing.T)
 			client := dialSkillInputHub(t, hub)
 			defer client.Close()
 
-			_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+			_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 				Model: "openai/gpt-5",
 				CWD:   "/tmp",
 				Input: skillInputHubSelection(),

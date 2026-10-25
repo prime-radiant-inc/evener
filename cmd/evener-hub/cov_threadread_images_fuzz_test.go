@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/schema"
 
 	"primeradiant.com/evener/appwire"
@@ -132,23 +131,6 @@ func covThreadReadSeed(t *testing.T) {
 	_ = appendOutputImagesUnique([]appwire.OutputImage{{}}, []appwire.OutputImage{{}, {URL: "u"}, {URL: "u"}, {SHA: "s"}, {Path: "p"}})
 	for _, img := range []appwire.OutputImage{{}, {URL: "u"}, {SHA: "s"}, {Path: "p"}} {
 		_ = outputImageDescriptorKey(img)
-	}
-
-	items := []appwire.ThreadItem{{Type: "text"}, {Type: "commandExecution", ToolName: "other"}, {Type: "commandExecution", ToolName: "delegate"}, {Type: "commandExecution", ToolName: "delegate", Raw: json.RawMessage(`{"job_id":"missing"}`)}}
-	thread := appwire.Thread{Turns: []appwire.Turn{{Items: items}, {Items: []appwire.ThreadItem{{Type: "commandExecution", ToolName: "delegate", Raw: json.RawMessage(`{"job_id":"job"}`)}}}}}
-	rec := agent.HistoricalJobRecord{JobID: "job", Type: "delegate", Status: "completed", DelegateID: "d", Task: "task", TranscriptRef: "local:child", OriginTurnID: "t", OriginToolCallID: "c", OriginItemID: "i", Reason: "done", OutputBytes: 4}
-	_ = reconcileDelegateThreadItems(thread, map[string]agent.HistoricalJobRecord{"job": rec})
-	_ = reconcileDelegateThreadItemForTest(appwire.ThreadItem{}, rec)
-	for _, bad := range []agent.HistoricalJobRecord{{}, {JobID: "job", Type: "other", Status: "completed"}, {JobID: "job", Type: "delegate", Status: "running"}} {
-		_ = reconcileDelegateThreadItem(appwire.ThreadItem{}, bad)
-	}
-	_ = reconcileDelegateThreadItem(appwire.ThreadItem{Type: "commandExecution", ToolName: "delegate", Raw: json.RawMessage(`{"job_id":"other"}`)}, rec)
-	_ = reconcileDelegateThreadItem(appwire.ThreadItem{Type: "commandExecution", ToolName: "delegate", Raw: json.RawMessage(`not-json`)}, rec)
-	for _, raw := range []json.RawMessage{nil, json.RawMessage(`x`), json.RawMessage(`{}`), json.RawMessage(`{"started_job_id":" a "}`), json.RawMessage(`{"current_job_id":"b"}`), json.RawMessage(`{"latest_job_id":"c"}`)} {
-		_ = delegateJobIDFromRaw(raw)
-	}
-	for _, status := range []string{"completed", "failed", "cancelled", "stopped", "running"} {
-		_ = isTerminalHistoricalJobStatus(status)
 	}
 }
 

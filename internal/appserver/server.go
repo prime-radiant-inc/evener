@@ -689,18 +689,12 @@ func (c *Connection) ID() string {
 	return c.id
 }
 
+// Subscribe registers the connection's interest in threadID without a
+// hydration capture; tests outside this package seed live subscriptions with it.
 func (c *Connection) Subscribe(threadID string) {
 	c.server.projectionMu.Lock()
 	defer c.server.projectionMu.Unlock()
 	c.server.subs.Subscribe(c.id, threadID)
-}
-
-func (c *Connection) ReplaceSubscriptions(threadID string) {
-	c.server.projectionMu.Lock()
-	defer c.server.projectionMu.Unlock()
-	c.server.deliveryMu.Lock()
-	defer c.server.deliveryMu.Unlock()
-	c.server.subs.ReplaceConnectionSubscriptions(c.id, threadID)
 }
 
 func (c *Connection) setCancel(cancel context.CancelFunc) {
@@ -1319,28 +1313,6 @@ func SubscribeWithAdmission(ctx context.Context, threadID string, replace bool, 
 		delete(conn.pendingAdmissions, admission)
 	}
 	return nil
-}
-
-func ReplaceSubscriptions(ctx context.Context, threadID string) bool {
-	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
-	if !ok || conn == nil {
-		return true
-	}
-	server := conn.server
-	if server.beforeSubscriptionRegistration != nil {
-		server.beforeSubscriptionRegistration()
-	}
-	server.projectionMu.Lock()
-	defer server.projectionMu.Unlock()
-	server.deliveryMu.Lock()
-	defer server.deliveryMu.Unlock()
-	server.mu.Lock()
-	defer server.mu.Unlock()
-	if server.conns[conn.id] != conn {
-		return false
-	}
-	server.subs.ReplaceConnectionSubscriptions(conn.id, threadID)
-	return true
 }
 
 // SubscriptionTarget is one resolved delivery/lifecycle pair. Capture resolves

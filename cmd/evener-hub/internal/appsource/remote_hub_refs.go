@@ -130,14 +130,10 @@ func forwardedRemoteThreadCapabilities(features appwire.FeatureSet) appwire.Thre
 	}
 }
 
-// forwardedThreadCapabilitiesFor returns the forwarded set for client. The
-// probe's handshake snapshot is authoritative once it has run; otherwise the
-// client's own initialize response supplies the same features. A nil client is
-// the notification translator's test-only shape and fails closed.
+// forwardedThreadCapabilitiesFor returns the forwarded set for client, from the
+// features its own initialize response supplied. A nil client is the
+// notification translator's test-only shape and fails closed.
 func (s *RemoteHubSource) forwardedThreadCapabilitiesFor(client *appwire.Client) appwire.ThreadCapabilities {
-	if features, ok := s.cachedCapabilityFeatures(client); ok {
-		return forwardedRemoteThreadCapabilities(features)
-	}
 	if client == nil {
 		return appwire.ThreadCapabilities{}
 	}

@@ -16,6 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
@@ -1758,7 +1759,7 @@ func TestProjectDeleteReportsFavoriteStoreFailureAfterArtifactRemoval(t *testing
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	_, err = client.ProjectDelete(context.Background(), appwire.ProjectDeleteParams{
+	_, err = appwiretest.ProjectDelete(context.Background(), client, appwire.ProjectDeleteParams{
 		Key:        project.ID,
 		WorkingDir: project.CanonicalPath,
 	})
@@ -1913,7 +1914,7 @@ func TestProjectDeleteDoesNotBroadcastWhenNothingRemoved(t *testing.T) {
 	}
 	t.Cleanup(func() { projectSessionLive = oldProjectSessionLive })
 
-	got, err := client.ProjectDelete(context.Background(), appwire.ProjectDeleteParams{
+	got, err := appwiretest.ProjectDelete(context.Background(), client, appwire.ProjectDeleteParams{
 		Key:        project.ID,
 		WorkingDir: project.CanonicalPath,
 	})
