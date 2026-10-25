@@ -102,3 +102,23 @@ test("a continuation is wide and a spotlight is settled short dialogue only", ()
     [["stream", "wide"]],
   ]);
 });
+
+test.each(["first", "second"] as const)("image-bearing dialogue in %s pair position stays wide", (position) => {
+  const mixed: ComicEntry = {
+    ...entry("mixed", "dialogue", "Look at this."),
+    images: [{ src: "data:image/png;base64,iVBORw0KGgo=", name: "photo.png" }],
+  };
+  const plain = entry("plain", "dialogue", "Thanks.");
+  const entries = position === "first" ? [mixed, plain] : [plain, mixed];
+  const rows = composeComicRows(entries, 1200, () => true);
+  expect(rows.map((row) => row.panels.map((panel) => panel.slice.entryId))).toEqual(entries.map((value) => [value.id]));
+  expect(rows.flatMap((row) => row.panels).find((panel) => panel.slice.entryId === mixed.id)?.composition).toBe("wide");
+});
+
+test("a short image-bearing dialogue never becomes a spotlight", () => {
+  const mixed: ComicEntry = {
+    ...entry("mixed", "dialogue", "Look."),
+    images: [{ src: "data:image/png;base64,iVBORw0KGgo=", name: "photo.png" }],
+  };
+  expect(composeComicRows([mixed], 1200, () => true)[0]?.panels[0]?.composition).toBe("wide");
+});

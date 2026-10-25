@@ -5,6 +5,7 @@ import { expect, test, vi } from "vitest";
 import { initNavigation, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { ComicApp } from "./ComicApp";
 import { ComicPanel } from "./ComicPanel";
+import { composeComicRows } from "./layout";
 import { createComicMeasurer, loadComicFonts } from "./measure";
 import type { ComicEntry } from "./projection";
 
@@ -116,6 +117,68 @@ test("image-only and content-free thought panels contain no fabricated text", ()
   rendered.unmount();
   const thought = render(panel(entry({ kind: "thought", text: "" })));
   expect(thought.container.querySelector("[data-comic-text]")?.textContent).toBe("");
+});
+
+test("a mixed message preserves every text unit and renders one ordered image gallery after its last slice", () => {
+  const value = entry({
+    text: "Before\t👩🏽‍💻\n\nafter. ".repeat(8),
+    images: [
+      { src: "data:image/png;base64,iVBORw0KGgo=", name: "first.png" },
+      { src: "data:image/png;base64,iVBORw0KGgp=", name: "second.png" },
+    ],
+  });
+  const panels = composeComicRows([value], 1200, (text) => text.length <= 18).flatMap((row) => row.panels);
+  expect(panels.length).toBeGreaterThan(2);
+  let offset = 0;
+  for (const { slice } of panels) {
+    expect(slice.start).toBe(offset);
+    expect(slice.end).toBeGreaterThan(offset);
+    offset = slice.end;
+  }
+  expect(offset).toBe(value.text.length);
+
+  const { container } = render(
+    <div>
+      {panels.map(({ slice, composition }) => (
+        <ComicPanel
+          key={slice.start}
+          entry={value}
+          slice={slice}
+          composition={composition}
+          scene="room"
+          expression="neutral"
+        />
+      ))}
+    </div>,
+  );
+  const articles = Array.from(container.querySelectorAll("article"));
+  expect(articles.map((article) => article.querySelector("[data-comic-text]")?.textContent).join("")).toBe(value.text);
+  expect(
+    articles
+      .slice(0, -1)
+      .every((article) => article.querySelectorAll("[data-testid='image-gallery-thumb']").length === 0),
+  ).toBe(true);
+  const last = articles.at(-1);
+  expect(
+    Array.from(last?.querySelectorAll("[data-comic-text], [data-testid='image-gallery-thumb'] img") ?? [], (node) =>
+      node instanceof HTMLImageElement ? node.getAttribute("src") : node.textContent,
+    ),
+  ).toEqual([value.text.slice(panels.at(-1)?.slice.start), ...(value.images?.map((image) => image.src) ?? [])]);
+  expect(
+    Array.from(container.querySelectorAll("[data-testid='image-gallery-caption']"), (caption) => caption.textContent),
+  ).toEqual(["first.png", "second.png"]);
+});
+
+test("an image-only user message retains its gallery without inventing text", () => {
+  const value = entry({ text: "", images: [{ src: "data:image/png;base64,iVBORw0KGgo=", name: "user.png" }] });
+  const rows = composeComicRows([value], 1200, () => true);
+  expect(rows.map((row) => row.panels)).toEqual([
+    [{ slice: { entryId: value.id, start: 0, end: 0 }, composition: "wide" }],
+  ]);
+  const { container } = render(panel(value));
+  expect(container.querySelector("[data-comic-text]")?.textContent).toBe("");
+  expect(container.querySelectorAll("[data-testid='image-gallery-thumb']")).toHaveLength(1);
+  expect(container.querySelector("[data-testid='image-gallery-caption']")?.textContent).toBe("user.png");
 });
 
 test("stage pose is stable for an entry and presentation never infers a result", () => {

@@ -88,7 +88,7 @@ export function ComicPanel({
           )}
         </div>
       )}
-      {entry.images && entry.images.length > 0 && (
+      {entry.images && entry.images.length > 0 && slice.end === entry.text.length && (
         <div className={styles.images}>
           <ImageGallery images={entry.images} />
         </div>

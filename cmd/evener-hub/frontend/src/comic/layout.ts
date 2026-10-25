@@ -51,7 +51,11 @@ export function composeComicRows(
     if (!current) continue;
     const next = entries[index + 1];
     const pairable = (value: ComicEntry) =>
-      value.kind === "dialogue" && !value.streaming && !!value.text && fits(value.text, "paired", value.kind);
+      value.kind === "dialogue" &&
+      !value.streaming &&
+      !value.images?.length &&
+      !!value.text &&
+      fits(value.text, "paired", value.kind);
     if (viewportWidth > 760 && next && pairable(current) && pairable(next)) {
       rows.push({
         id: `${current.id}:${next.id}`,
@@ -66,6 +70,7 @@ export function composeComicRows(
     const spotlight =
       current.kind === "dialogue" &&
       !current.streaming &&
+      !current.images?.length &&
       current.text.length > 0 &&
       current.text.length <= 80 &&
       fits(current.text, "spotlight", current.kind);
