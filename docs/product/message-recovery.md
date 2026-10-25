@@ -145,13 +145,17 @@ edges, not the first matching one, so a shortcut cannot hide a longer chain
 that must settle first. Reloading upgrades an existing pending entry's rank and
 dependencies when the mutations store recovers. A settled transfer whose
 durable cleanup fails stays tracked separately and is retried; a later resume
-can still redirect its stale mapping away from the retired ref. The destination
-stays pending until the whole chain settles. A restarted app retries that
-handoff before reconciling the resumed screen and does not restore the source's
-original recovery text while the transfer is still owed. A refused handoff
-still moves a completed built-in command's completion markers to the
-destination, so reconciliation discards those moved rows instead of appending
-and re-running the command on a later Send.
+can still clean up its stale mapping without transferring it. Redirection
+merges the predecessor's existing dependencies with the intermediate, an
+incomplete read refuses to settle until its provenance returns, and a
+settled/refused mapping is marked durably so a restart retries only its
+cleanup, never the transfer. The destination stays pending until the whole
+chain settles. A restarted app retries that handoff before reconciling the
+resumed screen and does not restore the source's original recovery text while
+the transfer is still owed. A refused handoff still moves a completed built-in
+command's completion markers to the destination, so reconciliation discards
+those moved rows instead of appending and re-running the command on a later
+Send.
 
 Browser and native outboxes share one receipt-settlement rule from the AppWire
 package (`retainsAcceptedCopy`, `settlementRetiresRecovery`): a `pending` receipt
