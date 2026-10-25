@@ -393,7 +393,9 @@ func TestNotificationColdRetryHandoff(t *testing.T) {
 			unblockSchedule()
 			err := <-done
 			joined = true
-			if err != scheduledErr {
+			// Both directions require this original filesystem error, rejecting
+			// an added wrapper as well as an unwrapped or replacement cause.
+			if !errors.Is(err, scheduledErr) || !errors.Is(scheduledErr, err) {
 				t.Fatalf("returned error=%v, want same recovery error object %v", err, scheduledErr)
 			}
 			if !tc.fireBeforeReturn {
