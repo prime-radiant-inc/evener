@@ -311,6 +311,59 @@ describe("comic conversation projection", () => {
     expect(JSON.stringify(entries)).not.toContain(description);
   });
 
+  test("keeps image identity when the tool settles as failed or interrupted", () => {
+    const description = "private routine description";
+    const error = "The image tool stopped unexpectedly.";
+    const model = base([
+      {
+        id: "image-turn",
+        status: "inProgress",
+        itemsView: "full",
+        items: [
+          {
+            id: "image-tool",
+            turnId: "image-turn",
+            type: "commandExecution",
+            text: "",
+            toolName: "read_file",
+            status: "inProgress",
+            description,
+            outputImages: [{ url: "/s/root/images/identity", name: "identity.png", source: "read-file" }],
+          },
+        ],
+      },
+    ]);
+    const item = model.turns[0]!.items[0]!;
+    const before = projectComicConversation(model);
+    const gallery = before.find((entry) => entry.kind === "images")!;
+    expect(gallery.images).toEqual([
+      { src: "/s/root/images/identity", name: "identity.png", source: "read-file", path: undefined },
+    ]);
+    for (const status of ["failed", "interrupted"] as const) {
+      item.status = status;
+      item.error = error;
+      const after = projectComicConversation(model);
+      const failedGallery = after.find((entry) => entry.kind === "images")!;
+      const caption = after.find((entry) => entry.kind === "caption")!;
+      expect(failedGallery).toMatchObject({
+        id: gallery.id,
+        sourceItemId: gallery.sourceItemId,
+        sourceIndex: gallery.sourceIndex,
+      });
+      expect(failedGallery.images).toEqual(gallery.images);
+      expect(new Set(after.map((entry) => entry.id)).size).toBe(after.length);
+      expect(caption).toMatchObject({
+        text: error,
+        sourceItemId: gallery.sourceItemId,
+        sourceIndex: gallery.sourceIndex,
+      });
+      expect(caption.id).not.toBe(failedGallery.id);
+      expect(caption.text).not.toContain(description);
+      item.status = "inProgress";
+      item.error = undefined;
+    }
+  });
+
   test("turn-level typed failure survives when its only ordinary tool text is suppressed", () => {
     const model = fixture();
     model.turns = [

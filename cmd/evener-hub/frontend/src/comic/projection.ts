@@ -205,6 +205,7 @@ export function projectComicConversation(
           if (failed) {
             entries.push({
               ...base,
+              ...(item.outputImages?.length ? { id: `${base.id}:failure` } : {}),
               kind: "caption",
               speaker: "source",
               sourceLabel: item.toolName ?? "Tool",
@@ -214,7 +215,7 @@ export function projectComicConversation(
           if (item.outputImages?.length) {
             entries.push({
               ...base,
-              id: failed ? `${base.id}:images` : base.id,
+              id: base.id,
               kind: "images",
               speaker: "source",
               sourceLabel: item.toolName ?? "Tool",
