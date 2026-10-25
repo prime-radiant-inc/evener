@@ -85,6 +85,9 @@ that owner's coalesced wake channel, never replace the callback, and recheck the
 edge before declaring quiescence. The channel is only a hint. Canonical receiver
 custody and common execution admission still decide whether a model turn is owed.
 Resource-only completion wakes rescan ownership without inventing model input.
+Pending source deliveries count toward the recorded receiver's drain and its
+eligible ancestors, including cold descendants, not unrelated receivers' drains.
+The transport retry inventory remains global, and subtree lifecycle gates still apply.
 
 On completed one-shot quiescence, the job manager fences new watch callbacks,
 joins entered callbacks through source persistence, then retires registrations.
