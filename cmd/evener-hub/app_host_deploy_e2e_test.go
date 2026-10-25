@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/e2ecap"
@@ -286,7 +287,7 @@ func assertHostDeployCatalogs(ctx context.Context, t *testing.T, host *hostSSH, 
 	controllerCWD := t.TempDir()
 	writeSlashCatalogProjectCommand(t, controllerCWD, controllerName, "OPAQUE_CONTROLLER_"+token)
 	writeSlashCatalogSkill(t, filepath.Join(controllerCWD, "skills"), controllerName, controllerName, "OPAQUE_CONTROLLER_"+token)
-	direct, err := client.SpawnSlashCatalog(ctx, appwire.SpawnSlashCatalogParams{CWD: controllerCWD, Harness: "evener"})
+	direct, err := appwiretest.SpawnSlashCatalog(ctx, client, appwire.SpawnSlashCatalogParams{CWD: controllerCWD, Harness: "evener"})
 	if err != nil {
 		t.Fatalf("controller project catalog: %v", err)
 	}
@@ -319,7 +320,7 @@ func assertHostDeployCatalogs(ctx context.Context, t *testing.T, host *hostSSH, 
 			t.Fatalf("decode forwarded project catalog: %v", err)
 		}
 		assertDeployCatalogProject(t, forwarded, tc.name, tc.description, tc.excluded, controllerName)
-		direct, err := client.SpawnSlashCatalog(ctx, params)
+		direct, err := appwiretest.SpawnSlashCatalog(ctx, client, params)
 		if err != nil {
 			t.Fatalf("direct controller catalog for host-only cwd %q: %v", tc.cwd, err)
 		}

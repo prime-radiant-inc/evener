@@ -54,7 +54,6 @@ func runRegisteredCoverageSuite(t *testing.T) {
 		{"FrameRecorderJSONL", TestFrameRecorderWritesJSONL},
 		{"IDLess", TestIDLessFrameRoundTrips},
 		{"InputParams", TestInputParamAccessors},
-		{"InputText", TestInputTextPrefersFirstNonBlank},
 		{"InstanceCreate", TestInstanceCreateParamsJSONRoundTrip},
 		{"InstanceList", TestInstanceListResponseJSONRoundTrip},
 		{"ItemStatus", TestItemStatusHelpers},
@@ -74,7 +73,6 @@ func runRegisteredCoverageSuite(t *testing.T) {
 		{"NotificationCatalog", TestNotificationCatalogWellFormed},
 		{"Notification", TestNotificationRoundTrip},
 		{"ParseRef", TestParseRefRejectsUnsafeValues},
-		{"PendingRef", TestPendingTargetRefFallsBackToThreadID},
 		{"RecorderRoot", TestRecorderStateRoot},
 		{"RefRoundTrip", TestRefRoundTrip},
 		{"RefString", TestRefString},
@@ -110,34 +108,14 @@ func runRegisteredCoverageSuite(t *testing.T) {
 	}
 }
 
-type coverageCoordinator struct{ handle *coverageHandle }
-
-func (c coverageCoordinator) Register(string, string, string, string) PendingHandle {
-	return c.handle
-}
-
-type coverageHandle struct{ failed bool }
-
-func (h *coverageHandle) Fail(string) { h.failed = true }
-
 func coverFailureBranches(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	runClientKeepalive(ctx, nil, func() error { return nil }, time.Hour, time.Hour, nil)
 
-	failedTransport := &sendErrTransport{memoryTransport: newMemoryTransport(), err: errors.New("send")}
-	c := NewClient(failedTransport)
-	h := &coverageHandle{}
-	c.SetPendingCoordinator(coverageCoordinator{handle: h})
-	_ = c.TurnSteer(context.Background(), TurnSteerParams{Input: []InputItem{{Text: "x"}}})
-	_ = c.TurnDrainAsSteer(context.Background(), TurnDrainAsSteerParams{Ref: "local:t"})
-	if !h.failed {
-		t.Fatal("pending handle was not failed")
-	}
-
 	tr := newMemoryTransport()
-	c = NewClient(tr)
+	c := NewClient(tr)
 	ctx, cancel = context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() { errCh <- c.Request(ctx, "cancel", nil, nil) }()

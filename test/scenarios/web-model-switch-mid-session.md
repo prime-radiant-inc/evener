@@ -152,8 +152,7 @@ mid-turn, and this card previously asserted that it was.
   session earlier, with `404 session not live` (`web_api.go:309-312`) — so
   the two paths legitimately differ here, and step 4's curl must run against
   a live session.
-- The busy signal the daemon reads is its own `s.processing` plus
-  `s.appReservedTurnID` (`server/appwire_runtime.go:820-824`) — **not**
+- The busy signal the daemon reads is its own `s.processing` — **not**
   `ActiveFlags` (Evener daemons never populate it). Don't assert on
   `ActiveFlags`.
 - The queued-input rejection (step 6) is easy to miss if the drain is fast

@@ -457,12 +457,6 @@ func TestServerAppWireUnclaimedStableTurnDoesNotKeepSessionBusy(t *testing.T) {
 	if read.Thread.Evener.ActiveTurnID != "" || read.Thread.Status.Type != appwire.ThreadStatusIdle {
 		t.Fatalf("read = (active %q, status %q), want idle after the failed claim", read.Thread.Evener.ActiveTurnID, read.Thread.Status.Type)
 	}
-	srv.mu.RLock()
-	reserved := srv.appReservedTurnID
-	srv.mu.RUnlock()
-	if reserved != "" {
-		t.Fatalf("admission reservation=%q, want empty after failed claim", reserved)
-	}
 }
 
 func TestServerAppWireFailedClaimSessionEndClearsState(t *testing.T) {

@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/internal/appserver"
@@ -131,7 +132,7 @@ func testHubProtocolUpgrade(t *testing.T, protocol string, cleared, cached bool)
 		}
 	})
 	t.Run("resume refuses before replacement spawn", func(t *testing.T) {
-		_, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: ref})
+		_, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Ref: ref})
 		var wire appwire.WireError
 		if !errors.As(err, &wire) {
 			t.Fatalf("error=%v", err)
@@ -943,7 +944,7 @@ func TestHubUpgradeBlocksForkWritesUntilParentStops(t *testing.T) {
 						params.EditedInput = "replacement"
 					}
 				}
-				_, err := client.ThreadFork(t.Context(), params)
+				_, err := appwiretest.ThreadFork(t.Context(), client, params)
 				if !isDaemonRestartRequiredError(err) {
 					t.Errorf("fork bypassed incompatible owner: %v", err)
 				}
@@ -964,7 +965,7 @@ func TestHubUpgradeBlocksForkWritesUntilParentStops(t *testing.T) {
 				if err := rendezvous.Remove(runDir, 1001); err != nil {
 					t.Fatal(err)
 				}
-				forked, err := client.ThreadFork(t.Context(), params)
+				forked, err := appwiretest.ThreadFork(t.Context(), client, params)
 				if err != nil {
 					t.Fatalf("fork after owner stopped: %v", err)
 				}
@@ -1084,7 +1085,7 @@ func TestHubUpgradeDoesNotTreatFailedProbeAsAbsentOwner(t *testing.T) {
 				if err := client.Request(t.Context(), appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: ref, Name: "must not write"}, &response); err == nil {
 					t.Error("rename bypassed unresolved owner")
 				}
-				if _, err := client.ThreadFork(t.Context(), appwire.ThreadForkParams{Ref: ref, Aside: true}); err == nil {
+				if _, err := appwiretest.ThreadFork(t.Context(), client, appwire.ThreadForkParams{Ref: ref, Aside: true}); err == nil {
 					t.Error("fork bypassed unresolved owner")
 				}
 				err = client.Request(t.Context(), appwire.MethodTurnQueue, map[string]any{"ref": ref, "clientMutationId": "uncertain-upgrade", "expectedInstanceId": targetID, "input": []appwire.InputItem{{Type: "text", Text: "sentinel"}}}, &response)

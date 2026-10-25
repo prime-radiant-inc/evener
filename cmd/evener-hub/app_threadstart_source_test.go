@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
@@ -229,7 +230,7 @@ func TestHubRPCThreadStartRefusesBridgeOriginatedFanOut(t *testing.T) {
 
 	bridged := http.Header{}
 	bridged.Set(bridgeOriginHeader, "1")
-	_, err := dial(t, bridged).ThreadStart(t.Context(), appwire.ThreadStartParams{Source: "remote-a", CWD: "/tmp"})
+	_, err := appwiretest.ThreadStart(t.Context(), dial(t, bridged), appwire.ThreadStartParams{Source: "remote-a", CWD: "/tmp"})
 	assertWireCode(t, err, appwire.CodeInvalidParams)
 	if !strings.Contains(err.Error(), hostRoutingOriginBridge) {
 		t.Fatalf("refusal %q does not name the origin %q", err, hostRoutingOriginBridge)
@@ -238,7 +239,7 @@ func TestHubRPCThreadStartRefusesBridgeOriginatedFanOut(t *testing.T) {
 		t.Fatalf("bridge-originated spawn reached the host source (%d StartThread calls), want a refusal", source.startCalls)
 	}
 
-	if _, err := dial(t, nil).ThreadStart(t.Context(), appwire.ThreadStartParams{Source: "remote-a", CWD: "/tmp"}); err != nil {
+	if _, err := appwiretest.ThreadStart(t.Context(), dial(t, nil), appwire.ThreadStartParams{Source: "remote-a", CWD: "/tmp"}); err != nil {
 		t.Fatalf("local-originated thread/start: %v", err)
 	}
 	if source.startCalls != 1 {
