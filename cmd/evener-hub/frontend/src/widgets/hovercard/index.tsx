@@ -184,7 +184,9 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
         clearSwallowBackstop();
         longPressStartRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
         clearTimeout(longPressTimerRef.current);
-        armGestureListeners(ownerDocument);
+        // The pressed element's own document: right even on the first press
+        // after mounting directly in a popout, before any render settled state.
+        armGestureListeners(event.currentTarget.ownerDocument);
         longPressTimerRef.current = setTimeout(() => {
           longPressTimerRef.current = undefined;
           swallowClickRef.current = true;
