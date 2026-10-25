@@ -13,7 +13,7 @@ real `shell` tool call, that:
    (`agent/internal/hooks/matcher.go`).
 2. **Command exec-form**: a command hook with `"args":[...]` is spawned
    directly with no shell (`agent/internal/hooks/command_runtime.go:134,169`
-   `executeCommandHook`/`executeCommandHookWithRuntime`: `len(hook.Args) > 0`
+   `executeCommandHook`: `len(hook.Args) > 0`
    → `exec.CommandContext`, `:85`).
 3. An exit-0 PreToolUse command hook does NOT block the tool call.
 

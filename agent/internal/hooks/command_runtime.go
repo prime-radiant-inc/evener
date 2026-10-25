@@ -163,14 +163,9 @@ func (r systemCommandHookRuntime) Run(ctx context.Context, invocation commandHoo
 }
 
 // executeCommandHook runs a command hook with the given input piped as JSON to
-// stdin. It remains the production/default entry point used by existing callers;
-// the runtime-aware helper below is only how Runner supplies its per-instance
-// external boundary.
-func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input Input, wrapper ...*sandbox.Wrapper) (hookResult, error) {
-	return executeCommandHookWithRuntime(ctx, hook, input, newSystemCommandHookRuntime(), wrapper...)
-}
-
-func executeCommandHookWithRuntime(ctx context.Context, hook plugin.RegisteredHook, input Input, runtime commandHookRuntime, wrapper ...*sandbox.Wrapper) (hookResult, error) {
+// stdin. runtime is the external boundary the hook runs through; Runner supplies
+// its per-instance one.
+func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input Input, runtime commandHookRuntime, wrapper ...*sandbox.Wrapper) (hookResult, error) {
 	if runtime == nil {
 		runtime = newSystemCommandHookRuntime()
 	}

@@ -224,7 +224,7 @@ func TestRealPlugin_Superpowers_HookExecution(t *testing.T) {
 		CWD:           dir,
 		HookEventName: "SessionStart",
 	}
-	result := runner.RunSessionStart(context.Background(), input)
+	result := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindStartup)
 
 	// The superpowers session-start.sh outputs JSON with hookSpecificOutput.additionalContext
 	// which routes to ModelContext (model-visible), not UserMessages (user-visible).

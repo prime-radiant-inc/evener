@@ -198,7 +198,7 @@ func TestPlugin_EndToEnd_HookExecution(t *testing.T) {
 		CWD:           pluginDir,
 		HookEventName: "SessionStart",
 	}
-	result := runner.RunSessionStart(context.Background(), input)
+	result := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindStartup)
 	// A successful command hook produces no model-context or user messages.
 	if len(result.ModelContext) != 0 {
 		t.Errorf("unexpected ModelContext from hook: %v", result.ModelContext)

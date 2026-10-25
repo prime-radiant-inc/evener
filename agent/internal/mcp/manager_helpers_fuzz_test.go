@@ -41,7 +41,7 @@ func FuzzMergeEnv(f *testing.F) {
 			extra[k2] = v2
 		}
 
-		got := mergeEnv(extra)
+		got := mergeEnvInto(os.Environ(), extra)
 
 		// Each result entry is key=value; build the multiset of keys.
 		keyCounts := map[string]int{}
@@ -62,7 +62,7 @@ func FuzzMergeEnv(f *testing.F) {
 			}
 		}
 
-		got2 := mergeEnv(extra)
+		got2 := mergeEnvInto(os.Environ(), extra)
 		if !sameSet(got, got2) {
 			t.Fatalf("mergeEnv result set not deterministic")
 		}

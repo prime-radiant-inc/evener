@@ -361,11 +361,11 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 	})
 
 	// --- SessionStart ---
-	startResult := runner.RunSessionStart(context.Background(), hooks.Input{
+	startResult := runner.RunSessionStartFor(context.Background(), hooks.Input{
 		SessionID:     "live-test",
 		CWD:           dir,
 		HookEventName: "SessionStart",
-	})
+	}, plugin.SessionStartKindStartup)
 	// session-start.sh outputs additionalContext (model context), not systemMessage (user-visible).
 	// additionalContext routes to ModelContext.
 	if len(startResult.ModelContext) == 0 {
