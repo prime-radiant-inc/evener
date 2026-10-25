@@ -1,11 +1,11 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"reflect"
 	"runtime/pprof"
@@ -919,6 +919,7 @@ func TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently(t *testing.T)
 }
 
 func TestDelegateDrainPendingColdReceiver(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, receiver, gate string
 		outstanding, live    bool
@@ -926,8 +927,10 @@ func TestDelegateDrainPendingColdReceiver(t *testing.T) {
 		{"own", "dlg_parent", "", true, true},
 		{"cold descendant", "dlg_receiver", "", true, true},
 		{"cold grandchild", "dlg_receiver", "grandchild", true, true},
+		{"cold grandchild, closed retained boundary", "dlg_receiver", "grandchild closed", true, true},
 		{"cold grandchild stopped ancestor", "dlg_receiver", "grandchild stop", false, false},
 		{"live descendant", "dlg_receiver", "resident", true, true},
+		{"closed retained descendant", "dlg_receiver", "resident closed", true, true},
 		{"historical receiver, source now elsewhere", "dlg_parent", "", true, true},
 		{"ancestor", "", "", false, false},
 		{"sibling", "dlg_sibling", "", false, false},
@@ -947,6 +950,9 @@ func TestDelegateDrainPendingColdReceiver(t *testing.T) {
 			seedDelegateControllerIdle(t, c, "dlg_receiver", "dlg_parent")
 			seedDelegateControllerIdle(t, c, "dlg_source", "")
 			seedDelegateControllerIdle(t, c, "dlg_sibling", "")
+			if strings.HasPrefix(tc.gate, "grandchild") {
+				seedDelegateControllerIdle(t, c, "dlg_middle", "dlg_parent")
+			}
 			parent := &Session{id: c.durable["dlg_parent"].Descriptor.ChildSessionID, owningDelegateID: "dlg_parent", delegateController: c}
 			receiver := c.durable["dlg_receiver"]
 			receiver.Descriptor.OwnerSessionID = parent.id
@@ -962,13 +968,17 @@ func TestDelegateDrainPendingColdReceiver(t *testing.T) {
 				receiver.LatestOutcome = &delegatestore.Outcome{Status: delegatestore.OutcomeStopped, Reason: delegatestore.ReasonStoppedByParent}
 			}
 			if strings.HasPrefix(tc.gate, "grandchild") {
-				seedDelegateControllerIdle(t, c, "dlg_middle", "dlg_parent")
 				middle := c.durable["dlg_middle"]
 				middle.Descriptor.OwnerSessionID = parent.id
 				receiver.Descriptor.ParentDelegateID = "dlg_middle"
 				receiver.Descriptor.OwnerSessionID = middle.Descriptor.ChildSessionID
 				if tc.gate == "grandchild stop" {
 					middle.LatestOutcome, receiver.LatestOutcome = receiver.LatestOutcome, nil
+				}
+				if tc.gate == "grandchild closed" {
+					child := &Session{id: middle.Descriptor.ChildSessionID, owningDelegateID: "dlg_middle", delegateController: c}
+					c.live["dlg_middle"] = &delegateLiveState{runtime: child}
+					parent.subagents = &subagentManager{subs: map[string]*subagent{child.id: {sess: child, closed: true}}}
 				}
 			}
 			if strings.Contains(tc.gate, "abandoned") {
@@ -981,7 +991,7 @@ func TestDelegateDrainPendingColdReceiver(t *testing.T) {
 			if strings.HasPrefix(tc.gate, "resident") || tc.gate == "fatal" {
 				child := &Session{id: receiver.Descriptor.ChildSessionID, owningDelegateID: "dlg_receiver", delegateController: c}
 				c.live["dlg_receiver"] = &delegateLiveState{runtime: child}
-				parent.subagents = &subagentManager{subs: map[string]*subagent{child.id: {sess: child, fatalRunGated: tc.gate == "fatal"}}}
+				parent.subagents = &subagentManager{subs: map[string]*subagent{child.id: {sess: child, fatalRunGated: tc.gate == "fatal", closed: tc.gate == "resident closed"}}}
 			}
 			for _, check := range []struct {
 				name string
@@ -998,7 +1008,7 @@ func TestDelegateDrainPendingColdReceiver(t *testing.T) {
 			}
 			if tc.name == "ancestor" {
 				root := &Session{id: c.rootSessionID, delegateController: c}
-				if !root.hasPendingDrainDelegateDeliveries(false) || !root.hasPendingDrainDelegateDeliveries(true) {
+				if !root.hasPendingDrainDelegateDeliveries(false, nil) || !root.hasPendingDrainDelegateDeliveries(true, nil) {
 					t.Error("root receiver lost its own pending delivery")
 				}
 			}
@@ -1006,10 +1016,24 @@ func TestDelegateDrainPendingColdReceiver(t *testing.T) {
 	}
 }
 
+type reclaimLogCapture struct {
+	slog.Handler
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *reclaimLogCapture) Handle(_ context.Context, record slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, record.Clone())
+	return nil
+}
+
 func TestDelegateLeafFinalizationDoesNotWaitForForeignReceiverDelivery(t *testing.T) {
-	var logged bytes.Buffer
+	// Serial: this test replaces the process-wide default logger.
+	logged := &reclaimLogCapture{Handler: slog.NewTextHandler(io.Discard, nil)}
 	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	slog.SetDefault(slog.New(logged))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	foreignBeforeAnnouncement := make(chan struct{})
 	allowForeignAnnouncement := make(chan struct{})
@@ -1018,7 +1042,8 @@ func TestDelegateLeafFinalizationDoesNotWaitForForeignReceiverDelivery(t *testin
 	var drainEntries, rootReadFailures atomic.Int32
 	var recoveredRequests atomic.Int32
 	var rootID atomic.Value
-	root := newSession(t, withoutGitSnapshot(), withClock(agenttest.NewFakeClock()), withConfig(SessionConfig{
+	clock := agenttest.NewFakeClock()
+	root := newSession(t, withoutGitSnapshot(), withClock(clock), withConfig(SessionConfig{
 		StateDir: t.TempDir(), MaxSubagentDepth: 1, ForceRealIO: true,
 		testOnly: testConfig{
 			minimalSystemPrompt: true, disableDelegateIdleRelease: true,
@@ -1125,21 +1150,66 @@ func TestDelegateLeafFinalizationDoesNotWaitForForeignReceiverDelivery(t *testin
 		t.Fatalf("leaf outcome: status=%s err=%v", status, runErr)
 	}
 	assertForeignStillOwed()
+	// Use the server's registered, coalesced input wake pattern. The input
+	// owner starts after the retry callback finishes so both recovered results
+	// share one request, without racing that callback's delivery batch.
+	wakes := make(chan struct{}, 1)
+	startOwner := make(chan struct{})
+	ownerDone := make(chan struct{})
+	turnDone := make(chan error, 1)
+	ctx, cancelOwner := context.WithCancel(context.Background())
+	go func() {
+		defer close(ownerDone)
+		select {
+		case <-ctx.Done():
+			return
+		case <-startOwner:
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-wakes:
+			_, turnErr := root.ProcessInputKind(ctx, "", nil, EntryNotification)
+			turnDone <- turnErr
+		}
+	}()
+	t.Cleanup(func() {
+		cancelOwner()
+		<-ownerDone
+	})
+	root.SetNotifyFunc(func() {
+		select {
+		case wakes <- struct{}{}:
+		default:
+		}
+	})
+	select {
+	case <-wakes:
+		t.Fatal("receiver woke before the foreign fault was released")
+	default:
+	}
+	root.delegateDeliveryMu.Lock()
+	retryArmed := root.delegateDeliveryRetry.active
+	root.delegateDeliveryMu.Unlock()
+	if !retryArmed {
+		t.Fatal("failed delivery did not retain its automatic transport retry")
+	}
 	failRootRead.Store(false)
 	if _, err := c.CompleteDelivery(token, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := root.replayDelegateDeliveries(); err != nil {
-		t.Fatalf("recover foreign delivery: %v", err)
-	}
+	clock.Advance(jobNotificationRetryInitialDelay)
+	clock.Drain()
 	if ids := pendingDeliveryIDs(c, foreign.DelegateID); len(ids) != 0 {
-		t.Fatalf("foreign source acknowledgment still pending: %v", ids)
+		t.Fatalf("automatic retry left foreign source acknowledgment pending: %v", ids)
 	}
-	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
-		t.Fatalf("recovered notification turn: %v", err)
+	if len(wakes) != 1 {
+		t.Fatal("automatic retry did not wake the registered receiver input owner")
 	}
-	if err := root.replayDelegateDeliveries(); err != nil {
-		t.Fatalf("duplicate recovery: %v", err)
+	close(startOwner)
+	await(ownerDone, "automatically woken receiver input owner")
+	if err := <-turnDone; err != nil {
+		t.Fatalf("automatic notification turn: %v", err)
 	}
 	fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, root.id), root.id)
 	attentionID := delegateAttentionID(plans[0].deliveryID)
@@ -1149,6 +1219,10 @@ func TestDelegateLeafFinalizationDoesNotWaitForForeignReceiverDelivery(t *testin
 		t.Fatalf("recovery: accepted=%t observed=%t requests=%d err=%v", accepted, observed, recoveredRequests.Load(), err)
 	}
 	assertAttentionResponseReceipts(t, root, attentionID, 1)
+	// Manual replay is only an idempotency check AFTER automatic observation.
+	if err := root.replayDelegateDeliveries(); err != nil {
+		t.Fatalf("duplicate recovery: %v", err)
+	}
 	acceptedCount := 0
 	for _, entry := range readAttentionTranscriptEntries(t, root.TranscriptPath()) {
 		if entry.Turn.AttentionID == attentionID {
@@ -1158,8 +1232,27 @@ func TestDelegateLeafFinalizationDoesNotWaitForForeignReceiverDelivery(t *testin
 	if acceptedCount != 1 {
 		t.Fatalf("foreign notification transcript records = %d, want 1", acceptedCount)
 	}
-	if warnings := strings.Count(logged.String(), "notification wake failed"); warnings != 1 || !strings.Contains(logged.String(), errInjectedTranscriptWrite.Error()) {
-		t.Fatalf("expected one injected receiver warning, got: %s", logged.String())
+	logged.mu.Lock()
+	defer logged.mu.Unlock()
+	warnings := 0
+	for _, record := range logged.records {
+		var sessionID string
+		var warningErr error
+		record.Attrs(func(attr slog.Attr) bool {
+			switch attr.Key {
+			case "session_id":
+				sessionID = attr.Value.String()
+			case "error":
+				warningErr, _ = attr.Value.Any().(error)
+			}
+			return true
+		})
+		if record.Level == slog.LevelWarn && sessionID == root.id && errors.Is(warningErr, errInjectedTranscriptWrite) {
+			warnings++
+		}
+	}
+	if warnings != 1 {
+		t.Fatalf("injected receiver warning records = %d, want 1", warnings)
 	}
 }
 

@@ -1101,7 +1101,7 @@ func (s *Session) hasPendingDelegateDeliveries() bool {
 // pendingDrainDelegateReceivers returns this receiver, or the first cold child
 // on a recorded receiver's ownership path. Live children belong to the drain's
 // existing gated walk. This is accounting only: it never changes a destination.
-func (s *Session) pendingDrainDelegateReceivers() []string {
+func (s *Session) pendingDrainDelegateReceivers(liveChildren map[string]struct{}) []string {
 	if s == nil || s.delegateController == nil {
 		return nil
 	}
@@ -1127,8 +1127,9 @@ func (s *Session) pendingDrainDelegateReceivers() []string {
 				continue
 			}
 			// Cold receivers have no runtime for liveDirectSubagents to visit.
-			// Walk their canonical parents only until a live boundary or this
-			// session's direct ownership boundary, preserving cold Stop fences.
+			// Walk their canonical parents only until a child in the caller's
+			// actual live traversal, or its direct ownership boundary. A retained
+			// controller runtime pointer alone does not make a closed child live.
 			seen := make(map[string]struct{})
 			for ownerID := pending.OwnerDelegateID; ownerID != ""; {
 				if _, duplicate := seen[ownerID]; duplicate {
@@ -1139,7 +1140,7 @@ func (s *Session) pendingDrainDelegateReceivers() []string {
 				if owner == nil || delegateRowStopGated(delegateSnapshot{lastOutcome: owner.LatestOutcome, currentRunOpen: owner.CurrentRunOpen}) {
 					break
 				}
-				if live := c.live[ownerID]; live != nil && live.runtime != nil {
+				if _, live := liveChildren[owner.Descriptor.ChildSessionID]; live {
 					break
 				}
 				if c.stableDelegateOwnedBySessionLocked(s, owner) {
