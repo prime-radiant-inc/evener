@@ -257,14 +257,38 @@ func (s *Session) recordSkillCarrierDurably(live, persisted schema.Turn) error {
 // recordSkillDeliveryNotification appends one typed activation notification to
 // the real history: the model-facing carrier content plus the causal outcome
 // and obligation, linked to the original invocation. Continuation
-// re-expansion sees it because it is an ordinary recorded turn.
+// re-expansion sees it because it is an ordinary recorded turn. A failed
+// outcome finalizes its obligation here, so no caller can leave a durably
+// explained denial pending for a duplicate retry.
 func (s *Session) recordSkillDeliveryNotification(message llm.Message, outcome schema.SkillActivationOutcome, obligation schema.SkillDeliveryObligation) error {
 	turn := schema.NewTurn(schema.TurnSystem, message)
 	turn.SkillState = &schema.SkillTurnState{
 		Outcomes:    []schema.SkillActivationOutcome{outcome},
 		Obligations: []schema.SkillDeliveryObligation{obligation},
 	}
-	return s.recordSkillCarrierDurably(turn, turn)
+	if err := s.recordSkillCarrierDurably(turn, turn); err != nil {
+		return err
+	}
+	if outcome.Status == "failed" {
+		s.finalizeSkillDeliveryFailure(obligation.InvocationID)
+	}
+	return nil
+}
+
+// skillDeliveryFailureOutcome shapes the typed failed outcome for a pending
+// obligation whose delivery cannot complete. It carries the obligation's
+// recorded identity so the terminal record names exactly which bytes were not
+// delivered.
+func skillDeliveryFailureOutcome(sessionID string, obligation schema.SkillDeliveryObligation, cause error) schema.SkillActivationOutcome {
+	return schema.SkillActivationOutcome{
+		SessionID:        sessionID,
+		InvocationID:     obligation.InvocationID,
+		ToolCallID:       obligation.ToolCallID,
+		ClientMutationID: obligation.ClientMutationID,
+		Identity:         obligation.Identity,
+		Status:           "failed",
+		ErrorCode:        skillActivationErrorCode(cause),
+	}
 }
 
 // skillDeliveryMessage builds the model-facing carrier for a skill's
@@ -282,9 +306,9 @@ func skillDeliveryMessage(note, body string) llm.Message {
 }
 
 // finalizeSkillDeliveryFailure drops the obligation for an invocation whose
-// delivery failed permanently (reload failure, budget rejection). The failed
-// outcome is already recorded on its notification turn; the inventory keeps
-// any earlier successful record.
+// delivery failed permanently (a capability denial, a reload failure, a budget
+// rejection). The failed outcome is already recorded on its notification turn;
+// the inventory keeps any earlier successful record.
 func (s *Session) finalizeSkillDeliveryFailure(invocationIDs ...string) {
 	if len(invocationIDs) == 0 {
 		return
@@ -306,10 +330,14 @@ func (s *Session) finalizeSkillDeliveryFailure(invocationIDs ...string) {
 }
 
 // prepareSkillDelivery revalidates every pending delivery obligation against
-// the actual outgoing request. An obligation whose complete content is still
-// present is left for the dispatch-seam commit. One whose carrier left the
-// shape (fold, projection, restore) is reloaded from its recorded source under
-// the invocation's route policy and re-admitted through a typed causal
+// the actual outgoing request. Before accepting retained content it rechecks
+// the session's current skill availability: a skill this session can no longer
+// follow (a --disable-memory resume, a delegate, a removed save tool) is denied
+// with the same typed policy_denied failure a fresh activation produces, and
+// its obligation is finalized. Otherwise an obligation whose complete content
+// is still present is left for the dispatch-seam commit. One whose carrier left
+// the shape (fold, projection, restore) is reloaded from its recorded source
+// under the invocation's route policy and re-admitted through a typed causal
 // activation notification appended to the real history; the caller rebuilds
 // the request when commit.appendedNotifications is set. A reload failure
 // records an explicit failed outcome and finalizes the obligation — never a
@@ -329,12 +357,12 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 	s.mu.Unlock()
 
 	commit := skillDeliveryCommit{}
-	var failed []string
 	for _, obligation := range obligations {
 		if err := ctx.Err(); err != nil {
 			return req, commit, err
 		}
-		if completeSkillContentPresent(req, obligation.Identity) {
+		available := s.skillAvailableToSession(obligation.Identity.Name)
+		if available && completeSkillContentPresent(req, obligation.Identity) {
 			continue
 		}
 		source := obligation.Identity
@@ -347,23 +375,27 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 			AtomicGroupID:    obligation.AtomicGroupID,
 			Source:           &source,
 		}
-		batch, err := s.prepareSkillActivations(ctx, []skillInvocation{invocation})
-		if err != nil {
-			outcome := schema.SkillActivationOutcome{
-				SessionID:        s.id,
-				InvocationID:     obligation.InvocationID,
-				ToolCallID:       obligation.ToolCallID,
-				ClientMutationID: obligation.ClientMutationID,
-				Identity:         obligation.Identity,
-				Status:           "failed",
-				ErrorCode:        skillActivationErrorCode(err),
-			}
+		if !available {
+			// Retained content does not prove the session can still follow the
+			// skill. Deny before the dispatch plan can accept the body as a
+			// success, and let the same notification door carry the typed
+			// explanation into this dispatch.
+			cause := unavailableSkillActivationError(invocation, obligation.Identity.Name)
 			if err := s.recordSkillDeliveryNotification(
-				llm.UserMachinery(systemNotificationf("Skill %q is no longer available from %s: %v", obligation.Identity.Name, obligation.Identity.Source, err)),
-				outcome, obligation); err != nil {
+				llm.UserMachinery(systemNotificationf("%v", cause)),
+				skillDeliveryFailureOutcome(s.id, obligation, cause), obligation); err != nil {
 				return req, commit, err
 			}
-			failed = append(failed, obligation.InvocationID)
+			commit.appendedNotifications = true
+			continue
+		}
+		batch, err := s.prepareSkillActivations(ctx, []skillInvocation{invocation})
+		if err != nil {
+			if err := s.recordSkillDeliveryNotification(
+				llm.UserMachinery(systemNotificationf("Skill %q is no longer available from %s: %v", obligation.Identity.Name, obligation.Identity.Source, err)),
+				skillDeliveryFailureOutcome(s.id, obligation, err), obligation); err != nil {
+				return req, commit, err
+			}
 			commit.appendedNotifications = true
 			continue
 		}
@@ -415,9 +447,6 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 		s.skillLifecycle.Revision++
 		s.mu.Unlock()
 		commit.appendedNotifications = true
-	}
-	if len(failed) > 0 {
-		s.finalizeSkillDeliveryFailure(failed...)
 	}
 	if commit.appendedNotifications {
 		// Obligation identity corrections and failure finalizations must be

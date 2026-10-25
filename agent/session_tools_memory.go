@@ -379,7 +379,7 @@ func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvir
 	if target == "." {
 		skip = isMemoryIndexPath
 	}
-	return env.GrepSkipping(ctx, g.pattern, g.path, g.glob, g.caseInsensitive, g.maxResults, g.outputMode, g.contextLines, skip)
+	return env.GrepConfinedFiles(ctx, g.pattern, g.path, g.glob, g.caseInsensitive, g.maxResults, g.outputMode, g.contextLines, skip)
 }
 func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	return s.execOwnMemoryWrite(args, "delete", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, _ func([]byte) []byte) (any, error) {

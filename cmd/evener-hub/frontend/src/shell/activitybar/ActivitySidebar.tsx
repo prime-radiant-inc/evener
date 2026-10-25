@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { AnimatePresence, m, spatialTransition } from "../../motion";
+import { ActivityBodyClock } from "../../panes/session/chrome/activityTime";
 import { popAgentCascade } from "../../panes/zoom/actions";
 import { cascadeOrigin, cascadeOriginRef } from "../../panes/zoom/inspectionOrigin";
 import { deriveCascadePath, parseZoomParams } from "../../panes/zoom/intent";
@@ -203,14 +204,18 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
                 />
               </div>
               <DisclosurePersistenceContext.Provider value={JSON.stringify([scope.leaf.ref, tab])}>
-                <ActivityViewport
-                  key={JSON.stringify([scope.leaf.ref, tab])}
-                  sessionRef={scope.leaf.ref}
-                  tab={tab}
-                  className={CLASS.body}
-                >
-                  {Body === null ? null : <Body scope={scope} />}
-                </ActivityViewport>
+                <ActivityBodyClock>
+                  {(now) => (
+                    <ActivityViewport
+                      key={JSON.stringify([scope.leaf.ref, tab])}
+                      sessionRef={scope.leaf.ref}
+                      tab={tab}
+                      className={CLASS.body}
+                    >
+                      {Body === null ? null : <Body scope={scope} now={now} />}
+                    </ActivityViewport>
+                  )}
+                </ActivityBodyClock>
               </DisclosurePersistenceContext.Provider>
             </div>
           </FocusScope>
