@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // Entry describes one live evener serve daemon.
@@ -67,43 +69,26 @@ func Write(dir string, entry Entry) (string, error) {
 	var path string
 	err := withOwnershipLock(dir, entry.PID, func() error {
 		var err error
-		path, err = writeFS(afero.NewOsFs(), dir, entry)
+		path, err = write(dir, entry)
 		return err
 	})
 	return path, err
 }
 
-// writeFS is Write against an injected afero.Fs. Production passes
-// afero.NewOsFs(), whose methods delegate directly to the os package, so the
-// on-disk behavior is byte-identical; tests and fuzzers inject an in-memory or
-// sandboxed filesystem.
-func writeFS(fs afero.Fs, dir string, entry Entry) (string, error) {
-	return writeFSWithMarshal(fs, dir, entry, json.Marshal)
-}
-
-func writeFSWithMarshal(fs afero.Fs, dir string, entry Entry, marshal func(any) ([]byte, error)) (string, error) {
-	if err := fs.MkdirAll(dir, 0o700); err != nil {
+func write(dir string, entry Entry) (string, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create rendezvous dir: %w", err)
 	}
-	if err := fs.Chmod(dir, 0o700); err != nil {
+	if err := os.Chmod(dir, 0o700); err != nil {
 		return "", fmt.Errorf("secure rendezvous dir: %w", err)
 	}
-	data, err := marshal(entry)
+	data, err := json.Marshal(entry)
 	if err != nil {
 		return "", fmt.Errorf("marshal entry: %w", err)
 	}
 	target := filepath.Join(dir, fmt.Sprintf("%d.json", entry.PID))
-	tmp := target + ".tmp"
-	if err := afero.WriteFile(fs, tmp, data, 0o600); err != nil {
-		return "", fmt.Errorf("write tmp: %w", err)
-	}
-	if err := fs.Chmod(tmp, 0o600); err != nil {
-		_ = fs.Remove(tmp)
-		return "", fmt.Errorf("secure tmp: %w", err)
-	}
-	if err := fs.Rename(tmp, target); err != nil {
-		_ = fs.Remove(tmp)
-		return "", fmt.Errorf("rename: %w", err)
+	if err := fsatomic.Write(target, data, 0o600); err != nil {
+		return "", fmt.Errorf("write entry: %w", err)
 	}
 	return target, nil
 }
@@ -115,7 +100,7 @@ func Remove(dir string, pid int) error {
 	})
 }
 
-// removeFS is Remove against an injected afero.Fs (see writeFS).
+// removeFS is Remove against an injected afero.Fs.
 func removeFS(fs afero.Fs, dir string, pid int) error {
 	target := filepath.Join(dir, fmt.Sprintf("%d.json", pid))
 	if err := fs.Remove(target); err != nil && !os.IsNotExist(err) {
@@ -136,7 +121,7 @@ func ListStrict(dir string) ([]Entry, error) {
 	return listFSMode(afero.NewOsFs(), dir, true)
 }
 
-// listFS is List against an injected afero.Fs (see writeFS).
+// listFS is List against an injected afero.Fs.
 func listFS(fs afero.Fs, dir string) ([]Entry, error) {
 	return listFSMode(fs, dir, false)
 }
