@@ -884,8 +884,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 			jm.mu.Unlock()
 			return watchResult{}, err
 		}
-		jm.recordWatchEndedLocked(key, existing, "replaced")
-		closeWatchConfig(existing)
+		jm.detachWatchConfigSnapshotLocked(targets[0])
 		stop := cfg.initProgressStop()
 		jm.watches[key] = cfg
 		result := watchResultFromConfig(cfg, true)
