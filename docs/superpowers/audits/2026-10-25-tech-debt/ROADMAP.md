@@ -555,13 +555,13 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 
 ### Theme C: llm
 
-### W1-25 Delete the dead SSE read-timeout stack and `PrunablePaths`
+### W1-25 Delete private dead code in `llm` (public SDK surface stays)
 - Findings: llm-core-providers-3, llm-core-providers-7 (second half), llm-core-providers-4 (exported helpers with only test/doc callers: `MergeHeaders` at `headers.go:34`, `IsImageFile`, `OrderedEffortLevels`, `(*APIAttempt).SetWireRequestMetadata`, `ErrorHint`, `AdapterTransport`, `BuildAPILogCredentialMaterial`, pass-through `clampEffort` at `anthropic/response.go:246`), llm-core-providers-19 (continuation scaffolding: `ProductionPathProven`, `StorageShapeProofID`, `ProductionPathProofID`, `ProviderOptionKeysByContinuation` never read in production; only `StorageShapeProven` is read, at `agent/session_model_call.go:610`; package-level `PlanResponsesContinuation` at `responses_continuation.go:161` and `ClearResponsesContinuationStoreOverride` have only test callers).
 - Files: `llm/` `parseSSEWithTimeout`, `sseActivityReader`, `sseReadTimer`, `WithStreamReadTimeout`, `sseOptions`/`SSEOption`, `StreamReadSSEOptions` (called only from `core_contracts_fuzz_test.go`, `client_config_edges_fuzz_test.go`), `StreamRunner.SSEOpts` (`runner.go:50`, never assigned), the `*sseReadTimeoutError` case; `llm.Protocol.PrunablePaths` interface method, four `prunablePaths` tables and their `TestPrunablePathsMatc...` tests.
-- Steps: delete per llm-core-providers-3 plan; keep `ParseSSE`'s other callers (responses).
+- Steps: Q3 (DECISIONS.md): `llm` is a public SDK, so an exported symbol is not dead just because nothing in this repo calls it. Keep every exported API and its behavior, including `ParseSSE`, `SSEOption`, `WithStreamReadTimeout`, `StreamReadSSEOptions` and the exported helpers listed under llm-core-providers-4 and -19; `llm/doc.go` exposes `ParseSSE` for custom adapters. Delete only unexported dead code (for example a never-assigned unexported field, or unexported tables with no reader), after a repo-wide grep. Removing any exported symbol is a separate compatibility decision for Jesse.
 - Tests: provider difftests (`providers/difftest`) unchanged; delete tests that only pin removed code.
 - Docs: grep `docs/` for `SSEOpts`.
-- LOC: ~-700
+- LOC: ~-150 (unexported code only)
 - Risk: low. Gate: none. Deps: none.
 
 ### W1-26 Provider stream decoders share their finish and credential-material code
@@ -845,7 +845,7 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 ### W1-56 Build-gate repairs (keep the tooling)
 - Findings: build-gates-scripts-1, build-gates-scripts-3, -4, -5, -6, -7, -8, -10, -16, -2.
 - Files: `testing-budget.json` (zero `"metric"` keys; `test-timing-budget.sh:485,553-556` downgrades the ratio FAIL to WARN; CI still runs the check at `ci.yml:433`, class ceilings can still fail), `make/testing.mk:233`, `makefiletargets_audit_test.go` (`makefileVariableFedDeletes` allowlist), and the tools that stay: `internal/devtool/*audit*`, `scenariosourcecite_audit_test.go`, `maketargetsdoc`, `internal/devtool/gatesurface`, the fuzz mutation toolkit, the sandbox/lazytranscript/appwirelegacy/doctorcomments/transcriptcomments prose audits.
-- Steps: Q11 is answered (DECISIONS.md): delete none of the gate tooling. (a) Rebaseline the timing ratchet: add a `metric` key to each `testing-budget.json` row, baselined from a CI-class measurement (not this workstation), so the per-package ratios enforce again instead of downgrading to WARN. (b) Fix `make/testing.mk:233` bare `$(mktemp)` and the empty `makefileVariableFedDeletes` allowlist. (c) Keep `gatesurface`, `maketargetsdoc`, the fuzz mutation toolkit and the prose audits; fix only what is broken in them (build-gates-scripts-1, -3 to -8, -10, -16 become keep-and-fix findings). (d) Port the shell gate stack to Go only when touched (build-gates-scripts-2: `load-aware-workers.sh` is not replaced by GOMAXPROCS).
+- Steps: Q11 is answered (DECISIONS.md): delete none of the gate tooling. (a) Rebaseline the timing ratchet: regenerate every package budget from a CI-class measurement (not this workstation) and write the single top-level marker `"metric": "package-wall-seconds"` (`WALL_METRIC` in `test-timing-budget.sh`); package rows stay plain numbers. With the marker present the per-package ratios enforce again instead of downgrading to WARN. (b) Fix `make/testing.mk:233` bare `$(mktemp)` and the empty `makefileVariableFedDeletes` allowlist. (c) Keep `gatesurface`, `maketargetsdoc`, the fuzz mutation toolkit and the prose audits; fix only what is broken in them (build-gates-scripts-1, -3 to -8, -10, -16 become keep-and-fix findings). (d) Port the shell gate stack to Go only when touched (build-gates-scripts-2: `load-aware-workers.sh` is not replaced by GOMAXPROCS).
 - Tests: the ratchet's own tests gain a case where a package over its ratio fails (not warns); every gate keeps its tests.
 - Docs: `docs/developing-evener/README.md`, `make help` text if a target changes.
 - LOC: ~+100 (budget rows and small fixes; nothing deleted)
