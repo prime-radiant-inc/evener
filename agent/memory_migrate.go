@@ -32,7 +32,7 @@ const memoryLegacyIndexBackup = ".MEMORY.md.pre-generated"
 // older Evener build can write MEMORY.md again after migration; numbering
 // keeps the first backup, the one holding the original index, from being
 // overwritten when that file is migrated too. The name can be taken by the
-// time it is used; moveLegacyMemoryIndex never relies on it being free.
+// time it is used; moveLegacyMemoryIndexCtx never relies on it being free.
 func freeMemoryBackupPath(env *execenv.LocalExecutionEnvironment, root string) (string, error) {
 	entries, err := env.ListDirectory(root, 1)
 	if err != nil {
@@ -65,19 +65,13 @@ const memoryIndexStagingPrefix = ".MEMORY.md.migrating-"
 // under it by a crash is found like a staged one (see legacyMemoryIndexes).
 const memoryBackupCopyPrefix = ".MEMORY.md.copying-"
 
-// moveLegacyMemoryIndex moves the migrated hand-written index at legacy,
+// moveLegacyMemoryIndexCtx moves the migrated hand-written index at legacy,
 // whose bytes the migration read as raw, to a backup in root, trying the
-// name backup first (see backUpMemoryIndex), then removes MEMORY.md only if
-// it still holds raw (see removeMigratedMemoryIndex). No lock guards the
+// name backup first (see backUpMemoryIndexCtx), then removes MEMORY.md only if
+// it still holds raw (see removeMigratedMemoryIndexCtx). No lock guards the
 // move: another migration, or an older build writing MEMORY.md again, may
 // change the scope at any point, and neither step relies on it holding
 // still. A failure leaves the index in place for the next run.
-func moveLegacyMemoryIndex(env *execenv.LocalExecutionEnvironment, root, legacy string, raw []byte, backup string) error {
-	return moveLegacyMemoryIndexCtx(context.Background(), env, root, legacy, raw, backup)
-}
-
-// moveLegacyMemoryIndexCtx is moveLegacyMemoryIndex with the caller's context
-// threaded to each read.
 func moveLegacyMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment, root, legacy string, raw []byte, backup string) error {
 	if err := backUpMemoryIndexCtx(ctx, env, root, raw, backup); err != nil {
 		return err
@@ -85,7 +79,7 @@ func moveLegacyMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecutionEn
 	return removeMigratedMemoryIndexCtx(ctx, env, root, legacy, raw)
 }
 
-// backUpMemoryIndex keeps raw, an index's bytes, as a backup in root, trying
+// backUpMemoryIndexCtx keeps raw, an index's bytes, as a backup in root, trying
 // the name backup first, unless a backup already holds raw byte for byte, so
 // alternating builds that write the same index add nothing. The backup is a
 // copy of its own, so nothing written to MEMORY.md later reaches it. A
@@ -95,12 +89,6 @@ func moveLegacyMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecutionEn
 // there since the name was chosen, and a taken name moves on to the next free
 // one. Any other link failure, such as a filesystem without hard links, is
 // returned.
-func backUpMemoryIndex(env *execenv.LocalExecutionEnvironment, root string, raw []byte, backup string) error {
-	return backUpMemoryIndexCtx(context.Background(), env, root, raw, backup)
-}
-
-// backUpMemoryIndexCtx is backUpMemoryIndex with the caller's context threaded
-// to each read.
 func backUpMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment, root string, raw []byte, backup string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -128,7 +116,7 @@ func backUpMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecutionEnviro
 	}
 }
 
-// removeMigratedMemoryIndex removes the index at legacy only if it holds
+// removeMigratedMemoryIndexCtx removes the index at legacy only if it holds
 // raw. A read followed by an unlink could delete a rewrite landing between
 // the two, and no filesystem call removes a name only if its contents match.
 // So whatever legacy names is first renamed, atomically, to a name only this
@@ -139,12 +127,6 @@ func backUpMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecutionEnviro
 // errLegacyMemoryIndexChanged reports that an index is left for the next
 // run. A captured file that can't be put back keeps its private name, where
 // the next migration finds it.
-func removeMigratedMemoryIndex(env *execenv.LocalExecutionEnvironment, root, legacy string, raw []byte) error {
-	return removeMigratedMemoryIndexCtx(context.Background(), env, root, legacy, raw)
-}
-
-// removeMigratedMemoryIndexCtx is removeMigratedMemoryIndex with the caller's
-// context threaded to the captured-bytes read.
 func removeMigratedMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment, root, legacy string, raw []byte) error {
 	// Check cancellation BEFORE the rename: staging the index and only then
 	// reporting cancellation would leave MEMORY.md hidden under a private name
@@ -498,23 +480,17 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 	return out
 }
 
-// migrateMemoryScope moves a scope's hand-written index (see
+// migrateMemoryScopeCtx moves a scope's hand-written index (see
 // legacyMemoryIndexes) into its pages: each linked page with no description
 // gets the one its index line gave, then the index is moved to a backup
-// (see moveLegacyMemoryIndex). It is idempotent and takes no lock (the write
-// loop and moveLegacyMemoryIndex say why), and the run that finds the index
+// (see moveLegacyMemoryIndexCtx). It is idempotent and takes no lock (the write
+// loop and moveLegacyMemoryIndexCtx say why), and the run that finds the index
 // already moved is done. A linked target that can't be read (missing, a directory, a
 // refused symlink), or whose frontmatter does not parse or can't take the
 // description in place, is skipped. A page that fails to write does not stop
 // the others; any failed write, or failing to read or move the index,
 // returns an error and leaves the index in place, so the next run finishes
 // the job.
-func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
-	return migrateMemoryScopeCtx(context.Background(), env)
-}
-
-// migrateMemoryScopeCtx is migrateMemoryScope with the caller's context
-// threaded to each index and page read.
 func migrateMemoryScopeCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment) error {
 	legacies, err := legacyMemoryIndexes(env)
 	if err != nil || len(legacies) == 0 {
@@ -523,14 +499,8 @@ func migrateMemoryScopeCtx(ctx context.Context, env *execenv.LocalExecutionEnvir
 	return migrateLegacyMemoryIndexesCtx(ctx, env, legacies)
 }
 
-// migrateLegacyMemoryIndexes is migrateMemoryScope's work for the root
+// migrateLegacyMemoryIndexesCtx is migrateMemoryScopeCtx's work for the root
 // indexes legacyMemoryIndexes found, in that order.
-func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies []string) error {
-	return migrateLegacyMemoryIndexesCtx(context.Background(), env, legacies)
-}
-
-// migrateLegacyMemoryIndexesCtx is migrateLegacyMemoryIndexes with the caller's
-// context threaded to each read.
 func migrateLegacyMemoryIndexesCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment, legacies []string) error {
 	root := env.WorkingDirectory()
 	// Only regular page files are read or written; a FIFO, directory or
@@ -638,8 +608,8 @@ func migrateLegacyMemoryIndexesCtx(ctx context.Context, env *execenv.LocalExecut
 // regular file (a symlink, FIFO or directory) is skipped. The one named exactly
 // MEMORY.md comes first. A case-insensitive filesystem holds at most one,
 // under whatever case it was created with. A file a crashed migration left
-// under a private name, staged (removeMigratedMemoryIndex) or copied
-// (backUpMemoryIndex), comes last, so it is migrated, backed up unless a
+// under a private name, staged (removeMigratedMemoryIndexCtx) or copied
+// (backUpMemoryIndexCtx), comes last, so it is migrated, backed up unless a
 // backup holds its bytes, and removed.
 func legacyMemoryIndexes(env *execenv.LocalExecutionEnvironment) ([]string, error) {
 	root := env.WorkingDirectory()

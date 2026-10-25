@@ -2,68 +2,6 @@ package agent
 
 import (
 	"os"
-	"path/filepath"
-
-	"primeradiant.com/evener/agent/internal/jobstore"
-	"primeradiant.com/evener/agent/schema"
 )
 
 var historicalJobsStat = os.Stat
-
-// HistoricalJobRecord is a flattened, read-only snapshot of one job as it was
-// persisted in a session's durable jobs.jsonl — the origin coordinates, the
-// delegate/task it ran, and its terminal status — for tooling that inspects
-// past sessions without replaying their event streams.
-type HistoricalJobRecord struct {
-	JobID            string
-	Type             string
-	Status           string
-	Reason           string
-	DelegateID       string
-	Task             string
-	TranscriptRef    string
-	OriginTurnID     string
-	OriginToolCallID string
-	OriginItemID     string
-	OutputBytes      int64
-}
-
-// LoadSessionHistoricalJobRecords reads one local session's durable jobs.jsonl and
-// returns the folded job records needed by cold UI projections. It is read-only:
-// a session with no jobs.jsonl yields an empty map and creates no file.
-func LoadSessionHistoricalJobRecords(stateDir, sessionID string) (map[string]HistoricalJobRecord, error) {
-	if err := schema.ValidateSessionID(sessionID); err != nil {
-		return nil, err
-	}
-	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
-	if _, err := historicalJobsStat(path); err != nil {
-		if os.IsNotExist(err) {
-			return map[string]HistoricalJobRecord{}, nil
-		}
-		return nil, err
-	}
-
-	events, err := jobstore.ReadEvents(path)
-	if err != nil {
-		return nil, err
-	}
-	records := jobstore.Fold(events)
-	out := make(map[string]HistoricalJobRecord, len(records))
-	for jobID, rec := range records {
-		if rec == nil {
-			continue
-		}
-		out[jobID] = HistoricalJobRecord{
-			JobID:            rec.JobID,
-			Type:             string(rec.Type),
-			Status:           string(rec.Status),
-			Reason:           rec.Reason,
-			Task:             rec.Task,
-			OriginTurnID:     rec.OriginTurnID,
-			OriginToolCallID: rec.OriginToolCallID,
-			OriginItemID:     rec.OriginItemID,
-			OutputBytes:      rec.OutputBytes,
-		}
-	}
-	return out, nil
-}

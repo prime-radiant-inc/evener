@@ -316,6 +316,9 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
+	// worktree injects failures at the manage_worktree filesystem and sandbox
+	// boundaries (see worktreeTestSeams).
+	worktree worktreeTestSeams
 	// memoryBeforeIO observes the native scope boundary without providing data.
 	memoryBeforeIO func(scope, operation string) error
 	// memoryRealBudget gives the memory boundary its production read budget

@@ -398,14 +398,6 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 	return execReadSessionTranscript(deps, args)
 }
 
-func parseRetainedReadArgs(args map[string]any) (retainedReadArgs, retainedReadOperation, error) {
-	parsed, operation, issues := parseRetainedReadArgsWithIssues(args)
-	if len(issues) > 0 {
-		return retainedReadArgs{}, retainedReadDefault, errors.New("invalid_request: " + issues[0].Reason)
-	}
-	return parsed, operation, nil
-}
-
 type retainedReadParseIssue struct {
 	Field  string
 	Reason string

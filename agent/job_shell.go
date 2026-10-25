@@ -734,10 +734,6 @@ func shellFinalizeBackoff(attempt int) time.Duration {
 	return delay
 }
 
-func (jm *jobManager) shellTerminal(run *runningJob, exitCode int, timedOut bool, waitErr error) (jobstore.Status, string, *int) {
-	return jm.shellTerminalWithSignal(run, exitCode, "", timedOut, waitErr)
-}
-
 func (jm *jobManager) shellTerminalWithSignal(run *runningJob, exitCode int, signalName string, timedOut bool, waitErr error) (jobstore.Status, string, *int) {
 	code := exitCode
 	jm.mu.Lock()

@@ -396,10 +396,6 @@ func rootOnlySubagentTools() []string {
 	return appendUniqueStrings(all, rootOnlyWorktreeTools...)
 }
 
-func isRootOnlyJobPresenceTool(name string) bool {
-	return hasString(rootOnlyJobPresenceTools, name)
-}
-
 func isRootOnlySubagentTool(name string) bool {
 	return hasString(rootOnlySubagentTools(), name)
 }
@@ -573,21 +569,6 @@ func localEnvPolicyName(env execenv.ExecutionEnvironment) string {
 		return "core_only"
 	default:
 		return "default"
-	}
-}
-
-func localEnvPolicyFromName(name string) (execenv.EnvVarPolicy, bool) {
-	switch strings.TrimSpace(name) {
-	case "all":
-		return execenv.EnvPolicyAll, true
-	case "none":
-		return execenv.EnvPolicyNone, true
-	case "core_only":
-		return execenv.EnvPolicyCoreOnly, true
-	case "default":
-		return execenv.EnvPolicyDefault, true
-	default:
-		return execenv.EnvPolicyDefault, false
 	}
 }
 

@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -26,8 +25,8 @@ const worktreeGitTimeoutMS = 300_000
 
 // worktreeTestSeams provides per-session failure injection at filesystem and
 // sandbox boundaries that cannot be made to fail reliably under a temp dir.
-// The map is empty in production, so the wrappers below preserve the normal
-// direct calls without ambient state or behavior changes.
+// It lives in cfg.testOnly and is zero in production, so the wrappers below
+// preserve the normal direct calls.
 type worktreeTestSeams struct {
 	useControlPolicy func(*execenv.LocalExecutionEnvironment, string) error
 	enterWorktree    func(string, bool) error
@@ -36,39 +35,29 @@ type worktreeTestSeams struct {
 	updateSidecar    func(string, string, func(*worktree.Sidecar)) error
 }
 
-var worktreeSeams sync.Map // map[*Session]worktreeTestSeams
-
-func (s *Session) testWorktreeSeams() worktreeTestSeams {
-	seams, ok := worktreeSeams.Load(s)
-	if !ok {
-		return worktreeTestSeams{}
-	}
-	return seams.(worktreeTestSeams)
-}
-
 func (s *Session) useWorktreeControlPolicy(env *execenv.LocalExecutionEnvironment, root string) error {
-	if hook := s.testWorktreeSeams().useControlPolicy; hook != nil {
+	if hook := s.cfg.testOnly.worktree.useControlPolicy; hook != nil {
 		return hook(env, root)
 	}
 	return env.UseControlPolicy(root)
 }
 
 func (s *Session) writeWorktreeSidecar(dir, name string, sidecar worktree.Sidecar) error {
-	if hook := s.testWorktreeSeams().writeSidecar; hook != nil {
+	if hook := s.cfg.testOnly.worktree.writeSidecar; hook != nil {
 		return hook(dir, name, sidecar)
 	}
 	return worktree.WriteSidecarExcl(dir, name, sidecar)
 }
 
 func (s *Session) deleteWorktreeSidecar(dir, name string) error {
-	if hook := s.testWorktreeSeams().deleteSidecar; hook != nil {
+	if hook := s.cfg.testOnly.worktree.deleteSidecar; hook != nil {
 		return hook(dir, name)
 	}
 	return worktree.DeleteSidecar(dir, name)
 }
 
 func (s *Session) updateWorktreeSidecar(dir, name string, mutate func(*worktree.Sidecar)) error {
-	if hook := s.testWorktreeSeams().updateSidecar; hook != nil {
+	if hook := s.cfg.testOnly.worktree.updateSidecar; hook != nil {
 		return hook(dir, name, mutate)
 	}
 	return worktree.UpdateSidecar(dir, name, mutate)
@@ -916,7 +905,7 @@ func projectIsGitCheckout(project identifier.Project) bool {
 // forks git for the snapshot); manage_worktree is serialized in the tool
 // stream, so nothing else swaps the env concurrently.
 func (s *Session) enterWorktree(path string, managed bool) error {
-	if hook := s.testWorktreeSeams().enterWorktree; hook != nil {
+	if hook := s.cfg.testOnly.worktree.enterWorktree; hook != nil {
 		if err := hook(path, managed); err != nil {
 			return err
 		}

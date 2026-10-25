@@ -288,12 +288,6 @@ func SetLaneClosePassBudget(d time.Duration) (restore func()) {
 	})
 }
 
-func (jm *jobManager) setParentJobID(jobID string) {
-	jm.mu.Lock()
-	jm.parentJobID = jobID
-	jm.mu.Unlock()
-}
-
 func (jm *jobManager) bindStableDelegateParent(controller *delegateTreeController, lease delegateLease, forward func(jobstore.Event) error, owner *Session) {
 	jm.mu.Lock()
 	jm.parentJobID = ""
@@ -697,29 +691,6 @@ func (jm *jobManager) createJobOutput() (string, string, *jobstore.OutputStore, 
 		return jobID, outputPath, output, nil
 	}
 	return "", "", nil, errJobIDAllocationExhausted
-}
-
-func (jm *jobManager) createJobOutputForID(jobID string) (string, *jobstore.OutputStore, error) {
-	ownerSessionID, err := identifier.JobOwnerSessionID(jobID)
-	if err != nil {
-		return "", nil, err
-	}
-	if ownerSessionID != jm.sessionID {
-		return "", nil, fmt.Errorf("job ID owner %q does not match session %q", ownerSessionID, jm.sessionID)
-	}
-	records, err := jm.store.Load()
-	if err != nil {
-		return "", nil, err
-	}
-	if _, exists := records[jobID]; exists {
-		return "", nil, fmt.Errorf("job ID %q already exists: %w", jobID, os.ErrExist)
-	}
-	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
-	output, err := jm.createOutput(outputPath, maxJobOutputRetentionBytes)
-	if err != nil {
-		return "", nil, err
-	}
-	return outputPath, output, nil
 }
 
 func (jm *jobManager) close() error {
@@ -1231,29 +1202,6 @@ func (jm *jobManager) appendJobOutputWithProvenance(jobID string, output *jobsto
 		jm.feedJobOutputWithProvenance(jobID, b[:n], output.Len(), p)
 	}
 	return n, err
-}
-
-func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp) ([]jobstore.Match, error) {
-	jm.mu.Lock()
-	run := jm.running[jobID]
-	jm.mu.Unlock()
-	if run != nil {
-		// Scan the full retained output: maxJobOutputRetentionBytes caps retention, so it
-		// doubles as the scan budget; the result stays bounded by maxJobGrepMatches and maxJobGrepLineBytes.
-		return run.output.GrepLimitLineBytes(re, maxJobOutputRetentionBytes, maxJobGrepMatches, maxJobGrepLineBytes)
-	}
-
-	recs, err := jm.store.Load()
-	if err != nil {
-		return nil, err
-	}
-	rec := recs[jobID]
-	if rec == nil {
-		return nil, errJobNotFound(jobID)
-	}
-	path := jm.outputPathForJob(rec, jobID)
-	// Full retained scan (same budget rationale as above).
-	return grepOutputFile(path, re, maxJobOutputRetentionBytes, rec)
 }
 
 func (jm *jobManager) reconcileLostJobs() error {
