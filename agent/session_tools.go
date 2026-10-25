@@ -1549,6 +1549,13 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 	nameMap := s.profile.ToolNameMap()
 	defs := s.profile.ToolDefinitions()
 	for i := range defs {
+		// The profile's communicate definition is this session's result tool.
+		// Present it under the configured name so the prompt's comparison with
+		// the advertised set does not report the canonical name as an
+		// unavailable provider tool when the result tool is renamed (issue #4906).
+		if defs[i].Name == tool.DefaultResultToolName {
+			defs[i].Name = s.resultToolName()
+		}
 		if defs[i].Name == "delegate" {
 			sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
 			sandboxSchema.ModelDescription = s.delegateModelDescription
