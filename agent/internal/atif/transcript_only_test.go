@@ -36,8 +36,8 @@ func TestConvertSkipsTranscriptOnlyEntries(t *testing.T) {
 		return out
 	}
 	header := transcript.Header{SessionID: "s", CreatedAt: at}
-	want := Convert(header, entries(plain))
-	got := Convert(header, entries(schematest.InterleaveTranscriptOnly(plain)))
+	want := Convert(header, entries(plain), Options{})
+	got := Convert(header, entries(schematest.InterleaveTranscriptOnly(plain)), Options{})
 	if !reflect.DeepEqual(got, want) {
 		gotJSON, _ := json.Marshal(got)
 		wantJSON, _ := json.Marshal(want)
