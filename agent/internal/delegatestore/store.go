@@ -343,58 +343,23 @@ func decodeJSONLine(line []byte, target any) error {
 func cloneEvents(events []Event) []Event {
 	clones := make([]Event, len(events))
 	for i := range events {
-		clones[i] = cloneEvent(events[i])
+		cloneEventInto(&clones[i], &events[i])
 	}
 	return clones
 }
 
 func cloneEvent(event Event) Event {
-	clone := event
-	if event.Created != nil {
-		clone.Created = &DelegateCreated{Descriptor: cloneDescriptor(event.Created.Descriptor)}
-	}
-	if event.RunStarted != nil {
-		payload := *event.RunStarted
-		clone.RunStarted = &payload
-	}
-	if event.TerminalPrepared != nil {
-		payload := *event.TerminalPrepared
-		payload.Packet = *cloneTerminalPacket(&event.TerminalPrepared.Packet)
-		clone.TerminalPrepared = &payload
-	}
-	if event.RunFinished != nil {
-		payload := *event.RunFinished
-		payload.Outcome = *cloneOutcome(&event.RunFinished.Outcome)
-		payload.Packet = cloneTerminalPacket(event.RunFinished.Packet)
-		clone.RunFinished = &payload
-	}
-	if event.ResumabilityClosed != nil {
-		payload := *event.ResumabilityClosed
-		clone.ResumabilityClosed = &payload
-	}
-	if event.SubtreeStopRequested != nil {
-		payload := *event.SubtreeStopRequested
-		clone.SubtreeStopRequested = &payload
-	}
-	if event.SubtreeStopCompleted != nil {
-		payload := *event.SubtreeStopCompleted
-		clone.SubtreeStopCompleted = &payload
-	}
-	if event.DeliveryAcknowledged != nil {
-		payload := *event.DeliveryAcknowledged
-		clone.DeliveryAcknowledged = &payload
-	}
-	if event.AttentionChanged != nil {
-		payload := *event.AttentionChanged
-		clone.AttentionChanged = &payload
-	}
-	if event.IntentStated != nil {
-		payload := *event.IntentStated
-		clone.IntentStated = &payload
-	}
-	if event.UpdatePosted != nil {
-		payload := *event.UpdatePosted
-		clone.UpdatePosted = &payload
-	}
+	var clone Event
+	cloneEventInto(&clone, &event)
 	return clone
+}
+
+// cloneEventInto replaces dst with a deep copy of src. Callers that already own
+// both values pass their addresses, so the journal read and write paths do not
+// allocate a fresh Event for each cloned event.
+func cloneEventInto(dst, src *Event) {
+	*dst = *src
+	for _, spec := range eventKindSpecs {
+		spec.clone(dst, src)
+	}
 }

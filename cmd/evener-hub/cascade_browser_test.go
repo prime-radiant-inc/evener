@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +34,12 @@ import (
 
 const cascadeBrowserTripwire = 4 * time.Minute // TRIPWIRE: bounds a broken browser journey, never releases a barrier.
 const cascadePagingDelegates = 51              // Exceeds the real public default page size of 50.
+// cascadeAttentionSessions is two more than the shared navigation store's
+// needs_you page size, so a later-page target exists beyond the boundary the
+// Next control loads on its own. Each session is a real root created when the
+// driver asks for the tier; its first model round fails on the provider
+// boundary, which lands it in needs_you as errored with no pending question.
+const cascadeAttentionSessions = 52
 
 // Reverting AgentsTab to openTranscript must fail this journey. Every edge and
 // transcript comes from a real delegate tool through the daemon and public hub.
@@ -113,6 +120,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 	// when a completion notice becomes the most recent user-role message.
 	scriptErr := make(chan error, 1)
 	releaseProvider := make(chan struct{})
+	releaseAttentionHeld := make(chan struct{})
 	releaseAncestor := make(chan struct{})
 	var inputsMu sync.Mutex
 	providerInputs := make(map[string]int)
@@ -141,12 +149,44 @@ func TestAgentCascadeBrowser(t *testing.T) {
 				scriptErr <- err
 				return
 			}
-			role, err := cascadeRequestRole(call, toolOwners)
+			input, err := cascadeLatestUserContent(call)
 			if err != nil {
 				scriptErr <- err
 				return
 			}
-			input, err := cascadeLatestUserContent(call)
+			// An attention fixture session is a real root created on the driver's
+			// command. Its first model round fails with a non-retryable provider
+			// error, so it ends its turn errored: live, in the public needs_you
+			// tier, with no pending question or approval to hide the floating
+			// control. A provider failure can be retried without replaying an
+			// assistant tool call, so the whole conversation is searched for the
+			// session's opening sentinel, not just its trailing input.
+			attentionInput, _ := json.Marshal(call.Body["messages"])
+			if index, ok := cascadeAttentionIndex(string(attentionInput)); ok {
+				_ = index
+				toolOwners[call.ToolCallID()] = 0
+				call.RespondHTTPError(400, "invalid_request_error")
+				continue
+			}
+			// The browser's held-response leg asks for one real root whose first
+			// model round is parked at the provider boundary. The reply exists as
+			// an ordinary provider response but is not delivered until the driver
+			// releases it unchanged.
+			if strings.Contains(input, "CASCADE_ATTENTION_HELD_INPUT") {
+				toolOwners[call.ToolCallID()] = 0
+				if err := os.WriteFile(filepath.Join(artifacts, "attention-held-call.json"), []byte(`{"input":"CASCADE_ATTENTION_HELD_INPUT"}`), 0600); err != nil {
+					scriptErr <- err
+					return
+				}
+				select {
+				case <-releaseAttentionHeld:
+					call.RespondToolCall("communicate", communicateArgs("CASCADE_ATTENTION_HELD_REPLY"))
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
+			role, err := cascadeRequestRole(call, toolOwners)
 			if err != nil {
 				scriptErr <- err
 				return
@@ -352,8 +392,12 @@ func TestAgentCascadeBrowser(t *testing.T) {
 		"childDelegateId": edges[0].DelegateID, "grandchildDelegateId": edges[1].DelegateID,
 		"refs": refs, "edges": edges, "branch": branch, "rootDelegateCount": 1 + cascadePagingDelegates,
 		"controlPath": filepath.Join(artifacts, "control.jsonl"), "milestonePath": filepath.Join(artifacts, "milestones.jsonl"),
+		"attentionControlPath":  filepath.Join(artifacts, "attention-control.jsonl"),
+		"attentionReadyPath":    filepath.Join(artifacts, "attention-ready.json"),
+		"attentionHeldPath":     filepath.Join(artifacts, "attention-held.json"),
+		"attentionHeldCallPath": filepath.Join(artifacts, "attention-held-call.json"),
 	}
-	for _, name := range []string{"control.jsonl", "milestones.jsonl"} {
+	for _, name := range []string{"control.jsonl", "attention-control.jsonl", "milestones.jsonl"} {
 		if err := os.WriteFile(filepath.Join(artifacts, name), nil, 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -369,7 +413,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 	controlDone := make(chan error, 1)
 	go func() {
 		defer watcher.Close()
-		controlDone <- cascadeAwaitProviderRelease(ctx, watcher, filepath.Join(artifacts, "control.jsonl"), map[string]chan struct{}{
+		controlDone <- cascadeAwaitCommands(ctx, watcher, filepath.Join(artifacts, "control.jsonl"), map[string]chan struct{}{
 			"release-provider":          releaseProvider,
 			"release-ancestor-provider": releaseAncestor,
 		})
@@ -377,6 +421,43 @@ func TestAgentCascadeBrowser(t *testing.T) {
 	defer func() {
 		cancel()
 		if err := <-controlDone; err != nil {
+			t.Error(err)
+		}
+	}()
+	attentionWatcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := attentionWatcher.Add(artifacts); err != nil {
+		attentionWatcher.Close()
+		t.Fatal(err)
+	}
+	attentionDone := make(chan error, 1)
+	createAttention := make(chan struct{})
+	go func() {
+		defer attentionWatcher.Close()
+		if err := cascadeAwaitCommands(ctx, attentionWatcher, filepath.Join(artifacts, "attention-control.jsonl"), map[string]chan struct{}{"create-attention": createAttention}); err != nil {
+			attentionDone <- err
+			return
+		}
+		if ctx.Err() != nil {
+			attentionDone <- nil
+			return
+		}
+		if err := cascadeCreateAttentionSessions(ctx, t, client, stack, filepath.Join(artifacts, "attention-ready.json")); err != nil {
+			attentionDone <- err
+			return
+		}
+		attentionDone <- cascadeHeldAttentionSession(
+			ctx, attentionWatcher, t, client, stack,
+			filepath.Join(artifacts, "attention-control.jsonl"),
+			filepath.Join(artifacts, "attention-held.json"),
+			releaseAttentionHeld,
+		)
+	}()
+	defer func() {
+		cancel()
+		if err := <-attentionDone; err != nil {
 			t.Error(err)
 		}
 	}()
@@ -421,6 +502,12 @@ func TestAgentCascadeBrowser(t *testing.T) {
 		"ordinary-reader-width-reflow", "ordinary-reader-width-return", "cascade-reader-width-reflow", "cascade-reader-width-return",
 		"ordinary-reader-height-only", "ordinary-reader-height-return", "cascade-reader-height-only", "cascade-reader-height-return",
 		"Shift-Space-interruption-precedence", "wheel-interruption-precedence", "pill-interruption-precedence", "phone-reader-width-reflow", "phone-reader-width-return",
+		"attention-tier-visible", "attention-control-visible-unfocused", "attention-hop-one", "attention-hop-two",
+		"attention-back", "attention-forward", "attention-origin-restored",
+		"attention-320-light", "attention-390-light", "attention-700-light", "attention-899-light",
+		"attention-900-light", "attention-1024-light", "attention-1400-light",
+		"attention-320-dark", "attention-390-dark", "attention-700-dark", "attention-899-dark",
+		"attention-900-dark", "attention-1024-dark", "attention-1400-dark",
 	} {
 		found := false
 		for line := range strings.SplitSeq(string(milestones), "\n") {
@@ -466,6 +553,65 @@ func TestAgentCascadeBrowser(t *testing.T) {
 		}
 	}
 	inputsMu.Unlock()
+	// The public needs-you tier the floating control consumed is real: one full
+	// default page plus the two later rows the driver reached past the boundary.
+	attentionRows := map[string]string{}
+	for offset, want := range map[uint32]int{0: 50, 50: 2} {
+		start, limit := offset, uint32(50)
+		read, err := client.NavigationRead(ctx, appwire.NavigationReadParams{
+			RepresentationVersion: 3, Resource: "section", Section: "needs_you", Offset: &start, Limit: &limit,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Representation v3 carries the page as entities plus a root container;
+		// the session rows are the entities' values.
+		var page struct {
+			Metadata struct {
+				Remaining int `json:"remaining"`
+			} `json:"metadata"`
+			Entities []struct {
+				Value struct {
+					Ref   string `json:"ref"`
+					Title string `json:"title"`
+				} `json:"value"`
+			} `json:"entities"`
+		}
+		if err := json.Unmarshal(read.Data, &page); err != nil {
+			t.Fatalf("needs_you page at %d: %v", offset, err)
+		}
+		if len(page.Entities) != want {
+			t.Fatalf("needs_you page at %d returned %d rows, want %d", offset, len(page.Entities), want)
+		}
+		wantRemaining := 2
+		if offset == 50 {
+			wantRemaining = 0
+		}
+		if page.Metadata.Remaining != wantRemaining {
+			t.Fatalf("needs_you page at %d reports %d remaining, want %d", offset, page.Metadata.Remaining, wantRemaining)
+		}
+		for _, row := range page.Entities {
+			attentionRows[row.Value.Ref] = row.Value.Title
+		}
+	}
+	if len(attentionRows) != cascadeAttentionSessions {
+		t.Fatalf("public attention tier returned %d distinct rows, want %d", len(attentionRows), cascadeAttentionSessions)
+	}
+	var attentionFixture struct {
+		Created []string `json:"created"`
+	}
+	readyBody, err := os.ReadFile(filepath.Join(artifacts, "attention-ready.json"))
+	if err != nil {
+		t.Fatalf("attention fixture record: %v", err)
+	}
+	if err := json.Unmarshal(readyBody, &attentionFixture); err != nil {
+		t.Fatalf("attention fixture record: %v", err)
+	}
+	for _, ref := range attentionFixture.Created {
+		if _, ok := attentionRows[ref]; !ok {
+			t.Fatalf("public attention tier is missing real fixture session %s", ref)
+		}
+	}
 	transcript, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, IncludeTurns: true, ItemLimit: 40})
 	if err != nil {
 		t.Fatal(err)
@@ -491,6 +637,30 @@ func TestAgentCascadeBrowser(t *testing.T) {
 }
 
 func cascadeRoleToken(role int) string { return fmt.Sprintf("CASCADE_ROLE_%d_SENTINEL", role) }
+
+// cascadeAttentionIndex recognises one attention fixture session's first input.
+// Those inputs carry no cascade role sentinel, so they are answered before the
+// cascade script's strict role routing.
+func cascadeAttentionIndex(input string) (int, bool) {
+	const prefix = "CASCADE_ATTENTION_INPUT_"
+	start := strings.Index(input, prefix)
+	if start < 0 {
+		return 0, false
+	}
+	rest := input[start+len(prefix):]
+	end := 0
+	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0, false
+	}
+	index, err := strconv.Atoi(rest[:end])
+	if err != nil || index < 0 || index >= cascadeAttentionSessions {
+		return 0, false
+	}
+	return index, true
+}
 
 func cascadeRecordMixedProviderCall(artifacts string, call *fakellm.Call, role int, input skillGuardMessage, docs []skillGuardDocument) error {
 	messages, _ := call.Body["messages"].([]any)
@@ -898,7 +1068,10 @@ func cascadeLatestUserContent(call *fakellm.Call) (string, error) {
 	return "", nil
 }
 
-func cascadeAwaitProviderRelease(ctx context.Context, watcher *fsnotify.Watcher, controlPath string, releases map[string]chan struct{}) error {
+// cascadeAwaitCommands releases the channels named by the control records a run
+// appends. Several commands share one file, so a record for a command this call
+// does not own belongs to another leg and is ignored.
+func cascadeAwaitCommands(ctx context.Context, watcher *fsnotify.Watcher, controlPath string, releases map[string]chan struct{}) error {
 	handled := make(map[string]bool, len(releases))
 	for {
 		body, err := os.ReadFile(controlPath)
@@ -915,13 +1088,8 @@ func cascadeAwaitProviderRelease(ctx context.Context, watcher *fsnotify.Watcher,
 				if err := json.Unmarshal([]byte(line), &record); err != nil {
 					return fmt.Errorf("cascade control record: %w", err)
 				}
-				release, ok := releases[record.Command]
-				if !ok {
-					return fmt.Errorf("unexpected cascade control command %q", record.Command)
-				}
-				// The file is re-read on every event, so a record already seen
-				// must not close its channel twice.
-				if handled[record.Command] {
+				release, owned := releases[record.Command]
+				if !owned || handled[record.Command] {
 					continue
 				}
 				handled[record.Command] = true
@@ -939,6 +1107,173 @@ func cascadeAwaitProviderRelease(ctx context.Context, watcher *fsnotify.Watcher,
 		case <-watcher.Events:
 		}
 	}
+}
+
+// cascadeCreateAttentionSessions starts the fixture's real root sessions only
+// when the driver's attention journey begins, so the cascade journey ahead of
+// it runs against its exact baseline with no extra daemons. Each session's
+// first model round fails on the provider boundary, which lands it in the
+// public needs_you tier as errored. The helper returns only once the public
+// page carries every session, and records the refs for the driver.
+func cascadeCreateAttentionSessions(ctx context.Context, t *testing.T, client *appwire.Client, stack hubStack, readyPath string) error {
+	t.Helper()
+	created := make([]string, cascadeAttentionSessions)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var startErr error
+	for index := 0; index < cascadeAttentionSessions; index++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			started, err := client.ThreadStart(ctx, appwire.ThreadStartParams{
+				Harness: "evener", CWD: stack.workDir, Model: stack.model,
+				Input:           []appwire.InputItem{{Type: "text", Text: fmt.Sprintf("CASCADE_ATTENTION_INPUT_%d", index)}},
+				LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
+			})
+			if err != nil {
+				mu.Lock()
+				if startErr == nil {
+					startErr = err
+				}
+				mu.Unlock()
+				return
+			}
+			ref := threadRef(started.Thread)
+			mu.Lock()
+			created[index] = ref
+			mu.Unlock()
+			t.Cleanup(func() {
+				cleanupCtx, stop := context.WithTimeout(context.Background(), 10*time.Second)
+				defer stop()
+				_ = client.ThreadShutdown(cleanupCtx, appwire.ThreadShutdownParams{Ref: ref})
+			})
+		}(index)
+	}
+	wg.Wait()
+	if startErr != nil {
+		return startErr
+	}
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		rows, err := cascadeNeedsYouRefs(ctx, client)
+		if err == nil && len(rows) == cascadeAttentionSessions {
+			body, err := json.Marshal(map[string]any{"refs": rows, "created": created})
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(readyPath, body, 0600)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("attention tier never reached %d rows (last read %d, err %v)", cascadeAttentionSessions, len(rows), err)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// cascadeHeldAttentionSession starts one real root at the driver's command and
+// leaves its first model round parked on the provider boundary until the driver
+// releases it. The provider call is a real request; only its reply is withheld,
+// so the browser exercises an unchanged response delivered late rather than a
+// synthesized message.
+func cascadeHeldAttentionSession(ctx context.Context, watcher *fsnotify.Watcher, t *testing.T, client *appwire.Client, stack hubStack, controlPath, readyPath string, release chan struct{}) error {
+	t.Helper()
+	if err := cascadeAwaitCommandAt(ctx, watcher, controlPath, 1, "hold-attention-response"); err != nil {
+		return err
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	started, err := client.ThreadStart(ctx, appwire.ThreadStartParams{
+		Harness: "evener", CWD: stack.workDir, Model: stack.model,
+		Input:           []appwire.InputItem{{Type: "text", Text: "CASCADE_ATTENTION_HELD_INPUT"}},
+		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
+	})
+	if err != nil {
+		return err
+	}
+	ref := threadRef(started.Thread)
+	t.Cleanup(func() {
+		cleanupCtx, stop := context.WithTimeout(context.Background(), 10*time.Second)
+		defer stop()
+		_ = client.ThreadShutdown(cleanupCtx, appwire.ThreadShutdownParams{Ref: ref})
+	})
+	body, err := json.Marshal(map[string]string{"ref": ref})
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(readyPath, body, 0600); err != nil {
+		return err
+	}
+	if err := cascadeAwaitCommandAt(ctx, watcher, controlPath, 2, "release-attention-response"); err != nil {
+		return err
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	close(release)
+	return nil
+}
+
+// cascadeAwaitCommandAt waits for the complete control record at index in the
+// append-only control file. Earlier records were already consumed by
+// cascadeAwaitCommands.
+func cascadeAwaitCommandAt(ctx context.Context, watcher *fsnotify.Watcher, controlPath string, index int, command string) error {
+	for {
+		body, err := os.ReadFile(controlPath)
+		if err != nil {
+			return err
+		}
+		if end := strings.LastIndexByte(string(body), '\n'); end >= 0 {
+			lines := strings.Split(string(body[:end]), "\n")
+			if len(lines) > index {
+				var record struct {
+					Command string `json:"command"`
+				}
+				if err := json.Unmarshal([]byte(lines[index]), &record); err != nil {
+					return fmt.Errorf("cascade control record: %w", err)
+				}
+				if record.Command != command {
+					return fmt.Errorf("unexpected cascade control command %q, want %q", record.Command, command)
+				}
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-watcher.Errors:
+			return err
+		case <-watcher.Events:
+		}
+	}
+}
+
+// cascadeNeedsYouRefs reads both public pages of the needs_you tier.
+func cascadeNeedsYouRefs(ctx context.Context, client *appwire.Client) ([]string, error) {
+	var refs []string
+	for _, offset := range []uint32{0, 50} {
+		start, limit := offset, uint32(50)
+		read, err := client.NavigationRead(ctx, appwire.NavigationReadParams{
+			RepresentationVersion: 3, Resource: "section", Section: "needs_you", Offset: &start, Limit: &limit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		var page struct {
+			Entities []struct {
+				Value struct {
+					Ref string `json:"ref"`
+				} `json:"value"`
+			} `json:"entities"`
+		}
+		if err := json.Unmarshal(read.Data, &page); err != nil {
+			return nil, err
+		}
+		for _, row := range page.Entities {
+			refs = append(refs, row.Value.Ref)
+		}
+	}
+	return refs, nil
 }
 
 func cascadeRequestRole(call *fakellm.Call, toolOwners map[string]int) (int, error) {

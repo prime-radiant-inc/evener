@@ -33,6 +33,7 @@ export function BoardListRow({
 	wash,
 	context,
 	onSwipeActive,
+	edgeInset,
 }: {
 	item: ClassifiedRow;
 	variant: BoardRowProps["variant"];
@@ -41,6 +42,7 @@ export function BoardListRow({
 	wash?: number;
 	context: RowContext;
 	onSwipeActive?: (active: boolean) => void;
+	edgeInset?: number;
 }): ReactElement {
 	const { draftRefs, swipes, menu, activityOf, waiting: waitingFor, ...shared } = context;
 	const { leading, trailing, dimmed } = swipes(item, archived);
@@ -59,7 +61,7 @@ export function BoardListRow({
 		...shared,
 	};
 	return (
-		<SwipeRow leading={leading} trailing={trailing} onActiveChange={onSwipeActive}>
+		<SwipeRow leading={leading} trailing={trailing} edgeInset={edgeInset} onActiveChange={onSwipeActive}>
 			<RowMenu item={item} hostLabel={shared.hostLabel} {...menu(item, archived)}>
 				<BoardRow {...row} {...swipeAccessibility(leading, trailing)} />
 			</RowMenu>

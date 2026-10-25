@@ -40,14 +40,22 @@ export function tailSlice(text: string, max: number): string {
   return text.slice(cut);
 }
 
-// tailFold no-ops under `max` chars; over budget, prefixes an honest
-// elision line before the kept tail - mirrors renderer-tools.js's
+// tailFoldNote is the one owner of the tail-elision sentence. tailFold puts it
+// above the kept tail slice; a caller that already holds its own rendered tail
+// composes it with that tail instead of calling tailFold. The note carries no
+// trailing newline, so each caller joins it to exactly one line of content.
+export function tailFoldNote(max: number): string {
+  return `earlier output not retained — showing the last ${max.toLocaleString("en-US")} chars`;
+}
+
+// tailFold no-ops under `max` chars; over budget, prefixes the shared
+// elision note before the kept tail - mirrors renderer-tools.js's
 // tailFoldOutput, used wherever a settled (non-error) tool output is shown
 // so a human always knows text was dropped rather than seeing a
 // silently-incomplete transcript.
 export function tailFold(text: string, max: number): string {
   if (text.length <= max) return text;
-  return `earlier output not retained — showing the last ${max.toLocaleString("en-US")} chars\n${tailSlice(text, max)}`;
+  return `${tailFoldNote(max)}\n${tailSlice(text, max)}`;
 }
 
 // formatToolDuration and displayFormat.ts's formatDurationMs are the SAME

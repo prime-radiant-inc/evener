@@ -11,7 +11,16 @@
 // palette's runWhenAvailable and native's requireControl are the same rule at
 // their own boundaries.
 
-import { NO_ACTIVE_TURN, type SessionControls, sessionControls, type ThreadModel } from "@evener/appwire-client";
+import {
+  BROWSER_SEND_QUEUE_POLICY,
+  NO_ACTIVE_TURN,
+  type SendQueueDecision,
+  type SendQueueRecovery,
+  type SessionControls,
+  sendQueueGate,
+  sessionControls,
+  type ThreadModel,
+} from "@evener/appwire-client";
 import {
   isRecoveryFenced,
   isResumeOnly,
@@ -110,6 +119,51 @@ export function recoveryFence(
   };
 }
 
+// The browser's recovery face as the shared send/queue gate's recovery input
+// (@evener/appwire-client's sendQueueGate). RecoveryFenceReading is the ONE
+// reading of the fence; this mapping keeps availabilityFor's order: the
+// Send-resumes face first, then a still fence, then the folded resume, then
+// the table. The browser never has the gate's native explicit-resume face, so
+// the return type excludes it.
+export type BrowserSendQueueRecovery = Exclude<SendQueueRecovery, { kind: "explicit-resume" }>;
+
+export function browserSendRecovery(fence: RecoveryFenceReading): BrowserSendQueueRecovery {
+  if (fence.sendResumes) return { kind: "send-resumes" };
+  if (fence.stillFenced) return { kind: "blocked" };
+  if (fence.resumeOnly) return { kind: "folded-resume" };
+  return { kind: "none" };
+}
+
+// The browser's Send/Queue decision: the shared gate over the fence above, this
+// client's own pending-send bit, and the browser policy constant. `connected`
+// is always true because the web composer has no connectivity branch - its
+// durable outbox and dispatch path handle offline - so the gate's resume
+// branches (native explicit-resume, offline shut-down) are unreachable from
+// this adapter. The narrowed return type states that: a browser decision is
+// never a resume.
+export type BrowserSendQueueDecision = Exclude<SendQueueDecision, { action: "resume" }>;
+
+export function sendQueueDecisionFor(
+  target: Pick<ThreadModel, "status" | "capabilities" | "resumeOnlyFoldable" | "parentRef">,
+  pendingSend: boolean,
+  restartObligated: boolean,
+  signals: ResumeOnlySignals = {},
+): BrowserSendQueueDecision {
+  const decision = sendQueueGate({
+    statusType: target.status.type,
+    capabilities: target.capabilities,
+    hasPendingSend: pendingSend,
+    connected: true,
+    recovery: browserSendRecovery(recoveryFence(target, restartObligated, signals)),
+    policy: BROWSER_SEND_QUEUE_POLICY,
+  });
+  // The gate's only resume routes need the excluded explicit-resume face or
+  // !connected; this adapter supplies neither. An impossible resume refuses,
+  // exactly as the old two-boolean availability answered for every face it
+  // could not offer.
+  return decision.action === "resume" ? { action: "none", reason: "no-action" } : decision;
+}
+
 // The same fence as a press reads it: the store's recovery state as it holds it
 // NOW, not as the subscribing render saw it (this module's own render-vs-press
 // rule - a Stop can arm the fence between the render that offered a control
@@ -120,7 +174,7 @@ export function recoveryFence(
 // forceStop RPC is still in flight, and the hub holds Stopping > 0 (refusing
 // every verb this helper guards) for that whole window. It is deliberately
 // method-agnostic: none of its callers presses the send (the composer's submit
-// runs its own live read, decideSubmitRoute over availabilityFor, which is
+// runs its own live read, sendQueueDecisionFor over the recovery face, which is
 // where the resume-only carve-out belongs), and every verb it does guard -
 // steer, the queue-strip actions, the recovery-fenced built-ins - is one the
 // hub refuses for the obligation's or the drain's whole window, turn/start's

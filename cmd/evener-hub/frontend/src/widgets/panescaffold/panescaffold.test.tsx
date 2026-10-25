@@ -3,10 +3,35 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
+import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
 import { requestPaneFocus, resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { PaneScaffold } from "./index";
 
-beforeEach(resetWorkspaceStoreForTests);
+beforeEach(() => {
+  resetWorkspaceStoreForTests();
+  resetChromeStoreForTests();
+});
+
+// A replacement under the same pane id runs the outgoing scaffold's teardown
+// too. If that teardown is passive it lands after the replacement's own
+// publication and erases it, leaving shell observers on the wrong document
+// until something else renders.
+test("a replacement scaffold under the same pane id keeps its document", () => {
+  const { rerender, unmount } = render(
+    <PaneScaffold paneId="pane_replaced" title="First">
+      first
+    </PaneScaffold>,
+  );
+  expect(chromeStore.getState().paneDocuments.get("pane_replaced")).toBe(document);
+  rerender(
+    <PaneScaffold key="second" paneId="pane_replaced" title="Second">
+      second
+    </PaneScaffold>,
+  );
+  expect(chromeStore.getState().paneDocuments.get("pane_replaced")).toBe(document);
+  unmount();
+  expect(chromeStore.getState().paneDocuments.has("pane_replaced")).toBe(false);
+});
 
 test("renders the title as a heading", () => {
   render(<PaneScaffold title="Sessions">content</PaneScaffold>);

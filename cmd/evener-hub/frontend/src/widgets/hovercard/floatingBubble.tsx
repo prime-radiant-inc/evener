@@ -13,6 +13,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { ownerWindowOf } from "../internal/documentRealm";
 import { computeTooltipPosition, type TooltipPosition, TRIGGER_GAP } from "../tooltip/computePosition";
 import { computeSideAnchorPosition, type SideAnchor } from "./computePosition";
 import { useFloatingLabel } from "./useFloatingLabel";
@@ -22,9 +23,10 @@ import { useFloatingLabel } from "./useFloatingLabel";
 // pre-measure placeholder, and the aria association, differing only in the
 // element and content they render.
 //
-// The bubble is portaled to document.body and positioned in viewport
-// coordinates (see computePosition.ts for the placement math). Two reasons,
-// both measured live rather than assumed:
+// The bubble is portaled to the body of the document its trigger lives in (the
+// opener's by default; a Dockview popout's when the card is mounted there) and
+// positioned in that window's viewport coordinates (see computePosition.ts for
+// the placement math). Two reasons, both measured live rather than assumed:
 //
 //   1. Collision. Centre-anchored with no shift, an edge-mounted bubble runs
 //      off the viewport. The rail's search button sits 28px from the top of a
@@ -47,6 +49,8 @@ export interface FloatingBubble {
   setBubbleRef: (element: HTMLElement | null) => void;
   /** What the bubble renders with: the measured placement, or the placeholder. */
   bubbleStyle: CSSProperties;
+  /** The body of the document the wrapper lives in: the bubble's portal target. */
+  bubbleContainer: HTMLElement;
   /** The bubble's id, for as long as the bubble is on screen. */
   bubbleID: string;
   /** The trigger's aria-describedby value, undefined while nothing is shown. */
@@ -80,7 +84,10 @@ export function useFloatingBubble(
     if (!wrapperEl || !bubbleEl) return;
     const anchor = sideAnchor?.();
     const size = { width: bubbleEl.offsetWidth, height: bubbleEl.offsetHeight };
-    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    // The wrapper's own window: a Dockview popout has its own viewport, and
+    // the opener's window knows nothing about where that bubble can fit.
+    const viewportWindow = ownerWindowOf(wrapperEl);
+    const viewport = { width: viewportWindow.innerWidth, height: viewportWindow.innerHeight };
     setPosition(
       anchor
         ? computeSideAnchorPosition(anchor, size, viewport)
@@ -88,7 +95,7 @@ export function useFloatingBubble(
     );
   }, [sideAnchor]);
 
-  const { visible, wrapperRef, triggerProps, showImmediately, dismiss } = useFloatingLabel({
+  const { visible, ownerDocument, wrapperRef, triggerProps, showImmediately, dismiss } = useFloatingLabel({
     measure,
     observe: bubbleRef,
     focusTarget,
@@ -116,13 +123,14 @@ export function useFloatingBubble(
   // so the measure and the re-render its setPosition causes both complete
   // before the browser's next paint, in the same commit that mounts the portal:
   // the bubble is never visibly painted at the pre-measure placeholder.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: ownerDocument is the deliberate trigger - a document move has to re-measure against the new window
   useLayoutEffect(() => {
     if (!visible) {
       setPosition(null);
       return;
     }
     measure();
-  }, [measure, visible]);
+  }, [measure, visible, ownerDocument]);
 
   const setBubbleRef = useCallback((element: HTMLElement | null) => {
     bubbleRef.current = element;
@@ -133,6 +141,7 @@ export function useFloatingBubble(
     wrapperRef,
     triggerProps,
     setBubbleRef,
+    bubbleContainer: ownerDocument.body,
     // Before the measure lands, the bubble sits at the top-left corner one gap
     // in - off the trigger, but on-screen and laid out at its natural size,
     // which is what gives the layout effect above a real box to read. It is
@@ -153,6 +162,9 @@ export interface FloatingBubblePortalProps {
   className: string;
   style: CSSProperties;
   setRef: (element: HTMLElement | null) => void;
+  /** The owning document's body. Defaults to the opener's, for callers that
+   * have not resolved a realm (the tooltip). */
+  container?: HTMLElement;
   longPressEnabled?: boolean;
   children: ReactNode;
 }
@@ -165,6 +177,7 @@ export function FloatingBubblePortal({
   className,
   style,
   setRef,
+  container,
   longPressEnabled,
   children,
 }: FloatingBubblePortalProps) {
@@ -175,7 +188,7 @@ export function FloatingBubblePortal({
       { ref: setRef, role: "tooltip", id, className, style, "data-long-press-enabled": longPressEnabled },
       children,
     ),
-    document.body,
+    container ?? document.body,
   );
 }
 

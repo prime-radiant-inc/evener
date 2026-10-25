@@ -494,17 +494,26 @@ func requestSkillEnvelopes(t *testing.T, req llm.Request) []skillEnvelope {
 	t.Helper()
 	var out []skillEnvelope
 	for _, msg := range req.Messages {
-		for _, part := range msg.Content {
-			switch part.Kind {
-			case llm.ContentText:
-				out = append(out, extractSkillEnvelopes(t, part.Text)...)
-			case llm.ContentToolResult:
-				if part.ToolResult == nil {
-					continue
-				}
-				if content, ok := part.ToolResult.Content.(string); ok {
-					out = append(out, extractSkillEnvelopes(t, content)...)
-				}
+		out = append(out, messageSkillEnvelopes(t, msg)...)
+	}
+	return out
+}
+
+// messageSkillEnvelopes collects the envelopes carried by one message's text
+// and tool-result parts.
+func messageSkillEnvelopes(t *testing.T, msg llm.Message) []skillEnvelope {
+	t.Helper()
+	var out []skillEnvelope
+	for _, part := range msg.Content {
+		switch part.Kind {
+		case llm.ContentText:
+			out = append(out, extractSkillEnvelopes(t, part.Text)...)
+		case llm.ContentToolResult:
+			if part.ToolResult == nil {
+				continue
+			}
+			if content, ok := part.ToolResult.Content.(string); ok {
+				out = append(out, extractSkillEnvelopes(t, content)...)
 			}
 		}
 	}

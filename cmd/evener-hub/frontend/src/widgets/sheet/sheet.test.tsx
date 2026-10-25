@@ -1,7 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createPortal } from "react-dom";
 import { expect, test, vi } from "vitest";
 import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
+import { appendPopout } from "../internal/popoutTestUtils";
 import { Sheet } from "./index";
 import sheetStyles from "./sheet.module.css";
 
@@ -336,4 +338,112 @@ test("bodyClassName is appended to the body element", () => {
     </Sheet>,
   );
   expect(screen.getByText("drawer body").className).toMatch(/flush/);
+});
+
+// --- popout realm (Dockview) ---------------------------------------------
+// A Dockview popout is a separate Window/Document. An expandable sheet's drag
+// attaches pointermove/pointerup for the gesture, so those listeners must be
+// on the drag surface's own window; the opener's window never sees the
+// popout's pointer events.
+test("a drag in a popout is driven and ended by that window's pointer events, not the opener's", () => {
+  const { frame, doc } = appendPopout();
+  const view = render(
+    createPortal(
+      <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: true }} onClose={vi.fn()} title="t">
+        Body
+      </Sheet>,
+      doc.body,
+    ),
+  );
+  try {
+    const handle = doc.querySelector<HTMLElement>('[data-testid="sheet-handle"]');
+    if (handle === null) throw new Error("popout sheet handle missing");
+    const geometry = () => doc.querySelector("[data-geometry]")?.getAttribute("data-geometry");
+    expect(geometry()).toBe("full");
+
+    fireEvent.pointerDown(handle, { clientY: 500 });
+    // The opener's window is not part of this drag.
+    fireEvent.pointerMove(document.body, { clientY: 800 });
+    expect(geometry()).toBe("full");
+
+    // The popout's own pointer events drive it.
+    fireEvent.pointerMove(handle, { clientY: 800 });
+    expect(geometry()).toBe("peek");
+
+    // pointerup in the popout ends the gesture; a later move changes nothing.
+    fireEvent.pointerUp(handle, { clientY: 800 });
+    fireEvent.pointerMove(handle, { clientY: 100 });
+    expect(geometry()).toBe("peek");
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
+// The drag's listeners must come off the window they went on. A removal that
+// asked the opener (the pre-fix module-scope `window`) leaves the popout's
+// listeners behind, which no geometry assertion can see.
+test("a popout drag removes its listeners from the popout window", () => {
+  const { frame, doc, win } = appendPopout();
+  const addSpy = vi.spyOn(win, "addEventListener");
+  const removeSpy = vi.spyOn(win, "removeEventListener");
+  const openerAdd = vi.spyOn(window, "addEventListener");
+  const view = render(
+    createPortal(
+      <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: true }} onClose={vi.fn()} title="t">
+        Body
+      </Sheet>,
+      doc.body,
+    ),
+  );
+  try {
+    const handle = doc.querySelector<HTMLElement>('[data-testid="sheet-handle"]');
+    if (handle === null) throw new Error("popout sheet handle missing");
+    fireEvent.pointerDown(handle, { clientY: 500 });
+    const added = addSpy.mock.calls.filter(([type]) => type === "pointermove" || type === "pointerup");
+    expect(added.map(([type]) => type).sort()).toEqual(["pointermove", "pointerup"]);
+    expect(openerAdd.mock.calls.filter(([type]) => type === "pointermove" || type === "pointerup")).toHaveLength(0);
+
+    fireEvent.pointerUp(handle, { clientY: 500 });
+    for (const [type, listener] of added) {
+      expect(removeSpy.mock.calls.some(([t, f]) => t === type && f === listener)).toBe(true);
+    }
+  } finally {
+    view.unmount();
+    frame.remove();
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
+    openerAdd.mockRestore();
+  }
+});
+
+// A sheet closed mid-drag removes the pair from the popout window on unmount.
+test("unmounting a popout sheet mid-drag removes its listeners there", () => {
+  const { frame, doc, win } = appendPopout();
+  const addSpy = vi.spyOn(win, "addEventListener");
+  const removeSpy = vi.spyOn(win, "removeEventListener");
+  const view = render(
+    createPortal(
+      <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: true }} onClose={vi.fn()} title="t">
+        Body
+      </Sheet>,
+      doc.body,
+    ),
+  );
+  try {
+    const handle = doc.querySelector<HTMLElement>('[data-testid="sheet-handle"]');
+    if (handle === null) throw new Error("popout sheet handle missing");
+    fireEvent.pointerDown(handle, { clientY: 500 });
+    const added = addSpy.mock.calls.filter(([type]) => type === "pointermove" || type === "pointerup");
+    expect(added).toHaveLength(2);
+
+    view.unmount();
+    for (const [type, listener] of added) {
+      expect(removeSpy.mock.calls.some(([t, f]) => t === type && f === listener)).toBe(true);
+    }
+  } finally {
+    frame.remove();
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
+  }
 });

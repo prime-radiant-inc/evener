@@ -86,6 +86,14 @@ and `<name>.test.tsx`. Every widget change lands with all of:
   updated to the shipped props;
 - tests that drive the widget through its role and accessible name.
 
+A widget that portals, measures against the viewport, or listens on
+`document`/`window` must resolve the realm it rendered into, not the
+module-scope globals: a Dockview popout is a separate Window with its own
+Document and constructors. Resolve from the widget's own root element ref on
+each render/effect with `ownerDocumentOf`/`ownerWindowOf` from
+`src/widgets/internal/documentRealm.ts` (internal, not barrelled), and compare
+`nodeType` (`1` element, `9` document) rather than cross-realm `instanceof`.
+
 `Button` is the exemplar for file layout, CSS, and test style. A widget that
 sets one of the attention hues must be on the token-contract allowlist; see
 the comment above `SEMANTIC_USE_ALLOWLIST` in `token-contract.test.ts`.

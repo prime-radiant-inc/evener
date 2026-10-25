@@ -1561,8 +1561,11 @@ needs-attention projection and drops the wakes itself, and if that clear fails
 the root's attention drive retries it. A stop meanwhile discards only the
 attention the transcript still owes; a wake whose item is already resolved is
 only forgotten, and the clear leaves the wakes to a pending stop. A delegate
-that can no longer resume never acts on a wake, so its noted wakes do not block
-retirement (the transcript evidence still does for anything pending).
+that can no longer resume never acts on a wake, and a noted wake does not
+decide retirement for any delegate: the transcript fold does. A resolved wake
+is ignored even on a resumable delegate, and anything still pending blocks
+through the fold. The non-blocking retirement snapshot, which deliberately
+skips transcript reads, keeps the wakes as its conservative proxy.
 
 There are no recordless model-bearing drive turns. A drive is not a JobRecord,
 but it is an exact delegate generation governed by the same lease.
