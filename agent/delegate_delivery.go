@@ -1178,6 +1178,18 @@ func (s *Session) replayDelegateDeliveries() error {
 	if s == nil || s.delegateController == nil {
 		return nil
 	}
+	if s.cfg.spawn.delegateController != nil {
+		s.delegateController.mu.Lock()
+		root := s.delegateController.rootRuntime
+		s.delegateController.mu.Unlock()
+		// Inherited executors do not own the shared source inventory. Its root
+		// pump retries receiver failures without failing an unrelated child's
+		// construction, request, or finalization. Keep the fallback when no root
+		// runtime exists, matching scheduleDelegateDeliveryRetry.
+		if root != nil && root != s {
+			return nil
+		}
+	}
 	release, err := s.beginRetirementMutation("delegate_delivery")
 	if err != nil {
 		return err

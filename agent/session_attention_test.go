@@ -2962,40 +2962,99 @@ func TestDelegateAttention_FailedFlushRetainsDeliveryForLiveRetry(t *testing.T) 
 }
 
 func TestDelegateAttention_FailedMutationQueueRetainsOtherOwners(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 3, 1)
-	seedDelegateControllerIdle(t, c, "dlg_a_root", "")
-	seedDelegateControllerIdle(t, c, "dlg_parent", "")
-	seedDelegateControllerIdle(t, c, "dlg_z_child", "dlg_parent")
+	stateDir, workspace := t.TempDir(), t.TempDir()
+	entered, release := make(chan llm.Request, 1), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+		entered <- req
+		<-release
+		return finalResponse("nested observed")
+	}}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
+	meta := schema.SessionMeta{ID: "root-session", ProfileID: "openai", Model: "gpt-5.2", Config: schema.ConfigSnapshot{MaxSubagentDepth: 2}}
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatal(err)
+	}
+	writeEmptyAttentionTranscript(t, transcriptPath(stateDir, meta.ID), meta.ID)
+	clock := agenttest.NewFakeClock()
+	root, err := RestoreSessionFromMetaWithConfig(client, profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: stateDir, ForceRealIO: true, clock: clock, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(root.Close)
+	started := false
+	defer func() {
+		unblock()
+		if started {
+			waitForStableSupervisionRun(t, root, "child-dlg_parent")
+			root.sendersWG.Wait()
+		}
+	}()
+	c := root.delegateController
+	for _, item := range []struct{ id, parent, owner string }{{"dlg_a_root", "", meta.ID}, {"dlg_parent", "", meta.ID}, {"dlg_z_child", "dlg_parent", "child-dlg_parent"}} {
+		created := delegateControllerCreatedEvent(item.id, item.parent)
+		d := &created.Created.Descriptor
+		d.OwnerSessionID, d.ResolvedProfileID, d.ResolvedModel = item.owner, "openai", "gpt-5.2"
+		d.WorkingDir, d.LocalEnvPolicy = workspace, "default"
+		c.mu.Lock()
+		_, err := c.appendLocked(created)
+		c.mu.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeEmptyAttentionTranscript(t, transcriptPath(stateDir, d.ChildSessionID), d.ChildSessionID)
+		if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: d.ChildSessionID, ParentSessionID: item.owner, ProfileID: "openai", Model: "gpt-5.2", IsSubagent: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	seedDelegateControllerDelivery(t, c, "dlg_a_root")
 	seedDelegateControllerDelivery(t, c, "dlg_z_child")
 
-	rootPath := transcriptPath(c.stateDir, "root-session")
-	rootWriter, err := transcript.NewWriter(rootPath, transcript.Header{SessionID: "root-session"})
-	if err != nil {
-		t.Fatalf("create root transcript: %v", err)
+	fs := newAttentionFailNextSyncFS()
+	original := root.transcript
+	if err := original.Close(); err != nil {
+		t.Fatal(err)
 	}
-	root := &Session{id: "root-session", stateDir: c.stateDir, delegateController: c}
+	rootWriter, err := transcript.NewWriterWithFS(fs, transcriptPath(stateDir, meta.ID), transcript.Header{SessionID: meta.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
 	root.attachTranscript(rootWriter)
-	c.rootRuntime = root
+	wakes := make(chan struct{}, 1)
+	root.SetNotifyFunc(func() {
+		select {
+		case wakes <- struct{}{}:
+		default:
+		}
+	})
 	ownerPath := transcriptPath(c.stateDir, "child-dlg_parent")
-	ownerWriter, err := transcript.NewWriter(ownerPath, transcript.Header{SessionID: "child-dlg_parent"})
-	if err != nil {
-		t.Fatalf("create nested owner transcript: %v", err)
-	}
-	if err := ownerWriter.Close(); err != nil {
-		t.Fatalf("close nested owner transcript: %v", err)
-	}
 	plans := c.ReplayDeliveries()
 	if len(plans) != 2 || plans[0].delegateID != "dlg_a_root" || plans[1].delegateID != "dlg_z_child" {
 		t.Fatalf("multi-owner replay plans = %#v", plans)
 	}
-	if err := rootWriter.Close(); err != nil {
-		t.Fatalf("close root transcript writer: %v", err)
+	// Keep this receiver unavailable across any internal writer health retry.
+	// Only the filesystem fault is cleared below, never the transport itself.
+	var rearm func()
+	rearm = func() { fs.failNextSyncWith(rearm) }
+	fs.failNextSyncWith(rearm)
+	if err := root.executeDelegateMutationPlans(delegateMutationPlans{deliveries: plans}); err == nil || !strings.Contains(err.Error(), "injected attention resolution sync failure") {
+		t.Fatalf("multi-owner delivery error=%v, want injected source failure", err)
 	}
-	if err := root.executeDelegateMutationPlans(delegateMutationPlans{deliveries: plans}); err == nil {
-		t.Fatal("multi-owner delivery execution unexpectedly succeeded")
+	var req llm.Request
+	select {
+	case req = <-entered:
+		started = true
+	// TRIPWIRE: bounds a missing automatic owner wake, not ordering.
+	case <-time.After(10 * time.Second):
+		t.Fatal("unrelated owner's delivery did not automatically launch its runtime")
 	}
-	if len(c.durable["dlg_a_root"].PendingDeliveries) != 1 || len(c.durable["dlg_z_child"].PendingDeliveries) != 0 {
+	c.mu.Lock()
+	rootPending, childPending := len(c.durable["dlg_a_root"].PendingDeliveries), len(c.durable["dlg_z_child"].PendingDeliveries)
+	runtime := c.live["dlg_parent"].runtime
+	c.mu.Unlock()
+	if rootPending != 1 || childPending != 0 {
 		t.Fatal("failed source lost its head or unrelated source did not transfer custody")
 	}
 	journal, err := c.store.Load()
@@ -3014,6 +3073,146 @@ func TestDelegateAttention_FailedMutationQueueRetainsOtherOwners(t *testing.T) {
 	entries := notificationRawEntries(t, ownerPath)
 	if len(entries) != 1 || entries[0].Turn.Kind != schema.TurnSteering || entries[0].Turn.AttentionID != "delegate:dlg_z_child/delivery/1" {
 		t.Fatalf("unrelated owner's raw transcript = %+v, want exactly one canonical delivery", entries)
+	}
+	observed := 0
+	for _, message := range req.Messages {
+		if reflect.DeepEqual(message, entries[0].Turn.Message) {
+			observed++
+		}
+	}
+	if observed != 1 {
+		t.Fatalf("unrelated owner request delivery occurrences=%d, want exactly one", observed)
+	}
+	assertAttentionResponseReceipts(t, runtime, "delegate:dlg_z_child/delivery/1", 0)
+	unblock()
+	waitForStableSupervisionRun(t, root, "child-dlg_parent")
+	root.sendersWG.Wait()
+	assertAttentionResponseReceipts(t, runtime, "delegate:dlg_z_child/delivery/1", 1)
+	finished := latestDelegateControllerRunFinished(t, c, "dlg_parent")
+	if finished.Outcome.Status != delegatestore.OutcomeCompleted || finished.Disposition != delegatestore.DispositionReported {
+		t.Errorf("unrelated generation finish=%+v, want completed/reported despite failed sibling source", finished)
+	}
+	if supervisionRequestCount(adapter) != 1 {
+		t.Fatal("unrelated owner did not execute exactly one canonical request")
+	}
+	if !root.delegateDeliveryResiduePending() {
+		t.Fatal("failed source has no automatic root-pump retry")
+	}
+	fs.mu.Lock()
+	fs.failNext, fs.onFail = false, nil
+	fs.mu.Unlock()
+	clock.Advance(jobNotificationRetryInitialDelay)
+	clock.Drain()
+	if got := pendingDeliveryIDs(c, "dlg_a_root"); len(got) != 0 {
+		t.Fatalf("automatic root retry left failed source owed: %v", got)
+	}
+	rootEntries := notificationRawEntries(t, transcriptPath(stateDir, meta.ID))
+	recovered := 0
+	for _, entry := range rootEntries {
+		if entry.Turn.AttentionID == "delegate:dlg_a_root/delivery/1" {
+			recovered++
+		}
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered source custody records=%d, want exactly one", recovered)
+	}
+	select {
+	case <-wakes:
+	default:
+		t.Fatal("automatic root retry did not wake recovered receiver")
+	}
+}
+
+func TestDelegateAttention_InheritedReplayWithoutRootRuntimeRetainsRetry(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_source", "")
+	seedDelegateControllerDelivery(t, c, "dlg_source")
+	path := transcriptPath(c.stateDir, "root-session")
+	writeEmptyAttentionTranscript(t, path, "root-session")
+	child := &Session{id: "child-dlg_source", stateDir: c.stateDir, delegateController: c, clock: agenttest.NewFakeClock(), cfg: SessionConfig{spawn: spawnConfig{delegateController: c}}}
+	if err := child.replayDelegateDeliveries(); !errors.Is(err, errDelegateDeliveryReceiverUnavailable) {
+		t.Fatalf("missing-root replay error=%v, want unavailable receiver", err)
+	}
+	if len(pendingDeliveryIDs(c, "dlg_source")) != 1 || !child.delegateDeliveryResiduePending() {
+		t.Fatal("missing root runtime silently orphaned the source pump")
+	}
+	entries := notificationRawEntries(t, path)
+	if len(entries) != 0 {
+		t.Fatalf("missing-root replay fabricated receiver custody=%+v", entries)
+	}
+}
+
+func TestDelegateAttention_RootRestoreRejectsOtherOwnersInvalidTranscript(t *testing.T) {
+	c, journalPath := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerIdle(t, c, "dlg_owner", "")
+	seedDelegateControllerIdle(t, c, "dlg_source", "dlg_owner")
+	seedDelegateControllerDelivery(t, c, "dlg_source")
+	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "root-session"), "root-session")
+	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "child-dlg_owner"), "wrong-owner")
+	copyDelegateJournalForBootstrap(t, c, journalPath)
+
+	restored, err := RestoreSessionFromMetaWithConfig(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), schema.SessionMeta{ID: "root-session", ProfileID: "openai", Model: "gpt-5.2", Config: schema.ConfigSnapshot{MaxSubagentDepth: 2}}, RestoreSessionConfig{StateDir: c.stateDir, ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true}})
+	if restored != nil {
+		restored.Close()
+		t.Fatal("root restore swallowed another owner's replay failure")
+	}
+	if err == nil || !strings.Contains(err.Error(), "reconcile delegate resources") || !strings.Contains(err.Error(), `transcript session "wrong-owner", want "child-dlg_owner"`) {
+		t.Fatalf("root restore error=%v, want global bootstrap identity refusal", err)
+	}
+	store, err := delegatestore.Open(filepath.Join(jobsDir(c.stateDir, "root-session"), "delegates.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == delegatestore.EventDelegateDeliveryAcknowledged {
+			t.Fatal("failed global source was acknowledged")
+		}
+	}
+}
+
+func TestDelegateAttention_InheritedRestoreRejectsInvalidOwnTranscript(t *testing.T) {
+	for _, malformed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("malformed=%t", malformed), func(t *testing.T) {
+			c, _ := newDelegateControllerTestHarness(t, 2, 1)
+			seedDelegateControllerIdle(t, c, "dlg_owner", "")
+			seedDelegateControllerIdle(t, c, "dlg_source", "dlg_owner")
+			seedDelegateControllerDelivery(t, c, "dlg_source")
+			const sessionID = "child-dlg_owner"
+			path := transcriptPath(c.stateDir, sessionID)
+			writeEmptyAttentionTranscript(t, path, "wrong-owner")
+			if malformed {
+				if err := os.WriteFile(path, []byte("not JSON\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := llm.NewClient()
+			adapter := &fakeAdapter{name: "openai"}
+			client.Register(adapter)
+			restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), schema.SessionMeta{ID: sessionID, ProfileID: "openai", Model: "gpt-5.2", IsSubagent: true}, RestoreSessionConfig{StateDir: c.stateDir, spawn: spawnConfig{parentSessionID: "root-session", delegateController: c, delegateRootSessionID: "root-session", owningDelegateID: "dlg_owner"}, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true}})
+			if restored != nil {
+				restored.Close()
+				t.Fatal("invalid own transcript restored")
+			}
+			if err == nil || !strings.Contains(err.Error(), "open transcript for resume") {
+				t.Fatalf("inherited restore error=%v, want preconstruction transcript refusal", err)
+			}
+			after, readErr := os.ReadFile(path)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if !bytes.Equal(before, after) || len(pendingDeliveryIDs(c, "dlg_source")) != 1 || supervisionRequestCount(adapter) != 0 {
+				t.Fatal("invalid own transcript was changed, acknowledged, or sent to a model")
+			}
+		})
 	}
 }
 
