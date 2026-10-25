@@ -997,6 +997,25 @@ describe("ConversationStore", () => {
 			expect(store.getState().draft).toBe("");
 		});
 
+		it("records the admitted clientMutationId on the pending mutation", async () => {
+			const service = new FakeConversationService();
+			service.receipt = makeReceipt({ clientMutationId: "cmid-admitted" });
+			const store = createConversationStore();
+			await store.getState().open(service, "ref-1");
+			store.getState().setDraft("hello");
+			const seen: string[] = [];
+			const unsubscribe = store.subscribe((state) => {
+				const admitted = state.pendingMutation?.admittedMutationId;
+				if (admitted) seen.push(admitted);
+			});
+			try {
+				await store.getState().send(service, textInput("hello"));
+			} finally {
+				unsubscribe();
+			}
+			expect(seen).toContain("cmid-admitted");
+		});
+
 		it("publishes a replayed Hub receipt as success without retry or failure", async () => {
 			const service = new FakeConversationService();
 			service.receipt = makeReceipt({ disposition: "replayed" });

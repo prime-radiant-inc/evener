@@ -182,6 +182,10 @@ export interface ConversationMutationState {
 	generation: number;
 	/** @internal — monotonic token for stale-check; not for external consumption. */
 	mutationId: number;
+	/** The durable identity the daemon admitted, when the submit returned a
+	 * receipt. The local mutationId remains the stale-check token until the
+	 * field's readers are migrated. */
+	admittedMutationId?: string;
 }
 
 /** Display-safe local acknowledgement of a completed production mutation. A
@@ -3103,6 +3107,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					);
 					// C1: Recheck the exact operation binding after the await.
 					if (!isBindingCurrent(opBinding)) return;
+					// The receipt names the durable row the daemon admitted. Record
+					// that identity on the pending record before the completion
+					// guard, so this success and any later completion compare the
+					// same durable identity rather than the click-time local id.
+					const admittedMutationId = receipt?.clientMutationId;
+					if (admittedMutationId !== undefined && get().pendingMutation?.mutationId === mutationId) {
+						set({ pendingMutation: { ...mutation, admittedMutationId } });
+					}
 					// F4: Check mutationId — out-of-order completion cannot clear a
 					// newer mutation's state.
 					if (get().pendingMutation?.mutationId === mutationId) {
