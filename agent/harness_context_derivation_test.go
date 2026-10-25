@@ -15,6 +15,7 @@ import (
 // without a harness-context decision.
 func TestHarnessContextSitesDeriveFromPredicate(t *testing.T) {
 	t.Parallel()
+	harnessKinds := harnessContextKindNames(t)
 	sites := []struct {
 		file       string
 		function   string
@@ -38,10 +39,13 @@ func TestHarnessContextSitesDeriveFromPredicate(t *testing.T) {
 		if got := harnessContextCallCount(fn.Body); got != 1 {
 			t.Errorf("%s: %s calls HarnessContext %d times, want 1; the site must derive its harness-context kinds from the schema predicate", site.file, site.function, got)
 		}
-		for _, ref := range harnessContextKindRefs(fn.Body) {
+		for _, ref := range harnessContextKindRefs(fn.Body, harnessKinds) {
 			if ref != site.allowedRef {
 				t.Errorf("%s: %s still names schema.%s directly; harness-context kinds belong in TurnKind.HarnessContext", site.file, site.function, ref)
 			}
+		}
+		for _, ref := range harnessContextCaseRefs(fn.Body, harnessKinds) {
+			t.Errorf("%s: %s names schema.%s in a case clause; harness-context kinds belong in TurnKind.HarnessContext", site.file, site.function, ref)
 		}
 	}
 }
@@ -71,12 +75,44 @@ func harnessContextCallCount(body *ast.BlockStmt) (count int) {
 	return count
 }
 
+// harnessContextKindNames reads the kinds named in HarnessContext's own switch,
+// so the site guard tracks a new harness-context kind without a third
+// hand-maintained list.
+func harnessContextKindNames(t *testing.T) map[string]bool {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "schema/turn.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse schema/turn.go: %v", err)
+	}
+	fn := findFuncDecl(file, "HarnessContext")
+	if fn == nil {
+		t.Fatal("schema.TurnKind.HarnessContext not found; update the site guard with its new name")
+	}
+	names := map[string]bool{}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		clause, ok := n.(*ast.CaseClause)
+		if !ok {
+			return true
+		}
+		for _, expr := range clause.List {
+			if ident, ok := expr.(*ast.Ident); ok {
+				names[ident.Name] = true
+			}
+		}
+		return true
+	})
+	if len(names) == 0 {
+		t.Fatal("HarnessContext names no kinds in its switch; update the site guard")
+	}
+	return names
+}
+
 // harnessContextKindRefs lists the schema.TurnKind constants from the
 // harness-context set that a function body names directly. A site that still
 // carries a literal list names them; a site that derives from the predicate
 // does not (expandHistory keeps one deliberate TurnNotesContext self-echo
-// check). Adding a harness-context kind means adding it here too.
-func harnessContextKindRefs(body *ast.BlockStmt) []string {
+// check outside a case clause).
+func harnessContextKindRefs(body *ast.BlockStmt, harnessKinds map[string]bool) []string {
 	var refs []string
 	ast.Inspect(body, func(n ast.Node) bool {
 		sel, ok := n.(*ast.SelectorExpr)
@@ -87,9 +123,36 @@ func harnessContextKindRefs(body *ast.BlockStmt) []string {
 		if !ok || pkg.Name != "schema" {
 			return true
 		}
-		switch sel.Sel.Name {
-		case "TurnEnvironment", "TurnNotesContext", "TurnMemoryContext":
+		if harnessKinds[sel.Sel.Name] {
 			refs = append(refs, sel.Sel.Name)
+		}
+		return true
+	})
+	return refs
+}
+
+// harnessContextCaseRefs lists harness-context kinds named in a case clause.
+// The allowed direct reference (expandHistory's notes self-echo check) belongs
+// in an if condition, so a re-added literal case cannot hide behind it.
+func harnessContextCaseRefs(body *ast.BlockStmt, harnessKinds map[string]bool) []string {
+	var refs []string
+	ast.Inspect(body, func(n ast.Node) bool {
+		clause, ok := n.(*ast.CaseClause)
+		if !ok {
+			return true
+		}
+		for _, expr := range clause.List {
+			ast.Inspect(expr, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				pkg, ok := sel.X.(*ast.Ident)
+				if ok && pkg.Name == "schema" && harnessKinds[sel.Sel.Name] {
+					refs = append(refs, sel.Sel.Name)
+				}
+				return true
+			})
 		}
 		return true
 	})

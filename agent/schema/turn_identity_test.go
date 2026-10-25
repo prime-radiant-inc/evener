@@ -166,8 +166,8 @@ func TestHarnessContextKindsAreClassified(t *testing.T) {
 
 // declaredTurnKinds returns the value of every TurnKind constant declared in
 // the schema package's non-test files, across every const block. Turn kinds
-// declare their type and string value explicitly, so a spec without both is
-// not a turn kind and is skipped.
+// declare their type and string value explicitly; a Turn-prefixed string
+// constant without the type fails rather than escaping the classification.
 func declaredTurnKinds(t *testing.T) []TurnKind {
 	t.Helper()
 	entries, err := os.ReadDir(".")
@@ -194,6 +194,11 @@ func declaredTurnKinds(t *testing.T) []TurnKind {
 				vs, ok := spec.(*ast.ValueSpec)
 				if !ok {
 					continue
+				}
+				if vs.Type == nil && len(vs.Names) == 1 && len(vs.Values) == 1 && strings.HasPrefix(vs.Names[0].Name, "Turn") {
+					if lit, ok := vs.Values[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+						t.Fatalf("%s: Turn-prefixed constant %s declares no TurnKind type; declare it as Name TurnKind = \"VALUE\"", fset.Position(vs.Pos()), vs.Names[0].Name)
+					}
 				}
 				isTurnKind := false
 				var valueExpr ast.Expr
