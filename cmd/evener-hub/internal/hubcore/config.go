@@ -53,6 +53,7 @@ type WebConfig struct {
 	KeybindingsStoreErr       error                    // diagnostic returned while loading the injected store; retained for startup diagnostics
 	DaemonProcesses           daemonprocess.Controller // nil selects verified native process operations
 	RunDir                    string                   // run directory where rendezvous files live
+	SpawnTimeout              time.Duration            // how long the Hub waits for a spawned daemon to report ready; surfaced in settings
 	DaemonIdleTimeout         time.Duration            // configured idle-retirement deadline the Hub passes to spawned daemons; surfaced in settings
 	PastIndexPath             string                   // path to the SQLite past-index DB, for display in settings
 	Roster                    *Roster

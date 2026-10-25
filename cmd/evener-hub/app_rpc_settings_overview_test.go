@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -65,6 +66,7 @@ func TestHubRPCSettingsOverview_HubAndStorage(t *testing.T) {
 		PastIndexPath: pastIndexPath,
 		PastPerPage:   25,
 		Past:          past,
+		SpawnTimeout:  37 * time.Second,
 		// Hermetic: an empty MCPConfigPath would fall back to the ambient
 		// machine's ~/.config/evener/mcp.json, which this test has no business
 		// touching (this test isn't about MCP at all).
@@ -98,8 +100,8 @@ func TestHubRPCSettingsOverview_HubAndStorage(t *testing.T) {
 	if resp.Hub.RunDir != runDir {
 		t.Errorf("Hub.RunDir = %q, want %q", resp.Hub.RunDir, runDir)
 	}
-	if resp.Hub.SpawnTimeout != "30s" {
-		t.Errorf("Hub.SpawnTimeout = %q, want 30s", resp.Hub.SpawnTimeout)
+	if resp.Hub.SpawnTimeout != (37 * time.Second).String() {
+		t.Errorf("Hub.SpawnTimeout = %q, want the configured %v", resp.Hub.SpawnTimeout, 37*time.Second)
 	}
 	if resp.Hub.BearerTokenAge == "" {
 		t.Error("Hub.BearerTokenAge = \"\", want a populated age string (auth-token file exists)")
