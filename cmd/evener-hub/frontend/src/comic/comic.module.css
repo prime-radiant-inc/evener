@@ -24,6 +24,13 @@
   font-family: var(--comic-font);
 }
 
+.comicRoot[data-comic-route="session"] { display: flex; flex-direction: column; height: 100dvh; }
+.session { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
+.session > header, .controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2); }
+.reader { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
+.scroll { position: relative; flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.sourcePanel { min-width: 0; display: grid; }
+
 .row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

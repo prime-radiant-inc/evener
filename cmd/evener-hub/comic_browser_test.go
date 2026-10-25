@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -31,13 +32,7 @@ func TestComicChatBrowser(t *testing.T) {
 	fixture := skillGuardSetup(t)
 	entry := skillGuardStartHelper(t, fixture, 0)
 	ref := skillGuardSessionRef(entry)
-	const literal = "COMIC_READ_SOURCE_3f user-recorded literal *asterisks*"
-	if err := appendFileLine(fixture.control[0], map[string]string{"command": "background-start-turn", "phase": literal}); err != nil {
-		t.Fatal(err)
-	}
-	if err := newSkillGuardChoreography(fixture).waitForTranscriptText(0, literal, 30*time.Second); err != nil {
-		t.Fatal(err)
-	}
+	literal := "COMIC_READ_SOURCE_3f " + strings.Repeat("Literal *asterisks*, `code`, and a source-offset reading point. ", 24)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	roster := hubcore.NewRoster(fixture.runDir, &hubcore.StatusProber{Timeout: 500 * time.Millisecond})
@@ -61,6 +56,9 @@ func TestComicChatBrowser(t *testing.T) {
 	hub := httptest.NewServer(web.Handler())
 	defer hub.Close()
 	evidence := filepath.Join(fixture.artifact, "comic")
+	if requested := os.Getenv("COMICGUARD_EVIDENCE_DIR"); requested != "" {
+		evidence = requested
+	}
 	if err := os.MkdirAll(evidence, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -71,10 +69,21 @@ func TestComicChatBrowser(t *testing.T) {
 			Saved  string `json:"saved,omitempty"`
 			Remote string `json:"remote,omitempty"`
 		} `json:"refs"`
-		EvidenceDir         string `json:"evidenceDir"`
-		RequirePrivateFonts bool   `json:"requirePrivateFonts"`
-		ExpectedSourceText  string `json:"expectedSourceText"`
-	}{BaseURL: hubedge.AuthURLFor(hub.URL, token), EvidenceDir: evidence, ExpectedSourceText: literal}
+		EvidenceDir         string   `json:"evidenceDir"`
+		RequirePrivateFonts bool     `json:"requirePrivateFonts"`
+		ExpectedSourceText  string   `json:"expectedSourceText"`
+		HistoryTexts        []string `json:"historyTexts"`
+		ControlPath         string   `json:"controlPath"`
+		RequestLog          string   `json:"requestLog"`
+	}{BaseURL: hubedge.AuthURLFor(hub.URL, token), EvidenceDir: evidence, ExpectedSourceText: literal,
+		RequirePrivateFonts: os.Getenv("COMICGUARD_PRIVATE_FONTS") == "1", ControlPath: fixture.control[0], RequestLog: fixture.requestLog[0]}
+	for i := range 75 {
+		text := fmt.Sprintf("COMIC_HISTORY_%02d literal history", i)
+		if i == 27 {
+			text += strings.Repeat(" Older source *literal* reading offset. ", 30)
+		}
+		input.HistoryTexts = append(input.HistoryTexts, text)
+	}
 	input.Refs.Live = ref
 	data, err := json.Marshal(input)
 	if err != nil {

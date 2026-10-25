@@ -1,41 +1,15 @@
 import { selectLocation } from "@evener/appwire-client/state/navigation";
-import { useEffect, useState } from "react";
-import { type TranscriptReader, useTranscriptReader } from "../panes/session/transcript/useTranscript";
+import { useEffect, useId, useMemo, useState } from "react";
+import { useTranscriptReader } from "../panes/session/transcript/useTranscript";
 import { useConnectionStore } from "../stores/connection";
 import { navigationStore, useNavigationStore } from "../stores/navigation/store";
 import { useThreadsStore } from "../stores/threads";
 import { useThreadModel } from "../stores/useThreadModel";
-import { Button } from "../widgets";
-import { ComicPlainTranscript } from "./ComicPlainTranscript";
+import { Button, Select } from "../widgets";
+import { ComicTranscript } from "./ComicTranscript";
+import styles from "./comic.module.css";
 import { projectComicConversation } from "./projection";
-
-let nextReader = 0;
-function makeReader(): TranscriptReader & { dispose(): void } {
-  const id = `comic-reader:${++nextReader}`;
-  let alive = true;
-  const subscribers = new Set<() => void>();
-  return {
-    id,
-    membership: "standalone",
-    get alive() {
-      return alive;
-    },
-    get readable() {
-      return alive;
-    },
-    subscribe(listener) {
-      subscribers.add(listener);
-      return () => {
-        subscribers.delete(listener);
-      };
-    },
-    dispose() {
-      alive = false;
-      for (const listener of subscribers) listener();
-      subscribers.clear();
-    },
-  };
-}
+import { useComicReader } from "./useComicReader";
 
 export function ComicSession({
   sessionRef,
@@ -46,13 +20,15 @@ export function ComicSession({
   onReplaceRef(ref: string): void;
   onSelectRef(ref: string): void;
 }): React.ReactElement {
-  const [reader] = useState(makeReader);
+  const reader = useComicReader(sessionRef);
+  const viewId = useId();
+  const [mode, setMode] = useState<"comic" | "plain">("comic");
   const model = useThreadModel(sessionRef);
-  const transcript = useTranscriptReader(sessionRef, reader);
+  const transcript = useTranscriptReader(sessionRef, reader.reader);
+  const entries = useMemo(() => (model ? projectComicConversation(model) : []), [model]);
   const deleted = useThreadsStore((state) => state.deletedRefs.has(sessionRef));
   const connection = useConnectionStore((state) => state.state);
   const location = useNavigationStore(selectLocation(sessionRef));
-  useEffect(() => () => reader.dispose(), [reader]);
   useEffect(() => {
     if (connection !== "ready") return;
     void navigationStore
@@ -65,34 +41,29 @@ export function ComicSession({
     if (resolvedRef && resolvedRef !== sessionRef) onReplaceRef(resolvedRef);
   }, [model?.ref, sessionRef, onReplaceRef]);
   return (
-    <section aria-label="Comic conversation">
+    <section className={styles.session} aria-label="Comic conversation">
       <header>
         <Button variant="link" onClick={() => onSelectRef("")}>
           Conversations
         </Button>
         <a href={`/s/${encodeURIComponent(sessionRef)}`}>Open in regular UI</a>
+        <label htmlFor={viewId}>
+          View
+          <Select
+            id={viewId}
+            value={mode}
+            options={[
+              { value: "comic", label: "Comic" },
+              { value: "plain", label: "Plain" },
+            ]}
+            onChange={(event) => setMode(event.target.value as "comic" | "plain")}
+          />
+        </label>
       </header>
       {!!location?.error && <div role="alert">Navigation location unavailable</div>}
       {deleted && <div role="alert">This conversation is no longer available</div>}
       {!model && !deleted && <p role="status">Loading conversation</p>}
-      {model && (
-        <>
-          <ComicPlainTranscript entries={projectComicConversation(model)} />
-          {transcript.hasOlder && (
-            <Button variant="link" disabled={transcript.loadingOlder} onClick={transcript.loadOlderReportingError}>
-              Older messages
-            </Button>
-          )}
-          {transcript.olderError && (
-            <div role="alert">
-              {transcript.olderError}{" "}
-              <Button variant="link" onClick={transcript.loadOlderReportingError}>
-                Retry
-              </Button>
-            </div>
-          )}
-        </>
-      )}
+      {model && <ComicTranscript key={sessionRef} entries={entries} history={transcript} reader={reader} mode={mode} />}
     </section>
   );
 }

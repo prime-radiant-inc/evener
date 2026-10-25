@@ -20,7 +20,7 @@ export function ComicPlainTranscript({ entries }: { entries: readonly ComicEntry
         )}
         {entry.kind === "thought" && <span> · Thought</span>}
       </div>
-      {entry.text && <div>{entry.text}</div>}
+      {entry.text && <div data-comic-text="">{entry.text}</div>}
       {entry.images && <ImageGallery images={entry.images} />}
     </li>
   );
