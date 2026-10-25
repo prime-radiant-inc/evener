@@ -222,7 +222,7 @@ func TestFromChatCompletionResponseRescuePreservesNonCanonicalJSON(t *testing.T)
 			},
 		},
 	}
-	resp, err := fromChatCompletionResponse(raw, nil)
+	resp, err := fromChatCompletionResponse(raw, nil, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}

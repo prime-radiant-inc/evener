@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -51,6 +52,27 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 	}
 	if calls := resp.ToolCalls(); len(calls) != 0 {
 		t.Fatalf("ToolCalls() = %d, want 0: %+v", len(calls), calls)
+	}
+}
+
+func TestExtractRecordedResponse_ResponsesSSE_TerminalRawArguments(t *testing.T) {
+	args := `{ "path" : "` + "\xff" + `" }`
+	payload := []byte(`{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.2","status":"completed","output":[{"type":"function_call","call_id":"call_1","id":"item_1","name":"write_file","arguments":`)
+	payload = append(payload, jsonStringToken(args)...)
+	payload = append(payload, []byte(`}]}}`)...)
+	body := append([]byte("event: response.completed\ndata: "), payload...)
+	body = append(body, '\n', '\n')
+
+	resp, err := ExtractRecordedResponse(body, "gpt-5.2")
+	if err != nil {
+		t.Fatalf("ExtractRecordedResponse: %v", err)
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ToolCalls() = %d, want 1", len(calls))
+	}
+	if !bytes.Equal(calls[0].Arguments, []byte(args)) {
+		t.Fatalf("Arguments = %q (% x), want %q (% x)", calls[0].Arguments, calls[0].Arguments, args, []byte(args))
 	}
 }
 
@@ -106,6 +128,74 @@ func TestExtractRecordedResponse_ResponsesSSE_SynthesizesFromAccumulatedItems(t 
 	if calls[0].Name != "write_file" {
 		t.Fatalf("tool call name = %q, want write_file", calls[0].Name)
 	}
+}
+
+func TestExtractRecordedResponse_ResponsesSSE_AccumulatedRawArguments(t *testing.T) {
+	args := `{ "path" : "` + "\xfe" + `" }`
+	done := []byte(`{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","id":"item_1","name":"write_file","arguments":`)
+	done = append(done, jsonStringToken(args)...)
+	done = append(done, []byte(`}}`)...)
+	body := append([]byte("event: response.output_item.done\ndata: "), done...)
+	body = append(body, []byte("\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.2\",\"status\":\"completed\",\"output\":[]}}\n\n")...)
+
+	resp, err := ExtractRecordedResponse(body, "gpt-5.2")
+	if err != nil {
+		t.Fatalf("ExtractRecordedResponse: %v", err)
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ToolCalls() = %d, want 1", len(calls))
+	}
+	if !bytes.Equal(calls[0].Arguments, []byte(args)) {
+		t.Fatalf("Arguments = %q (% x), want %q (% x)", calls[0].Arguments, calls[0].Arguments, args, []byte(args))
+	}
+}
+
+func TestExtractRecordedResponse_ResponsesSSE_ArgumentsDoneRawArguments(t *testing.T) {
+	want := []byte(`{"path":"` + "\xfe" + `final.txt"}`)
+	resp, err := ExtractRecordedResponse(rawArgumentsDoneSSE(string(want)), "gpt-5.5")
+	if err != nil {
+		t.Fatalf("ExtractRecordedResponse: %v", err)
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ToolCalls() = %d, want 1", len(calls))
+	}
+	if !bytes.Equal(calls[0].Arguments, want) {
+		t.Fatalf("Arguments = %q (% x), want %q (% x)", calls[0].Arguments, calls[0].Arguments, want, want)
+	}
+}
+
+func TestExtractRecordedResponse_ResponsesSSE_MultipleArgumentsDonePreserveCallRouting(t *testing.T) {
+	want := [][]byte{
+		[]byte(`{"first":"` + "\xff" + `final"}`),
+		[]byte(`{"second":"` + "\xfe" + `final"}`),
+	}
+	resp, err := ExtractRecordedResponse(rawMultipleArgumentsDoneSSE(string(want[0]), string(want[1])), "gpt-5.5")
+	if err != nil {
+		t.Fatalf("ExtractRecordedResponse: %v", err)
+	}
+	assertRawArgsByIndex(t, responseToolCallArguments(resp), want)
+}
+
+func TestExtractRecordedResponse_ResponsesSSE_DeltaOnlyRawArguments(t *testing.T) {
+	fragments := []string{`{"path":"`, "\xfffile.txt\"}"}
+	want := append([]byte(fragments[0]), []byte(fragments[1])...)
+	resp, err := ExtractRecordedResponse(rawDeltaOnlySSE("delta", fragments...), "gpt-5.5")
+	if err != nil {
+		t.Fatalf("ExtractRecordedResponse: %v", err)
+	}
+	assertRawArgsByIndex(t, responseToolCallArguments(resp), [][]byte{want})
+}
+
+func TestExtractRecordedResponse_ResponsesSSE_ArgumentsFieldDeltaPreservesRawBytes(t *testing.T) {
+	fragments := []string{`{"path":"`, "\xfffile.txt\"}"}
+	want := append([]byte(fragments[0]), []byte(fragments[1])...)
+	resp, err := ExtractRecordedResponse(rawDeltaOnlySSE("arguments", fragments...), "gpt-5.5")
+	if err != nil {
+		t.Fatalf("ExtractRecordedResponse: %v", err)
+	}
+	assertRawArgsByIndex(t, responseToolCallArguments(resp), [][]byte{want})
 }
 
 // TestExtractRecordedResponse_EmptyBody covers the empty body error path.
