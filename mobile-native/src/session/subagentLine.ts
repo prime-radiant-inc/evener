@@ -20,6 +20,9 @@ export interface SubagentLine {
 	activityFrom?: "roster" | "tree";
 	/** The subagent's own transcript, which tapping the row opens. */
 	ref?: string;
+	/** When its run started, so the screen it opens times the run as this row
+	 * does, before the coordinator's tree reports the row (#2988). */
+	runStartedAt?: string;
 	/** The subagent's id, for its outcome in the coordinator's tree. */
 	delegateId?: string;
 	runGeneration?: number;
@@ -77,6 +80,10 @@ export function subagentLine(
 		state,
 		stateText,
 		ref: delegate.transcriptRef,
+		// Only a running row needs its run's start: a finished row's screen is
+		// no Working time, and carrying an old start could time a winding-down
+		// session by a run that already ended (#2988).
+		...(state === "running" && delegate.runStartedAt !== undefined ? { runStartedAt: delegate.runStartedAt } : {}),
 		delegateId: delegate.delegateId,
 		runGeneration: delegate.runGeneration,
 	};

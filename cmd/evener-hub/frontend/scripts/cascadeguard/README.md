@@ -21,6 +21,17 @@ production SPA and activates those actual delegate rows.
 Go passes the authenticated fixture JSON through Node's stdin pipe, keeping
 its auth URL out of process arguments and environment variables.
 
+`scripts/cascadeguard/attention.mjs` owns the floating Next-needs-you journey
+and is imported by `run.mjs` after the cascade journeys. Go creates nothing for
+it up front: the driver writes `{"command":"create-attention"}` to
+`attention-control.jsonl`, and only then does Go start 52 real root sessions.
+Each first model round fails with a non-retryable provider error, so each
+session ends its turn errored - live, in the public needs_you tier, with no
+pending question or approval. Go writes `attention-ready.json` only once the
+public page carries every session. That is the only fixture state: the tier is
+the hub's own `needs_you` section, one full 50-row page plus two later rows,
+and the cascade journey above runs with no extra sessions and no extra daemons.
+
 The guard checks:
 
 - The mounted origin conversation never renders in the pane: no readable
@@ -92,6 +103,64 @@ The guard checks:
   the activity controls - with no path nav or pane title and a usable
   close-only Return, plus the ordinary phone Agents row opening the child's
   live conversation.
+- The floating attention control against that real tier: a structured draft
+  with a catalog skill atom and a real staged PNG held at native encoder
+  completion, an away-reading source, then Next, Next, real browser Back,
+  Forward and Back to the origin. After every hop `location.pathname`, the
+  focused pane's ref and the history entry's runtime attention token must
+  agree, and Back restores the exact origin pane record with its draft, image
+  and reading point. A hop leaves the editor unfocused. Each attention session
+  ends its held turn on a non-retryable provider failure, so it needs you
+  without a pending question; a pending question deliberately hides the
+  control and cannot be a hop target.
+- A completed 500ms native pointer hold opens the list without navigating and
+  its release click is consumed; movement past the 10px tolerance cancels the
+  hold and releases outside the button, so no click navigates. Escape restores
+  the More trigger.
+- Actual geometry at 320, 390, 700, 899, 900, 1024 and 1400 CSS pixels in both
+  themes: the control, Next and More fit the viewport, Next and More are
+  distinct hit areas, neither overlaps the composer nor the Send/Stop button,
+  the end clearance equals the measured stack, and the last text row is
+  hit-testable above the floating stack's bottom edge at the end. The matrix
+  records `control:false` for any width where the control is not offered and
+  fails at the end naming every such width.
+
+  The matrix passed at all seven widths in both themes on 2026-10-22 after the
+  driver began dismissing the source activity sidebar before measuring (on the
+  phone host it is a full-screen overlay that otherwise covers the control).
+  Native hold and cancel pass. The already-presented target is recorded as
+  blocked: an ordinary rail open replaces the primary session pane here, so no
+  source pane survives to compare an in-place focus against. A long fixture
+  title is not asserted: `ThreadStartParams` carries no title, and a session
+  rename never reached the hub's needs_you summary, so the control's title
+  truncation has no real provider path yet.
+- The measured clearance row cannot toggle New Content: asserted by the unit
+  suite (`Session.test.tsx`, clearance driven 0 → 96 → 0 with the pill and the
+  reader's position checked at each step), not yet reached by this browser leg.
+- A real response held at native delivery: Go starts one root on the driver's
+  command and parks its first provider call, so the reply exists but is not
+  delivered. The reader opens that session, hops Next to a needs-you target,
+  returns with Back, and the reply is then released unchanged. The delivered
+  text must appear in place, and `location.pathname`, the focused pane ref, its
+  pane ID, the history entry's attention token and `history.length` must all be
+  unchanged afterwards, so a late response navigates nothing. The fixed
+  hold/cancel and encoder holds are untouched: only the provider reply waits.
+- A transport-boundary failure on a later read: the open hub socket refuses the
+  write of the app's own `needs_you` page-two read, so no frame reaches the hub
+  and that page errors without a reconnect. The list stays open with its first
+  50 rows intact, and a deliberate second press of Load more issues exactly one
+  later-page read at offset 50, which the hub answers. Both pages then carry 52
+  rows in the hub's order, and an earlier-page row still opens with URL and pane
+  agreeing. The refused frame is injected in the page at the socket write, is
+  recorded as an attempt, and is reported as such; no frontend store is seeded.
+- The hub's public two-page tier (50 + 2 rows, exact remaining counts) checked
+  from Go, and the attention tier's absence from every earlier cascade
+  assertion because the provider holds each first round until the driver
+  releases it.
+
+The attention module runs at desktop widths in headless Chrome. Safari,
+physical-phone touch and keyboard behavior, and the native app are not
+qualified by it.
 
 The center legitimately retains shared root demand. Closed-peek release is
 checked on an ancestor with no independent holder, rather than treating every

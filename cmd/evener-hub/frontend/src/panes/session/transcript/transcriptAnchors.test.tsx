@@ -2,7 +2,7 @@ import type { ItemModel, ProjectedEntry, ProjectedTurn, ThreadModel, TurnModel }
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { createRef } from "react";
+import { createRef, type ReactNode } from "react";
 import { beforeEach, expect, test } from "vitest";
 import { useStore } from "zustand";
 import { ClientProvider } from "../../../shell/clientContext";
@@ -38,6 +38,31 @@ import { retainedTranscriptReadView } from "./transcriptReadView";
 import { resetTranscriptPagingForTests } from "./useTranscript";
 
 beforeEach(resetDisclosureStoreForTests);
+
+// Attachment measurements run after commit, before browser rendering updates or
+// reader input. Keep that ordering before establishing a measured reading point.
+async function renderMeasured(body: ReactNode) {
+  return act(async () => render(body));
+}
+
+async function notifyWithNewRows(
+  external: ReturnType<typeof installTranscriptGeometry>,
+  frames?: ReturnType<typeof holdReaderFrames>,
+) {
+  const delivered = new Set<Element>();
+  let pending = external.observedTargets();
+  let updates = 0;
+  // A range change can attach refs after this observer delivery. The browser
+  // observes those new rows too, even while upstream skips ref reads mid-scroll.
+  // Reconciliation frames can mount another window before its observations.
+  while (pending.length > 0 || (frames?.pending.size ?? 0) > 0) {
+    if (++updates > 100) throw new Error("Transcript rendering updates did not settle");
+    const targets = new Set(pending);
+    for (const target of targets) delivered.add(target);
+    await act(async () => external.notify((target) => targets.has(target)));
+    pending = external.observedTargets().filter((target) => !delivered.has(target));
+  }
+}
 
 test.each(["input", "close", "reset", "replacement"] as const)(
   "real same-ref read-only readers isolate %s with pending measurements",
@@ -253,10 +278,12 @@ test.each([
 // row above it growing writes past the uncommitted sizer's end; the browser
 // clamps that write, and VirtualList completes it after the sizer commits.
 test("a retained reader completes a clamped write when a row above it grows", async () => {
-  const scene = mountReaderScene("retained-clamped-growth", [300, 300, 300, 300, 300], {
-    estimate: 300,
-    viewportHeight: 500,
-  });
+  const scene = await act(async () =>
+    mountReaderScene("retained-clamped-growth", [300, 300, 300, 300, 300], {
+      estimate: 300,
+      viewportHeight: 500,
+    }),
+  );
   const row3 = () => scene.port().querySelector('[data-index="3"]')?.getBoundingClientRect().top;
   try {
     await scene.start(900);
@@ -573,7 +600,7 @@ test.each([
     const model = { ...makeTranscriptPreviewModel(), turns: [row("current"), row("tail")] };
     let mounted: ReturnType<typeof render> | undefined;
     try {
-      mounted = render(
+      mounted = await renderMeasured(
         <TranscriptBody
           model={model}
           config={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
@@ -637,7 +664,7 @@ test.each([
     const listRef = createRef<VirtualListHandle>();
     let mounted: ReturnType<typeof render> | undefined;
     try {
-      mounted = render(
+      mounted = await renderMeasured(
         <TranscriptBody
           model={{ ...makeTranscriptPreviewModel(), turns: [readingRow("current"), readingRow("tail")] }}
           config={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
@@ -706,7 +733,7 @@ test.each([
   const listRef = createRef<VirtualListHandle>();
   let mounted: ReturnType<typeof render> | undefined;
   try {
-    mounted = render(
+    mounted = await renderMeasured(
       <TranscriptBody
         model={{ ...makeTranscriptPreviewModel(), turns: [readingRow("current"), readingRow("tail")] }}
         config={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
@@ -764,7 +791,7 @@ test("width-only reflow preserves useful content beside a Chat-filtered daemon s
   const listRef = createRef<VirtualListHandle>();
   let mounted: ReturnType<typeof render> | undefined;
   try {
-    mounted = render(
+    mounted = await renderMeasured(
       <TranscriptBody
         model={{
           ...makeTranscriptPreviewModel(),
@@ -828,7 +855,7 @@ test("width-only reflow preserves the first visible row beside a fractional pred
   const listRef = createRef<VirtualListHandle>();
   let mounted: ReturnType<typeof render> | undefined;
   try {
-    mounted = render(
+    mounted = await renderMeasured(
       <TranscriptBody
         model={{
           ...makeTranscriptPreviewModel(),
@@ -896,7 +923,7 @@ test("width-only reflow keeps end following without restoring stale entry focus"
   const listRef = createRef<VirtualListHandle>();
   let mounted: ReturnType<typeof render> | undefined;
   try {
-    mounted = render(
+    mounted = await renderMeasured(
       <>
         <button type="button">Outside follower</button>
         <TranscriptBody
@@ -950,7 +977,7 @@ test.each(["zero width", "zero viewport", "zero row", "repeated widths"])(
     const listRef = createRef<VirtualListHandle>();
     let mounted: ReturnType<typeof render> | undefined;
     try {
-      mounted = render(
+      mounted = await renderMeasured(
         <TranscriptBody
           model={{ ...makeTranscriptPreviewModel(), turns: [readingRow("current"), readingRow("tail")] }}
           config={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
@@ -971,7 +998,7 @@ test.each(["zero width", "zero viewport", "zero row", "repeated widths"])(
       geometry.width = 352;
       geometry.viewportHeight = scene === "zero width" ? 500 : 400;
       geometry.rowHeights = [scene === "zero width" ? 1600 : scene === "repeated widths" ? 1000 : 700, 1000];
-      await act(async () => external.notify());
+      await notifyWithNewRows(external);
       const want = scene === "zero width" ? 825 : scene === "repeated widths" ? 450 : 225;
       await waitFor(() => expect(port.scrollTop).toBe(want));
       await waitFor(() =>
@@ -1004,7 +1031,7 @@ test("width-only reflow retains the pre-arm capture when the real read view beco
   try {
     view.setReadable(true);
     const firstRef = createRef<VirtualListHandle>();
-    mounted = render(
+    mounted = await renderMeasured(
       <TranscriptBody
         model={model}
         config={config}
@@ -1033,7 +1060,7 @@ test("width-only reflow retains the pre-arm capture when the real read view beco
     mounted.unmount();
     view.setReadable(true);
     const returnedRef = createRef<VirtualListHandle>();
-    mounted = render(
+    mounted = await renderMeasured(
       <TranscriptBody
         model={model}
         config={config}
@@ -1084,7 +1111,7 @@ test("width-only reflow transfers the original point through real display captur
   let mounted: ReturnType<typeof render> | undefined;
   let unsubscribe: (() => void) | undefined;
   try {
-    mounted = render(<DisplayReader />);
+    mounted = await renderMeasured(<DisplayReader />);
     const port = listRef.current?.getScrollElement();
     if (!port) throw new Error("Display reader has no port");
     await startReading(port, external.notify);
@@ -1131,13 +1158,14 @@ test("width-only reflow applies a real 300px prepend once", async () => {
   );
   let mounted: ReturnType<typeof render> | undefined;
   try {
-    mounted = render(body(model));
+    mounted = await renderMeasured(body(model));
     const port = listRef.current?.getScrollElement();
     if (!port) throw new Error("Prepend reader has no port");
     await startReading(port, external.notify);
     geometry.width = 352;
     geometry.rowHeights = [300, 1000, 1000];
-    mounted.rerender(body({ ...model, turns: [readingRow("older"), ...model.turns] }));
+    const { rerender } = mounted;
+    await act(async () => rerender(body({ ...model, turns: [readingRow("older"), ...model.turns] })));
     await act(async () => external.notify());
     await waitFor(() => expect(port.scrollTop).toBe(750));
     await waitFor(() =>
@@ -1159,7 +1187,7 @@ test("width-only reflow retains original intent through a real clamp and later r
   const listRef = createRef<VirtualListHandle>();
   let mounted: ReturnType<typeof render> | undefined;
   try {
-    mounted = render(
+    mounted = await renderMeasured(
       <TranscriptBody
         model={{ ...makeTranscriptPreviewModel(), turns: [readingRow("current"), readingRow("tail")] }}
         config={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
@@ -1202,10 +1230,11 @@ test("width-only reflow retains original intent through a real clamp and later r
 test("width-only reflow mounts its known source after shrink removes it from the rendered range", async () => {
   const geometry = { width: 152, viewportHeight: 400, rowHeights: [1600, ...Array.from({ length: 20 }, () => 96)] };
   const external = installTranscriptGeometry(() => geometry);
+  const frames = holdReaderFrames();
   const listRef = createRef<VirtualListHandle>();
   let mounted: ReturnType<typeof render> | undefined;
   try {
-    mounted = render(
+    mounted = await renderMeasured(
       <TranscriptBody
         model={{
           ...makeTranscriptPreviewModel(),
@@ -1225,7 +1254,7 @@ test("width-only reflow mounts its known source after shrink removes it from the
     geometry.rowHeights[0] = 100;
     await act(async () => external.notify());
     // The next observer delivery measures newly mounted overscan, including equal estimates.
-    await act(async () => external.notify());
+    await notifyWithNewRows(external, frames);
     await waitFor(() => expect(port.scrollTop).toBe(0));
     await waitFor(() =>
       expect(captureTranscriptView("outside-reflow")).toMatchObject({ anchorId: "current-entry", anchorOffset: 0 }),
@@ -1236,6 +1265,7 @@ test("width-only reflow mounts its known source after shrink removes it from the
   } finally {
     mounted?.unmount();
     external.restore();
+    frames.restore();
     resetTranscriptViewRegistryForTests();
   }
 });
@@ -1277,7 +1307,7 @@ test.each(["tools", "intent"] as const)(
     );
     let mounted: ReturnType<typeof render> | undefined;
     try {
-      mounted = render(body("full"));
+      mounted = await renderMeasured(body("full"));
       const port = listRef.current?.getScrollElement();
       if (!port) throw new Error("Alias reader has no port");
       await act(async () => {
@@ -1356,7 +1386,7 @@ test.each([
     );
     let mounted: ReturnType<typeof render> | undefined;
     try {
-      mounted = render(body(false));
+      mounted = await renderMeasured(body(false));
       const port = listRef.current?.getScrollElement();
       if (!port) throw new Error("Missing-source reader has no port");
       await act(async () => {
@@ -1422,13 +1452,14 @@ test.each([
     );
     let mounted: ReturnType<typeof render> | undefined;
     try {
-      mounted = render(body(false));
+      mounted = await renderMeasured(body(false));
       const port = listRef.current?.getScrollElement();
       if (!port) throw new Error("Real normalized reader has no port");
       await startReading(port, external.notify);
       geometry.width = 352;
       geometry.rowHeights = [height];
-      mounted.rerender(body(true));
+      const { rerender } = mounted;
+      await act(async () => rerender(body(true)));
       await act(async () => external.notify());
       await waitFor(() => expect(port.scrollTop).toBe(want));
       await waitFor(() =>
@@ -1482,7 +1513,7 @@ test("a real body restores the same entry and offset after collapse and an older
     return port;
   };
   try {
-    first = render(
+    first = await renderMeasured(
       <TranscriptBody
         model={model}
         config={config}
@@ -1504,7 +1535,7 @@ test("a real body restores the same entry and offset after collapse and an older
     first.unmount();
     geometry.rowHeights = [500, 500, 4500];
     const returnedRef = createRef<VirtualListHandle>();
-    returned = render(
+    returned = await renderMeasured(
       <TranscriptBody
         model={{ ...model, turns: [row("older"), ...model.turns] }}
         config={config}
