@@ -52,7 +52,10 @@ Revision notes:
   surfaced. First, a read-only workspace under host `/tmp` was preserved only
   through the cwd re-bind; an accepted outside cwd removed that bind and hid
   workspace files that `cd` from the default cwd could still read. The
-  file-tool anchor now joins the bwrap candidates independently of cwd.
+  workspace anchor (`Git.WorktreeRoot`, the session root for a non-git
+  session) now joins the bwrap candidates independently of cwd. Content
+  carve-outs stay out of that early bind and keep their validated handler
+  after the masks.
   Second, the resolved visibility check must judge explicit grants by their
   resolved spelling too, so a literal cwd under a symlinked writable root
   under `/tmp` is accepted. The symlinked-read-root test's `pwd` expectation
@@ -73,9 +76,9 @@ Intended tracked deliverables:
   spawned-layer read predicate beside `FileToolCanRead`.
 - `agent/sandbox/backend.go` — `Wrapper.CommandCWDVisible`, the
   backend-namespace companion for the private `/tmp` and `/dev` mounts.
-- `agent/sandbox/bwrap.go` — the file-tool workspace anchor joins the cwd
-  re-bind candidates, so a workspace under `/tmp` stays visible when the
-  chosen cwd is elsewhere.
+- `agent/sandbox/bwrap.go` — the workspace anchor joins the cwd re-bind
+  candidates, so a workspace under `/tmp` stays visible when the chosen cwd
+  is elsewhere.
 - `agent/sandbox/backend_test.go` and
   `agent/sandbox/resolve_canread_test.go` — predicate matrices.
 - `agent/execenv/local.go` — `EnsureCommandWorkingDirectory` canonicalises,
@@ -252,7 +255,7 @@ read"), replacing today's "which escapes the sandbox".
   so it stays refused unless it is an explicit grant. Seatbelt has no
   private mount namespace and accepts an unmasked path there.
 - The workspace stays visible from an accepted outside cwd, including a
-  workspace under host `/tmp`: the wrapper re-binds the file-tool anchor
+  workspace under host `/tmp`: the wrapper re-binds the workspace anchor
   independently of the chosen cwd.
 - Restricted mode accepts a `cwd` in a spawned read root or an unmasked
   carve-out (for example the worktree or a system root) instead of
