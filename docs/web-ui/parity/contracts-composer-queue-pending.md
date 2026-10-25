@@ -98,10 +98,15 @@ except where a line says so itself.
   for reload. Adoption clears only the exact incorporated draft revision, so a
   newer ordinary draft from another pane or tab survives. The preserving
   composer is excluded from its own newer-edit check, so a same-ref conflict
-  still remembers the fresh row.
+  still remembers the fresh row. An explicit activation that merged a newer
+  draft into the stale row is newer work too; delayed adoption leaves the
+  merged text and attachments alone.
 - When another tab retargets recovery during preservation, the adopted row's
   resumed ref is reconciled with the originating seat: the ref mapping moves
   with the seat and a Send targets the preserved ref, not the superseded one.
+  If the originating pane is disposed first, preservation still records the
+  destination selection and ref-to-seat mapping unless another owner already
+  established that mapping.
 - A pane disposed while a refused recovery write awaits storage preserves the
   newest complete composition captured at disposal: text, selections, payload
   input and settled attachment bytes. The fresh row becomes the seat's

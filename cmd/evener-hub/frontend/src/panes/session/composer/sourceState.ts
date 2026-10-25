@@ -23,6 +23,7 @@ import {
   readComposerDraftSnapshot,
   readDraftRevision,
   readRecoverySelection,
+  readRefComposerSeat,
   writeComposerDraft,
   writeRecoverySelection,
   writeRefComposerSeat,
@@ -285,6 +286,9 @@ export function createComposerSourceState(
   let userEditEpoch = 0;
   let selectionUserEditEpoch = 0;
   let recoveryTargetRef = ref;
+  // An explicit activation that merged this composer's newer draft into the
+  // recovery row. Delayed preservation must not replace that work.
+  let activationIncorporatedWork = false;
   let cleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let cleanupRetryAttempt = 0;
   let cleanupRetryVersion = 0;
@@ -389,6 +393,7 @@ export function createComposerSourceState(
     options?: { replaceSelection?: string; keepSelection?: boolean },
   ): void {
     if (disposed) return;
+    activationIncorporatedWork = false;
     const activeRecoveryId = record?.clientMutationId ?? null;
     if (currentRecoveryId() !== activeRecoveryId) {
       cancelCleanupRetry();
@@ -436,6 +441,15 @@ export function createComposerSourceState(
     // A destination composer editing the same recovery row owns newer work.
     // Keep its selection so a reload restores that work, not this older row.
     if (destinationHasNewerEdits(recoverySelectionOwnerId, targetRef, staleId, source)) return false;
+    if (targetRef !== ref && selectionOwnerId !== undefined) {
+      // The destination may be another tab's retarget, recorded after this
+      // pane was disposed. Persist this seat under that ref unless another
+      // owner already established it.
+      const establishedSeat = readRefComposerSeat(targetRef);
+      if (establishedSeat === undefined || establishedSeat === selectionOwnerId) {
+        writeRefComposerSeat(targetRef, selectionOwnerId);
+      }
+    }
     writeRecoverySelection(targetRef, recoverySelectionOwnerId, preserved.clientMutationId);
     // The stale row's ref no longer holds this composition; a composer that
     // restores there would look for a row that moved.
@@ -453,6 +467,7 @@ export function createComposerSourceState(
     if (currentRecoveryId() !== staleId) return;
     if (operations.hasPending) return;
     if (userEditEpoch !== selectionUserEditEpoch) return;
+    if (activationIncorporatedWork) return;
     const recovered = recoveryComposerDraft(preserved);
     const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
     Object.assign(recovered, visible);
@@ -480,7 +495,7 @@ export function createComposerSourceState(
 
   function ownsStaleRecoveryWithNewerEdits(targetRef: string, staleId: string): boolean {
     if (disposed || ref !== targetRef || currentRecoveryId() !== staleId) return false;
-    return userEditEpoch !== selectionUserEditEpoch || operations.hasPending;
+    return activationIncorporatedWork || userEditEpoch !== selectionUserEditEpoch || operations.hasPending;
   }
   function persistDraft(text: string): void {
     if (disposed) return;
@@ -780,6 +795,16 @@ export function createComposerSourceState(
             );
           };
           const merged = merge();
+          // Activation merges this composer's draft when the record does not
+          // already incorporate that exact snapshot. That merged work is newer
+          // than the delayed preservation that may land later.
+          const incorporatedLocalWork =
+            !incorporatedSnapshotIsCurrent() &&
+            (textRef.current.trim() !== "" ||
+              operations.items.length > 0 ||
+              skillNamesRef.current.length > 0 ||
+              selectionMetaRef.current.commandNames.length > 0 ||
+              (selectionMetaRef.current.mentions?.length ?? 0) > 0);
           const ownerId = currentRecoveryId() ?? record.clientMutationId;
           const ownerLease = recoveryOwnerLeaseRef.current;
           const ownerRecord = ownerId === record.clientMutationId ? record : undefined;
@@ -827,6 +852,7 @@ export function createComposerSourceState(
           recoveryOwnsLocalDraftRef.current = true;
           // Adoption uses the transaction's committed record and revision.
           setActiveRecoveryId(updated);
+          activationIncorporatedWork = incorporatedLocalWork;
           // Rehydrating an already-owned recovery draft is not a user edit.
           // Counting it as one makes a submission that began before the
           // remount look stale, so its commit observer cannot clear unchanged

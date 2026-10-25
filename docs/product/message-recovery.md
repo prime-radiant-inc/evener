@@ -112,12 +112,18 @@ autosaved work in place, so a reload restores the newer composition. Adoption
 clears only the exact draft revision the preserved composition incorporated;
 a newer ordinary draft written by another pane or tab survives. The preserving
 composer is never treated as a newer-edit destination of its own same-ref
-conflict, so its fresh row still becomes the seat's selection.
+conflict, so its fresh row still becomes the seat's selection. An explicit
+activation that merged this composer's newer draft into the stale row is
+likewise newer work: delayed preservation leaves the merged text and
+attachments in place.
 
 When another tab retargets the recovery while this composer preserves, the
 adopted row belongs to the resumed ref. The seat is reconciled with that ref
 before the row is activated: its ref-to-seat mapping moves with it and a Send
 uses the preserved target instead of repeating the old ref's target mismatch.
+If the originating pane closes before preservation finishes, remembering the
+preserved row still records the destination selection and its ref-to-seat
+mapping, unless another owner already established that ref's mapping.
 
 Sending recovery consumes its durable source and creates one fresh outbox
 identity atomically. It never falls back to an ordinary enqueue when the source

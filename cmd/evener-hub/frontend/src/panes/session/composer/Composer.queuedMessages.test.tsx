@@ -348,8 +348,8 @@ test("image encoding survives a literal-marker recovery merge while storage is p
     );
     await act(async () => {
       mount(fake, source);
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
 
     const deliveredInputs: InputItem[][] = [];
@@ -1039,8 +1039,8 @@ test("a same-ref conflict preserves the local work across reload", async () => {
   try {
     await act(async () => {
       mount(fake, source);
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(source.getSnapshot().freshRecoveryRef).toBe("root"));
     await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
     const peerRecovery = await peer.getRecovery(original.clientMutationId);
@@ -1066,8 +1066,8 @@ test("a same-ref conflict preserves the local work across reload", async () => {
       storage.release.resolve();
       await source.flushRecoveryWrites();
       await new Promise((resolve) => setTimeout(resolve, 50));
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     await waitFor(async () => {
       expect(
         (await storage.listRecovery("root")).find((record) => record.clientMutationId !== original.clientMutationId),
@@ -1088,8 +1088,8 @@ test("a same-ref conflict preserves the local work across reload", async () => {
     reloaded = createTestComposerSource("root", undefined, "pane-a");
     await act(async () => {
       mount(fake, reloaded);
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(reloaded?.getSnapshot().freshRecoveryRef).toBe("root"));
     await waitFor(() =>
       expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe(localText),
@@ -1166,8 +1166,8 @@ test("a peer retarget lets the original composer send the preserved row", async 
   try {
     await act(async () => {
       mount(fake, source);
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(source.getSnapshot().freshRecoveryRef).toBe("root"));
     await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
     const peerRecovery = await peer.getRecovery(original.clientMutationId);
@@ -1195,8 +1195,8 @@ test("a peer retarget lets the original composer send the preserved row", async 
       storage.release.resolve();
       await source.flushRecoveryWrites();
       await new Promise((resolve) => setTimeout(resolve, 50));
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     await waitFor(async () => {
       expect(
         (await storage.listRecovery(resumed)).find((record) => record.clientMutationId !== original.clientMutationId),
@@ -1211,10 +1211,10 @@ test("a peer retarget lets the original composer send the preserved row", async 
       fireEvent.click(screen.getByRole("button", { name: "Send" }));
       await source.flushRecoveryWrites();
       await new Promise((resolve) => setTimeout(resolve, 100));
-      await flushPendingTurnsProjectionForTests();
       await new Promise((resolve) => setTimeout(resolve, 50));
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
+    await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(delivered).toHaveLength(1));
     expect(delivered[0]).toMatchObject({ ref: resumed });
   } finally {
