@@ -594,7 +594,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			SystemPrompt:     s.cachedSystemPrompt,
 			AgentTasks:       agentTasks,
 		}
-		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+		tpath := schema.SessionTranscriptPath(s.stateDir, s.id)
 		var twErr error
 		if fault := s.sessionInitFault("new_transcript"); fault != nil {
 			twErr = fault
@@ -983,7 +983,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// refresh below can't flip it.
 	restoredTranscriptOpened := false
 	if cfg.StateDir != "" {
-		tpath := filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
+		tpath := schema.SessionTranscriptPath(cfg.StateDir, meta.ID)
 		var openErr error
 		resumeTranscript, transcriptEntries, openErr = transcript.OpenWriterForSession(tpath, meta.ID)
 		if openErr != nil && !errors.Is(openErr, os.ErrNotExist) {
@@ -1396,7 +1396,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// writeTranscript consults is closed exactly once, on every path.
 	var tw *transcript.Writer
 	if s.stateDir != "" {
-		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+		tpath := schema.SessionTranscriptPath(s.stateDir, s.id)
 		tw = resumeTranscript
 		if tw == nil {
 			hdr := transcript.Header{
@@ -2308,7 +2308,7 @@ func (s *Session) logPluginLoadDiag(p plugin.Instance) {
 		Summary: fmt.Sprintf("plugin loaded: name=%s flavor=%s manifest=%s", p.Manifest.Name, p.ManifestFlavor, p.ManifestPath),
 		Outcome: "success",
 	}
-	logPath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".log.jsonl")
+	logPath := schema.SessionLogPath(s.stateDir, s.id)
 	log, err := sessionlog.NewSessionLog(logPath)
 	if err != nil {
 		return
@@ -2354,7 +2354,7 @@ func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, deli
 		Outcome:  outcome,
 		Failures: failures,
 	}
-	logPath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".log.jsonl")
+	logPath := schema.SessionLogPath(s.stateDir, s.id)
 	log, err := sessionlog.NewSessionLog(logPath)
 	if err != nil {
 		return
