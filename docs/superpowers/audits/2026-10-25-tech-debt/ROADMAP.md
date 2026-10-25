@@ -8,10 +8,10 @@ LOC figures are net lines of change (negative means removed), prod plus tests, a
 
 | Wave | Roadmap entries | Expected PRs incl. splits | Net LOC (est.) | Can start now (no open decision) |
 |---|---|---|---|---|
-| 0: guardrails, defects, dead-code deletions | 27 | 28 | -12,100 | 24 entries, -9,500 |
-| 1: consolidations | 67 | about 96 | -57,600 | 41 entries, -19,900; the rest wait on a decision (Q1 compat sweeps, Q2 coverage floor, Q3 llm SDK, Q4 helper home, and others) |
-| 2: structural splits (all need design discussion) | 19 | about 45 | -10,300 (about 330,000 lines moved with no net change) | 0 |
-| Total | 113 | about 170 | about -80,000 | 65 entries, -29,400 |
+| 0: guardrails, defects, dead-code deletions | 27 | 28 | -12,100 | 27 entries, -12,100 (W0-01, W0-05 and W0-18 were gated on Q12, Q10 and Q17; all answered) |
+| 1: consolidations | 69 | about 98 | -46,800 | 68 entries, about -46,500; W1-49 waits on the second tier of Q12 (error-string ratchet). Every other gate is answered in [DECISIONS.md](DECISIONS.md); the Deps: fields still order the work. The answers shrank several entries (W1-27 dedupe only, W1-56 keep-and-fix, W1-60 and W1-62..W1-64 simplify-only) |
+| 2: structural splits (all need design discussion) | 19 | about 45 | -9,300 (about 330,000 lines moved with no net change) | 1 entry, about -1,000 (W2-09 is now comment and dead-code trimming only, Q18 answered); the other 18 need design discussion, W2-13 also waits on Q20 |
+| Total | 115 | about 172 | about -68,000 | 96 entries, about -59,600 |
 
 Net LOC is production plus tests; markdown deleted under W1-58 (about 300,000 lines) and binaries under W0-14 (about 69 MB) are not counted. The sum is the arithmetic total of the per-PR estimates below, which come from the slice reports and verifier notes; SYNTHESIS section 1 estimated 25-35k production lines and 60-90k test lines removable, so this is consistent but not independently measured. Entries marked `~` with no audit count are rough.
 
@@ -40,14 +40,14 @@ Work in different lanes does not conflict, so several worktrees can run at once.
 | agent-core | `agent/*.go` | W0-02, W0-03, W0-12, W0-17, W0-19, W1-15..W1-19, W1-21..W1-24, W1-66, W1-67, then W2-01, W2-02, W2-05, W2-06, W2-07 |
 | agent-subpackages | `agent/internal/*`, `agent/plugin`, `agent/skill`, `agent/schema`, `agent/execenv` | W0-11, W0-13, W0-18, W0-20, W1-05..W1-08, then W2-03, W2-04, W2-08, W2-09 |
 | llm | `llm/**` | W0-21, W1-25..W1-28, then W2-13 (registry part) |
-| hub | `cmd/evener-hub/**`, `hubapi`, `cmd/evener-hub/internal/**`, `cmd/evener` | W0-06..W0-09, W0-24, W0-26, W1-14, W1-29..W1-36, then W2-10, W2-11 |
+| hub | `cmd/evener-hub/**`, `hubapi`, `cmd/evener-hub/internal/**`, `cmd/evener` | W0-06..W0-09, W0-24, W0-26, W1-14, W1-29..W1-36, W1-68, then W2-10, W2-11 |
 | appwire-server | `server/`, `appwire/`, `internal/appserver`, `internal/appwirets` | W0-10, W0-23, W1-09..W1-13, W1-20, then W2-12 |
 | ts-shared | `appwire-client/typescript` | W0-22, W0-25, W1-37..W1-42, then W2-14 |
 | web | `cmd/evener-hub/frontend/src` | W0-05, W0-27, W1-44..W1-47, W1-53, then W2-15..W2-17 |
 | native | `mobile-native`, `mobile/` | W1-43, W1-48, then W2-18 |
-| tests-and-gates | test-only files, `internal/devtool`, `scripts/`, `Makefile` | W0-16, W1-49..W1-52, W1-54..W1-56, then W2-19 |
+| tests-and-gates | test-only files, `internal/devtool`, `scripts/`, `Makefile` | W0-16, W1-49..W1-52, W1-54..W1-56, W1-69, then W2-19 |
 | docs | `docs/**`, `AGENTS.md` | W0-01, W0-14, W0-15, W1-57..W1-59 |
-| compat-gated | any, after Q1 | W1-60..W1-65 |
+| compat-gated | any; Q1 and Q15 are answered, so classify by version direction first (W1-59) | W1-60..W1-65 |
 
 ## Wave 0: guardrails, defects, and pure deletions of verified-dead code
 
@@ -62,7 +62,8 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Tests: none (docs). `make docs-check` if AGENTS.md is in its scope.
 - Docs: that is the doc. There is no RoboRev instruction file in the repo (`git ls-files | grep -i roborev` finds only a test file), so rule (c) lives in AGENTS.md; if the reviewer reads instructions from elsewhere, Jesse adds it there.
 - LOC: +30
-- Risk: none. Gate: Q12 (Jesse approves wording; AGENTS.md is his file). Deps: none.
+- Risk: none. Gate: answered (DECISIONS.md, Q12: five-rule wording plus the typo and path fixes approved). Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-02 Sweep `//nolint:unused` retentions, then enable `nolintlint`
 - Findings: agent-delegates-2, x-compat-legacy-11, x-error-handling-slop-9, agent-session-tools-2, agent-session-features-3, agent-jobs-7 (pure duplicates: `liveWorkHandles` byte-identical to `liveShellHandles`, `abandonRunningJob`, `watchListToolResultForReceiver`, `aggregateWatchStatuses`, `LiveWatchesFor*`, `Session.liveWatchStatuses`).
@@ -72,6 +73,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: none unless `docs/architecture.md` names a deleted helper (grep).
 - LOC: ~-450
 - Risk: low. Gate: none. Deps: none; land before the `job_watch.go` split (W2-01).
+- Status: Wave 0 is executing.
 
 ### W0-03 Move `createShell` into a test helper
 - Findings: agent-jobs-6 (high), x-dead-code-2 (verifier-revised plan supersedes the "migrate 238 call sites" plan: it is a fixture helper that creates a job with no process, 197 test call sites).
@@ -81,6 +83,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: none.
 - LOC: ~-25 (about 95 moved)
 - Risk: low. Gate: none. Deps: none; must land before the `job_watch.go` split (W2-01).
+- Status: Wave 0 is executing.
 
 ### W0-04 Delete the root `frontmatter` package
 - Findings: x-dead-code-5, agent-internal-tools-9, agent-misc-root-15 (first half).
@@ -90,6 +93,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: grep `docs/` for `evener/frontmatter`.
 - LOC: -350
 - Risk: low. Gate: none. Deps: none; the memory frontmatter editor move in W2-03 comes after this.
+- Status: Wave 0 is executing.
 
 ### W0-05 Delete design-mockup harnesses for shipped designs
 - Findings: web-dev-and-tests-1, x-dead-code-12.
@@ -98,7 +102,8 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Tests: `make test-web` including token-contract test.
 - Docs: `docs/developing-evener/design-system.md` if it points at the mockup pages (grep).
 - LOC: -2,750
-- Risk: low. Gate: Q10 (one-line confirmation the designs are final). Deps: none.
+- Risk: low. Gate: answered (DECISIONS.md, Q10(a): the harnesses are final, delete them). Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-06 Delete the superseded port-based sshconn restart/health ladder
 - Findings: hub-sshconn-1 (high), x-dead-code-7, x-compat-legacy-4, hub-sshconn-9 (the dead `deploySelected` wrapper).
@@ -108,6 +113,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: `docs/evener-hub-remote-operations.md` or subsystems row if they describe the port ladder (grep).
 - LOC: ~-1,200 (342 prod, remainder tests; test suite is 32.6k lines)
 - Risk: medium (tests are rewritten around the live path). Gate: none. Deps: none; precedes W0-26 and W1-34.
+- Status: Wave 0 is executing.
 
 ### W0-07 Delete dead code in the hub `main` package
 - Findings: hub-root-rest-5, hub-root-rest-6, hub-app-rest-5, hub-app-rest-6, hub-app-rest-11.
@@ -117,6 +123,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: `docs/product/subsystems.md` hub row if it mentions the tree cache.
 - LOC: ~-900
 - Risk: low to medium (registration change). Gate: none. Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-08 Delete dead surface in `hubapi`, `hubcore` and hostops
 - Findings: hub-internal-small-13, hub-hubcore-7, hub-hostops-appsource-5, hub-hostops-appsource-7, hub-app-host-8, hub-hubcore-4 (production `SetFs` on SQL stores has no non-test caller).
@@ -126,6 +133,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: `docs/architecture.md` if it lists the hubapi client.
 - LOC: ~-1,300
 - Risk: low. Gate: none. Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-09 Delete the remote capability probe nobody reads
 - Findings: hub-hostops-appsource-1 (high).
@@ -135,6 +143,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: the product doc row the verifier noted (search `docs/product/` for "capability probe").
 - LOC: ~-400
 - Risk: low. Gate: none. Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-10 Delete dead appwire server and appserver surface
 - Findings: appwire-server-3, appwire-server-4, appwire-server-5, internal-app-layer-3.
@@ -144,6 +153,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: `docs/appwire*.md` method list if wrappers are documented; `docs/product/subsystems.md` appserver row.
 - LOC: ~-1,000
 - Risk: low. Gate: none. Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-11 Delete dead and test-only APIs in agent sub-packages
 - Findings: agent-subpackages-6 (`skill.DiscoverSkills`/`LoadSkillBody`/`CatalogEntries`/`ExtractEmbeddedSkills`/`EmbeddedSkills`/`ResolveSkill` and the map-based `ResolveSkillContent`), agent-subpackages-9 (`plugin.LoadAll`, `LoadSettings`, `parsePluginHooks`, `discoverPluginHooks`), agent-internal-state-15 step 1 (atif `Convert`->`ConvertWithOptions`->`ConvertTranscriptWithOptions` forwarders at `atif.go:106-115`; keep one exported `Convert`), agent-internal-tools-3 (`executeCommandHook`, `Runner.Summary`, `RunSessionStart`, `NewManagerWithClock`, `transportForConfig`, `mergeEnv`; keep `ApplyPatch` unless the 45 test sites take a ctx mechanically), agent-internal-tools-5 (stale `(line N)` comments in `explain_covtest_test.go`).
@@ -153,6 +163,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: grep `docs/` for deleted symbols.
 - LOC: ~-900
 - Risk: low. Gate: none. Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-12 Delete production helpers only tests call (agent root)
 - Findings: x-dead-code-1 (75 production functions only tests reference; spot-checked `jobWatchTool`, `noteDelegateAttention`, `nextIdleDelegateAttention`, `completionSnapshot`, `watchCount`, `sendInput`, `reconcileDelegateThreadItems`, `cloneNavigationSnapshot`, `localEnvPolicyFromName`, `writeAPIWireError`, `grepOutput`, `abandonRunningJob`, `createJobOutputForID`), agent-misc-root-7 (`agent/historical_jobs.go`: `LoadSessionHistoricalJobRecords`, `HistoricalJobRecord`), agent-misc-root-8 (`moveLegacyMemoryIndex`, `backUpMemoryIndex`, `removeMigratedMemoryIndex`, `migrateMemoryScope`, `migrateLegacyMemoryIndexes`, non-Ctx wrappers, `resolveLiveModelProfile`), agent-session-tools-3 step (worktree seam `sync.Map` keyed by `*Session` at `session_tools_worktree.go:39`).
@@ -162,6 +173,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: grep `docs/` for removed names (`docs/architecture.md:330,389,423` cite job_watch pieces).
 - LOC: ~-1,500
 - Risk: low to medium (count not re-derived). Gate: none. Deps: after W0-02 (shared files).
+- Status: Wave 0 is executing.
 
 ### W0-13 Delete path-based job-output snapshot readers
 - Findings: x-dead-code-3, agent-internal-state-7 (partial).
@@ -171,6 +183,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: none.
 - LOC: ~-450 (about -250 prod)
 - Risk: medium (race semantics). Gate: none. Deps: none.
+- Status: Wave 0 is executing.
 
 ### Documentation and script cleanup
 
@@ -182,6 +195,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: AGENTS.md/testing.md rule "PR screenshots go on the PR" folded into W0-01.
 - LOC: 0 lines of code (about -69 MB of binaries)
 - Risk: low. Gate: none. Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-15 Fix stale evergreen docs
 - Findings: x-docs-4 (cites of non-existent `internal/appwire`, `internal/appsource`, `internal/hubapi`, `internal/launchconfig`, `agent/transcript.go`, `agent/mcp_config.go`; `naming.md:183` contradicts the lint config), x-docs-5 (`environment.md:14` `EVENER_ALLOWED_DECISIONS` contradicts `envvars.go:61`; `EVENER_OFFLINE`), x-docs-7 (finished `resume-model-context-fix-plan.md`, 304 lines; private runbook in the evergreen folder), agent-jobs-17, x-docs-3 narrow step (broken `web-ui/history` link; add `design/context.md`, `stop-cancellation-outbox.md`, `subagent-management/11` to `LIVING_IN_ARCHIVE` in `docs-site/scripts/check.mjs:11-35`), hub-root-rest-3 doc sentence at `docs/evener-hub.md:306` pointing at a nonexistent doc.
@@ -191,6 +205,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: that is the change.
 - LOC: ~-450
 - Risk: low. Gate: none. Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-16 Remove the broken live-compaction shell harness
 - Findings: build-gates-scripts-9.
@@ -200,6 +215,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: grep `docs/` and Makefile help.
 - LOC: ~-300
 - Risk: low. Gate: none. Deps: none.
+- Status: Wave 0 is executing.
 
 ### Small defect fixes (red test first)
 
@@ -211,6 +227,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: none.
 - LOC: ~-20
 - Risk: low. Gate: none. Deps: none; precedes W1-06.
+- Status: Wave 0 is executing.
 
 ### W0-18 `plugin.ResolveCommand` is nondeterministic on ambiguity
 - Findings: agent-subpackages-8.
@@ -219,7 +236,8 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Tests: test asserts the sentinel with `errors.Is`, not wording.
 - Docs: slash-command section of `docs/` (grep "slash").
 - LOC: +40
-- Risk: low. Gate: Q17 (confirm ambiguity should be reported rather than resolved by precedence). Deps: none.
+- Risk: low. Gate: answered (DECISIONS.md, Q17: report ambiguity with a sentinel error, as skills do). Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-19 Explicit `10000` timeout is overridden
 - Findings: agent-subpackages-12.
@@ -229,6 +247,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: `docs/job-control.md:385`.
 - LOC: ~-50
 - Risk: low. Gate: none. Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-20 Byte-slice truncation splits UTF-8 runes in model-facing text
 - Findings: agent-internal-state-4, x-go-duplicate-functions-5, agent-misc-root-12 (first step).
@@ -238,6 +257,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: none.
 - LOC: ~+60
 - Risk: low. Gate: none. Deps: none; precedes W1-09.
+- Status: Wave 0 is executing.
 
 ### W0-21 Vertex model listing ignores the listing timeout
 - Findings: llm-core-providers-7 (first step only).
@@ -247,6 +267,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: none.
 - LOC: +25
 - Risk: low. Gate: none. Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-22 Cache validators reject current delegate fields
 - Findings: appwire-ts-core-2 (high, drift), x-go-ts-protocol-4 (TS half).
@@ -256,6 +277,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: none.
 - LOC: +40
 - Risk: low. Gate: none. Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-23 `appitempaging.cloneThreadItem` aliases pointers
 - Findings: internal-app-layer-16.
@@ -265,6 +287,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: none.
 - LOC: ~-50
 - Risk: low. Gate: none. Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-24 Settings page shows a hard-coded spawn timeout
 - Findings: hub-root-rest-4 (first item only).
@@ -274,6 +297,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: none.
 - LOC: ~+10
 - Risk: low. Gate: none. Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-25 Duplicated TS constants
 - Findings: x-client-duplication-2 step 1, x-go-ts-protocol-1 (smaller first step), x-compat-legacy-3 (six unreferenced alias consts).
@@ -283,6 +307,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: none.
 - LOC: ~-40
 - Risk: low. Gate: none. Deps: none.
+- Status: Wave 0 is executing.
 
 ### W0-26 Hostreg registration comparison and sshconn sentinels
 - Findings: hub-sshconn-6, hub-internal-small-12, hub-sshconn-11 (sentinel twins only).
@@ -292,6 +317,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: none.
 - LOC: ~-90
 - Risk: low. Gate: none. Deps: after W0-06.
+- Status: Wave 0 is executing.
 
 ### W0-27 Delete the dead entry-transcript fixture route and dead test exports
 - Findings: web-stores-2, web-stores-3 step 1.
@@ -301,6 +327,7 @@ Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions
 - Docs: none.
 - LOC: ~-120
 - Risk: low. Gate: none. Deps: none; do before the `threads.ts` split (W2-15).
+- Status: Wave 0 is executing.
 
 ## Wave 1: high-value consolidations
 
@@ -310,39 +337,39 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 
 ### W1-01 Shared durable-write package and sync predicate, plus the fixed-name `.tmp` writers
 - Findings: x-go-duplicate-functions-1 (partial; counts inflated: 22 non-test files have `Rename`), x-go-duplicate-functions-2, internal-misc-cmds-1 (partial), agent-misc-root-5, hub-internal-small-1, hub-internal-small-15, hub-app-host-9, x-error-handling-slop-12.
-- Files: new package in the module chosen under Q4 (`execsupport/fsatomic` is the default candidate; `execsupport/go.mod` today requires only `golang.org/x/sync`, so keep it free of an `afero` dependency by exposing a small FS interface); `cmd/evener-hub/internal/fsdurability` becomes a thin import or is deleted; first callers: `rendezvous/rendezvous.go:96`, `agent/session_queue_persist.go:71`, `cmd/evener-migrate/convert.go:242`, `cmd/evener-hub/internal/launchconfig/io.go:53`, `hubedge/auth_token.go:105`. These use fixed names or no fsync, so they gain symlink-plant protection and crash safety (a real fix, as `llm/registry/write.go:219` documents the rationale).
-- Steps: (1) characterization tests of the strongest existing writer (credentials store: `afero.TempFile`, fsync, rename; `hubcore/state_file.go:35 writeStateFileAtomic`: renamed/err contract and fault hooks) become the package's tests; (2) implement `Write(path, data, Options{Perm, Fs, SyncDir})` with durability always on and one `SyncUnsupported` predicate (ENOSYS/ENOTSUP/EINVAL); a plainly named variant for scratch/cache writes that intentionally skip fsync; (3) migrate the five fixed-name sites first, one commit each, with a test per site that a pre-planted symlink at the temp name is not followed and that the directory is fsynced.
-- Tests: the behavior change per caller group is explicit (durability and symlink safety improve), so each migration commit carries its own red-then-green test; fault-injection through the FS interface, not `testing.Testing()`.
+- Files: new package in the `execsupport` module (Q4; `execsupport/fsatomic` is the working name and `auth` takes the dependency; `execsupport/go.mod` today requires only `golang.org/x/sync` and stays free of `afero` because the package uses the real `os` package, per the G7 decision); `cmd/evener-hub/internal/fsdurability` becomes a thin import or is deleted; first callers: `rendezvous/rendezvous.go:96`, `agent/session_queue_persist.go:71`, `cmd/evener-migrate/convert.go:242`, `cmd/evener-hub/internal/launchconfig/io.go:53`, `hubedge/auth_token.go:105`. These use fixed names or no fsync, so they gain symlink-plant protection and crash safety (a real fix, as `llm/registry/write.go:219` documents the rationale).
+- Steps: (1) characterization tests of the strongest existing writer (credentials store: `afero.TempFile`, fsync, rename; `hubcore/state_file.go:35 writeStateFileAtomic`: renamed/err contract and fault hooks) become the package's tests; (2) implement `Write(path, data, Options{Perm, SyncDir})` with durability always on and one `SyncUnsupported` predicate (ENOSYS/ENOTSUP/EINVAL); a plainly named variant for scratch/cache writes that intentionally skip fsync; (3) migrate the five fixed-name sites first, one commit each, with a test per site that a pre-planted symlink at the temp name is not followed and that the directory is fsynced.
+- Tests: the behavior change per caller group is explicit (durability and symlink safety improve), so each migration commit carries its own red-then-green test; tests use `t.TempDir()` (G7: `afero` is phased out); inject faults through a narrow test hook only where a real filesystem cannot reproduce the failure, not `testing.Testing()`.
 - Docs: `docs/architecture.md` module boundaries (if a new import edge appears); `docs/developing-evener/README.md` if it lists helper packages.
 - LOC: ~+250 (package and tests +350, five callers -100)
-- Risk: medium (durability change on hot state files). Gate: Q4 answered (DECISIONS.md: `execsupport`, durable default). Before migrating a caller, trace its call frequency; a hot path that writes rebuildable state uses the explicitly named no-sync variant, and the PR says why (GAPS.md section 3, item 1). Decide the `afero` question (GAPS.md G7) before fixing the FS-interface shape. Deps: none; precedes W1-02, W1-03.
+- Risk: medium (durability change on hot state files). Gate: answered (DECISIONS.md, Q4: `execsupport`, durable default; G7: `afero` phased out). Before migrating a caller, trace its call frequency; a hot path that writes rebuildable state uses the explicitly named no-sync variant, and the PR says why (GAPS.md section 3, item 1). The `afero` question is decided (DECISIONS.md, G7): no FS interface. Deps: none; precedes W1-02, W1-03.
 
 ### W1-02 Migrate the hub CreateTemp writers to the shared writer
 - Findings: hub-app-host-9, hub-hostops-appsource-10, hub-internal-small-1 (hub half), x-go-duplicate-functions-1.
 - Files: `cmd/evener-hub/app_host_manage.go` (`writeHubTOMLHostsRecords` tail at ~:911-955 and `hubTOMLReplaceWithBytes` at ~:2907: same MkdirAll/CreateTemp/Chmod/Write/Sync/Close/Rename/dir-sync sequence), `hubcore/state_file.go:35` (`writeStateFileAtomic`), `hostops` `saveFS` and `writeQuarantineFile`, `fsdurability`, `hubcore/state_file.go:127` predicate, `app_host_manage.go:1054` predicate.
-- Steps: replace each sequence with the W1-01 call; keep `recoveryStore` behavior per hub-hostops-appsource-10 (move `writeStateFileAtomic`'s renamed/err contract into the shared package so hostops callers can distinguish "rename happened"); delete the local predicates.
+- Steps: replace each sequence with the W1-01 call; keep `recoveryStore` behavior per hub-hostops-appsource-10 (move `writeStateFileAtomic`'s renamed/err contract into the shared package so hostops callers can distinguish "rename happened"); delete the local predicates. Each migrated file drops its `afero` use and its tests move to `t.TempDir()` (G7).
 - Tests: existing crash-recovery tests for host records and quarantine; add a test that the renamed/err contract survives (post-rename sync failure reports renamed=true).
 - Docs: none.
 - LOC: ~-250
-- Risk: medium. Gate: Q4. Deps: W1-01.
+- Risk: medium. Gate: answered (DECISIONS.md, Q4). Deps: W1-01.
 
 ### W1-03 Migrate the remaining writers and delete the other sync predicates
 - Findings: x-go-duplicate-functions-1, -2, internal-misc-cmds-1, agent-misc-root-5, appwire-server-13, hub-app-host-9 (other-package copies), llm-registry-12, x-error-handling-slop-12.
-- Files: `credentials/store.go:196-225` (add the missing parent-dir fsync), `internal/plugins/atomic.go:32`, `internal/transcriptindex/index.go:1294`, `llm/registry/refresh.go:48`, `llm/registry/write.go`, `server/thread_clear_journal.go:155`, `auth/openai/storage.go:229` (auth is a separate module; Q4 decides whether it may import the home), `agent/session_client_mutation_persist.go:423`, `agent/internal/worktree/sync_unix.go:36`, jobstore tolerance (decide with a test, agent-misc-root-5), `hubendpoint/runtime.go:196 syncDir`.
-- Steps: three or four commits grouped by durability need: user state (credentials, plugins) first; then derived data where fsync is intentionally skipped (llm cache, transcriptindex) calling the plainly named no-fsync variant; then delete the seven non-test sync predicates. Keep selfupdate `stageExecutable` out (internal-misc-cmds-1 verifier scoped it out).
+- Files: `credentials/store.go:196-225` (add the missing parent-dir fsync), `internal/plugins/atomic.go:32`, `internal/transcriptindex/index.go:1294`, `llm/registry/refresh.go:48`, `llm/registry/write.go`, `server/thread_clear_journal.go:155`, `auth/openai/storage.go:229` (auth is a separate module and takes the `execsupport` dependency, per Q4), `agent/session_client_mutation_persist.go:423`, `agent/internal/worktree/sync_unix.go:36`, jobstore tolerance (decide with a test, agent-misc-root-5), `hubendpoint/runtime.go:196 syncDir`.
+- Steps: three or four commits grouped by durability need: user state (credentials, plugins) first; then derived data where fsync is intentionally skipped (llm cache, transcriptindex) calling the plainly named no-fsync variant; then delete the seven non-test sync predicates. Keep selfupdate `stageExecutable` out (internal-misc-cmds-1 verifier scoped it out). Each migrated file drops its `afero` use and its tests move to `t.TempDir()` (G7); `afero` leaves `go.mod` after the last caller.
 - Tests: per caller group, a test that parent-dir fsync happens where the group's contract requires it; characterization for the no-fsync groups.
 - Docs: none.
 - LOC: ~-500
-- Risk: medium. Gate: Q4. Deps: W1-01.
+- Risk: medium. Gate: answered (DECISIONS.md, Q4). Deps: W1-01.
 
 ### W1-04 One XDG state-root resolver
 - Findings: agent-misc-root-4 (7 copies, 4 fallbacks), agent-subpackages-4, internal-misc-cmds-2, appwire-server-9 (state-root half), llm-registry-12.
 - Files: `envvars/userdirs/userdirs.go` (add `StateRoot` beside `ConfigRoot`), callers: `rendezvous/rendezvous.go:42-60` (falls back to "."), `cmdutil/statedir.go:25-55` ("."), `auth/openai/storage.go:90-110` (`os.TempDir()`), `agent/runtime_dir.go:73-95` (`os.TempDir()`), `agent/doctor/statedir.go:30-37`, `appwire/frame_recorder.go:95-103` (relative path), `cmd/evener-migrate`, legacy migration helpers, skill/plugin cmdutil helpers.
-- Steps: add `userdirs.StateRoot` with a table test; port the pure duplicates first, each keeping its current HOME-less fallback; once Q5 is answered make the fallback one value and delete the per-caller variants.
-- Tests: one table test (XDG set, XDG unset with HOME, HOME unset).
+- Steps: add `userdirs.StateRoot` with a table test. Q5 is answered (DECISIONS.md): it returns a clear error when `HOME` and `XDG_STATE_HOME` are unset, with no `os.TempDir()` or `"."` fallback. Port the pure duplicates first; each caller then surfaces the error, and the per-caller fallbacks are deleted.
+- Tests: one table test (XDG set, XDG unset with HOME, both unset returns the error); one test per caller that the error reaches the user.
 - Docs: `docs/developing-evener/environment.md`.
 - LOC: ~-120
-- Risk: low until the fallback is unified. Gate: Q5 for the last commit only. Deps: none.
+- Risk: low to medium (HOME-less callers now fail instead of writing to a temp or relative directory). Gate: answered (DECISIONS.md, Q5). Deps: none.
 
 ### W1-05 One session on-disk layout helper
 - Findings: agent-misc-root-11 (29 hand-built `.transcript.jsonl` sites; ~16 in agent, ~12 outside), agent-subpackages-2 (`sessionsSubdir` declared in both `agent/session.go:2775` and `agent/schema/snapshot.go:343`; doctor uses bare `"sessions"`), hub-root-rest-20, agent-internal-state-13.
@@ -392,11 +419,11 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 ### W1-10 Delegate status: stop dropping `LatestIntent` and alias the server type
 - Findings: agent-misc-root-2 (high), appwire-server-2 (high), x-go-ts-protocol-4 (high), x-go-ts-protocol-5, internal-misc-cmds-12, internal-app-layer-14.
 - Files: `server/server.go:105` (`DelegateStatusInfo`, 50 fields) vs `agent/status.go:124` (51 json tags; `LatestIntent` at :158, populated at :517/:588) and `events.DelegateUpdatedData` (52, `payloads.go:786`) and `appwire.EvenerDelegateInfo` (54, `LatestIntent` at `types.go:1839`); converters `cmd/evener/serve.go:2232-2345` (`agentToServerDetailedStatus`, delegate literal 2293-2316), `server/appwire_runtime.go:2827-2850`, `cmd/evener-hub/app_threadread.go:1278-1306`, `server/server.go:204` `MarshalJSON` plugin nil-vs-empty workaround.
-- Steps: (1) red test: a `DetailedStatus` carrying `LatestIntent` reaches the appwire delegate on all three paths (fails today on two). Confirm with Jesse that `latest_intent` should flow on the detailed-status path (additive; Q17). (2) Make `server.DelegateStatusInfo` a type alias of `agent.DelegateStatusInfo` (server already imports agent); delete the `serve.go` copy loop and its `cloneServe*` helpers; pin the plugin nil-vs-empty behavior with a test before deleting `MarshalJSON`.
+- Steps: (1) red test: a `DetailedStatus` carrying `LatestIntent` reaches the appwire delegate on all three paths (fails today on two). `latest_intent` flows on the detailed-status path (additive; Q17 answered in DECISIONS.md). (2) Make `server.DelegateStatusInfo` a type alias of `agent.DelegateStatusInfo` (server already imports agent); delete the `serve.go` copy loop and its `cloneServe*` helpers; pin the plugin nil-vs-empty behavior with a test before deleting `MarshalJSON`.
 - Tests: the round-trip test over every field (built by reflection over `agent.DelegateStatusInfo` so a new field fails it).
 - Docs: `docs/product/subsystems.md` delegate row; protocol docs regenerate (`make` generated-output freshness) if wire description changes.
 - LOC: ~-450
-- Risk: medium (wire-visible, additive). Gate: Q17. Deps: W1-09.
+- Risk: medium (wire-visible, additive). Gate: answered (DECISIONS.md, Q17). Deps: W1-09.
 
 ### W1-11 Delegate status: one exported mapper to the wire
 - Findings: agent-misc-root-2 step 2, appwire-server-2, internal-app-layer-14 stage 2, x-go-ts-protocol-4.
@@ -546,14 +573,14 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 - LOC: ~-250
 - Risk: medium. Gate: none. Deps: none.
 
-### W1-27 Delete the llm streaming `Generate` family and the multi-round tool loop
+### W1-27 Dedupe the llm streaming `Generate` family and the multi-round tool loop (keep both)
 - Findings: llm-core-providers-1 (high), x-dead-code-4, llm-core-providers-2, llm-core-providers-21 (tests of removed code).
-- Files: `llm/stream_generate.go` (425 lines: `StreamGenerate`, `StreamGenerateObject`, `StreamObjectResult`), `llm/generate_object.go:23,117` (`streamGenerateObjectStart` seam, streaming half; file is 300 lines), `ToolCallContext`/`ToolCallContextFromCtx` in `llm/generate.go`, the multi-round tool loop (all production callers pass no tools: `cmd/llmcall/main.go:256` `Tools: nil`; `agent/session_namer.go:101,107`, `cmd/llmcall/main.go:299,319`, `tools/tool-fluency/cmd/evener-fluency/respond.go:240` do not stream), tests, fuzz targets tied only to these, the `08-standalone` doc mention.
-- Steps: only after Q3. If `llm` is not a public SDK, delete the streaming family and the seam var, then separately decide the tool loop; the three doc-only mentions in `docs/` are updated.
-- Tests: surviving `Generate`/`GenerateObject` tests unchanged; delete tests of removed code and list them.
-- Docs: `docs/` standalone-llm doc.
-- LOC: ~-1,500
-- Risk: low if Q3 says "not public". Gate: Q3. Deps: none.
+- Files: `llm/stream_generate.go` (425 lines: `StreamGenerate`, `StreamGenerateObject`, `StreamObjectResult`), `llm/generate_object.go:23,117` (`streamGenerateObjectStart` seam, streaming half), `ToolCallContext`/`ToolCallContextFromCtx` in `llm/generate.go`, the multi-round tool loop.
+- Steps: Q3 is answered (DECISIONS.md): `llm` is a public SDK. The streaming family, the multi-round tool loop and their public tests all stay, even though production callers today pass `Tools: nil` (`cmd/llmcall/main.go:256`). The work is dedupe only: share request building, finish handling and error mapping between the streaming and non-streaming paths, and collapse any copy of the same logic inside these files. Delete a test seam such as `streamGenerateObjectStart` only if a behavior test through the public API reaches the same failure. No exported symbol is removed.
+- Tests: every surviving `Generate`/`GenerateObject`/`StreamGenerate*` test unchanged; add a characterization test for any path the dedupe touches that no public-API test reaches.
+- Docs: `docs/` standalone-llm doc stays accurate; no mention removed.
+- LOC: ~-200
+- Risk: low to medium (public surface, so no behavior change). Gate: answered (DECISIONS.md, Q3). Deps: none.
 
 ### W1-28 Typed credential diagnosis instead of prose parsed by prefix
 - Findings: llm-registry-3 (high), llm-registry-4 (table test only), llm-registry-9 (`ResolveGateCredential` vs `...Candidate` differ only in flags).
@@ -596,11 +623,11 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 ### W1-32 Handler skeleton and resume-then-retry wrappers in the hub
 - Findings: hub-app-rest-3, hub-app-rest-4, hub-app-rest-8 (three wrapper vars), hub-app-rest-9 (phase 1 only).
 - Files: `cmd/evener-hub/app_rpc.go` `registerThreadHandlers` (8 `ClientMutationID` checks; shared `withDeletionTargetOwnership` + `adoptCallerMutationResult` shape), `compactThreadWithResume`/`setThreadModelWithResume`/`setThreadVisionModelWithResume` (identical bodies modulo action string) and the `*Once` skeletons, `authLoginComplete`/`authDevicePoll`/`launchTrustRepo` function vars (`app_rpc.go:195-203`; writers only `app_rpc_auth_origin_test.go:141-144`, `cov_exact_app_rpc_fuzz_test.go`), `app_auth.go:1404,1486` (endpoint-fingerprint verifiers).
-- Steps: `requireClientMutationID` plus a helper owning the trailing `adoptCallerMutationResult` for the seven non-start handlers (turn/start is not a duplicate of `withSessionResume`: share only its retry tail); one resume-then-retry helper; call the three wrapper vars' methods directly and rewrite the two test sites to a scripted HTTP boundary. For the endpoint-fingerprint guard do phase 1 only (one `endpointGuard.Check` shared by three verifiers; unkeyed wrappers that only tests call); behavior stays fail-closed pending Q15.
+- Steps: `requireClientMutationID` plus a helper owning the trailing `adoptCallerMutationResult` for the seven non-start handlers (turn/start is not a duplicate of `withSessionResume`: share only its retry tail); one resume-then-retry helper; call the three wrapper vars' methods directly and rewrite the two test sites to a scripted HTTP boundary. For the endpoint-fingerprint guard do phase 1 only (one `endpointGuard.Check` shared by three verifiers; unkeyed wrappers that only tests call); the behavior change (discard and restart the flow when the key cannot be computed) is Q15(c), done in W1-65, which builds on this shared check.
 - Tests: per-handler characterization of codes; no change to guard outcomes.
 - Docs: none.
 - LOC: ~-450
-- Risk: medium. Gate: none for the skeleton work; Q15 before touching guard policy. Deps: W0-07.
+- Risk: medium. Gate: none (Q15 is answered in DECISIONS.md; the guard policy change itself lives in W1-65). Deps: W0-07.
 
 ### W1-33 `PinSectionStore` retry loop and `rosterFingerprint`
 - Findings: hub-hubcore-3, hub-hubcore-6.
@@ -632,11 +659,11 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 ### W1-36 One ref grammar
 - Findings: hub-hubcore-9 (step 2), hub-internal-small-14, hub-root-rest-17, x-go-ts-protocol-7.
 - Files: `hubapi/refs.go` (`refPattern` allows `:`, splits at first colon so `ParseRef("local:a:b")` yields SessionID `a:b`) vs `appwire/refs.go:22` (`refPartPattern` rejects `:`, checks both parts); `hubapi.AttentionSummary` (`types.go:41`, field-identical to appwire's); 54 `appwire.ParseRef` vs 10 `hubapi.ParseRef` in `cmd/evener-hub` non-test; stale "does not import appwire" comment.
-- Steps: characterization tests for both `ParseRef` grammars first (pin the `a:b:c` divergence); with Jesse's answer, make `hubapi.Ref` a thin layer over or alias of `appwire.Ref`; alias `AttentionSummary`; fix the comment; remove `hubapi.Ref` only after callers migrate.
+- Steps: characterization tests for both `ParseRef` grammars first (pin the `a:b:c` divergence); Q16 is answered (DECISIONS.md): reject `:` in session ids and keep one strict `ParseRef` (appwire's grammar), so move the other callers to it and make `hubapi.Ref` a thin layer over or alias of `appwire.Ref` (a test pins that `local:a:b` is rejected); alias `AttentionSummary`; fix the comment; remove `hubapi.Ref` only after callers migrate.
 - Tests: the characterization table; emit_test dedup fixture adjusted.
 - Docs: none.
 - LOC: ~-200
-- Risk: medium (identifier grammar). Gate: Q16. Deps: W0-08.
+- Risk: medium (identifier grammar). Gate: answered (DECISIONS.md, Q16). Deps: W0-08.
 
 ### Theme E: shared TypeScript client (SYNTHESIS T5)
 
@@ -652,29 +679,29 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 ### W1-38 One attention-class derivation
 - Findings: x-client-duplication-1, native-session-board-4, web-shell-widgets-6.
 - Files: web `sessionStatus.ts:4`, `liveness.ts:30`, `railNodes.ts:373`, native `attention.ts:6,92-95` (`boardState`), shared `railSessionState.ts:22`, hub `hubapi/attention.go:16` (`AttentionState` turns `approval_pending` into "awaiting" for every state except errored).
-- Steps: phase 1 (native only) make `sessionStateLine` and `boardState` share one precedence table. Phase 2 add `normalizeWireState` (closed->ended, systemError->errored) and one `attentionState()` to `appwire-client`; delete the web copies. Red test first for the case where the copies disagree; the answer for `restartRequired`/`ended` with `approval_pending` is Q7.
+- Steps: phase 1 (native only) make `sessionStateLine` and `boardState` share one precedence table. Phase 2 add `normalizeWireState` (closed->ended, systemError->errored) and one `attentionState()` to `appwire-client`; delete the web copies. Red test first for the case where the copies disagree; Q7 is answered (DECISIONS.md): `restartRequired` or ended wins over `approval_pending`, and hub `AttentionState` follows the same precedence.
 - Tests: precedence table over every (state, flags) combination, run against hub `AttentionState` fixtures as well.
 - Docs: `docs/product/subsystems.md` client row; package README.
 - LOC: ~-300
-- Risk: medium (user-visible class changes). Gate: Q7 for phase 2. Deps: none.
+- Risk: medium (user-visible class changes). Gate: answered (DECISIONS.md, Q7). Deps: none.
 
 ### W1-39 One stuck/quiet policy
 - Findings: x-client-duplication-2 (step 2), native-session-board-6.
 - Files: web `flow/liveness.ts:27-28,180-191` (20s quiet / 180s stuck), package `sessionActivity.ts:11` (10 min), native `trayLine.ts`.
-- Steps: after Q6, one policy in the package; web and phone consume it. If Jesse wants different thresholds, encode them as named options in the package (not hand-copied constants).
+- Steps: Q6 is answered (DECISIONS.md): one stuck rule in the package, 10 minutes, and a session is never stuck while its delegates are actively running. Web and phone consume it. Web's short quiet hint (20s) may stay as a separate, softer state, encoded as a named option or a distinct state in the package, not hand-copied constants.
 - Tests: boundary table at the thresholds; web and phone render tests assert state, not text.
 - Docs: `docs/product/` session-activity guide.
 - LOC: ~-100
-- Risk: medium (user-visible). Gate: Q6. Deps: W0-25.
+- Risk: medium (user-visible). Gate: answered (DECISIONS.md, Q6). Deps: W0-25.
 
 ### W1-40 One outbox transition rule set
 - Findings: x-client-duplication-7, native-rest-5, native-rest-6, web-stores-9.
 - Files: web `mutationOutboxIndexedDB.ts:675-676,685` (retains accepted copy for `carriesOptimisticInput(source) || method==='notes/human/set'`), native `mutationOutboxStorage.ts:553` (only `carriesOptimisticInput`), `mutationOutboxStorage.ts:221-289` (five ALTER TABLE ladders), `navigationActionRepository.ts:39`, `pinAssignmentDrafts.ts:7`, `nativePreferenceDrafts.ts:112` (three Backend interfaces), `valid()` copies.
-- Steps: (a) move the transition decisions into the package with unit tests there (drifted retention rule first, since it is user-visible); both adapters call it. (b) native checkpoint repositories: one validator helper taking a message and one backend interface; keep stored shapes; test key-reorder equality before switching to `sameJsonValue`. (c) The ALTER TABLE ladder and `#seedLegacyAttemptCount` only after Q1 (no installed build older than 2026-09-18 then one `CREATE TABLE`).
+- Steps: (a) move the transition decisions into the package with unit tests there (drifted retention rule first, since it is user-visible); both adapters call it. (b) native checkpoint repositories: one validator helper taking a message and one backend interface; keep stored shapes; test key-reorder equality before switching to `sameJsonValue`. (c) The ALTER TABLE ladder and `#seedLegacyAttemptCount` are persisted client-state eras, and Q1 says on-disk migrations stay. Part (c) is simplification only (for example one shared step helper for the ladder) and keeps every upgrade path and its behavior test; do not collapse the ladder to one `CREATE TABLE`.
 - Tests: the same transition table runs through both adapters (IndexedDB fake, SQLite fake).
 - Docs: `docs/product/message-recovery.md` if retention behavior changes.
 - LOC: ~-500
-- Risk: medium-high (message recovery). Gate: Q1 for (c) only. Deps: none. Split into W1-40a, W1-40b.
+- Risk: medium-high (message recovery). Gate: answered (DECISIONS.md, Q1; (c) is simplification only). Deps: none. Split into W1-40a, W1-40b.
 
 ### W1-41 Move shared web/native code into the package
 - Findings: native-rest-2 (high), x-client-duplication-11, native-rest-17, x-client-duplication-8, x-client-duplication-12.
@@ -701,7 +728,7 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 - Tests: the red test; `make test-native`.
 - Docs: `docs/product/session-activity.md` and subsystems row mention of a phone activity store, if any.
 - LOC: ~-3,200 (prod ~900, tests ~2,800 less rewrites)
-- Risk: medium. Gate: Q10. Deps: none.
+- Risk: medium. Gate: answered (DECISIONS.md, Q10(c)). Deps: none.
 
 ### Theme F: web and native components
 
@@ -735,11 +762,11 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 ### W1-47 Four unused widgets
 - Findings: web-shell-widgets-8.
 - Files: `src/widgets/{table,insightcard,inspectorcard,recommendationcard}/*`, `widgets/index.ts` exports, `src/dev/gallery-sections/*`, design-system rows in `docs/developing-evener/design-system.md`, `styles/token-contract.test.ts` allowlist entries, `DiffTable` / panescaffold comments.
-- Steps: delete as listed (AGENTS.md restricts adding widgets, not deleting; still ask).
+- Steps: delete as listed (AGENTS.md restricts adding widgets, not deleting; Q10(b) approved the deletion).
 - Tests: `make test-web`.
 - Docs: design-system doc rows.
 - LOC: ~-1,100
-- Risk: low. Gate: Q10. Deps: none.
+- Risk: low. Gate: answered (DECISIONS.md, Q10(b)). Deps: none.
 
 ### W1-48 Test fixtures and mocks on the native side
 - Findings: native-tests-legacy-mobile-8, native-tests-legacy-mobile-9.
@@ -759,7 +786,7 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 - Tests: the ratchet's own tests for the new pattern.
 - Docs: `docs/developing-evener/testing.md` ratchet section.
 - LOC: ~+150 (plus a large allowlist data file)
-- Risk: low. Gate: Q12. Deps: none.
+- Risk: low. Gate: Q12, second tier only (should the copy-oracle ratchet also cover error strings; still open). The AGENTS.md half of Q12 is answered (DECISIONS.md). Deps: none.
 
 ### W1-50 Convert phrase assertions to sentinels or behavior (per area)
 - Findings: go-tests-agent-4, go-tests-rest-14, agent-internal-state-12, agent-misc-root-18, hub-sshconn-18, hub-internal-small-8, hub-root-rest-13, internal-misc-cmds-19, web-dev-and-tests-7, web-shell-widgets-16, web-stores-15, web-panes-a (about 150), native-rest-12, native-tests-legacy-mobile-10, appwire-ts-state-testing-14.
@@ -786,7 +813,7 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 - Tests: migrated tests keep their assertions.
 - Docs: testing.md kit list.
 - LOC: ~-1,200 (packages +300)
-- Risk: low. Gate: Q13. Deps: W1-51.
+- Risk: low. Gate: answered (DECISIONS.md, Q13 orchestrator default: adopt the kits first, create a package only if more than ten copies remain). Deps: W1-51.
 
 ### W1-53 Web fixtures and connection-store reset
 - Findings: web-dev-and-tests-3, web-dev-and-tests-4, web-dev-and-tests-5, web-dev-and-tests-6, appwire-ts-state-testing-9, web-stores-17 (helper half).
@@ -800,11 +827,11 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 ### W1-54 Delete coverage-wave test files
 - Findings: hub-root-rest-11 (40 `cov_*_test.go`, 6,031 lines, 46 Fuzz funcs), hub-app-rest-15 (39 files, 5,928 lines, 790 discarded-result statements), go-tests-agent-5 (211 sprint-labelled files), agent-delegates-19, agent-jobs-18, agent-internal-tools-5, hub-hubcore-19, hub-sshconn-18, go-tests-rest-2, internal-misc-cmds-9, llm-core-providers-21, build-gates-scripts-19 (183 gap/cov-named files).
 - Files: `cmd/evener-hub/cov_*_fuzz_test.go`, `agent/*covtest*_test.go` (17 in the delegates slice, 4,013 lines), `credentials/package_union_fuzz_test.go`, `*_covtest_test.go` elsewhere, `scripts/coverage/coverage-floors.txt`, `scripts/coverage/fuzzcov-ignore.txt`, `scripts/fuzz/fuzz-targets.txt` (46 Fuzz funcs in the hub `cov_*` files are registered by name; the static gap gate fails if the rows outlive the files), `testing-budget.json` rows.
-- Steps: only after Q2. Per file: move assertions that test real behavior into the matching `app_*_test.go`, delete discarded-result blocks and `err != nil`-only tests, run the coverage before/after report in CI and attach it. Q2 answered: the floor is not a protected gate, so update or drop the floors rows in the same PR. Delete the fuzz-target and coverage-list rows together with the files. Smallest packages first; no line target (build-gates-scripts-19 verifier).
+- Steps: Q2 is answered. Per file: move assertions that test real behavior into the matching `app_*_test.go`, delete discarded-result blocks and `err != nil`-only tests, run the coverage before/after report in CI and attach it. Q2 answered: the floor is not a protected gate, so update or drop the floors rows in the same PR. Delete the fuzz-target and coverage-list rows together with the files. Smallest packages first; no line target (build-gates-scripts-19 verifier).
 - Tests: coverage report attached per PR.
 - Docs: `docs/developing-evener/testing.md` coverage section.
 - LOC: ~-8,000 first pass (hub 6,000 plus delegates 2,000; the 38k repo-wide figure in SYNTHESIS is not claimed) here
-- Risk: medium. Gate: Q2 answered (DECISIONS.md). Deps: before W1-50, so phrase-assertion conversion skips files this PR deletes.
+- Risk: medium. Gate: answered (DECISIONS.md, Q2). Deps: before W1-50, so phrase-assertion conversion skips files this PR deletes.
 
 ### W1-55 Mechanical test renames and stale citations
 - Findings: go-tests-agent-5 (cheap parts), go-tests-rest-3, go-tests-rest-4, hub-hostops-appsource-14, native-tests-legacy-mobile-5/12 (labels), agent-jobs-18 (comment half), hub-app-host-17 (round files).
@@ -815,14 +842,14 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 - LOC: ~-600 (comments)
 - Risk: low. Gate: none. Deps: none; run before any W2 test split.
 
-### W1-56 Build-gate decisions
+### W1-56 Build-gate repairs (keep the tooling)
 - Findings: build-gates-scripts-1, build-gates-scripts-3, -4, -5, -6, -7, -8, -10, -16, -2.
-- Files: `testing-budget.json` (zero `"metric"` keys; `test-timing-budget.sh:485,553-556` downgrades the ratio FAIL to WARN; CI still runs the check at `ci.yml:433`, class ceilings can still fail), `internal/devtool/*audit*`, `makefiletargets_audit_test.go` (1,219 lines), `scenariosourcecite_audit_test.go` (967 lines), `maketargetsdoc` (3,642 lines, 75% tests), `internal/devtool/gatesurface` (no importer outside itself; cited spec not in the tree), the sandbox/lazytranscript/appwirelegacy prose audits.
-- Steps: after Q11: (a) rebaseline the ratchet with a `metric` key or delete the script and its 1,231 lines of tests; (b) delete the prose-pinning audits (sandboxbreakerdocs, lazytranscriptloading, appwirelegacypath, doctorcomments, transcriptcomments) per build-gates-scripts-3; (c) fix `make/testing.mk:233` bare `$(mktemp)` and the empty `makefileVariableFedDeletes` allowlist; (d) delete unused `gatesurface` or wire it; (e) port the shell gate stack to Go only when touched (build-gates-scripts-2: `load-aware-workers.sh` is not replaced by GOMAXPROCS).
-- Tests: whichever gates remain keep their tests.
-- Docs: `docs/developing-evener/README.md`, `make help` text.
-- LOC: ~-4,000 if all of (a) and (b) are approved
-- Risk: low. Gate: Q11. Deps: none. Split by decision into W1-56a..c.
+- Files: `testing-budget.json` (zero `"metric"` keys; `test-timing-budget.sh:485,553-556` downgrades the ratio FAIL to WARN; CI still runs the check at `ci.yml:433`, class ceilings can still fail), `make/testing.mk:233`, `makefiletargets_audit_test.go` (`makefileVariableFedDeletes` allowlist), and the tools that stay: `internal/devtool/*audit*`, `scenariosourcecite_audit_test.go`, `maketargetsdoc`, `internal/devtool/gatesurface`, the fuzz mutation toolkit, the sandbox/lazytranscript/appwirelegacy/doctorcomments/transcriptcomments prose audits.
+- Steps: Q11 is answered (DECISIONS.md): delete none of the gate tooling. (a) Rebaseline the timing ratchet: add a `metric` key to each `testing-budget.json` row, baselined from a CI-class measurement (not this workstation), so the per-package ratios enforce again instead of downgrading to WARN. (b) Fix `make/testing.mk:233` bare `$(mktemp)` and the empty `makefileVariableFedDeletes` allowlist. (c) Keep `gatesurface`, `maketargetsdoc`, the fuzz mutation toolkit and the prose audits; fix only what is broken in them (build-gates-scripts-1, -3 to -8, -10, -16 become keep-and-fix findings). (d) Port the shell gate stack to Go only when touched (build-gates-scripts-2: `load-aware-workers.sh` is not replaced by GOMAXPROCS).
+- Tests: the ratchet's own tests gain a case where a package over its ratio fails (not warns); every gate keeps its tests.
+- Docs: `docs/developing-evener/README.md`, `make help` text if a target changes.
+- LOC: ~+100 (budget rows and small fixes; nothing deleted)
+- Risk: low to medium (a ratchet that enforces again can fail CI on noisy packages, so baseline from CI runs). Gate: answered (DECISIONS.md, Q11). Deps: none. Split into W1-56a (ratchet rebaseline) and W1-56b (mktemp and allowlist fixes).
 
 ### W1-57 Trim the testing guide
 - Findings: x-docs-6 (testing.md is 1,973 lines of rolling changelog), x-docs-3 (remaining), x-docs-9 (history phrases only), x-docs-10 (stale count).
@@ -836,96 +863,114 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 ### W1-58 Plan and spec corpus
 - Findings: x-docs-1 (481 plans/402,756 lines, 441 specs/117,976 lines; 161 non-docs files cite `docs/superpowers`, 92 distinct paths).
 - Files: `docs/superpowers/plans/**`, `docs/superpowers/specs/**`.
-- Steps: after Q19, delete only plans whose PR has merged to main (check with `gh pr list --search`, not by citation count) and that nobody has touched in the last 30 days, and that are not cited outside `docs/superpowers` (exact `git grep` of each basename); drop front-matter noise; leave specs that code cites. Prefer repointing code cites to evergreen docs in the same PRs as comment cleanup.
+- Steps: Q19 is answered (DECISIONS.md): delete plans whose PR has merged to main (check with `gh pr list --search`, not by citation count) and that nobody has touched in the last 30 days. Keep all specs. Repoint any code cite to an evergreen doc in the same PR (exact `git grep` of each basename); drop front-matter noise. Going forward a plan is deleted in the PR that completes it.
 - Tests: `make docs-check`.
-- Docs: `docs/product/README.md` gains the one-line rule if approved.
+- Docs: `docs/product/README.md` gains the one-line rule: a plan is deleted in the PR that completes it.
 - LOC: 0 code (docs only: about -300,000 lines of markdown; not counted in the totals)
-- Risk: low (history keeps it). Gate: Q19. Deps: none.
+- Risk: low (history keeps it). Gate: answered (DECISIONS.md, Q19). Deps: none.
 
 ### Theme H: gated sweeps (compat, recovery, experiments)
 
-These cannot start until their gate is answered. Each is its own PR.
+Their gates (Q1, Q8, Q9, Q15) are answered in [DECISIONS.md](DECISIONS.md). Each is its own PR. The compat entries are shaped by Q1: migrations of persisted state stay, and only fallbacks in a dropped version direction go.
 
-### W1-59 Write the version-skew policy into `docs/product/README.md`
+### W1-59 Write the version-skew policy into `docs/product/README.md` and classify the "older hub" fallbacks by direction
 - Findings: x-compat-legacy-1 (46 "older hub" fallbacks; `appwire/types.go:30-35` documents that daemons outlive the hub that spawned them), T8.
-- Files: `docs/product/README.md` (new "Compatibility" section: supported hub/client/daemon window, state migration window, where removal conditions are recorded), `docs/product/subsystems.md` link.
-- Steps: Jesse writes or dictates the window; the PR records it evergreen with no dates.
+- Files: `docs/product/README.md` (new "Compatibility" section), `docs/product/subsystems.md` link; the classification table lives in the PR description, one row per fallback.
+- Steps: record the Q1 policy evergreen, with no dates: the hub tolerates any older daemon; daemon code may assume the hub is the same version or newer; phone code and local-hub code tolerate an older (remote) hub; on-disk state migrations stay. Then classify each of the 46 fallbacks by version direction: phone or local-hub code serving an older hub (keep, including the combined update/apply path), daemon code facing an older hub (delete), hub code serving an older phone app (delete), remote-side code serving a newer local hub (delete), and no production producer in any direction (T1 dead code, delete). New compat code names its removal condition in the PR description.
 - Tests: `make docs-check`.
 - Docs: that is the change.
 - LOC: +40
-- Risk: none. Gate: Q1. Deps: none; precedes W1-60..W1-64 and W1-40 part (c).
+- Risk: none. Gate: answered (DECISIONS.md, Q1). Deps: none; precedes W1-60..W1-64 and W1-40 part (c).
 
-### W1-60 Retire the host-record sidecar and never-shipped spellings
+### W1-60 Drop never-shipped host-record spellings and simplify sidecar handling
 - Findings: hub-app-host-6, hub-app-host-7 (bare `.stash` arm in `stashPathOwnedBy`, `manage.go:2842-2851`, and its test `pipeline_test.go:1525`; ask before touching `Retired*` fields at `records.go:43-66` or `remote-lease`), x-compat-legacy-6 (sidecar introduced `d66d970556` 2026-09-20, retired `3ffeccc893` 2026-09-26; no tag contains the introduction without the retirement), hub-hostops-appsource-9.
 - Files: `cmd/evener-hub/app_host_manage.go:2804-2808` (".stash name never shipped"), `store.poison` (`:599-611,1625-1628`), `poison/poisoned/loadErr` and three guard sites, compensating-sidecar alias (`intent.go:166 compensationSidecarLegacy`), hostops retired fields (`custody.go`, `recordFile` OrphanBoundary/OrphanResolved/Attestation/PendingSpawns), `StateOrphanUnverified` and the appwire enum value.
-- Steps: delete the never-shipped `.stash` spelling and compensating alias first (no approval needed beyond tag check); with Q1, delete the rest. If the sidecar is kept, replace write-poisoning with recovery per the product guide.
-- Tests: existing store round-trip tests; delete tests of removed formats.
+- Steps: delete the never-shipped `.stash` spelling and the compensating alias (no producer in any direction, so T1 dead code; tag check first). Q1 says on-disk state migrations stay, so the retired record fields and sidecar handling that read persisted host records are simplification only: keep every read path and its behavior test. Replace write-poisoning with recovery per the product guide.
+- Tests: existing store round-trip tests stay; delete only tests of the never-shipped spellings.
 - Docs: `docs/product/subsystems.md` hub host rows.
-- LOC: ~-1,200
-- Risk: medium. Gate: Q1. Deps: W1-59, W1-29.
+- LOC: ~-300
+- Risk: medium. Gate: answered (DECISIONS.md, Q1). Deps: W1-59, W1-29.
 
-### W1-61 Retire plugin-store migrations
+### W1-61 Simplify plugin-store migrations (keep every migration path)
 - Findings: internal-misc-cmds-5, x-compat-legacy-13, internal-misc-cmds-10 (seams), internal-misc-cmds-15.
 - Files: `internal/plugins/marketplace_migration.go` (1,282 lines, 439 comments), `metadata_migration.go` (343), `store_format.go` (94), tests (4,261 + 774 + 590 + 170), `locks.go:84-97` `lockStore` calling `migrateMarketplaceNames` and `ensureManagedContentMigrated`.
 - Steps: Q1 answered (DECISIONS.md): state migrations stay. Keep the marketplace-name migration, and keep the managed Git-metadata migration (`metadata_migration.go`, `store_format.go`, added 2026-10-21, with its interrupted-operation recovery and audit state). Scope this entry to simplification that keeps every migration path working: take the three tree-copy implementations (`source.go:304`, `publication.go:325`, `resolve.go:412`) to one, and trim test seams that have no behavior test behind them.
 - Tests: preservation behavior tests stay.
 - Docs: `docs/product/subsystems.md` rows S17/S18.
 - LOC: ~-300
-- Risk: medium. Gate: Q1 answered. Deps: W1-59.
+- Risk: medium. Gate: answered (DECISIONS.md, Q1). Deps: W1-59.
 
-### W1-62 Retire serf-era migration tools and the MEMORY.md migration
+### W1-62 Simplify the serf-era migration tools and the MEMORY.md migration (keep every migration path)
 - Findings: internal-misc-cmds-6, x-compat-legacy-7, agent-misc-root-16, x-compat-legacy-5 (pre-union adapters; verify no producers).
-- Files: `cmd/evener-migrate/*` (801 non-test lines, created 2026-08-18), `cmdutil/userdirs.go:34 checkLegacyDataDirs` / `ErrLegacySerfData`, install.sh notes, `agent/memory_migrate.go` (671 lines; call site `session_memory.go:201` swallows the error). `homeRootFiles` duplication in `evener-migrate` with the false "does not import cmdutil" comment goes regardless of Q1 (move the 9-name list into `envvars/userdirs`, about -25).
-- Steps: with Q1, delete the tools and the launch refusal; otherwise replace the launch refusal with automatic first-launch migration (no refusal, per the recovery principle). Until then drop only non-Ctx wrappers in the memory migration and log its swallowed error at warning.
-- Tests: migration tests deleted with the code; for the keep path add a first-launch migration test.
+- Files: `cmd/evener-migrate/*` (801 non-test lines, created 2026-08-18), `cmdutil/userdirs.go:34 checkLegacyDataDirs` / `ErrLegacySerfData`, install.sh notes, `agent/memory_migrate.go` (671 lines; call site `session_memory.go:201` swallows the error). `homeRootFiles` duplication in `evener-migrate` with the false "does not import cmdutil" comment.
+- Steps: Q1 answered (DECISIONS.md): users skip versions, so state migrations stay. Keep the serf-era migration tools, the MEMORY.md migration and their tests. Allowed work: fix the false comment and move the 9-name `homeRootFiles` list into `envvars/userdirs` (about -25, ships now as W1-62a); drop non-Ctx wrappers in the memory migration and log its swallowed error at warning; share helpers between the two migrations. Delete a pre-union adapter (x-compat-legacy-5) only when verification shows no production producer, since that is dead code and not a migration. The launch refusal on legacy serf data is unchanged by this entry.
+- Tests: every migration path keeps its behavior coverage; any removed duplicate helper names the test that still covers its path.
 - Docs: install docs; subsystems row.
-- LOC: ~-2,500
-- Risk: medium. Gate: Q1. Deps: W1-59. The false-comment fix can ship now as a tiny PR (W1-62a).
+- LOC: ~-150
+- Risk: low to medium. Gate: answered (DECISIONS.md, Q1). Deps: W1-59. The false-comment fix can ship now as a tiny PR (W1-62a).
 
-### W1-63 Retire legacy transcript projection and checkpoint formats
+### W1-63 Simplify legacy transcript projection and checkpoint formats (keep every format readable)
 - Findings: internal-app-layer-1 (high), x-compat-legacy-12, agent-internal-state-10, x-compat-legacy-3 (rest), x-compat-legacy-9.
-- Files: `internal/apptranscript/apptranscript.go:445` (`Format != TurnFormatIdentity` routes to `ProjectTurnParts`), `agent/transcript/placement.go:81` (stamps Format on every written entry, introduced `1268e1282e` 2026-09-26), `internal/transcriptindex/build.go` (`applyLegacy`:195, 31 "communicate" mentions), `flush_communicate.go` (102 lines), `agent/internal/contextmgr/checkpoint_format.go:299-321,669-677` (three legacy readers; no producer writes them), `strategy_session_log.go:243`, `toolIntent` "purpose" fallbacks (`transcript_render.go:1746`, `doctor/transcript.go:324`, `apptranscript.go:217`).
-- Steps: do not rewrite users' transcripts in place. Option for Jesse: normalize legacy entries into identity-shaped entries in memory at the read boundary so only one projection path remains; bump index `projectionID`; update the transcript-read-model row. Checkpoint legacy readers: delete the three branches if Q1 gives no support window. Tool intent: add `schema.ToolIntent(args)` and call it from the three sites; drop the "purpose" fallback only with approval.
-- Tests: golden transcripts from before 2026-09-26 projected before and after normalization (identical output) before the old path is removed.
+- Files: `internal/apptranscript/apptranscript.go:445` (`Format != TurnFormatIdentity` routes to `ProjectTurnParts`), `agent/transcript/placement.go:81` (stamps Format on every written entry, introduced `1268e1282e` 2026-09-26), `internal/transcriptindex/build.go` (`applyLegacy`:195, 31 "communicate" mentions), `flush_communicate.go` (102 lines), `agent/internal/contextmgr/checkpoint_format.go:299-321,669-677` (three legacy readers), `strategy_session_log.go:243`, `toolIntent` "purpose" fallbacks (`transcript_render.go:1746`, `doctor/transcript.go:324`, `apptranscript.go:217`).
+- Steps: Q1 answered (DECISIONS.md): persisted state stays readable. Do not rewrite users' transcripts in place and do not delete the legacy projection or the three checkpoint readers. Allowed: simplification that keeps every migration path and its behavior coverage, for example normalizing legacy entries into identity-shaped entries in memory at the read boundary so one projection path remains (only with golden output identical for every legacy shape; bump index `projectionID`; update the transcript-read-model row), and sharing code between the legacy readers. Tool intent: add `schema.ToolIntent(args)` and call it from the three sites; the "purpose" fallback stays because it reads persisted data.
+- Tests: golden transcripts from before 2026-09-26 and a legacy checkpoint of each format project identically before and after the change, and those goldens stay in the suite.
 - Docs: `docs/product/subsystems.md` transcript-read-model row.
-- LOC: ~-1,500
-- Risk: high (user transcripts). Gate: Q1. Deps: W1-59.
+- LOC: ~-300
+- Risk: high (user transcripts). Gate: answered (DECISIONS.md, Q1). Deps: W1-59.
 
-### W1-64 Retire "older hub" fallbacks and young on-device formats
+### W1-64 Classify "older hub" fallbacks and young on-device formats by version direction
 - Findings: x-compat-legacy-1, x-compat-legacy-2, native-session-board-8, native-rest-8, x-compat-legacy-14, appwire-ts-core-13 (`hubUpdate.ts:60-63,90-92,289+` deprecated `apply()`/`applying`/`applyError`, still called at `HubHome.tsx:69`: an intentional compat path).
 - Files: web `hubUpdates.tsx:104`, native `HubHome.tsx:38` (both cast `check as {restartSupported?}`), `approvalRefs`/`tracksSeenThrough` in `attention.ts:66-70`, `boardMemory.ts`, `activityPoll.ts`, `boardData.ts`, `nativePreferenceDrafts.ts:248-320`, `draftDocument.ts:59-61,84`, `draftRepository.ts:205`, `screens.tsx:3153` (exclude: documented in `message-recovery.md`), web `workspace.ts:378,457 migrateLegacyLayout`, `sessionEntryCache.ts:327`, combined update/apply path.
-- Steps: per area, once Q1 gives the window: delete fallbacks and the "older hub" branches; for cache and layout bump the DB version and reset unrecognized layout; for native drafts, never discard draft text (leave until Jesse decides).
-- Tests: tests for removed fallbacks deleted; draft preservation tests untouched.
+- Steps: Q1 answered (DECISIONS.md); apply the direction table from W1-59 per area. Keep: every phone and local-hub fallback for an older (remote) hub, including the combined update/apply path (`apply()`/`applying`/`applyError`, the `restartSupported` casts), and every persisted client-state era (`nativePreferenceDrafts`, `draftDocument`, `draftRepository`, `boardMemory`, `migrateLegacyLayout`, `sessionEntryCache`); these may be simplified but keep every migration path and its behavior coverage. Delete only: daemon-side fallbacks for an older hub, hub-side fallbacks for an older phone app, remote-side fallbacks for a newer local hub, and fallbacks with no production producer. Never discard draft text.
+- Tests: tests for deleted fallbacks go with them; tests for kept fallbacks and all draft preservation tests stay.
 - Docs: `docs/product/message-recovery.md` unchanged for drafts.
-- LOC: ~-2,000
-- Risk: medium. Gate: Q1. Deps: W1-59. Split by area.
+- LOC: ~-500
+- Risk: medium. Gate: answered (DECISIONS.md, Q1). Deps: W1-59. Split by area.
 
 ### W1-65 Recovery-over-lockdown behavior changes
 - Findings: agent-subpackages-10, agent-delegates-17, x-compat-legacy-8, hub-app-rest-9 (policy half).
 - Files: `agent/plugin/commands.go:97-108` (first unreadable or unparsable command file drops the whole plugin), `agents.go:46`, `agent/delegate_legacy_state.go:11 rejectLegacyDelegateState` (called `delegate_runtime.go:3236`; refuses startup) and `doctor/jobs.go:276 legacyDelegateFailures`, endpoint-fingerprint guard (`app_auth.go:402-405,1404,1486`; fail-closed default).
-- Steps: each is a product choice. After Q15, TDD per item: red test showing a healthy plugin keeps working when one command file is malformed (skip and report the bad file); legacy delegate state recovers or is quarantined instead of blocking startup; endpoint guard default per Jesse. Do not simplify code around them before the decision.
-- Tests: behavior tests including the transition back to useful operation (AGENTS.md).
+- Steps: Q15 is answered (DECISIONS.md): all three switch to recovery, TDD per item. (a) Red test: a plugin with one malformed command file loads its healthy commands, skips the bad file, and emits a diagnostic naming it. (b) Legacy delegate state is archived or ignored with a diagnostic and startup proceeds instead of refusing (`doctor/jobs.go legacyDelegateFailures` reports it). (c) When the endpoint-fingerprint key cannot be computed, discard the pending login or pairing flow and automatically restart a fresh flow against the current endpoint; never complete unchecked. Also dedupe the three verifiers into one `endpointGuard.Check` (done here, or taken from W1-32 phase 1 if it merged first).
+- Tests: behavior tests including the transition back to useful operation (AGENTS.md): the plugin's healthy commands run, startup proceeds after legacy state is archived, the restarted flow completes against the current endpoint, and an unchecked completion is never possible.
 - Docs: `docs/product/principles.md` or the owning guide; `friction.md` entries removed when fixed, without renumbering.
 - LOC: ~+150
-- Risk: medium. Gate: Q15. Deps: none.
+- Risk: medium. Gate: answered (DECISIONS.md, Q15). Deps: none (W1-32 phase 1 may land first).
 
 ### W1-66 Remove the four experimental context strategies
 - Findings: agent-internal-state-2, agent-internal-state-1 (pipeline copies after deletion).
 - Files: `agent/session_init.go:277-284` (accepts `obs-mask`, `checkpoint-pred`, `memory-crystals`, `recursive-distill`; `session_config.go:185` and `main.go:360` document only `compact|session-log|ooda`), the four strategy files and tests, `selectStrategy` cases, `aggressiveMaskObservations`, `predictiveChec...`, cov_s2 / fuzz-list references. Afterwards add `Manager.resetMeasurement()` and one `applyLayer` helper for the remaining strategies (agent-internal-state-1 plan).
-- Steps: delete only with approval; then the helper extraction, guarded by existing seqfuzz and compaction tests.
+- Steps: Q9 is answered (DECISIONS.md): delete all four strategies. Then the helper extraction, guarded by existing seqfuzz and compaction tests.
 - Tests: compaction suites in CI.
 - Docs: `docs/` contextmgr reference (`design/context.md`).
 - LOC: ~-3,500
-- Risk: low. Gate: Q9. Deps: none; precedes W2-04.
+- Risk: low. Gate: answered (DECISIONS.md, Q9). Deps: none; precedes W2-04.
 
-### W1-67 `FollowUp` and queue authority
+### W1-67 Delete `FollowUp` and its drain rung
 - Findings: agent-session-core-6, agent-session-core-9.
-- Files: `agent/queue.go:401-416 FollowUp`, `popFollowUp` (:1617), `runFollowUp` rung (`lifecycle.go:1022/1079`), pop at :1496, retirement check `session_retirement_admission.go:31`; queue representations `reflectDurableInputQueue` (:665), `reflectDurableClientSteering` (:1352), `daemonSourcedSteering` (`session_queue_persist.go:138`), `queues/<id>.json`.
-- Steps: Jesse decides first (the drain ladder depends on it). If deleted: red/green around the drain ladder; migrate tests; remove the rung. Queue-authority consolidation is design work, not a refactor: do not start it here.
-- Tests: drain-ladder tests.
+- Files: `agent/queue.go:401-416 FollowUp`, `popFollowUp` (:1617), `runFollowUp` rung (`lifecycle.go:1022/1079`), pop at :1496, retirement check `session_retirement_admission.go:31`.
+- Steps: Q8 is answered (DECISIONS.md): delete `Session.FollowUp`, `popFollowUp`, the `runFollowUp` drain rung and its retirement check. Red/green around the drain ladder; repoint the tests that used `FollowUp` at the real input paths (`ProcessPendingUserInput` or the client mutation path). Consolidating the three queue representations (`reflectDurableInputQueue` :665, `reflectDurableClientSteering` :1352, `daemonSourcedSteering` in `session_queue_persist.go:138`, `queues/<id>.json`) remains a design discussion with Jesse; do not start it here.
+- Tests: drain-ladder tests; each repointed test names the real path it now drives.
 - Docs: `docs/architecture.md` drain section.
 - LOC: ~-600
-- Risk: medium-high. Gate: Q8. Deps: W1-23.
+- Risk: medium-high. Gate: answered (DECISIONS.md, Q8). Deps: W1-23.
+
+### W1-68 One resolver for doc and image paths, with the artifacts-root fallback
+- Findings: hub-root-rest-8 (remote image-by-path misses the artifacts root).
+- Files: `doc_serve.go:57-110` (`resolveLocalDocTarget`), `doc_serve.go:423-487` (`sessionDocumentFromHub`), `image_serve.go:281-309` (`sessionImageByPath`), `output_images.go:360-398` (`readOutputImageFile`, `readOutputImageInRoot`), `image_proxy.go:80-90`, `doc_proxy.go:52-72`, `doc_serve.go:503-540` (`handleDocImage`).
+- Steps: Q14 is answered (DECISIONS.md): remote image-by-path falls back to the artifacts root for absolute paths like local doc serving does. Red test first: a remote image request for an absolute path under the retained artifacts directory fails today and succeeds after. Then extract one shared resolver (cwd first, then the artifacts root, honoring the deletion fence and the contained-miss rule) that returns a typed result, and have `resolveLocalDocTarget`, `sessionDocumentFromHub` and `sessionImageByPath` map it to HTTP statuses or wire errors.
+- Tests: resolver table (cwd hit, artifacts-root hit, deleted, contained miss, escape attempt) run through the doc and image routes, local and remote; assert codes and bytes, not text.
+- Docs: `docs/product/subsystems.md` hub row if it names the doc and image routes.
+- LOC: ~-100
+- Risk: medium (path containment, security-adjacent). Gate: answered (DECISIONS.md, Q14). Deps: W0-07.
+
+### W1-69 Fix the flaky tests seen on main (root cause first)
+- Findings: not from the audit; three failures observed on main and on a docs-only PR.
+- Files: Go `TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner` in the `agent` package (failed on main at `aedb22acd8`, passed on the next commit); web vitest "a pending approval suppresses the control and returns when it resolves" in `cmd/evener-hub/frontend/src/panes/session/Session.test.tsx` (failed on main at `e66d879364`); browser guard `TestBackgroundTranscriptsEntrySliceBrowser` timing out while waiting for a rail row (seen on docs-only PR #5033).
+- Steps: find the root cause of each before touching it, with no retry loops, longer timeouts or skips as the fix. For each: pull the failing CI log, reproduce through the narrowest deterministic route (for the Go test, the unlaunched-runner ordering; for the vitest, the approval resolve/render ordering; for the browser guard, what the rail row waits on), write down the race or missing wait condition, then fix the production or test synchronization at that point. Prove the fix by a test that forces the bad ordering deterministically, red then green. One PR per root cause if they are unrelated.
+- Tests: the deterministic forcing test per flake; CI reruns are the sample (no local stress loops).
+- Docs: none; `docs/developing-evener/testing.md` only if a general waiting rule falls out.
+- LOC: ~+50
+- Risk: low to medium. Gate: none. Deps: none.
 
 ## Wave 2: structural splits (all need design discussion with Jesse before any code)
 
@@ -1011,15 +1056,14 @@ Rules for every item here: do not start until Jesse has discussed the seams. Ord
 - LOC: ~-600 (moves ~3,600)
 - Risk: medium-high (sandbox). Gate: design. Deps: W1-07.
 
-### W2-09 Replace the hand-rolled schema example synthesizer in `explain.go` (needs design discussion)
+### W2-09 Trim `explain.go`: narration comments and dead code only
 - Findings: agent-internal-tools-1 (high), agent-internal-tools-2, agent-internal-tools-6.
-- Files: `agent/internal/tool/repair/explain.go` (3,638 lines, 1,020 comment lines, 88 issue/review cites; the 2446-3358 family `candidateSatisfies`, `numericExample`, `snapMultiple`, reached only from `exampleValueFor`, lines 2379/2398), `schemaOwnKeywordsMatch` (:2575, also used by `repair.go`'s null handling), `repair.go` `schemaAcceptsNull`/`branchAcceptsNull`.
-- Steps: behavior-level tests first; give `repair` its own accepts-null probe; replace candidate/numeric synthesis with "simplest candidate (const/enum first value, type placeholder), assemble into args, validate with the compiled schema passed into `ExplainSchemaError`, omit the Example line when invalid"; delete the family. This changes model-facing coaching text, so it is Jesse's call (Q18).
-- Questions for the discussion: Q18.
-- Tests: behavior tests asserting that the Example, when present, validates against the schema; no wording assertions.
+- Files: `agent/internal/tool/repair/explain.go` (3,638 lines, 1,020 comment lines, 88 issue/review cites), `schemaOwnKeywordsMatch` (:2575, also used by `repair.go`'s null handling), `repair.go` `schemaAcceptsNull`/`branchAcceptsNull`.
+- Steps: Q18 is answered (DECISIONS.md): leave the coaching text as is. The example-synthesis family (`candidateSatisfies`, `numericExample`, `snapMultiple`, `exampleValueFor`, lines 2379-3358) stays. Remove only narration comments (history, review rounds, issue ids) and code with no caller; behavior-level tests first so the model-facing output is pinned before and after.
+- Tests: behavior tests asserting that the Example, when present, validates against the schema; no wording assertions; output identical before and after.
 - Docs: tool-repair doc if it describes examples.
-- LOC: ~-2,000
-- Risk: medium (model behavior). Gate: Q18. Deps: none.
+- LOC: ~-1,000
+- Risk: low. Gate: answered (DECISIONS.md, Q18). Deps: none.
 
 ### W2-10 Hub and CLI composition roots (needs design discussion)
 - Findings: hub-root-rest-1 (high), hub-root-rest-10, internal-misc-cmds-3 (high), hub-root-rest-14, internal-misc-cmds-4, hub-root-rest-7, x-error-handling-slop-1.
@@ -1059,7 +1103,7 @@ Rules for every item here: do not start until Jesse has discussed the seams. Ord
 - Tests: as listed; round-trip/golden for `providers.toml` output.
 - Docs: `docs/evener-hub.md`, product subsystems.
 - LOC: ~-800
-- Risk: high. Gate: Q20. Deps: none.
+- Risk: high. Gate: Q20 (still open). Deps: none.
 
 ### W2-14 Split `appwire-client` `reducer.ts` and the credentials closure (needs design discussion)
 - Findings: appwire-ts-core-1, appwire-ts-state-testing-2, appwire-ts-state-testing-4, appwire-ts-state-testing-5, appwire-ts-core-7.
@@ -1125,28 +1169,28 @@ Rules for every item here: do not start until Jesse has discussed the seams. Ord
 
 Answers so far are recorded in [DECISIONS.md](DECISIONS.md).
 
-Each is a product or policy call, not a refactor. Items marked "default" state what the roadmap assumes if he has no preference, so work can proceed on the safe reading.
+Each is a product or policy call, not a refactor. Every item except Q20 (and the second tier of Q12) is answered, and each answer points to [DECISIONS.md](DECISIONS.md). The "Default" text on an answered item is the pre-answer assumption and no longer applies.
 
-1. **Q1. Version-skew and state-migration policy.** Which hub, client and daemon versions must interoperate (daemons outlive the hub that spawned them per `appwire/types.go:30-35`), and how long on-disk formats are migrated. One written window turns about 46 "older hub" fallbacks, the plugin-store and serf migrations, the MEMORY.md migration, the legacy transcript projection and checkpoint formats, and young on-device formats into keep/delete answers. Unblocks W1-59..W1-64 and part of W1-40. Default: nothing is deleted.
-2. **Q2. Coverage floor as a gate.** Is `make coverage-floor` a required ratchet or an unenforced number? If it is not a gate, the coverage-wave files (about 38k lines repo-wide) and the 39-40 hub `cov_*` files can go after one before/after report. Unblocks W1-54. Default: leave them.
-3. **Q3. Is `llm` a public SDK?** If it is not, the streaming `Generate` family and the multi-round tool loop (production callers pass `Tools: nil`) are dead. Unblocks W1-27. Default: keep.
-4. **Q4. Home for the shared durable-write helper and its fsync default.** `execsupport` is required by root, `agent` and `llm` but not `auth`; `cmd/evener-hub/internal/fsdurability` cannot be imported from `server`, `agent` or `auth`. Options: a package in `execsupport` (and add the dependency to `auth`), or in `envvars`, or a new tiny module. Also whether durability is always on with an explicit no-fsync variant for caches. Unblocks W1-01..W1-03. Default: `execsupport/fsatomic`, always-on, explicit no-fsync variant.
-5. **Q5. Fallback when HOME is unset.** Today it is `os.TempDir()` in some packages, `"."` in others. One value is needed for the shared state-root resolver (W1-04). Default: keep each caller's fallback until answered.
-6. **Q6. Web and phone stuck thresholds.** Web `describeLiveness` uses 20s quiet / 180s stuck; the package and phone use 10 minutes. Should they differ on purpose, and should "stuck" be suppressed while subagents run? Unblocks W1-39.
-7. **Q7. Attention precedence for `approval_pending` with `restartRequired` or ended.** The hub reads it as awaiting, native reads it as restart needed. Unblocks W1-38 phase 2.
-8. **Q8. Delete `FollowUp`, and consolidate the three queue representations?** The drain ladder depends on `FollowUp`; queue authority is design work. Unblocks W1-67.
-9. **Q9. The four experimental context strategies** (`obs-mask`, `checkpoint-pred`, `memory-crystals`, `recursive-distill`): delete? Unblocks W1-66.
-10. **Q10. UI dead weight.** (a) the two mockup harnesses (about 2,750 lines) are final, (b) delete the four unused widgets, (c) delete the write-only phone `ActivityStore` after the rehydrate-trigger check, (d) keep or drop the ~10k-line demo hub fixture (`native-tests-legacy-mobile-13`). Unblocks W0-05, W1-43, W1-47.
-11. **Q11. Gate tooling that exists but may not be worth its weight.** The timing ratchet (rebaseline with a `metric` key, or delete 664 lines of script and 1,231 of tests), the prose-pinning and Makefile-text audit tests (about 5.5k lines), the fuzz mutation toolkit (`ledger.json` and `buckets.json` are both `{}`), the generated Make-targets table renderer (3,642 lines), unused `internal/devtool/gatesurface`. Unblocks W1-56.
-12. **Q12. Contributor rules wording, and a second copy-oracle tier.** Approve the five AGENTS.md rules in W0-01; decide whether the copy-oracle ratchet should also cover error strings (W1-49) or stay at "shows X" names.
-13. **Q13. New test-support packages.** Create `llm/llmtest` and a `gittest` package only if copy counts stay above ten after adopting existing kits. Unblocks W1-52.
-14. **Q14. Remote image-by-path and the artifacts root.** Local doc serving falls back to the artifacts root for absolute paths; remote `sessionImageByPath` does not. Should it? Affects hub-root-rest-8 (not scheduled until answered).
-15. **Q15. Fail-closed behaviors vs the recovery-first guide.** The endpoint-fingerprint guard default, one malformed plugin command file dropping the whole plugin, and legacy delegate state refusing startup. Unblocks W1-65.
-16. **Q16. Ref grammar.** Is `:` allowed inside a session id? `hubapi.ParseRef` accepts it, `appwire.ParseRef` rejects it. Unblocks W1-36.
-17. **Q17. Behavior-visible small fixes.** Report ambiguity for plugin slash commands (W0-18) and let `latest_intent` flow on the detailed-status path (W1-10).
-18. **Q18. Slimming `explain.go`.** It changes model-facing coaching text (examples validated against the schema or omitted). Unblocks W2-09.
-19. **Q19. Plan and spec corpus rule.** "Delete the plan in the PR that completes it", and approval to delete plans not cited outside `docs/superpowers`. Unblocks W1-58.
-20. **Q20. `hub.toml` as machine database, and the 23 undocumented retention knobs.** One source of truth for host records is a design record first; the knobs can go if no deployed hub tunes them. Unblocks W2-13.
+1. **Q1. Version-skew and state-migration policy.** Which hub, client and daemon versions must interoperate (daemons outlive the hub that spawned them per `appwire/types.go:30-35`), and how long on-disk formats are migrated. One written window turns about 46 "older hub" fallbacks, the plugin-store and serf migrations, the MEMORY.md migration, the legacy transcript projection and checkpoint formats, and young on-device formats into keep/delete answers. Unblocks W1-59..W1-64 and part of W1-40. Default: nothing is deleted. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q1): the hub tolerates any older daemon; phone and local-hub code tolerate an older (remote) hub; state migrations stay. Shapes W1-59..W1-64 and W1-40(c).
+2. **Q2. Coverage floor as a gate.** Is `make coverage-floor` a required ratchet or an unenforced number? If it is not a gate, the coverage-wave files (about 38k lines repo-wide) and the 39-40 hub `cov_*` files can go after one before/after report. Unblocks W1-54. Default: leave them. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q2): the floor is not a protected gate; W1-54 is unblocked.
+3. **Q3. Is `llm` a public SDK?** If it is not, the streaming `Generate` family and the multi-round tool loop (production callers pass `Tools: nil`) are dead. Unblocks W1-27. Default: keep. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q3): `llm` is a public SDK; keep both; W1-27 is dedupe only.
+4. **Q4. Home for the shared durable-write helper and its fsync default.** `execsupport` is required by root, `agent` and `llm` but not `auth`; `cmd/evener-hub/internal/fsdurability` cannot be imported from `server`, `agent` or `auth`. Options: a package in `execsupport` (and add the dependency to `auth`), or in `envvars`, or a new tiny module. Also whether durability is always on with an explicit no-fsync variant for caches. Unblocks W1-01..W1-03. Default: `execsupport/fsatomic`, always-on, explicit no-fsync variant. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q4): `execsupport`, durable by default; plus G7: `afero` phased out.
+5. **Q5. Fallback when HOME is unset.** Today it is `os.TempDir()` in some packages, `"."` in others. One value is needed for the shared state-root resolver (W1-04). Default: keep each caller's fallback until answered. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q5): a clear error, no fallback (W1-04).
+6. **Q6. Web and phone stuck thresholds.** Web `describeLiveness` uses 20s quiet / 180s stuck; the package and phone use 10 minutes. Should they differ on purpose, and should "stuck" be suppressed while subagents run? Unblocks W1-39. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q6): one 10-minute rule, never stuck while delegates run (W1-39).
+7. **Q7. Attention precedence for `approval_pending` with `restartRequired` or ended.** The hub reads it as awaiting, native reads it as restart needed. Unblocks W1-38 phase 2. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q7): restart-needed or ended wins over `approval_pending` (W1-38).
+8. **Q8. Delete `FollowUp`, and consolidate the three queue representations?** The drain ladder depends on `FollowUp`; queue authority is design work. Unblocks W1-67. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q8): delete `FollowUp` and its rung; queue consolidation stays a design discussion (W1-67).
+9. **Q9. The four experimental context strategies** (`obs-mask`, `checkpoint-pred`, `memory-crystals`, `recursive-distill`): delete? Unblocks W1-66. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q9): delete all four (W1-66).
+10. **Q10. UI dead weight.** (a) the two mockup harnesses (about 2,750 lines) are final, (b) delete the four unused widgets, (c) delete the write-only phone `ActivityStore` after the rehydrate-trigger check, (d) keep or drop the ~10k-line demo hub fixture (`native-tests-legacy-mobile-13`). Unblocks W0-05, W1-43, W1-47. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q10): (a) delete, (b) delete, (c) delete after the rehydrate check, (d) keep the demo hub fixture.
+11. **Q11. Gate tooling that exists but may not be worth its weight.** The timing ratchet (rebaseline with a `metric` key, or delete 664 lines of script and 1,231 of tests), the prose-pinning and Makefile-text audit tests (about 5.5k lines), the fuzz mutation toolkit (`ledger.json` and `buckets.json` are both `{}`), the generated Make-targets table renderer (3,642 lines), unused `internal/devtool/gatesurface`. Unblocks W1-56. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q11): delete none of the gate tooling; rebaseline the timing ratchet and fix what is broken (W1-56).
+12. **Q12. Contributor rules wording, and a second copy-oracle tier.** Approve the five AGENTS.md rules in W0-01; decide whether the copy-oracle ratchet should also cover error strings (W1-49) or stay at "shows X" names. Partly answered ([DECISIONS.md](DECISIONS.md), Q12): the AGENTS.md wording is approved (W0-01). The second tier, a copy-oracle ratchet for error strings (W1-49), is still open.
+13. **Q13. New test-support packages.** Create `llm/llmtest` and a `gittest` package only if copy counts stay above ten after adopting existing kits. Unblocks W1-52. Answered as an orchestrator default, not Jesse's call ([DECISIONS.md](DECISIONS.md), Q13): adopt the existing kits first; create a package only if more than ten copies remain (W1-52).
+14. **Q14. Remote image-by-path and the artifacts root.** Local doc serving falls back to the artifacts root for absolute paths; remote `sessionImageByPath` does not. Should it? Affects hub-root-rest-8 (not scheduled until answered). Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q14): fall back to the artifacts root through one shared resolver (new W1-68).
+15. **Q15. Fail-closed behaviors vs the recovery-first guide.** The endpoint-fingerprint guard default, one malformed plugin command file dropping the whole plugin, and legacy delegate state refusing startup. Unblocks W1-65. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q15): all three switch to recovery (W1-65).
+16. **Q16. Ref grammar.** Is `:` allowed inside a session id? `hubapi.ParseRef` accepts it, `appwire.ParseRef` rejects it. Unblocks W1-36. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q16): reject `:` in session ids; one strict `ParseRef` (W1-36).
+17. **Q17. Behavior-visible small fixes.** Report ambiguity for plugin slash commands (W0-18) and let `latest_intent` flow on the detailed-status path (W1-10). Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q17): report ambiguity with a sentinel error (W0-18); `latest_intent` flows on the detailed-status path (W1-10).
+18. **Q18. Slimming `explain.go`.** It changes model-facing coaching text (examples validated against the schema or omitted). Unblocks W2-09. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q18): leave the coaching text; trim comments and dead code only (W2-09).
+19. **Q19. Plan and spec corpus rule.** "Delete the plan in the PR that completes it", and approval to delete plans not cited outside `docs/superpowers`. Unblocks W1-58. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q19): delete merged, untouched-for-30-days plans; keep specs; delete a plan in the PR that completes it (W1-58).
+20. **Q20. `hub.toml` as machine database, and the 23 undocumented retention knobs.** One source of truth for host records is a design record first; the knobs can go if no deployed hub tunes them. Unblocks W2-13. Still open: a Wave 2 design discussion (W2-13).
 
 ## Facts re-checked while writing this plan
 

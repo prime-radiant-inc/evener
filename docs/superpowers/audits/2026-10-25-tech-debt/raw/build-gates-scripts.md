@@ -91,7 +91,7 @@ Locations:
 - `transcriptcomments_audit_test.go:1-127` (pins `decodeStrictJSON`'s comment cites two named tests; walks the whole tree for `func Test...`)
 - `sandboxbreakerdocs_audit_test.go:1-170` (pins `agent/sandbox/policy.go` package doc and `docs/architecture.md` sections via `regexp` for "enforces nothing", "both keyed on tool name", and requires the word "normalized")
 - `lazytranscriptloading_audit_test.go:1-37` (a scenario card must contain "near-top" and "too short to scroll" and not "IntersectionObserver")
-- `appwirelegacypath_audit_test.go:1-102` (reads EVERY git-tracked file looking for the string `cmd/evener-hub/assets/appwire.js`; requires `cmd/serf-hub/assets/appwire.js` to appear somewhere)
+- `appwirelegacypath_audit_test.go:1-102` (reads EVERY git-tracked file looking for the never-existing evener-hub assets path for appwire.js; requires `cmd/serf-hub/assets/appwire.js` to appear somewhere)
 
 Evidence:
 - Each header names the incident it came from (`issue #2624`, `#2782`, `#2403`, `#3057`, `#2819`). The oracle in each is a hardcoded phrase from the correction, the exact pattern `testing.md:60-110` ("Copy Is Not a Test Oracle") bans for tests of UI strings. Applying it to comments and docs is the same defect.
