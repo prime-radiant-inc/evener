@@ -1235,17 +1235,14 @@ func (s *Session) drainJobTreeWith(ctx context.Context, wake <-chan struct{}, re
 						s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
 							"undisposed-background-job announcement turn failed: %v", perr)})
 					} else if res != "" {
-						observedAfter, err := s.drainObservedNotifications()
+						newlyObserved, err := s.drainHasNewObservation(observedBefore)
 						if err != nil {
 							return lastResult, err
 						}
-						for id := range observedAfter {
-							if _, earlier := observedBefore[id]; !earlier {
-								// This input earned a successful canonical receipt,
-								// not just custody or repair of an older receipt.
-								lastResult = res
-								break
-							}
+						if newlyObserved {
+							// This input earned a successful canonical receipt,
+							// not just custody or repair of an older receipt.
+							lastResult = res
 						}
 					}
 					stallStart = time.Time{}
@@ -1347,6 +1344,23 @@ func (s *Session) drainObservedNotifications() (map[string]struct{}, error) {
 		return nil, err
 	}
 	return maps.Clone(fold.observed), nil
+}
+
+// drainHasNewObservation compares the canonical fold under its lock, without
+// copying or returning the borrowed observed map. The before snapshot is owned.
+func (s *Session) drainHasNewObservation(before map[string]struct{}) (bool, error) {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		return false, err
+	}
+	for id := range fold.observed {
+		if _, earlier := before[id]; !earlier {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // rematerializeDurablePendings transfers this session's owned durable-only
