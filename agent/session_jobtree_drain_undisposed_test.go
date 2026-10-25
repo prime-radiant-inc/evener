@@ -445,6 +445,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
+		StateDir:        t.TempDir(),
 	}))
 	jobID = startUndisposedBackgroundShell(t, sess)
 
@@ -531,9 +532,35 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	if len(reqs) != 5 {
 		t.Fatalf("model requests = %d, want 5 after one watch notification and two fresh-episode escalation turns", len(reqs))
 	}
-	last := reqs[2].Messages[len(reqs[2].Messages)-1].Text()
-	if !strings.Contains(last, "<job-notification") || !strings.Contains(last, `event="watch"`) {
-		t.Fatalf("request 3 did not carry the structured watch notification: %q", last)
+	drainRequestNotice(t, reqs[2], map[string]string{"job_type": "watch", "event": "watch", "watch_id": watched.watchID})
+	var ids []string
+	for _, entry := range notificationRawEntries(t, sess.TranscriptPath()) {
+		if entry.Turn.AttentionID != "" {
+			ids = append(ids, entry.Turn.AttentionID)
+		}
+	}
+	if len(ids) != 1 {
+		t.Fatalf("watch receiver identities = %v, want one", ids)
+	}
+	accepted, observed, consumed := 0, 0, 0
+	for _, entry := range notificationRawEntries(t, sess.TranscriptPath()) {
+		if entry.Turn.AttentionID == ids[0] {
+			accepted++
+		}
+		for _, id := range entry.Turn.ObservedNotificationIDs {
+			if id == ids[0] {
+				observed++
+			}
+		}
+		if resolution := entry.Turn.AttentionResolution; resolution != nil && resolution.AttentionID == ids[0] && resolution.Disposition == string(delegateAttentionConsumed) {
+			consumed++
+		}
+	}
+	// The cleared-watch message remains in request history for both later
+	// announcements. Each successful response presents it again, but custody
+	// and consumption each occur only once.
+	if accepted != 1 || observed != 3 || consumed != 1 {
+		t.Fatalf("watch %s accepted=%d observed=%d consumed=%d, want 1/3/1", ids[0], accepted, observed, consumed)
 	}
 }
 
@@ -600,55 +627,69 @@ func startControlledBackgroundShell(t *testing.T, sess *Session, command string)
 // must return it.
 func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
 	t.Parallel()
-	const answer = "FINAL-ANSWER: the build passed"
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse(answer) },
-	}}
-	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		TurnEndsProcess: true,
-	}))
-	jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
+	for _, persistent := range []bool{false, true} {
+		name := "memory"
+		if persistent {
+			name = "persistent"
+		}
+		t.Run(name, func(t *testing.T) {
+			stateDir := ""
+			if persistent {
+				stateDir = t.TempDir()
+			}
+			const answer = "FINAL-ANSWER: the build passed"
+			adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response { return finalResponse(answer) },
+			}}
+			sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+				TurnEndsProcess: true,
+				StateDir:        stateDir,
+			}))
+			jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
 
-	// TRIPWIRE: every step is scripted or fed; 30s only fires on a hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	var completedOnAnnounce sync.Once
-	process := func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
-		// The drain has queued the announcement and not yet opened the turn.
-		// Finish the job here so its notification is queued before
-		// acceptNotificationInput drains the queue: the gap production leaves
-		// between the pass's queue gate and the turn's own drain.
-		completedOnAnnounce.Do(func() {
-			// This runs on the drain goroutine; finalizeShell reports a miss with
-			// t.Error, and the result assertions on the test goroutine then fail
-			// the test.
-			finalizeShell(t, sess.jobManager, jobID, releaseShell)
+			// TRIPWIRE: every step is scripted or fed; 30s only fires on a hang.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			var completedOnAnnounce sync.Once
+			process := func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
+				// The drain has queued the announcement and not yet opened the turn.
+				// Finish the job here so its notification is queued before
+				// acceptNotificationInput drains the queue: the gap production leaves
+				// between the pass's queue gate and the turn's own drain.
+				completedOnAnnounce.Do(func() {
+					// This runs on the drain goroutine; finalizeShell reports a miss with
+					// t.Error, and the result assertions on the test goroutine then fail
+					// the test.
+					finalizeShell(t, sess.jobManager, jobID, releaseShell)
+				})
+				return sess.ProcessInputKind(ctx, input, images, kind)
+			}
+			done := make(chan drainResult, 1)
+			go func() {
+				res, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), feedRechecks(ctx), sess.kickDriveTree, process)
+				done <- drainResult{res, err}
+			}()
+			var d drainResult
+			select {
+			case d = <-done:
+			case <-ctx.Done():
+				t.Fatal("drain did not return")
+			}
+			if d.err != nil {
+				t.Fatalf("drain error: %v", d.err)
+			}
+			reqs := adapter.Requests()
+			if len(reqs) != 1 {
+				t.Fatalf("model calls = %d, want exactly 1: the announcement carrying the completion", len(reqs))
+			}
+			if !requestsContain(reqs, jobID, "cannot finish") || !requestsContain(reqs, jobID, "<job-notification") {
+				t.Fatalf("the one request must carry both the announcement and the completion, got: %v", reqs[0].Messages[1:])
+			}
+			requireDrainShellObserved(t, sess, jobID)
+			if d.res != answer {
+				t.Fatalf("drain result = %q, want %q: the reply to a request that delivered the completion is the run's answer", d.res, answer)
+			}
 		})
-		return sess.ProcessInputKind(ctx, input, images, kind)
-	}
-	done := make(chan drainResult, 1)
-	go func() {
-		res, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), feedRechecks(ctx), sess.kickDriveTree, process)
-		done <- drainResult{res, err}
-	}()
-	var d drainResult
-	select {
-	case d = <-done:
-	case <-ctx.Done():
-		t.Fatal("drain did not return")
-	}
-	if d.err != nil {
-		t.Fatalf("drain error: %v", d.err)
-	}
-	reqs := adapter.Requests()
-	if len(reqs) != 1 {
-		t.Fatalf("model calls = %d, want exactly 1: the announcement carrying the completion", len(reqs))
-	}
-	if !requestsContain(reqs, jobID, "cannot finish") || !requestsContain(reqs, jobID, "<job-notification") {
-		t.Fatalf("the one request must carry both the announcement and the completion, got: %v", reqs[0].Messages[1:])
-	}
-	if d.res != answer {
-		t.Fatalf("drain result = %q, want %q: the reply to a request that delivered the completion is the run's answer", d.res, answer)
 	}
 }
 

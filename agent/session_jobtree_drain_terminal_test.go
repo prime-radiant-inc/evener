@@ -356,11 +356,34 @@ func TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.
 // answer.
 func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *testing.T) {
 	t.Parallel()
+	testTerminalFollowUpCompletion(t, false)
+}
+
+func TestOneShotDrainReturnsWhenFollowUpCompletionRidesToolResult(t *testing.T) {
+	t.Parallel()
+	testTerminalFollowUpCompletion(t, true)
+}
+
+type terminalFollowUpShellEnv struct {
+	execenv.ExecutionEnvironment
+	*delayedSuccessStreamingExecutor
+}
+
+func testTerminalFollowUpCompletion(t *testing.T, early bool) {
+	t.Helper()
 	const firstAnswer = "first answer, written before the build finished"
 	const finalAnswer = "FINAL-ANSWER: both jobs done"
 	var sess *Session
-	var firstJobID string
+	var firstJobID, secondJobID string
 	var releaseShell func()
+	executor := newDelayedSuccessStreamingExecutor()
+	releaseSecond := func() {
+		select {
+		case <-executor.release:
+		default:
+			close(executor.release)
+		}
+	}
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			finalizeShell(t, sess.jobManager, firstJobID, releaseShell)
@@ -372,7 +395,19 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 				Arguments: json.RawMessage(`{"command":"printf second-job-output","mode":"background"}`),
 			})
 		},
-		func(llm.Request) llm.Response { return finalResponse("started a follow-up job; waiting") },
+		func(req llm.Request) llm.Response {
+			if early {
+				requireTerminalShellCompletionInRequest(t, req, secondJobID, "completed", "exit_zero", "0")
+				return finalResponse(finalAnswer)
+			}
+			if requestsContain([]llm.Request{req}, `job_id="`+secondJobID+`"`) {
+				t.Error("late follow-up completion was already present in the tool-result request")
+			}
+			// Request3 is built without the completion. Release it only now, so
+			// the drain must present its outcome in a separate fourth request.
+			finalizeShell(t, sess.jobManager, secondJobID, releaseSecond)
+			return finalResponse("started a follow-up job; waiting")
+		},
 		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
@@ -380,8 +415,43 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 		TurnEndsProcess: true,
 	}))
 	firstJobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled build")
+	// Reuse the existing successful controlled executor at the external shell
+	// boundary. The real shell tool, job lifecycle and receiver remain intact.
+	registered := sess.reg.Get("shell")
+	original := registered.Exec
+	registered.Exec = func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+		result, err := original(ctx, terminalFollowUpShellEnv{env, executor}, args)
+		if err != nil {
+			return result, err
+		}
+		records, err := sess.jobManager.store.Load()
+		if err != nil {
+			return nil, err
+		}
+		for id, record := range records {
+			if id != firstJobID && record.Type == jobstore.JobShell && record.OwnerSessionID == sess.ID() {
+				secondJobID = id
+			}
+		}
+		if secondJobID == "" {
+			return nil, errors.New("controlled follow-up shell has no source record")
+		}
+		if early {
+			finalizeShell(t, sess.jobManager, secondJobID, releaseSecond)
+		}
+		return result, nil
+	}
+	if err := sess.reg.Register(*registered); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		releaseSecond()
+		if secondJobID != "" {
+			waitForShellDone(t, sess.jobManager, secondJobID)
+		}
+	})
 
-	// TRIPWIRE: scripted adapter, a controlled shell and one real printf; 30s
+	// TRIPWIRE: scripted adapter and controlled shell executors; 30s
 	// only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -404,8 +474,12 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 		t.Fatalf("drain result = %q, want %q: the drain must finish with the follow-up job's outcome", drained, finalAnswer)
 	}
 	reqs := adapter.Requests()
-	if len(reqs) != 4 {
-		t.Fatalf("model calls = %d, want 4: answer, first completion, tool result, second completion", len(reqs))
+	wantRequests := 4
+	if early {
+		wantRequests = 3
+	}
+	if len(reqs) != wantRequests {
+		t.Fatalf("model calls = %d, want exactly %d for the pinned completion schedule", len(reqs), wantRequests)
 	}
 	if requestsContain(reqs[:1], "<job-notification") {
 		t.Fatal("the initial request already carried a completion")
@@ -424,17 +498,23 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 	if len(followUpIDs) != 1 {
 		t.Fatalf("follow-up owned shell source IDs = %v, want exactly one", followUpIDs)
 	}
-	secondJobID := followUpIDs[0]
-	requireTerminalShellCompletionInRequest(t, reqs[3], secondJobID, "completed", "exit_zero", "0")
+	if followUpIDs[0] != secondJobID {
+		t.Fatalf("follow-up source = %s, want controlled shell %s", followUpIDs[0], secondJobID)
+	}
+	requireTerminalShellCompletionInRequest(t, reqs[wantRequests-1], secondJobID, "completed", "exit_zero", "0")
 	for _, id := range []string{firstJobID, secondJobID} {
 		requireNotificationState(t, sess.jobManager, id, jobstore.NotifyDelivered)
 		requireNeverConsumed(t, sess.jobManager, id)
 	}
-	// The first accepted turn remains in history through all three later
-	// requests. Each successful request truthfully covers it, without another
-	// acceptance or consumption. The follow-up source is new only in request 4.
-	requireTerminalAttentionRequestCoverage(t, sess, stableShellAttentionID(firstJobID, loadShellRecord(t, sess.jobManager, firstJobID).TerminalGen), []bool{false, true, true, true})
-	requireTerminalAttentionRequestCoverage(t, sess, stableShellAttentionID(secondJobID, loadShellRecord(t, sess.jobManager, secondJobID).TerminalGen), []bool{false, false, false, true})
+	// The first accepted turn remains in history through every later
+	// request. Each successful request truthfully covers it, without another
+	// acceptance or consumption. Each pinned schedule has its own exact oracle.
+	firstCoverage, secondCoverage := []bool{false, true, true, true}, []bool{false, false, false, true}
+	if early {
+		firstCoverage, secondCoverage = []bool{false, true, true}, []bool{false, false, true}
+	}
+	requireTerminalAttentionRequestCoverage(t, sess, stableShellAttentionID(firstJobID, loadShellRecord(t, sess.jobManager, firstJobID).TerminalGen), firstCoverage)
+	requireTerminalAttentionRequestCoverage(t, sess, stableShellAttentionID(secondJobID, loadShellRecord(t, sess.jobManager, secondJobID).TerminalGen), secondCoverage)
 	if warnings := collectStallWarnings(sess); len(warnings) != 0 {
 		t.Fatalf("want no warnings, got %+v", warnings)
 	}

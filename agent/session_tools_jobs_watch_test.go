@@ -7,10 +7,10 @@ import (
 	"maps"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
 	tooldefs "primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -824,7 +824,10 @@ func TestJobWatchListAndInspectReturnWatchIDs(t *testing.T) {
 
 func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withConfig(SessionConfig{
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("watch output observed") },
+	}}
+	s := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
 		StateDir:         packageFixtureTempDir(t, "watch-state-*"),
 	}))
@@ -872,6 +875,12 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	if watchRes.IsError {
 		t.Fatalf("job_watch returned error for returned job_id %s: %s", shellOut.JobID, watchRes.Output)
 	}
+	var created struct {
+		WatchID string `json:"watch_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(watchRes), &created); err != nil || created.WatchID == "" {
+		t.Fatalf("watch identity = %q, error %v", created.WatchID, err)
+	}
 
 	// Inject the token through the full output pipeline so watch matchers fire
 	// deterministically, without relying on the real shell process timing.
@@ -885,25 +894,29 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 		t.Fatalf("inject token into job output: %v", err)
 	}
 
-	// Observation enqueues a caller wake token on the notification queue (no
-	// synchronous delivery, spec §3). The live loop would wake and accept; here
-	// we wait for the wake and accept it, which renders the frame into the
-	// notification turn (a TurnSteering in history) and settles the pending.
-	if pending := s.peekNotifications(); pending == 0 {
-		t.Fatal("watch output match did not synchronously enqueue a notification")
+	// Await real receiver custody, then earn observation through a successful
+	// provider response. A legacy queue token is neither requirement nor proof.
+	var pending []string
+	waitForCondition(t, 30*time.Second, "watch receiver custody", func() bool {
+		var err error
+		pending, err = s.pendingNotificationIDs()
+		return err == nil && len(pending) == 1
+	})
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
 	}
-	drainAndAccept(t, s)
-
-	s.mu.Lock()
-	deliveries := 0
-	for _, turn := range s.history {
-		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), token) {
-			deliveries++
-		}
+	requests := adapter.Requests()
+	if len(requests) != 1 || !requestContainsText(requests[0], token) {
+		t.Fatalf("watch provider requests = %d, want one carrying output sentinel", len(requests))
 	}
-	s.mu.Unlock()
-	if deliveries != 1 {
-		t.Fatalf("watch deliveries containing %q = %d, want 1", token, deliveries)
+	drainRequestNotice(t, requests[0], map[string]string{"job_id": shellOut.JobID, "event": "watch", "watch_id": created.WatchID})
+	requireOwnedDrainAttentionObservedOnce(t, s, pending[0])
+	assertNotificationPending(t, s, []string{})
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("watch replay issued a duplicate request: %d", got)
 	}
 }
 
