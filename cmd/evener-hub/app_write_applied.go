@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // The error still goes back to the caller that asked, independent of the
@@ -92,4 +93,15 @@ func writeApplied(err error) error {
 // failed.
 func writeDidApply(err error) bool {
 	return err == nil || errors.Is(err, hubcore.ErrWriteApplied)
+}
+
+// savedWrite marks a failed fsatomic save whose rename landed (the new contents
+// are on disk, only their durability is unconfirmed) as an applied write, so
+// the other clients still hear about the change. Any other error passes
+// through.
+func savedWrite(err error) error {
+	if errors.Is(err, fsatomic.ErrPublished) {
+		return writeApplied(err)
+	}
+	return err
 }

@@ -11,11 +11,19 @@ import (
 	"syscall"
 )
 
+// ErrPublished marks a Write error that happened after the rename: the new
+// contents are already visible at path and only the directory sync that makes
+// them durable failed. A caller that treats a failed Write as "nothing
+// changed" must check for it, and either reconcile with the published file or
+// accept it.
+var ErrPublished = errors.New("contents published but not confirmed durable")
+
 // Write publishes data at path with permission perm. It writes a uniquely
 // named temp file in path's directory (created exclusively, so a symlink
 // planted at a predictable name is never followed), fsyncs it, sets perm
 // outright so the process umask has no say, renames it over path, and fsyncs
-// the directory so the rename itself is durable. The parent directory must
+// the directory so the rename itself is durable; a failure of that last step
+// wraps ErrPublished. The parent directory must
 // exist. A failed write removes its temp file; a crash between the create and
 // the rename leaves a stray "<name>.tmp-*" file behind, which is the cost of
 // never reusing a name another process could plant.
@@ -51,7 +59,10 @@ func Write(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("rename temp file over %s: %w", path, err)
 	}
 	published = true
-	return syncDir(dir)
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("%w: %w", ErrPublished, err)
+	}
+	return nil
 }
 
 func syncDir(dir string) error {

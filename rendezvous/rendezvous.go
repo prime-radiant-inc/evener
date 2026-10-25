@@ -7,6 +7,7 @@ package rendezvous
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -87,7 +88,11 @@ func write(dir string, entry Entry) (string, error) {
 		return "", fmt.Errorf("marshal entry: %w", err)
 	}
 	target := filepath.Join(dir, fmt.Sprintf("%d.json", entry.PID))
-	if err := fsatomic.Write(target, data, 0o600); err != nil {
+	// The entry is runtime state the daemon republishes on every start, so a
+	// directory sync that fails after the rename only costs crash durability
+	// of a file nobody needs after a crash; treating it as a failed write
+	// would leave a published entry the caller believes is absent.
+	if err := fsatomic.Write(target, data, 0o600); err != nil && !errors.Is(err, fsatomic.ErrPublished) {
 		return "", fmt.Errorf("write entry: %w", err)
 	}
 	return target, nil

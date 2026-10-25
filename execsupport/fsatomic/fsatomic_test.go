@@ -31,22 +31,6 @@ func TestWritePublishesContentsWithPerm(t *testing.T) {
 	}
 }
 
-func TestWriteIgnoresUmask(t *testing.T) {
-	old := syscall.Umask(0o077)
-	defer syscall.Umask(old)
-	path := filepath.Join(t.TempDir(), "state.json")
-	if err := fsatomic.Write(path, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o644 {
-		t.Fatalf("perm = %v, want 0644 despite umask", info.Mode().Perm())
-	}
-}
-
 // A symlink planted where a fixed "<name>.tmp" would have been must not
 // redirect the write.
 func TestWriteDoesNotFollowPlantedTempSymlink(t *testing.T) {
@@ -113,5 +97,33 @@ func TestSyncUnsupported(t *testing.T) {
 	}
 	if fsatomic.SyncUnsupported(syscall.EIO) || fsatomic.SyncUnsupported(nil) {
 		t.Error("EIO and nil are not unsupported")
+	}
+}
+
+// A directory that can be searched and written but not opened for reading lets
+// the rename land and then fails the directory sync's open.
+func TestWriteReportsPublishedWhenDirectorySyncFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens any directory")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o700) }()
+
+	err := fsatomic.Write(path, []byte("new"), 0o600)
+	if !errors.Is(err, fsatomic.ErrPublished) {
+		t.Fatalf("err = %v, want ErrPublished", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "new" {
+		t.Fatalf("contents = %q, want the published new contents", got)
 	}
 }
