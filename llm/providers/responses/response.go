@@ -20,6 +20,8 @@ func responseContentFromOutputItems(out []any, body []byte) []llm.ContentPart {
 }
 
 func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.RawMessage) []llm.ContentPart {
+	var rawBodyItems []json.RawMessage
+	var rawBodyCaptured bool
 	var content []llm.ContentPart
 	for itemIdx, itemAny := range out {
 		item, ok := itemAny.(map[string]any)
@@ -54,21 +56,29 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 			if itemID == "" {
 				itemID, _ = item["item_id"].(string)
 			}
-			// When the raw body is available, try a focused RawMessage
-			// decode to capture byte-faithful arguments. Degrade, never
-			// drop: fall back to the existing string-form args on failure.
-			if len(body) > 0 || itemIdx < len(rawItems) {
-				var rawArgs json.RawMessage
-				var rawOK bool
-				if itemIdx < len(rawItems) && len(rawItems[itemIdx]) > 0 {
-					rawArgs, rawOK = captureResponsesItemArgsRaw(rawItems[itemIdx])
-				} else {
-					rawArgs, rawOK = captureResponsesArgsRaw(body, itemIdx)
-				}
-				if rawOK && rawArgs != nil {
-					if content, cerr := protocolhttp.RawStringContent(rawArgs); cerr == nil {
-						args = string(content)
+			// When the raw body is available, decode it once on the first
+			// function_call item and index that item's token. rawItems entry
+			// tokens win when present; the per-item decode stays bounded by
+			// the item. Degrade, never drop: fall back to the string-form
+			// args on failure.
+			var rawArgs json.RawMessage
+			var rawOK bool
+			if itemIdx < len(rawItems) && len(rawItems[itemIdx]) > 0 {
+				rawArgs, rawOK = captureResponsesItemArgsRaw(rawItems[itemIdx])
+			} else {
+				if !rawBodyCaptured {
+					rawBodyCaptured = true
+					if len(body) > 0 {
+						rawBodyItems = captureResponsesArgsRaw(body)
 					}
+				}
+				if itemIdx < len(rawBodyItems) {
+					rawArgs, rawOK = captureResponsesItemArgsRaw(rawBodyItems[itemIdx])
+				}
+			}
+			if rawOK && rawArgs != nil {
+				if content, cerr := protocolhttp.RawStringContent(rawArgs); cerr == nil {
+					args = string(content)
 				}
 			}
 			content = append(content, llm.ContentPart{
@@ -223,23 +233,23 @@ func fromResponses(raw map[string]any, requestedModel string, body []byte) llm.R
 	return r
 }
 
-// captureResponsesArgsRaw decodes the response body with a focused struct
-// that captures function_call arguments as json.RawMessage (the string
-// token) rather than string, preserving bytes that the lossy map[string]any
-// decode coerces. itemIdx is the index of the function_call item within the
-// output array. Returns (nil, false) if the focused decode fails — the
-// caller falls back to the existing string-form args (degrade, never drop).
-func captureResponsesArgsRaw(body []byte, itemIdx int) (json.RawMessage, bool) {
+// rawArgsBodyDecode is the focused raw-args body decode. Tests replace it to
+// count focused decodes per response body.
+var rawArgsBodyDecode = json.Unmarshal
+
+// captureResponsesArgsRaw decodes the response body once into raw output-item
+// tokens, aligned with the output array. The walk passes the selected token to
+// captureResponsesItemArgsRaw, so a malformed sibling item does not lose
+// capture for well-formed function calls. It returns nil if the focused decode
+// fails, so the caller falls back to the existing string-form args.
+func captureResponsesArgsRaw(body []byte) []json.RawMessage {
 	var focused struct {
 		Output []json.RawMessage `json:"output"`
 	}
-	if err := json.Unmarshal(body, &focused); err != nil {
-		return nil, false
+	if err := rawArgsBodyDecode(body, &focused); err != nil {
+		return nil
 	}
-	if itemIdx < 0 || itemIdx >= len(focused.Output) {
-		return nil, false
-	}
-	return captureResponsesItemArgsRaw(focused.Output[itemIdx])
+	return focused.Output
 }
 
 func captureResponsesItemArgsRaw(item []byte) (json.RawMessage, bool) {

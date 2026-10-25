@@ -497,6 +497,128 @@ func decodeRawArgsCompleteMany(t *testing.T, body []byte) [][]byte {
 	return responseToolCallArguments(resp)
 }
 
+// countRawArgsBodyDecodes swaps the package-level focused raw-args body
+// decode seam for a counter. Tests that use it must stay serial (not
+// t.Parallel); t.Cleanup restores the seam.
+func countRawArgsBodyDecodes(t *testing.T) *int {
+	t.Helper()
+	decodes := 0
+	previous := rawArgsBodyDecode
+	rawArgsBodyDecode = func(body []byte, v any) error {
+		decodes++
+		return json.Unmarshal(body, v)
+	}
+	t.Cleanup(func() { rawArgsBodyDecode = previous })
+	return &decodes
+}
+
+func responsesManyBody(first, second, third string) []byte {
+	return []byte(`{"id":"resp_1","status":"completed","model":"gpt-5.5","output":[` +
+		`{"type":"message","content":[{"type":"output_text","text":"hello"}]},` +
+		`{"id":"fc_1","type":"function_call","call_id":"call_1","name":"first","arguments":` + string(jsonStringToken(first)) + `},` +
+		`{"id":"fc_2","type":"function_call","call_id":"call_2","name":"second","arguments":` + string(jsonStringToken(second)) + `},` +
+		`{"id":"fc_3","type":"function_call","call_id":"call_3","name":"third","arguments":` + string(jsonStringToken(third)) + `}` +
+		`]}`)
+}
+
+// TestRawArgs_NonStream_DecodesBodyOnce pins that one response with several
+// function_call items runs the focused raw-args body decode once, with the
+// item index aligned past a message item.
+// Not parallel: it swaps the package-level rawArgsBodyDecode seam.
+func TestRawArgs_NonStream_DecodesBodyOnce(t *testing.T) {
+	decodes := countRawArgsBodyDecodes(t)
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	third := `{ "third" : "` + "\xfd" + `" }`
+
+	got := decodeRawArgsCompleteMany(t, responsesManyBody(first, second, third))
+	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second), []byte(third)})
+	if *decodes != 1 {
+		t.Fatalf("focused raw-args body decodes = %d, want 1", *decodes)
+	}
+}
+
+// TestRawArgs_NonStream_NoFunctionCallsDecodesNothing pins that a tool-free
+// response performs no focused raw-args decode.
+// Not parallel: it swaps the package-level rawArgsBodyDecode seam.
+func TestRawArgs_NonStream_NoFunctionCallsDecodesNothing(t *testing.T) {
+	decodes := countRawArgsBodyDecodes(t)
+	body := []byte(`{"id":"resp_1","status":"completed","model":"gpt-5.5","output":[{"type":"message","content":[{"type":"output_text","text":"hello"}]}]}`)
+
+	got := decodeRawArgsCompleteMany(t, body)
+	if len(got) != 0 {
+		t.Fatalf("got %d tool calls, want 0", len(got))
+	}
+	if *decodes != 0 {
+		t.Fatalf("focused raw-args body decodes = %d, want 0", *decodes)
+	}
+}
+
+// TestRawArgs_RecordedJSON_DecodesBodyOnce pins the recorded-response JSON
+// branch to one focused body decode for several function_call items.
+// Not parallel: it swaps the package-level rawArgsBodyDecode seam.
+func TestRawArgs_RecordedJSON_DecodesBodyOnce(t *testing.T) {
+	decodes := countRawArgsBodyDecodes(t)
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	third := `{ "third" : "` + "\xfd" + `" }`
+
+	resp, err := ExtractRecordedResponse(responsesManyBody(first, second, third), "gpt-5.5")
+	if err != nil {
+		t.Fatalf("ExtractRecordedResponse: %v", err)
+	}
+	assertRawArgsByIndex(t, responseToolCallArguments(resp), [][]byte{[]byte(first), []byte(second), []byte(third)})
+	if *decodes != 1 {
+		t.Fatalf("focused raw-args body decodes = %d, want 1", *decodes)
+	}
+}
+
+// TestRawArgs_StreamTerminal_DecodesBodyOnce pins the streaming
+// response.completed terminal payload to one focused body decode for several
+// function_call items.
+// Not parallel: it swaps the package-level rawArgsBodyDecode seam.
+func TestRawArgs_StreamTerminal_DecodesBodyOnce(t *testing.T) {
+	decodes := countRawArgsBodyDecodes(t)
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	third := `{ "third" : "` + "\xfd" + `" }`
+	sseBody := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"model\":\"gpt-5.5\",\"output\":[" +
+		`{"type":"message","content":[{"type":"output_text","text":"hello"}]},` +
+		`{"id":"fc_1","type":"function_call","call_id":"call_1","name":"first","arguments":` + string(jsonStringToken(first)) + `},` +
+		`{"id":"fc_2","type":"function_call","call_id":"call_2","name":"second","arguments":` + string(jsonStringToken(second)) + `},` +
+		`{"id":"fc_3","type":"function_call","call_id":"call_3","name":"third","arguments":` + string(jsonStringToken(third)) + `}` +
+		`],"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}` + "\n\n"
+
+	got := decodeRawArgsStreamMany(t, sseBody)
+	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second), []byte(third)})
+	if *decodes != 1 {
+		t.Fatalf("focused raw-args body decodes = %d, want 1", *decodes)
+	}
+}
+
+// TestRawArgs_StreamAccumulated_DecodesNoBody pins the accumulated
+// settlement path to zero body decodes: the terminal output is empty and the
+// items come from rawItems.
+// Not parallel: it swaps the package-level rawArgsBodyDecode seam.
+func TestRawArgs_StreamAccumulated_DecodesNoBody(t *testing.T) {
+	decodes := countRawArgsBodyDecodes(t)
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	third := `{ "third" : "` + "\xfd" + `" }`
+	sseBody := "" +
+		"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"first\",\"arguments\":" + string(jsonStringToken(first)) + "}}\n\n" +
+		"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_2\",\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"second\",\"arguments\":" + string(jsonStringToken(second)) + "}}\n\n" +
+		"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_3\",\"type\":\"function_call\",\"call_id\":\"call_3\",\"name\":\"third\",\"arguments\":" + string(jsonStringToken(third)) + "}}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"model\":\"gpt-5.5\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n"
+
+	got := decodeRawArgsStreamMany(t, sseBody)
+	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second), []byte(third)})
+	if *decodes != 0 {
+		t.Fatalf("focused raw-args body decodes = %d, want 0", *decodes)
+	}
+}
+
 func decodeRawArgsStreamMany(t *testing.T, sseBody string) [][]byte {
 	t.Helper()
 	srv, _ := server(t, http.StatusOK, sseBody)

@@ -275,6 +275,8 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 			}
 
 			// Tool call deltas.
+			var rawFragments []json.RawMessage
+			var rawCaptured bool
 			for tcArrIdx, tc := range choice.Delta.ToolCalls {
 				state, exists := toolCalls[tc.Index]
 				if !exists {
@@ -299,13 +301,17 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 				}
 				if tc.Function.Arguments != "" {
 					deltaArgs := []byte(tc.Function.Arguments)
-					// Capture the arguments fragment as raw bytes from the
-					// chunk's raw data (ev.Data) to preserve bytes that
+					// Capture the arguments fragments from the chunk's raw
+					// data (ev.Data) once to preserve bytes that
 					// json.Unmarshal into string would coerce to U+FFFD.
-					// Degrade, never drop: fall back to the string-form
-					// args when the focused capture fails.
-					if rawFrag, ok := captureChunkArgsRaw(ev.Data, tcArrIdx); ok && rawFrag != nil {
-						if content, cerr := protocolhttp.RawStringContent(rawFrag); cerr == nil {
+					// Degrade, never drop: fall back to the string-form args
+					// when the focused capture fails.
+					if !rawCaptured {
+						rawCaptured = true
+						rawFragments = captureChunkArgsRaw(ev.Data)
+					}
+					if tcArrIdx < len(rawFragments) && rawFragments[tcArrIdx] != nil {
+						if content, cerr := protocolhttp.RawStringContent(rawFragments[tcArrIdx]); cerr == nil {
 							state.args.Write(content)
 							deltaArgs = content
 						} else {
@@ -332,13 +338,12 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 	runner.Run(sctx)
 }
 
-// captureChunkArgsRaw decodes a streaming chunk's raw data with a focused
-// struct that captures the tool-call arguments fragment as json.RawMessage
-// (the string token) rather than string, preserving bytes that
-// json.Unmarshal into string would coerce. toolCallIdx is the index of the
-// tool call in the delta's tool_calls array. Returns (nil, false) if the
-// focused decode fails — the caller falls back to the string-form args.
-func captureChunkArgsRaw(chunkData []byte, toolCallIdx int) (json.RawMessage, bool) {
+// captureChunkArgsRaw decodes a streaming chunk's raw data once with a focused
+// struct and returns one arguments token per choices[0].delta.tool_calls
+// entry, in order. Each token is the JSON string token; callers unescape it
+// with protocolhttp.RawStringContent. It returns nil if the focused decode
+// fails, so the caller falls back to the string-form args.
+func captureChunkArgsRaw(chunkData []byte) []json.RawMessage {
 	type chunkFunctionRaw struct {
 		Arguments json.RawMessage `json:"arguments"`
 	}
@@ -356,15 +361,16 @@ func captureChunkArgsRaw(chunkData []byte, toolCallIdx int) (json.RawMessage, bo
 		Choices []chunkChoiceRaw `json:"choices"`
 	}
 	var focused chunkRaw
-	if err := json.Unmarshal(chunkData, &focused); err != nil {
-		return nil, false
+	if err := rawArgsBodyDecode(chunkData, &focused); err != nil {
+		return nil
 	}
 	if len(focused.Choices) == 0 {
-		return nil, false
+		return nil
 	}
-	delta := focused.Choices[0].Delta
-	if toolCallIdx < 0 || toolCallIdx >= len(delta.ToolCalls) {
-		return nil, false
+	calls := focused.Choices[0].Delta.ToolCalls
+	fragments := make([]json.RawMessage, len(calls))
+	for i, call := range calls {
+		fragments[i] = call.Function.Arguments
 	}
-	return delta.ToolCalls[toolCallIdx].Function.Arguments, true
+	return fragments
 }

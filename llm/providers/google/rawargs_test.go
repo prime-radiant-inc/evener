@@ -3,6 +3,7 @@ package google
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -213,6 +214,82 @@ func decodeRawArgsCompleteMany(t *testing.T, body []byte) [][]byte {
 		t.Fatalf("Complete: %v", err)
 	}
 	return googleToolCallArguments(resp)
+}
+
+// countRawArgsBodyDecodes swaps the package-level focused raw-args body
+// decode seam for a counter. Tests that use it must stay serial (not
+// t.Parallel); t.Cleanup restores the seam.
+func countRawArgsBodyDecodes(t *testing.T) *int {
+	t.Helper()
+	decodes := 0
+	previous := rawArgsBodyDecode
+	rawArgsBodyDecode = func(body []byte, v any) error {
+		decodes++
+		return json.Unmarshal(body, v)
+	}
+	t.Cleanup(func() { rawArgsBodyDecode = previous })
+	return &decodes
+}
+
+// TestRawArgs_NonStream_DecodesBodyOnce pins that one response with several
+// functionCall parts runs the focused raw-args body decode once, with the
+// part index aligned past a text part.
+// Not parallel: it swaps the package-level rawArgsBodyDecode seam.
+func TestRawArgs_NonStream_DecodesBodyOnce(t *testing.T) {
+	decodes := countRawArgsBodyDecodes(t)
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	third := `{ "third" : "` + "\xfd" + `" }`
+	body := []byte(`{"candidates":[{"content":{"role":"model","parts":[` +
+		`{"text":"hello"},` +
+		`{"functionCall":{"name":"first","args":` + first + `}},` +
+		`{"functionCall":{"name":"second","args":` + second + `}},` +
+		`{"functionCall":{"name":"third","args":` + third + `}}` +
+		`]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7}}`)
+
+	got := decodeRawArgsCompleteMany(t, body)
+	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second), []byte(third)})
+	if *decodes != 1 {
+		t.Fatalf("focused raw-args body decodes = %d, want 1", *decodes)
+	}
+}
+
+// TestRawArgs_NonStream_NoFunctionCallsDecodesNothing pins that a tool-free
+// response performs no focused raw-args decode.
+// Not parallel: it swaps the package-level rawArgsBodyDecode seam.
+func TestRawArgs_NonStream_NoFunctionCallsDecodesNothing(t *testing.T) {
+	decodes := countRawArgsBodyDecodes(t)
+	body := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
+
+	got := decodeRawArgsCompleteMany(t, body)
+	if len(got) != 0 {
+		t.Fatalf("got %d tool calls, want 0", len(got))
+	}
+	if *decodes != 0 {
+		t.Fatalf("focused raw-args body decodes = %d, want 0", *decodes)
+	}
+}
+
+// TestRawArgs_Stream_DecodesEventOnce pins one streamed event with several
+// functionCall parts to one focused event-body decode.
+// Not parallel: it swaps the package-level rawArgsBodyDecode seam.
+func TestRawArgs_Stream_DecodesEventOnce(t *testing.T) {
+	decodes := countRawArgsBodyDecodes(t)
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	third := `{ "third" : "` + "\xfd" + `" }`
+	sseBody := "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hello\"}," +
+		`{"functionCall":{"name":"first","args":` + first + `}},` +
+		`{"functionCall":{"name":"second","args":` + second + `}},` +
+		`{"functionCall":{"name":"third","args":` + third + `}}` +
+		"]}}]}\n\n" +
+		"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":2,\"totalTokenCount\":7}}\n\n"
+
+	got := decodeRawArgsStreamMany(t, sseBody)
+	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second), []byte(third)})
+	if *decodes != 1 {
+		t.Fatalf("focused raw-args event decodes = %d, want 1", *decodes)
+	}
 }
 
 func decodeRawArgsStreamMany(t *testing.T, sseBody string) [][]byte {

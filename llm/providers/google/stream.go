@@ -84,6 +84,8 @@ func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc
 				if c0, ok := cands[0].(map[string]any); ok {
 					if content, ok := c0["content"].(map[string]any); ok {
 						if parts, ok := content["parts"].([]any); ok {
+							var rawArgs []json.RawMessage
+							var rawCaptured bool
 							for partIdx, pAny := range parts {
 								p, ok := pAny.(map[string]any)
 								if !ok {
@@ -120,12 +122,18 @@ func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc
 									name, _ := fc["name"].(string)
 									argsAny := normalizeJSONNumbers(fc["args"])
 									argsRaw, _ := json.Marshal(argsAny)
-									// Capture the args object as json.RawMessage
-									// from the raw event data — for objects,
-									// the token IS the content (byte-identical).
-									// Degrade, never drop.
-									if rawArgs, ok := captureGeminiArgsRaw(ev.Data, partIdx); ok && rawArgs != nil {
-										argsRaw = rawArgs
+									// Capture the args tokens from the raw
+									// event data once — for objects, the token
+									// IS the content (byte-identical). Degrade,
+									// never drop.
+									if !rawCaptured {
+										rawCaptured = true
+										if len(ev.Data) > 0 {
+											rawArgs = captureGeminiArgsRaw(ev.Data)
+										}
+									}
+									if partIdx < len(rawArgs) && rawArgs[partIdx] != nil {
+										argsRaw = rawArgs[partIdx]
 									}
 									thoughtSig := geminiThoughtSignature(p, fc)
 									flushTextPart()

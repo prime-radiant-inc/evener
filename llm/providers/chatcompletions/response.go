@@ -293,21 +293,27 @@ func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string,
 	if choice.Message.Content != "" {
 		parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: choice.Message.Content})
 	}
+	var rawArgs []json.RawMessage
+	var rawCaptured bool
 	for tcIdx, tc := range choice.Message.ToolCalls {
 		args := rescueClaudeXMLArgs(tc.Function.Arguments)
-		// When the raw body is available, try a focused RawMessage decode
-		// to capture byte-faithful arguments. Degrade, never drop: if the
-		// focused decode fails for this call, fall back to the existing
-		// string-form args (already coerced by the map decode).
-		if len(body) > 0 {
-			if rawArgs, ok := captureChatArgsRaw(body, len(parts), tcIdx); ok && rawArgs != nil {
-				// rawArgs is the RawMessage string token; unescape it to
-				// get byte-faithful content. rescueClaudeXMLArgs still
-				// applies on the unescaped content (it returns it
-				// unchanged when no XML is present, preserving raw bytes).
-				if content, cerr := protocolhttp.RawStringContent(rawArgs); cerr == nil {
-					args = rescueClaudeXMLArgs(string(content))
-				}
+		// When the raw body is available, decode it once on the first tool
+		// call and index this call's byte-faithful arguments token. Degrade,
+		// never drop: a failed decode keeps the existing string-form args
+		// (already coerced by the map decode).
+		if !rawCaptured {
+			rawCaptured = true
+			if len(body) > 0 {
+				rawArgs = captureChatArgsRaw(body)
+			}
+		}
+		if tcIdx < len(rawArgs) && rawArgs[tcIdx] != nil {
+			// rawArgs is the RawMessage string token; unescape it to get
+			// byte-faithful content. rescueClaudeXMLArgs still applies on
+			// the unescaped content (it returns it unchanged when no XML is
+			// present, preserving raw bytes).
+			if content, cerr := protocolhttp.RawStringContent(rawArgs[tcIdx]); cerr == nil {
+				args = rescueClaudeXMLArgs(string(content))
 			}
 		}
 		parts = append(parts, llm.ContentPart{
@@ -375,28 +381,27 @@ func estimateThinkingFromBuf(chars int) int {
 	return est
 }
 
-// captureChatArgsRaw decodes the response body with a focused struct that
-// captures tool-call arguments as json.RawMessage (the string token) rather
-// than string, preserving bytes that the lossy map[string]any decode coerces.
-// toolCallIdx is the index of the tool call within choices[0].message.tool_calls.
-// Returns (nil, false) if the focused decode fails — the caller falls back
-// to the existing string-form args (degrade, never drop).
-//
-// partsBefore is the number of content parts already built before the tool
-// calls — not used for chatcompletions (tool calls are always at the end of
-// the message), but accepted for signature parity with other families.
-func captureChatArgsRaw(body []byte, partsBefore, toolCallIdx int) (json.RawMessage, bool) {
-	_ = partsBefore
+// rawArgsBodyDecode is the focused raw-args body decode. Tests replace it to
+// count focused decodes per response body.
+var rawArgsBodyDecode = json.Unmarshal
+
+// captureChatArgsRaw decodes the response body once with a focused struct and
+// returns one arguments token per choices[0].message.tool_calls entry, in
+// order. Each token is the JSON string token; callers unescape it with
+// protocolhttp.RawStringContent. It returns nil if the focused decode fails,
+// so the caller keeps the existing string-form args (degrade, never drop).
+func captureChatArgsRaw(body []byte) []json.RawMessage {
 	var focused chatCompletionResponseRaw
-	if err := json.Unmarshal(body, &focused); err != nil {
-		return nil, false
+	if err := rawArgsBodyDecode(body, &focused); err != nil {
+		return nil
 	}
 	if len(focused.Choices) == 0 {
-		return nil, false
+		return nil
 	}
-	choice := focused.Choices[0]
-	if toolCallIdx < 0 || toolCallIdx >= len(choice.Message.ToolCalls) {
-		return nil, false
+	calls := focused.Choices[0].Message.ToolCalls
+	args := make([]json.RawMessage, len(calls))
+	for i, call := range calls {
+		args[i] = call.Function.Arguments
 	}
-	return choice.Message.ToolCalls[toolCallIdx].Function.Arguments, true
+	return args
 }
