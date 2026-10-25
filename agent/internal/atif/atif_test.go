@@ -1153,9 +1153,9 @@ func TestConvertToATIF_MultiRound(t *testing.T) {
 	if fm.TotalSteps != 3 {
 		t.Errorf("FinalMetrics.TotalSteps = %d, want 3", fm.TotalSteps)
 	}
-	// 100 + 150 = 250 prompt tokens
-	if fm.TotalPromptTokens != 250 {
-		t.Errorf("FinalMetrics.TotalPromptTokens = %d, want 250", fm.TotalPromptTokens)
+	// Inclusive prompt tokens: 100 + 20 cache-read + 150 = 270.
+	if fm.TotalPromptTokens != 270 {
+		t.Errorf("FinalMetrics.TotalPromptTokens = %d, want 270 inclusive prompt tokens", fm.TotalPromptTokens)
 	}
 	// 40 + 25 = 65 completion tokens
 	if fm.TotalCompletionTokens != 65 {
@@ -1167,6 +1167,11 @@ func TestConvertToATIF_MultiRound(t *testing.T) {
 	}
 }
 
+// TestConvertToATIF_FinalMetricsPromptWireVolume pins ATIF's inclusive prompt
+// token definition: prompt_tokens / total_prompt_tokens count every prompt
+// token including cached ones, and cached_tokens / total_cached_tokens are the
+// cache-read subset. The cache-miss figure the exporter used to publish as
+// total_prompt_tokens stays available as final_metrics.extra.cache_miss_tokens.
 func TestConvertToATIF_FinalMetricsPromptWireVolume(t *testing.T) {
 	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
 	cacheRead1, cacheRead2 := 500, 300
@@ -1205,22 +1210,53 @@ func TestConvertToATIF_FinalMetricsPromptWireVolume(t *testing.T) {
 	if fm == nil {
 		t.Fatal("FinalMetrics is nil")
 	}
-	// Existing fields keep their cache-miss-only meanings.
-	if fm.TotalPromptTokens != 1200 {
-		t.Errorf("FinalMetrics.TotalPromptTokens = %d, want 1200 cache-miss tokens", fm.TotalPromptTokens)
+	// Prompt totals are inclusive: cache-miss + cache-read + cache-write +
+	// cache-write-1h across both steps.
+	if fm.TotalPromptTokens != 2050 {
+		t.Errorf("FinalMetrics.TotalPromptTokens = %d, want 2050 inclusive prompt tokens", fm.TotalPromptTokens)
 	}
 	if fm.TotalCompletionTokens != 150 {
 		t.Errorf("FinalMetrics.TotalCompletionTokens = %d, want 150", fm.TotalCompletionTokens)
 	}
 	if fm.TotalCachedTokens != 800 {
-		t.Errorf("FinalMetrics.TotalCachedTokens = %d, want 800 cache-read tokens", fm.TotalCachedTokens)
+		t.Errorf("FinalMetrics.TotalCachedTokens = %d, want 800 cache-read tokens (a subset of prompt)", fm.TotalCachedTokens)
+	}
+	// The documented non-cached split must stay non-negative and cover every
+	// prompt token that was not a cache read: cache-miss plus both cache writes.
+	if nonCached := fm.TotalPromptTokens - fm.TotalCachedTokens; nonCached != 1250 {
+		t.Errorf("TotalPromptTokens - TotalCachedTokens = %d, want 1250", nonCached)
 	}
 
-	// The cache-read term and the prompt-side wire total are reported as their
-	// own final-metrics keys. The wire total adds both cache-write terms.
+	// Per-step metrics use the same inclusive definition, so the final totals
+	// are the sums of the steps and cached_tokens stays a subset of
+	// prompt_tokens at both levels.
+	wantStepPrompt := []int{1550, 500}
+	wantStepCached := []int{500, 300}
+	for i, want := range wantStepPrompt {
+		metrics := traj.Steps[i].Metrics
+		if metrics == nil {
+			t.Fatalf("Steps[%d].Metrics is nil", i)
+		}
+		if metrics.PromptTokens != want {
+			t.Errorf("Steps[%d].Metrics.PromptTokens = %d, want %d inclusive prompt tokens", i, metrics.PromptTokens, want)
+		}
+		if metrics.CachedTokens != wantStepCached[i] {
+			t.Errorf("Steps[%d].Metrics.CachedTokens = %d, want %d", i, metrics.CachedTokens, wantStepCached[i])
+		}
+		if metrics.CachedTokens > metrics.PromptTokens {
+			t.Errorf("Steps[%d].Metrics.CachedTokens = %d exceeds PromptTokens %d", i, metrics.CachedTokens, metrics.PromptTokens)
+		}
+	}
+
+	// The cache-miss split and the #4562 aliases are reported as their own
+	// final-metrics keys. prompt_wire_tokens is now the same number as
+	// total_prompt_tokens.
 	extra := fm.Extra
 	if extra == nil {
-		t.Fatal("FinalMetrics.Extra is nil; want cache_read_tokens and prompt_wire_tokens")
+		t.Fatal("FinalMetrics.Extra is nil; want cache_miss_tokens, cache_read_tokens and prompt_wire_tokens")
+	}
+	if got := extra["cache_miss_tokens"]; got != 1200 {
+		t.Errorf("FinalMetrics.Extra[cache_miss_tokens] = %v, want 1200", got)
 	}
 	if got := extra["cache_read_tokens"]; got != 800 {
 		t.Errorf("FinalMetrics.Extra[cache_read_tokens] = %v, want 800", got)
@@ -1244,11 +1280,11 @@ func TestConvertToATIF_FinalMetricsPromptWireVolume(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if raw.FinalMetrics.TotalPromptTokens != 1200 || raw.FinalMetrics.TotalCachedTokens != 800 {
-		t.Errorf("JSON final_metrics = %+v, want prompt 1200 and cached 800", raw.FinalMetrics)
+	if raw.FinalMetrics.TotalPromptTokens != 2050 || raw.FinalMetrics.TotalCachedTokens != 800 {
+		t.Errorf("JSON final_metrics = %+v, want prompt 2050 and cached 800", raw.FinalMetrics)
 	}
-	if raw.FinalMetrics.Extra["cache_read_tokens"] != 800 || raw.FinalMetrics.Extra["prompt_wire_tokens"] != 2050 {
-		t.Errorf("JSON final_metrics.extra = %v, want cache_read_tokens 800 and prompt_wire_tokens 2050", raw.FinalMetrics.Extra)
+	if raw.FinalMetrics.Extra["cache_miss_tokens"] != 1200 || raw.FinalMetrics.Extra["cache_read_tokens"] != 800 || raw.FinalMetrics.Extra["prompt_wire_tokens"] != 2050 {
+		t.Errorf("JSON final_metrics.extra = %v, want cache_miss_tokens 1200, cache_read_tokens 800 and prompt_wire_tokens 2050", raw.FinalMetrics.Extra)
 	}
 
 	// A trajectory with no usage reports explicit zeros rather than omitting
@@ -1256,6 +1292,9 @@ func TestConvertToATIF_FinalMetricsPromptWireVolume(t *testing.T) {
 	empty := Convert(header, nil)
 	if empty.FinalMetrics == nil || empty.FinalMetrics.Extra == nil {
 		t.Fatal("empty trajectory FinalMetrics.Extra is nil; want explicit zero keys")
+	}
+	if got := empty.FinalMetrics.Extra["cache_miss_tokens"]; got != 0 {
+		t.Errorf("empty trajectory cache_miss_tokens = %v, want 0", got)
 	}
 	if got := empty.FinalMetrics.Extra["cache_read_tokens"]; got != 0 {
 		t.Errorf("empty trajectory cache_read_tokens = %v, want 0", got)
@@ -1275,7 +1314,7 @@ func TestConvertToATIF_FinalMetricsPromptWireVolume(t *testing.T) {
 	if err := json.Unmarshal(emptyData, &emptyRaw); err != nil {
 		t.Fatalf("json.Unmarshal empty: %v", err)
 	}
-	for _, key := range []string{"cache_read_tokens", "prompt_wire_tokens"} {
+	for _, key := range []string{"cache_miss_tokens", "cache_read_tokens", "prompt_wire_tokens"} {
 		got, ok := emptyRaw.FinalMetrics.Extra[key]
 		if !ok {
 			t.Errorf("empty trajectory JSON final_metrics.extra missing %q; want explicit zero", key)
@@ -1284,6 +1323,165 @@ func TestConvertToATIF_FinalMetricsPromptWireVolume(t *testing.T) {
 		if got != 0 {
 			t.Errorf("empty trajectory JSON final_metrics.extra[%q] = %d, want 0", key, got)
 		}
+	}
+}
+
+// TestConvertToATIF_SkipsCompactionFoldCopies pins the fold-copy rule
+// internal/apptranscript applies to usage totals: a compaction fold re-appends
+// copies of the turns recorded during the fold after its markers, and those
+// copies carry OriginalOrdinal. A trajectory has one step and one usage
+// contribution per real turn, so the copies are neither steps nor spend.
+func TestConvertToATIF_SkipsCompactionFoldCopies(t *testing.T) {
+	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+	cacheRead, cacheWrite := 300, 10
+
+	assistant := schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "working"},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "fold-call", Name: "shell", Arguments: json.RawMessage(`{"command":"ls"}`)}},
+		}},
+		Timestamp: ts.Add(time.Second),
+		Usage: llm.Usage{
+			InputTokens:      100,
+			OutputTokens:     20,
+			CacheReadTokens:  &cacheRead,
+			CacheWriteTokens: &cacheWrite,
+		},
+	}
+	results := schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "fold-call", Content: "out"}},
+		}},
+		Timestamp: ts.Add(2 * time.Second),
+	}
+
+	// The fold copies its post-snapshot pairs after its markers, stamping each
+	// with the entry ordinal it copies.
+	assistantCopy := assistant
+	resultsCopy := results
+	assistantOrdinal, resultsOrdinal := uint64(2), uint64(3)
+	assistantCopy.OriginalOrdinal = &assistantOrdinal
+	resultsCopy.OriginalOrdinal = &resultsOrdinal
+
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("start"), Timestamp: ts}},
+		{Kind: "entry", Seq: 1, Turn: assistant},
+		{Kind: "entry", Seq: 2, Turn: results},
+		{Kind: "entry", Seq: 3, Turn: schema.Turn{Kind: schema.TurnCheckpoint, Message: llm.User("fold checkpoint"), Timestamp: ts.Add(3 * time.Second)}},
+		{Kind: "entry", Seq: 4, Turn: schema.Turn{Kind: schema.TurnSummary, Message: llm.User("fold summary"), Timestamp: ts.Add(4 * time.Second)}},
+		{Kind: "entry", Seq: 5, Turn: assistantCopy},
+		{Kind: "entry", Seq: 6, Turn: resultsCopy},
+		// A real turn recorded after the fold is written after the markers with
+		// no OriginalOrdinal, and must survive. It also keeps the test from
+		// passing for an exporter that drops everything after a marker.
+		{Kind: "entry", Seq: 7, Turn: schema.Turn{
+			Kind:      schema.TurnAssistant,
+			Message:   llm.Assistant("after the fold"),
+			Timestamp: ts.Add(5 * time.Second),
+			Usage:     llm.Usage{InputTokens: 50, OutputTokens: 5},
+		}},
+	}
+
+	traj := Convert(transcript.Header{SessionID: "sess-fold", Model: "claude-sonnet"}, entries)
+
+	// user, the assistant/tool-result round, checkpoint, summary, the real turn
+	// after the fold. The copied assistant and tool results are not a second
+	// round.
+	if len(traj.Steps) != 5 {
+		t.Fatalf("len(Steps) = %d, want 5 with fold copies skipped: %+v", len(traj.Steps), traj.Steps)
+	}
+	if got := traj.Steps[1]; got.Source != "agent" || got.Observation == nil || len(got.Observation.Results) != 1 {
+		t.Fatalf("Steps[1] = %+v, want the original assistant/tool-result round", got)
+	}
+	if got := traj.Steps[4]; got.Message != "after the fold" || got.Metrics == nil || got.Metrics.PromptTokens != 50 {
+		t.Fatalf("Steps[4] = %+v, want the unmarked turn after the fold preserved", got)
+	}
+
+	fm := traj.FinalMetrics
+	if fm == nil {
+		t.Fatal("FinalMetrics is nil")
+	}
+	if fm.TotalSteps != 5 {
+		t.Errorf("FinalMetrics.TotalSteps = %d, want 5", fm.TotalSteps)
+	}
+	// The copy carries the same usage as its original; counting it would double
+	// all three totals. Prompt is inclusive: 100 cache-miss + 300 cache-read +
+	// 10 cache-write, plus the post-fold turn's 50.
+	if fm.TotalPromptTokens != 460 {
+		t.Errorf("FinalMetrics.TotalPromptTokens = %d, want 460 counted once", fm.TotalPromptTokens)
+	}
+	if fm.TotalCompletionTokens != 25 {
+		t.Errorf("FinalMetrics.TotalCompletionTokens = %d, want 25 counted once", fm.TotalCompletionTokens)
+	}
+	if fm.TotalCachedTokens != 300 {
+		t.Errorf("FinalMetrics.TotalCachedTokens = %d, want 300 counted once", fm.TotalCachedTokens)
+	}
+	if got := fm.Extra["cache_miss_tokens"]; got != 150 {
+		t.Errorf("FinalMetrics.Extra[cache_miss_tokens] = %v, want 150 counted once", got)
+	}
+}
+
+// TestConvertToATIF_SkipsFoldCopyInSplitToolRound pins the split ordering a
+// fold can leave behind: the original assistant is recorded before the markers,
+// its copy lands after them, and its original tool results land after the copy
+// because that write queued behind the fold. Skipping the copy leaves the
+// results on the existing orphaned-tool-results path, which keeps the original
+// call id in extra; the copy's usage is not counted.
+func TestConvertToATIF_SkipsFoldCopyInSplitToolRound(t *testing.T) {
+	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+	assistant := schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "split-call", Name: "shell", Arguments: json.RawMessage(`{"command":"ls"}`)}},
+		}},
+		Timestamp: ts.Add(time.Second),
+		Usage:     llm.Usage{InputTokens: 10, OutputTokens: 1},
+	}
+	assistantCopy := assistant
+	ordinal := uint64(2)
+	assistantCopy.OriginalOrdinal = &ordinal
+	results := schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "split-call", Content: "out"}},
+		}},
+		Timestamp: ts.Add(2 * time.Second),
+	}
+
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("start"), Timestamp: ts}},
+		{Kind: "entry", Seq: 1, Turn: assistant},
+		{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnCheckpoint, Message: llm.User("fold checkpoint"), Timestamp: ts.Add(3 * time.Second)}},
+		{Kind: "entry", Seq: 3, Turn: schema.Turn{Kind: schema.TurnSummary, Message: llm.User("fold summary"), Timestamp: ts.Add(4 * time.Second)}},
+		{Kind: "entry", Seq: 4, Turn: assistantCopy},
+		{Kind: "entry", Seq: 5, Turn: results},
+	}
+
+	traj := Convert(transcript.Header{SessionID: "sess-split-fold"}, entries)
+
+	// user, the original assistant, checkpoint, summary, orphaned results. The
+	// copy adds no step.
+	if len(traj.Steps) != 5 {
+		t.Fatalf("len(Steps) = %d, want 5 with the copy skipped: %+v", len(traj.Steps), traj.Steps)
+	}
+	if got := traj.Steps[1]; got.Observation != nil || len(got.ToolCalls) != 1 || got.ToolCalls[0].ToolCallID != "split-call" {
+		t.Fatalf("Steps[1] = %+v, want the original assistant and no observation", got)
+	}
+	orphan := traj.Steps[4]
+	if orphan.Extra["evener_kind"] != "orphaned_tool_results" || orphan.Observation == nil || len(orphan.Observation.Results) != 1 {
+		t.Fatalf("Steps[4] = %+v, want orphaned tool results", orphan)
+	}
+	if got := orphan.Observation.Results[0].SourceCallID; got != "" {
+		t.Errorf("orphaned result source_call_id = %q, want empty", got)
+	}
+	ids, ok := orphan.Extra["orphaned_source_call_ids"].([]string)
+	if !ok || len(ids) != 1 || ids[0] != "split-call" {
+		t.Errorf("orphaned_source_call_ids = %v, want [split-call]", orphan.Extra["orphaned_source_call_ids"])
+	}
+	if fm := traj.FinalMetrics; fm.TotalPromptTokens != 10 || fm.TotalCompletionTokens != 1 {
+		t.Errorf("FinalMetrics = %+v, want the original turn's usage counted once", fm)
 	}
 }
 
