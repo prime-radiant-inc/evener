@@ -1,7 +1,7 @@
 import { act } from "@testing-library/react";
 import { useRef } from "react";
 import { createRoot } from "react-dom/client";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { appendPopout } from "./popoutTestUtils";
 import { useOwnedDocument } from "./useOwnedDocument";
 
@@ -69,5 +69,38 @@ test("a detached node's later insertion into another document is followed", asyn
     act(() => root.unmount());
     frame.remove();
     host.remove();
+  }
+});
+
+// The grace period belongs to the detachment, not to the mount: a menu open
+// for longer than the window must still be followed when it is moved.
+test("a long-lived node's later move is followed after a detached turn", async () => {
+  vi.useFakeTimers();
+  const { frame, doc } = appendPopout();
+  const seen: Document[] = [];
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    act(() => root.render(<Probe seen={seen} />));
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+
+    act(() => host.remove());
+    await Promise.resolve();
+    act(() => {
+      doc.body.appendChild(host);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(40);
+    });
+
+    expect(seen.at(-1)).toBe(doc);
+  } finally {
+    act(() => root.unmount());
+    frame.remove();
+    host.remove();
+    vi.useRealTimers();
   }
 });

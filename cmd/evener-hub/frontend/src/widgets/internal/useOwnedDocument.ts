@@ -65,6 +65,7 @@ export function useOwnedDocument<T extends Node>(ref: RefObject<T | null>, enabl
     const root = ref.current;
     if (root === null) return;
     let recheck: ReturnType<typeof setTimeout> | undefined;
+    let detachedAt: number | undefined;
     const check = () => {
       const next = ownerDocumentOf(root);
       if (next !== doc) {
@@ -73,13 +74,19 @@ export function useOwnedDocument<T extends Node>(ref: RefObject<T | null>, enabl
       }
       // A move can detach the node and insert it later. The removal is the
       // only mutation the watched document sees; the insertion happens in a
-      // document nothing is watching yet, so re-check until it lands. Bounded:
-      // a node removed for good (a closed pane) stops polling.
-      if (!root.isConnected && Date.now() - startedAt < ADOPTION_GRACE_MS) {
+      // document nothing is watching yet, so re-check until it lands. The
+      // grace period starts when the detachment is seen, not when the effect
+      // attached: a menu open for hours can still be moved. Bounded, so a node
+      // removed for good (a closed pane) stops polling.
+      if (root.isConnected) {
+        detachedAt = undefined;
+        return;
+      }
+      detachedAt ??= Date.now();
+      if (Date.now() - detachedAt < ADOPTION_GRACE_MS) {
         recheck = setTimeout(check, ADOPTION_RECHECK_MS);
       }
     };
-    const startedAt = Date.now();
     const stop = watchDocument(doc, check);
     return () => {
       stop();
