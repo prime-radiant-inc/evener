@@ -478,6 +478,9 @@ func TestShellToolReadOnlyCwdContentCarveOutGitMasked(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skills, ".git", "config"), []byte("SECRET-CARVE"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(skills, "ok.txt"), []byte("CARVE-OK"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink(realConfig, filepath.Join(home, ".config", "evener")); err != nil {
 		t.Skipf("cannot create config symlink: %v", err)
 	}
@@ -504,10 +507,13 @@ func TestShellToolReadOnlyCwdContentCarveOutGitMasked(t *testing.T) {
 	s := newSandboxedShellSession(t, env)
 
 	literal := filepath.Join(home, ".config", "evener", "skills")
-	res := executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"cat .git/config","cwd":%q}`, literal))
+	res := executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"cat ok.txt && (cat .git/config || true)","cwd":%q}`, literal))
 	out := decodeSandboxedShellOutput(t, res)
 	if strings.Contains(*out.Output, "SECRET-CARVE") {
 		t.Fatalf("carve-out .git was readable through cwd: %q", *out.Output)
+	}
+	if !strings.Contains(*out.Output, "CARVE-OK") {
+		t.Fatalf("carve-out cwd did not run the ordinary read: %q", *out.Output)
 	}
 }
 
@@ -587,5 +593,62 @@ func TestShellToolReadOnlySymlinkedRootVisibleFromOutside(t *testing.T) {
 	out := decodeSandboxedShellOutput(t, res)
 	if !strings.Contains(*out.Output, "root-readable") {
 		t.Fatalf("advertised root spelling unreadable from an outside cwd: %q", *out.Output)
+	}
+}
+
+// TestShellToolReadOnlySymlinkedRootKeepsMasks pins that recreating the
+// advertised workspace spelling as a link does not alias a masked child: the
+// mask lands at the resolved root and applies through the link.
+func TestShellToolReadOnlySymlinkedRootKeepsMasks(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("bubblewrap private /tmp is Linux-only")
+	}
+	base, err := os.MkdirTemp("/tmp", "evener-4332-mask-link-")
+	if err != nil {
+		t.Skipf("no writable /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	realRoot, err := os.MkdirTemp("/var/tmp", "evener-4332-mask-real-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(realRoot) })
+	if err := os.WriteFile(filepath.Join(realRoot, "ok.txt"), []byte("ROOT-OK"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	secretDir := filepath.Join(realRoot, "secret")
+	if err := os.MkdirAll(secretDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secretDir, "data"), []byte("SECRET-MASK"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := filepath.Join(base, "workspace-link")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("cannot create root symlink: %v", err)
+	}
+	outside, err := os.MkdirTemp("/var/tmp", "evener-4332-mask-outside-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+	env := newSandboxedShellEnv(t, sandbox.SandboxPolicy{
+		Mode:        sandbox.ModeReadOnly,
+		DenylistAdd: []string{secretDir},
+	}, linkRoot)
+	requireBwrapPrivateMounts(t, env)
+	s := newSandboxedShellSession(t, env)
+
+	res := executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"cat %s","cwd":%q}`, filepath.Join(linkRoot, "ok.txt"), outside))
+	out := decodeSandboxedShellOutput(t, res)
+	if !strings.Contains(*out.Output, "ROOT-OK") {
+		t.Fatalf("advertised root spelling did not run: %q", *out.Output)
+	}
+
+	res = executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"cat %s","cwd":%q}`, filepath.Join(linkRoot, "secret", "data"), outside))
+	out = decodeSandboxedShellOutput(t, res)
+	if strings.Contains(*out.Output, "SECRET-MASK") {
+		t.Fatalf("masked child was readable through the workspace alias: %q", *out.Output)
 	}
 }

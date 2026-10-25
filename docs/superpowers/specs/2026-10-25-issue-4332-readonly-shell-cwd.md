@@ -72,6 +72,10 @@ Revision notes:
   spelling is retained as `ResolvedPolicy.WorkspaceRoot` and bound alongside
   the resolved worktree, so a session rooted at a symlinked `/tmp` spelling
   keeps that advertised spelling readable when the chosen cwd is elsewhere.
+  It is recreated as a **symlink** to the resolved anchor, not a second bind:
+  a literal bind would alias masked children under the canonical path. A cwd
+  already covered by a bound root takes no independent bind (only the cwd
+  candidate is skipped, so a root equal to the cwd is still bound).
   A multi-hop symlink whose intermediate target lies in a private mount can
   still pass the literal and endpoint checks and fail at `--chdir`; it grants
   no read capability, and the backend remains the final authority, so this is
@@ -356,9 +360,11 @@ fixture.
    `/var/tmp` directory is accepted as cwd.
    A read-only cwd inside a content carve-out under `/tmp`, with the config
    directory itself a symlink, cannot read `.git/config`; the validated
-   carve-out handler keeps the `.git` denial at the resolved root.
+   carve-out handler keeps the `.git` denial at the resolved root, and the
+   same cwd reads an ordinary fixture file, proving the command ran.
    A session rooted at a symlinked `/tmp` spelling reads a workspace file
-   through that advertised spelling from an accepted outside cwd.
+   through that advertised spelling from an accepted outside cwd, and a
+   masked child under the resolved root stays unreadable through the alias.
 8. `agent/sandbox/resolve_canread_test.go`: `SpawnedCanRead` accepts
    read-anywhere paths, rejects masked paths and `.git` under a carve-out,
    accepts restricted read roots and unmasked roots, rejects a restricted

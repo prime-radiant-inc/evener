@@ -105,19 +105,26 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// sandbox already allows, and an unsandboxed root's TMPDIR is not in the tree.
 	// Binding only chosen files would not avoid it (a socket is a file), and
 	// hiding the tree is what #4170 reported as friction.
-	// The literal workspace spelling and its resolved anchor join the cwd
-	// candidates: read-anywhere modes carry no spawned read roots, and a
-	// workspace under /tmp must stay visible (under the spelling the
-	// environment advertises) when the chosen cwd is elsewhere. Only the
-	// workspace root belongs here; content carve-outs take their validated
-	// path below, after the masks.
-	candidates := append([]string{cwd, rp.WorkspaceRoot, rp.Git.WorktreeRoot}, sp.ReadRoots...)
+	// The resolved workspace anchor joins the cwd candidates: read-anywhere
+	// modes carry no spawned read roots, and a workspace under /tmp must stay
+	// visible when the chosen cwd is elsewhere. Only the workspace root belongs
+	// here; content carve-outs take their validated path below, after the masks.
+	candidates := append([]string{cwd, rp.Git.WorktreeRoot}, sp.ReadRoots...)
 	if sp.Read == ReadAnywhere {
 		candidates = append(candidates, scratchTreeOf(sessionTmp))
 	}
+	// A cwd already covered by a root this argv binds or exposes needs no
+	// independent bind, which would alias the tree before the masks land.
+	cwdCovered := cwd != "" && (isUnderAnyRoot(cwd, []string{rp.WorkspaceRoot, rp.Git.WorktreeRoot}) ||
+		isUnderAnyRoot(cwd, sp.ReadRoots) || isUnderAnyRoot(cwd, sp.WriteRoots) ||
+		isUnderAnyRoot(cwd, rp.UnmaskedRoots) ||
+		(sessionTmp != "" && pathUnder(cwd, sessionTmp)))
 	reboundRO := make(map[string]bool)
-	for _, r := range candidates {
+	for i, r := range candidates {
 		if r == "" || r == "/tmp" || (r != "/dev/shm" && !pathUnder(r, "/tmp") && !pathUnder(r, "/dev/shm")) {
+			continue
+		}
+		if i == 0 && cwdCovered {
 			continue
 		}
 		// A cwd or anchor inside a content carve-out takes the validated
@@ -135,6 +142,19 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		}
 		reboundRO[r] = true
 		add("--ro-bind", r, r)
+	}
+	// Recreate the advertised literal workspace spelling as a link to the
+	// resolved anchor instead of a second bind: a bind at the literal path would
+	// bypass masks applied at canonical paths under it. The anchor is visible
+	// through the read baseline, a read root, or its own re-bind above.
+	if rp.WorkspaceRoot != "" && rp.WorkspaceRoot != rp.Git.WorktreeRoot && rp.Git.WorktreeRoot != "" {
+		hidden := sp.Read != ReadAnywhere || inPrivateMount(rp.WorkspaceRoot)
+		exposed := isUnderAnyRoot(rp.WorkspaceRoot, sp.ReadRoots) ||
+			isUnderAnyRoot(rp.WorkspaceRoot, rp.UnmaskedRoots) ||
+			(sessionTmp != "" && pathUnder(rp.WorkspaceRoot, sessionTmp))
+		if hidden && !exposed {
+			add("--symlink", rp.Git.WorktreeRoot, rp.WorkspaceRoot)
+		}
 	}
 	// A re-bound root can contain the session tmp (the scratch tree, or a
 	// /dev/shm workspace whose session scratch lives beneath it); its read-only
