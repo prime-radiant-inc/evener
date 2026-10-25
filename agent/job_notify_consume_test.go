@@ -611,42 +611,86 @@ func TestKeptForegroundShellUnsyncedReplyLeavesNotificationUnsettled(t *testing.
 // that reply is persisted, its completion notification must stay pending.
 func TestBackgroundShellReplyWithTerminalStatusLeavesNotificationPending(t *testing.T) {
 	t.Parallel()
-	s, adapter := newStatusNotificationSession(t, true)
-	watcher := newJobNotifyWatcher(s, nil)
-	jobID := startBackgroundShellJob(t, s, "printf 'finishes later\\n'")
-	id := awaitCanonicalShellCustody(t, watcher, s, jobID)
+	for _, beforeCustody := range []bool{false, true} {
+		t.Run(fmt.Sprintf("before_custody=%t", beforeCustody), func(t *testing.T) {
+			s, adapter := newStatusNotificationSession(t, true)
+			var jobID, id string
+			if beforeCustody {
+				// A real kept foreground completion is terminal but not yet armed.
+				// Persisting a background reply must not consume this source either.
+				_, _, jobID = keptForegroundShellCall(t, s)
+				rec := loadShellRecord(t, s.jobManager, jobID)
+				if !rec.Status.IsTerminal() || rec.TerminalGen == "" || rec.NotifyState != jobstore.NotifyNotArmed {
+					t.Fatalf("kept terminal source = %+v, want unarmed terminal generation", rec)
+				}
+				id = "shell:" + jobID + ":" + rec.TerminalGen
+				assertNotificationPending(t, s, []string{})
+			} else {
+				watcher := newJobNotifyWatcher(s, nil)
+				jobID = startBackgroundShellJob(t, s, "printf 'finishes later\\n'")
+				id = awaitCanonicalShellCustody(t, watcher, s, jobID)
+			}
 
-	reply, err := marshalShellToolResult(shellResult{
-		JobID:               jobID,
-		Type:                string(jobstore.JobShell),
-		Status:              string(jobstore.StatusFailed),
-		Reason:              "finalize_failed",
-		RunningInBackground: true,
-	}, 100000, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state, err := json.Marshal(reply.State)
-	if err != nil {
-		t.Fatal(err)
-	}
-	call := llm.ToolCallData{ID: "fg-timeout", Name: "shell", Arguments: json.RawMessage(`{"command":"sleep 999"}`)}
-	result := tooldefs.ExecResult{ToolName: "shell", CallID: call.ID, Output: reply.Output, ToolState: state}
-	if err := s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
-		t.Fatalf("persistToolResults: %v", err)
-	}
-	requireCanonicalShellNotification(t, s, jobID, 0)
-	assertNotificationPending(t, s, []string{id})
-	adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
-		observationRequest(t, req, []string{fmt.Sprintf(`job_id=%q`, jobID)}, nil)
-		requireCanonicalShellNotification(t, s, jobID, 0)
-		return finalResponse("later completion observed")
-	}}
-	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
-		t.Fatal(err)
-	}
-	requireCanonicalShellNotification(t, s, jobID, 1)
-	if len(adapter.Requests()) != 1 {
-		t.Fatalf("provider requests=%d want 1", len(adapter.Requests()))
+			reply, err := marshalShellToolResult(shellResult{
+				JobID:               jobID,
+				Type:                string(jobstore.JobShell),
+				Status:              string(jobstore.StatusFailed),
+				Reason:              "finalize_failed",
+				RunningInBackground: true,
+			}, 100000, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err := json.Marshal(reply.State)
+			if err != nil {
+				t.Fatal(err)
+			}
+			call := llm.ToolCallData{ID: "fg-timeout", Name: "shell", Arguments: json.RawMessage(`{"command":"sleep 999"}`)}
+			result := tooldefs.ExecResult{ToolName: "shell", CallID: call.ID, Output: reply.Output, ToolState: state}
+			if err := s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
+				t.Fatalf("persistToolResults: %v", err)
+			}
+			if beforeCustody {
+				if rec := loadShellRecord(t, s.jobManager, jobID); rec.NotifyState != jobstore.NotifyNotArmed {
+					t.Fatalf("terminal_notification_state = %q after durable background reply, want %q", rec.NotifyState, jobstore.NotifyNotArmed)
+				}
+				assertNotificationPending(t, s, []string{})
+				persisted := false
+				for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+					if entry.Turn.AttentionID == id || slices.Contains(entry.Turn.ObservedNotificationIDs, id) {
+						t.Fatal("unarmed completion was accepted or observed before arming")
+					}
+					if _, found := findToolResultInHistory([]schema.Turn{entry.Turn}, call.ID); found {
+						persisted = true
+					}
+				}
+				if !persisted {
+					t.Fatal("background reply did not reach the disk transcript")
+				}
+				if err := s.jobManager.armPendingTerminalNotifications(); err != nil {
+					t.Fatal(err)
+				}
+				if got := requireCanonicalShellNotification(t, s, jobID, 0); got != id {
+					t.Fatalf("armed ID=%q want original terminal ID %q", got, id)
+				}
+			}
+			requireCanonicalShellNotification(t, s, jobID, 0)
+			assertNotificationPending(t, s, []string{id})
+			adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+				observationRequest(t, req, []string{fmt.Sprintf(`job_id=%q`, jobID)}, nil)
+				requireCanonicalShellNotification(t, s, jobID, 0)
+				return finalResponse("later completion observed")
+			}}
+			if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			requireCanonicalShellNotification(t, s, jobID, 1)
+			if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			if len(adapter.Requests()) != 1 {
+				t.Fatalf("provider requests=%d want 1", len(adapter.Requests()))
+			}
+		})
 	}
 }
