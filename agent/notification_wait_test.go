@@ -46,6 +46,188 @@ func waitProducerFIFO(t *testing.T) (string, func()) {
 	return fifo, sync.OnceFunc(func() { _, _ = f.WriteString("release\n") })
 }
 
+func TestFreshRootInputSupersedesFailedWaitCheckpoint(t *testing.T) {
+	t.Parallel()
+	adapter := newMessagingAdapter()
+	adapter.script("root", func(llm.Request) llm.Response { return waitResponseFor("wait-failed-84", "") })
+	root := newMessagingRoot(t, adapter, nil)
+	if _, err := root.ProcessInput(context.Background(), "input-old-84", nil); err != nil {
+		t.Fatal(err)
+	}
+	path := transcriptPath(root.stateDir, root.ID())
+	checkpoint, err := readWaitCheckpoint(path, root.ID())
+	if err != nil || checkpoint == nil {
+		t.Fatalf("wait checkpoint=%+v err=%v", checkpoint, err)
+	}
+	// Persist the late failed completion at the existing wait boundary. This
+	// historical evidence must forbid resuming the old execution, not new input.
+	if _, err := root.recordTranscriptOnlyThrough(schema.Turn{
+		Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnFailed},
+	}, transcript.DoorSynced, transcript.PlaceInTurn(checkpoint.ExecutionTurnID)); err != nil {
+		t.Fatal(err)
+	}
+	stateDir, client, profile, id := root.stateDir, root.client, root.profile, root.ID()
+	root.Close()
+	root = nil // No resident runtime or writer survives into restore.
+	meta, err := schema.LoadSessionMeta(stateDir, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := RestoreSessionFromMetaWithConfig(client, profile, execenv.NewLocalExecutionEnvironment(meta.EnvInfo.WorkingDir), meta, RestoreSessionConfig{
+		StateDir: stateDir, ForceRealIO: true, clock: agenttest.NewFakeClock(),
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(reopened.Close)
+	before, err := readTranscriptFull(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if safeWaitBoundary(*checkpoint, before.Entries, reopened.resultToolName()) {
+		t.Fatal("failed execution became safely resumable")
+	}
+	if err := reopened.claimWaitResumption(checkpoint.ExecutionTurnID); err == nil {
+		t.Fatal("failed execution identity was reusable as a wait resumption")
+	}
+	adapter.script("root", func(req llm.Request) llm.Response {
+		seen := 0
+		for _, msg := range req.Messages {
+			if msg.Role == llm.RoleUser && msg.Text() == "input-new-84" {
+				seen++
+			}
+		}
+		if seen != 1 {
+			t.Errorf("fresh input presentations=%d, want 1", seen)
+		}
+		return finalResponse("reply-new-84")
+	})
+	reopened.SetClientMutationStartWakeFunc(func() {})
+	accepted, err := reopened.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "client-new-84", ExpectedInstanceID: id,
+		Input: []appwire.InputItem{{Type: "text", Text: "input-new-84"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := reopened.ProcessClientMutationStart(context.Background(), nil); err != nil {
+		t.Fatalf("fresh root input refused: %v", err)
+	}
+	if got := len(adapter.requestsFor("root")); got != 2 {
+		t.Fatalf("scripted requests=%d, want old wait and fresh input", got)
+	}
+	data, err := readTranscriptFull(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs, completions := 0, 0
+	for _, entry := range data.Entries[len(before.Entries):] {
+		turn := entry.Turn
+		if turn.TurnID == checkpoint.ExecutionTurnID || len(turn.ObservedNotificationIDs) != 0 || turn.AttentionResolution != nil {
+			t.Fatalf("fresh execution reused failed identity or fabricated observation: %+v", turn)
+		}
+		if cp := turn.WaitCheckpoint; cp != nil {
+			t.Fatalf("failed wait was claimed instead of superseded: %+v", cp)
+		}
+		if turn.Kind == schema.TurnUserInput {
+			inputs++
+			if turn.ClientMutationID != "client-new-84" || turn.Message.Text() != "input-new-84" || turn.TurnID != accepted.Turn.ID {
+				t.Fatalf("fresh input identity lost: %+v", turn)
+			}
+		}
+		if turn.Kind == schema.TurnCompletion && turn.TurnID == accepted.Turn.ID && turn.Completion != nil && turn.Completion.Status == schema.TurnCompleted {
+			completions++
+		}
+	}
+	if inputs != 1 || completions != 1 || accepted.Turn.ID == checkpoint.ExecutionTurnID {
+		t.Fatalf("fresh inputs=%d completions=%d turn=%s failed=%s", inputs, completions, accepted.Turn.ID, checkpoint.ExecutionTurnID)
+	}
+}
+
+func TestFailedWaitSupersessionRequiresSettledBoundary(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		before  []schema.Turn
+		status  schema.TurnCompletionStatus
+		otherID bool
+		unknown string
+		admit   bool
+	}{
+		{name: "settled failure", status: schema.TurnFailed, admit: true},
+		{name: "failure marker then settled failure", before: []schema.Turn{{Kind: schema.TurnFailure}}, status: schema.TurnFailed, admit: true},
+		{name: "unfinished tool before failed completion", before: []schema.Turn{{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "unfinished-84", Name: "read_file"}}}}}}, status: schema.TurnFailed},
+		{name: "failure without completion", before: []schema.Turn{{Kind: schema.TurnFailure}}},
+		{name: "another execution failed", status: schema.TurnFailed, otherID: true},
+		{name: "interrupted completion", status: schema.TurnInterrupted},
+		{name: "missing evidence", status: schema.TurnFailed, unknown: "missing"},
+		{name: "incomplete evidence", status: schema.TurnFailed, unknown: "truncated"},
+		{name: "unavailable durability barrier", status: schema.TurnFailed, unknown: "closed writer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := newMessagingAdapter()
+			adapter.script("root", func(llm.Request) llm.Response { return waitResponseFor("wait-boundary-84", "") })
+			root := newMessagingRoot(t, adapter, nil)
+			if _, err := root.ProcessInput(context.Background(), "boundary-input-84", nil); err != nil {
+				t.Fatal(err)
+			}
+			path := transcriptPath(root.stateDir, root.ID())
+			checkpoint, err := readWaitCheckpoint(path, root.ID())
+			if err != nil || checkpoint == nil {
+				t.Fatalf("checkpoint=%+v err=%v", checkpoint, err)
+			}
+			record := func(turn schema.Turn, id string) {
+				t.Helper()
+				if _, err := root.recordTranscriptOnlyThrough(turn, transcript.DoorSynced, transcript.PlaceInTurn(id)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, turn := range tc.before {
+				record(turn, checkpoint.ExecutionTurnID)
+			}
+			if tc.status != "" {
+				id := checkpoint.ExecutionTurnID
+				if tc.otherID {
+					id = "execution-other-84"
+				}
+				record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: tc.status}}, id)
+			}
+			switch tc.unknown {
+			case "missing":
+				if err := os.Rename(path, path+".saved"); err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = os.Rename(path+".saved", path) }()
+			case "truncated":
+				file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := file.WriteString(`{"kind":"entry","turn":`); err != nil {
+					t.Fatal(err)
+				}
+				if err := file.Close(); err != nil {
+					t.Fatal(err)
+				}
+			case "closed writer":
+				if err := root.attachedTranscript().Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := root.claimWaitResumption("execution-fresh-84"); (err == nil) != tc.admit {
+				t.Fatalf("fresh claim error=%v, want admission=%v", err, tc.admit)
+			}
+			if tc.unknown == "" {
+				retained, err := readWaitCheckpoint(path, root.ID())
+				if err != nil || retained == nil || *retained != *checkpoint {
+					t.Fatalf("claim erased or resumed failed/unsafe checkpoint: %+v, %v", retained, err)
+				}
+			}
+		})
+	}
+}
+
 func TestNotificationResumesYieldedWait(t *testing.T) {
 	t.Parallel()
 	for _, producer := range []string{"child", "shell"} {

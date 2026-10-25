@@ -367,6 +367,34 @@ func (s *Session) persistWaitCheckpointDurably(checkpoint schema.WaitCheckpointI
 	return s.persistWaitCheckpointThrough(checkpoint, true)
 }
 
+// settledFailedWaitBoundary proves that a complete wait boundary subsequently
+// ended in failure. Failure records after the checkpoint describe that ending,
+// not another model/tool boundary. Nothing else may bypass safeWaitBoundary.
+// This is supersession evidence, never permission to resume the failed turn.
+func settledFailedWaitBoundary(checkpoint schema.WaitCheckpointInfo, entries []transcript.Entry, resultToolName string) bool {
+	boundary := make([]transcript.Entry, 0, len(entries))
+	sealed := false
+	for _, entry := range entries {
+		turn := entry.Turn
+		if turn.OriginalOrdinal != nil {
+			continue
+		}
+		if turn.TurnID == checkpoint.ExecutionTurnID {
+			if turn.Kind == schema.TurnCompletion && turn.Completion != nil && turn.Completion.Status == schema.TurnFailed {
+				return safeWaitBoundary(checkpoint, boundary, resultToolName)
+			}
+			if turn.Kind == schema.TurnFailure && sealed {
+				continue
+			}
+			if turn.Kind == schema.TurnWaitCheckpoint && turn.WaitCheckpoint != nil && *turn.WaitCheckpoint == checkpoint {
+				sealed = true
+			}
+		}
+		boundary = append(boundary, entry)
+	}
+	return false
+}
+
 // The caller already owns the single input executor. Claim before recording
 // any activity of its new execution, so a crash is ordinary interruption.
 func (s *Session) claimWaitResumption(turnID string) error {
@@ -395,6 +423,12 @@ func (s *Session) claimWaitResumption(turnID string) error {
 		return err
 	}
 	if !safeWaitBoundary(*checkpoint, data.Entries, s.resultToolName()) {
+		if checkpoint.DelegateID == "" && turnID != checkpoint.ExecutionTurnID && settledFailedWaitBoundary(*checkpoint, data.Entries, s.resultToolName()) {
+			// A root's settled failure is historical, not a yielded activation. Keep
+			// its checkpoint unchanged until the new input is durably admitted by
+			// the ordinary execution/input owner. Readable bytes alone are not proof.
+			return s.attachedTranscript().EstablishDurability()
+		}
 		return errors.New("wait resumption lacks a safe boundary")
 	}
 	checkpoint.ResumedByTurnID = turnID
