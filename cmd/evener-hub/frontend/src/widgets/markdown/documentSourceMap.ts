@@ -20,6 +20,31 @@ export interface DocumentRenderMap extends DocumentRenderIdentity {
 export type MappedSelection =
   | { state: "mapped"; sourceRange: SourceRange; selectedRenderedText: string }
   | { state: "unmapped"; reason: "outside" | "stale" | "chrome" | "unverified" | "transformed" };
+// The provenance proof has two levels: a frame's own text is compared in
+// full once, and each token's raw is compared at the token's length. These
+// counters expose that split to the regression suite so a return to
+// per-call full-frame comparisons (quadratic on a large single frame) fails
+// deterministically instead of waiting on a wall clock. Production never
+// reads them.
+let fullFrameUnits = 0;
+let tokenUnits = 0;
+export function provenanceProofUnitsForTests(): { fullFrameUnits: number; tokenUnits: number } {
+  return { fullFrameUnits, tokenUnits };
+}
+export function resetProvenanceProofUnitsForTests(): void {
+  fullFrameUnits = 0;
+  tokenUnits = 0;
+}
+// Every full-frame content check and every token-raw content check runs
+// through these two helpers, and only a passing check records its units.
+function verifiedFrameText(input: string, src: string, message: string): void {
+  if (input !== src) throw new Error(message);
+  fullFrameUnits += src.length;
+}
+function verifiedTokenRaw(raw: Trace, tokenRaw: string, name: string): void {
+  if (raw.text !== tokenRaw) throw new Error(`Unverified ${name} raw`);
+  tokenUnits += tokenRaw.length;
+}
 export interface BoundDocumentMap {
   identity: DocumentRenderIdentity;
   capture(selection: Selection): MappedSelection;
@@ -40,9 +65,18 @@ interface SpanView {
   readonly end: number;
 }
 interface Trace {
-  text: string;
-  spans: SpanView;
+  // `text` materializes on first read for deferred concatenations; `length`
+  // is always O(1) so piece accounting never flattens the accumulated text.
+  readonly text: string;
+  readonly length: number;
+  readonly spans: SpanView;
   newline?: Trace;
+  // The two operands of a deferred concatenation, in order. Leaves have
+  // neither. Keeping the tree and joining once on first read avoids copying
+  // the accumulated prefix on every append - the list tokenizer appends a
+  // line to the same raw trace per continuation line (#4579).
+  readonly left?: Trace;
+  readonly right?: Trace;
 }
 interface Provenance {
   raw: Trace;
@@ -59,6 +93,7 @@ function spansOf(value: Trace): SourceRange[] {
 function originalTrace(source: string): Trace {
   return {
     text: source,
+    length: source.length,
     spans: {
       data: Array.from({ length: source.length }, (_, start) => ({ start, end: start + 1 })),
       start: 0,
@@ -66,12 +101,51 @@ function originalTrace(source: string): Trace {
     },
   };
 }
-function slice(value: Trace, start = 0, end = value.text.length): Trace {
-  const a = start < 0 ? Math.max(0, value.text.length + start) : start;
-  const b = end < 0 ? Math.max(0, value.text.length + end) : end;
+function slice(value: Trace, start = 0, end = value.length): Trace {
+  // Clamp exactly like String.prototype.slice: a requested end past the trace
+  // must not leave `length` or the span view longer than the text, which the
+  // deferred accounting relies on.
+  const a = Math.max(0, Math.min(value.length, start < 0 ? value.length + start : start));
+  const b = Math.max(a, Math.min(value.length, end < 0 ? value.length + end : end));
   return {
     text: value.text.slice(a, b),
+    length: b - a,
     spans: { data: value.spans.data, start: value.spans.start + a, end: value.spans.start + b },
+  };
+}
+// The rightmost leaf without flattening a deferred concatenation: a text merge
+// asks for the accumulated raw trace's final newline once per line.
+function trailingNewline(value: Trace): Trace | undefined {
+  if (value.right) return trailingNewline(value.right);
+  return value.text.endsWith("\n") ? slice(value, -1) : undefined;
+}
+function flattenText(left: Trace, right: Trace): string {
+  const pieces: string[] = [];
+  const stack: Trace[] = [right, left];
+  while (stack.length > 0) {
+    const next = stack.pop();
+    if (!next) continue;
+    if (next.left && next.right) {
+      stack.push(next.right, next.left);
+      continue;
+    }
+    pieces.push(next.text);
+  }
+  return pieces.join("");
+}
+function deferredConcat(left: Trace, right: Trace): Trace {
+  if (left.spans.data !== right.spans.data || left.spans.end !== right.spans.start)
+    throw new Error("Unverified concat inputs");
+  let text: string | undefined;
+  return {
+    get text() {
+      if (text === undefined) text = flattenText(left, right);
+      return text;
+    },
+    length: left.length + right.length,
+    spans: { data: left.spans.data, start: left.spans.start, end: right.spans.end },
+    left,
+    right,
   };
 }
 // The array-taking form is the real implementation: the transformations
@@ -85,11 +159,10 @@ function concatAll(values: readonly Trace[]): Trace {
   // break the shared-storage chain either: otherwise a merge that stitches
   // an empty separator between two contiguous views would materialize the
   // accumulated spans on every merge, quadratic across a document's blocks.
-  const pieces = values.filter((value) => value.text.length > 0);
+  const pieces = values.filter((value) => value.length > 0);
   if (pieces.length === 0) return empty();
   const first = pieces[0];
-  const last = pieces.at(-1);
-  if (!first || !last) throw new Error("Unverified concat inputs");
+  if (!first) throw new Error("Unverified concat inputs");
   if (pieces.length === 1) return first;
   let shared = true;
   for (let i = 1; i < pieces.length; i++) {
@@ -100,15 +173,19 @@ function concatAll(values: readonly Trace[]): Trace {
       break;
     }
   }
+  if (shared) {
+    // Keep append-heavy merges deferred: joining here copied the whole
+    // accumulated prefix for every continuation line.
+    return pieces.slice(1).reduce(deferredConcat, first);
+  }
   const text = pieces.map((v) => v.text).join("");
-  if (shared) return { text, spans: { data: first.spans.data, start: first.spans.start, end: last.spans.end } };
   const data = pieces.flatMap((v) => spansOf(v));
-  return { text, spans: { data, start: 0, end: data.length } };
+  return { text, length: text.length, spans: { data, start: 0, end: data.length } };
 }
 function concat(...values: Trace[]): Trace {
   return concatAll(values);
 }
-const empty = (): Trace => ({ text: "", spans: { data: NO_SPANS, start: 0, end: 0 } });
+const empty = (): Trace => ({ text: "", length: 0, spans: { data: NO_SPANS, start: 0, end: 0 } });
 function spelling(value: Trace, text: string): Trace {
   if (!text) return empty();
   const { data, start, end } = value.spans;
@@ -117,6 +194,7 @@ function spelling(value: Trace, text: string): Trace {
   if (!first || !last) throw new Error("Unverified Marked insertion");
   return {
     text,
+    length: text.length,
     spans: {
       data: Array.from({ length: text.length }, () => ({ start: first.start, end: last.end })),
       start: 0,
@@ -149,7 +227,7 @@ function remove(value: Trace, re: RegExp): Trace {
   return replace(value, re, () => empty());
 }
 function trim(value: Trace): Trace {
-  const start = value.text.length - value.text.trimStart().length;
+  const start = value.length - value.text.trimStart().length;
   return slice(value, start, start + value.text.trim().length);
 }
 function trimEnd(value: Trace): Trace {
@@ -277,6 +355,10 @@ interface Frame {
   kind: "block" | "inline";
   clipped: boolean;
   separator?: Trace;
+  // UTF-16 units of `input.text` that Marked has consumed by returning tokens
+  // from this frame. Entry proves the frame text once; the cursor locates each
+  // later dispatch's tail without re-comparing the whole remainder.
+  offset: number;
 }
 interface Invocation {
   name: string;
@@ -360,19 +442,22 @@ class ProvenanceLexer extends Lexer {
   private inputFor(src: string): Trace {
     const frame = this.frames.at(-1);
     if (!frame) throw new Error("No lexer provenance");
-    const input = slice(frame.input, frame.input.text.length - src.length);
-    if (input.text !== src) throw new Error("Unverified Marked remainder");
-    return input;
+    if (src.length !== frame.input.length - frame.offset) throw new Error("Unverified Marked remainder");
+    return slice(frame.input, frame.offset);
   }
   override blockTokens(src: string, tokens: Token[] = [], lastParagraphClipped = false): TokensList {
     const input = this.pending;
     const separator = this.pendingSeparator;
     this.pending = undefined;
     this.pendingSeparator = undefined;
-    if (!input || input.text !== src) throw new Error("Unverified nested block input");
-    this.frames.push({ input, tokens, kind: "block", clipped: lastParagraphClipped, separator });
+    if (!input) throw new Error("Unverified nested block input");
+    verifiedFrameText(input.text, src, "Unverified nested block input");
+    const frame: Frame = { input, tokens, kind: "block", clipped: lastParagraphClipped, separator, offset: 0 };
+    this.frames.push(frame);
     try {
-      return super.blockTokens(src, tokens, lastParagraphClipped) as TokensList;
+      const result = super.blockTokens(src, tokens, lastParagraphClipped) as TokensList;
+      if (frame.offset !== input.length) throw new Error("Unverified Marked consumption");
+      return result;
     } finally {
       this.frames.pop();
     }
@@ -388,10 +473,13 @@ class ProvenanceLexer extends Lexer {
       input = remove(input, this.tokenizerRef.rules.other.listReplaceTask);
     }
     if (!input) input = this.inlineInput(src);
-    if (input.text !== src) throw new Error("Unverified queued inline input");
-    this.frames.push({ input, tokens, kind: "inline", clipped: false });
+    verifiedFrameText(input.text, src, "Unverified queued inline input");
+    const frame: Frame = { input, tokens, kind: "inline", clipped: false, offset: 0 };
+    this.frames.push(frame);
     try {
-      return super.inlineTokens(src, tokens);
+      const result = super.inlineTokens(src, tokens);
+      if (frame.offset !== input.length) throw new Error("Unverified Marked consumption");
+      return result;
     } finally {
       this.frames.pop();
     }
@@ -460,7 +548,7 @@ class ProvenanceLexer extends Lexer {
       default:
         throw new Error(`Unverified inline entry ${call.name}`);
     }
-    if (input.text !== src) throw new Error(`Unverified ${call.name} transformation`);
+    verifiedFrameText(input.text, src, `Unverified ${call.name} transformation`);
     call.inline = input;
     return input;
   }
@@ -521,9 +609,17 @@ class ProvenanceLexer extends Lexer {
   }
   private token(name: string, src: string, parse: () => Token | undefined): Token | undefined {
     const prior = this.invocation;
-    const input = this.pendingToken ?? this.inputFor(src);
+    const pending = this.pendingToken;
     this.pendingToken = undefined;
-    if (input.text !== src) throw new Error("Unverified recursive tokenizer input");
+    const consumingFrame = pending ? undefined : this.frames.at(-1);
+    const input = pending ?? this.inputFor(src);
+    if (pending) {
+      // A recursive tokenizer call (blockquote/list continuation) re-lexes text
+      // assembled from provenance, not a frame tail Marked is walking. Its own
+      // frame entry still proves the text, so this compare is once per
+      // recursive call, never once per frame token.
+      verifiedFrameText(input.text, src, "Unverified recursive tokenizer input");
+    }
     const call: Invocation = { name, input, cellIndex: 0 };
     this.invocation = call;
     try {
@@ -531,7 +627,15 @@ class ProvenanceLexer extends Lexer {
       if (!token) return token;
       const existing = this.provenance.get(token);
       const raw = existing?.raw ?? slice(input, 0, token.raw.length);
-      if (raw.text !== token.raw) throw new Error(`Unverified ${name} raw`);
+      verifiedTokenRaw(raw, token.raw, name);
+      if (consumingFrame) {
+        // Marked consumes with `src.substring(token.raw.length)`, which clamps
+        // when a tokenizer reports a raw longer than the frame (blockquote
+        // appends a synthetic newline for a trailing empty continuation
+        // group). Track what Marked actually consumed, not the synthetic raw.
+        const remaining = consumingFrame.input.length - consumingFrame.offset;
+        consumingFrame.offset += Math.min(token.raw.length, remaining);
+      }
       const text = this.leafText(call, token) ?? existing?.text;
       this.provenance.set(token, { raw, text });
       if ((name === "url" || name === "autolink") && token.type === "link" && text) {
@@ -559,13 +663,13 @@ class ProvenanceLexer extends Lexer {
             (name === "text" && previous.type === "text") ||
             (name === "paragraph" && frame.clipped && previous.type === "paragraph");
           if (merge) {
-            const hasNewline = old.raw.text.endsWith("\n");
-            const newline = hasNewline ? slice(old.raw, -1) : (frame.separator ?? empty());
+            const trailing = trailingNewline(old.raw);
+            const newline = trailing ?? frame.separator ?? empty();
             if (newline.text !== "\n") throw new Error("Unverified block merge newline");
             const added = name === "def" ? raw : text;
             if (!old.text || !added) throw new Error("Unverified block merge text");
             const merged = concat(old.text, newline, added);
-            this.provenance.set(previous, { raw: concat(old.raw, hasNewline ? empty() : newline, raw), text: merged });
+            this.provenance.set(previous, { raw: concat(old.raw, trailing ? empty() : newline, raw), text: merged });
             if ("tokens" in previous && previous.tokens) this.queued.set(previous.tokens, merged);
           }
         }
@@ -740,7 +844,11 @@ class ProvenanceTokenizer extends Tokenizer {
         let endEarly = false;
         let raw = "";
         let itemContents = "";
-        let rawTrace = empty();
+        // Raw pieces accumulate and materialize once per item: appending a
+        // line to the accumulated raw trace through concat copied the whole
+        // prefix per continuation line (#4579).
+        const rawPieces: Trace[] = [];
+        let lastNewline: Trace = empty();
         let contentsTrace = empty();
         // Continuation pieces accumulate and materialize once per item: the
         // dedent slice breaks the shared-storage chain, so concatenating the
@@ -757,11 +865,13 @@ class ProvenanceTokenizer extends Tokenizer {
         }
 
         raw = cap[0];
-        rawTrace = slice(sourceTrace, 0, raw.length);
+        const firstRawTrace = slice(sourceTrace, 0, raw.length);
+        rawPieces.push(firstRawTrace);
+        lastNewline = slice(firstRawTrace, -1);
         sourceTrace = slice(sourceTrace, raw.length);
         src = src.substring(raw.length);
 
-        const firstLine = traceLines(capture(rawTrace, itemRegex, 2))[0] ?? empty();
+        const firstLine = traceLines(capture(firstRawTrace, itemRegex, 2))[0] ?? empty();
         let lineTrace = expandTabs(firstLine, (cap[1] ?? "").length);
         let line = lineTrace.text;
         let nextLine = src.split("\n", 1)[0] ?? "";
@@ -784,7 +894,8 @@ class ProvenanceTokenizer extends Tokenizer {
 
         if (blankLine && this.rules.other.blankLine.test(nextLine)) {
           // Items begin with at most one blank line
-          rawTrace = concat(rawTrace, slice(sourceTrace, 0, nextLine.length + 1));
+          rawPieces.push(slice(sourceTrace, 0, nextLine.length + 1));
+          lastNewline = slice(sourceTrace, nextLine.length, nextLine.length + 1);
           sourceTrace = slice(sourceTrace, nextLine.length + 1);
           raw += `${nextLine}\n`;
           src = src.substring(nextLine.length + 1);
@@ -848,7 +959,7 @@ class ProvenanceTokenizer extends Tokenizer {
 
             if (nextLineWithoutTabs.search(this.rules.other.nonSpaceChar) >= indent || !nextLine.trim()) {
               // Dedent if possible
-              continuationTraces.push(slice(rawTrace, -1), slice(nextLineTrace, indent));
+              continuationTraces.push(lastNewline, slice(nextLineTrace, indent));
               itemContents += `\n${nextLineWithoutTabs.slice(indent)}`;
             } else {
               // not enough indentation
@@ -871,13 +982,14 @@ class ProvenanceTokenizer extends Tokenizer {
                 break;
               }
 
-              continuationTraces.push(slice(rawTrace, -1), rawLineTrace);
+              continuationTraces.push(lastNewline, rawLineTrace);
               itemContents += `\n${nextLine}`;
             }
 
             blankLine = !nextLine.trim();
 
-            rawTrace = concat(rawTrace, slice(sourceTrace, 0, rawLine.length + 1));
+            rawPieces.push(slice(sourceTrace, 0, rawLine.length + 1));
+            lastNewline = slice(sourceTrace, rawLine.length, rawLine.length + 1);
             sourceTrace = slice(sourceTrace, rawLine.length + 1);
             raw += `${rawLine}\n`;
             src = src.substring(rawLine.length + 1);
@@ -904,7 +1016,7 @@ class ProvenanceTokenizer extends Tokenizer {
           tokens: [],
         };
         itemTraces.set(item, {
-          raw: rawTrace,
+          raw: concatAll(rawPieces),
           text: continuationTraces.length > 0 ? concatAll([contentsTrace, ...continuationTraces]) : contentsTrace,
         });
         list.items.push(item);
@@ -1012,6 +1124,13 @@ class ProvenanceTokenizer extends Tokenizer {
       return list;
     }
   }
+}
+
+// Test seam for the frame-boundary remainder proof: lex `src` against a trace
+// built from `traceSource`. Production always passes the same text as both;
+// the suite corrupts the pair to prove a genuine mismatch is still refused.
+export function lexAgainstSourceForTests(traceSource: string, src: string): Token[] {
+  return new ProvenanceLexer(originalTrace(traceSource)).lex(src);
 }
 
 export type DocumentRenderSegment =

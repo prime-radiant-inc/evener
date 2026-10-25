@@ -1,9 +1,18 @@
 import { render } from "@testing-library/react";
+import { type Token, Tokenizer } from "marked";
 import { createElement } from "react";
 import { afterEach, expect, test } from "vitest";
 import { FIRST, RICH_RANGES, RICH_SOURCE, SECOND, SOURCE } from "../../panes/doc/testing/annotationFixtures";
 import { DocumentMarkdown } from "./DocumentMarkdown";
-import { type BoundDocumentMap, parseDocument, renderDocument } from "./documentSourceMap";
+import {
+  type BoundDocumentMap,
+  type DocumentTextRun,
+  lexAgainstSourceForTests,
+  parseDocument,
+  provenanceProofUnitsForTests,
+  renderDocument,
+  resetProvenanceProofUnitsForTests,
+} from "./documentSourceMap";
 
 afterEach(() => window.getSelection()?.removeAllRanges());
 function documentFor(source: string) {
@@ -52,6 +61,13 @@ function selectText(container: HTMLElement, text: string, occurrence = 0) {
   selection.removeAllRanges();
   selection.addRange(range);
   return selection;
+}
+function expectExactLine(run: DocumentTextRun, source: string, line: string) {
+  const lineStart = source.indexOf(line);
+  const lineIndex = run.sourceSpans.findIndex((span) => span.start === lineStart);
+  expect(lineIndex).toBeGreaterThanOrEqual(0);
+  expect(run.renderedText.slice(lineIndex, lineIndex + line.length)).toBe(line);
+  expect(run.sourceSpans[lineIndex + line.length - 1]?.end).toBe(lineStart + line.length);
 }
 // A mapper that rebases normalized input, searches duplicates or ignores decode
 // spellings fails these independent literal original-coordinate expectations.
@@ -302,10 +318,9 @@ test("maps a long list continuation with exact coordinates", () => {
   expect(source.slice(boldFirst.start, boldLast.end)).toBe("bold 1500");
   const mid = map.textRuns.find((run) => run.renderedText.includes("Line 750 with lazy"));
   if (!mid) throw new Error("missing mid-document text run");
-  const midFirst = mid.sourceSpans[0];
-  const midLast = mid.sourceSpans.at(-1);
-  if (!midFirst || !midLast) throw new Error("missing mid run spans");
-  expect(source.slice(midFirst.start, midLast.end)).toContain("Line 750 with lazy continuation text.");
+  // The run is the merged item paragraph, so check one interior line's exact
+  // source position rather than the whole run's width.
+  expectExactLine(mid, source, "Line 750 with lazy continuation text.");
   const tail = map.textRuns.find((run) => run.renderedText === "Tail");
   if (!tail) throw new Error("missing tail heading run");
   const tailFirst = tail.sourceSpans[0];
@@ -344,6 +359,146 @@ test("maps a long indented list continuation with exact coordinates", () => {
   const tailLast = tail.sourceSpans.at(-1);
   if (!tailFirst || !tailLast) throw new Error("missing tail heading spans");
   expect(source.slice(tailFirst.start, tailLast.end)).toBe("Tail");
+});
+
+// The provenance proof must stay linear in a single frame: the frame's own
+// text is compared once, then every token proves its own raw at token size.
+// Counting the units of each kind makes a return to the old per-dispatch
+// full-frame comparisons a deterministic failure, not a wall-clock race
+// (#4579). The 4000-line shape compared 8.1 billion characters before the
+// proof moved; this 500-line shape already exceeds the bound below by 412x on
+// the old implementation, so the ratchet stays cheap.
+test("proves a frame once and each token at token size", () => {
+  const lines: string[] = [];
+  for (let i = 0; i < 500; i++) lines.push(`Line ${i} with lazy continuation text.`);
+  lines[250] = "Line 250 with a **bold 250** inline.";
+  const source = `# Proof shape\n\n- ${lines.join("\n")}\n\n## Tail\n`;
+  resetProvenanceProofUnitsForTests();
+  const parse = parseDocument(source);
+  const units = provenanceProofUnitsForTests();
+  // Frames are bounded by the document's blocks, not its tokens: a handful of
+  // frame texts add up to a small multiple of the source.
+  expect(units.fullFrameUnits).toBeLessThan(source.length * 16);
+  // Every byte of every frame's text is still verified: tokens account for at
+  // least the source's own units (nested frames verify their text again).
+  expect(units.tokenUnits).toBeGreaterThanOrEqual(source.length);
+  expect(units.tokenUnits).toBeLessThan(source.length * 16);
+  const bold = parse.textRuns.find((run) => run.renderedText === "bold 250");
+  if (!bold) throw new Error("missing middle bold run");
+  const first = bold.sourceSpans[0];
+  const last = bold.sourceSpans.at(-1);
+  if (!first || !last) throw new Error("missing middle bold run spans");
+  expect(source.slice(first.start, last.end)).toBe("bold 250");
+});
+
+test("refuses a deliberately corrupted frame remainder", () => {
+  expect(() => lexAgainstSourceForTests("same", "same and more")).toThrow();
+  expect(() => lexAgainstSourceForTests("same", "sAme")).toThrow();
+  expect(() => lexAgainstSourceForTests("same", "same")).not.toThrow();
+});
+
+// The per-token proof, not only the frame-entry compare, must refuse a token
+// whose consumed raw diverges at the same length. Patch Marked's own tokenizer
+// boundary (the pinned dependency) and restore it afterwards.
+test("refuses a token whose raw differs from the frame trace", () => {
+  const tokenizer = Tokenizer.prototype as unknown as { text(src: string): Token | undefined };
+  const original = tokenizer.text;
+  tokenizer.text = function (this: unknown, src: string) {
+    const token = original.call(this, src);
+    if (token && token.raw.length > 0) token.raw = `${token.raw.slice(0, -1)}${token.raw.endsWith("a") ? "b" : "a"}`;
+    return token;
+  };
+  try {
+    expect(() => parseDocument("- same\n")).toThrow();
+  } finally {
+    tokenizer.text = original;
+  }
+});
+
+// Marked's blockquote tokenizer appends a synthetic newline for a trailing
+// empty continuation group, so its token raw is one unit longer than the
+// source and blockTokens' substring clamps. The frame cursor must track what
+// Marked consumed, not the synthetic raw length (#4579 review).
+test("maps a blockquote whose token raw appends a synthetic newline", () => {
+  const source = "> - a\nb";
+  const { container, map } = documentFor(source);
+  expect(map.capture(selectText(container, "b"))).toEqual({
+    state: "mapped",
+    sourceRange: { start: 6, end: 7 },
+    selectedRenderedText: "b",
+  });
+});
+
+test.each([
+  ["> 1. a\nb", 7, 8],
+  ["> * a\nb", 6, 7],
+] as const)("maps a quote-nested list's lazy continuation in %j", (source, start, end) => {
+  const { container, map } = documentFor(source);
+  expect(map.capture(selectText(container, "b"))).toEqual({
+    state: "mapped",
+    sourceRange: { start, end },
+    selectedRenderedText: "b",
+  });
+});
+
+test.each(["> - a\n b", "> - a\n  b", "> - a\n    b", "> - a\nb\nc", "> - a\nb\n\n> - c\nd"])(
+  "renders %j without a frame-consumption mismatch",
+  (source) => {
+    expect(() => parseDocument(source)).not.toThrow();
+  },
+);
+
+test("maps a list item at end of input without a trailing newline", () => {
+  const source = "- first\nsecond";
+  const { container, map } = documentFor(source);
+  expect(map.capture(selectText(container, "second"))).toEqual({
+    state: "mapped",
+    sourceRange: { start: 8, end: 14 },
+    selectedRenderedText: "second",
+  });
+});
+
+// A long quoted paragraph is one blockquote frame whose inner paragraph is a
+// single inline frame. Moving the proof to frame entry plus token raw must
+// keep both coordinates exact.
+test("maps a long quoted paragraph with exact coordinates", () => {
+  const lines: string[] = [];
+  for (let i = 0; i < 2000; i++) lines.push(`> Line ${i} with quoted continuation text.`);
+  lines[1000] = "> Line 1000 with a **bold 1000** inline.";
+  const source = `# Quote continuation\n\n${lines.join("\n")}\n\n## Tail\n`;
+  const { map } = renderDocument(parseDocument(source), { displayedSnapshotId: "snap-quote", mappingId: "map-quote" });
+  const bold = map.textRuns.find((run) => run.renderedText === "bold 1000");
+  if (!bold) throw new Error("missing quote bold run");
+  const boldFirst = bold.sourceSpans[0];
+  const boldLast = bold.sourceSpans.at(-1);
+  if (!boldFirst || !boldLast) throw new Error("missing quote bold run spans");
+  expect(source.slice(boldFirst.start, boldLast.end)).toBe("bold 1000");
+  const mid = map.textRuns.find((run) => run.renderedText.includes("Line 500 with quoted"));
+  if (!mid) throw new Error("missing quote mid run");
+  // The source range spans the dropped "> " prefixes between rendered lines,
+  // so locate the line by its own first source unit and check its exact run.
+  expectExactLine(mid, source, "Line 500 with quoted continuation text.");
+});
+
+// Table cells are separate inline frames nested under one table token; their
+// coordinates must survive the frame cursor.
+test("maps a long table's cells with exact coordinates", () => {
+  const rows = ["| a | b | c |", "| --- | --- | --- |"];
+  for (let i = 0; i < 200; i++) rows.push(`| cell ${i}a | **cell ${i}b** | \`cell ${i}c\` |`);
+  const source = `# Table\n\n${rows.join("\n")}\n\n## Tail\n`;
+  const { map } = renderDocument(parseDocument(source), { displayedSnapshotId: "snap-table", mappingId: "map-table" });
+  const bold = map.textRuns.find((run) => run.renderedText === "cell 100b");
+  if (!bold) throw new Error("missing table cell run");
+  const boldFirst = bold.sourceSpans[0];
+  const boldLast = bold.sourceSpans.at(-1);
+  if (!boldFirst || !boldLast) throw new Error("missing table cell spans");
+  expect(source.slice(boldFirst.start, boldLast.end)).toBe("cell 100b");
+  const code = map.textRuns.find((run) => run.renderedText === "cell 100c");
+  if (!code) throw new Error("missing table code run");
+  const codeFirst = code.sourceSpans[0];
+  const codeLast = code.sourceSpans.at(-1);
+  if (!codeFirst || !codeLast) throw new Error("missing table code spans");
+  expect(source.slice(codeFirst.start, codeLast.end)).toBe("cell 100c");
 });
 
 // String.replace interprets $$ and $& in a replacement string; authored code
