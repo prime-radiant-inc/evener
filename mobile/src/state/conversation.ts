@@ -97,6 +97,7 @@ import type {
 } from "../services/conversation";
 import type { ActivityIdentity, NotificationOutcome } from "./activity";
 import {
+	type ConversationMutationAdmission,
 	type ConversationMutationContext,
 	type ConversationMutationPendingPort,
 	type ConversationMutationSubmitter,
@@ -182,6 +183,10 @@ export interface ConversationMutationState {
 	generation: number;
 	/** @internal — monotonic token for stale-check; not for external consumption. */
 	mutationId: number;
+	/** @internal — the durable row's clientMutationId once the submitter
+	 * admitted it. Absent while an attempt owns only its local token and on a
+	 * submitter that returned no admission. */
+	admittedMutationId?: string;
 }
 
 /** Display-safe local acknowledgement of a completed production mutation. A
@@ -595,10 +600,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	const mutationSubmitter = options.mutationSubmitter;
 
 	// The durable path for one conversation mutation: the intent is admitted
-	// through the host's runtime at the enqueue boundary and returns no wire
-	// receipt, so the caller settles on admission rather than on a daemon answer.
-	// The target ref and instance fence come from the operation binding the
-	// caller already captured and rechecks after the await.
+	// through the host's runtime at the enqueue boundary and returns the durable
+	// row's id with no wire receipt, so the caller settles on admission rather
+	// than on a daemon answer. The target ref and instance fence come from the
+	// operation binding the caller already captured and rechecks after the await.
 	function submitMutation(
 		kind: ConversationMutationState["kind"],
 		opBinding: RequestBinding,
@@ -606,7 +611,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		input: InputItem[],
 		context?: ConversationMutationContext,
 		precondition?: () => boolean,
-	): Promise<MutationReceipt | undefined> {
+	): Promise<ConversationMutationAdmission | undefined> {
 		return mutationSubmitter!.submit({
 			kind,
 			hubId: mutationHubId,
@@ -620,8 +625,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	}
 
 	// One mutation's transport: admitted durably through the submitter when the
-	// host wired one, otherwise the service's own method. Keeping the choice here
-	// means each action declares only its kind, binding and input.
+	// host wired one, otherwise the service's own method. The service path wraps
+	// its acknowledgement as a local admission, so both paths give the caller
+	// one shape (a receipt only where the service actually returned one).
+	// Keeping the choice here means each action declares only its kind, binding
+	// and input.
 	function dispatchMutation(
 		service: ConversationService,
 		kind: ConversationMutationState["kind"],
@@ -630,18 +638,33 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		input: InputItem[],
 		context?: ConversationMutationContext,
 		precondition?: () => boolean,
-	): Promise<MutationReceipt | undefined> {
+	): Promise<ConversationMutationAdmission | undefined> {
 		if (mutationSubmitter !== undefined)
 			return submitMutation(kind, opBinding, conversation, input, context, precondition);
+		const withReceipt = (receipt: MutationReceipt): ConversationMutationAdmission => ({
+			clientMutationId: receipt.clientMutationId,
+			receipt,
+		});
 		switch (kind) {
 			case "send":
-				return service.send(input);
+				return service.send(input).then(withReceipt);
 			case "queue":
-				return service.queue(input);
+				return service.queue(input).then(withReceipt);
 			case "interrupt":
-				return service.interrupt();
+				return service.interrupt().then(withReceipt);
 		}
 	}
+
+	// What the store reports for a settled mutation. The durable path has no
+	// wire receipt to carry, so the receipt rides along only when the transport
+	// actually returned one (the service path).
+	function acceptedMutation(
+		kind: ConversationMutationState["kind"],
+		admission: ConversationMutationAdmission | undefined,
+	): AcceptedConversationMutation {
+		return admission?.receipt === undefined ? { kind } : { kind, receipt: admission.receipt };
+	}
+
 	let conversationGen = 0;
 	let mutationIdCounter = 0;
 	// Draft revision: a monotonically increasing counter incremented on every
@@ -1763,6 +1786,18 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				}
 			}
 			rawSet(partial);
+		};
+		// Record the durable row's identity on the attempt's pending record once
+		// the submitter admits it. Only the attempt that still owns the record
+		// writes: a newer mutation may have replaced it while the admission was
+		// in flight, and that record must survive untouched.
+		const recordAdmittedMutation = (
+			admission: ConversationMutationAdmission | undefined,
+			mutationId: number,
+			mutation: ConversationMutationState,
+		) => {
+			if (admission === undefined || get().pendingMutation?.mutationId !== mutationId) return;
+			set({ pendingMutation: { ...mutation, admittedMutationId: admission.clientMutationId } });
 		};
 		storeGet = get;
 		// The one chokepoint for canonical-read validity transitions. Guarded so
@@ -3092,7 +3127,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// it.
 				const entryErrorRev = errorOwnerRev;
 				try {
-					const receipt = await dispatchMutation(
+					const admission = await dispatchMutation(
 						service,
 						"send",
 						opBinding,
@@ -3103,9 +3138,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					);
 					// C1: Recheck the exact operation binding after the await.
 					if (!isBindingCurrent(opBinding)) return;
+					recordAdmittedMutation(admission, mutationId, mutation);
 					// F4: Check mutationId — out-of-order completion cannot clear a
 					// newer mutation's state.
 					if (get().pendingMutation?.mutationId === mutationId) {
+						const accepted = acceptedMutation("send", admission);
 						// I1: Clear pending fields unconditionally (this mutation owns
 						// them), but clear error only if the error-owner revision is
 						// unchanged — revision equality ONLY, no || error === null
@@ -3113,13 +3150,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						if (entryErrorRev === errorOwnerRev) {
 							set({
 								pendingMutation: null,
-								lastAcceptedMutation: { kind: "send", receipt },
+								lastAcceptedMutation: accepted,
 								error: null,
 							});
 						} else {
 							set({
 								pendingMutation: null,
-								lastAcceptedMutation: { kind: "send", receipt },
+								lastAcceptedMutation: accepted,
 							});
 						}
 						// I1: mutation settled (success) — drain deferred trailing reread.
@@ -3186,7 +3223,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// I1: Capture error-owner revision AFTER installing pending+error-clear.
 				const entryErrorRev = errorOwnerRev;
 				try {
-					const receipt = await dispatchMutation(
+					const admission = await dispatchMutation(
 						service,
 						"queue",
 						opBinding,
@@ -3197,19 +3234,21 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					);
 					// C1: Recheck the exact operation binding after the await.
 					if (!isBindingCurrent(opBinding)) return;
+					recordAdmittedMutation(admission, mutationId, mutation);
 					if (get().pendingMutation?.mutationId === mutationId) {
+						const accepted = acceptedMutation("queue", admission);
 						// I1: clear error only if error-owner revision is unchanged —
 						// revision equality ONLY.
 						if (entryErrorRev === errorOwnerRev) {
 							set({
 								pendingMutation: null,
-								lastAcceptedMutation: { kind: "queue", receipt },
+								lastAcceptedMutation: accepted,
 								error: null,
 							});
 						} else {
 							set({
 								pendingMutation: null,
-								lastAcceptedMutation: { kind: "queue", receipt },
+								lastAcceptedMutation: accepted,
 							});
 						}
 						// I1: mutation settled (success) — drain deferred trailing reread.
@@ -3272,28 +3311,24 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// I1: Capture error-owner revision AFTER installing pending+error-clear.
 				const entryErrorRev = errorOwnerRev;
 				try {
-					const receipt = await dispatchMutation(service, "interrupt", opBinding, state.conversation, []);
+					const admission = await dispatchMutation(service, "interrupt", opBinding, state.conversation, []);
 					// C1: Recheck the exact operation binding after the await.
 					if (!isBindingCurrent(opBinding)) return;
+					recordAdmittedMutation(admission, mutationId, mutation);
 					if (get().pendingMutation?.mutationId === mutationId) {
+						const accepted = acceptedMutation("interrupt", admission);
 						// I1: clear error only if error-owner revision is unchanged —
 						// revision equality ONLY.
 						if (entryErrorRev === errorOwnerRev) {
 							set({
 								pendingMutation: null,
-								lastAcceptedMutation: {
-									kind: "interrupt",
-									receipt,
-								},
+								lastAcceptedMutation: accepted,
 								error: null,
 							});
 						} else {
 							set({
 								pendingMutation: null,
-								lastAcceptedMutation: {
-									kind: "interrupt",
-									receipt,
-								},
+								lastAcceptedMutation: accepted,
 							});
 						}
 						// I1: mutation settled (success) — drain deferred trailing reread.

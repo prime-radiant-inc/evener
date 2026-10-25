@@ -133,6 +133,61 @@ test("a target stays gated until a matching authoritative read opens it", async 
 	await runtime.stop();
 });
 
+test("submit returns the durable row's id as a local admission after an ordinary enqueue", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	await registerAndStart(runtime, client);
+
+	const admission = await runtime.submit(request("send"));
+
+	const [row] = (await runtime.read(nativeMutationTargetKey("hub-1", "ref-1"))).outbox;
+	expect(row).toMatchObject({ clientMutationId: "mutation-1" });
+	expect(admission).toEqual({ clientMutationId: "mutation-1" });
+	// The production path acknowledges at the enqueue boundary, before the
+	// daemon answers, so the local admission carries no wire receipt.
+	expect(admission).not.toHaveProperty("receipt");
+	await runtime.stop();
+});
+
+test("submit returns the interrupt row's id as a local admission after a Stop", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+	});
+	const client = new FakeClient("connecting");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+
+	await runtime.submit(request("send"));
+	const admission = await runtime.submit(request("interrupt"));
+
+	expect(await runtime.storage.getOutbox("mutation-2")).toMatchObject({
+		clientMutationId: "mutation-2",
+		method: "turn/interrupt",
+	});
+	expect(admission).toEqual({ clientMutationId: "mutation-2" });
+	await runtime.stop();
+});
+
+test("submit returns the resend row's id as a local admission after a recovery resend", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+	});
+	await runtime.start();
+	await runtime.submit(request("send"));
+	expect(await runtime.storage.transferToRecovery("mutation-1", "editing")).toBeDefined();
+
+	const admission = await runtime.submit({ ...request("send"), recoverySourceIds: ["mutation-1"] });
+
+	const rows = (await runtime.read(nativeMutationTargetKey("hub-1", "ref-1"))).outbox;
+	expect(rows.map((row) => row.clientMutationId)).toEqual(["mutation-2"]);
+	expect(admission).toEqual({ clientMutationId: "mutation-2" });
+	await runtime.stop();
+});
+
 test("read and storage subscriptions expose a scoped rejection without changing origin identity", async () => {
 	let nextId = 0;
 	const runtime = new NativeMutationRuntime(openDatabase(), {
@@ -1609,6 +1664,20 @@ test("a direct send is remembered as this phone's", async () => {
 
 	const sent = (client.calls[0]?.params as { clientMutationId: string }).clientMutationId;
 	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-1")).has(sent)).toBe(true);
+	await runtime.stop();
+});
+
+test("a direct fallback returns the request's clientMutationId as a local admission", async () => {
+	const { runtime, client } = await readyRuntimeWithClient(() => "mutation-1");
+	client.on("turn/start", (params) => appliedReceipt(params));
+	refuseWrites(database!);
+
+	const admission = await runtime.submit(request("send"));
+
+	expect(client.calls).toHaveLength(1);
+	expect((client.calls[0]?.params as { clientMutationId?: string }).clientMutationId).toBe("mutation-1");
+	expect(admission).toEqual({ clientMutationId: "mutation-1" });
+	expect(admission).not.toHaveProperty("receipt");
 	await runtime.stop();
 });
 

@@ -47,12 +47,14 @@ import type { ActivityIdentity } from "./activity";
 import { createActivityStore } from "./activity";
 import {
 	createConversationStore,
+	type ConversationMutationState,
 	type LiveActivitySink,
 	MAX_ITEM_BYTES,
 	olderPageKey,
 	TRUNCATION_MARKER,
 } from "./conversation";
 import type {
+	ConversationMutationAdmission,
 	ConversationMutationPendingPort,
 	ConversationMutationRequest,
 	ConversationMutationSubmitter,
@@ -1270,6 +1272,77 @@ describe("ConversationStore", () => {
 				});
 			});
 		}
+
+		for (const { kind, call } of mutationCases) {
+			it(`${kind}: records the admission's durable id on the pending record`, async () => {
+				const service = serviceFor(kind);
+				const pendingRecords: ConversationMutationState[] = [];
+				const store = createConversationStore({
+					mutationHubId: "hub-1",
+					mutationSubmitter: {
+						submit: async () => ({ clientMutationId: `durable-${kind}` }),
+					},
+				});
+				await store.getState().open(service, "ref-1");
+				const unsubscribe = store.subscribe((state) => {
+					if (state.pendingMutation !== null && state.pendingMutation !== undefined)
+						pendingRecords.push(state.pendingMutation);
+				});
+				await call(store, service, kind === "interrupt" ? [] : textInput("admitted"));
+				unsubscribe();
+
+				// The record carried the durable row's id while it was pending...
+				expect(pendingRecords).toContainEqual(
+					expect.objectContaining({
+						kind,
+						status: "pending",
+						admittedMutationId: `durable-${kind}`,
+					}),
+				);
+				// ...and settled as before, without inventing a wire receipt.
+				expect(store.getState().pendingMutation).toBeNull();
+				expect(store.getState().lastAcceptedMutation).toEqual({ kind });
+				expect(store.getState().lastAcceptedMutation).not.toHaveProperty("receipt");
+			});
+		}
+
+		it("an older admitted completion cannot clear a newer mutation", async () => {
+			const service = serviceFor("send");
+			const admissions: Array<(admission: ConversationMutationAdmission | undefined) => void> = [];
+			const store = createConversationStore({
+				mutationHubId: "hub-1",
+				mutationSubmitter: {
+					submit: () => new Promise<ConversationMutationAdmission | undefined>((resolve) => admissions.push(resolve)),
+				},
+			});
+			await store.getState().open(service, "ref-1");
+			store.getState().setDraft("first");
+			const first = store.getState().send(service, textInput("first"));
+			store.getState().setDraft("second");
+			const second = store.getState().send(service, textInput("second"));
+			const secondPending = store.getState().pendingMutation;
+			expect(secondPending).toMatchObject({ kind: "send", status: "pending" });
+			expect(secondPending?.admittedMutationId).toBeUndefined();
+
+			// The older submission is admitted first. Its record was replaced
+			// by the newer mutation, so it must neither write to that record
+			// nor settle it.
+			const firstReceipt = makeReceipt({ clientMutationId: "durable-1" });
+			admissions[0]!({ clientMutationId: "durable-1", receipt: firstReceipt });
+			await first;
+			expect(store.getState().pendingMutation).toBe(secondPending);
+			expect(store.getState().lastAcceptedMutation).toBeNull();
+
+			// The newer mutation settles only with its own admission.
+			const secondReceipt = makeReceipt({ clientMutationId: "durable-2" });
+			admissions[1]!({ clientMutationId: "durable-2", receipt: secondReceipt });
+			await second;
+			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().lastAcceptedMutation).toEqual({
+				kind: "send",
+				receipt: secondReceipt,
+			});
+		});
 
 		it.each(["send", "queue"] as const)(
 			"forwards %s composition context without changing encoded input",

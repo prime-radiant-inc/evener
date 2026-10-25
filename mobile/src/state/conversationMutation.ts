@@ -53,8 +53,17 @@ export class MutationNotSentError extends Error {
 	}
 }
 
+/** The local result of a durable admission: the clientMutationId of the row
+ * the outbox committed at the enqueue boundary. The production runtime
+ * settles before the daemon answers, so the receipt is absent there and
+ * present only on the direct service path, which still returns one. */
+export interface ConversationMutationAdmission {
+	readonly clientMutationId: string;
+	readonly receipt?: MutationReceipt;
+}
+
 export interface ConversationMutationSubmitter {
-	submit(request: ConversationMutationRequest): Promise<MutationReceipt | undefined>;
+	submit(request: ConversationMutationRequest): Promise<ConversationMutationAdmission | undefined>;
 }
 
 // The durable pending-row seam a host wires for one conversation: the scoped
