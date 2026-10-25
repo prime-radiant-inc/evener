@@ -3,11 +3,13 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -16,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 )
@@ -109,5 +112,78 @@ func TestComicChatBrowser(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("durable seeded source inputs = %d, want 1", count)
 	}
+	comicGuardCheckProviderFailure(t, fixture.stateDir[0], evidence)
 	t.Logf("Comic Chat real reader evidence: %s", evidence)
+}
+
+func comicGuardCheckProviderFailure(t *testing.T, stateDir, evidence string) {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.transcript.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var turns []schema.Turn
+	var failedID string
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		for {
+			var record struct {
+				Turn schema.Turn `json:"turn"`
+			}
+			if err := decoder.Decode(&record); err == io.EOF {
+				break
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			turns = append(turns, record.Turn)
+			if record.Turn.Kind == schema.TurnUserInput {
+				for _, part := range record.Turn.Message.Content {
+					if part.Text == "COMIC_PROVIDER_FAILURE" {
+						if failedID != "" {
+							t.Fatal("provider failure input recorded more than once")
+						}
+						failedID = record.Turn.TurnID
+					}
+				}
+			}
+		}
+	}
+	if failedID == "" {
+		t.Fatal("missing durable provider failure input")
+	}
+	failures, completions, assistants := 0, 0, 0
+	for _, turn := range turns {
+		if turn.TurnID != failedID {
+			continue
+		}
+		switch turn.Kind {
+		case schema.TurnAssistant, schema.TurnToolResults, schema.TurnCommunicate:
+			assistants++
+		case schema.TurnFailure:
+			failures++
+			if turn.Error == nil || turn.Error.Cause == nil || turn.Error.Cause.Kind != "provider" || turn.Error.Cause.Provider != "openai" {
+				t.Fatalf("durable failure has no typed provider cause: %+v", turn.Error)
+			}
+		case schema.TurnCompletion:
+			completions++
+			if turn.Completion == nil || turn.Completion.Status != schema.TurnFailed {
+				t.Fatalf("durable completion = %+v, want failed", turn.Completion)
+			}
+		}
+	}
+	if failures != 1 || completions != 1 || assistants != 0 {
+		t.Fatalf("durable failure records=%d completions=%d assistant-content records=%d, want 1/1/0", failures, completions, assistants)
+	}
+	data, err := json.MarshalIndent(map[string]any{"turnId": failedID, "status": schema.TurnFailed, "causeKind": "provider", "provider": "openai", "failureRecords": failures, "completionRecords": completions, "assistantContentRecords": assistants}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(evidence, "failed-turn-durable.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("Durable %s: typed provider failure, one failed completion, no assistant content (not itemless)", failedID)
 }

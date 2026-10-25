@@ -555,6 +555,11 @@ func (a *skillBrowserAdapter) Stream(ctx context.Context, req llm.Request) (llm.
 		return nil, llm.ErrStreamUnsupported
 	}
 	a.record(req)
+	// Fail at the external provider boundary, before any assistant content. The
+	// real runtime owns the resulting failed turn and its canonical turn error.
+	if a.backgroundRole() == "precontent-error" {
+		return nil, llm.NewAuthenticationError(a.name, "scripted comic provider refusal", nil)
+	}
 	streamCtx, cancel := context.WithCancel(ctx)
 	st := llm.NewChanStream(cancel)
 	go a.scriptBackgroundStream(streamCtx, st, req)

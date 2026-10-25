@@ -299,6 +299,9 @@ export function ComicTranscript({
       });
     };
     const scroll = () => {
+      // Reflow can clamp the DOM offset before the new layout commits. It does
+      // not end tail-following, only a reader gesture may clear this command.
+      if (anchor.current.mode === "end" && commanded.current !== undefined) return;
       if (commanded.current !== undefined && Math.abs(port.scrollTop - commanded.current) <= 1) return;
       if (!list.current?.isLayoutCurrent()) return;
       if (restoring.current && !moving.current) return;

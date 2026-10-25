@@ -67,12 +67,12 @@ async function until(label, read, accept = Boolean) {
 
 async function journey(page, fixture) {
   const command = (command, phase = "") => appendFileSync(fixture.controlPath, `${JSON.stringify({ command, phase })}\n`);
-  const complete = async (text) => {
+  const complete = async (text, failed = false) => {
     command("background-start-turn", text);
     return until("real turn completion", () => {
       const records = readFileSync(fixture.requestLog, "utf8").trim().split("\n").flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
       const record = records.find(record => record.event === "turn-complete" && record.prompt === text);
-      if (record && !record.ok) throw new Error(`real producer failed: ${JSON.stringify(record)}`);
+      if (record && (failed ? record.ok || record.status !== "failed" : !record.ok)) throw new Error(`unexpected real producer outcome: ${JSON.stringify(record)}`);
       return record;
     });
   };
@@ -80,6 +80,10 @@ async function journey(page, fixture) {
   command("background-role", "history");
   for (const text of fixture.historyTexts) await complete(text);
   await complete(fixture.expectedSourceText);
+  command("background-role", "precontent-error");
+  const failedTurn = await complete("COMIC_PROVIDER_FAILURE", true);
+  command("background-role", "history");
+  writeFileSync(`${fixture.evidenceDir}/failed-turn.json`, JSON.stringify(failedTurn, null, 2));
 
   const metrics = [];
   const requests = new Map();
@@ -89,6 +93,7 @@ async function journey(page, fixture) {
   let socketsClosed = 0;
   let subscriptions = 0;
   const incoming = [];
+  let canonicalFailure;
   const paused = [];
   let holdFonts = fixture.requirePrivateFonts;
   await page.send("Network.enable");
@@ -163,6 +168,14 @@ async function journey(page, fixture) {
     if (value.path !== new URL(route).pathname || value.route !== "session" || value.ref !== fixture.refs.live) throw new Error(`${name}: wrong authenticated conversation route ${JSON.stringify(value)}`);
     if (name === "away-before-font" && value.parts.filter(part => part.entryId === point.entryId).map(part => part.text).join("") !== fixture.expectedSourceText) throw new Error("complete independent literal source was not rendered exactly once");
     if (point && (value.saved?.entryId !== point.entryId || value.saved?.offset !== point.offset)) throw new Error(`${name}: anchor identity changed ${JSON.stringify(value.saved)}`);
+    if (end && name !== "initial-end" && value.saved?.mode !== "end") throw new Error(`${name}: lost explicit end-following ${JSON.stringify(value.saved)}`);
+    if (canonicalFailure && point?.text === fixture.expectedSourceText) {
+      const failureItem = canonicalFailure.items.find(item => item.eventKind === "error");
+      // Narrow widths split the long source into more rows, legitimately moving
+      // the later error outside the virtual window. At desktop/plain both fit.
+      const sameWindow = value.width === 1360 || value.mode === "plain";
+      if ((sameWindow && !value.parts.some(part => part.entryId === `${failureItem.id}:turn-error`)) || value.errorGroups.length) throw new Error(`${name}: canonical item-backed error lost or misgrouped ${JSON.stringify(value)}`);
+    }
     if (value.mode === "comic" && name.startsWith("away-width") && !value.panels.some(panel => Math.abs(panel.panel.width - value.probe.panel.width) < 1 && Math.abs(panel.text.width - value.probe.text.width) < 1 && panel.text.font === value.probe.text.font)) throw new Error(`${name}: probe does not match a rendered panel ${JSON.stringify(value)}`);
     for (const part of value.parts) {
       if (point?.entryId === part.entryId && point.text && part.text !== point.text.slice(part.start, part.end)) throw new Error(`${name}: literal source range mismatch ${JSON.stringify(part)}`);
@@ -190,9 +203,22 @@ async function journey(page, fixture) {
     port.scrollTop += range.getBoundingClientRect().top - port.getBoundingClientRect().top - 24;
     return source.dataset.comicEntry;
   })()`);
+  // The real reader captures a gesture on animation frame. Finish that gesture
+  // before establishing the fixed point or triggering an unrelated font reflow.
+  await evaluateHere(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
   let point = await until("captured source point", () => read(), value => value?.saved?.mode === "away" && value.saved.entryId === target && value.saved.offset > 0);
   point = { ...point.saved, text: fixture.expectedSourceText };
   await record("away-before-font", point);
+  const canonicalTurns = incoming.flatMap(frame => {
+    const payload = JSON.parse(frame);
+    return payload.result?.thread?.turns ?? payload.result?.turns ?? [];
+  }).filter(turn => turn.id === failedTurn.turnId);
+  writeFileSync(`${fixture.evidenceDir}/failed-turn-canonical.json`, JSON.stringify(canonicalTurns, null, 2));
+  canonicalFailure = canonicalTurns.at(-1);
+  if (!canonicalFailure || canonicalFailure.status !== "failed" || canonicalFailure.error?.cause?.kind !== "provider" || canonicalFailure.error.cause.provider !== "openai" || canonicalFailure.items.length !== 2 || canonicalFailure.items[0].type !== "userMessage" || canonicalFailure.items[1].type !== "systemMessage" || canonicalFailure.items[1].eventKind !== "error" || canonicalFailure.items[1].status !== "failed") throw new Error(`unexpected canonical provider failure: ${JSON.stringify(canonicalTurns)}`);
+  // A pre-content failure is NOT itemless: the runtime records both user input
+  // and a positioned TURN_FAILURE. Keep that distinction, never fake an empty turn.
+  await record("provider-failure-away", point);
   if (fixture.requirePrivateFonts) {
     await until("both personal font requests", async () => paused.length, count => count === 2);
     holdFonts = false;
@@ -330,6 +356,7 @@ function readGeometry(point, ref) {
     width: innerWidth, portWidth: port.clientWidth, mode: document.querySelector('[data-comic-mode]')?.dataset.comicMode, font: document.querySelector('[data-comic-font]')?.dataset.comicFont,
     saved: JSON.parse(sessionStorage.getItem('evener:comic:position:' + ref) ?? 'null')?.position,
     point: selected, parts, mounted: sources.length, scrollTop: port.scrollTop, scrollHeight: port.scrollHeight, clientHeight: port.clientHeight, endGap: port.scrollHeight - port.clientHeight - port.scrollTop,
+    errorGroups: [...port.querySelectorAll('section[aria-label="Turn errors"]')].map(group => [...group.querySelectorAll('[data-comic-entry]')].map(node => node.dataset.comicEntry)),
     overflow: Math.max(document.documentElement.scrollWidth - innerWidth, port.scrollWidth - port.clientWidth),
     pageOverflow: document.documentElement.scrollHeight - innerHeight,
     clipped: [...port.querySelectorAll('[data-comic-text], [data-comic-identity]')].filter(node => node.scrollWidth > node.clientWidth + 1 || node.scrollHeight > node.clientHeight + 1).map(node => node.textContent),
