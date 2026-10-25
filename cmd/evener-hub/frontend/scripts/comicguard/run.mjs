@@ -199,8 +199,9 @@ async function journey(page, fixture) {
     const text = source.querySelector('[data-comic-text]').firstChild;
     const offset = Math.min(650, text.length - 1);
     const range = document.createRange(); range.setStart(text, offset); range.setEnd(text, offset + 1);
-    port.dispatchEvent(new WheelEvent('wheel', { bubbles: true }));
-    port.scrollTop += range.getBoundingClientRect().top - port.getBoundingClientRect().top - 24;
+    const deltaY = range.getBoundingClientRect().top - port.getBoundingClientRect().top - 24;
+    port.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY }));
+    port.scrollTop += deltaY;
     return source.dataset.comicEntry;
   })()`);
   // The real reader captures a gesture on animation frame. Finish that gesture
@@ -226,6 +227,42 @@ async function journey(page, fixture) {
     await until("personal fonts loaded", () => read(), value => value?.font === "ready");
     await record("away-after-late-font", point);
   } else await until("explicit failed font state", () => read(), value => value?.font === "unavailable");
+
+  // A real non-text click used to leave the reader permanently awaiting scroll.
+  // Hit-test rendered art, then use CDP input, not element.click or DOM events.
+  const clickTarget = await evaluateHere(`(() => {
+    const port = document.querySelector('[data-comic-scroll]').firstElementChild;
+    const bounds = port.getBoundingClientRect();
+    for (const image of port.querySelectorAll('article img')) {
+      const rect = image.getBoundingClientRect();
+      const left = Math.max(rect.left, bounds.left) + 4;
+      const right = Math.min(rect.right, bounds.right) - 4;
+      const top = Math.max(rect.top, bounds.top) + 4;
+      const bottom = Math.min(rect.bottom, bounds.bottom) - 4;
+      for (let y = top; y < bottom; y += 16) for (let x = left; x < right; x += 16) {
+        const hit = document.elementFromPoint(x, y);
+        if (!hit?.closest('article') || hit.closest('[data-comic-text], [data-comic-identity], button, a')) continue;
+        window.__comicClickEvents = [];
+        window.__comicClickListener = event => window.__comicClickEvents.push({type:event.type, trusted:event.isTrusted, pointerType:event.pointerType, scrollTop:port.scrollTop});
+        port.addEventListener('pointerdown', window.__comicClickListener);
+        port.addEventListener('pointerup', window.__comicClickListener);
+        return {x, y, scrollTop:port.scrollTop};
+      }
+    }
+    throw Error('no visible non-text panel click target');
+  })()`);
+  await page.send("Input.dispatchMouseEvent", { type: "mousePressed", x: clickTarget.x, y: clickTarget.y, button: "left", buttons: 1, clickCount: 1 });
+  await page.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: clickTarget.x, y: clickTarget.y, button: "left", buttons: 0, clickCount: 1 });
+  await evaluateHere(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+  const clicked = await record("native-click-without-scroll", point);
+  const clickEvents = await evaluateHere(`(() => {
+    const port = document.querySelector('[data-comic-scroll]').firstElementChild;
+    port.removeEventListener('pointerdown', window.__comicClickListener);
+    port.removeEventListener('pointerup', window.__comicClickListener);
+    return window.__comicClickEvents;
+  })()`);
+  if (clicked.scrollTop !== clickTarget.scrollTop || clickEvents.map(event => event.type).join(',') !== 'pointerdown,pointerup' || !clickEvents.every(event => event.trusted && event.pointerType === 'mouse' && event.scrollTop === clickTarget.scrollTop)) throw new Error(`native click did not complete without scrolling: ${JSON.stringify({clickTarget, clickEvents, after:clicked.scrollTop})}`);
+  writeFileSync(`${fixture.evidenceDir}/native-click.json`, JSON.stringify({ clickTarget, clickEvents, after: clicked.scrollTop }, null, 2));
 
   for (const width of [1360, 760, 600, 390, 320, 1360]) {
     await page.send("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -283,10 +320,10 @@ async function journey(page, fixture) {
     const value = await evaluateHere(`(() => {
       const source = [...document.querySelectorAll('[data-comic-entry]')].find(node => node.querySelector('[data-comic-text]')?.textContent.startsWith('COMIC_HISTORY_27'));
       const port = document.querySelector('[data-comic-scroll]').firstElementChild;
-      port.dispatchEvent(new WheelEvent('wheel', { bubbles: true }));
-      if (source) { port.scrollTop += source.querySelector('[data-comic-text]').getBoundingClientRect().top - port.getBoundingClientRect().top - 24; return source.dataset.comicEntry; }
-      port.scrollTop -= port.clientHeight * 3;
-      return null;
+      const deltaY = source ? source.querySelector('[data-comic-text]').getBoundingClientRect().top - port.getBoundingClientRect().top - 24 : -port.clientHeight * 3;
+      port.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY }));
+      port.scrollTop += deltaY;
+      return source?.dataset.comicEntry ?? null;
     })()`);
     if (value) olderPoint = value;
     return value;

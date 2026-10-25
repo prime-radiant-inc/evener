@@ -392,6 +392,257 @@ test.each(["invalid capture", "delayed backward key"] as const)(
   },
 );
 
+async function mountGestureReader(atTop = false) {
+  // Deterministic consumer-protocol geometry, not native browser layout.
+  let port: HTMLDivElement;
+  const geometry = { sourceY: atTop ? 24 : 120, valid: true, height: 2000 };
+  let publish: (() => void) | undefined;
+  const place = vi.fn((offset: number) => {
+    port.scrollTop = offset;
+  });
+  vi.spyOn(widgets, "VirtualList").mockImplementation(function ControlledList(props) {
+    const element = useRef<HTMLDivElement>(null);
+    useImperativeHandle(props.ref, () => ({
+      getScrollElement: () => element.current,
+      isLayoutCurrent: () => geometry.valid,
+      getVisibleRange: () => ({ startIndex: 0, endIndex: props.count - 1 }),
+      scrollToIndex: vi.fn(),
+    }));
+    publish = () => {
+      port = element.current!;
+      props.onLayout?.({
+        virtualizer: { scrollElement: port } as widgets.CommittedVirtualListLayout["virtualizer"],
+        isCurrent: () => geometry.valid,
+        scrollToOffset: place,
+        cancelPendingScroll: vi.fn(),
+        syncReaderMovement: vi.fn(),
+      });
+    };
+    return (
+      <div ref={element}>
+        {Array.from({ length: props.count }, (_, index) => (
+          <div key={props.getItemKey?.(index) ?? index}>{props.renderRow(index)}</div>
+        ))}
+      </div>
+    );
+  });
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(500);
+  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(() => geometry.height);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    return new DOMRect(0, this.dataset.comicEntry ? geometry.sourceY - port.scrollTop : 0, 760, 20);
+  });
+  vi.spyOn(document, "createRange").mockImplementation(() => {
+    let source: HTMLElement;
+    return {
+      setStart(node: Node) {
+        source = node.parentElement!.closest<HTMLElement>("[data-comic-entry]")!;
+      },
+      setEnd() {},
+      getBoundingClientRect: () => source.getBoundingClientRect(),
+    } as unknown as Range;
+  });
+  const position = {
+    mode: "away" as const,
+    sessionRef: "local:test",
+    path: [],
+    entryId: "m",
+    offset: 7,
+    viewportOffset: 24,
+  };
+  writeComicPosition("local:test", position);
+  const older = history();
+  const mounted = render(<Reader older={older} />);
+  port = mounted.container.querySelector("[data-comic-scroll]")!.firstElementChild as HTMLDivElement;
+  await waitFor(() => expect(port.querySelector('[data-comic-entry="m"]')).not.toBeNull());
+  act(() => publish!());
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameID = 0;
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+    frames.set(++frameID, callback);
+    return frameID;
+  });
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+  const frame = () =>
+    act(() => {
+      const pending = [...frames.values()];
+      frames.clear();
+      for (const callback of pending) callback(0);
+    });
+  return { port, geometry, publish: () => act(() => publish!()), place, frame, older, mounted, position };
+}
+
+test("settles a completed non-scrolling pointer gesture before reflow", async () => {
+  const { port, geometry, publish, frame, older, mounted, position } = await mountGestureReader();
+  expect(geometry.sourceY - port.scrollTop).toBe(position.viewportOffset);
+  expect(readComicPosition("local:test")).toEqual(position);
+  fireEvent.pointerDown(port);
+  fireEvent.pointerUp(port);
+  frame();
+  expect(older.cancelOlder).toHaveBeenCalledTimes(1);
+  expect(port.scrollTop).toBe(96);
+  geometry.valid = true;
+  geometry.sourceY = 220;
+  publish();
+  expect(geometry.sourceY - port.scrollTop).toBe(position.viewportOffset);
+  mounted.unmount();
+});
+
+test("keeps touch pan cancellation pending until scrolling after an invalid-to-valid layout", async () => {
+  const { port, geometry, publish, place, frame, older, mounted, position } = await mountGestureReader();
+  place.mockClear();
+  geometry.valid = false;
+  fireEvent.pointerDown(port, { pointerType: "touch", pointerId: 7 });
+  fireEvent.touchStart(port);
+  fireEvent.pointerCancel(port, { pointerType: "touch", pointerId: 7 });
+  frame(); // A browser may start panning after the first attempted capture.
+  expect(older.cancelOlder).toHaveBeenCalled();
+  expect(place).not.toHaveBeenCalled();
+  geometry.sourceY = 220;
+  geometry.valid = true;
+  publish(); // No scroll yet: neither place the cancelled anchor nor capture this reflowed point.
+  expect(place).not.toHaveBeenCalled();
+  expect(readComicPosition("local:test")).toEqual(position);
+  port.scrollTop = 76;
+  fireEvent.scroll(port);
+  publish();
+  expect(readComicPosition("local:test")).toMatchObject({ mode: "away", entryId: "m", viewportOffset: 144 });
+  geometry.sourceY = 320;
+  publish();
+  expect(port.scrollTop).toBe(176);
+  mounted.unmount();
+});
+
+test.each(["wheel up", "touch no-op", "backward key"] as const)(
+  "settles a completed %s at the top boundary before reflow",
+  async (input) => {
+    const { port, geometry, publish, frame, mounted, position } = await mountGestureReader(true);
+    expect(port.scrollTop).toBe(0);
+    expect(geometry.sourceY - port.scrollTop).toBe(position.viewportOffset);
+    expect(readComicPosition("local:test")).toEqual(position);
+    if (input === "wheel up") fireEvent.wheel(port, { deltaY: -120 });
+    if (input === "touch no-op") {
+      fireEvent.pointerDown(port, { pointerType: "touch", pointerId: 7 });
+      fireEvent.touchStart(port);
+      fireEvent.touchEnd(port);
+      fireEvent.pointerUp(port, { pointerType: "touch", pointerId: 7 });
+    }
+    if (input === "backward key") {
+      fireEvent.keyDown(port, { key: "ArrowUp" });
+      fireEvent.keyUp(port, { key: "ArrowUp" });
+    }
+    frame();
+    geometry.sourceY = 124;
+    publish();
+    expect(geometry.sourceY - port.scrollTop).toBe(position.viewportOffset);
+    mounted.unmount();
+  },
+);
+
+test("captures a completed pointer on the next valid layout without placing its cancelled source", async () => {
+  const { port, geometry, publish, place, frame, mounted } = await mountGestureReader();
+  fireEvent.pointerDown(port, { pointerId: 9, pointerType: "mouse" });
+  geometry.valid = false;
+  fireEvent.pointerUp(document.body, { pointerId: 9, pointerType: "mouse" });
+  frame();
+  place.mockClear();
+  geometry.sourceY = 220;
+  publish();
+  expect(place).not.toHaveBeenCalled();
+  geometry.valid = true;
+  publish();
+  expect(place).not.toHaveBeenCalled();
+  expect(readComicPosition("local:test")).toMatchObject({ mode: "away", entryId: "m", viewportOffset: 124 });
+  geometry.sourceY = 320;
+  publish();
+  expect(port.scrollTop).toBe(196);
+  mounted.unmount();
+});
+
+test.each(["wheel", "key"])("ignores stale pointer release after newer %s intent", async (input) => {
+  const { port, geometry, publish, place, frame, mounted, position } = await mountGestureReader();
+  fireEvent.pointerDown(port, { pointerId: 9, pointerType: "mouse" });
+  if (input === "wheel") fireEvent.wheel(port, { deltaY: -120 });
+  else fireEvent.keyDown(port, { key: "PageUp" });
+  fireEvent.pointerUp(document.body, { pointerId: 9, pointerType: "mouse" });
+  frame();
+  place.mockClear();
+  geometry.sourceY = 220;
+  publish();
+  expect(place).not.toHaveBeenCalled();
+  expect(readComicPosition("local:test")).toEqual(position);
+  port.scrollTop = 76;
+  fireEvent.scroll(port);
+  geometry.sourceY = 320;
+  publish();
+  expect(port.scrollTop).toBe(176);
+  mounted.unmount();
+});
+
+test.each(["wheel", "ArrowDown", "PageDown", "End", " "])(
+  "settles bottom-boundary %s intent before content grows",
+  async (input) => {
+    const { port, geometry, publish, frame, mounted } = await mountGestureReader();
+    fireEvent.click(screen.getByRole("button", { name: /latest/i }));
+    expect(port.scrollTop).toBe(1500);
+    if (input === "wheel") fireEvent.wheel(port, { deltaY: 120 });
+    else fireEvent.keyDown(port, { key: input });
+    frame();
+    geometry.height = 2100;
+    publish();
+    expect(port.scrollTop).toBe(1600);
+    expect(readComicPosition("local:test")).toMatchObject({ mode: "end" });
+    mounted.unmount();
+  },
+);
+
+test.each(["PageUp", "Home", " "])("settles top-boundary %s intent before reflow", async (key) => {
+  const { port, geometry, publish, mounted } = await mountGestureReader(true);
+  fireEvent.keyDown(port, { key, shiftKey: key === " " });
+  geometry.sourceY = 124;
+  publish();
+  expect(port.scrollTop).toBe(100);
+  mounted.unmount();
+});
+
+test("ignores another pointer's release and a cancelled touch's finger lift", async () => {
+  const { port, geometry, publish, place, frame, mounted, position } = await mountGestureReader();
+  fireEvent.pointerDown(port, { pointerId: 7, pointerType: "touch" });
+  fireEvent.touchStart(port);
+  fireEvent.pointerUp(document.body, { pointerId: 8, pointerType: "touch" });
+  fireEvent.pointerCancel(port, { pointerId: 7, pointerType: "touch" });
+  fireEvent.touchEnd(port);
+  frame();
+  place.mockClear();
+  geometry.sourceY = 220;
+  publish();
+  expect(place).not.toHaveBeenCalled();
+  expect(readComicPosition("local:test")).toEqual(position);
+  port.scrollTop = 76;
+  fireEvent.scroll(port);
+  geometry.sourceY = 320;
+  publish();
+  expect(port.scrollTop).toBe(176);
+  mounted.unmount();
+});
+
+test("fences pointer completion after latest and after reader retirement", async () => {
+  const { port, geometry, publish, frame, mounted } = await mountGestureReader();
+  fireEvent.pointerDown(port, { pointerId: 7, pointerType: "mouse" });
+  fireEvent.click(screen.getByRole("button", { name: /latest/i }));
+  geometry.height = 2100;
+  fireEvent.pointerUp(document.body, { pointerId: 7, pointerType: "mouse" });
+  frame();
+  publish();
+  expect(port.scrollTop).toBe(1600);
+  expect(readComicPosition("local:test")).toMatchObject({ mode: "end" });
+  fireEvent.pointerDown(port, { pointerId: 8, pointerType: "mouse" });
+  mounted.unmount();
+  writeComicPosition("local:test", { mode: "end", sessionRef: "local:test", path: [] });
+  fireEvent.pointerUp(document.body, { pointerId: 8, pointerType: "mouse" });
+  frame();
+  expect(readComicPosition("local:test")).toEqual({ mode: "end", sessionRef: "local:test", path: [] });
+});
+
 test("settles an unavailable saved source when history is exhausted", async () => {
   writeComicPosition("local:test", {
     mode: "away",

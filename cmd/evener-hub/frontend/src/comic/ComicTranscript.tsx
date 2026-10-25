@@ -301,7 +301,9 @@ export function ComicTranscript({
     const port = list.current?.getScrollElement();
     if (!port) return;
     let frame = 0;
+    let pointer: { id: number; type: string; revision: number; cancelled: boolean } | undefined;
     const cancel = (event?: Event) => {
+      pointer = undefined;
       revision.current += 1;
       const requestedRevision = revision.current;
       restoring.current = false;
@@ -316,6 +318,52 @@ export function ComicTranscript({
         if (revision.current !== requestedRevision || latest.current.reader !== reader) return;
         if (list.current?.isLayoutCurrent()) captureMovement(port);
       });
+    };
+    const complete = () => {
+      // Completion permits capture without movement. If geometry is invalid,
+      // keep moving set until a valid commit captures, never place the old anchor.
+      movementStart.current = undefined;
+      if (list.current?.isLayoutCurrent()) captureMovement(port);
+    };
+    const blocked = (direction: number) => {
+      if (!list.current?.isLayoutCurrent()) return;
+      if (
+        direction === 0 ||
+        (direction < 0 && port.scrollTop <= 0) ||
+        (direction > 0 && port.scrollTop >= port.scrollHeight - port.clientHeight)
+      )
+        complete();
+    };
+    const wheel = (event: WheelEvent) => {
+      cancel(event);
+      blocked(event.deltaY);
+    };
+    const pointerDown = (event: PointerEvent) => {
+      cancel(event);
+      pointer = { id: event.pointerId, type: event.pointerType, revision: revision.current, cancelled: false };
+    };
+    const touchStart = (event: TouchEvent) => {
+      // A touch pointerdown and its following touchstart are one intent.
+      if (pointer?.type === "touch" && pointer.revision === revision.current) return;
+      cancel(event);
+    };
+    const pointerEnd = (event: PointerEvent) => {
+      if (
+        !pointer ||
+        pointer.id !== event.pointerId ||
+        pointer.revision !== revision.current ||
+        latest.current.reader !== reader ||
+        !reader.reader.alive
+      )
+        return;
+      if (event.type === "pointercancel") {
+        // Native touch panning takes over here, potentially before any scroll.
+        // Finger lift is not evidence that the ensuing fling has finished.
+        pointer.cancelled = true;
+        return;
+      }
+      if (!pointer.cancelled && moving.current) complete();
+      pointer = undefined;
     };
     const scroll = () => {
       // Reflow can clamp the DOM offset before the new layout commits. It does
@@ -332,24 +380,28 @@ export function ComicTranscript({
     const key = (event: KeyboardEvent) => {
       if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
         cancel(event);
-        if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) {
-          list.current?.noteBackwardMovement?.();
-        }
+        const backward = ["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey);
+        if (backward) list.current?.noteBackwardMovement?.();
+        blocked(backward ? -1 : 1);
       }
     };
-    port.addEventListener("wheel", cancel, { passive: true });
-    port.addEventListener("touchstart", cancel, { passive: true });
-    port.addEventListener("pointerdown", cancel);
+    port.addEventListener("wheel", wheel, { passive: true });
+    port.addEventListener("touchstart", touchStart, { passive: true });
+    port.addEventListener("pointerdown", pointerDown);
     port.addEventListener("keydown", key);
     port.addEventListener("scroll", scroll);
+    document.addEventListener("pointerup", pointerEnd);
+    document.addEventListener("pointercancel", pointerEnd);
     document.addEventListener("selectionchange", selection);
     return () => {
       cancelAnimationFrame(frame);
-      port.removeEventListener("wheel", cancel);
-      port.removeEventListener("touchstart", cancel);
-      port.removeEventListener("pointerdown", cancel);
+      port.removeEventListener("wheel", wheel);
+      port.removeEventListener("touchstart", touchStart);
+      port.removeEventListener("pointerdown", pointerDown);
       port.removeEventListener("keydown", key);
       port.removeEventListener("scroll", scroll);
+      document.removeEventListener("pointerup", pointerEnd);
+      document.removeEventListener("pointercancel", pointerEnd);
       document.removeEventListener("selectionchange", selection);
     };
   }, [captureMovement, reader]);
