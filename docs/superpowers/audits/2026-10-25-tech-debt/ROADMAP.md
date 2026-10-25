@@ -49,6 +49,33 @@ Work in different lanes does not conflict, so several worktrees can run at once.
 | docs | `docs/**`, `AGENTS.md` | W0-01, W0-14, W0-15, W1-57..W1-59 |
 | compat-gated | any; Q1 and Q15 are answered, so classify by version direction first (W1-59) | W1-60..W1-65 |
 
+## Wave 0 status (2026-10-25)
+
+All 27 entries merged, one PR each, plus fast-follows #5052 (W0-14) and #5059 (W0-15). Roughly -16,000 lines net, plus 69 MB of PNGs.
+
+| Entry | PR | Entry | PR | Entry | PR |
+|---|---|---|---|---|---|
+| W0-01 | #5049 | W0-10 | #5042 | W0-19 | #5054 |
+| W0-02 | #5039 | W0-11 | #5041 | W0-20 | #5058 |
+| W0-03 | #5057 | W0-12 | #5064 | W0-21 | #5034 |
+| W0-04 | #5063 | W0-13 | #5047 | W0-22 | #5036 |
+| W0-05 | #5050 | W0-14 | #5035 | W0-23 | #5060 |
+| W0-06 | #5040 | W0-15 | #5055 | W0-24 | #5061 |
+| W0-07 | #5038 | W0-16 | #5062 | W0-25 | #5044 |
+| W0-08 | #5043 | W0-17 | #5037 | W0-26 | #5048 |
+| W0-09 | #5046 | W0-18 | #5051 | W0-27 | #5053 |
+
+Where the PRs departed from the entries:
+
+- Test-only helpers were moved into `_test.go` files or test packages instead of deleted when many tests call them (W0-02, W0-08, W0-10, W0-12). The production surface is gone; the helpers still exist in tests.
+- Left for later, routed to Wave 1 entries:
+  - agent root: the remaining `deadcode` entries reachable only through dead chains (eval, session queue and notes, subagent spawn paths, `memory_page`); `CloseResumability`, `inputPersistFailureBatch` and the reconstruction-wait barrier; `jobKindAgent` and the `_ = deps` in `registerJobToolsWithRegistrar`; the `nameSessionFromTextFunc` fold; the rest of the agent-jobs-7 list (`setParentJobID`, `feedJobOutput` and others); the `jobToolRegistrar` half of agent-session-tools-3. Goes to W1-21..W1-23.
+  - agent sub-packages: `tool.ApplyPatch` test sites, `Registry.Unregister`/`Restrict`, the `truncate*` wrappers, `compileSchemaWith`, plugin manifest-probing dedup (agent-subpackages-9 steps 1, 2, 4). W1-08 takes the truncation wrappers; the rest goes to W1-07.
+  - hub: `SetFs` on the SQL stores (needs another fault seam for `project_delete_test.go`), `Store.RemovedHosts()`, `preDispatchRefusalError` (hub-app-rest-5, needs Jesse), `remoteFetchGeneration` and the nil-cache fallback in `remoteThreadFetch`, the test-only read wrappers, the optional-interface tiers (hub-root-rest-6), a duplicate-registration panic in `Router.Handle`, the `deploySelectedWith*` wrapper ladder, `cmd/evener-hub/transcript_limits.go`'s own max-line copy. Goes to W1-29..W1-35 and W1-06.
+  - appwire: `appserver.Subscribe`, `Connection.Subscribe` and `Server.SetBeforeSubscriptionGate` (about 20 tests to re-seed through the real subscribe path), `SetStatus`. Goes to W1-20.
+  - docs: a docs path-resolution gate (x-docs-4), not built.
+- Process gaps, fixed in how Wave 1 runs: several admin merges landed while the branch was behind main (strict up-to-date is bypassed by `--admin`); W0-09 and W0-24 wrote the test after the change; workflow subagents have no subagent tool, so `/simplify-code`'s reviewer fan-out ran as a single self-review.
+
 ## Wave 0: guardrails, defects, and pure deletions of verified-dead code
 
 Cheap, safe, mostly independent. Defects are small and red-test-first. Deletions follow the rule in SYNTHESIS T1: a production symbol with no production caller goes, along with the tests that exist only for it.
@@ -964,13 +991,19 @@ Their gates (Q1, Q8, Q9, Q15) are answered in [DECISIONS.md](DECISIONS.md). Each
 - Risk: medium (path containment, security-adjacent). Gate: answered (DECISIONS.md, Q14). Deps: W0-07.
 
 ### W1-69 Fix the flaky tests seen on main (root cause first)
-- Findings: not from the audit; three failures observed on main and on a docs-only PR.
-- Files: Go `TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner` in the `agent` package (failed on main at `aedb22acd8`, passed on the next commit); web vitest "a pending approval suppresses the control and returns when it resolves" in `cmd/evener-hub/frontend/src/panes/session/Session.test.tsx` (failed on main at `e66d879364`); browser guard `TestBackgroundTranscriptsEntrySliceBrowser` timing out while waiting for a rail row (seen on docs-only PR #5033).
+- Findings: not from the audit; observed on main CI during Wave 0.
+- Files: 20 of the last 60 CI runs on main failed, all on tests that also pass on rerun (tally of 2026-10-25, from `c9ebba8a8f` to `e535fdcd2b`). By test:
+  - browser guard `TestBackgroundTranscriptsEntrySliceBrowser` (`web-backgroundtranscriptguard`), 6 failures, times out waiting for a rail row "present and uncovered";
+  - browser guard `TestAgentCascadeBrowser` (`web-cascadeguard`), 5;
+  - Go `TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner` (`agent`), 4;
+  - web vitest (`web-unit`), 3, including "a pending approval suppresses the control and returns when it resolves" in `cmd/evener-hub/frontend/src/panes/session/Session.test.tsx`;
+  - browser guard `TestSkillComposerBrowser` (`web-skillguard`), 2;
+  - one each: `web-transcriptscrollguard`, `TestSystemdFallbackRequiresSelectedRootEvidence/retarget`, `TestHostRestartDisconnectedWithoutDeploymentDoesNotInstall`.
 - Steps: find the root cause of each before touching it, with no retry loops, longer timeouts or skips as the fix. For each: pull the failing CI log, reproduce through the narrowest deterministic route (for the Go test, the unlaunched-runner ordering; for the vitest, the approval resolve/render ordering; for the browser guard, what the rail row waits on), write down the race or missing wait condition, then fix the production or test synchronization at that point. Prove the fix by a test that forces the bad ordering deterministically, red then green. One PR per root cause if they are unrelated.
 - Tests: the deterministic forcing test per flake; CI reruns are the sample (no local stress loops).
 - Docs: none; `docs/developing-evener/testing.md` only if a general waiting rule falls out.
 - LOC: ~+50
-- Risk: low to medium. Gate: none. Deps: none.
+- Risk: low to medium. Gate: none. Deps: none. Runs first in Wave 1: every flake costs each PR a rerun and tempts agents to merge past a red check.
 
 ## Wave 2: structural splits (all need design discussion with Jesse before any code)
 
