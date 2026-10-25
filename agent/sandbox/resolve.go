@@ -180,6 +180,12 @@ type ResolvedPolicy struct {
 	// Git is the resolved git-surface map: writable metadata, write-protected
 	// config/hook surfaces, and outside-worktree read grants. Zero for off.
 	Git GitLayout
+	// WorkspaceRoot is the session's working directory as the caller spelled
+	// it: absolute and cleaned, but not symlink-resolved. It is the spelling
+	// the environment advertises, and the anchor bwrap re-binds when the
+	// session root itself sits under a private mount. Git.WorktreeRoot is the
+	// resolved counterpart. Empty for a hand-built policy.
+	WorkspaceRoot string
 
 	// ToolchainBinDir is the macOS developer-toolchain bin directory the env floor
 	// puts on a spawned process's PATH, ahead of the system directories, so `git`
@@ -539,6 +545,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		SessionTmp:          true,
 		MaskedPaths:         masked,
 		Git:                 layout,
+		WorkspaceRoot:       cwd,
 		ManagedContentRoots: host.EvenerManagedContentRoots,
 		ManagedContentClean: host.EvenerManagedContentClean,
 		resolveInputs:       policy,

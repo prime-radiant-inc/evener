@@ -247,8 +247,10 @@ func (w *Wrapper) commandCWDVisible(cwd string, resolveRoots bool) bool {
 		return true
 	}
 	readRoots := slices.Clone(w.policy.Spawned.ReadRoots)
-	if w.policy.Git.WorktreeRoot != "" {
-		readRoots = append(readRoots, w.policy.Git.WorktreeRoot)
+	for _, root := range []string{w.policy.WorkspaceRoot, w.policy.Git.WorktreeRoot} {
+		if root != "" {
+			readRoots = append(readRoots, root)
+		}
 	}
 	writeRoots, unmaskedRoots := w.policy.Spawned.WriteRoots, w.policy.UnmaskedRoots
 	if resolveRoots {

@@ -68,6 +68,14 @@ Revision notes:
   the literal spelling as a link. The visibility predicate also includes the
   workspace anchor it binds, so a workspace symlink under `/tmp` to a
   readable outside directory is accepted.
+- **Amendment 6 (RoboRev branch review, round 5).** The session root's own
+  spelling is retained as `ResolvedPolicy.WorkspaceRoot` and bound alongside
+  the resolved worktree, so a session rooted at a symlinked `/tmp` spelling
+  keeps that advertised spelling readable when the chosen cwd is elsewhere.
+  A multi-hop symlink whose intermediate target lies in a private mount can
+  still pass the literal and endpoint checks and fail at `--chdir`; it grants
+  no read capability, and the backend remains the final authority, so this is
+  recorded as a known residual rather than an extra path walk.
 
 ## Intent and scope
 
@@ -85,7 +93,8 @@ Intended tracked deliverables:
   backend-namespace companion for the private `/tmp` and `/dev` mounts.
 - `agent/sandbox/bwrap.go` — the workspace anchor joins the cwd re-bind
   candidates, so a workspace under `/tmp` stays visible when the chosen cwd
-  is elsewhere.
+  is elsewhere. `ResolvedPolicy.WorkspaceRoot` retains the literal session
+  spelling beside the resolved worktree.
 - `agent/sandbox/backend_test.go` and
   `agent/sandbox/resolve_canread_test.go` — predicate matrices.
 - `agent/execenv/local.go` — `EnsureCommandWorkingDirectory` canonicalises,
@@ -198,7 +207,8 @@ then applies, in this order:
      scratch root is explicitly bound);
    - bwrap `ReadAnywhere`: true for the session tmp, the session scratch
      tree, and any path under `Spawned.ReadRoots`, `Spawned.WriteRoots` or
-     `UnmaskedRoots` (all explicitly bound), plus a path under a
+     `UnmaskedRoots` (all explicitly bound), under the literal workspace
+     root or its resolved worktree, plus a path under a
      `CacheRoots` entry only when the strategy is `CacheOverlay` and the
      overlay serves that entry (`liveCacheRoots`); false for a path under
      the private `/tmp` or `/dev` (`inPrivateMount`); true otherwise.
@@ -347,6 +357,8 @@ fixture.
    A read-only cwd inside a content carve-out under `/tmp`, with the config
    directory itself a symlink, cannot read `.git/config`; the validated
    carve-out handler keeps the `.git` denial at the resolved root.
+   A session rooted at a symlinked `/tmp` spelling reads a workspace file
+   through that advertised spelling from an accepted outside cwd.
 8. `agent/sandbox/resolve_canread_test.go`: `SpawnedCanRead` accepts
    read-anywhere paths, rejects masked paths and `.git` under a carve-out,
    accepts restricted read roots and unmasked roots, rejects a restricted

@@ -547,3 +547,45 @@ func TestShellToolReadOnlyCwdWorkspaceSymlinkUnderTmp(t *testing.T) {
 		t.Fatalf("shell pwd with a workspace symlink = %q, want the literal cwd %q", got, link)
 	}
 }
+
+// TestShellToolReadOnlySymlinkedRootVisibleFromOutside pins that a session
+// rooted at a symlinked /tmp spelling keeps that advertised spelling bound when
+// the chosen cwd is elsewhere.
+func TestShellToolReadOnlySymlinkedRootVisibleFromOutside(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("bubblewrap private /tmp is Linux-only")
+	}
+	base, err := os.MkdirTemp("/tmp", "evener-4332-root-link-")
+	if err != nil {
+		t.Skipf("no writable /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	realRoot, err := os.MkdirTemp("/var/tmp", "evener-4332-root-real-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(realRoot) })
+	workspaceFile := filepath.Join(realRoot, "workspace.txt")
+	if err := os.WriteFile(workspaceFile, []byte("root-readable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := filepath.Join(base, "workspace-link")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("cannot create root symlink: %v", err)
+	}
+	outside, err := os.MkdirTemp("/var/tmp", "evener-4332-root-outside-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+	env := newSandboxedShellEnv(t, sandbox.SandboxPolicy{Mode: sandbox.ModeReadOnly}, linkRoot)
+	requireBwrapPrivateMounts(t, env)
+	s := newSandboxedShellSession(t, env)
+
+	res := executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"cat %s","cwd":%q}`, filepath.Join(linkRoot, "workspace.txt"), outside))
+	out := decodeSandboxedShellOutput(t, res)
+	if !strings.Contains(*out.Output, "root-readable") {
+		t.Fatalf("advertised root spelling unreadable from an outside cwd: %q", *out.Output)
+	}
+}
