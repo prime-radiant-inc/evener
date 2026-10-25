@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -482,17 +481,7 @@ func blockedUnknownMutationError(clientMutationID string, err error) error {
 	if isDaemonRestartRequiredError(err) || isSessionRecoveryAdmissionError(err) {
 		return blockedAdmissionMutationError(err, clientMutationID)
 	}
-	return appwire.WireError{
-		Code:    appwire.CodeInternalError,
-		Message: err.Error(),
-		Data: appwire.ErrorData{
-			EvenerErrorInfo:  appwire.ErrorMutationOutcomeUnknown,
-			ClientMutationID: clientMutationID,
-			MutationOutcome:  appwire.MutationOutcomeUnknown,
-			RetryDisposition: appwire.RetryDispositionBlocked,
-			Cause:            "persistenceUnavailable",
-		},
-	}
+	return appwire.MutationUnknown(clientMutationID, err.Error())
 }
 
 // mutationResumeFailureError reports a resume failure the way the mutation that
@@ -653,8 +642,8 @@ func errorNamesClientMutation(err error, clientMutationID string) bool {
 // err is returned unchanged when there is nothing to rewrite: it is not a
 // WireError, it names no id, it already names the caller's id, or it names a
 // mutation that is not the caller's. The rewrite handles both decoded shapes
-// (typed ErrorData and map[string]any), the convention nameTargetDeletedFailure
-// follows.
+// (typed ErrorData and map[string]any) through WireError.WithMutation, as
+// nameTargetDeletedFailure does.
 func adoptCallerMutationID(err error, clientMutationID string) error {
 	if clientMutationID == "" {
 		return err
@@ -667,15 +656,8 @@ func adoptCallerMutationID(err error, clientMutationID string) error {
 	if named == clientMutationID || !mutationIDsMatch(clientMutationID, named) {
 		return err
 	}
-	switch data := wire.Data.(type) {
-	case appwire.ErrorData:
-		data.ClientMutationID = clientMutationID
-		wire.Data = data
-	case map[string]any:
-		updated := maps.Clone(data)
-		updated["clientMutationId"] = clientMutationID
-		wire.Data = updated
-	default:
+	wire, ok = wire.WithMutation(clientMutationID, "", "")
+	if !ok {
 		return err
 	}
 	return wire
@@ -893,15 +875,8 @@ func nameTargetDeletedFailure(clientMutationID string, err error) error {
 	// and as map[string]any on others; both are stamped the same way
 	// blockedAdmissionMutationError stamps its own, without disturbing the
 	// deletion outcome the refusal already carries.
-	switch data := wire.Data.(type) {
-	case appwire.ErrorData:
-		data.ClientMutationID = clientMutationID
-		wire.Data = data
-	case map[string]any:
-		updated := maps.Clone(data)
-		updated["clientMutationId"] = clientMutationID
-		wire.Data = updated
-	default:
+	wire, ok = wire.WithMutation(clientMutationID, "", "")
+	if !ok {
 		return nil
 	}
 	return wire

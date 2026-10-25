@@ -1039,16 +1039,7 @@ func localDaemonMutationCallError(clientMutationID string, err error) error {
 	if !ok || wire.Code != appwire.CodeUnavailable {
 		return mapped
 	}
-	return appwire.WireError{
-		Code:    appwire.CodeInternalError,
-		Message: "mutation outcome is unknown after local daemon response loss",
-		Data: appwire.ErrorData{
-			EvenerErrorInfo:  appwire.ErrorMutationOutcomeUnknown,
-			ClientMutationID: clientMutationID,
-			MutationOutcome:  appwire.MutationOutcomeUnknown,
-			RetryDisposition: appwire.RetryDispositionAutomatic,
-		},
-	}
+	return mutationOutcomeUnknown("mutation outcome is unknown after local daemon response loss", clientMutationID, appwire.RetryDispositionAutomatic)
 }
 
 func localDaemonMutationEntryError(clientMutationID string, err error) error {

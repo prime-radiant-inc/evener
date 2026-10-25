@@ -285,7 +285,7 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 			// mapping it as one keeps the auto-resume gate working; reporting
 			// context.Canceled would read as the caller giving up.
 			if !callerCanceled && errors.Is(result.err, context.Canceled) {
-				return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": subscription ended before it attached")
+				return nil, remoteHubUnavailable(s.id, "subscription ended before it attached")
 			}
 			return nil, s.mapCallError(result.err)
 		}
@@ -306,7 +306,7 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 				// it — surface the same refusal admission produces.
 				return nil, refusal
 			}
-			return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": subscription was replaced before it attached")
+			return nil, remoteHubUnavailable(s.id, "subscription was replaced before it attached")
 		}
 		go s.pumpSubscription(subCtx, sub)
 		if previous != nil && previous != sub {
@@ -325,7 +325,7 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 		cancel()
 		go s.retireCanceledSubscribe(sub, previous, outcome)
 		if !callerCanceled {
-			return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": subscription ended before it attached")
+			return nil, remoteHubUnavailable(s.id, "subscription ended before it attached")
 		}
 		return nil, s.mapCallError(subCtx.Err())
 	}

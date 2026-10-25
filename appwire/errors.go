@@ -3,6 +3,7 @@ package appwire
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 )
 
@@ -826,6 +827,63 @@ func ErrorDataOf(data any) (ErrorData, bool) {
 		return ErrorData{}, false
 	}
 	return field.Interface().(ErrorData), true
+}
+
+// DecodedErrorData is the standard data an error's Data carries in whichever
+// shape it arrived: ErrorData itself, a struct embedding it, or the generic map
+// a wire client decodes JSON into. Fields a map lacks or holds as another type
+// read as empty.
+func DecodedErrorData(data any) (ErrorData, bool) {
+	if typed, ok := ErrorDataOf(data); ok {
+		return typed, true
+	}
+	fields, ok := data.(map[string]any)
+	if !ok {
+		return ErrorData{}, false
+	}
+	text := func(key string) string {
+		value, _ := fields[key].(string)
+		return value
+	}
+	return ErrorData{
+		EvenerErrorInfo:  ErrorInfo(text("evenerErrorInfo")),
+		ClientMutationID: text("clientMutationId"),
+		MutationOutcome:  MutationOutcome(text("mutationOutcome")),
+		RetryDisposition: RetryDisposition(text("retryDisposition")),
+		Cause:            text("cause"),
+	}, true
+}
+
+// WithMutation stamps the mutation the error belongs to: its clientMutationId,
+// and the outcome and retry disposition when they are not empty. Data stays in
+// its shape, plain ErrorData or the generic map a wire client decodes, and
+// every other field is kept; the original data is not modified. ok is false,
+// with the error unchanged, for any other shape.
+func (e WireError) WithMutation(clientMutationID string, outcome MutationOutcome, disposition RetryDisposition) (WireError, bool) {
+	switch data := e.Data.(type) {
+	case ErrorData:
+		data.ClientMutationID = clientMutationID
+		if outcome != "" {
+			data.MutationOutcome = outcome
+		}
+		if disposition != "" {
+			data.RetryDisposition = disposition
+		}
+		e.Data = data
+	case map[string]any:
+		updated := maps.Clone(data)
+		updated["clientMutationId"] = clientMutationID
+		if outcome != "" {
+			updated["mutationOutcome"] = string(outcome)
+		}
+		if disposition != "" {
+			updated["retryDisposition"] = string(disposition)
+		}
+		e.Data = updated
+	default:
+		return e, false
+	}
+	return e, true
 }
 
 // markedNotAccepted is a copy of data with its ErrorData marked: data itself

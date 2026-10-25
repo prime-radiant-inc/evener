@@ -308,3 +308,58 @@ func TestRetrySafeMutationMethodsMatchSharedDispatcher(t *testing.T) {
 		}
 	}
 }
+
+// A wire client decodes error data as the typed ErrorData on some paths and as
+// a generic map on others, and a typed refusal may embed ErrorData. The
+// decoded read and the mutation stamp treat every such shape alike.
+func TestDecodedErrorDataReadsAndStampsEveryShape(t *testing.T) {
+	typed := ErrorData{EvenerErrorInfo: ErrorSessionUnavailable, ClientMutationID: "m1", Cause: "c"}
+	shapes := map[string]any{
+		"typed": typed,
+		"map": map[string]any{
+			"evenerErrorInfo": string(ErrorSessionUnavailable), "clientMutationId": "m1", "cause": "c",
+		},
+		"embedded": HostFieldErrorData{ErrorData: typed, Field: "address"},
+	}
+	for name, data := range shapes {
+		t.Run(name, func(t *testing.T) {
+			got, ok := DecodedErrorData(data)
+			if !ok || got != typed {
+				t.Fatalf("DecodedErrorData = %+v, %v; want %+v", got, ok, typed)
+			}
+		})
+	}
+	for _, other := range []any{nil, "text", struct{ Name string }{"x"}} {
+		if got, ok := DecodedErrorData(other); ok && got != (ErrorData{}) {
+			t.Fatalf("DecodedErrorData(%#v) = %+v, want none", other, got)
+		}
+	}
+
+	for _, name := range []string{"typed", "map"} {
+		t.Run("stamp "+name, func(t *testing.T) {
+			original := shapes[name]
+			stamped, ok := WireError{Data: original}.WithMutation("m2", MutationOutcomeUnknown, RetryDispositionBlocked)
+			if !ok {
+				t.Fatal("WithMutation refused a shape it stamps")
+			}
+			got, _ := DecodedErrorData(stamped.Data)
+			if got.ClientMutationID != "m2" || got.MutationOutcome != MutationOutcomeUnknown ||
+				got.RetryDisposition != RetryDispositionBlocked || got.EvenerErrorInfo != ErrorSessionUnavailable || got.Cause != "c" {
+				t.Fatalf("stamped = %+v, want the three fields set and the rest kept", got)
+			}
+			if before, _ := DecodedErrorData(original); before.ClientMutationID != "m1" {
+				t.Fatalf("original data was modified: %+v", before)
+			}
+			idOnly, _ := WireError{Data: original}.WithMutation("m3", "", "")
+			got, _ = DecodedErrorData(idOnly.Data)
+			if got.ClientMutationID != "m3" || got.MutationOutcome != "" || got.RetryDisposition != "" {
+				t.Fatalf("id-only stamp = %+v, want only the id changed", got)
+			}
+		})
+	}
+	for _, other := range []any{nil, HostFieldErrorData{ErrorData: typed}, "text"} {
+		if _, ok := (WireError{Data: other}).WithMutation("m2", "", ""); ok {
+			t.Fatalf("WithMutation stamped %#v, want it left alone", other)
+		}
+	}
+}

@@ -602,15 +602,8 @@ func localDaemonItemCursorStale(err error) bool {
 	if !ok || wire.Code != appwire.CodeInvalidParams {
 		return false
 	}
-	switch data := wire.Data.(type) {
-	case appwire.ErrorData:
-		return data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
-	case map[string]any:
-		info, ok := data["evenerErrorInfo"].(string)
-		return ok && info == string(appwire.ErrorTranscriptItemCursorStale)
-	default:
-		return false
-	}
+	data, _ := appwire.DecodedErrorData(wire.Data)
+	return data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
 }
 
 type localDaemonItemThread struct {
