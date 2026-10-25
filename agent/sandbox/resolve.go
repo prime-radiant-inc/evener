@@ -239,15 +239,17 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 	if !rp.FileToolConfined() {
 		return true
 	}
-	return rp.readGrantAllows(path, rp.FileTool.Read, rp.FileTool.ReadRoots)
+	return rp.readGrantAllows(path, rp.FileTool.Read, rp.FileTool.ReadRoots, false)
 }
 
 // readGrantAllows applies one enforcement layer's read grant to path. The
 // caller has already settled its own confinement gate. Containment is lexical
 // (pathUnder) and both sides must be absolute: a relative path cannot be
 // proved inside any root, and a relative root grants nothing. Masked paths
-// deny in every mode, and ReadAnywhere allows everything else.
-func (rp ResolvedPolicy) readGrantAllows(path string, read ReadScope, roots []string) bool {
+// deny in every mode, and ReadAnywhere allows everything else. resolveRoots
+// judges a symlink-resolved path against the roots' resolved spelling, which
+// is how a backend that canonicalises a grant reaches it.
+func (rp ResolvedPolicy) readGrantAllows(path string, read ReadScope, roots []string, resolveRoots bool) bool {
 	if !filepath.IsAbs(path) {
 		return false
 	}
@@ -258,7 +260,13 @@ func (rp ResolvedPolicy) readGrantAllows(path string, read ReadScope, roots []st
 		return true
 	}
 	for _, root := range roots {
-		if filepath.IsAbs(root) && pathUnder(path, root) {
+		if !filepath.IsAbs(root) {
+			continue
+		}
+		if resolveRoots {
+			root = resolveExistingPrefix(root)
+		}
+		if pathUnder(path, root) {
 			return true
 		}
 	}
@@ -283,7 +291,20 @@ func (rp ResolvedPolicy) SpawnedCanRead(path string) bool {
 	if !rp.Enforced() {
 		return filepath.IsAbs(path) && !rp.Masks(path)
 	}
-	return rp.readGrantAllows(path, rp.Spawned.Read, slices.Concat(rp.Spawned.ReadRoots, rp.UnmaskedRoots))
+	return rp.readGrantAllows(path, rp.Spawned.Read, slices.Concat(rp.Spawned.ReadRoots, rp.UnmaskedRoots), false)
+}
+
+// SpawnedCanReadResolved answers SpawnedCanRead for an already
+// symlink-resolved path, judging it against the grant roots' resolved
+// spelling. The literal spelling is judged by SpawnedCanRead; requiring both
+// accepts a cwd reached through a symlinked read root (the literal path is
+// bound there) without accepting the resolved path when the backend does not
+// expose it.
+func (rp ResolvedPolicy) SpawnedCanReadResolved(path string) bool {
+	if !rp.Enforced() {
+		return filepath.IsAbs(path) && !rp.Masks(path)
+	}
+	return rp.readGrantAllows(path, rp.Spawned.Read, slices.Concat(rp.Spawned.ReadRoots, rp.UnmaskedRoots), true)
 }
 
 // Masks reports whether path is denied by the masked set: at or beneath a

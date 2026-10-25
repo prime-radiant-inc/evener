@@ -1,6 +1,10 @@
 package sandbox
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // FileToolCanRead answers the policy question a caller must settle before it
 // names a path to the model: may the in-process file tools read that path?
@@ -164,5 +168,33 @@ func TestSpawnedCanReadRestrictedRoots(t *testing.T) {
 		if got := rp.SpawnedCanRead(tc.path); got != tc.want {
 			t.Errorf("SpawnedCanRead(%q) = %v, want %v", tc.path, got, tc.want)
 		}
+	}
+}
+
+func TestSpawnedCanReadSymlinkedReadRoot(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	link := filepath.Join(base, "link")
+	if err := os.MkdirAll(filepath.Join(realDir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	rp := ResolvedPolicy{
+		Mode:    ModeRestricted,
+		Spawned: AccessScope{Read: ReadWorktreeOnly, ReadRoots: []string{link}},
+	}
+	literal := filepath.Join(link, "sub")
+	resolved := filepath.Join(realDir, "sub")
+	if !rp.SpawnedCanRead(literal) {
+		t.Fatalf("SpawnedCanRead(%q) = false, want the literal grant to admit it", literal)
+	}
+	if !rp.SpawnedCanReadResolved(resolved) {
+		t.Fatalf("SpawnedCanReadResolved(%q) = false, want the resolved grant to admit it", resolved)
+	}
+	if rp.SpawnedCanRead(resolved) {
+		t.Errorf("SpawnedCanRead(%q) = true, want the resolved spelling refused against the literal grant", resolved)
 	}
 }

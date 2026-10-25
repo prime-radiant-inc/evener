@@ -3518,7 +3518,8 @@ func (e *LocalExecutionEnvironment) EnsureCommandWorkingDirectory(abs string) er
 	if e.ensureUnderRoot(abs) == nil {
 		return nil
 	}
-	readable := e.Sandbox.SpawnedCanRead(abs) && (abs == resolved || e.Sandbox.SpawnedCanRead(resolved))
+	readable := e.Sandbox.SpawnedCanRead(abs) &&
+		(abs == resolved || e.Sandbox.SpawnedCanReadResolved(resolved))
 	if readable && e.Wrapper.CommandCWDVisible(abs) &&
 		(abs == resolved || e.Wrapper.CommandCWDVisible(resolved)) {
 		return nil

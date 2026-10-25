@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 )
@@ -113,18 +114,28 @@ func TestCommandCWDVisible(t *testing.T) {
 		}
 	}
 
-	cacheRoot := t.TempDir()
-	private := anywhere()
-	private.policy.CacheStrategy = CacheSessionPrivate
-	private.policy.CacheRoots = []string{cacheRoot}
-	if private.CommandCWDVisible(cacheRoot) {
-		t.Error("a cache root under the private /tmp must stay hidden while CacheSessionPrivate redirects it")
-	}
-	overlaid := anywhere()
-	overlaid.policy.CacheStrategy = CacheOverlay
-	overlaid.policy.CacheRoots = []string{cacheRoot}
-	if !overlaid.CommandCWDVisible(cacheRoot) {
-		t.Error("an overlay-served cache root must be visible")
+	if runtime.GOOS == "linux" {
+		cacheBase, err := os.MkdirTemp("/tmp", "evener-4332-cache-")
+		if err != nil {
+			t.Skipf("no writable /tmp: %v", err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(cacheBase) })
+		cacheRoot := filepath.Join(cacheBase, "cache")
+		if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		private := anywhere()
+		private.policy.CacheStrategy = CacheSessionPrivate
+		private.policy.CacheRoots = []string{cacheRoot}
+		if private.CommandCWDVisible(cacheRoot) {
+			t.Error("a cache root under the private /tmp must stay hidden while CacheSessionPrivate redirects it")
+		}
+		overlaid := anywhere()
+		overlaid.policy.CacheStrategy = CacheOverlay
+		overlaid.policy.CacheRoots = []string{cacheRoot}
+		if !overlaid.CommandCWDVisible(cacheRoot) {
+			t.Error("an overlay-served cache root must be visible")
+		}
 	}
 
 	restricted := &Wrapper{

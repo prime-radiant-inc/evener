@@ -313,3 +313,45 @@ func TestShellToolReadOnlyCwdInsideTmpRoot(t *testing.T) {
 		t.Fatalf("sibling of a /tmp root was accepted: %s", res.Output)
 	}
 }
+
+// TestShellToolRestrictedCwdSymlinkedReadRoot pins the resolved-root case: a
+// symlinked extra read root is bound at its literal spelling, so a cwd under
+// that spelling is accepted, while the target's own spelling is not exposed by
+// the restricted namespace and stays refused.
+func TestShellToolRestrictedCwdSymlinkedReadRoot(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("pwd is POSIX-only")
+	}
+	base, err := os.MkdirTemp("/var/tmp", "evener-4332-link-")
+	if err != nil {
+		t.Skipf("no writable fixture base /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	root := filepath.Join(base, "root")
+	realDir := filepath.Join(base, "real")
+	link := filepath.Join(base, "link")
+	for _, dir := range []string{root, filepath.Join(realDir, "sub")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	env := newSandboxedShellEnv(t, sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, ExtraReadRoots: []string{link}}, root)
+	s := newSandboxedShellSession(t, env)
+
+	literal := filepath.Join(link, "sub")
+	res := executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"pwd","cwd":%q}`, literal))
+	out := decodeSandboxedShellOutput(t, res)
+	if got := strings.TrimSpace(*out.Output); got != literal {
+		t.Fatalf("shell pwd under a symlinked read root = %q, want the literal binding %q", got, literal)
+	}
+
+	resolved := filepath.Join(realDir, "sub")
+	res = executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"pwd","cwd":%q}`, resolved))
+	if !res.IsError {
+		t.Fatalf("resolved spelling of a symlinked read root was accepted: %s", res.Output)
+	}
+}

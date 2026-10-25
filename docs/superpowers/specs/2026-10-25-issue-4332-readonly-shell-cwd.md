@@ -39,6 +39,15 @@ Revision notes:
   otherwise be accepted and then re-bound through the cwd, the widening this
   spec forbids. The predicate consults `CacheRoots` only when the strategy is
   overlay, through the same live-served check the argv uses.
+- **Amendment 3 (RoboRev branch review).** A symlinked read root is bound at
+  its literal spelling (bubblewrap exposes `link/sub`, not the target's own
+  spelling). A symlinked cwd's resolved spelling is therefore judged against
+  the grant roots' resolved spelling, not their literal spelling. That accepts
+  a cwd reached through a symlinked read root while refusing the target's own
+  spelling when the backend does not expose it, and still refuses a workspace
+  symlink that resolves outside the read set. The cache-root test fixture uses
+  an explicit `/tmp` directory and is Linux-gated, so it does not depend on
+  where `t.TempDir()` lands.
 
 ## Intent and scope
 
@@ -143,8 +152,9 @@ then applies, in this order:
    inside-root case, including a workspace root that itself lives under host
    `/tmp` (the wrapper already re-binds that root). A symlink inside the
    workspace that resolves outside it does not take this branch.
-3. **Outside the root, both the literal and resolved spellings must be in
-   the spawned read set and visible in the backend namespace.**
+3. **Outside the root, the literal spelling must be in the spawned read set
+   and visible; a symlinked literal spelling must also resolve under a
+   grant's resolved spelling.**
    `ResolvedPolicy.SpawnedCanRead` models:
    - no enforced policy, after the masks above: any absolute path. Plain off
      has no masks; the write-blocked off degrade keeps its credential mask.
@@ -170,11 +180,14 @@ then applies, in this order:
      overlay serves that entry (`liveCacheRoots`); false for a path under
      the private `/tmp` or `/dev` (`inPrivateMount`); true otherwise.
 
-   Requiring both spellings means a symlink inside the workspace that
-   resolves to a masked path, a path outside the restricted read roots, or a
-   host `/tmp`/`/dev` path is refused, while a literal path that is itself
-   inside the policy set but whose target is not is also refused. The
-   backend remains the final authority for anything the policy admits.
+   The resolved spelling is judged against the roots' resolved spelling, not
+   their literal spelling: bubblewrap binds a symlinked read root at its
+   literal path, so `link/sub` is enterable while the target's own spelling
+   is not. Requiring the literal path against the literal grant and the
+   resolved path against the resolved grant accepts the former, refuses the
+   latter, and still refuses a workspace symlink that resolves to a masked
+   path or outside the read roots. The backend remains the final authority
+   for anything the policy admits.
 
 4. **The session scratch is accepted.** The environment accepts the scratch
    directory it has already provisioned (through its wrapper, or the
@@ -287,7 +300,9 @@ fixture.
    This is the no-widening control the PAR rounds found missing. It runs
    only when the resolved backend is bwrap.
 5. Same file: a restricted-mode directory outside the spawned read roots is
-   refused, and a marker command leaves no file behind.
+   refused, and a marker command leaves no file behind. A symlinked extra
+   read root accepts its literal cwd and refuses the target's own spelling,
+   which the restricted namespace does not bind.
 6. Same file: the environment's own session scratch directory is accepted as
    a `cwd` and `pwd` runs there, proving the scratch branch on a real
    backend.
@@ -299,13 +314,17 @@ fixture.
    accepts restricted read roots and unmasked roots, rejects a restricted
    path outside them and a write-only root, rejects a relative path on a
    confined policy, and accepts any path on an unenforced policy.
+   `SpawnedCanReadResolved` accepts the resolved spelling of a symlinked read
+   root while `SpawnedCanRead` refuses that spelling against the literal
+   grant.
 9. `agent/sandbox/backend_test.go`: `CommandCWDVisible` accepts a host
    `/var/tmp` path under bwrap read-anywhere, rejects a host `/tmp` or
    `/dev` path, accepts the session tmp and its scratch tree, accepts an
    explicitly granted read/write/unmasked root under `/tmp`, rejects a cache
-   root under `/tmp` while `CacheSessionPrivate` redirects it and accepts the
-   same root under `CacheOverlay`, is always true for Seatbelt, for bwrap
-   worktree-only, and for a nil wrapper.
+   root under an explicit `/tmp` fixture while `CacheSessionPrivate`
+   redirects it and accepts the same root under `CacheOverlay` (Linux only),
+   is always true for Seatbelt, for bwrap worktree-only, and for a nil
+   wrapper.
 10. `agent/execenv/sandbox_off_scope_test.go`: the confined-cwd matrix now
     accepts an outside root for read-only, workspace-write and the
     write-blocked off degrade (including the detached entry point when the
