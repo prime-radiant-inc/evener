@@ -164,6 +164,14 @@ func (s *Session) scheduleNotificationRetry() {
 	r.delay = min(delay*2, jobNotificationRetryMaxDelay)
 	s.mu.Unlock()
 	s.sclock().AfterFunc(delay, func() {
+		// Superseded timers have no work and must not reset idle eligibility.
+		// Keep the second check below for supersession during admission.
+		s.mu.Lock()
+		if s.notificationSchedule.retry.generation != generation {
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
 		release, err := s.beginAttentionCallback()
 		s.mu.Lock()
 		current := s.notificationSchedule.retry.generation == generation

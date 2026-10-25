@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -246,13 +249,185 @@ func TestRetirementAdmissionDirectEffects(t *testing.T) {
 
 func TestRetirementAdmissionNotificationStaysPending(t *testing.T) {
 	t.Parallel()
-	root, _ := retirementRefusalRoot(t)
-	if root.enqueueSystemNotification("opaque-notice") {
-		t.Fatal("refused notification was acknowledged")
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("retried notification observed") },
+	}}
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withAdapter(adapter))
+	c := retirementEvidenceController(t, root)
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("claim: %+v %v", state, err)
+	}
+	original, err := os.ReadFile(root.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Retain the exact producer-owned delivery for retry. The admission owner,
+	// not the low-level transcript writer, must refuse before any custody effect.
+	n := notification{ID: "retirement-refused-notice", Message: llm.UserMachinery("opaque-refused-notice")}
+	if err := root.delegateController.enqueueNotification(root.ID(), n); !errors.Is(err, ErrRetirementUnavailable) {
+		t.Fatalf("controller-addressed notification was not refused: %v", err)
+	}
+	after, err := os.ReadFile(root.TranscriptPath())
+	if err != nil || !bytes.Equal(original, after) {
+		t.Fatalf("refused notification changed receiver transcript: %v", err)
 	}
 	if len(root.SteeringQueueSnapshot()) != 0 {
 		t.Fatal("refused notification enqueued")
 	}
+	assertAttentionResponseReceipts(t, root, n.ID, 0)
+	if err := c.Abort(claim, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.delegateController.enqueueNotification(root.ID(), n); err != nil {
+		t.Fatal(err)
+	}
+	retirementNotificationCustody(t, root, n.ID, 0)
+	if _, err := root.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	if !requestsContain(adapter.Requests(), "opaque-refused-notice") {
+		t.Fatal("the retained delivery did not reach the model after Abort")
+	}
+	retirementNotificationCustody(t, root, n.ID, 1)
+	assertRetirementEvidenceEligible(t, c)
+}
+
+// The owning source is a real terminal watch-send journal. Its normal
+// controller-addressed acceptance must preserve that source when preparing
+// refuses admission. Production firing leases prevent new source production
+// behind a granted claim, so that separate boundary is tested above.
+func TestRetirementAdmissionWatchSourcePreserved(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("retained watch source observed") },
+	}}
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
+	c := retirementEvidenceController(t, root)
+	jm := root.jobManager
+	rec, err := jm.createShell(createShellOpts{Command: "retirement-refused-watch-shell"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Source: rec.JobID, OutputMatch: "never-seen", Send: &watchSendArgs{To: "caller", Message: "opaque-retained-watch-notice"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "fixture-settled", nil); err != nil {
+		t.Fatal(err)
+	}
+	originalSource, err := jm.store.LoadWatchSends()
+	if err != nil || len(originalSource.Pending) != 1 {
+		t.Fatalf("real producer source missing: %+v err=%v", originalSource, err)
+	}
+	var source jobstore.WatchSendState
+	for _, pending := range originalSource.Pending {
+		source = *pending
+	}
+	originalReceiver, err := os.ReadFile(root.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	jm.mu.Lock()
+	unlockJobs := sync.OnceFunc(jm.mu.Unlock)
+	defer unlockJobs()
+	type claimResult struct {
+		claim *RetirementClaim
+		err   error
+	}
+	done := make(chan claimResult, 1)
+	go func() { claim, _, err := c.TryClaim(true); done <- claimResult{claim, err} }()
+	waitForCondition(t, 5*time.Second, "watch source preparing refusal", func() bool { return c.Snapshot().Phase == "preparing" })
+	// This is the real transport acceptance function and its installed
+	// controller route, not a substituted enqueue callback or writer.
+	if err := jm.acceptWatchFrame(source); !errors.Is(err, ErrRetirementUnavailable) {
+		t.Fatalf("producer did not report controller admission refusal: %v", err)
+	}
+	afterSource, err := jm.store.LoadWatchSends()
+	if err != nil || !reflect.DeepEqual(originalSource, afterSource) {
+		t.Fatalf("refusal lost or changed source: %+v err=%v", afterSource, err)
+	}
+	afterReceiver, err := os.ReadFile(root.TranscriptPath())
+	if err != nil || !bytes.Equal(originalReceiver, afterReceiver) {
+		t.Fatalf("refusal wrote receiver custody: %v", err)
+	}
+	unlockJobs()
+	result := <-done
+	if result.err != nil || result.claim != nil {
+		t.Fatalf("pending source escaped claim evidence: claim=%v err=%v", result.claim, result.err)
+	}
+	if err := jm.dispatchProducedWatchSendsFrom(jm.store.LoadWatchSends); err != nil {
+		t.Fatal(err)
+	}
+	id := fmt.Sprintf("watch:%s:%d", source.DeliveryID, source.UpdateSeq)
+	retirementNotificationCustody(t, root, id, 0)
+	settled, err := jm.store.LoadWatchSends()
+	if err != nil || len(settled.Pending) != 0 {
+		t.Fatalf("retained source retry did not settle: %+v err=%v", settled, err)
+	}
+	if _, err := root.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	if !requestsContain(adapter.Requests(), "opaque-retained-watch-notice") {
+		t.Fatal("original retained source never reached the provider")
+	}
+	retirementNotificationCustody(t, root, id, 1)
+	assertRetirementEvidenceEligible(t, c)
+}
+
+// Low-level synced custody can outlive a resident runtime. This checks that
+// particular accepted append, not a general admission policy or daemon wake.
+func TestRetirementAdmissionLateCustodySurvivesRestore(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	root := newQueuePersistTestSession(t, dir)
+	t.Cleanup(root.Close)
+	c := retirementEvidenceController(t, root)
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("claim: %+v %v", state, err)
+	}
+	prepared, err := c.Prepare(t.Context(), claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "retirement-late-preserved"
+	if err := root.enqueueSystemNotificationFromSource(id, "opaque-late-preserved-notice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Commit(claim); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DrainReaders(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.ReleaseForRetirement(t.Context(), prepared); err != nil {
+		t.Fatal(err)
+	}
+	retirementNotificationCustody(t, root, id, 0)
+	restored := restoreQueuePersistTestSession(t, dir, root.ID())
+	t.Cleanup(restored.Close)
+	if restored.ID() != root.ID() {
+		t.Fatal("retirement changed receiver identity")
+	}
+	retirementNotificationCustody(t, restored, id, 0)
+	var wakes atomic.Int32
+	restored.SetNotifyFunc(func() { wakes.Add(1) })
+	defer restored.SetNotifyFunc(nil)
+	if wakes.Load() != 1 {
+		t.Fatalf("normal callback registration did not wake retained custody: %d", wakes.Load())
+	}
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("restored notice observed") },
+	}}
+	restored.client.Register(adapter)
+	if _, err := restored.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	if !requestsContain(adapter.Requests(), "opaque-late-preserved-notice") {
+		t.Fatal("restored custody never reached provider")
+	}
+	retirementNotificationCustody(t, restored, id, 1)
 }
 
 // The only substituted dependency is the OS filesystem. Every store serializer,

@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -44,8 +46,10 @@ func retirementPrepareFixture(t *testing.T) (*Session, *RetirementController, *R
 // preparation must refuse it, the session stays resident, and admission reopens.
 func TestRetirementPreparationCorruptTranscriptStaysResident(t *testing.T) {
 	t.Parallel()
-	root := newQueuePersistTestSession(t, t.TempDir())
-	defer root.Close()
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("repaired transcript processed") },
+	}}
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withAdapter(adapter))
 	c, err := NewRetirementController(0, clock.Real())
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +62,8 @@ func TestRetirementPreparationCorruptTranscriptStaysResident(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("not-json\n"), 0600); err != nil {
+	corrupt := []byte("not-json\n")
+	if err := os.WriteFile(path, corrupt, 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -66,22 +71,14 @@ func TestRetirementPreparationCorruptTranscriptStaysResident(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	claim, state, err := c.TryClaim(true)
-	if err != nil {
-		t.Fatal(err)
+	claim, state, evidenceErr := c.TryClaim(true)
+	var syntaxErr *json.SyntaxError
+	if claim != nil || !errors.As(evidenceErr, &syntaxErr) || state.Phase != "resident" {
+		t.Fatalf("corrupt evidence was not refused structurally: claim=%v state=%+v err=%v", claim, state, evidenceErr)
 	}
-	// Either the evidence read or preparation must refuse the corrupt original.
-	if claim != nil {
-		if _, err := c.Prepare(context.Background(), claim); err == nil {
-			t.Fatal("preparation accepted corrupt original transcript")
-		}
-		if err := c.Abort(claim, "prepare_failed"); err != nil {
-			t.Fatal(err)
-		}
-	} else if !slices.ContainsFunc(state.Blockers, func(b RetirementBlocker) bool {
-		return b.Category == "persistence"
-	}) {
-		t.Fatalf("corruption lacked persistence diagnostic: %+v", state)
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(after, corrupt) {
+		t.Fatalf("refused claim changed corrupt bytes: %v", err)
 	}
 	if got := c.Snapshot().Phase; got != "resident" {
 		t.Fatalf("phase = %s", got)
@@ -91,6 +88,16 @@ func TestRetirementPreparationCorruptTranscriptStaysResident(t *testing.T) {
 		t.Fatalf("preparation failure closed admission: %v", err)
 	}
 	release()
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	assertRetirementEvidenceEligible(t, c)
+	if _, err := root.ProcessInput(t.Context(), "opaque-repaired-transcript-input", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !requestsContain(adapter.Requests(), "opaque-repaired-transcript-input") {
+		t.Fatal("storage repair did not restore useful model processing")
+	}
 }
 
 // TestRetirementPreparationMetadataWriteFailureStaysResident forces the
