@@ -217,6 +217,26 @@ describe("useThreadsStore.resolveEscalation", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
   });
 
+  // The resolving client is not sent the resolved broadcast, so its own clear
+  // is the only one. The transcript repository republishes its model on every
+  // later accepted frame, and that model must not still hold the card.
+  test("a frame accepted after the resolve does not bring the escalation back", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toHaveLength(1);
+
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active", activeFlags: [] } },
+    } as never);
+
+    expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("active");
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
   test("updates BOTH threads and watchedThreads when the same ref is tracked in each", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
