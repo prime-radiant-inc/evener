@@ -1344,3 +1344,30 @@ test("a scroll in the destination window cancels a press that crossed a move", a
     host.remove();
   }
 });
+
+// A card mounted directly in a popout resolves its document after mount. Its
+// very first press must already arm cancellation in that document.
+test("the first press after mounting in a popout is cancelled by a scroll there", async () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const { frame, doc, win } = appendPopout();
+  const view = render(
+    createPortal(
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+        <button type="button">Fix flaky test</button>
+      </HoverCard>,
+      doc.body,
+    ),
+  );
+  try {
+    const trigger = doc.querySelector("button");
+    if (!trigger) throw new Error("popout trigger missing");
+    fireEvent.pointerDown(trigger, { pointerId: 6, pointerType: "touch", button: 0 });
+    act(() => win.dispatchEvent(new win.Event("scroll")));
+    act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+    expect(doc.querySelector('[role="tooltip"]')).toBeNull();
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
