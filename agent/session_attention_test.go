@@ -3039,7 +3039,7 @@ func TestDelegateAttention_FailedMutationQueueRetainsOtherOwners(t *testing.T) {
 	var rearm func()
 	rearm = func() { fs.failNextSyncWith(rearm) }
 	fs.failNextSyncWith(rearm)
-	if err := root.executeDelegateMutationPlans(delegateMutationPlans{deliveries: plans}); err == nil || !strings.Contains(err.Error(), "injected attention resolution sync failure") {
+	if err := root.executeDelegateMutationPlans(delegateMutationPlans{deliveries: plans}); !errors.Is(err, fs.syncErr) {
 		t.Fatalf("multi-owner delivery error=%v, want injected source failure", err)
 	}
 	var req llm.Request
@@ -3098,6 +3098,13 @@ func TestDelegateAttention_FailedMutationQueueRetainsOtherOwners(t *testing.T) {
 	if !root.delegateDeliveryResiduePending() {
 		t.Fatal("failed source has no automatic root-pump retry")
 	}
+	// The child completion may already have notified the root. Its runner and
+	// senders are joined, so consume that edge while the failed source is still
+	// unavailable. The assertion below must observe a new automatic-retry edge.
+	select {
+	case <-wakes:
+	default:
+	}
 	fs.mu.Lock()
 	fs.failNext, fs.onFail = false, nil
 	fs.mu.Unlock()
@@ -3149,14 +3156,30 @@ func TestDelegateAttention_RootRestoreRejectsOtherOwnersInvalidTranscript(t *tes
 	seedDelegateControllerDelivery(t, c, "dlg_source")
 	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "root-session"), "root-session")
 	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "child-dlg_owner"), "wrong-owner")
+	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "child-dlg_source"), "child-dlg_source")
 	copyDelegateJournalForBootstrap(t, c, journalPath)
 
-	restored, err := RestoreSessionFromMetaWithConfig(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), schema.SessionMeta{ID: "root-session", ProfileID: "openai", Model: "gpt-5.2", Config: schema.ConfigSnapshot{MaxSubagentDepth: 2}}, RestoreSessionConfig{StateDir: c.stateDir, ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true}})
+	// Bootstrap's evidence fold has no typed identity error. Prove this header
+	// is the refusing boundary by repairing only it and reaching a sentinel at
+	// the existing post-bootstrap construction seam with the same configuration.
+	afterBootstrap := errors.New("reached construction after global bootstrap")
+	constructionCalls := 0
+	cfg := RestoreSessionConfig{StateDir: c.stateDir, ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, sessionInitFault: func(point string) error {
+		if point == "builtin_agents" {
+			constructionCalls++
+			return afterBootstrap
+		}
+		return nil
+	}}}
+	meta := schema.SessionMeta{ID: "root-session", ProfileID: "openai", Model: "gpt-5.2", Config: schema.ConfigSnapshot{MaxSubagentDepth: 2}}
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	client := newAskRestoreClient()
+	restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), env, meta, cfg)
 	if restored != nil {
 		restored.Close()
 		t.Fatal("root restore swallowed another owner's replay failure")
 	}
-	if err == nil || !strings.Contains(err.Error(), "reconcile delegate resources") || !strings.Contains(err.Error(), `transcript session "wrong-owner", want "child-dlg_owner"`) {
+	if err == nil || errors.Is(err, afterBootstrap) || constructionCalls != 0 {
 		t.Fatalf("root restore error=%v, want global bootstrap identity refusal", err)
 	}
 	store, err := delegatestore.Open(filepath.Join(jobsDir(c.stateDir, "root-session"), "delegates.jsonl"))
@@ -3172,6 +3195,18 @@ func TestDelegateAttention_RootRestoreRejectsOtherOwnersInvalidTranscript(t *tes
 		if event.Kind == delegatestore.EventDelegateDeliveryAcknowledged {
 			t.Fatal("failed global source was acknowledged")
 		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "child-dlg_owner"), "child-dlg_owner")
+	restored, err = RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), env, meta, cfg)
+	if restored != nil {
+		restored.Close()
+		t.Fatal("post-bootstrap sentinel unexpectedly restored a session")
+	}
+	if !errors.Is(err, afterBootstrap) || constructionCalls != 1 {
+		t.Fatalf("valid-owner control error=%v construction calls=%d, want post-bootstrap sentinel once", err, constructionCalls)
 	}
 }
 
@@ -3202,8 +3237,16 @@ func TestDelegateAttention_InheritedRestoreRejectsInvalidOwnTranscript(t *testin
 				restored.Close()
 				t.Fatal("invalid own transcript restored")
 			}
-			if err == nil || !strings.Contains(err.Error(), "open transcript for resume") {
-				t.Fatalf("inherited restore error=%v, want preconstruction transcript refusal", err)
+			if malformed {
+				var syntaxErr *json.SyntaxError
+				if !errors.As(err, &syntaxErr) || syntaxErr.Offset != 2 {
+					t.Fatalf("inherited restore error=%v, want own header JSON syntax error at byte 2", err)
+				}
+			} else {
+				var mismatch *transcript.SessionIDMismatchError
+				if !errors.As(err, &mismatch) || mismatch.HeaderSessionID != "wrong-owner" || mismatch.RequestedSessionID != sessionID {
+					t.Fatalf("inherited restore error=%v, want own transcript identity refusal", err)
+				}
 			}
 			after, readErr := os.ReadFile(path)
 			if readErr != nil {
@@ -4903,6 +4946,7 @@ type attentionFailNextSyncFS struct {
 	failNext  bool
 	failAfter int
 	onFail    func()
+	syncErr   error
 }
 
 func installResolutionSyncFailureWriter(t *testing.T, s *Session) {
@@ -5007,7 +5051,7 @@ func (file *rootAttentionResolutionFailFile) Sync() error {
 }
 
 func newAttentionFailNextSyncFS() *attentionFailNextSyncFS {
-	return &attentionFailNextSyncFS{Fs: afero.NewOsFs()}
+	return &attentionFailNextSyncFS{Fs: afero.NewOsFs(), syncErr: errors.New("injected attention resolution sync failure")}
 }
 
 func (fs *attentionFailNextSyncFS) Create(name string) (afero.File, error) {
@@ -5143,7 +5187,7 @@ func (file *attentionFailNextSyncFile) Sync() error {
 		if onFail != nil {
 			onFail()
 		}
-		return errors.New("injected attention resolution sync failure")
+		return file.fs.syncErr
 	}
 	return file.File.Sync()
 }

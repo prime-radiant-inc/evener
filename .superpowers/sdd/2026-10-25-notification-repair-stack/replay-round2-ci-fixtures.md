@@ -48,6 +48,14 @@ The error propagated from `kickDriveTreeWith:1498` through `drainJobTreeWith:104
 
 The earlier rationale that `restorePendingNotifications` validates an inherited child's transcript was incorrect. It is root-only. Actual malformed/identity refusal is the preconstruction `OpenWriterForSession` boundary near `session_init.go:990`; the new controls invoke `RestoreSessionFromMetaWithConfig` and prove refusal there. Bootstrap refresh, own transcript opening/identity checks, all later mutation-recovery refreshes, root global replay and root errors remain unchanged.
 
+### Replay review corrections over `3139553`
+
+The first replay review found that the recovery-wake assertion could consume the healthy child's earlier completion edge. The corrected test joins the child and root senders, drains that edge while the root filesystem fault remains active, then clears only the fault and advances the existing automatic retry. It keeps the original callback installed and requires a new wake alongside exact recovered canonical custody. Source debt, journal acknowledgements, actual request, response receipt and completed/reported generation checks remain intact.
+
+A temporary control called the existing `root.SetNotifyFunc(nil)` only after draining the old edge. Custody still recovered, but the test failed specifically at `automatic root retry did not wake recovered receiver` (exit 1). The control was removed before final verification. Log: `review-replay-disabled-wake-red.log`.
+
+Three new error-prose assertions were replaced. The test filesystem now returns one per-instance sync-failure sentinel, checked with `errors.Is`. Inherited own-header failures require `transcript.SessionIDMismatchError` with both exact session IDs or `json.SyntaxError` at the malformed input's exact byte offset; unchanged transcript, retained source debt and zero model requests remain required. Global bootstrap uses an untyped identity error, so its control now repairs only the wrong owner's header and repeats the same restore configuration: the invalid header must refuse before construction with no delivery acknowledgement, while the corrected header must reach the existing `builtin_agents` construction seam and return its exact sentinel once. No production error type or runtime behavior was added. A first attempted typed global assertion failed because bootstrap's evidence fold does not return `transcript.SessionIDMismatchError`; that assertion was replaced with this differential boundary control.
+
 ## Watch failure, old/new invariant, and causal controls
 
 Old O2 required the live and `terminalFlush` watch-ID sets to be disjoint. This was false for an active callback whose produced durable frame had not reached receiver custody: `produceCallbackNotifications` deliberately retains that config in `terminalFlush`. The original standalone harness had no receiver capable of accepting that frame. Seed 37 reproduced this after the exact create-plus-tick sequence, and seed 1 rediscovered it after eight iterations.
@@ -67,6 +75,12 @@ This independent pending-journal check exposed seed 121 (discovered during seed 
 The one-line lifecycle-helper replacement fixes that loss. Deterministic controls cover replacement and Clear with both callback and addressed pending frames. They require automatic transport retry, exact canonical ID, one request occurrence, one successful-response receipt, and removal of the settled historical config. The Stop controls assert the distinct lifecycle: requesting concrete-job Stop does not prematurely retire its watch; the simulated shell's actual cancellation terminal edge does. `TestWatchSeqFuzz_ActivePendingCallbackRetriesAutomatically` also proves that the valid active-plus-pending overlap settles automatically and leaves its registration active.
 
 These tests advance the existing paced retry, not a manual replay, enqueue, or rescue. Their explicit notification processing occurs only after automatic custody and its real receiver wake, to check actual request presentation and observation separately from transport.
+
+### Watch review corrections over `3139553`
+
+All six direct oracle controls now specify their own journal pending map and expected error boolean, not error prose. The pointer-only overlap case has an empty durable map, so a missing overlap check cannot be masked by the independent lost-debt check. Temporarily removing only the overlap-validation block made the different-config and pointer-only cases fail with `custody error=<nil>, want error=true`; the other four controls passed (exit 1 overall). The block was restored before final verification. Log: `review-watch-removed-overlap-red.log`.
+
+The three new instance-local top-level watch tests now call `t.Parallel()`. The sequence generator and production invariants are unchanged. Both production files remain frozen during these test-only review corrections.
 
 No product-contract amendment is needed. `docs/job-control.md:141–145` separates custody, successful-response observation and generation settlement; `:799–820`, especially `:812`, requires already-produced frames to survive clear/replacement. `docs/product/subsystems.md`, S12, assigns paced FIFO retry to the source journal until receiver custody and requires healthy receivers to remain usable during another receiver's storage failure.
 
@@ -132,10 +146,27 @@ There were 1,400 bounded rapid iterations across the fourteen normal/race seed r
 
 Raw final attention normal/race/lint output: `job:job_034lxFAXq5h2TBuAMLnG7v_CKdfTz6c9CAI` (exit 0). Raw final watch normal/race controls and all fourteen seed runs: `job:job_034lxFAXq5h2TBuAMLnG7v_RUHFgf9JvZI6` (exit 0). The foreground stronger settled-generation RED invocation/result is in `local:034lxFAXq5h2TBuAMLnG7v`, transcript turns `386–387`, as well as `red-child-finalization-global-replay.log`.
 
+### Review-correction verification
+
+These checks reran after both temporary causal controls were removed. They supersede the earlier results for the changed test oracles, not the closed production review.
+
+| Check | Result and retained log |
+| --- | --- |
+| Replay focused controls | PASS, `review-replay-focused-green.log` |
+| Full attention normal | PASS, 88 top-level tests, `ok ... 9.197s`, `review-attention-normal.log` |
+| Full attention race | PASS, 88 top-level tests, `ok ... 13.944s`, `review-attention-race.log` |
+| Three parallel watch groups and four native seeds, normal | PASS, `ok ... 3.995s`, `review-watch-controls-normal.log` |
+| Same watch groups and native seeds, race | PASS, `ok ... 7.368s`, `review-watch-controls-race.log` |
+| Seven rapid seeds normal and race | All fourteen runs PASS, 100 iterations each, `review-watch-{normal,race}-seed{1,2,3,5,8,37,121}.log` |
+| Configured changed-line lint | Exit 0, `0 issues.`, `review-changed-files-lint.log` |
+
+Raw normal/race attention and watch controls: `job:job_034lxFAXq5h2TBuAMLnG7v_9FmVUBp05kXI` (exit 0). Raw fourteen bounded rapid runs: `job:job_034lxFAXq5h2TBuAMLnG7v_pLAKHxWflgWu` (exit 0). The test commands and environment are the same as above; the control/native command's exact pattern was `^(TestWatchSeqFuzz_(CustodyInvariant|ActivePendingCallbackRetriesAutomatically|RetirementRetainsPendingSource)|FuzzWatchAttachTerminalProgram)$`. There were another 1,400 bounded rapid iterations, with no new campaign, skipped seed, timeout increase or live provider traffic. Gofmt and diff checks were clean. Only `agent/session_attention_test.go`, `agent/watch_seqfuzz_test.go` and this report changed over `3139553`; `agent/delegate_delivery.go`, `agent/job_watch.go` and `agent/session_init.go` were verified unchanged. Existing broader-fixture warning limits above still apply.
+
 ### Commits and handoff
 
-1. `641c45d86af01f02ab70b9cc064857459fd32e7a`, `fix(agent): keep shared delegate replay on its root pump`: only `agent/delegate_delivery.go` and `agent/session_attention_test.go`. Normal commit with configured hooks enabled. Those paths were explicitly relinquished to the parent immediately after this commit and were not changed afterward.
+1. `641c45d86af01f02ab70b9cc064857459fd32e7a`, `fix(agent): keep shared delegate replay on its root pump`: only `agent/delegate_delivery.go` and `agent/session_attention_test.go`. Normal commit with configured hooks enabled. Those paths were explicitly relinquished to the parent immediately after this commit. The parent later reopened only the test file for the review corrections above; production remains frozen.
 2. The subsequent `fix(agent): retain replaced watch sources until custody` commit contains only `agent/job_watch.go`, `agent/watch_seqfuzz_test.go`, and this report. Its exact resulting hash is supplied in the final parent handoff, since a committed file cannot name its own commit hash.
+3. The test-only review correction is a new child commit over `3139553dcfd031480c990e2be870695eaa9176e4`, with configured hooks enabled. Its exact hash is supplied in the parent handoff. Both test paths and the report are relinquished after that commit; production remains frozen.
 
 The missing-root-runtime control proves unavailable-receiver error identity, retained source debt, and the child's fallback retry owner. It does not claim eventual recovery without any receiver runtime. Actual automatic recovery after fault repair is proved with the initialized root. Watch controls use real journals, receiver transcripts, model-request construction and successful-response receipts with deterministic provider fixtures; their shell terminal edge is simulated, not a launched OS process.
 

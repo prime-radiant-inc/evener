@@ -690,6 +690,7 @@ func ws_checkCustody(snaps []ws_watchSnap, pending map[jobstore.WatchSendKey]*jo
 }
 
 func TestWatchSeqFuzz_CustodyInvariant(t *testing.T) {
+	t.Parallel()
 	key := jobstore.WatchSendKey{WatchID: "watch_source", WatchGeneration: "generation"}
 	state := jobstore.WatchSendState{Key: key, DeliveryID: "delivery", UpdateSeq: 1}
 	config := &watchConfig{}
@@ -706,32 +707,30 @@ func TestWatchSeqFuzz_CustodyInvariant(t *testing.T) {
 	emptyFlush := empty
 	emptyFlush.live = false
 	tests := []struct {
-		name      string
-		snaps     []ws_watchSnap
-		wantError string
+		name    string
+		snaps   []ws_watchSnap
+		pending map[jobstore.WatchSendKey]*jobstore.WatchSendState
+		wantErr bool
 	}{
-		{"active callback owes durable frame", []ws_watchSnap{active, flushing}, ""},
-		{"retired source still reachable", []ws_watchSnap{flushing}, ""},
-		{"live pending work disappeared", nil, "disappeared"},
-		{"retired watch stays live", []ws_watchSnap{retired, flushing}, "retired watch"},
-		{"different config reuses id", []ws_watchSnap{active, other}, "overlap"},
-		{"shared pointer alone is insufficient", []ws_watchSnap{empty, emptyFlush}, "overlap"},
+		{"active callback owes durable frame", []ws_watchSnap{active, flushing}, pending, false},
+		{"retired source still reachable", []ws_watchSnap{flushing}, pending, false},
+		{"live pending work disappeared", nil, pending, true},
+		{"retired watch stays live", []ws_watchSnap{retired, flushing}, pending, true},
+		{"different config reuses id", []ws_watchSnap{active, other}, pending, true},
+		{"shared pointer alone is insufficient", []ws_watchSnap{empty, emptyFlush}, map[jobstore.WatchSendKey]*jobstore.WatchSendState{}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ws_checkCustody(tt.snaps, pending, nil)
-			if tt.wantError == "" {
-				if err != nil {
-					t.Fatal(err)
-				}
-			} else if err == nil || !strings.Contains(err.Error(), tt.wantError) {
-				t.Fatalf("custody error=%v, want %q", err, tt.wantError)
+			err := ws_checkCustody(tt.snaps, tt.pending, nil)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("custody error=%v, want error=%t", err, tt.wantErr)
 			}
 		})
 	}
 }
 
 func TestWatchSeqFuzz_ActivePendingCallbackRetriesAutomatically(t *testing.T) {
+	t.Parallel()
 	h := ws_newHarness(t, t)
 	defer h.teardown()
 	stateDir := t.TempDir()
@@ -803,6 +802,7 @@ func TestWatchSeqFuzz_ActivePendingCallbackRetriesAutomatically(t *testing.T) {
 }
 
 func TestWatchSeqFuzz_RetirementRetainsPendingSource(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"replace", "clear", "stop"} {
 		for _, send := range []int{0, 1} {
 			t.Run(fmt.Sprintf("%s/send=%d", action, send), func(t *testing.T) {
