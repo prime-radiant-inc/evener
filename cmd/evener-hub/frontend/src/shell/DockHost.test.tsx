@@ -648,6 +648,10 @@ test("promoting a real delegate conversation keeps both conversation lifetimes, 
   expect(parentComposer?.getSnapshot().text).toBe("retained parent draft");
   expect(within(restoredPanel).getByTestId("transcript-virtual-list").firstElementChild?.scrollTop).toBe(137);
   expect(childScroll.scrollTop).toBe(211);
+  // The reader's own scroll replaces the virtualizer's index target, and that
+  // reconciliation runs a frame later. Let it land inside act here so a slow
+  // CI worker cannot deliver it after the test has finished.
+  await act(async () => {});
 });
 
 // The main group's header is hidden ALWAYS (identity, not count - see

@@ -7,6 +7,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { ownerDocumentOf } from "../internal/documentRealm";
+import { useOwnedDocument } from "../internal/useOwnedDocument";
+import { watchViewport } from "../internal/viewportWatch";
 import { acquirePointerActivity, type PointerActivityHandle } from "./pointerActivity";
 
 export const SHOW_DELAY_MS = 300;
@@ -44,6 +47,8 @@ interface FloatingLabelTriggerProps {
 
 interface UseFloatingLabelResult {
   visible: boolean;
+  /** The document the label's own DOM lives in, current across a move. */
+  ownerDocument: Document;
   wrapperRef: RefObject<HTMLSpanElement | null>;
   triggerProps: FloatingLabelTriggerProps;
   showImmediately: () => void;
@@ -61,6 +66,11 @@ export function useFloatingLabel({
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const wrapperRef = useRef<HTMLSpanElement>(null);
   const activeRef = useRef({ hovered: false, wrapperFocused: false, externalFocused: false });
+  // Follows Dockview moving this label's DOM between windows without a render.
+  // Always on, not only while visible: the pointer tracker has to belong to the
+  // destination document before the first tap there, or that tap reads as
+  // keyboard focus and pops a hoverless card the person did not ask for.
+  const ownerDocument = useOwnedDocument(wrapperRef);
 
   // A focus that arrives while a pointer is pressed, or just after it lifts
   // (touch browsers send the compatibility mousedown/focus/click only after
@@ -73,17 +83,20 @@ export function useFloatingLabel({
     () => isHoverless() && (pointerActivityRef.current?.isPointerFocus(POINTER_CLICK_WINDOW_MS) ?? false),
     [],
   );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: ownerDocument is the deliberate rebinding trigger; the node is authoritative at attach time
   useEffect(() => {
-    // The wrapper's own Document, so a label mounted inside an iframe tracks
-    // that document's pointers rather than the top-level one's.
-    const owner = wrapperRef.current?.ownerDocument ?? document;
-    const handle = acquirePointerActivity(owner);
+    // The wrapper's actual document, not the tracked state: on the first
+    // commit the state is still the opener's (the ref attaches during commit),
+    // and a card mounted in a popout by a tap has to read that popout's
+    // tracker to know the focus came from the tap. Later moves rebind through
+    // the dependency below.
+    const handle = acquirePointerActivity(ownerDocumentOf(wrapperRef.current));
     pointerActivityRef.current = handle;
     return () => {
       pointerActivityRef.current = null;
       handle.release();
     };
-  }, []);
+  }, [ownerDocument]);
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
@@ -94,16 +107,21 @@ export function useFloatingLabel({
   // without the caller having to enumerate them. Feature-detected: jsdom
   // implements no ResizeObserver, and the caller's show-time measure is the
   // whole behavior without it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: ownerDocument is the deliberate trigger - a document move replaces the observed bubble node
   useEffect(() => {
     if (!visible) return;
     const observedEl = observe.current;
-    if (!observedEl || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
+    // The observer belongs to the observed element's own window: a popout's
+    // element cannot be observed through the opener's constructor, and
+    // delivery would follow the opener's rendering lifecycle.
+    const Observer = observedEl?.ownerDocument.defaultView?.ResizeObserver;
+    if (!observedEl || typeof Observer === "undefined") return;
+    const observer = new Observer(measure);
     observer.observe(observedEl);
     const anchor = observeAnchor?.();
     if (anchor) observer.observe(anchor);
     return () => observer.disconnect();
-  }, [measure, observe, observeAnchor, visible]);
+  }, [measure, observe, observeAnchor, ownerDocument, visible]);
 
   // A scroll anywhere (capture-phase, so a scrollable ancestor's own scroll
   // counts) or a viewport resize hides the floating element rather than
@@ -122,13 +140,10 @@ export function useFloatingLabel({
       setPending(false);
       setVisible(false);
     }
-    window.addEventListener("scroll", dismiss, true);
-    window.addEventListener("resize", dismiss);
-    return () => {
-      window.removeEventListener("scroll", dismiss, true);
-      window.removeEventListener("resize", dismiss);
-    };
-  }, [pending, visible]);
+    // The wrapper's own window: a Dockview popout scrolls and resizes its own
+    // window, and the opener's never sees either.
+    return watchViewport(ownerDocument, dismiss);
+  }, [ownerDocument, pending, visible]);
 
   const show = useCallback(() => {
     clearTimeout(timerRef.current);
@@ -175,7 +190,9 @@ export function useFloatingLabel({
     };
     target.addEventListener("focusin", handleFocus);
     target.addEventListener("focusout", handleBlur);
-    if (target.contains(document.activeElement)) handleFocus();
+    // The target's own document: in a popout the opener's activeElement is the
+    // iframe, never the row that already has focus there.
+    if (target.contains(ownerDocumentOf(target).activeElement)) handleFocus();
     return () => {
       target.removeEventListener("focusin", handleFocus);
       target.removeEventListener("focusout", handleBlur);
@@ -184,6 +201,7 @@ export function useFloatingLabel({
 
   return {
     visible,
+    ownerDocument,
     wrapperRef,
     showImmediately,
     dismiss: hide,

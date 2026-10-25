@@ -56,6 +56,9 @@ type grepAccum struct {
 	maxResults   int
 	contextLines int
 	results      []string
+	// pathPrefix rebases result names for memory search. An empty prefix keeps
+	// ordinary grep's search-base-relative and unnamed-single-file output.
+	pathPrefix string
 	// truncated records that the walk found a result past maxResults, so
 	// finish adds grepTruncationNote as a note.
 	truncated bool
@@ -122,6 +125,15 @@ func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMo
 	}, nil
 }
 
+// resultName rebases only the path field, before escaping and formatting.
+// A rebased explicit file has a real name, rather than grep's "." sentinel.
+func (a *grepAccum) resultName(relPath string) (name string, singleFile bool) {
+	if a.pathPrefix != "" {
+		relPath = filepath.Join(a.pathPrefix, relPath)
+	}
+	return OneLinePath(relPath), relPath == "."
+}
+
 // feed scans one file's lines and records matches per output mode; it returns true
 // when it found a result past maxResults, which it leaves out, and the walk
 // should stop. Stopping at the result past the cap rather than at the cap
@@ -137,8 +149,7 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 	if bytes.IndexByte(data, 0) >= 0 {
 		return false
 	}
-	singleFile := relPath == "."
-	name := OneLinePath(relPath)
+	name, singleFile := a.resultName(relPath)
 	lines := fileLines(string(data))
 	switch a.outputMode {
 	case "files_with_matches":
@@ -462,8 +473,9 @@ func (a *grepAccum) feedLargeFile(ctx context.Context, r io.ReadSeeker) (stop bo
 		disarm := armStreamDeadline(ctx, f)
 		defer disarm()
 	}
-	// A named target's feed name is "." (see feed); the walk never streams.
-	s := &grepStream{a: a, name: ".", singleFile: true, last: -1, afterEnd: -1}
+	// Only named targets stream; memory search supplies their scope-relative name.
+	name, singleFile := a.resultName(".")
+	s := &grepStream{a: a, name: name, singleFile: singleFile, last: -1, afterEnd: -1}
 	buf := make([]byte, grepStreamWindowBytes)
 	var pending []byte
 	i, skipping, binary := 0, false, false
