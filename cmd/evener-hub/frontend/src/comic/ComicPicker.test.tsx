@@ -157,7 +157,8 @@ test("remote live rows and current, recent, archived project pages load only on 
     ["p", "archived", 1, 50],
   ]);
   screen.getByRole("button", { name: "Remote live" }).click();
-  expect(selected).toEqual(["remote:live"]);
+  screen.getByRole("button", { name: "Local live" }).click();
+  expect(selected).toEqual(["remote:live", "local:live"]);
   await act(async () => {
     screen.getByRole("button", { name: /Archived project/ }).click();
     await flush();
@@ -179,6 +180,54 @@ test("remote live rows and current, recent, archived project pages load only on 
     ["recent", 1, 50],
     ["archived", 1, 50],
   ]);
+  mounted.unmount();
+});
+
+test("a shallow root retains an explicitly supplied child ref until project expansion", async () => {
+  const calls: NavigationReadParams[] = [];
+  const childRef = "local:child-of-parent-034l-ref";
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params) => {
+    calls.push(params);
+    if (params.resource === "manifest")
+      return wireSnapshot(
+        params,
+        manifest({
+          sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+          catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+        }),
+      );
+    if (params.resource === "section")
+      return wireSnapshot(params, {
+        sessions: [{ ref: "local:parent-034l-ref", title: "Parent", children: [] }],
+        remaining: 0,
+      });
+    if (params.resource === "catalog")
+      return wireSnapshot(params, { projects: [{ key: "p", name: "Parent project", session_count: 2 }], remaining: 0 });
+    if (params.resource === "project")
+      return wireSnapshot(params, {
+        key: "p",
+        current: { sessions: [{ ref: childRef, title: "Supplied child", children: [] }], remaining: 0 },
+        recent: { sessions: [] },
+        archived: { sessions: [] },
+      });
+    throw new Error(`unexpected ${params.resource}`);
+  });
+  initNavigation(client, capability());
+  await act(flush);
+  const selected: string[] = [];
+  const mounted = render(<ComicPicker onSelect={(ref) => selected.push(ref)} />);
+  expect(screen.getByRole("button", { name: "Parent" })).toBeDefined();
+  expect(screen.queryByRole("button", { name: "Supplied child" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Children of Parent" })).toBeNull();
+  expect(calls.filter((call) => call.resource === "project" || call.resource === "project_page")).toHaveLength(0);
+  await act(async () => {
+    screen.getByRole("button", { name: "Parent project" }).click();
+    await flush();
+  });
+  screen.getByRole("button", { name: "Supplied child" }).click();
+  expect(selected).toEqual([childRef]);
+  expect(calls.filter((call) => call.resource === "project_page" || call.resource === "location")).toHaveLength(0);
   mounted.unmount();
 });
 
@@ -224,5 +273,127 @@ test("a failed next page retains last-known live rows during retry", async () =>
   screen.getByRole("button", { name: "First" }).click();
   screen.getByRole("button", { name: "Second" }).click();
   expect(selected).toEqual(["local:first", "local:second"]);
+  mounted.unmount();
+});
+
+test("a failed project page retries once per offset and follows returned continuation", async () => {
+  const calls: NavigationReadParams[] = [];
+  const client = new FakeClient("ready");
+  let failed = false;
+  client.on("evener/navigation/read", (params) => {
+    calls.push(params);
+    if (params.resource === "manifest")
+      return wireSnapshot(
+        params,
+        manifest({ catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } } }),
+      );
+    if (params.resource === "catalog")
+      return wireSnapshot(params, { projects: [{ key: "p", name: "Project P", session_count: 3 }], remaining: 0 });
+    if (params.resource === "project") {
+      const response = wireSnapshot(params, {
+        key: "p",
+        current: { sessions: [{ ref: "local:first", title: "First", children: [] }] },
+        recent: { sessions: [] },
+        archived: { sessions: [] },
+      });
+      const data = response.data as { metadata: Record<string, unknown> };
+      return { ...response, data: { ...data, metadata: { ...data.metadata, current_remaining: 2 } } };
+    }
+    if (params.resource === "project_page") {
+      if (params.offset === 1 && !failed) {
+        failed = true;
+        throw new Error("project page temporarily unavailable");
+      }
+      return wireSnapshot(params, {
+        sessions: [
+          {
+            ref: params.offset === 1 ? "local:second" : "local:third",
+            title: params.offset === 1 ? "Second" : "Third",
+            children: [],
+          },
+        ],
+        remaining: params.offset === 1 ? 1 : 0,
+      });
+    }
+    throw new Error(`unexpected ${params.resource}`);
+  });
+  initNavigation(client, capability());
+  await act(flush);
+  const mounted = render(<ComicPicker onSelect={() => {}} />);
+  await act(async () => {
+    screen.getByRole("button", { name: "Project P" }).click();
+    await flush();
+  });
+  const current = () => screen.getByRole("region", { name: "Project P current" });
+  await act(async () => {
+    within(current()).getByRole("button", { name: "More current" }).click();
+    await flush();
+  });
+  expect(within(current()).getByRole("button", { name: "First" })).toBeDefined();
+  expect(within(current()).getByRole("alert").textContent).toContain("Page unavailable");
+  await act(async () => {
+    const retry = within(current()).getByRole("button", { name: "More current" });
+    retry.click();
+    retry.click();
+    await flush();
+  });
+  expect(within(current()).getAllByRole("button", { name: "Second" })).toHaveLength(1);
+  await act(async () => {
+    within(current()).getByRole("button", { name: "More current" }).click();
+    await flush();
+  });
+  expect(within(current()).getAllByRole("button", { name: "Third" })).toHaveLength(1);
+  expect(within(current()).queryByRole("button", { name: "More current" })).toBeNull();
+  expect(calls.filter((call) => call.resource === "project_page").map((call) => call.offset)).toEqual([1, 1, 2]);
+  mounted.unmount();
+});
+
+test("a failed catalog page preserves prior projects and retries its exact offset", async () => {
+  const calls: NavigationReadParams[] = [];
+  const client = new FakeClient("ready");
+  let failed = false;
+  client.on("evener/navigation/read", (params) => {
+    calls.push(params);
+    if (params.resource === "manifest")
+      return wireSnapshot(
+        params,
+        manifest({ catalogs: { projects: { count: 3 }, archived_projects: { count: 0 }, test_runs: { count: 0 } } }),
+      );
+    if (params.resource === "catalog") {
+      if (params.catalog === "projects" && params.offset === 1 && !failed) {
+        failed = true;
+        throw new Error("catalog temporarily unavailable");
+      }
+      return wireSnapshot(params, {
+        projects: [{ key: `p${params.offset}`, name: `Project ${params.offset}`, session_count: 1 }],
+        remaining: params.catalog === "projects" ? 2 - (params.offset ?? 0) : 0,
+      });
+    }
+    throw new Error(`unexpected ${params.resource}`);
+  });
+  initNavigation(client, capability());
+  await act(flush);
+  const mounted = render(<ComicPicker onSelect={() => {}} />);
+  const projects = () => screen.getByRole("region", { name: "projects" });
+  await act(async () => {
+    within(projects()).getByRole("button", { name: "More projects" }).click();
+    await flush();
+  });
+  expect(within(projects()).getByRole("button", { name: "Project 0" })).toBeDefined();
+  expect(within(projects()).getByRole("alert").textContent).toContain("Catalog unavailable");
+  await act(async () => {
+    within(projects()).getByRole("button", { name: "Retry projects" }).click();
+    await flush();
+  });
+  expect(within(projects()).getAllByRole("button", { name: "Project 1" })).toHaveLength(1);
+  await act(async () => {
+    within(projects()).getByRole("button", { name: "More projects" }).click();
+    await flush();
+  });
+  expect(within(projects()).getAllByRole("button", { name: "Project 2" })).toHaveLength(1);
+  expect(within(projects()).queryByRole("button", { name: "More projects" })).toBeNull();
+  expect(
+    calls.filter((call) => call.resource === "catalog" && call.catalog === "projects").map((call) => call.offset),
+  ).toEqual([0, 1, 1, 2]);
   mounted.unmount();
 });

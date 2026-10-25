@@ -118,12 +118,13 @@ function Project({ project, onSelect }: { project: NavigationProjectSummary; onS
                   <Button
                     variant="link"
                     onClick={() => {
+                      setPages((old) => ({
+                        ...old,
+                        [tier]: (old[tier] ?? []).includes(offset) ? old[tier] : [...(old[tier] ?? []), offset],
+                      }));
                       void navigationStore
                         .getState()
-                        .loadProjectPage(project.key, tier, offset, NAVIGATION_SECTION_LIMIT)
-                        .then(() => {
-                          setPages((old) => ({ ...old, [tier]: [...(old[tier] ?? []), offset] }));
-                        });
+                        .loadProjectPage(project.key, tier, offset, NAVIGATION_SECTION_LIMIT);
                     }}
                   >
                     More {tier}
@@ -211,19 +212,21 @@ export function ComicPicker({ onSelect }: { onSelect(ref: string): void }): Reac
                 ))}
             </ul>
             {!!last?.error && <div role="alert">Catalog unavailable</div>}
-            {Number(lastData?.remaining ?? 0) > 0 && (
+            {(!!last?.error || Number(lastData?.remaining ?? 0) > 0) && (
               <Button
                 variant="link"
                 onClick={() => {
-                  void navigationStore
-                    .getState()
-                    .loadCatalog(catalog, nextOffset, NAVIGATION_CATALOG_LIMIT)
-                    .then(() =>
-                      setCatalogOffsets((old) => ({ ...old, [catalog]: [...(old[catalog] ?? [0]), nextOffset] })),
-                    );
+                  const offset = last?.error && last.key.kind === "catalog" ? last.key.offset : nextOffset;
+                  setCatalogOffsets((old) => ({
+                    ...old,
+                    [catalog]: (old[catalog] ?? [0]).includes(offset)
+                      ? (old[catalog] ?? [0])
+                      : [...(old[catalog] ?? [0]), offset],
+                  }));
+                  void navigationStore.getState().loadCatalog(catalog, offset, NAVIGATION_CATALOG_LIMIT);
                 }}
               >
-                More {catalog}
+                {last?.error ? "Retry" : "More"} {catalog}
               </Button>
             )}
           </section>
