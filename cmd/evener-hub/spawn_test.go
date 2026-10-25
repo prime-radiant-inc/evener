@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -448,9 +449,9 @@ echo 'evener serve: session creation: plugin initialization: resolving plugin di
 exit 42
 `
 	writeFakeEvener(t, bin, script)
-	_, err := SpawnDaemon(context.Background(), bin, filepath.Join(dir, "run"), hubcore.SpawnRequest{
+	_, err := spawnDaemonWithProviderConfig(context.Background(), bin, filepath.Join(dir, "run"), hubcore.SpawnRequest{
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5.2"}},
-	}, 60*time.Second)
+	}, 60*time.Second, io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected spawn error")
 	}
@@ -491,14 +492,14 @@ sleep 30
 		{
 			name: "spawn",
 			call: func(ctx context.Context, evenerBinary, runDir string, timeout time.Duration) error {
-				_, err := SpawnDaemon(ctx, evenerBinary, runDir, hubcore.SpawnRequest{}, timeout)
+				_, err := spawnDaemonWithProviderConfig(ctx, evenerBinary, runDir, hubcore.SpawnRequest{}, timeout, io.Discard, nil)
 				return err
 			},
 		},
 		{
 			name: "resume",
 			call: func(ctx context.Context, evenerBinary, runDir string, timeout time.Duration) error {
-				_, err := ResumeDaemon(ctx, evenerBinary, runDir, hubcore.ResumeRequest{SessionID: "sess_old"}, timeout)
+				_, err := resumeDaemon(ctx, evenerBinary, runDir, hubcore.ResumeRequest{SessionID: "sess_old"}, timeout, io.Discard)
 				return err
 			},
 		},

@@ -122,7 +122,7 @@ directory: `cd cmd/evener-hub/frontend && npm run lint` to check or
 `npm run check` to fix. Before the gate, run
 `cd cmd/evener-hub/frontend && npx biome check --write <touched paths>` on
 touched files under `src/` and on touched files in the AppWire TypeScript
-package. Files outside those two directories, such as the `scripts/layoutguard`
+package. Files outside those two directories, such as the `cmd/evener-hub/frontend/scripts/layoutguard`
 harness HTML, deliberately reproduce component markup that trips a11y lint
 rules, so an explicit-path Biome run over them reports violations the gate does
 not enforce. Do not "fix" those to satisfy an out-of-scope invocation. Use
@@ -204,9 +204,21 @@ run load app modules that import the package by name. `npm run check:scripts`
 (part of `make test-native`) resolves those scripts' module graphs without
 loading them, since each opens a socket the moment its body runs.
 
+## Code conventions
+
+- A production symbol needs a production caller. A test-only seam needs a
+  behavior test that cannot reach the failure any other way.
+- Before writing a path, fsync, truncate or clone helper, grep for the shared
+  one and use it.
+- Comments state the invariant. History, review rounds, issue ids and spec
+  section numbers belong in the commit message.
+- No test file or test name carries a sprint, round, pass or
+  coverage-percentage label.
+- New compatibility code names its removal condition in the PR description.
+
 ## Shepherding a PR through RoboRev
 
-- **Simplify-code*
+- **Simplify-code**
   Before submitting a PR, you should always use the /simplify-code skill to
   improve the code quality.
 

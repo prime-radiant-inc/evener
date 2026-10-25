@@ -569,10 +569,10 @@ including declarative repeating timers whose configuration is saved. A repeating
 send watch that has already spoken can also skip an individual restart-end
 notice. Saved pending deliveries and future registrations have different lifetimes.
 
-**Evidence.** [newJobManagerWithStoreOpen](../../agent/jobs.go#L647) and
-[clearUnrestoredActiveWatches](../../agent/jobs.go#L1526) clear all active records;
-[watchConfigSnapshot](../../agent/job_watch.go#L2174) retains filters, identities
-and intervals. [noticeUnrestoredWatchEnds](../../agent/job_watch.go#L3830) handles
+**Evidence.** [newJobManagerWithStoreOpen](../../agent/jobs.go) and
+[clearUnrestoredActiveWatches](../../agent/jobs.go) clear all active records;
+[watchConfigSnapshot](../../agent/job_watch.go) retains filters, identities
+and intervals. [noticeUnrestoredWatchEnds](../../agent/job_watch.go) handles
 the end notices. The [job-control contract](../job-control.md) distinguishes
 durable registration and delivery records from process-local observation,
 timers and callbacks.
@@ -586,7 +586,7 @@ does not shut down the independent session runtimes. Explicitly detached process
 have a separately chosen lifetime outside session-owned job supervision.
 
 The normal shutdown path already marks and signals owned jobs in
-[closeRuntimeState](../../agent/jobs.go#L757), followed by tracked process-group
+[closeRuntimeState](../../agent/jobs.go), followed by tracked process-group
 [cleanup](../../agent/execenv/local.go#L1330). After an abrupt loss, the restored
 job record's `runtime_lost` status describes lost supervision; it does not by
 itself prove that every OS process was terminated.
@@ -1441,7 +1441,7 @@ These are useful patterns and preservation checks, rather than new fix requests.
 - [Task-tool loading](../../agent/session_tools_task.go#L340) retries after a
   transient load failure without replacing malformed source with an empty plan.
 - [History repair](../../agent/history_repair.go#L127) records interrupted tool
-  execution honestly; [lost-job reconciliation](../../agent/jobs.go#L1457) ends
+  execution honestly; [lost-job reconciliation](../../agent/jobs.go) ends
   lost owned runtime with retained output and delivery. Neither blindly restarts
   commands with unknown effects. Explicit Force stop has deliberate resume rules.
 - Tool dispatch repairs supported malformed arguments before execution, and

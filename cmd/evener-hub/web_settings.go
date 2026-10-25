@@ -17,12 +17,6 @@ import (
 // (evener/settings/overview), the appwire data path behind Settings → Agents.
 var builtinAgentNames = []string{"default", "explorer", "subagent"}
 
-// settingsSpawnTimeoutDisplay is the Settings → General/Hub "Spawn timeout"
-// value. It is a display literal, not derived from live spawner config —
-// there is no configurable spawn timeout today. Consumed by
-// hubSettingsOverview for the same reason as builtinAgentNames above.
-const settingsSpawnTimeoutDisplay = "30s"
-
 // handleSettings serves the SPA shell for /settings and /settings/{section};
 // client-side routing selects the section.
 func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {

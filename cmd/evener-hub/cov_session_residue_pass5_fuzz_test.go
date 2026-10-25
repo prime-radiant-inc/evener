@@ -58,10 +58,7 @@ func FuzzSessionResiduePass5(f *testing.F) {
 			inputs := &hubcore.InputsVersion{}
 			web := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache, Inputs: inputs})
 			_, _, _ = web.navigationTreeInputs(context.Background())
-			_, _ = web.memoTree(context.Background())
-			_, _ = web.memoTree(context.Background())
 			inputs.Bump()
-			_, _ = web.memoTree(context.Background())
 		case 2:
 			past := hubcore.NewPastIndex("")
 			past.SeedForTest([]schema.SessionMeta{{
@@ -69,7 +66,8 @@ func FuzzSessionResiduePass5(f *testing.F) {
 				EnvInfo: schema.EnvironmentInfo{WorkingDir: "/work/project"},
 			}})
 			web := NewWebServer(hubcore.WebConfig{Past: past})
-			tree, _ := web.memoTree(context.Background())
+			snapshot := web.navigationSnapshot(context.Background())
+			tree := hubBuildNavigationTree(snapshot.metas, snapshot.live, web.archiveDecisions(), snapshot.projects)
 			if len(tree.Projects) == 0 {
 				t.Fatal("expected project")
 			}

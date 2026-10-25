@@ -1,0 +1,161 @@
+[
+ {
+  "id": "agent-jobs-1",
+  "title": "job_watch.go is a 6,564-line eight-concern file",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "Verified: 6564 lines, 291 funcs, 259 commits (11 in 30d). Session methods at job_watch.go:5709-6170 (drainPendingWatchSends, driveChildrenWithUndeliveredAttention 5753, childStopGated 5944, ...) operate on child sessions; session_jobtree_drain.go (1750 lines) and subagents.go:1546 driveSubagentNotificationTurn already own sibling logic. docs/architecture.md:330,389,423 and the S12 row of docs/product/subsystems.md:155 name job_watch.go as home."
+ },
+ {
+  "id": "agent-jobs-2",
+  "title": "fire-a-watch funnel hand-copied across six sites",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Overstated. Only three sites share the breaker funnel (noteConditionFireLocked): onSessionEvent 3298, feedJobOutputWithProvenance 3602, fireAttachScan 3714/3728 (twice, separate lock pairs, confirmed). runTerminalCatchup (3761) never touches the breaker, fireProgressTick (4167) explicitly says periodic ticks never trip the budget, and completeExpired is a teardown. The claimed drift (feedJobOutput breaks on budget crossing, onSessionEvent cannot) is not drift: onSessionEvent fires at most once per watch per event, so there is no match loop to break. There IS a real ordering difference: onSessionEvent records sends, then clears over-budget watches, then enqueues (teardown notification rides with the event's batch); feedJobOutput enqueues, records sends, then clears. A shared flush must preserve both orders or the first-wake semantics change. Realistic saving is ~-60, not -150.",
+  "revised_fix_plan": "Extract only the shared pieces for the three condition-fire sites: a helper that does noteConditionFireLocked + send-vs-notify build + countWatchDelivery under jm.mu, and keep each site's post-unlock ordering explicit (or parameterize it). Leave fireProgressTick, runTerminalCatchup and expire paths alone. Characterization tests for budget crossing mid-chunk and for the onSessionEvent notification order before touching."
+ },
+ {
+  "id": "agent-jobs-3",
+  "title": "Watch teardown transaction open-coded in many places",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Core confirmed: clearWatch (job_watch.go:1639-1682), autoClearWatchOverBudgetNotification (2018-2037) and abandonRunningJobs (jobs.go:913-950) all do mark rejecting -> unlock -> appendWatchTeardownBatch/appendAbandonSnapshots -> rollback or detach+removeWatchSendTerminalSnapshots+forget. Helper counts roughly match (removeWatchSendTerminalSnapshots 16 prod refs, forgetDetached 7, markWatchConfigSnapshotsRejectingLocked 6, rollbackWatchConfigsRejecting 5). But sites differ materially (clear returns the error; abandon swallows it into a notification; budget path also resets budgetTripped under the same critical section), so a single watchTeardown value must model three failure policies. rollbackWatchBudgetTeardown/Locked is a normal lock/Locked pair (3+2 refs), not slop worth its own item. abandonRunningJob (jobs.go:953) is genuinely dead (0 prod callers, //nolint:unused) and near-duplicates abandonRunningJobs. Severity high overstated; risk is medium-high and the saving is closer to -100.",
+  "revised_fix_plan": "Stage it: (1) delete dead abandonRunningJob (finding 7). (2) Add only red-first persist-failure tests for clearWatch, auto-clear and abandon asserting watch live again with delivery re-enabled. (3) Then extract a begin/rollback/commit helper used by those three sites, one per commit. Do not collapse the three failure policies."
+ },
+ {
+  "id": "agent-jobs-4",
+  "title": "configureWatchWithHooks is a 217-line function",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Confirmed: function spans job_watch.go:764-980; only prod caller is configureWatch (761) passing watchConfigureHooks{}; hooks used by job_watch_core_config_fuzz_test.go:229,250. validateWatchSendTarget (1249) is a pass-through to validateWatchSendDeliveryTarget(target, _ watchArgs) with an unused param. Send-target trimming split in two ifs (778-787), guard repeated at 679 and 822. MISSED by the audit: job_watch_timer_identity_test.go:214-263 is an AST guard looking up the function by name 'configureWatchWithHooks' and counting calls inside its body; splitting or renaming it requires rewriting that guard in the same change. Also the hooks race tests (beforeTargetRevalidate/afterDetachedTeardown) have no real-sync alternative cheaply, so 'drive the race with real sync' is unlikely.",
+  "revised_fix_plan": "Delete validateWatchSendTarget wrapper and unused param first (tiny, safe). Collapse the two send-target trim ifs. Then split out installWatch, updating job_watch_timer_identity_test.go's AST guard to follow. Keep hooks parameter as is."
+ },
+ {
+  "id": "agent-jobs-5",
+  "title": "jobManager carries a dozen test seams",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Seams confirmed (jobs.go:127-130, 178-216; append* assigned at 702-705 to the manager's own methods and overridden in tests: jobs_seed100_more_test.go:38,44,223). Mutexes: mu, watchActivityMu, watchNotifyMu, watchPersistMu confirmed at 68-72. But hook usage is thin (appendTeardown 1 test ref, appendRegistry 2, finalizeShellAsync 1) and grouping fields into a struct deletes nothing; it only relocates them. Fault injection through the jobstore fs layer is unverified and could need a bigger test rewrite. Value is low.",
+  "revised_fix_plan": "Do only the cheap part: convert the three append* fields to a single nil-in-prod hook if a test rewrite is not needed; otherwise leave. Do not build new seams. Ask Jesse before reworking tests."
+ },
+ {
+  "id": "agent-jobs-6",
+  "title": "createShell is production-dead, 238 test call sites",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "Verified: createShell has 0 non-test refs, 238 test refs; createShellOpts is used only by createShell (def jobs.go:623, 991). Production path newDelayedShell (job_shell.go:512) + commitDelayedShell (594) builds the same record/event and has the same forward-failure handling, and sets WorkingDir and Background and the stable delegate receipt, which createShell (jobs.go:991-1074) omits. Tests therefore exercise a lifecycle production never runs.",
+  "revised_fix_plan": "Add test helper that calls newDelayedShell then commitDelayedShell; migrate the 238 call sites mechanically; delete createShell/createShellOpts. Expect some tests to need WorkingDir/Background set. Run job tests in CI."
+ },
+ {
+  "id": "agent-jobs-7",
+  "title": "20+ production functions reachable only from tests",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Spot-checked with whole-repo grep excluding _test.go: createShell 0, setParentJobID 0, noteJobActivity 0, liveWorkHandles 0 (byte-identical body to liveShellHandles, jobs.go:489 vs 511), createJobOutputForID 0, abandonRunningJob 0, readOutputHead 0, outputDropped 0, grepOutput 0, isJobNotFoundErr 0, finalizeWithRunNoNotification 0, SetLaneClosePassBudget 0 prod (only tests + session_env_swap_test.go:517 helper), watchListToolResultForReceiver 0, aggregateWatchStatuses 0, Session.liveWatchStatuses 0, LiveWatchesForDescendant/Session 0, recordWatchSendPending 0, feedJobOutput 0 (it is a nil-provenance wrapper over the live feedJobOutputWithProvenance), watchCount 0, projectActivitySession 0, projectStableLiveActivityTree 0 (test jobs_activity_test.go:179), shellTerminal 0, isOutputNotExistErr 0. headOutput has one prod ref but only inside dead readOutputHead (jobs.go:1383). Seven //nolint:unused markers (jobs.go:461,952,1377,1401,1779,2310; job_watch.go:5216). No evenerfuzz-tagged non-test file in agent/ references them (only agent/sandbox has tagged non-test files), so moving them to tagged _test.go files is the right home. Caveat: SetLaneClosePassBudget is used by a test helper; and some of these are pinned by many tests (watchCount 85 test refs), so 'repoint tests' is the bulk of the work.",
+  "revised_fix_plan": "Delete pure duplicates first (liveWorkHandles, abandonRunningJob, watchListToolResultForReceiver, aggregateWatchStatuses, LiveWatchesFor*, Session.liveWatchStatuses), repoint tests at production entry points; move the nolint helpers into _test.go (tagged if needed). go vet and go vet -tags evenerfuzz ./agent as the check. Do not blanket-delete functions with many test refs (watchCount, feedJobOutput) without reading those tests."
+ },
+ {
+  "id": "agent-jobs-8",
+  "title": "Five copies of 'snapshot subagents, skip closed'",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: liveSubagentSessions (jobs_nested.go:194-217) and liveDirectSubagents (271-299) are identical except return type; closed-flag triple at jobs_nested.go:36,211,288,310, jobs_activity.go:743, subagent_manager.go:364. subagentManager.directSubagents (subagent_manager.go:245-255) already snapshots under m.mu but deliberately does not filter closed (its doc says so). liveDirectSubagents 15 prod callers. Small, safe, ~-45 LOC; low rather than medium.",
+  "revised_fix_plan": "As proposed: add (*subagent).isClosed(), build liveDirectSubagents on directSubagents()+!isClosed(), liveSubagentSessions as a map over it. Preserve the manager-outer/sub-inner lock order (directSubagents releases m.mu before sub.mu is taken)."
+ },
+ {
+  "id": "agent-jobs-9",
+  "title": "Three JobRecord clone helpers with different depth",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified: cloneJobRecord (jobs.go:2358) is a shallow *rec copy with 9 prod uses; cloneActivityRecord (jobs_activity.go:1031) deep-copies EndedAt/ExitCode/LastActivity only (2 prod uses at 1004,1010); cloneFoldJobs/cloneFoldOrdered (jobstore/store.go:945-985) deep-copy 7 fields with the 8-line body pasted twice. Latent not live; no mutation bug confirmed.",
+  "revised_fix_plan": "As proposed: red test in jobstore, (*JobRecord).Clone() with full body, use from both fold clones, delete the two agent helpers. Consider keeping cloneJobRecord call sites cheap if profiling shows list-path allocation matters."
+ },
+ {
+  "id": "agent-jobs-10",
+  "title": "watchConfig plays three roles; id/watchID duplicate",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Verified: id and watchID set to the same value at job_watch.go:1307-1308, 1574-1575, 3971-3972; cfg.id read at 2394, 2725, 3059. Detached config literal built at 1573-1587 and 3970-3984 with essentially the same fields (comment at 3967 admits it). 132 &watchConfig{ literals in tests. Real but small (~-50); watchConfig split not recommended. Severity low.",
+  "revised_fix_plan": "Delete id, switch three readers to watchID, add one newDetachedWatchConfig used by both restore sites. Skip the buildWatchFrame signature change unless it falls out naturally."
+ },
+ {
+  "id": "agent-jobs-11",
+  "title": "Receiver/visibility matching duplicated; list and inspect disagree",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Duplication is real: watchConfigMatchesReceiver/watchHistoryMatchesReceiver vs the inline matches closure in watchListToolResultForReceiverShapes (2573-2587), plus separate key-based matchers at 5528-5583. But the headline 'list and inspect disagree' is not supported: inspectReceiverWatchByIDShapes (2672) checks delegate shape then session shape, which for a unique watch id returns the same row the list pass would. The one real asymmetry is clearStableReceiverWatchByID (session_tools_jobs.go:374-383), which uses non-Shapes inspect and a delegate-keyed clear, while inspect at line 249 uses Shapes; whether that is intentional (clear only for stable receiver watches) was not confirmed. Also watchListToolResultForReceiver (the non-Shapes twin) is test-only (finding 7).",
+  "revised_fix_plan": "Delete the dead non-Shapes list twin (finding 7), then dedupe the matcher closure. Separately ask whether session-keyed descendant watches should be clearable through job_watch clear; if so that is a behavior change needing TDD, not part of this refactor."
+ },
+ {
+  "id": "agent-jobs-12",
+  "title": "Send-rail delivery state across ten maps/sets",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Fields confirmed at jobs.go:81-130, 211-217. deliverStableWatchSend (job_watch.go:4552-4640) does have two branches that both call armAcceptedStableWatchFrame then settleWatchSendDelivered, but they return different values (false vs true) and differ in failure bookkeeping (rememberStableWatchSettlementRetry vs noteUnsettledWatchSend), so collapsing is not a mechanical merge. Architectural claim is reasonable but the -150 LOC estimate and 'collapse' step are speculative; moving maps behind a type is mostly relocation. Needs Jesse's call.",
+  "revised_fix_plan": "Discuss first. If approved, move the maps and accessors into a watchSendRail type guarded by jm.mu with no logic change; leave the two deliverStableWatchSend branches until per-branch concurrency tests exist."
+ },
+ {
+  "id": "agent-jobs-13",
+  "title": "runShell repeats commit-failure handling",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: identical 7-line commit-failure block at job_shell.go:234-240 and 318-324; start_failed result literal at 175,182,238,322,464 plus multiline at 193. Small (~-35); low severity.",
+  "revised_fix_plan": "Extract handleCommitFailure and a startFailedResult constructor; no behavior change."
+ },
+ {
+  "id": "agent-jobs-14",
+  "title": "Watch event-kind vocabulary defined three times",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: WatchEventKindNames (job_watch.go:29), modelEventKinds (37) and provider/profile.go:114 jobWatchEventKindNames with a 'Keep in sync' comment at 111. availableEventKindNames has one prod caller (session_tools_jobs.go:117).",
+  "revised_fix_plan": "Define the list once in agent/internal/tool next to DefJobWatch (profile.go already imports it); keep modelEventKinds with a test asserting key equality."
+ },
+ {
+  "id": "agent-jobs-15",
+  "title": "Lane-disposal tunables and override stack in jobs.go",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Misplacement confirmed: laneClosePassBudget/laneTailWarnThreshold used only by session_worktree_close.go; laneSweepDelay/laneGrace by session_worktree_sweep.go/relock/session_init/session_tools_worktree.go (jobs.go:224-289). But the override stack is not mere over-building: SetLaneClosePassBudget's doc says it exists so end-to-end tests shorten the budget 'without racing a close already running in the background'. A plain package var assigned by tests would be a data race under -race, and TestSetLaneClosePassBudgetRestoresOutOfOrder (session_worktree_close_test.go:70) pins out-of-order restore. Replacing it is unsafe as proposed.",
+  "revised_fix_plan": "Move the block (constants, vars, laneClosePassBudget, SetLaneClosePassBudget) to session_worktree_close.go with no logic change. Do not replace the override stack."
+ },
+ {
+  "id": "agent-jobs-16",
+  "title": "Four on-disk 'read one job record' paths with different safety checks",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Happy-path duplication confirmed: jobs_panel.go:83-103 loadSessionJobRecord and historical_jobs.go:33-69 LoadSessionHistoricalJobRecords share ValidateSessionID -> jobsDir/jobs.jsonl -> historicalJobsStat -> IsNotExist -> ReadEvents -> Fold. findLocalJobInProject (job_transcript_read.go:254-325) is hardened because it walks sibling project buckets discovered by enumeration; the panel/historical paths read the caller's own stateDir, so the FIFO/symlink threat model does not obviously apply and 'inconsistent defense' is overstated. jobs_activity_past.go:98-132 is an incremental fold cache, not a fourth copy. cmd/evener-hub/app_jobs.go:108 not opened. Narrating 'round 10/11' comments at job_transcript_read.go:308-309 noted for finding 19.",
+  "revised_fix_plan": "Extract only a shared readSessionJobEvents(stateDir, sessionID) for the two identical happy paths. Add the hardened checks only if Jesse confirms the panel path can see untrusted directories."
+ },
+ {
+  "id": "agent-jobs-17",
+  "title": "Evergreen docs cite stale line anchors",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: friction.md:572-575 anchors jobs.go#L647/L1526/job_watch.go#L3830, L2174, jobs.go#L757, L1457; actual: newJobManagerWithStoreOpen at jobs.go:663, clearUnrestoredActiveWatches 1540, noticeUnrestoredWatchEnds job_watch.go:3921, closeRuntimeState jobs.go:778, reconcileLostJobs 1467. architecture.md:330,389,423 name job_watch.go for functions that would move in finding 1.",
+  "revised_fix_plan": "Replace line anchors with symbol names; update architecture.md and the S12 row of subsystems.md in the same PR as the split."
+ },
+ {
+  "id": "agent-jobs-18",
+  "title": "Coverage-driven test files assert on phrasing",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Direction confirmed: jobs_pure_covtest_test.go:21 asserts strings.Contains(got, \"persist terminal job record\") (violates AGENTS.md 'Never assert on phrasing'); stale 'covers ... (jobs.go lines N-M)' comments (jobs_pure_covtest_test.go:16,29,48 cites 991-1007 for keepListedJobRow now at ~1150); jobs_seed100_more_test.go has 35 '_ =' in 311 lines, with results discarded after injected errors (lines 38-49 call abandonRunningJobs/closeRuntimeState with no assertion). Reproducible counts for job*/jobs* test files: 83 files / 32,307 lines vs 14,378 prod lines (2.2:1), 22 cov/seed100 files / 7,372 lines, 61 TestCov funcs, 287 strings.Contains lines. The audit's 148 files / 56,690 lines / 35 files / 11,970 lines cover a wider glob and were not reproducible; treat numbers as approximate. -2,500 to -4,000 lines is a guess.",
+  "revised_fix_plan": "Per file: replace phrase asserts with errors.Is/structured asserts, delete stale 'covers lines' comments, add post-state asserts where results are discarded. Do not cut coverage. Sequence after findings 6 and 7."
+ },
+ {
+  "id": "agent-jobs-19",
+  "title": "Narrating and issue-history comments in production code",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified counts in the 11 non-test job*/jobs* files: 2,861 comment lines, 51 'spec \u00a7', 12 '#NNN'. 'this PR' appears once (job_transcript_read.go:292), 'round 10/11' at 308-309, jobs.go:1148 'Behavior mirrors the original clause order exactly', and a 22-line known-gap essay in jobs_activity.go:366-388. Audit's 'this PR 6' was slightly high. Low value; do only when touching each file.",
+  "revised_fix_plan": "Rewrite as invariants while files are touched by other findings; no standalone PR."
+ },
+ {
+  "id": "agent-jobs-20",
+  "title": "Pass-through wrappers and double-field list filters",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Verified: listFilter has Status+Statuses and Type+Types (jobs.go:629-640); keepListedJobRow checks both (1154-1164); statusAllowed/typeAllowed are one-line slices.Contains wrappers with 4 prod uses (jobs.go:1157,1163, session_tools_jobs.go:1023,1029); sort.Slice comparators at jobs.go:1124, 2271, jobs_activity.go:1013. Single-value Status set by sessionRunningJobIDs (session_tools_jobs.go ~2149). Tiny.",
+  "revised_fix_plan": "Delete wrappers, collapse Status/Type into slices, add one sort helper only if the comparators are actually identical."
+ }
+]

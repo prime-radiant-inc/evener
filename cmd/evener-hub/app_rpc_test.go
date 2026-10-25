@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/buildinfo"
@@ -907,7 +908,7 @@ func testHubSteersSurvivingDaemon(t *testing.T, cleared bool) {
 	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + resumeID})
+	resumed, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: "local:" + resumeID})
 	if err != nil {
 		t.Fatalf("ThreadResume: %v", err)
 	}
@@ -9346,7 +9347,7 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	if _, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		ModelProvider: "openrouter",
 		Model:         "deepseek/deepseek-v4-flash",
 		CWD:           "/tmp",
@@ -9446,7 +9447,7 @@ func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) 
 			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 				t.Fatalf("Initialize: %v", err)
 			}
-			resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+			resp, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 				Model: "openai/gpt-5",
 				CWD:   "/tmp",
 				Input: []appwire.InputItem{{Type: "text", Text: "review the open PRs"}},
@@ -9527,7 +9528,7 @@ func TestHubRPCThreadStartPassesExplicitNonInteractive(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	nonInteractive := true
-	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	if _, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		Model:          "openai/gpt-5.2",
 		CWD:            "/tmp",
 		NonInteractive: &nonInteractive,
@@ -9563,7 +9564,7 @@ func TestHubRPCThreadStartPassesNonInteractiveLaunchOverride(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	nonInteractive := true
-	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	if _, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		Model: "openai/gpt-5.2",
 		CWD:   "/tmp",
 		LaunchOverrides: &appwire.LaunchConfigLayer{
@@ -9598,7 +9599,7 @@ func TestHubRPCThreadStartPropagatesSpawnerStderrAsHubLaunchError(t *testing.T) 
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		ModelProvider: "openai",
 		Model:         "gpt-5",
 		CWD:           "/tmp",
@@ -9675,7 +9676,7 @@ func TestHubRPCThreadStartRejectsModelOutsideEvenerLaunchContractBeforeSpawn(t *
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		ModelProvider: "openai",
 		Model:         "gpt-stale",
 		CWD:           "/tmp",
@@ -9718,7 +9719,7 @@ func TestHubRPCThreadStartAllowsModelWhenProviderDoesNotEnumerateLaunchModels(t 
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	if _, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		ModelProvider: "openai",
 		Model:         "gpt-5.5",
 		CWD:           "/tmp",
@@ -9761,7 +9762,7 @@ func TestHubRPCThreadStartAllowsModelWhenProviderHasLaunchDiagnostic(t *testing.
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	if _, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		ModelProvider: "openai",
 		Model:         "gpt-5.5",
 		CWD:           "/tmp",
@@ -9799,7 +9800,7 @@ func TestHubRPCThreadStartRejectsProviderMissingFromDegradedLaunchContract(t *te
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		ModelProvider: "anthropic",
 		Model:         "claude-test",
 		CWD:           "/tmp",
@@ -9844,7 +9845,7 @@ func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T)
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	resp, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		ModelProvider: "orclaude",
 		Model:         "anthropic/claude-3-5-sonnet",
 		CWD:           "/tmp",
@@ -9881,7 +9882,7 @@ func TestHubRPCThreadStartRejectsMalformedModelBeforeSpawn(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		Model: "openrouter",
 		CWD:   "/tmp",
 	})
@@ -9929,7 +9930,7 @@ func TestThreadStart_LaunchOverridesApplied(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	if _, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		Model: "openai/gpt-5",
 		CWD:   "/tmp",
 		LaunchOverrides: &appwire.LaunchConfigLayer{
@@ -10001,7 +10002,7 @@ func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	if _, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		CWD: cwd,
 	}); err != nil {
 		t.Fatalf("ThreadStart: %v", err)
@@ -10224,7 +10225,7 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: "sess_old"})
+	resp, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Session: "sess_old"})
 	if err != nil {
 		t.Fatalf("ThreadResume: %v", err)
 	}
@@ -10283,7 +10284,7 @@ func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
 			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 				t.Fatal(err)
 			}
-			response, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: sessionID})
+			response, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Session: sessionID})
 			if spawns != 1 {
 				t.Fatalf("spawns=%d", spawns)
 			}
@@ -10465,7 +10466,7 @@ func TestHubRPCThreadResumeVerifiesExistingOwnerWhenDiscoveryFails(t *testing.T)
 			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 				t.Fatal(err)
 			}
-			response, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: sessionID})
+			response, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Session: sessionID})
 			if spawned {
 				t.Fatal("spawned despite incomplete ownership discovery")
 			}
@@ -10550,7 +10551,7 @@ func TestHubRPCThreadResumeReplacesIncompatibleRosterDaemon(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: sessionID})
+	resp, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Session: sessionID})
 	if err != nil {
 		t.Fatalf("ThreadResume: %v", err)
 	}
@@ -10650,7 +10651,7 @@ func TestHubRPCThreadResumeNamesLiveIncompatibleDaemonWhenReplacementFails(t *te
 			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 				t.Fatalf("Initialize: %v", err)
 			}
-			_, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: sessionID})
+			_, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Session: sessionID})
 			if err == nil {
 				t.Fatal("ThreadResume succeeded, want the replacement spawn to fail")
 			}
@@ -10699,7 +10700,7 @@ func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 	}
 	// Source, not Harness, names the host source: a harness naming a registered
 	// source is now refused (TestHubThreadStartRefusesHarnessNamingHostSource).
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Source: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
+	resp, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{Source: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
@@ -10750,7 +10751,7 @@ func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
 	}
 	// Source, not Harness, names the host source: a harness naming a registered
 	// source is now refused (TestHubThreadStartRefusesHarnessNamingHostSource).
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Source: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
+	resp, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{Source: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
@@ -10795,7 +10796,7 @@ func TestHubRPCThreadResumeRelaysReturnedSourceThread(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: "codex:th_resume_relay"})
+	resp, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{Ref: "codex:th_resume_relay"})
 	if err != nil {
 		t.Fatalf("ThreadResume: %v", err)
 	}
@@ -11429,7 +11430,7 @@ func TestHubRPCPathsCompleteReturnsMatchingDirectories(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.PathsComplete(context.Background(), appwire.PathsCompleteParams{Prefix: filepath.Join(root, "alph")})
+	resp, err := appwiretest.PathsComplete(context.Background(), client, appwire.PathsCompleteParams{Prefix: filepath.Join(root, "alph")})
 	if err != nil {
 		t.Fatalf("PathsComplete: %v", err)
 	}
@@ -11437,7 +11438,7 @@ func TestHubRPCPathsCompleteReturnsMatchingDirectories(t *testing.T) {
 		t.Fatalf("dirs=%+v, want [%s]", resp.Data, alpha)
 	}
 
-	all, err := client.PathsComplete(context.Background(), appwire.PathsCompleteParams{Prefix: root + "/"})
+	all, err := appwiretest.PathsComplete(context.Background(), client, appwire.PathsCompleteParams{Prefix: root + "/"})
 	if err != nil {
 		t.Fatalf("PathsComplete all children: %v", err)
 	}
@@ -11445,7 +11446,7 @@ func TestHubRPCPathsCompleteReturnsMatchingDirectories(t *testing.T) {
 		t.Fatalf("all dirs=%d, want every one of 38 children", len(all.Data))
 	}
 
-	fuzzy, err := client.PathsComplete(context.Background(), appwire.PathsCompleteParams{Prefix: filepath.Join(root, "nwprj")})
+	fuzzy, err := appwiretest.PathsComplete(context.Background(), client, appwire.PathsCompleteParams{Prefix: filepath.Join(root, "nwprj")})
 	if err != nil {
 		t.Fatalf("PathsComplete fuzzy: %v", err)
 	}
@@ -11500,7 +11501,7 @@ func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{})
+	resp, err := appwiretest.ProjectsRecent(context.Background(), client, appwire.ProjectsRecentParams{})
 	if err != nil {
 		t.Fatalf("ProjectsRecent: %v", err)
 	}
@@ -11514,7 +11515,7 @@ func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 		t.Fatalf("recent dirs contain managed worktree lane %q", lane)
 	}
 
-	limited, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{Limit: 2})
+	limited, err := appwiretest.ProjectsRecent(context.Background(), client, appwire.ProjectsRecentParams{Limit: 2})
 	if err != nil {
 		t.Fatalf("ProjectsRecent limit=2: %v", err)
 	}
@@ -11584,7 +11585,7 @@ func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+	resp, err := appwiretest.ThreadFork(context.Background(), client, appwire.ThreadForkParams{
 		Ref:           "codex:th_fork",
 		SourceItemKey: "codex-turn-1",
 		Model:         "gpt-5-codex",
@@ -11633,7 +11634,7 @@ func TestHubRPCThreadForkRoutesNonLocalWholeThreadForkWithoutTurnForkCapability(
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{Ref: "codex:th_whole_fork"})
+	resp, err := appwiretest.ThreadFork(context.Background(), client, appwire.ThreadForkParams{Ref: "codex:th_whole_fork"})
 	if err != nil {
 		t.Fatalf("ThreadFork: %v", err)
 	}
@@ -11708,7 +11709,7 @@ func TestHubRPCThreadForkCreatesForkedThread(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+	resp, err := appwiretest.ThreadFork(context.Background(), client, appwire.ThreadForkParams{
 		Ref:           "local:" + parentID,
 		SourceItemKey: "apptranscript-item-v2:turn_3:2:0",
 		EditedInput:   "second task, edited",
@@ -11751,7 +11752,7 @@ func TestHubRPCThreadForkDeferInput(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+	resp, err := appwiretest.ThreadFork(context.Background(), client, appwire.ThreadForkParams{
 		Ref:           "local:" + parentID,
 		SourceItemKey: "apptranscript-item-v2:turn_3:2:0",
 		DeferInput:    true,
@@ -12858,7 +12859,7 @@ func TestHubRPCTestServerGivesEachTestItsOwnOAuthState(t *testing.T) {
 		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 			t.Fatalf("%s Initialize: %v", name, err)
 		}
-		status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
+		status, err := appwiretest.AuthStatus(context.Background(), client, appwire.AuthStatusParams{Provider: "openai-codex"})
 		if err != nil {
 			t.Fatalf("%s AuthStatus: %v", name, err)
 		}
@@ -13239,7 +13240,7 @@ func TestHubRPCThreadStartEnvModelSatisfiesRequiredGate(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	if _, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		CWD: t.TempDir(),
 	}); err != nil {
 		t.Fatalf("ThreadStart should accept env-model spawn: %v", err)
@@ -13277,7 +13278,7 @@ func TestHubRPCThreadStartEmptyModelRejected(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		CWD: t.TempDir(),
 	})
 	if err == nil {

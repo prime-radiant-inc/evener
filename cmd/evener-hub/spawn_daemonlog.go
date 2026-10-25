@@ -50,7 +50,7 @@ const daemonLogRetainedBytes = 1 << 20
 // not an *os.File, and a hub-owned pipe kills the daemon on its first write
 // after the hub exits — Go raises SIGPIPE to the default handler for writes to
 // fd 1 and 2, and spawned daemons are documented to outlive a hub restart
-// (SpawnDaemon, hubcore.Roster).
+// (spawnDaemonWithProviderConfig, hubcore.Roster).
 type daemonLog struct {
 	file *os.File
 	// path is the file the child currently writes. For a resume this is a

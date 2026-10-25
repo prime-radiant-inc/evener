@@ -4694,9 +4694,8 @@ type SettingsHubOverview struct {
 	// Source: web_settings.go settingsData.RunDir (cfg.RunDir).
 	RunDir string `json:"runDir,omitempty"`
 	// SpawnTimeout is how long the hub waits for a daemon to report ready after
-	// spawn. Source: web_settings.go settingsData.SpawnTimeout — today a
-	// hardcoded "30s" literal, not derived from live spawner config (there is
-	// no configurable spawn timeout yet).
+	// spawn, rendered as a Go duration string. Source: cfg.SpawnTimeout
+	// (hub.toml spawn_timeout).
 	SpawnTimeout string `json:"spawnTimeout,omitempty"`
 	// BearerTokenAge is a human-readable age of the hub's auth-token file (e.g.
 	// "created 3d ago" / "just now"), empty if unavailable.

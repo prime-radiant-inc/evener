@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -506,17 +505,6 @@ func skillDescription(skills []appwire.EvenerSkillInfo, name string) string {
 	return ""
 }
 
-func TestHubThreadReadStableDelegateDoesNotExtractActivationID(t *testing.T) {
-	raw := json.RawMessage(`{"job_id":"job_retired_activation","delegate_id":"dlg_stable","status":"running"}`)
-	item := appwire.ThreadItem{Type: "commandExecution", ToolName: "delegate", Raw: bytes.Clone(raw), Status: appwire.TurnStatusInProgress}
-	got := reconcileDelegateThreadItemForTest(item, agent.HistoricalJobRecord{
-		JobID: "job_retired_activation", DelegateID: "dlg_stable", Type: "delegate", Status: "completed", OutputBytes: 99,
-	})
-	if !bytes.Equal(got.Raw, raw) || got.Status != item.Status {
-		t.Fatalf("thread read extracted/reconciled retired activation id: got raw=%s status=%s", got.Raw, got.Status)
-	}
-}
-
 func TestHubThreadReadStableDelegateIsReadOnly(t *testing.T) {
 	cfg, params := seedBoundedPastThread(t)
 	sessionID := strings.TrimPrefix(params.Ref, "local:")
@@ -686,66 +674,6 @@ func TestPastEntryThreadStampsInstanceID(t *testing.T) {
 	}
 	if thread.Evener.AskPending {
 		t.Fatalf("askPending = true for a past session with no live ask")
-	}
-}
-
-func TestThreadReadDoesNotReconcileStableDelegateFromActivationJob(t *testing.T) {
-	raw := json.RawMessage(`{"job_id":"job_A","delegate_id":"dlg_A","status":"running","task":"inspect billing","transcript_ref":"local:child"}`)
-	item := appwire.ThreadItem{Type: "commandExecution", ID: "item_delegate", CallID: "call_delegate", ToolName: "delegate", Raw: raw, Status: appwire.TurnStatusCompleted}
-	rec := agent.HistoricalJobRecord{JobID: "job_A", DelegateID: "dlg_A", Type: "delegate", Status: "completed", Task: "inspect billing", TranscriptRef: "local:child", OriginToolCallID: "call_delegate", OutputBytes: 42}
-
-	got := reconcileDelegateThreadItemForTest(item, rec)
-	if got.Status != item.Status || !bytes.Equal(got.Raw, raw) {
-		t.Fatalf("activation job mutated stable delegate transcript item: status=%q raw=%s", got.Status, got.Raw)
-	}
-}
-
-func TestHistoricalDelegateActivationExhaustionDoesNotRewriteStableTranscript(t *testing.T) {
-	raw := json.RawMessage(`{"job_id":"job_exhausted","delegate_id":"dlg_exhausted","status":"running","task":"bounded work","transcript_ref":"local:child-exhausted"}`)
-	item := appwire.ThreadItem{
-		Type:     "commandExecution",
-		ID:       "item_delegate",
-		CallID:   "call_delegate",
-		ToolName: "delegate",
-		Raw:      raw,
-		Status:   appwire.TurnStatusInProgress,
-	}
-	rec := agent.HistoricalJobRecord{
-		JobID:         "job_exhausted",
-		DelegateID:    "dlg_exhausted",
-		Type:          "delegate",
-		Status:        "exhausted",
-		Reason:        "tool_round_budget_exhausted",
-		Task:          "bounded work",
-		TranscriptRef: "local:child-exhausted",
-	}
-
-	got := reconcileDelegateThreadItemForTest(item, rec)
-	if got.Status != item.Status || !bytes.Equal(got.Raw, raw) {
-		t.Fatalf("activation exhaustion mutated stable delegate transcript item: status=%q raw=%s", got.Status, got.Raw)
-	}
-}
-
-func TestThreadReadLeavesDelegateRawUnchangedWithoutJobstoreRecord(t *testing.T) {
-	raw := json.RawMessage(`{"job_id":"job_missing","delegate_id":"dlg_A","status":"running"}`)
-	item := appwire.ThreadItem{Type: "commandExecution", ID: "item_delegate", CallID: "call_delegate", ToolName: "delegate", Raw: raw, Status: appwire.TurnStatusInProgress}
-	thread := appwire.Thread{Turns: []appwire.Turn{{ID: "turn_1", Items: []appwire.ThreadItem{item}}}}
-
-	got := reconcileDelegateThreadItems(thread, map[string]agent.HistoricalJobRecord{})
-	gotItem := got.Turns[0].Items[0]
-	if gotItem.Status != appwire.TurnStatusInProgress || string(gotItem.Raw) != string(raw) {
-		t.Fatalf("item changed without jobstore record: status=%q raw=%s", gotItem.Status, gotItem.Raw)
-	}
-}
-
-func TestThreadReadReconciliationIgnoresMismatchedJobID(t *testing.T) {
-	raw := json.RawMessage(`{"job_id":"job_A","status":"running"}`)
-	item := appwire.ThreadItem{Type: "commandExecution", ID: "item_delegate", CallID: "call_delegate", ToolName: "delegate", Raw: raw, Status: appwire.TurnStatusInProgress}
-	rec := agent.HistoricalJobRecord{JobID: "job_B", Type: "delegate", Status: "completed"}
-
-	got := reconcileDelegateThreadItemForTest(item, rec)
-	if got.Status != appwire.TurnStatusInProgress || string(got.Raw) != string(raw) {
-		t.Fatalf("mismatched job id reconciled: status=%q raw=%s", got.Status, got.Raw)
 	}
 }
 

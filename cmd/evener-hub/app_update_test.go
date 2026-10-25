@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -554,7 +555,7 @@ func TestHubUpdateApplyRestartsAfterTheResponseIsWritten(t *testing.T) {
 		t.Fatalf("initialize: %v", err)
 	}
 
-	resp, err := client.UpdateApply(t.Context(), appwire.UpdateApplyParams{Channel: "snapshot"})
+	resp, err := appwiretest.UpdateApply(t.Context(), client, appwire.UpdateApplyParams{Channel: "snapshot"})
 	if err != nil {
 		t.Fatalf("UpdateApply: %v", err)
 	}

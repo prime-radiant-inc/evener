@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
@@ -309,7 +310,7 @@ func TestHubRPCPersistedSubagentCanForkAfterStop(t *testing.T) {
 		t.Fatalf("persisted subagent read did not advertise fork: %+v", read.Thread.Evener.Capabilities)
 	}
 	before := len(past.Search("", 100, 0))
-	_, err = client.ThreadFork(t.Context(), appwire.ThreadForkParams{Ref: "local:" + sessionID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "fork"})
+	_, err = appwiretest.ThreadFork(t.Context(), client, appwire.ThreadForkParams{Ref: "local:" + sessionID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "fork"})
 	if err != nil {
 		t.Fatalf("persisted subagent fork: %v", err)
 	}
@@ -465,7 +466,7 @@ func TestHubExplicitResumeResponseAdvertisesClearedForkFence(t *testing.T) {
 	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
 		t.Fatal(err)
 	}
-	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + sessionID})
+	resumed, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: "local:" + sessionID})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -29,12 +29,13 @@ func cloneTurns(turns []Turn) []Turn {
 	}
 	out := make([]Turn, len(turns))
 	for i := range turns {
-		out[i] = cloneTurn(turns[i])
+		out[i] = CloneTurn(turns[i])
 	}
 	return out
 }
 
-func cloneTurn(turn Turn) Turn {
+// CloneTurn returns a copy of turn that shares no mutable state with it.
+func CloneTurn(turn Turn) Turn {
 	turn.Items = cloneThreadItems(turn.Items)
 	turn.Error = cloneTurnError(turn.Error)
 	turn.StartedAt = clonePointer(turn.StartedAt)
@@ -50,12 +51,14 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 	}
 	out := make([]ThreadItem, len(items))
 	for i := range items {
-		out[i] = cloneThreadItem(items[i])
+		out[i] = CloneThreadItem(items[i])
 	}
 	return out
 }
 
-func cloneThreadItem(item ThreadItem) ThreadItem {
+// CloneThreadItem returns a copy of item that shares no mutable state with
+// it.
+func CloneThreadItem(item ThreadItem) ThreadItem {
 	item.Images = cloneInputItems(item.Images)
 	item.OutputImages = CloneOutputImages(item.OutputImages)
 	item.Position = clonePointer(item.Position)
@@ -63,7 +66,9 @@ func cloneThreadItem(item ThreadItem) ThreadItem {
 	item.CompletedAt = clonePointer(item.CompletedAt)
 	item.DurationMS = clonePointer(item.DurationMS)
 	item.ExitCode = clonePointer(item.ExitCode)
-	item.Raw = append(json.RawMessage(nil), item.Raw...)
+	if item.Raw != nil {
+		item.Raw = append(json.RawMessage{}, item.Raw...)
+	}
 	return item
 }
 
@@ -74,7 +79,7 @@ func CloneOverlayItem(item OverlayItem) OverlayItem {
 		anchor := *item.Anchor
 		item.Anchor = &anchor
 	}
-	item.Item = cloneThreadItem(item.Item)
+	item.Item = CloneThreadItem(item.Item)
 	return item
 }
 

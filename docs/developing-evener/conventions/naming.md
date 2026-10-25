@@ -27,8 +27,8 @@ Anthropic (`has_more`, `last_id`), Ollama, and OpenRouter. Only Google
 Gemini uses camelCase (`displayName`). Evener transcripts and audit
 logs sit right next to those provider responses; matching snake_case
 keeps the eye honest when reading raw JSON. The codebase already
-leans this way: 203 snake-case JSON tags vs 169 camelCase, the latter
-concentrated under `internal/appwire/` and the Google adapter.
+leans this way: camelCase JSON is confined to the AppWire packages, the
+Google adapter, and the upstream `mcpServers` key.
 
 TOML matches JSON so the same conceptual field reads identically in a
 session save file and a launch config. Only the CLI diverges, because
@@ -42,14 +42,14 @@ collectively outnumber AppWire fields. This revision backs off.
 
 | Surface | Where | Casing |
 |---|---|---|
-| AppWire protocol | `internal/appwire/`, `internal/appsource/`, `internal/appserver/`, `server/appwire_*.go` | camelCase (wire compatibility) |
+| AppWire protocol | `appwire/`, `cmd/evener-hub/internal/appsource/`, `internal/appserver/`, `server/appwire_*.go` | camelCase (wire compatibility) |
 | Provider request/response shapes | `llm/providers/*/` | per provider (snake_case for OpenAI/Anthropic/Ollama/OpenRouter; camelCase for Google) |
-| Hub REST/SSE JSON | `cmd/evener-hub/`, `internal/hubapi/`, `server/` | snake_case |
+| Hub REST/SSE JSON | `cmd/evener-hub/`, `hubapi/`, `server/` | snake_case |
 | Rendezvous files (`~/.local/state/evener/run/*.json`) | `rendezvous/` | snake_case |
-| Session save files | `agent/session.go`, `agent/transcript.go` | snake_case |
+| Session save files | `agent/session.go`, `agent/transcript/` | snake_case |
 | Hub config (`~/.config/evener/hub.toml`) | `cmd/evener-hub/config.go` | snake_case |
-| Launch config (`~/.config/evener/launch.toml`, `.evener/launch.toml`) | `internal/launchconfig/` | snake_case |
-| Project meta (`~/.config/evener/projects/<id>/meta.toml`) | `internal/launchconfig/` | snake_case |
+| Launch config (`~/.config/evener/launch.toml`, `.evener/launch.toml`) | `cmd/evener-hub/internal/launchconfig/` | snake_case |
+| Project meta (`~/.config/evener/projects/<id>/meta.toml`) | `cmd/evener-hub/internal/launchconfig/` | snake_case |
 | `evener` CLI flags | `cmd/evener/`, `cmd/evener-hub/`, `cmd/llmcall/` | kebab-case |
 
 Go struct tags follow the rule directly: `json:"snake_case"` and
@@ -84,11 +84,11 @@ Two carve-outs, each forced by an upstream we don't own:
 
 - **AppWire protocol code is camelCase.** Any implementation that
   participates in the AppWire protocol uses camelCase,
-  matching the protocol definition under `internal/appwire/`. That
+  matching the protocol definition under `appwire/`. That
   covers:
-  - `internal/appwire/` — the protocol definition itself
+  - `appwire/` — the protocol definition itself
     (`clientInfo`, `protocolVersion`, `turnId`, `itemId`).
-  - `internal/appsource/` — clients of the AppWire protocol.
+  - `cmd/evener-hub/internal/appsource/` — clients of the AppWire protocol.
   - `internal/appserver/` — the AppWire server implementation, which
     speaks the same wire format back to clients.
   - `server/appwire_*.go` — the hub's AppWire runtime glue, which
@@ -99,6 +99,10 @@ Two carve-outs, each forced by an upstream we don't own:
   Anthropic, Ollama, and OpenRouter use snake_case (`finish_reason`,
   `display_name`, `has_more`). Google Gemini uses camelCase
   (`displayName`). These are wire formats owned by the provider.
+- **`mcpServers` mirrors the upstream `.mcp.json` format.** The few
+  `json:"mcpServers"` tags (for example in `agent/mcpconfig/` and
+  `agent/plugin/`) keep that spelling and opt out with a trailing
+  `//nolint:tagliatelle // upstream .mcp.json key spelling` comment.
 
 Plus the usual trivial cases: `inspo/codex/**` is skipped entirely
 (vendored reference code), and single-word keys (`model`, `name`,
@@ -164,24 +168,11 @@ When you add a new TOML config file, JSON payload, or CLI flag:
 
 ## See also
 
-- `agent/session.go`, `agent/transcript.go` — snake_case JSON examples
+- `agent/session.go`, `agent/transcript/` — snake_case JSON examples
   (`session_id`, `working_dir`, `plugin_dirs`).
-- `internal/launchconfig/types.go` — snake_case TOML examples
+- `cmd/evener-hub/internal/launchconfig/` — snake_case TOML examples
   (`reasoning_effort`, `max_rounds`, `app_replay_size`).
-- `internal/appwire/types.go` — camelCase JSON examples for the AppWire
+- `appwire/` — camelCase JSON examples for the AppWire
   carve-out (`clientInfo`, `protocolVersion`, `pluginDirs`).
 - `cmd/evener/main.go` — kebab-case CLI flag examples
   (`--reasoning-effort`, `--max-rounds`).
-
-## Migration status
-
-The tree matches the rule end-to-end. Only two JSON tags outside the
-appwire/providers carve-outs intentionally stay camelCase:
-
-- `mcpServers` in `agent/mcp_config.go` and `agent/plugin.go` —
-  mirrors the Claude `.mcp.json` format. Marked
-  `// evener:naming-ignore` with a pointer back to the upstream format.
-
-Hub REST/SSE shapes that previously leaked
-camelCase have all migrated: REST request bodies use `turn_id`, and the
-appwire-defined `NotificationRef` type carries the wire shape directly.

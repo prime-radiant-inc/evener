@@ -19,6 +19,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -270,7 +271,7 @@ func TestMemHarness(t *testing.T) {
 		// delegate's result arriving) or one whose completion was already
 		// counted -- so queue the input behind it, as the web composer does.
 		if err != nil && strings.Contains(err.Error(), "already active") {
-			err = client.TurnQueue(ctx, appwire.TurnQueueParams{
+			err = appwiretest.TurnQueue(ctx, client, appwire.TurnQueueParams{
 				ClientMutationID: fmt.Sprintf("memharness-%s-queue-%d", runID, i), ExpectedInstanceID: entry.SessionID, Ref: ref, Input: input,
 			})
 		}

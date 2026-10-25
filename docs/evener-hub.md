@@ -303,8 +303,8 @@ others keep the negative value. The loader does not validate every duration
 field the same way, so assume a typo can take effect and check the resolved
 value rather than trusting a silent load.
 
-Host receipt and operation retention rows are documented beside the host
-registry in the [subsystem map](product/subsystems.md) rather than here.
+The remaining `host_*` retention and pruning keys are defined in
+`cmd/evener-hub/config.go`, which is their source of truth.
 
 ## Launch configuration
 

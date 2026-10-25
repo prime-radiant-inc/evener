@@ -1,25 +1,9 @@
 package appwire
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 )
-
-func TestClientGitHeadRoundTrip(t *testing.T) {
-	written := roundTrip(t, MethodEvenerGitHead, GitHeadResponse{Head: "main"}, func(ctx context.Context, client *Client) error {
-		resp, err := client.GitHead(ctx, GitHeadParams{CWD: "/repo"})
-		if err != nil {
-			return err
-		}
-		if resp.Head != "main" {
-			return fmt.Errorf("head=%q, want main", resp.Head)
-		}
-		return nil
-	})
-	assertWrittenParams(t, "GitHead", written.Request.Params, `{"cwd":"/repo"}`)
-}
 
 func TestGitHeadResponseUsesHeadWireField(t *testing.T) {
 	got, err := json.Marshal(GitHeadResponse{Head: "main"})

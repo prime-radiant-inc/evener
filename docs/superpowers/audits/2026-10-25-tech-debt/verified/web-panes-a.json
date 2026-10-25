@@ -1,0 +1,135 @@
+[
+ {
+  "id": "web-panes-a-1",
+  "category": "duplication",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "Skill/command gate strings verbatim at Composer.tsx:1063-1072 and QueueStrip.tsx:427-436; 'changed in another tab' toast appears 8 times in non-test code across sourceState/QueueStrip/Composer (11 grep hits incl. one more file). QueueStrip comment itself says 'mirroring Composer's own submitAction'. Real hand-synced copy. Plan is large and touches recovery; keep recovery tests as guard."
+ },
+ {
+  "id": "web-panes-a-2",
+  "category": "complexity",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "Composer.tsx is 1824 lines (title says 1,633 for the component, plausible). 49 use*( call sites by grep. Size claim holds; plan is sound if done after #1."
+ },
+ {
+  "id": "web-panes-a-3",
+  "category": "complexity",
+  "verdict": "partial",
+  "severity": "high",
+  "note": "2449-line file and duplicate export captureTranscriptView confirmed (useTranscriptScroll.ts:316 vs transcriptViewRegistry.ts:134, different signatures). But the claim that contracts-transcript-scroll-liveness.md 'is not in the repo' is FALSE: docs/web-ui/parity/contracts-transcript-scroll-liveness.md exists. Comment cleanup there should keep valid doc pointers.",
+  "revised_fix_plan": "Same split plan (pure moves first, rename element-level captureElementView, then hook split), but do not strip the references to docs/web-ui/parity/contracts-*.md; only drop 'this rewrite'/'w4 fix-round' provenance."
+ },
+ {
+  "id": "web-panes-a-4",
+  "category": "complexity",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "ProviderConnection.tsx is 2131 lines and SelectedConnection starts at 474, so ~1650 lines is right. Ref count is overstated: roughly 13 useRef cells inside SelectedConnection (phaseRef, operation, retryTimer, retryAttempt, retryRunRef, pendingRecovery, acquisitionSource, onConnectedRef, checkAnchor, draftClaim, draftValue, confirmedStore, adoptBaselineRef, selfMutation) not ~20. Complexity is real but live credential flow makes it high-risk; severity high is arguable, medium is safer for audit priority."
+ },
+ {
+  "id": "web-panes-a-5",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Four distinct endpoint-changed constants confirmed (ProviderConnection:58, InstanceSheet:111, instanceDialogs:64/73, CredentialsSection:96) with different wording per context (key vs value vs save vs confirm). Copy differences are context-specific, so one endpointCopy.ts may not collapse them; shared logic is the claim/identity computation. Mobile adoption is a separate cross-client change.",
+  "revised_fix_plan": "Scope to the shared claim/holds logic (DestinationClaim vs draftIdentity) only; keep per-surface copy local. Do web consolidation first, mobile later."
+ },
+ {
+  "id": "web-panes-a-6",
+  "category": "architecture",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Legacy/Provider split confirmed (ToolCallItem.tsx:461-468). But the variants differ in more than context: ProviderToolCallItem takes `thread` from props while LegacyToolCallItem subscribes per row via useThreadsStore. Deleting the prop must keep the thread prop (avoids a per-row store subscription) or the change adds N subscriptions.",
+  "revised_fix_plan": "Make ToolCallItem always use useTranscriptRenderContext(), but keep thread passed by props from the parent; delete only the renderContext prop and the Legacy/Provider branch. Add a context-change re-render test first."
+ },
+ {
+  "id": "web-panes-a-7",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "parseMillis is byte-identical at ActivityTree.tsx:146 and ActivityRowDetail.tsx:199 (confirmed). Formatters are different conventions by design: formatWorkDuration (statusFormat.ts:42) documents itself as separate; formatQuietAge is floor-based with d/h buckets; formatThoughtDuration is a clone of formatDurationMs plus a 0ms branch. Only parseMillis and the thought clone are true duplicates; the rest needs a product call and should not be listed as 6 duplicates.",
+  "revised_fix_plan": "Dedupe parseMillis (move to shared displayFormat parseTimestampMs) and make formatThoughtDuration call formatDurationMs. Leave the other formatters unless Jesse decides formats should converge."
+ },
+ {
+  "id": "web-panes-a-8",
+  "category": "duplication",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "ConversationBody.tsx:131-149, DocPane.tsx:162-180 and stores/useThreadModel.ts:10-28 contain byte-identical ensureThread/releaseThread effects with the connection-ready dance. ActivityRowDetail.tsx:294 and useConnectedEffect.ts:36 are further variants. Plan (reuse useThreadModel in the first two) is safe; note useThreadModel also subscribes to threads.state, minor extra selector."
+ },
+ {
+  "id": "web-panes-a-9",
+  "category": "slop",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Comment volume claims plausible but the central claim 'no tracked contracts-*.md/parity-m*.md exist' is FALSE: docs/web-ui/parity/ contains contracts-composer-queue-pending.md, contracts-sidebar-search-settings.md, contracts-transcript-scroll-liveness.md and parity-m3..m8. Many comment citations are valid. Real narrating/history comments exist (Composer.tsx ~1010-1017 'Before this reconciliation...', Settings.tsx SECTION_COMPONENTS wave-7 text), but a blanket 3000-line removal is wrong.",
+  "revised_fix_plan": "Remove only history/provenance narration ('wave-7 report', 'before this reconciliation', plan/PR numbers); keep pointers to existing docs/web-ui/parity contracts. Do per-file alongside extractions."
+ },
+ {
+  "id": "web-panes-a-10",
+  "category": "inconsistency",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "classifyJobStatus (subagentModuleStore.ts:133) includes 'errored'; isActivityFailure (activityData.ts:31) omits it - confirmed drift. But coldStart.tsx lists turn/thread statuses (closed, systemError, cancelled, completed...), a different domain from job statuses, so it is not a third job-status list. jobStatusDotState (dot semantics) legitimately differs from row-kind classification (queued/starting are not 'running' rows).",
+  "revised_fix_plan": "Add 'errored' handling to the shared isActivityFailure (or have classifyJobStatus call it) with a package table test; do not merge dot-state and row-kind vocabularies; drop coldStart from scope."
+ },
+ {
+  "id": "web-panes-a-11",
+  "category": "duplication",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "DeployDialog (hosts.tsx:868) and RestartDialog (:1042) both read hostOpsStore operations[name] and push the 'repeated its existing operation' toast (:892, :1058). HOST_POLL_MS setInterval refresh duplicated at hosts.tsx:217 and HostPicker.tsx:37 (HostPicker imports the constant from hosts.tsx). File is 1421 lines. Real but modest; medium overstated."
+ },
+ {
+  "id": "web-panes-a-12",
+  "category": "dead-code",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "lastUserMessageText only used by its own test (comment cites SessionActionsMenu which exists nowhere but widgets/menu and tests as unrelated); materializeSkillReferences and useRetryPendingState only referenced by their tests. Confirmed. taskActivityTime is used in-file at activityTime.tsx:75, so only unexport it, not delete. Deletion of three symbols needs Jesse's flag per rule."
+ },
+ {
+  "id": "web-panes-a-13",
+  "category": "dead-code",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Settings.tsx:150 `SECTION_COMPONENTS[activeId] ?? PlaceholderSection` - map is Record<string,...> covering all ids and activeId comes from resolveSettingsSection; PlaceholderSection.tsx doc ('Settings.tsx currently renders this unconditionally') is false. 6 'Unused - kept so signature matches' comments confirmed. Note the fallback is type-reachable only by Record<string> indexing, not at runtime."
+ },
+ {
+  "id": "web-panes-a-14",
+  "category": "duplication",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "18 `selector ? useStore` sites repo-wide (3 in panes: askDockStore.ts:28, sessionCacheRow.tsx:81, marketplacesPlugins/hostStore.tsx:39), each with biome-ignore, matches claim. connection.ts:200 comment explains zustand default param. Helper is a safe small consolidation."
+ },
+ {
+  "id": "web-panes-a-15",
+  "category": "duplication",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "MODEL_LIST_CAP=50 at InstanceSheet.tsx:83 and mobile ProvidersPage.tsx:69; both slice matching models (InstanceSheet:723, ProvidersPage:882) and comments cross-reference each other. Confirmed, small."
+ },
+ {
+  "id": "web-panes-a-16",
+  "category": "slop",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "keybindings.tsx:98 errorMessage is a one-line passthrough to storeErrorText (confirmed); activityFormat.ts re-export of jobStatusDisplay confirmed with explanatory 'keep importers' comment. Other items not individually re-verified."
+ },
+ {
+  "id": "web-panes-a-17",
+  "category": "compat-legacy",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "draft.ts reads v1 key fallback (draft.ts:125-126, 'approved transition') confirmed; removal needs Jesse's approval. ToolRow 'legacy' mode: ToolRow.tsx:548-551 shows twoLevel requires hasIntent && onToggleSummary, so 'legacy' means intent-less rows, not just ToolCallItem's bodyless row; the claim that the label is wrong is not established.",
+  "revised_fix_plan": "Only set a removal condition for the v1 draft key (with approval). Skip the ToolRow rename unless a second look shows no intent-less callers."
+ },
+ {
+  "id": "web-panes-a-18",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "requireClass pattern exists (widgets/internal/requireClass.ts) and is a repo-wide design-system convention; this is a pattern decision for Jesse, not slice debt. Counts not independently re-verified."
+ }
+]
