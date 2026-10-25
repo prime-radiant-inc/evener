@@ -244,16 +244,6 @@ func TestRound12PendingRestartSurvivesAnUnknownIdentity(t *testing.T) {
 	requireNoAttach(t, fr)
 }
 
-// restartBareScript scripts the standard ad-hoc restart sequence for a hub at pid
-// 4242: what the port probe answers, what the process-exit probe answers, and the
-// two side effects the test observes.
-type restartBareScript struct {
-	portProbe   func() []byte
-	processExit func() []byte
-	onKill      func()
-	onRelaunch  func()
-}
-
 // TestRound12PIDCommandsAreStructurallySafe pins the structural half of the same
 // finding: every builder that interpolates a host-derived pid into a remote
 // command goes through numericPID, the kill is issued as `kill -- <pid>`, and the

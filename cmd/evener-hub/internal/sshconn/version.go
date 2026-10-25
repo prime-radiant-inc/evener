@@ -57,17 +57,6 @@ type supervisor struct {
 	label string
 }
 
-// supervisorSet is everything one host's supervisor listings yield: at most one
-// live supervisor (a RUNNING hub unit) and at most one dormant supervisor (a
-// loaded but inactive hub unit). Both are kept because an inactive unit is still
-// the right way to bring the hub back on a host that is not currently serving —
-// but only while nothing else holds the hub port, since starting a second hub
-// races hub.lock.
-type supervisorSet struct {
-	live    supervisor
-	dormant supervisor
-}
-
 // restartRemote is the remote command that restarts the supervised hub. ok is
 // false when no safe supervised command can be built — launchd with no numeric
 // uid, or a label outside the bare-safe set — and the caller then refuses
