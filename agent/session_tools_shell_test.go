@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -1583,4 +1584,169 @@ func TestShellToolConfinedCwdOutsideWorkingDirectory(t *testing.T) {
 			t.Fatalf("policy %+v accepted external cwd", policy)
 		}
 	}
+}
+
+// advertisedShellMode reads the mode property from the definition the session
+// actually advertises, resolving the provider's wire name for shell rather
+// than assuming the canonical name.
+func advertisedShellMode(t *testing.T, s *Session) map[string]any {
+	t.Helper()
+	name := providerToolName("shell", s.profile.ToolNameMap())
+	for _, def := range s.ToolDefinitions() {
+		if def.Name != name {
+			continue
+		}
+		props, ok := def.Parameters["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("shell definition has no properties: %#v", def.Parameters)
+		}
+		mode, ok := props["mode"].(map[string]any)
+		if !ok {
+			t.Fatalf("shell definition has no mode property: %#v", props)
+		}
+		return mode
+	}
+	t.Fatalf("session does not advertise %q", name)
+	return nil
+}
+
+// advertisedShellModeEnum reads the mode enum from the definition the session
+// actually advertises.
+func advertisedShellModeEnum(t *testing.T, s *Session) []any {
+	t.Helper()
+	mode := advertisedShellMode(t, s)
+	enum, ok := mode["enum"].([]any)
+	if !ok {
+		t.Fatalf("shell mode has no enum: %#v", mode)
+	}
+	return enum
+}
+
+// requireShellModeEnum asserts the session's advertised shell mode enum.
+func requireShellModeEnum(t *testing.T, s *Session, context string, want ...any) {
+	t.Helper()
+	if got := advertisedShellModeEnum(t, s); !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s shell mode enum = %#v, want %#v", context, got, want)
+	}
+}
+
+// requireDetachUnsupported asserts the fixture's environment cannot disown a
+// process and that a detached call through the real registry still refuses.
+func requireDetachUnsupported(t *testing.T, s *Session) {
+	t.Helper()
+	env := s.currentEnv()
+	reporter, ok := env.(execenv.DetachSupportReporter)
+	if !ok || reporter.DetachSupported() {
+		t.Fatal("environment reports DetachSupported; the fixture does not reproduce the mismatch")
+	}
+	res := s.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
+		ID:        "detached-under-sandbox",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"true","mode":"detached"}`),
+	})
+	if !res.IsError || !errors.Is(res.Err, execenv.ErrDetachUnsupported) {
+		t.Fatalf("sandboxed detached call = (%q, %v), want ErrDetachUnsupported", res.Output, res.Err)
+	}
+}
+
+// TestShellModeDetachedFollowsEnvironment pins the advertised shell mode enum
+// to the live environment's detach capability (issue #4422): a sandboxed
+// session must not offer mode:"detached" that DetachCommand refuses, and a
+// detach-capable environment must still offer and accept it. The subtests share
+// one session and drive it through both directions of the environment swap, so
+// an implementation that narrows the enum forever after the first swap fails
+// the capable-return control.
+func TestShellModeDetachedFollowsEnvironment(t *testing.T) {
+	s := newTestSession(t)
+	base, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("session environment = %T, want *execenv.LocalExecutionEnvironment", s.currentEnv())
+	}
+
+	t.Run("init-time sandboxed session narrows at construction", func(t *testing.T) {
+		wrapped := execenv.NewLocalExecutionEnvironment(t.TempDir())
+		wrapped.Wrapper = &sandbox.Wrapper{}
+		cfg := minimalTestSessionConfig(t)
+		cfg.DisableMemory = true
+		initSess := newSession(t, withEnv(wrapped), withConfig(cfg))
+		requireShellModeEnum(t, initSess, "init-time sandboxed session", "foreground", "background")
+		requireDetachUnsupported(t, initSess)
+	})
+
+	t.Run("baseline follows the platform", func(t *testing.T) {
+		want := []any{"foreground", "background"}
+		if base.DetachSupported() {
+			want = append(want, "detached")
+		}
+		requireShellModeEnum(t, s, "fresh session", want...)
+	})
+
+	t.Run("sandboxed swap narrows the enum", func(t *testing.T) {
+		wrapped := base.WithWorkingDirectory(t.TempDir())
+		wrapped.Wrapper = &sandbox.Wrapper{}
+		if err := s.swapEnvAndRefresh(wrapped, nil); err != nil {
+			t.Fatalf("swap to sandboxed environment: %v", err)
+		}
+		want := []any{"foreground", "background"}
+		requireShellModeEnum(t, s, "sandboxed session", want...)
+		description, _ := advertisedShellMode(t, s)["description"].(string)
+		agenttest.CheckGolden(t, filepath.Join("testdata", "detachedshell", "mode-description-unavailable.md"), []byte(description+"\n"), *updatePromptGoldens, "Regenerate with `go test ./agent -run '^TestShellModeDetachedFollowsEnvironment$' -count=1 -update-prompt` and read the diff.")
+		preparedMode, _ := s.shellToolForDiagnostics(s.reg.Get("shell")).Definition.Parameters["properties"].(map[string]any)["mode"].(map[string]any)
+		if got := preparedMode["enum"]; !reflect.DeepEqual(got, want) {
+			t.Fatalf("shell repair schema mode enum = %#v, want %#v; validation prose would still list detached", got, want)
+		}
+		requireDetachUnsupported(t, s)
+		res := s.execTool(context.Background(), llm.ToolCallData{
+			ID:        "detached-through-preparation",
+			Name:      "shell",
+			Arguments: json.RawMessage(`{"command":"true","mode":"detached"}`),
+		}, "")
+		if !res.IsError || !errors.Is(res.Err, execenv.ErrDetachUnsupported) {
+			t.Fatalf("sandboxed detached call through preparation = (%q, %v), want ErrDetachUnsupported", res.Output, res.Err)
+		}
+	})
+
+	t.Run("capable return restores the enum and acceptance", func(t *testing.T) {
+		if !base.DetachSupported() {
+			t.Skip("detached execution is unsupported on this platform")
+		}
+		plain := base.WithWorkingDirectory(t.TempDir())
+		if err := s.swapEnvAndRefresh(plain, nil); err != nil {
+			t.Fatalf("swap to plain environment: %v", err)
+		}
+		if !plain.DetachSupported() {
+			t.Fatal("plain environment reports DetachSupported false; the capable-return fixture is wrong")
+		}
+		requireShellModeEnum(t, s, "unsandboxed session", "foreground", "background", "detached")
+		res := s.reg.ExecuteCall(context.Background(), s.currentEnv(), llm.ToolCallData{
+			ID:        "detached-unsandboxed",
+			Name:      "shell",
+			Arguments: json.RawMessage(`{"command":"exec true","mode":"detached"}`),
+		})
+		if res.IsError {
+			t.Fatalf("unsandboxed detached call failed: %s", res.Output)
+		}
+		var out detachedShellToolResult
+		if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+			t.Fatalf("unmarshal detached result: %v (output: %s)", err, res.Output)
+		}
+		if out.Mode != "detached" || out.PID <= 0 {
+			t.Fatalf("detached result = %+v, want mode detached and a positive pid", out)
+		}
+		s.mu.Lock()
+		receipts := append([]sessionDetachedProcess(nil), s.detachedProcesses...)
+		s.mu.Unlock()
+		if len(receipts) != 1 {
+			t.Fatalf("detached completion receipts = %d, want 1", len(receipts))
+		}
+		select {
+		case <-receipts[0].done:
+		// TRIPWIRE: `exec true` reports completion in milliseconds; this bound only keeps a broken completion receipt from hanging the suite.
+		case <-time.After(10 * time.Second):
+			if p, err := os.FindProcess(receipts[0].pid); err == nil {
+				_ = p.Kill()
+			}
+			t.Fatalf("detached process %d did not report completion", receipts[0].pid)
+		}
+	})
 }

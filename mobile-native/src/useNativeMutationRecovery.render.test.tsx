@@ -9,8 +9,8 @@
 // - the only production runtime construction is the getNativeMutationRuntime
 //   singleton, whose openDatabaseSync("evener-mutations.db") is acquired by
 //   the offline recovery effect, never during render; the expo-sqlite mock
-//   records every open with the phase it happened in (the screen's memoized
-//   draft library legitimately opens evener-drafts.db during render).
+//   records every open with the phase it happened in. The shared sessions
+//   provider acquires the draft library only when the screen commits its attachment.
 // - the probe's runtime is the REAL NativeMutationRuntime over the testkit
 //   double, with delegating wrappers on read/subscribeStorage/registerTarget/
 //   start/discardRecovery that only record the phase of each call - every
@@ -26,6 +26,7 @@ import {
 } from "./nativeMutationRuntime";
 import { render, settle } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
+import { NativeConversationSessionsProvider } from "./session/NativeConversationSessionsProvider";
 import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 import { type NativeMutationRecoveryProjection, useNativeMutationRecovery } from "./useNativeMutationRecovery";
 
@@ -311,7 +312,9 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	function tree(): ReactElement {
 		return (
 			<PhaseMarker>
-				<ConversationScreen route={conversationRoute(targetRef)} navigation={navigation} />
+				<NativeConversationSessionsProvider>
+					<ConversationScreen route={conversationRoute(targetRef)} navigation={navigation} />
+				</NativeConversationSessionsProvider>
 				<RecoveryProbe key={targetRef} runtime={runtime} hubId={hubId} targetRef={targetRef} />
 			</PhaseMarker>
 		);
@@ -322,22 +325,19 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	// THE RENDER-PASS FENCE: no runtime construction, no target registration,
 	// no subscribe and no read during the render pass - and mutations storage is
 	// acquired only by the recovery effect, including while disconnected. The
-	// drafts database the screen's render pass legitimately opens is
-	// classified "render" (the detector's own arming proof: it sees render
-	// passes), while the hook's subscribe/read land "effect" only.
+	// committed session attachment also acquires drafts outside render. The
+	// deliberate violations below independently prove the detector is armed.
 	expect(recordedCalls.filter((call) => call.phase === "render")).toEqual([]);
 	expect(recorder.opens).toContainEqual({
 		database: "evener-drafts.db",
-		phase: "render",
+		phase: "effect",
 	});
 	expect(recordedCalls.find((call) => call.method === "subscribeStorage")?.phase).toBe("effect");
 	expect(recordedCalls.find((call) => call.method === "read")?.phase).toBe("effect");
 	expect(recorder.opens.filter((open) => open.database === "evener-mutations.db")).toEqual([
 		{ database: "evener-mutations.db", phase: "effect" },
 	]);
-	expect(recorder.opens.filter((open) => open.phase === "render").map((open) => open.database)).toEqual([
-		"evener-drafts.db",
-	]);
+	expect(recorder.opens.filter((open) => open.phase === "render")).toEqual([]);
 
 	// EFFECT-OWNED: subscribe and read happen in the mount effects, with the
 	// read captured to the route's exact composite target key.

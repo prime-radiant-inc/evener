@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
+import { presentAttentionTarget } from "../attentionPlacement";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
+import "../../panes/session";
+import "../../panes/zoom";
 import {
   ACTIVITY_VIEW_LIMIT,
   ACTIVITY_VIEW_STORAGE_KEY,
@@ -110,6 +113,35 @@ test("openFor preserves the focused pane when the session has multiple instances
   expect(workspaceStore.getState().focusedPaneId).toBe("focused-instance");
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "remote:owner", tab: "about" });
   // A focus-carried open holds no explicit scope: the sidebar follows focus.
+  expect(activitySidebarStore.getState().explicitScopeRef).toBeNull();
+});
+
+test.each([false, true])("openFor ignores a parked match with a presented duplicate: %s", (duplicate) => {
+  const parked = workspaceStore.getState().openPane("session", { ref: "remote:owner" });
+  const target = presentAttentionTarget("remote:target");
+  const visible = duplicate ? workspaceStore.getState().openPane("session", { ref: "remote:owner" }) : null;
+  workspaceStore.getState().focusPane(target!.pane.id);
+  activitySidebarStore.getState().openFor("remote:owner", "jobs");
+  expect(workspaceStore.getState().focusedPaneId).toBe(visible ?? target!.pane.id);
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === parked)?.slot).toBe("parked");
+  expect(activitySidebarStore.getState()).toMatchObject({
+    open: true,
+    ref: "remote:owner",
+    explicitScopeRef: duplicate ? null : "remote:owner",
+  });
+});
+
+test("openFor ignores a stale parked cascade source and focuses a presented session", () => {
+  const parked = workspaceStore.getState().openPane("sessionZoom", {
+    ref: "remote:leaf",
+    source: { type: "session", params: { ref: "remote:root" } },
+    edges: [{ ownerRef: "remote:root", childRef: "remote:leaf", delegateId: "d1" }],
+  });
+  const target = presentAttentionTarget("remote:target");
+  const visible = workspaceStore.getState().openPane("session", { ref: "remote:leaf" });
+  workspaceStore.getState().focusPane(target!.pane.id);
+  activitySidebarStore.getState().openFor("remote:leaf", "agents", undefined, parked);
+  expect(workspaceStore.getState().focusedPaneId).toBe(visible);
   expect(activitySidebarStore.getState().explicitScopeRef).toBeNull();
 });
 
