@@ -2,19 +2,27 @@
 
 ## Status
 
-**Frozen for implementation and PAR round 2.** Lane
+**Frozen for implementation and PAR round 3.** Lane
 `issue-4332-readonly-shell-cwd`, based on `origin/main` at
 `f6900f5d8ff3e436a474054a7211fff746d1f451` (merged before this spec).
 
-Revision note (PAR round 1): both reviewers independently found that a
-policy-level "read anywhere" predicate is not the backend's actual visible
-set: bubblewrap hides host `/tmp` and `/dev` behind private mounts, and the
-wrapper's cwd re-bind would expose a model-named directory there (including
-Unix sockets the private `/tmp` exists to hide). The rule below adds a
-backend-visibility check and moves the real-backend fixture out of `/tmp`.
-The reviewers also found that the verification plan must construct explicit
-spawned scopes for the restricted hand-built policies, and that the
-write-blocked-off shell is already unconfined. Those are incorporated.
+Revision notes:
+
+- PAR round 1 found that a policy-only "read anywhere" rule is not the
+  backend's visible set: bubblewrap hides host `/tmp` and `/dev`, and the
+  wrapper's cwd re-bind would expose a model-named directory there (including
+  Unix sockets the private `/tmp` exists to hide). Round 2 found the first
+  repair's inside-root fast path would skip canonicalisation and masks,
+  regressing today's symlink-aware containment. The rule below canonicalises
+  and mask-checks first, then keeps symlink-aware containment, then requires
+  both the literal and resolved spellings to be readable and visible.
+- Round 1 also found the restricted branch must not treat write-only roots as
+  readable, the hand-built restricted test policies need explicit scopes, the
+  write-blocked off shell is already unconfined, and the real-backend fixture
+  must not live in `/tmp`. Round 2 found `/dev/shm` needs a deliberate
+  stricter-than-bwrap statement, the refusal needs a defined precedence and
+  composition point, and the verification needs the root-under-`/tmp`,
+  scratch and symlink cases. Those are incorporated.
 
 ## Intent and scope
 
@@ -32,9 +40,9 @@ Intended tracked deliverables:
   backend-namespace companion for the private `/tmp` and `/dev` mounts.
 - `agent/sandbox/backend_test.go` and
   `agent/sandbox/resolve_canread_test.go` — predicate matrices.
-- `agent/execenv/local.go` — `EnsureCommandWorkingDirectory` asks both
-  predicates plus the already-provisioned session scratch, and keeps the
-  inside-root fast path.
+- `agent/execenv/local.go` — `EnsureCommandWorkingDirectory` canonicalises,
+  mask-checks, keeps symlink-aware containment, then asks both predicates
+  plus the already-provisioned session scratch.
 - `agent/execenv/execenv.go` — the capability comment.
 - `agent/execenv/sandbox_off_scope_test.go` — the confined-cwd matrix,
   with an explicit restricted scope where the test needs one.
@@ -102,15 +110,25 @@ through a read-only bind (`agent/sandbox/bwrap.go:96-107`,
 
 ## Chosen rule
 
-A resolved command `cwd` is accepted when either:
+The check receives the cleaned absolute `abs` the caller resolved (relative
+paths are joined against the environment working directory, an omitted `cwd`
+defaults to it). It computes `resolved = resolveSymlinksBestEffort(abs)` and
+then applies, in this order:
 
-1. **It is at or under the environment's `RootDir`.** Every current
-   inside-root case keeps working, including a workspace root that itself
-   lives under host `/tmp` (the wrapper already re-binds that root).
-
-or both of:
-
-2. **The spawned-process layer of the policy can read it.** The predicate
+1. **Masks deny everywhere.** If `Masks(abs)` or `Masks(resolved)`, the cwd
+   is refused as masked. `Masks` already carves out `UnmaskedRoots` and
+   re-masks `.git` inside them, so the predicate and the backends agree.
+   This includes a masked path spelled inside the workspace root: the kernel
+   already masked it, so the command could not enter it; refusing it before
+   the spawn gives the actionable error instead of a bare `chdir` failure.
+2. **The symlink-aware workspace containment today already applies.**
+   `ensureUnderRoot(abs)` resolves symlinks and accepts a path that resolves
+   at or under `RootDir`. Keeping this check preserves every non-masked
+   inside-root case, including a workspace root that itself lives under host
+   `/tmp` (the wrapper already re-binds that root). A symlink inside the
+   workspace that resolves outside it does not take this branch.
+3. **Outside the root, both the literal and resolved spellings must be in
+   the spawned read set and visible in the backend namespace.**
    `ResolvedPolicy.SpawnedCanRead` models:
    - no enforced policy (plain off, or the write-blocked off degrade):
      any absolute path; there is no kernel wrapper;
@@ -123,46 +141,50 @@ or both of:
      on every backend. The worktree is a read root in restricted mode, so
      the ordinary case is covered.
 
-3. **The backend's namespace already exposes it.** The predicate
    `Wrapper.CommandCWDVisible` models the private mounts:
    - no wrapper, or a Seatbelt wrapper: true (Seatbelt has no private mount
      namespace);
    - bwrap `ReadWorktreeOnly`: true (every read, write, carved-out and
      scratch root is explicitly bound);
-   - bwrap `ReadAnywhere`: true unless the path is under the private `/tmp`
-     or `/dev`. The exceptions are the session tmp, the session scratch
-     tree, and the explicitly bound roots (`Spawned.WriteRoots`,
-     `UnmaskedRoots`, `CacheRoots`). This preserves the private-`/tmp` floor
-     and keeps `cwd` matching what `cd` can reach.
+   - bwrap `ReadAnywhere`: true for the session tmp, the session scratch
+     tree, and any path under `Spawned.ReadRoots`, `Spawned.WriteRoots`,
+     `UnmaskedRoots` or `CacheRoots` (all explicitly bound); false for a
+     path under the private `/tmp` or `/dev` (`inPrivateMount`); true
+     otherwise.
 
-The environment also accepts the session scratch directory it has already
-provisioned (through its wrapper, or the write-blocked degrade's own
-scratch) as a `cwd`. The check never provisions one: an empty scratch path
-is not a root.
+   Requiring both spellings means a symlink inside the workspace that
+   resolves to a masked path, a path outside the restricted read roots, or a
+   host `/tmp`/`/dev` path is refused, while a literal path that is itself
+   inside the policy set but whose target is not is also refused. The
+   backend remains the final authority for anything the policy admits.
 
-The check runs: resolve a relative path against the environment working
-directory, default an omitted `cwd` to it, clean the result, accept the
-inside-root case, canonicalise the outside path with the existing
-`resolveSymlinksBestEffort`, then ask both predicates. A symlink inside the
-workspace that points at a masked path or a private mount is therefore
-refused by the policy rather than failing later as a bare `chdir` error. The
-directory must still exist and be a directory.
+4. **The session scratch is accepted.** The environment accepts the scratch
+   directory it has already provisioned (through its wrapper, or the
+   write-blocked degrade's own scratch) in either spelling. The check never
+   provisions one: an empty scratch path is not a root.
+
+The directory must still exist and be a directory. `EnsureCommandWorkingDirectory`
+returns only a reason; `resolveShellWorkingDir` composes the refusal with the
+raw argument and the resolved path. Internal spawn paths (`resolveCommandWorkingDir`)
+surface the reason directly. The existing `EnsureUnderRoot` contract for URL
+attachments and other narrow callers is unchanged.
 
 ## Refusal
 
 A path outside the readable/visible set is still refused before any process
-is started, so a refused `cwd` runs no command. The refusal names the raw
-argument, the resolved absolute path, and which boundary refused it:
+is started, so a refused `cwd` runs no command. The shell refusal names the
+raw argument, the resolved absolute path, and the first applicable boundary,
+in this precedence:
 
-- the sandbox denylist (a masked path or `.git` in a carve-out);
-- the sandbox's readable roots (restricted mode outside them);
-- the private temporary namespace (a host `/tmp` or `/dev` path the private
-  mounts hide).
+1. the sandbox denylist (a masked path, or `.git` in a carve-out);
+2. the sandbox's readable roots (restricted mode outside them);
+3. the private temporary namespace (a host `/tmp` or `/dev` path the private
+   mounts hide).
 
 It ends with the remedy: choose a directory the sandbox can read. It does
 not tell the model to use `cd`, since `cd` cannot reach a hidden or masked
-path either. The existing `EnsureUnderRoot` contract for URL attachments and
-other narrow callers is unchanged.
+path either. The outer prefix becomes neutral ("which the sandbox cannot
+read"), replacing today's "which escapes the sandbox".
 
 ## Consequences and preservation
 
@@ -171,26 +193,34 @@ other narrow callers is unchanged.
   matching `cd`.
 - A write under that accepted cwd still fails in a real wrapped read-only
   sandbox: the policy's write roots are untouched and the kernel wrapper
-  mounts the tree read-only. This applies to the wrapped foreground,
-  background and streaming dispatch. Detached commands are already launched
-  without the wrapper (existing behavior), so the write claim is scoped to
-  wrapped dispatch; the detached `cwd` check changes only its validation.
-- Host `/tmp` and `/dev` directories remain refused as `cwd`. The private
-  mounts already hide them from `cd`, and accepting one would re-bind it and
-  widen what the shell can reach.
+  mounts the tree read-only. This applies to a non-scratch cwd and to the
+  wrapped foreground, background and streaming dispatch. Detached commands
+  are already launched without the wrapper (and a wrapped environment
+  refuses detach), so the detached `cwd` check changes only its validation.
+- Host `/tmp` and `/dev` directories remain refused as `cwd` on bubblewrap.
+  The private mounts already hide them from `cd`, and accepting one would
+  re-bind it and widen what the shell can reach. The rule is deliberately
+  stricter than bwrap for a host `/dev/shm` subdirectory: bwrap could
+  re-bind it, but exposing host shared memory is not needed for this defect,
+  so it stays refused unless it is an explicit grant. Seatbelt has no
+  private mount namespace and accepts an unmasked path there.
 - Restricted mode accepts a `cwd` in a spawned read root or an unmasked
   carve-out (for example the worktree or a system root) instead of
   requiring it under the workspace root. The shell could already `cd`
   there, so no read capability is added. A write-only root is not promised.
 - The write-blocked off degrade accepts a `cwd` anywhere, matching its
   unconfined shell and its already read-anywhere file tools. Its shell was
-  already unconfined; only the file-tool write boundary (session scratch
-  only) is preserved, and this change does not alter it.
+  already unconfined, so this replaces the last deliberate cwd role
+  boundary with the shell's actual access; its file-tool write boundary
+  (session scratch only) is unchanged. The docs must not claim the degraded
+  shell's writes are confined.
 - Relative `cwd`, the omitted-`cwd` default, and the `cd` path are
   unchanged.
 - A masked path, an unreadable restricted path, a private-mount path, a
   missing directory and a non-directory are still refused, with no process
-  started.
+  started. A masked path inside the root is now refused before the spawn
+  rather than failing at `chdir`; every non-masked inside-root case keeps
+  its behavior.
 - A hand-built `ResolvedPolicy` whose `Spawned` scope is left zero keeps
   the zero value's existing meaning (`ReadAnywhere`); production policies
   come from `sandbox.Resolve` and always carry an explicit scope. Tests
@@ -216,10 +246,10 @@ other narrow callers is unchanged.
 Red-first, through the real shell tool and a real resolved sandbox policy.
 The focused backend test runs where `sandbox.RealProber` reports a usable
 backend and skips otherwise; it is not part of a claim about hosts without
-one. Its fixture lives under `/var/tmp` (or another host directory outside
-the private mounts), never `t.TempDir()` alone, because a temp dir is
-normally under `/tmp` and the private-`/tmp` control must be tested
-separately.
+one. Its outside-root fixture lives under `/var/tmp` (outside the private
+mounts), never `t.TempDir()` alone. The tests avoid writing to the real
+`$HOME`: a mask is seeded with an explicit `DenylistAdd` path under the
+fixture.
 
 1. New `agent/session_tools_shell_cwd_sandbox_test.go`: a read-only session
    rooted at `<base>/root` executes the shell tool with `cwd = <base>/outside`
@@ -231,34 +261,46 @@ separately.
    boundary is still enforced by the real wrapper.
 3. Same file: a directory named by an explicit `DenylistAdd` entry is
    refused (masked), and a marker command under it leaves no file behind.
+   A symlink inside the workspace root pointing at that masked directory is
+   also refused, proving the canonicalisation branch; a marker command under
+   the link leaves no file behind.
 4. Same file: a host `/tmp` directory outside the session scratch is refused
    (private namespace), and a marker command under it leaves no file behind.
-   This is the no-widening control the PAR round found missing.
+   This is the no-widening control the PAR rounds found missing. It runs
+   only when the resolved backend is bwrap.
 5. Same file: a restricted-mode directory outside the spawned read roots is
    refused, and a marker command leaves no file behind.
-6. `agent/sandbox/resolve_canread_test.go`: `SpawnedCanRead` accepts
+6. Same file: the environment's own session scratch directory is accepted as
+   a `cwd` and `pwd` runs there, proving the scratch branch on a real
+   backend.
+7. Same file: a root under host `/tmp` accepts a subdirectory inside the
+   root (the wrapper's re-bind path) and refuses a sibling outside the root
+   (private namespace). Both run only when the resolved backend is bwrap.
+8. `agent/sandbox/resolve_canread_test.go`: `SpawnedCanRead` accepts
    read-anywhere paths, rejects masked paths and `.git` under a carve-out,
    accepts restricted read roots and unmasked roots, rejects a restricted
-   path outside them and a write-only root, rejects a relative path, and
-   accepts any path on an unenforced policy.
-7. `agent/sandbox/backend_test.go`: `CommandCWDVisible` accepts a host
+   path outside them and a write-only root, rejects a relative path on a
+   confined policy, and accepts any path on an unenforced policy.
+9. `agent/sandbox/backend_test.go`: `CommandCWDVisible` accepts a host
    `/var/tmp` path under bwrap read-anywhere, rejects a host `/tmp` or
    `/dev` path, accepts the session tmp and its scratch tree, accepts an
-   explicitly bound write or unmasked root under `/tmp`, is always true for
-   Seatbelt, for bwrap worktree-only, and for a nil wrapper.
-8. `agent/execenv/sandbox_off_scope_test.go`: the confined-cwd matrix now
-   accepts an outside root for read-only, workspace-write and the
-   write-blocked off degrade, and refuses it for a restricted policy whose
-   explicit `Spawned` scope is `ReadWorktreeOnly` outside its roots; the
-   inside-root and default-`cwd` cases keep passing for every policy. The
-   restricted policy literal gains that explicit scope.
-9. `agent/session_tools_shell_test.go`: the hand-built-policy cases are
-   updated — `TestShellToolConfinedCwdOutsideWorkingDirectory` accepts for
-   read-only, workspace-write and write-blocked off, and refuses for an
-   explicitly scoped restricted policy; `TestShellToolCwdEscapingSandboxRootRejected`
-   gains an explicit restricted scope so its refusal still means "outside
-   the spawned read roots". The off and inside-root accepted cases stay.
-10. `agent/internal/tool/definitions.go`'s `cwd` description and
+   explicitly granted read/write/unmasked/cache root under `/tmp`, is always
+   true for Seatbelt, for bwrap worktree-only, and for a nil wrapper.
+10. `agent/execenv/sandbox_off_scope_test.go`: the confined-cwd matrix now
+    accepts an outside root for read-only, workspace-write and the
+    write-blocked off degrade (including the detached entry point when the
+    platform supports it), and refuses it for a restricted policy whose
+    explicit `Spawned` scope is `ReadWorktreeOnly` outside its roots; the
+    inside-root and default-`cwd` cases keep passing for every policy. The
+    restricted policy literal gains that explicit scope.
+11. `agent/session_tools_shell_test.go`: the hand-built-policy cases are
+    updated — `TestShellToolConfinedCwdOutsideWorkingDirectory` accepts for
+    read-only, workspace-write and write-blocked off, and refuses for an
+    explicitly scoped restricted policy;
+    `TestShellToolCwdEscapingSandboxRootRejected` gains an explicit
+    restricted scope so its refusal still means "outside the spawned read
+    roots". The off and inside-root accepted cases stay.
+12. `agent/internal/tool/definitions.go`'s `cwd` description and
     `docs/sandboxing.md`/the S14 row describe the new rule; the copy is
     reviewed in the diff, not pinned by a test.
 
@@ -266,7 +308,7 @@ Commands from the worktree:
 
 - `go test ./agent -run 'TestShellTool.*Cwd|TestShell.*Cwd|TestReadOnly.*Cwd|TestShellToolConfinedCwd' -count=1`
 - `go test ./agent/sandbox -run 'TestSpawnedCanRead|TestCommandCWDVisible|TestFileToolCanRead' -count=1`
-- `go test ./agent/execenv -run 'TestConfinedCommandWorkingDirectory|TestSandboxOffCommandWorkingDirectory' -count=1`
+- `go test ./agent/execenv -run 'TestConfinedCommandWorkingDirectory|TestSandboxOffCommandWorkingDirectory|TestSandboxOffDetachedWorkingDirectory' -count=1`
 - `make build`
 
 The full suite is CI's job under the brief's verification rule, not this
