@@ -158,15 +158,15 @@ func FuzzATIFConversionProgram(f *testing.F) {
 				}},
 			}),
 		}
-		if got := Convert(transcript.Header{}, nil); got.Agent.Version != "unknown" || got.SchemaVersion != "ATIF-v1.7" {
+		if got := Convert(transcript.Header{}, nil, Options{}); got.Agent.Version != "unknown" || got.SchemaVersion != "ATIF-v1.7" {
 			t.Fatalf("empty Convert() = %+v; want unknown ATIF trajectory", got.Agent)
 		}
-		if got := ConvertWithOptions(header, entries, Options{ProviderHandles: ProviderHandleMode("invalid-mode")}); got.SchemaVersion != "ATIF-v1.7" {
+		if got := Convert(header, entries, Options{ProviderHandles: ProviderHandleMode("invalid-mode")}); got.SchemaVersion != "ATIF-v1.7" {
 			t.Fatalf("ConvertWithOptions invalid mode did not produce ATIF")
 		}
 
-		redacted := ConvertTranscriptWithOptions(header, entries, Options{ProviderHandles: ProviderHandleModeRedacted})
-		rawLocal := ConvertTranscriptWithOptions(header, entries, Options{ProviderHandles: ProviderHandleModeRawLocal})
+		redacted := Convert(header, entries, Options{ProviderHandles: ProviderHandleModeRedacted})
+		rawLocal := Convert(header, entries, Options{ProviderHandles: ProviderHandleModeRawLocal})
 		atifProgramAssertTrajectory(t, redacted, rawLocal, responseID, usage, cacheRead, cacheWrite, cacheWrite1h)
 	})
 }

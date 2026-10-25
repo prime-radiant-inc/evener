@@ -67,36 +67,6 @@ func NeedsResponse(state string, askPending bool) bool {
 	return state == "awaiting" && !askPending
 }
 
-// StateWord returns the display word for a normalized attention state, used by
-// clients. askPending selects the word for awaiting:
-// "Question waiting" for a pending question, "Needs you" for a turn that
-// ended on needs_response (#4093). It is ignored for every other state.
-func StateWord(state string, askPending bool) string {
-	switch state {
-	case "errored":
-		return "Error"
-	case "awaiting":
-		if NeedsResponse(state, askPending) {
-			return "Needs you"
-		}
-		return "Question waiting"
-	case "active":
-		return "Working"
-	case "restartRequired":
-		return "Restart required"
-	case "warning":
-		return "Warning"
-	case "idle":
-		return "Idle"
-	case "ended", "closed":
-		return "Ended"
-	case "notLoaded":
-		return "Not loaded"
-	default:
-		return state
-	}
-}
-
 // NeedsYouBand ranks a needs-you row into one of three ordering bands:
 // errored (2, "broken beats blocked"), blocked on a person (1: a question, an
 // approval, or an awaiting turn that ended on needs_response, #4093), or

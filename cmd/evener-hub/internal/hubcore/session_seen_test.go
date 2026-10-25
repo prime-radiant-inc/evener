@@ -127,7 +127,7 @@ func fuzzScenarioSessionSeenStore_MarkSeenMovesForwardOnly(t *testing.T) {
 		{"", turn.Add(-time.Minute), false, turn},
 		{"", turn.Add(time.Millisecond), true, turn.Add(time.Millisecond)},
 	} {
-		changed, err := store.MarkSeen(step.source, "01A", step.through)
+		changed, err := markSeenForTest(store, step.source, "01A", step.through)
 		if err != nil || changed != step.changed {
 			t.Fatalf("MarkSeen(%q, %v) = %v, %v; want changed %v", step.source, step.through, changed, err, step.changed)
 		}
@@ -149,11 +149,11 @@ func fuzzScenarioSessionSeenStore_UnreadOutranksSeenUntilTheNextMark(t *testing.
 	store := newSeenTestStore(filepath.Join(t.TempDir(), "index.db"), &now)
 	key := SessionPinKey("", "01A")
 	turn := seenTestNow.Add(10 * time.Minute)
-	if _, err := store.MarkSeen("", "01A", turn); err != nil {
+	if _, err := markSeenForTest(store, "", "01A", turn); err != nil {
 		t.Fatal(err)
 	}
 	for i, wantChanged := range []bool{true, false} {
-		changed, err := store.MarkUnread("", "01A")
+		changed, err := markUnreadForTest(store, "", "01A")
 		if err != nil || changed != wantChanged {
 			t.Fatalf("MarkUnread #%d = %v, %v; want changed %v", i+1, changed, err, wantChanged)
 		}
@@ -165,7 +165,7 @@ func fuzzScenarioSessionSeenStore_UnreadOutranksSeenUntilTheNextMark(t *testing.
 	if record := snapshot.Records[key]; !record.Unread || !record.SeenThrough.Equal(turn) || !snapshot.Unseen(key, turn) {
 		t.Fatalf("after MarkUnread: record %+v, unseen %v; want unread and seen through %v", record, snapshot.Unseen(key, turn), turn)
 	}
-	if changed, err := store.MarkSeen("", "01A", turn); err != nil || !changed {
+	if changed, err := markSeenForTest(store, "", "01A", turn); err != nil || !changed {
 		t.Fatalf("marking the same turn seen again = %v, %v; want it to clear unread", changed, err)
 	}
 	if snapshot, err = store.Snapshot(); err != nil || snapshot.Unseen(key, turn) {
@@ -179,10 +179,10 @@ func fuzzScenarioSessionSeenStore_SourcesKeepSeparateMarks(t *testing.T) {
 	now := seenTestNow
 	store := newSeenTestStore(filepath.Join(t.TempDir(), "index.db"), &now)
 	local, remote := seenTestNow.Add(time.Minute), seenTestNow.Add(2*time.Minute)
-	if _, err := store.MarkSeen("", "01A", local); err != nil {
+	if _, err := markSeenForTest(store, "", "01A", local); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.MarkSeen("paradise-park", "01A", remote); err != nil {
+	if _, err := markSeenForTest(store, "paradise-park", "01A", remote); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := store.Snapshot()
@@ -205,7 +205,7 @@ func fuzzScenarioSessionSeenStore_OnChangeFiresOnlyWhenAMarkChanges(t *testing.T
 	fired := 0
 	store.SetOnChange(func() { fired++ })
 	for range 2 {
-		if _, err := store.MarkSeen("", "01A", seenTestNow.Add(time.Minute)); err != nil {
+		if _, err := markSeenForTest(store, "", "01A", seenTestNow.Add(time.Minute)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -226,7 +226,7 @@ func fuzzScenarioSessionSeenStore_OnChangeFiresOnlyWhenAMarkChanges(t *testing.T
 // store writes nothing and reads as no store, so nothing reads unseen.
 func fuzzScenarioSessionSeenStore_WithoutADatabaseIsNoStore(t *testing.T) {
 	store := NewSessionSeenStore("")
-	if changed, err := store.MarkSeen("", "01A", seenTestNow); changed || err != nil {
+	if changed, err := markSeenForTest(store, "", "01A", seenTestNow); changed || err != nil {
 		t.Fatalf("MarkSeen with no database = %v, %v", changed, err)
 	}
 	snapshot, err := store.Snapshot()
@@ -311,4 +311,14 @@ func fuzzScenarioUnixMilliTime_RoundTripsTheWireStamp(t *testing.T) {
 	if UnixMilliseconds(time.Time{}) != 0 || UnixMilliseconds(at) != at.UnixMilli() {
 		t.Fatal("UnixMilliseconds does not invert UnixMilliTime")
 	}
+}
+
+// markSeenForTest and markUnreadForTest apply a single mark through MarkBatch,
+// the only path production writes marks through.
+func markSeenForTest(store *SessionSeenStore, source, sessionID string, through time.Time) (bool, error) {
+	return store.MarkBatch([]SessionSeenMark{{Source: source, SessionID: sessionID, SeenThrough: through}})
+}
+
+func markUnreadForTest(store *SessionSeenStore, source, sessionID string) (bool, error) {
+	return store.MarkBatch([]SessionSeenMark{{Source: source, SessionID: sessionID, Unread: true}})
 }

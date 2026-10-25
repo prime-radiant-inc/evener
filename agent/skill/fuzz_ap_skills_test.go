@@ -11,7 +11,7 @@ import (
 
 // FuzzApSkillFileParse drives the SKILL.md discovery path — ScanSkillsDir →
 // parseSkillFile (frontmatter decode + required-field validation + the
-// allowed-tools scalar-vs-list coercion) → LoadSkillBody / ResolveSkillContent.
+// allowed-tools scalar-vs-list coercion) → Load.
 // The whole skill package was fuzz-unreachable; only fixed-fixture unit tests
 // exercised this parser, so arbitrary SKILL.md bytes never hit it.
 //
@@ -21,8 +21,8 @@ import (
 //   - preserved invariant: every discovered SkillMeta has a non-blank Name and
 //     Description (parseSkillFile's acceptance contract), and the map key equals
 //     the meta's Name (ScanSkillsDir keys by name).
-//   - body agreement: LoadSkillBody on a discovered skill returns exactly the
-//     frontmatter body, and ResolveSkillContent by that name returns the same.
+//   - body agreement: Load on a discovered skill returns exactly the
+//     frontmatter body.
 //   - determinism: scanning the same bytes twice discovers the same skill set.
 //
 // SAFETY: pure parse over an in-TempDir file — no network, no spawn.
@@ -72,10 +72,10 @@ func FuzzApSkillFileParse(f *testing.F) {
 				t.Fatalf("map key %q != meta.Name %q", key, meta.Name)
 			}
 
-			// Body agreement: LoadSkillBody must equal the frontmatter body.
-			body, err := LoadSkillBody(meta)
+			// Body agreement: Load must equal the frontmatter body.
+			body, err := loadSkillBody(meta)
 			if err != nil {
-				t.Fatalf("LoadSkillBody on discovered skill %q errored: %v", meta.Name, err)
+				t.Fatalf("Load on discovered skill %q errored: %v", meta.Name, err)
 			}
 			// Derive the expected body through the same recovery Load applies, or a
 			// recovered delimiterless input would disagree on the body.
@@ -85,29 +85,7 @@ func FuzzApSkillFileParse(f *testing.F) {
 				t.Fatal("discovered skill has no complete frontmatter")
 			}
 			if body != expectedBody {
-				t.Fatalf("LoadSkillBody body mismatch for %q:\n got=%q\n want=%q", meta.Name, body, expectedBody)
-			}
-
-			// ResolveSkillContent by exact name returns the same body.
-			resolved, rerr := ResolveSkillContent(out, meta.Name)
-			if rerr != nil {
-				t.Fatalf("ResolveSkillContent(%q) errored: %v", meta.Name, rerr)
-			}
-			if resolved != body {
-				t.Fatalf("ResolveSkillContent(%q) = %q, want %q", meta.Name, resolved, body)
-			}
-
-			// Namespaced-fallback branch: a "plugin:<name>" key must resolve by
-			// the unnamespaced <name>, yielding the identical body.
-			nsKey := "plug:" + meta.Name
-			if nsKey != meta.Name { // guard against a literal "plug:"-prefixed name
-				nsResolved, nerr := ResolveSkillContent(map[string]SkillMeta{nsKey: meta}, meta.Name)
-				if nerr != nil {
-					t.Fatalf("namespaced ResolveSkillContent(%q) errored: %v", meta.Name, nerr)
-				}
-				if nsResolved != body {
-					t.Fatalf("namespaced ResolveSkillContent(%q) = %q, want %q", meta.Name, nsResolved, body)
-				}
+				t.Fatalf("Load body mismatch for %q:\n got=%q\n want=%q", meta.Name, body, expectedBody)
 			}
 		}
 

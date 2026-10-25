@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/e2ecap"
 	"primeradiant.com/evener/test/e2e/fakellm"
@@ -803,10 +802,10 @@ func stopHostListener(t *testing.T, host *hostSSH, addr, configPath string) bool
 		t.Errorf("stopping the deploy check's host hub on %s (config %s): %v", addr, configPath, err)
 		return false
 	}
-	probe := sshconn.ListenerProbeRemote(port)
+	probe := hostListenerProbeScript(port)
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		// Only a probe that ran (nil error) and answered NoListenerMarker proves
+		// Only a probe that ran (nil error) and answered hostNoListenerMarker proves
 		// the port is clear. A probe that could not run, or an answer this code
 		// does not recognize, proves nothing and must never be read as "the
 		// listener is gone": returning here is what lets the caller remove the
@@ -822,15 +821,15 @@ func stopHostListener(t *testing.T, host *hostSSH, addr, configPath string) bool
 }
 
 // hostListenerProbeAbsent reports whether out — the answer of the shared
-// listener probe sshconn.ListenerProbeRemote — proves that the port has no
+// listener probe hostListenerProbeScript — proves that the port has no
 // listener. The caller must already have a nil probe error: a probe that could
-// not run is "cannot say", not absence. Only sshconn.NoListenerMarker proves
+// not run is "cannot say", not absence. Only hostNoListenerMarker proves
 // absence; a pid, a listener-present answer, or anything unrecognized
 // (including empty output) is not absence, because treating a silent or failing
 // probe as "nothing is there" is the recognition bug that let cleanup remove a
 // live hub's directory.
 func hostListenerProbeAbsent(out []byte) bool {
-	return strings.TrimSpace(string(out)) == sshconn.NoListenerMarker
+	return strings.TrimSpace(string(out)) == hostNoListenerMarker
 }
 
 // hostHubKillCommand is the remote command that stops the hub this case started
@@ -856,7 +855,7 @@ func hostHubKillCommand(addr, configPath string) string {
 			"for pid in $pids; do "+
 			"case \"$pid\" in ''|*[!0-9]*) continue;; esac; "+
 			"if ps -ww -o command= -p \"$pid\" 2>/dev/null | grep -F -e %s >/dev/null; then kill \"$pid\"; fi; done",
-		sshconn.ListenerProbeRemote(port), shellquote.RemoteWord(configPath))
+		hostListenerProbeScript(port), shellquote.RemoteWord(configPath))
 }
 
 // TestHostHubKillCommandTargetsOnlyThisTestsHub pins the cleanup's precision
@@ -929,11 +928,11 @@ func TestHostListenerProbeAbsentOnlyOnTheMarker(t *testing.T) {
 		out  string
 		want bool
 	}{
-		{name: "no-listener marker proves absence", out: sshconn.NoListenerMarker + "\n", want: true},
-		{name: "marker among noise", out: " " + sshconn.NoListenerMarker + "\n", want: true},
+		{name: "no-listener marker proves absence", out: hostNoListenerMarker + "\n", want: true},
+		{name: "marker among noise", out: " " + hostNoListenerMarker + "\n", want: true},
 		{name: "a pid is not absence", out: "4242\n", want: false},
-		{name: "a named pid brackets the marker", out: "4242\n" + sshconn.NoListenerMarker + "\n", want: false},
-		{name: "listener-present marker is not absence", out: sshconn.ListenerPresentMarker + "\n", want: false},
+		{name: "a named pid brackets the marker", out: "4242\n" + hostNoListenerMarker + "\n", want: false},
+		{name: "listener-present marker is not absence", out: hostListenerPresentMarker + "\n", want: false},
 		{name: "empty output is not absence", out: "", want: false},
 		{name: "unrecognized output is not absence", out: "sshconn: probe blew up\n", want: false},
 	} {
@@ -964,7 +963,7 @@ func TestStopHostListenerIgnoresProbeStderr(t *testing.T) {
 		"  *'evener-hub deploy check cleanup'*) exit 0 ;;\n" +
 		"esac\n" +
 		"echo 'lsof: WARNING: can not stat() file system' >&2\n" +
-		"echo " + sshconn.NoListenerMarker + "\n"
+		"echo " + hostNoListenerMarker + "\n"
 	if err := os.WriteFile(sshPath, []byte(fake), 0o755); err != nil {
 		t.Fatalf("write fake ssh: %v", err)
 	}

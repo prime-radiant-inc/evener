@@ -894,14 +894,14 @@ describe("entry read actor", () => {
 					return accepted != null && accepted !== previous && accepted.kind === kind;
 				});
 				await admissionStarted.promise;
-				const pending = entry.store.getState().pendingMutation;
-				expect(pending).toMatchObject({ kind, status: "pending" });
+				const pending = entry.store.getState().pendingSubmission;
+				expect(pending).toEqual({ kind });
 				expect(document.getSnapshot().submitting).toBe(true);
 				await entry.store.getState().ensureLatest();
 				await retryStarted.promise;
 				expect(reads(client)).toBe(3); // Open, failed refresh, one entry-owned retry.
 				expect.soft(entry.store.getState().conversationGeneration).toBe(generation);
-				expect.soft(entry.store.getState().pendingMutation).toBe(pending);
+				expect.soft(entry.store.getState().pendingSubmission).toBe(pending);
 				expect(entry.service).toBe(service);
 				expect(entry.liveHost).toBe(host);
 				const retryAccepted = new Promise<void>((resolve) => {
@@ -919,7 +919,7 @@ describe("entry read actor", () => {
 				expect.soft(await submission).toBe(true);
 				expect.soft(entry.store.getState().lastAcceptedMutation).toMatchObject({ kind });
 				expect.soft(entry.store.getState().conversationGeneration).toBe(generation);
-				expect(entry.store.getState().pendingMutation).toBeNull();
+				expect(entry.store.getState().pendingSubmission).toBeNull();
 				expect(entry.store.getState().error).toBeNull();
 				expect.soft(document.getSnapshot()).toMatchObject({
 					submitting: false,

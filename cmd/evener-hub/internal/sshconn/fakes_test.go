@@ -413,6 +413,10 @@ func registeredTestHost(t *testing.T, m *Manager, host hostreg.Host) hostreg.Hos
 	return current
 }
 
+// modelHealthProbe is the /api/health read that health-only fixtures answer;
+// modelLegacySelectedProcess issues it to learn the build such a fixture serves.
+const modelHealthProbe = "curl -q --noproxy '*' -fsS http://127.0.0.1:9180/api/health"
+
 // modelLegacySelectedProcess adds the selected lock/process/service evidence
 // omitted by fixtures written for the old health-only manager. The existing
 // fake still supplies the served build and all mutation effects.
@@ -428,7 +432,7 @@ func modelLegacySelectedProcess(t *testing.T, fr *fakeRunner, host hostreg.Host)
 		f.endpointAlias = "evener hub endpoint --json"
 	}
 	f.observe = func(f *selectedProcessFixture) {
-		out, err := base(t.Context(), rawCommandArgv(Options{}, host, hubHealthRemote("127.0.0.1:9180")), nil)
+		out, err := base(t.Context(), rawCommandArgv(Options{}, host, modelHealthProbe), nil)
 		if err != nil {
 			f.stopped = true
 			return
@@ -450,3 +454,26 @@ func modelLegacySelectedProcess(t *testing.T, fr *fakeRunner, host hostreg.Host)
 	}
 	return f
 }
+
+// setPendingRestart seeds a command that restarts a serving hub.
+func (m *Manager) setPendingRestart(name, remote, expectedVersion, expectedGitSHA string, replaced hubIdentity, binding *effectBinding) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pendingRestarts[name] = pendingRestartState{command: remote, expectedVersion: expectedVersion, expectedGitSHA: expectedGitSHA, replaced: replaced, binding: binding}
+}
+
+// setPendingStart seeds a command that starts a hub where nothing was serving,
+// keeping any known original predecessor.
+func (m *Manager) setPendingStart(name, remote, expectedVersion, expectedGitSHA string, binding *effectBinding) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	replaced := m.pendingRestarts[name].replaced
+	m.pendingRestarts[name] = pendingRestartState{command: remote, expectedVersion: expectedVersion, expectedGitSHA: expectedGitSHA, replaced: replaced, start: true, binding: binding}
+}
+
+// Answers the fake runners give a port probe; the production restart path no
+// longer issues one.
+const (
+	noListenerMarker      = "__sshconn_no_listener__"
+	listenerPresentMarker = "__sshconn_listener_present__"
+)

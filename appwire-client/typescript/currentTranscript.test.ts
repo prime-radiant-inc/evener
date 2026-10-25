@@ -975,6 +975,76 @@ describe("current transcript checkpoints", () => {
     expect(restored.history?.deferredPages).toHaveLength(1);
   });
 
+  it("round-trips a delegate carrying every generated field", () => {
+    // Required<EvenerDelegateInfo> makes tsc fail this literal when the wire
+    // type gains a field, so the validator cannot drift without a red build.
+    const everyField: Required<EvenerDelegateInfo> = {
+      runGeneration: 2,
+      delegateId: "dlg_full",
+      ownerSessionId: "root",
+      logicalOwnerSessionId: "mid",
+      rootSessionId: "root",
+      childSessionId: "child",
+      transcriptRef: "local:child",
+      parentDelegateId: "dlg_parent",
+      type: "delegate",
+      lifecycle: "ended",
+      phase: "ended",
+      status: "completed",
+      outcome: "completed",
+      reason: "done",
+      error: "none",
+      terminal: true,
+      resumable: true,
+      needsAttention: false,
+      notResumableReason: "n/a",
+      projectionRevision: 3,
+      reportPreview: "report text",
+      reportPreviewTruncated: true,
+      task: "task",
+      description: "description",
+      agentType: "explorer",
+      requestedModel: "fast",
+      resolvedProfileId: "profile",
+      resolvedModel: "model",
+      model: "provider/model",
+      reasoningEffort: "high",
+      originTurnId: "turn_1",
+      originToolCallId: "call_1",
+      originItemId: "item_1",
+      runStartedAt: "2026-10-25T10:00:00Z",
+      runEndedAt: "2026-10-25T10:01:00Z",
+      latestActivityAt: "2026-10-25T10:00:59Z",
+      latestIntent: "Reading the board.",
+      runningForMs: 1,
+      quietForMs: 2,
+      durationMs: 3,
+      packetKind: "communicate",
+      message: { any: "thing" },
+      structuredResult: { any: "result" },
+      structuredResultValid: true,
+      structuredResultReason: "ok",
+      warnings: ["w"],
+      diagnostics: ["d"],
+      exhaustionBudget: "turns",
+      exhaustionLimit: 12,
+      exhaustionResumable: false,
+      delegationAllowance: 2,
+      parentWatchGranted: true,
+      usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, totalTokens: 6 },
+      worktree: { path: "/tmp/w", branch: "b", headSha: "abc", ahead: 1, dirty: false },
+    };
+    const original = hydrateThread(currentRead("local:every-field"), "local:every-field", 10);
+    original.delegates = [everyField];
+
+    const encoded = currentTranscriptState(original);
+    if (!encoded) throw new Error("populated checkpoint did not encode");
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+    if (!decoded) throw new Error("a delegate with every generated field was rejected");
+
+    expect(threadModelFromCurrentState(decoded).delegates?.[0]).toEqual(everyField);
+  });
+
   it("keeps omitted text distinct from explicit empty text", () => {
     const read = readWithItems("local:text", [
       { id: "omitted", turnId: "turn_1", type: "agentMessage" },

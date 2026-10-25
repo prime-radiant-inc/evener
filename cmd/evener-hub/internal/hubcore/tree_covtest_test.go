@@ -320,39 +320,6 @@ func TestResolveProjectMapStrictStillRejectsBeforeCarriedIdentity(t *testing.T) 
 	}
 }
 
-// --- tree.go: FavoriteCandidates ---
-
-// TestCovFavoriteCandidatesCoversAllKinds exercises FavoriteCandidates with
-// session, fork, other, and empty-ID nodes to cover the switch branches
-// (tree.go:62-71) and the empty-ID guard (tree.go:48-49).
-func TestCovFavoriteCandidatesCoversAllKinds(t *testing.T) {
-	tree := Tree{
-		favoriteLive: []TreeNode{
-			{ID: "live-1", Kind: "session", Title: "live"},
-		},
-		Projects: []TreeProject{
-			{allCurrent: []TreeNode{
-				{ID: "", Kind: "session"},       // empty ID skipped
-				{ID: "live-1", Kind: "session"}, // duplicate skipped
-				{ID: "fork-1", Kind: "fork", Title: "fork"},
-				{ID: "other-1", Kind: "other"}, // skipped
-			}},
-			{allRecent: []TreeNode{
-				{ID: "recent-1", Kind: "session", Title: "recent"},
-			}},
-		},
-	}
-	got := tree.FavoriteCandidates()
-	want := []TreeNode{
-		{ID: "live-1", Kind: "session", Title: "live"},
-		{ID: "fork-1", Kind: "fork", Title: "fork"},
-		{ID: "recent-1", Kind: "session", Title: "recent"},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("FavoriteCandidates = %#v, want exact ordered nodes %#v", got, want)
-	}
-}
-
 // --- past.go ---
 
 // TestCovPastRebuildEmptyGlob covers Rebuild with an empty stateGlob
