@@ -111,7 +111,10 @@ huge hunk, or the output ends with non-diff lines after a diff -- the tail
 falls back to the existing line-aligned peek: the first line start at or after
 `len(full)-512`. That keeps the last view the model had before this change
 instead of dropping it, and the result still ends at the natural end of the
-output. The head and tail never overlap.
+output. When no line start fits at all -- an unterminated final line longer
+than the budget -- the peek is a rune-safe byte suffix of the last 512 bytes,
+matching the old digest's behavior for that case. The head and tail never
+overlap.
 
 When the head cut falls between boundaries (for example a leading binary or
 mode-only section larger than the head budget), the omitted range begins inside
@@ -142,7 +145,10 @@ family and adds structural facts, not a rewritten diff:
   `diff --git `/`+++ `/`--- `/`@@ ` lines, rune-safe, newline-free, and capped
   at 96 bytes each; a hunk at or after the tail start is visible in the tail and
   is not named as omitted, and a hunkless file section is named from its
-  `diff --git ` header;
+  `diff --git ` header. That header's two paths are parsed with Git's quoting
+  rules (a quoted token with C escapes, or an unquoted token ending at
+  whitespace), never by searching for ` b/` or splitting fields, so a
+  destination path containing that substring or a quoted space stays intact;
 - `head starts at byte N` when retention forced a non-prefix head;
 - a `read_transcript` continuation hint naming `offset_bytes=start` and the
   returned job `transcript_ref`.
@@ -218,6 +224,12 @@ This case is documented rather than guessed at.
    - a leading hunkless section (binary patch) larger than the head budget
      followed by a text file: the cut inside the hunkless section names that
      file and no hunk from the following file.
+   - a hunkless section whose `diff --git ` header has a quoted destination
+     containing ` b/`, and one with spaces in both quoted paths: the cut names
+     the full destination, not a suffix or a split field.
+   - mixed diff/log output ending in an unterminated line longer than 512
+     bytes: the inline digest keeps a rune-safe byte suffix containing the
+     final line.
    Each boundary assertion uses the parsed `diffLine` state and reads the
    source bytes at the chosen offset; range assertions compare numeric offsets
    and source-derived file and hunk strings. Record the red run.

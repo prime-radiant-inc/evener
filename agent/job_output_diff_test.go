@@ -252,6 +252,26 @@ func TestShellInlineDigestMixedDiffAndLogKeepsLineTail(t *testing.T) {
 	}
 }
 
+func TestShellInlineDigestLongUnterminatedLineKeepsTail(t *testing.T) {
+	t.Parallel()
+	diff := syntheticUnifiedDiff("a.go", 2, 8)
+	full := diff + strings.Repeat("L", 700)
+	w := testDiffWindow(t, full, false)
+	if w.TailStart <= w.HeadEnd {
+		t.Fatalf("tail start = %d, want a trailing peek after head end %d", w.TailStart, w.HeadEnd)
+	}
+	if w.TailStart > 0 && full[w.TailStart-1] == '\n' {
+		t.Fatalf("tail start %d is a line boundary; want the byte suffix of an unterminated line", w.TailStart)
+	}
+	digest := shellInlineDigest(full, int64(len(full)), 0)
+	if !strings.HasSuffix(digest, full[w.TailStart:]) {
+		t.Fatalf("digest does not end with the byte suffix:\n%s", digest)
+	}
+	if !strings.Contains(digest, strings.Repeat("L", 100)) {
+		t.Fatalf("digest lost the long unterminated trailing line:\n%s", digest)
+	}
+}
+
 func TestShellInlineDigestQuotedDiffInsideLogIsNotADiff(t *testing.T) {
 	t.Parallel()
 	var b strings.Builder
@@ -539,6 +559,36 @@ func TestShellInlineDigestLeadingHunklessSectionNamesItsFile(t *testing.T) {
 	}
 	if strings.Contains(marker, "b/text.go") {
 		t.Fatalf("marker attributes the omission to the next file:\n%s", marker)
+	}
+}
+
+func TestShellInlineDigestHunklessSectionParsesQuotedPaths(t *testing.T) {
+	t.Parallel()
+	small := "diff --git a/small.go b/small.go\nindex 1..2 100644\n--- a/small.go\n+++ b/small.go\n@@ -1,2 +1,2 @@\n-old\n+new\n"
+	later := "diff --git a/later.go b/later.go\nindex 1..2 100644\n--- a/later.go\n+++ b/later.go\n@@ -1,2 +1,2 @@\n-old\n+new\n"
+	cases := []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{"destination contains b/", `diff --git a/foo "b/dir b/file.go"`, "b/dir b/file.go"},
+		{"quoted spaces", `diff --git "a/old name.go" "b/new name.go"`, "b/new name.go"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			full := small + tc.header + "\nold mode 100644\nnew mode 100755\n" + later
+			sectionAt := offsetOf(t, full, tc.header)
+			w, ok := unifiedDiffWindow(full, sectionAt, shellDigestHalfBytes, false, false)
+			if !ok {
+				t.Fatal("unifiedDiffWindow did not recognize the diff")
+			}
+			if w.HeadEnd != sectionAt {
+				t.Fatalf("head end = %d, want the hunkless section start %d", w.HeadEnd, sectionAt)
+			}
+			if w.File != tc.want {
+				t.Fatalf("cut file = %q, want %q", w.File, tc.want)
+			}
+		})
 	}
 }
 

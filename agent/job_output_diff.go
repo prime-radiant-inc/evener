@@ -213,6 +213,18 @@ func lineStartAtOrAfter(lines []diffLine, from, fullLen int) int {
 	return fullLen
 }
 
+// tailByteStart returns the start of a rune-safe byte suffix of at most
+// tailBudget bytes. It is the fallback for an unterminated final line longer
+// than the tail budget, where no line start fits.
+func tailByteStart(full string, tailBudget int) int {
+	if tailBudget <= 0 {
+		return len(full)
+	}
+	start := max(len(full)-tailBudget, 0)
+	trimmed := runetrim.TrimLeadingPartial([]byte(full[start:]))
+	return len(full) - len(trimmed)
+}
+
 // lastLineBoundaryAtOrBefore returns the end of the last line that ends at or
 // before limit, or 0.
 func lastLineBoundaryAtOrBefore(lines []diffLine, limit int) int {
@@ -327,6 +339,12 @@ func unifiedDiffWindow(full string, headBudget, tailBudget int, startsMidStream,
 		// peek rather than dropping the last 512 bytes entirely. The result
 		// still ends at the natural end of the output.
 		tailStart = lineStartAtOrAfter(lines, len(full)-tailBudget, len(full))
+		if tailStart == len(full) {
+			// An unterminated final line longer than the budget has no line
+			// start to snap to; keep the same byte suffix the old digest did,
+			// rune-trimmed.
+			tailStart = tailByteStart(full, tailBudget)
+		}
 		if tailStart <= headEnd {
 			tailStart = len(full)
 		}
@@ -431,20 +449,85 @@ func diffPathAroundCut(full string, lines []diffLine, cutIndex int) string {
 }
 
 // diffGitHeaderPath extracts the b-side path from a git file header such as
-// "diff --git a/x b/x". It is a display hint for sections with no +++ line.
+// "diff --git a/x b/x" or "diff --git \"a/old name\" \"b/new name\"".
 func diffGitHeaderPath(text string) string {
 	rest, ok := strings.CutPrefix(text, "diff --git ")
-	if !ok || rest == "" {
+	if !ok {
 		return ""
 	}
-	if i := strings.LastIndex(rest, " b/"); i >= 0 {
-		return strings.TrimSpace(rest[i+1:])
+	oldPath, newPath, ok := splitGitPaths(rest)
+	if !ok || oldPath == "" || newPath == "" {
+		return ""
 	}
-	fields := strings.Fields(rest)
-	if len(fields) >= 2 {
-		return strings.Trim(fields[len(fields)-1], `"`)
+	return newPath
+}
+
+// splitGitPaths splits the two paths of a diff --git header using Git's
+// quoting rules: a path containing spaces or unusual bytes is a double-quoted
+// token with C-style escapes, and an unquoted token ends at whitespace. A
+// separator heuristic cannot do this because a destination may itself contain
+// " b/" or spaces.
+func splitGitPaths(rest string) (oldPath, newPath string, ok bool) {
+	oldPath, rest, ok = nextGitPath(rest)
+	if !ok {
+		return "", "", false
 	}
-	return ""
+	newPath, _, ok = nextGitPath(rest)
+	return oldPath, newPath, ok
+}
+
+func nextGitPath(s string) (path, rest string, ok bool) {
+	s = strings.TrimLeft(s, " \t")
+	if s == "" {
+		return "", "", false
+	}
+	if s[0] != '"' {
+		if i := strings.IndexAny(s, " \t"); i >= 0 {
+			return s[:i], s[i:], true
+		}
+		return s, "", true
+	}
+	var b strings.Builder
+	for i := 1; i < len(s); i++ {
+		switch s[i] {
+		case '"':
+			return b.String(), s[i+1:], true
+		case '\\':
+			if i+1 >= len(s) {
+				return "", "", false
+			}
+			i++
+			switch c := s[i]; c {
+			case 'a':
+				b.WriteByte('\a')
+			case 'b':
+				b.WriteByte('\b')
+			case 'f':
+				b.WriteByte('\f')
+			case 'n':
+				b.WriteByte('\n')
+			case 'r':
+				b.WriteByte('\r')
+			case 't':
+				b.WriteByte('\t')
+			case 'v':
+				b.WriteByte('\v')
+			case '\\', '"':
+				b.WriteByte(c)
+			default:
+				if c >= '0' && c <= '7' && i+2 < len(s) &&
+					s[i+1] >= '0' && s[i+1] <= '7' && s[i+2] >= '0' && s[i+2] <= '7' {
+					b.WriteByte((c-'0')<<6 | (s[i+1]-'0')<<3 | (s[i+2] - '0'))
+					i += 2
+				} else {
+					b.WriteByte(c)
+				}
+			}
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return "", "", false
 }
 
 func clipDiffText(s string) string {
