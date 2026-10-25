@@ -3005,8 +3005,32 @@ func TestRetirementSafetyColdJobEvidence(t *testing.T) {
 func TestRetirementEvidenceStableWatchSettlementPending(t *testing.T) {
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
-	old, _, originalAppend := seedSupersededStableWatchAckFailure(t, fixture, fs)
+	old, newer, originalAppend := seedSupersededStableWatchAckFailure(t, fixture, fs)
 	jm := fixture.sourceJM
+	cfg := fixture.onlyWatchConfig(t)
+	// Clear preserves produced frames, so settle the unrelated newer frame
+	// through real custody without running the old settlement retry batch.
+	accepted, err := jm.deliverPendingWatchSend(cfg, newer, false)
+	if err != nil || !accepted {
+		t.Fatalf("settle newer frame: accepted=%v err=%v", accepted, err)
+	}
+	journalBeforeClear, err := jm.store.LoadEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if countExactWatchSendEvents(journalBeforeClear, jobstore.EventWatchSendDelivered, newer) != 1 || countExactWatchSendEvents(journalBeforeClear, jobstore.EventWatchSendDelivered, old) != 0 {
+		t.Fatal("newer-frame settlement changed the old acknowledgement boundary")
+	}
+	if got := countAttentionEntries(t, fixture.rootTranscriptPath, stableWatchAttentionID(newer)); got != 1 {
+		t.Fatalf("newer receiver custody entries = %d, want 1", got)
+	}
+	pendingReceiverIDs, err := fixture.root.pendingNotificationIDs()
+	wantReceiverIDs := []string{stableWatchAttentionID(old), stableWatchAttentionID(newer)}
+	slices.Sort(pendingReceiverIDs)
+	slices.Sort(wantReceiverIDs)
+	if err != nil || !slices.Equal(pendingReceiverIDs, wantReceiverIDs) {
+		t.Fatalf("custody-only receiver pending IDs=%v err=%v, want exact unobserved IDs %v", pendingReceiverIDs, err, wantReceiverIDs)
+	}
 	jm.mu.Lock()
 	receiptHeld := jm.stableWatchReceipts[old.DeliveryID] != nil
 	retry, retryHeld := jm.stableWatchSettlementRetries[old.DeliveryID]
@@ -3017,7 +3041,6 @@ func TestRetirementEvidenceStableWatchSettlementPending(t *testing.T) {
 	if retry.state.DeliveryID != old.DeliveryID || retry.state.UpdateSeq != old.UpdateSeq {
 		t.Fatalf("settlement retry lost original identity: %+v vs %+v", retry.state, old)
 	}
-	cfg := fixture.onlyWatchConfig(t)
 	if _, err := jm.clearWatchByIDMatching(cfg.watchID, func(*watchConfig) bool { return true }, true); err != nil {
 		t.Fatalf("clear watch: %v", err)
 	}

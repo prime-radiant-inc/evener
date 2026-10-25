@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -80,7 +81,9 @@ func TestAppendWatchSendEventsBatchesMultiEventGroups(t *testing.T) {
 // pending map full, the next send evicts the oldest entry, and the pending
 // event plus the eviction terminal event must land in ONE AppendBatch call —
 // one fsync, all-or-nothing — with no per-event appendEvent calls. A batch
-// failure must leave neither event durable nor the runtime map changed.
+// failure must leave neither event durable nor the persistence runtime map
+// changed. The recordWatchSend wrapper additionally retains an unpersisted
+// produced frame for retry, which the real delivery pump must recover.
 func TestPersistPendingWatchSendBatchesCapOverflowEvictions(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -93,8 +96,15 @@ func TestPersistPendingWatchSendBatchesCapOverflowEvictions(t *testing.T) {
 
 	build := func(target string) watchSendDelivery {
 		jm.mu.Lock()
-		defer jm.mu.Unlock()
-		return jm.watchSendSnapshot(cfg, target, "test", events.SessionEvent{SessionID: jm.sessionID})
+		d := jm.watchSendSnapshot(cfg, target, "test", events.SessionEvent{SessionID: jm.sessionID})
+		jm.mu.Unlock()
+		// Isolate source persistence from diagnostic-triggered receiver custody.
+		d.deliveryID = "batch-source-" + target
+		if !jm.claimWatchSendDelivery(d.deliveryID) {
+			t.Fatal("fixture delivery claim already held")
+		}
+		t.Cleanup(func() { jm.releaseWatchSendDeliveryClaim(d.deliveryID) })
+		return d
 	}
 
 	// Fill the pending map to the cap through the durable path.
@@ -167,7 +177,13 @@ func TestPersistPendingWatchSendBatchesCapOverflowEvictions(t *testing.T) {
 	jm.appendEvents = func([]jobstore.Event) error { return want }
 	before := len(loadJobStoreEvents(t, jm))
 	runtimeBefore := len(cfg.pending)
-	if _, _, ok, err := jm.recordWatchSend(build("target_lost")); !errors.Is(err, want) || ok {
+	pendingBefore := make(map[jobstore.WatchSendKey]jobstore.WatchSendState, runtimeBefore)
+	for key, pending := range cfg.pending {
+		pendingBefore[key] = *pending
+	}
+	orderBefore := slices.Clone(cfg.pendingOrder)
+	d := build("target_lost")
+	if _, ok, err := jm.persistPendingWatchSend(jm.watchSendState(d, "dlg_obs"), d); !errors.Is(err, want) || ok {
 		t.Fatalf("failed batch: ok=%v err=%v, want ok=false + the batch failure", ok, err)
 	}
 	if got := len(loadJobStoreEvents(t, jm)); got != before {
@@ -175,6 +191,61 @@ func TestPersistPendingWatchSendBatchesCapOverflowEvictions(t *testing.T) {
 	}
 	if len(cfg.pending) != runtimeBefore {
 		t.Fatalf("failed batch changed runtime pending %d -> %d, want unchanged", runtimeBefore, len(cfg.pending))
+	}
+	for key, pending := range pendingBefore {
+		if got := cfg.pending[key]; got == nil || *got != pending {
+			t.Fatalf("failed batch changed pending key %+v: got %+v, want %+v", key, got, pending)
+		}
+	}
+	if !slices.Equal(cfg.pendingOrder, orderBefore) || jm.terminalFlush[cfg] {
+		t.Fatalf("failed batch changed pending order or terminal projection: order=%v terminal=%v", cfg.pendingOrder, jm.terminalFlush[cfg])
+	}
+	// The source wrapper has an additional recovery contract: preserve an
+	// unpersisted produced frame, without claiming a successful batch commit.
+	retryDelivery := build("target_retry")
+	if _, _, ok, err := jm.recordWatchSend(retryDelivery); !errors.Is(err, want) || ok {
+		t.Fatalf("wrapper failed batch: ok=%v err=%v", ok, err)
+	}
+	if got := len(loadJobStoreEvents(t, jm)); got != before {
+		t.Fatalf("wrapper failure changed durable journal %d -> %d", before, got)
+	}
+	if len(cfg.pending) != runtimeBefore+1 {
+		t.Fatalf("wrapper retry pending entries = %d, want %d", len(cfg.pending), runtimeBefore+1)
+	}
+	for key, pending := range pendingBefore {
+		if got := cfg.pending[key]; got == nil || *got != pending {
+			t.Fatalf("wrapper failure changed existing pending key %+v: got %+v, want %+v", key, got, pending)
+		}
+	}
+	var retained *jobstore.WatchSendState
+	for _, pending := range cfg.pending {
+		if pending.DeliveryID == "batch-source-target_retry" {
+			retained = pending
+		}
+	}
+	if retained == nil || retained.Key.ResolvedWatchedIdentity != "target_retry" || !jm.terminalFlush[cfg] {
+		t.Fatalf("wrapper lost its exact unpersisted retry: state=%+v detached=%v", retained, jm.terminalFlush[cfg])
+	}
+	if len(loadWatchSendRecord(t, jm).Pending) != defaultWatchSendPendingCap {
+		t.Fatal("unpersisted wrapper retry appeared durable")
+	}
+	// Recover through the real pump. Only the failed frame's transport claim
+	// is released, so successful source entries remain untouched.
+	jm.appendEvents = origBatch
+	jm.releaseWatchSendDeliveryClaim("batch-source-target_retry")
+	jm.dispatchProducedWatchSends()
+	var retryEvents []jobstore.EventKind
+	for _, event := range loadJobStoreEvents(t, jm)[before:] {
+		if event.WatchSend == nil || event.WatchSend.DeliveryID != "batch-source-target_retry" {
+			t.Fatalf("recovery changed another delivery: %+v", event)
+		}
+		retryEvents = append(retryEvents, event.Kind)
+	}
+	if len(retryEvents) != 2 || retryEvents[0] != jobstore.EventWatchSendPending || retryEvents[1] != jobstore.EventWatchSendDropped {
+		t.Fatalf("wrapper recovery events = %v, want pending then dropped for retired loose receiver", retryEvents)
+	}
+	if len(cfg.pending) != runtimeBefore || len(loadWatchSendRecord(t, jm).Pending) != defaultWatchSendPendingCap {
+		t.Fatal("wrapper recovery did not restore the source-only pending inventory")
 	}
 }
 
@@ -201,8 +272,15 @@ func TestPersistPendingWatchSendEvictsBeforeStableVerification(t *testing.T) {
 
 	build := func(target string) watchSendDelivery {
 		jm.mu.Lock()
-		defer jm.mu.Unlock()
-		return jm.watchSendSnapshot(cfg, target, "test", events.SessionEvent{SessionID: jm.sessionID})
+		d := jm.watchSendSnapshot(cfg, target, "test", events.SessionEvent{SessionID: jm.sessionID})
+		jm.mu.Unlock()
+		// Hold transport only, stable enqueue and its verification remain real.
+		d.deliveryID = "stable-source-" + target
+		if !jm.claimWatchSendDelivery(d.deliveryID) {
+			t.Fatal("fixture delivery claim already held")
+		}
+		t.Cleanup(func() { jm.releaseWatchSendDeliveryClaim(d.deliveryID) })
+		return d
 	}
 
 	// Fill the pending map to the cap through the durable path. Distinct
@@ -219,11 +297,9 @@ func TestPersistPendingWatchSendEvictsBeforeStableVerification(t *testing.T) {
 	}
 	oldestKey := cfg.pendingOrder[0]
 
-	// Gate the overflow send's completion: once its batch has landed (seen
-	// via the batch seam), steal the live enqueue receipt so
-	// CompleteWatchEnqueue reports a stale lease. Every boundary hook fires
-	// in order (enqueue admission, then completion), so the completion gate
-	// waits for the batch to land first.
+	// After the overflow batch lands, eviction releases the oldest receipt.
+	// Gate that boundary and steal the newcomer's live enqueue receipt so
+	// its later CompleteWatchEnqueue verification reports a stale lease.
 	origBoundary := jm.watchReceiptBoundary
 	var boundaries int
 	batchLanded := make(chan struct{})
@@ -233,9 +309,9 @@ func TestPersistPendingWatchSendEvictsBeforeStableVerification(t *testing.T) {
 		if origBoundary != nil {
 			origBoundary()
 		}
-		// The completion boundary is the second hook call (admission is the
-		// first). Wait until the batch is durable, then steal the live
-		// enqueue receipt so CompleteWatchEnqueue reports a stale lease.
+		// Enqueue admission is first, eviction receipt release is second.
+		// Steal the live enqueue receipt after durability but before the
+		// newcomer's CompleteWatchEnqueue verification.
 		if boundaries == 2 {
 			<-batchLanded
 			fixture.controller.mu.Lock()
