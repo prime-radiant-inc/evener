@@ -224,8 +224,8 @@ func TestSchemaInt(t *testing.T) {
 	}
 }
 
-// TestResolveSchemaErrorContainer_NilSchema covers the nil-schema path
-//: a segment's current schema node is nil.
+// TestResolveSchemaErrorContainer_NilSchema covers the nil-schema path where
+// a segment's current schema node is nil.
 func TestResolveSchemaErrorContainer_NilSchema(t *testing.T) {
 	params := map[string]any{
 		"type": "object",
@@ -257,8 +257,7 @@ func TestResolveSchemaErrorContainer_ArrayNoItems(t *testing.T) {
 }
 
 // TestResolveSchemaErrorContainer_TerminalArrayIndexAllPresent covers the
-// terminal array-index path where all required fields are present, so ok=false
-//.
+// terminal array-index path where all required fields are present, so ok=false.
 func TestResolveSchemaErrorContainer_TerminalArrayIndexAllPresent(t *testing.T) {
 	params := map[string]any{
 		"type": "object",
@@ -333,8 +332,7 @@ func TestParseExcerpt_EmptyRaw(t *testing.T) {
 	}
 }
 
-// TestParseExcerpt_UnexpectedEOF covers the io.EOF/io.ErrUnexpectedEOF path
-//.
+// TestParseExcerpt_UnexpectedEOF covers the io.EOF/io.ErrUnexpectedEOF path.
 func TestParseExcerpt_UnexpectedEOF(t *testing.T) {
 	raw := []byte(`{"key": "val`)
 	got := parseExcerpt(io.ErrUnexpectedEOF, raw)
