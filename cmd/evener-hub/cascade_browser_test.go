@@ -129,17 +129,19 @@ func TestAgentCascadeBrowser(t *testing.T) {
 	signalReady := func() { readyOnce.Do(func() { close(ready) }) }
 	go func() {
 		phases := make(map[int]int)
+		settlementResponses := make(map[int]int)
 		toolOwners := make(map[string]int)
-		completed := make(map[int]bool)
+		retained := make(map[int]bool)
 		ancestorHeld := false
-		// The held ancestor never reaches the completed accounting, so its
-		// role lowers the target by one wherever readiness is checked.
+		// Readiness means each role has supplied its retained transcript, not
+		// that all generations have settled. Root must wait for the ancestor
+		// whose provider call the browser deliberately holds until later.
 		maybeSignalReady := func() {
 			readyAt := 7 + cascadePagingDelegates
 			if ancestorHeld {
 				readyAt--
 			}
-			if len(completed) == readyAt {
+			if len(retained) == readyAt {
 				signalReady()
 			}
 		}
@@ -274,14 +276,19 @@ func TestAgentCascadeBrowser(t *testing.T) {
 				// follow-up request that names it still resolves its role.
 				toolOwners[call.ToolCallID()] = role
 				ancestorHeld = true
-				// The other roles may already be complete if the serial loop
+				// The other roles may already be retained if the serial loop
 				// reached them first; in that order this hold branch owns the
 				// readiness signal.
 				maybeSignalReady()
 				go func(call *fakellm.Call) {
 					select {
 					case <-releaseAncestor:
-						call.RespondToolCall("communicate", communicateArgs("CASCADE_ANCESTOR_BUSY_REPLY"))
+						args, err := cascadeCommunicateArgs(ctx, client, call, role, "CASCADE_ANCESTOR_BUSY_REPLY")
+						if err != nil {
+							scriptErr <- err
+							return
+						}
+						call.RespondToolCall("communicate", args)
 					case <-ctx.Done():
 					}
 				}(call)
@@ -309,14 +316,36 @@ func TestAgentCascadeBrowser(t *testing.T) {
 				})
 				continue
 			}
+			// The finite hierarchy can emit wait updates and settled reports,
+			// never an unbounded stream of failed completion attempts. Leave
+			// room for a target settling between the status read and wait admission.
+			budget := 2
+			if role < 6 {
+				budget = 2 * (7 - role)
+			}
+			if role == 0 {
+				budget += 2 * cascadePagingDelegates
+			}
+			settlementResponses[role]++
+			if settlementResponses[role] > budget {
+				scriptErr <- fmt.Errorf("cascade role %d exceeded %d settlement responses at phase %d", role, budget, phase)
+				call.RespondHTTPError(400, "invalid_request_error")
+				cancel()
+				return
+			}
 			text := cascadeRoleToken(role)
 			if role <= 6 {
 				text += "\n\n" + strings.Repeat(fmt.Sprintf("Scope %d retained transcript paragraph.\n\n", role), 100)
 			}
+			args, err := cascadeCommunicateArgs(ctx, client, call, role, text)
+			if err != nil {
+				scriptErr <- err
+				return
+			}
 			toolOwners[call.ToolCallID()] = role
-			call.RespondToolCall("communicate", communicateArgs(text))
-			if !completed[role] {
-				completed[role] = true
+			call.RespondToolCall("communicate", args)
+			if !retained[role] {
+				retained[role] = true
 				maybeSignalReady()
 			}
 		}
@@ -542,6 +571,22 @@ func TestAgentCascadeBrowser(t *testing.T) {
 	if observed.Active != "active" || observed.ReducedMotionActive != "active" || observed.Idle != "idle" {
 		t.Fatalf("observed dotted ancestor states = %+v, want active/active/idle", observed)
 	}
+	for _, edge := range edges {
+		page, err := client.ThreadDelegatesList(ctx, appwire.SessionActivityListParams{
+			Ref: edge.OwnerRef, Scope: appwire.SessionActivityScopeSession, Limit: 200,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		index := slices.IndexFunc(page.Delegates, func(child appwire.SessionDelegate) bool { return child.DelegateID == edge.DelegateID })
+		if !page.Page.Complete || index < 0 {
+			t.Fatalf("settled cascade child %s missing from complete public state", edge.DelegateID)
+		}
+		child := page.Delegates[index]
+		if child.RunGeneration != 1 || child.Lifecycle != "idle" || child.Outcome != "completed" {
+			t.Fatalf("cascade child did not finish its original generation: %+v", child)
+		}
+	}
 	inputsMu.Lock()
 	for _, token := range []string{"CASCADE_BUSY_INPUT", "CASCADE_QUEUE_INPUT", "CASCADE_UNSENT", "CASCADE_NEWER", "CASCADE_MIXED_INPUT", "CASCADE_OVERLAP_COMMAND_BODY"} {
 		want := 0
@@ -637,6 +682,59 @@ func TestAgentCascadeBrowser(t *testing.T) {
 }
 
 func cascadeRoleToken(role int) string { return fmt.Sprintf("CASCADE_ROLE_%d_SENTINEL", role) }
+
+// cascadeCommunicateArgs scripts a valid model disposition from real public
+// child state. Answering a provider call is not proof its generation settled.
+func cascadeCommunicateArgs(ctx context.Context, client *appwire.Client, call *fakellm.Call, role int, text string) (map[string]any, error) {
+	args := communicateArgs(text)
+	args["end_reason"] = "done"
+	if role >= 6 {
+		return args, nil
+	}
+	var childRef string
+	messages, _ := call.Body["messages"].([]any)
+	for _, raw := range messages {
+		message, ok := raw.(map[string]any)
+		if !ok || message["role"] != "tool" {
+			continue
+		}
+		content, _ := message["content"].(string)
+		var result struct {
+			ChildSessionID string `json:"child_session_id"`
+		}
+		if json.Unmarshal([]byte(content), &result) == nil && result.ChildSessionID != "" {
+			childRef = "local:" + result.ChildSessionID
+			break
+		}
+	}
+	if childRef == "" {
+		return nil, fmt.Errorf("cascade role %d has no real delegate tool result", role)
+	}
+	child, err := client.ThreadActivityRead(ctx, appwire.SessionActivityReadParams{Ref: childRef})
+	if err != nil {
+		return nil, err
+	}
+	children, err := client.ThreadDelegatesList(ctx, appwire.SessionActivityListParams{
+		Ref: child.Context.ParentRef, Scope: appwire.SessionActivityScopeSession, Limit: 200,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !children.Page.Complete || len(children.Delegates) == 0 {
+		return nil, fmt.Errorf("cascade role %d has incomplete real child state: %+v", role, children.Page)
+	}
+	for _, child := range children.Delegates {
+		if child.Lifecycle == "running" {
+			args["end_reason"] = "waiting_on_work"
+			args["waiting_on"] = child.DelegateID
+			return args, nil
+		}
+		if child.Outcome != "completed" {
+			return nil, fmt.Errorf("cascade role %d child %s settled with outcome %s: %s", role, child.DelegateID, child.Outcome, child.Error)
+		}
+	}
+	return args, nil
+}
 
 // cascadeAttentionIndex recognises one attention fixture session's first input.
 // Those inputs carry no cascade role sentinel, so they are answered before the

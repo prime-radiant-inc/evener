@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"strconv"
 	"strings"
@@ -238,6 +239,7 @@ func applyRunStarted(state State, event Event) error {
 	aggregate.Phase = PhaseRunning
 	aggregate.CurrentRunOpen = true
 	aggregate.PreparedTerminal = nil
+	aggregate.PublicationIDs = nil
 	aggregate.RunStartedAt = payload.StartedAt
 	aggregate.LatestActivityAt = payload.StartedAt
 	// A new generation starts with an empty line; the words of the run that
@@ -385,6 +387,7 @@ func applySubtreeStopRequested(state State, event Event) error {
 		}
 		aggregate.PendingStopSeq = event.Seq
 		aggregate.PendingStopAt = event.TS
+		aggregate.PendingStopPreservesNotifications = payload.PreserveNotifications
 		aggregate.NeedsAttention = false
 		if aggregate.Phase != PhaseClosed {
 			aggregate.Phase = PhaseStopping
@@ -422,7 +425,8 @@ func applySubtreeStopCompleted(state State, event Event) error {
 	for _, aggregate := range state {
 		kept := aggregate.PendingDeliveries[:0]
 		for _, delivery := range aggregate.PendingDeliveries {
-			if covered[delivery.OwnerDelegateID] {
+			owner := state[delivery.OwnerDelegateID]
+			if covered[delivery.OwnerDelegateID] && (!owner.Resumable || !owner.PendingStopPreservesNotifications) {
 				continue
 			}
 			kept = append(kept, delivery)
@@ -433,6 +437,7 @@ func applySubtreeStopCompleted(state State, event Event) error {
 		aggregate := state[id]
 		aggregate.PendingStopSeq = 0
 		aggregate.PendingStopAt = time.Time{}
+		aggregate.PendingStopPreservesNotifications = false
 		aggregate.PreparedTerminal = nil
 		aggregate.NeedsAttention = false
 		if aggregate.Resumable {
@@ -486,12 +491,41 @@ func applyUpdatePosted(state State, event Event) error {
 	if strings.TrimSpace(payload.Message) == "" {
 		return fmt.Errorf("delegate %q update message is empty", event.DelegateID)
 	}
-	message, err := json.Marshal(payload.Message)
-	if err != nil {
-		return fmt.Errorf("delegate %q update message: %w", event.DelegateID, err)
+	if payload.Readiness != "" && payload.Readiness != "ready" {
+		return fmt.Errorf("delegate %q update readiness %q is not supported", event.DelegateID, payload.Readiness)
 	}
-	return queueDelivery(aggregate, UpdateDeliveryID(event.DelegateID, event.Seq), payload.Generation,
-		&TerminalPacket{Kind: PacketUpdate, Message: message})
+	message, _ := json.Marshal(payload.Message)
+	packet := TerminalPacket{Kind: PacketUpdate, Message: message}
+	if payload.Communicate != nil || payload.Packet != nil {
+		if payload.Communicate == nil || payload.Packet == nil {
+			return errors.New("update requires both communicate and packet")
+		}
+		info := payload.Communicate
+		if info.Message != payload.Message || (info.EndTurn && (info.EndReason != "waiting_on_work" || strings.TrimSpace(info.WaitingOn) == "")) {
+			return errors.New("update communicate tuple does not describe a nonterminal publication")
+		}
+		if payload.Packet.Kind != PacketUpdate {
+			return errors.New("update packet must have update kind")
+		}
+		if err := validatePacketPayload(*payload.Packet); err != nil {
+			return err
+		}
+		packet = *cloneTerminalPacket(payload.Packet)
+		if string(packet.Message) != string(message) {
+			return errors.New("update packet message does not match communicate")
+		}
+		if info.CallID != "" {
+			if aggregate.PublicationIDs[info.CallID] != "" {
+				return errors.New("update call already published")
+			}
+			if aggregate.PublicationIDs == nil {
+				aggregate.PublicationIDs = map[string]string{}
+			}
+			aggregate.PublicationIDs[info.CallID] = UpdateDeliveryID(event.DelegateID, event.Seq)
+		}
+	}
+	packet = ProjectUpdatePacket(packet, payload.Readiness)
+	return queueDelivery(aggregate, UpdateDeliveryID(event.DelegateID, event.Seq), payload.Generation, &packet)
 }
 
 // applyIntentStated records a running generation's newest tool-call intent.
@@ -667,6 +701,10 @@ func validateTerminalPacket(packet TerminalPacket) error {
 	if packet.Kind != PacketReported && packet.Kind != PacketTerminalError {
 		return fmt.Errorf("invalid kind %q", packet.Kind)
 	}
+	return validatePacketPayload(packet)
+}
+
+func validatePacketPayload(packet TerminalPacket) error {
 	if len(packet.Message) == 0 || !json.Valid(packet.Message) {
 		return errors.New("message is not valid JSON")
 	}
@@ -876,6 +914,10 @@ func cloneState(state State) (State, error) {
 
 func cloneAggregate(aggregate *Aggregate) *Aggregate {
 	clone := *aggregate
+	if aggregate.PublicationIDs != nil {
+		clone.PublicationIDs = make(map[string]string, len(aggregate.PublicationIDs))
+		maps.Copy(clone.PublicationIDs, aggregate.PublicationIDs)
+	}
 	clone.Descriptor = cloneDescriptor(aggregate.Descriptor)
 	clone.PreparedTerminal = cloneTerminalPacket(aggregate.PreparedTerminal)
 	clone.LatestOutcome = cloneOutcome(aggregate.LatestOutcome)

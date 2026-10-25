@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent"
@@ -19,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // requestFullText concatenates every request message's text, tool-call
@@ -146,12 +148,12 @@ func (e *shellExecutorEnvironment) StreamCommand(ctx context.Context, command, w
 func releaseOnDrainStart(t *testing.T, release func(), waitForCompletion func(*agent.Session)) {
 	t.Helper()
 	oldDrainJobTree := runDrainJobTree
-	runDrainJobTree = func(sess *agent.Session, ctx context.Context) (string, error) {
+	runDrainJobTree = func(sess *agent.Session, ctx context.Context, wake <-chan struct{}) (string, error) {
 		release()
 		if waitForCompletion != nil {
 			waitForCompletion(sess)
 		}
-		return oldDrainJobTree(sess, ctx)
+		return oldDrainJobTree(sess, ctx, wake)
 	}
 	t.Cleanup(func() {
 		release()
@@ -323,6 +325,83 @@ func delegateDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedProvid
 	return adapter
 }
 
+func TestRunDrainCompletionBeforeFallbackClock(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		executor := newHeldShellExecutor("completion-before-clock-731a", "shell-observed-731a", 0)
+		oldNew := runNewSession
+		runNewSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+			return oldNew(client, profile, &shellExecutorEnvironment{ExecutionEnvironment: env, executor: executor}, cfg)
+		}
+		t.Cleanup(func() { executor.releaseShell(); runNewSession = oldNew })
+		var observedAt time.Time
+		adapter := &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return scriptedToolCalls(scriptedShellCall("no-clock-shell", executor.command, "background"))
+			},
+			func(llm.Request) llm.Response {
+				return scriptedCommunicate("initial-no-clock-731a")
+			},
+			func(req llm.Request) llm.Response {
+				observedAt = time.Now()
+				if text := requestDeliveredText(req); !strings.Contains(text, "shell-observed-731a") || !strings.Contains(text, `status="completed"`) {
+					t.Errorf("completion missing from provider request: %s", text)
+				}
+				return scriptedCommunicate("final-no-clock-731a")
+			},
+		}}
+		// Startup captures every configured provider's model availability. Keep
+		// implicit local transports out of this clock-controlled fixture, rather
+		// than letting their HTTP keep-alive goroutines hold synctest open.
+		r, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithSnapshot([]byte(`{"openai":{"id":"openai","npm":"@ai-sdk/openai","api":"https://api.openai.com/v1","models":{}}}`)),
+			registry.WithOverlay([]byte("[providers.openai]\nprotocol = \"openai-chat\"\n")),
+			registry.WithInstances(map[string]registry.Provider{"openai": scriptedInstance("openai")}),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := llm.NewClient(llm.WithRegistry(r))
+		client.Register(adapter)
+		client.SetDefaultProvider("openai")
+		if names := client.ProviderNames(); len(names) != 1 || names[0] != "openai" {
+			t.Fatalf("fixture providers = %v, want only openai", names)
+		}
+		oldLoad := runLoadClient
+		runLoadClient = func(string) (*llm.Client, error) { return client, nil }
+		t.Cleanup(func() { runLoadClient = oldLoad })
+		var stdout, stderr bytes.Buffer
+		done := make(chan error, 1)
+		workDir := t.TempDir()
+		go func() {
+			done <- run(context.Background(), runConfig{prompt: "start shell then observe its result", noDefaultMarketplaces: true, model: "openai/gpt-test", workDir: workDir, stdout: &stdout, stderr: &stderr})
+		}()
+		synctest.Wait()
+		if got := len(adapter.Requests()); got != 2 {
+			t.Fatalf("requests before release = %d, want 2", got)
+		}
+		before := time.Now()
+		executor.releaseShell()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("run: %v, stderr: %s", err, stderr.String())
+			}
+		default:
+			t.Fatal("one-shot did not finish on the source wake")
+		}
+		if !observedAt.Equal(before) {
+			t.Fatalf("provider observed completion at %s, fallback clock was %s", observedAt, before)
+		}
+		if len(adapter.Requests()) != 3 || !strings.Contains(stdout.String(), "final-no-clock-731a") {
+			t.Fatalf("requests=%d stdout=%s", len(adapter.Requests()), stdout.String())
+		}
+	})
+}
+
 func TestRunDrainsManagedShellBeforeExit(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -412,10 +491,10 @@ func TestRunDrainContinuesWhenNotificationTurnStartsAnotherShell(t *testing.T) {
 func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedProvider {
 	// Shell A is gated so it cannot reach terminal completion until the drain
 	// starts; otherwise its notification can beat the tool-result model round
-	// and be folded into that request. Shell B needs no gate: it is launched
-	// from A's notification turn, and a notification turn owns its current
-	// batch (no post-tool yield), so B's completion always waits for the next
-	// drain wake.
+	// and be folded into that request. Shell B has its own gate: completion
+	// accepted after its tool round is safe may enter that round's next request,
+	// even when A's notification started the turn. Hold it until that request
+	// arrives so this scenario still exercises a later drain wake.
 	//
 	// Releasing A is not enough: the drain must also not START until A has
 	// finalized. A drain that begins while A is still running finds a sole
@@ -429,13 +508,20 @@ func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedPr
 	// after the gate opens is deliberate and longer than the recheck
 	// interval: without the barrier it makes the tick win every time, so the
 	// scenario fails outright rather than once in a thousand runs.
-	gate := filepath.Join(t.TempDir(), "release-shell-a")
+	gates := t.TempDir()
+	gate := filepath.Join(gates, "release-shell-a")
+	gateB := filepath.Join(gates, "release-shell-b")
 	shellACommand := "while [ ! -f " + gate + " ]; do sleep 0.02; done; sleep 0.5; printf shell-a"
+	shellBCommand := "while [ ! -f " + gateB + " ]; do sleep 0.02; done; printf shell-b"
+	var session *agent.Session
 	releaseOnDrainStart(t, func() {
 		if err := os.WriteFile(gate, []byte("go\n"), 0o600); err != nil {
 			t.Errorf("release shell A: %v", err)
 		}
-	}, func(sess *agent.Session) { awaitDurableJobCompletion(t, sess) })
+	}, func(sess *agent.Session) {
+		session = sess
+		awaitDurableJobCompletion(t, sess)
+	})
 	jobIDPattern := regexp.MustCompile(`job_id="([^"]+)"`)
 	adapter := &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
@@ -454,12 +540,16 @@ func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedPr
 			if got := strings.Count(requestDeliveredText(req), "<job-notification"); got != 1 {
 				t.Fatalf("shell A notification request count = %d, want 1", got)
 			}
-			return scriptedToolCalls(scriptedShellCall("shell_b", "printf shell-b", "background"))
+			return scriptedToolCalls(scriptedShellCall("shell_b", shellBCommand, "background"))
 		},
 		func(req llm.Request) llm.Response {
 			if got := strings.Count(requestDeliveredText(req), "<job-notification"); got != 1 {
-				t.Fatalf("shell B tool-result request notification count = %d, want only A's notification", got)
+				t.Fatalf("shell B tool-result request notification count = %d, ids = %v, want only A's notification", got, jobIDPattern.FindAllStringSubmatch(requestDeliveredText(req), -1))
 			}
+			if err := os.WriteFile(gateB, []byte("go\n"), 0o600); err != nil {
+				t.Fatalf("release shell B: %v", err)
+			}
+			awaitDurableJobCompletion(t, session)
 			return scriptedCommunicate("waiting for B")
 		},
 		func(req llm.Request) llm.Response {
@@ -470,6 +560,25 @@ func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedPr
 			matches := jobIDPattern.FindAllStringSubmatch(text, -1)
 			if len(matches) != 2 || matches[0][1] == matches[1][1] {
 				t.Fatalf("notification job ids = %v, want two distinct ids", matches)
+			}
+			for i, callID := range []string{"shell_a", "shell_b"} {
+				calls, results := 0, 0
+				for _, message := range req.Messages {
+					for _, part := range message.Content {
+						if call := part.ToolCall; call != nil && call.ID == callID && call.Name == "shell" {
+							calls++
+						}
+						if result := part.ToolResult; result != nil && result.ToolCallID == callID && result.Name == "shell" && !result.IsError {
+							results++
+							if !strings.Contains(fmt.Sprint(result.Content), matches[i][1]) {
+								t.Errorf("%s tool result does not match its notification job ID %s", callID, matches[i][1])
+							}
+						}
+					}
+				}
+				if calls != 1 || results != 1 {
+					t.Errorf("%s request pairs = calls:%d results:%d, want one successful pair", callID, calls, results)
+				}
 			}
 			return scriptedCommunicate("all shell work complete")
 		},

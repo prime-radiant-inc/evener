@@ -28,10 +28,10 @@ func TestRetirementParkedRootAttentionDoesNotBlock(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	root.parkRootDelegateAttention()
+	root.suspendNotificationWake()
 	armOneRootAttention(t, root, "dlg_parked", "delegate:dlg_parked/delivery/1")
-	if wake, _, pending := attentionRailState(root); wake || pending != 1 || !root.rootAttentionRailParked() {
-		t.Fatalf("fixture: wake=%t pending=%d parked=%t, want parked attention (false, 1, true)", wake, pending, root.rootAttentionRailParked())
+	if wake, _, pending := attentionRailState(root); wake || pending != 1 || !root.notificationStopHeld() {
+		t.Fatalf("fixture: wake=%t pending=%d parked=%t, want parked attention (false, 1, true)", wake, pending, root.notificationStopHeld())
 	}
 	baseline := notifies.Load()
 
@@ -68,8 +68,9 @@ func TestRetirementParkedRootAttentionDoesNotBlock(t *testing.T) {
 		t.Fatalf("restore: %v", err)
 	}
 	t.Cleanup(func() { restored.Close() })
-	if wake, _, pending := attentionRailState(restored); wake || pending != 1 || !restored.rootAttentionRailParked() {
-		t.Fatalf("restored: wake=%t pending=%d parked=%t, want the attention still parked (false, 1, true)", wake, pending, restored.rootAttentionRailParked())
+	restored.SetNotifyFunc(func() { notifies.Add(1) })
+	if wake, _, pending := attentionRailState(restored); wake || pending != 1 || !restored.notificationStopHeld() {
+		t.Fatalf("restored: wake=%t pending=%d parked=%t, want the attention still parked (false, 1, true)", wake, pending, restored.notificationStopHeld())
 	}
 
 	// The user's next message is the re-engagement that releases the park,

@@ -639,10 +639,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 	}
 	s.attachTranscript(tw)
-	if err := s.flushPendingDelegateDeliveries(); err != nil {
+	if err := s.replayDelegateDeliveries(); err != nil {
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
 	}
-	if err := s.rearmRootDelegateAttentionFromTranscript(nil); err != nil {
+	if err := s.restorePendingNotifications(nil); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
 
@@ -1465,10 +1465,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			return nil, err
 		}
 	}
-	s.delegateDeliveryMu.Lock()
-	hadPendingDelegateDeliveries := len(s.pendingDelegateDeliveries) != 0
-	s.delegateDeliveryMu.Unlock()
-	if err := s.flushPendingDelegateDeliveries(); err != nil {
+	hadPendingDelegateDeliveries := s.hasPendingDelegateDeliveries()
+	if err := s.replayDelegateDeliveries(); err != nil {
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
 	}
 	if tw != nil && hadPendingDelegateDeliveries {
@@ -1517,7 +1515,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if restoreCfg.OnRestoredTranscript != nil {
 		restoreCfg.OnRestoredTranscript(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened)
 	}
-	if err := s.rearmRootDelegateAttentionFromTranscript(transcriptEntries); err != nil {
+	if err := s.restorePendingNotifications(transcriptEntries); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
 

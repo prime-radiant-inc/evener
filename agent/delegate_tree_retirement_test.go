@@ -1645,7 +1645,7 @@ func TestRetirementDelegateQuietSourceAndBoundRuntime(t *testing.T) {
 	if err := tree.CompleteQuietAttention(quiet, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := root.armDelegateAttention(quiet.attentionID); err != nil {
+	if err := root.requestNotificationWake(); err != nil {
 		t.Fatal(err)
 	}
 	retirementAwait(t, quiet.done)

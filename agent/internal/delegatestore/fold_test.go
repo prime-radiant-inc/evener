@@ -2,6 +2,7 @@ package delegatestore
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -999,6 +1000,38 @@ func updatePostedEvent(id string, generation uint64, message string) Event {
 	}
 }
 
+func TestApplyUpdatePostedReadinessProjection(t *testing.T) {
+	for _, captured := range []bool{false, true} {
+		for _, readiness := range []string{"", "ready"} {
+			t.Run(fmt.Sprintf("captured=%t/readiness=%s", captured, readiness), func(t *testing.T) {
+				e := updatePostedEvent("dlg_alpha", 1, "payload-2a41")
+				e.UpdatePosted.Readiness = readiness
+				if captured {
+					e.UpdatePosted.Communicate = &schema.CommunicateInfo{CallID: "call-1", Message: "payload-2a41"}
+					e.UpdatePosted.Packet = &TerminalPacket{Kind: PacketUpdate, Message: json.RawMessage(`"payload-2a41"`), StructuredResult: json.RawMessage(`{"id":"data-3f21"}`), StructuredResultSource: StructuredResultSourceSchema, Metadata: json.RawMessage(`{"call_id":"call-1","extra":{"opaque":42}}`)}
+				}
+				state := applyEvents(t, createdEvent("dlg_alpha", ""), startedEvent("dlg_alpha", 1, TriggerOwnerInput), e)
+				packet := state["dlg_alpha"].PendingDeliveries[0].Packet
+				var metadata UpdateMetadata
+				if len(packet.Metadata) != 0 {
+					if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if metadata.Readiness != readiness {
+					t.Fatalf("metadata=%+v", metadata)
+				}
+				if captured && (metadata.CallID != "call-1" || !strings.Contains(string(packet.Metadata), `"opaque":42`) || packet.StructuredResultSource != StructuredResultSourceSchema || string(packet.StructuredResult) != `{"id":"data-3f21"}`) {
+					t.Fatalf("lost captured payload: %+v", packet)
+				}
+				if !captured && readiness == "" && len(packet.Metadata) != 0 {
+					t.Fatalf("old optional metadata=%s", packet.Metadata)
+				}
+			})
+		}
+	}
+}
+
 // A running generation's updates queue in the delegate's own delivery FIFO,
 // in the order posted and ahead of the report the generation settles, each
 // under an id its journal sequence makes unique.
@@ -1111,5 +1144,64 @@ func TestIsUpdateDeliveryIDRecognizesOnlyUpdateIDs(t *testing.T) {
 		if got := IsUpdateDeliveryID(tc.id); got != tc.want {
 			t.Errorf("IsUpdateDeliveryID(%q) = %t, want %t", tc.id, got, tc.want)
 		}
+	}
+}
+
+func TestApplyUpdatePostedCapturedTuple(t *testing.T) {
+	modern := func() Event {
+		e := updatePostedEvent("dlg_alpha", 1, "waiting")
+		e.Seq = 3
+		e.UpdatePosted.Communicate = &schema.CommunicateInfo{CallID: "call-9d2", EndTurn: true, Message: "waiting", EndReason: "waiting_on_work", WaitingOn: "job_8ab"}
+		e.UpdatePosted.Packet = &TerminalPacket{Kind: PacketUpdate, Message: json.RawMessage(`"waiting"`), StructuredResult: json.RawMessage(`{"data":{"id":"payload-43b"}}`), Metadata: json.RawMessage(`{"waiting_on":"job_8ab"}`)}
+		return e
+	}
+	t.Run("acknowledged identity survives fold and resets on next generation", func(t *testing.T) {
+		state := applyEvents(t, createdEvent("dlg_alpha", ""), startedEvent("dlg_alpha", 1, TriggerOwnerInput), modern(), Event{Kind: EventDelegateDeliveryAcknowledged, DelegateID: "dlg_alpha", DeliveryAcknowledged: &DeliveryAcknowledged{DeliveryID: "dlg_alpha/update/3"}})
+		if state["dlg_alpha"].PublicationIDs["call-9d2"] != "dlg_alpha/update/3" || len(state["dlg_alpha"].PendingDeliveries) != 0 {
+			t.Fatal("ack lost publication identity")
+		}
+		clone, err := cloneState(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clone["dlg_alpha"].PublicationIDs["call-9d2"] = "mutated"
+		if state["dlg_alpha"].PublicationIDs["call-9d2"] != "dlg_alpha/update/3" {
+			t.Fatal("clone shares publication index")
+		}
+		for _, e := range []Event{preparedEvent("dlg_alpha", 1, reportedPacket("done")), finishedEvent("dlg_alpha", 1, OutcomeCompleted, DispositionReported, "dlg_alpha/delivery/1", nil), startedEvent("dlg_alpha", 2, TriggerOwnerInput)} {
+			if err := Apply(state, e); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if len(state["dlg_alpha"].PublicationIDs) != 0 {
+			t.Fatal("new generation inherited publication identity")
+		}
+	})
+	for _, tc := range []struct {
+		name   string
+		mutate func(*UpdatePosted)
+	}{
+		{"missing packet", func(u *UpdatePosted) { u.Packet = nil }},
+		{"missing tuple", func(u *UpdatePosted) { u.Communicate = nil }},
+		{"terminal disposition", func(u *UpdatePosted) { u.Communicate.EndReason = "done" }},
+		{"missing wait target", func(u *UpdatePosted) { u.Communicate.WaitingOn = "" }},
+		{"tuple mismatch", func(u *UpdatePosted) { u.Communicate.Message = "another" }},
+		{"packet mismatch", func(u *UpdatePosted) { u.Packet.Message = json.RawMessage(`"another"`) }},
+		{"terminal kind", func(u *UpdatePosted) { u.Packet.Kind = PacketReported }},
+		{"invalid structured json", func(u *UpdatePosted) { u.Packet.StructuredResult = json.RawMessage(`{`) }},
+		{"invalid metadata", func(u *UpdatePosted) { u.Packet.Metadata = json.RawMessage(`{`) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := applyEvents(t, createdEvent("dlg_alpha", ""), startedEvent("dlg_alpha", 1, TriggerOwnerInput))
+			before := stateJSON(t, state)
+			e := modern()
+			tc.mutate(e.UpdatePosted)
+			if err := Apply(state, e); err == nil {
+				t.Fatal("invalid publication accepted")
+			}
+			if got := stateJSON(t, state); got != before {
+				t.Fatal("invalid publication mutated state")
+			}
+		})
 	}
 }

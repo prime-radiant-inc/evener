@@ -80,7 +80,7 @@ func TestDelegateUpdatePendingAcrossCompactionIsPresentedAndConsumedOnce(t *test
 		return sess.ProcessInputKind(ctx, text, images, kind)
 	}
 	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, delegateLease{delegateID: "dlg_coordinator", generation: 1})
-	if _, err := sess.drainJobTreeWith(ctx, make(chan time.Time), func(context.Context) error { return nil }, process); err != nil {
+	if _, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), make(chan time.Time), func(context.Context) error { return nil }, process); err != nil {
 		t.Fatalf("drainJobTreeWith: %v", err)
 	}
 	if len(main.requests) != 1 || !requestMessagesContainText(main.requests[0].Messages, "COMPACTED_UPDATE") {
@@ -100,7 +100,7 @@ func TestRootDelegateAttentionPendingAcrossCompactionIsPresentedAndConsumed(t *t
 	if _, err := sess.appendDelegateNotificationDurably(attentionID, compactedAttentionText); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
-	if err := sess.armDelegateAttention(attentionID); err != nil {
+	if err := sess.requestNotificationWake(); err != nil {
 		t.Fatalf("arm attention: %v", err)
 	}
 	compactAfterAttention(t, sess)
@@ -134,7 +134,7 @@ func TestRootDelegateAttentionSurvivesCompactionWhenTheTranscriptReadFails(t *te
 	if _, err := sess.appendDelegateNotificationDurably(attentionID, compactedAttentionText); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
-	if err := sess.armDelegateAttention(attentionID); err != nil {
+	if err := sess.requestNotificationWake(); err != nil {
 		t.Fatalf("arm attention: %v", err)
 	}
 	failReads.Store(true)
@@ -163,7 +163,7 @@ func TestRootDelegateAttentionKeepsDeliveryOrderAcrossCompaction(t *testing.T) {
 		if _, err := sess.appendDelegateNotificationDurably(attentionID, text); err != nil {
 			t.Fatalf("append attention: %v", err)
 		}
-		if err := sess.armDelegateAttention(attentionID); err != nil {
+		if err := sess.requestNotificationWake(); err != nil {
 			t.Fatalf("arm attention: %v", err)
 		}
 	}

@@ -1485,16 +1485,16 @@ func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) 
 	// Virtual time has not moved, so the finalize-armed grace timer cannot
 	// fire behind the plant.
 	runtime.delegateDeliveryMu.Lock()
-	runtime.pendingDelegateDeliveries = append(runtime.pendingDelegateDeliveries, delegateDeliveryPlan{})
+	runtime.delegateDeliveryPumping = true
 	runtime.delegateDeliveryMu.Unlock()
 	if runtime.releaseIdleRuntimeAfterFinalize() {
-		t.Fatal("release succeeded with a queued delegate delivery; the pre-gate must refuse")
+		t.Fatal("release succeeded with an active delivery pass; the pre-gate must refuse")
 	}
 	if !stillResident() {
 		t.Fatal("refused release released the runtime anyway")
 	}
 	runtime.delegateDeliveryMu.Lock()
-	runtime.pendingDelegateDeliveries = nil
+	runtime.delegateDeliveryPumping = false
 	runtime.delegateDeliveryMu.Unlock()
 
 	// Residue 2: restore side effects still settling on this manager.
@@ -1630,7 +1630,7 @@ func TestDelegateAttentionRestore_HoldsOffIdleReleaseMidWake(t *testing.T) {
 		// must count, so this pass's exit cannot drop the other pass's hold.
 		tree.holdAttentionRestore(res.DelegateID)
 	}
-	sess.drivePendingStableDelegateAttention()
+	sess.delegateController.recheckNotificationReceivers()
 	if !hookFired {
 		t.Fatal("wake pass restored nothing; fixture setup broken")
 	}

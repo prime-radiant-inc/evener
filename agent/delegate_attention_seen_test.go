@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -72,23 +73,22 @@ func TestDelegatePresentedAttentionDoesNotEarnSuccessorGeneration(t *testing.T) 
 	}
 }
 
-// Attention appended after the generation's last request was built has not
-// been shown to the model, so it still wakes the delegate: one attention
-// generation, whose request presents it.
+// Attention appended after a request snapshot still reaches a later request.
+// An unsettled generation drains it without creating a successor generation.
 func TestDelegateAttentionAfterLastRequestStillWakesTheDelegate(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	var root *Session
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			// This request is already built: the attention lands after the
-			// generation's last model boundary.
+			// first model boundary.
 			sub := root.subagents.get(fixture.childID)
 			armStableSupervisionAttention(t, sub, "attention:late", "late gate job finished: exit 1")
 			return finalResponse("handoff: committed, waiting for review")
 		},
 		func(req llm.Request) llm.Response {
 			if !requestContainsText(req, "late gate job finished") {
-				t.Errorf("the attention generation's request did not present the late attention")
+				t.Errorf("the next request did not present the late attention")
 			}
 			return finalResponse("the late gate run failed; looking into it")
 		},
@@ -97,14 +97,15 @@ func TestDelegateAttentionAfterLastRequestStillWakesTheDelegate(t *testing.T) {
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	if got := supervisionRequestCount(fixture.adapter); got != 2 {
-		t.Fatalf("provider requests = %d, want 2 (the late attention must start one generation)", got)
+		t.Fatalf("provider requests = %d, want 2 (the late attention must reach the model)", got)
 	}
-	if got := attentionRunStarts(t, fixture); got != 1 {
-		t.Fatalf("attention generations = %d, want 1", got)
+	if got := attentionRunStarts(t, fixture); got != 0 {
+		t.Fatalf("attention generations = %d, want 0 while the current generation can drain", got)
 	}
-	if resolution, generation := childAttentionResolution(t, sub, "attention:late"); resolution != delegateAttentionConsumed || generation == 0 {
-		t.Fatalf("late attention resolution = %q for generation %d, want consumed by its own attention generation", resolution, generation)
+	if resolution, generation := childAttentionResolution(t, sub, "attention:late"); resolution != delegateAttentionConsumed || generation != 0 {
+		t.Fatalf("late attention resolution = %q for generation %d, want consumed in the current generation", resolution, generation)
 	}
+	assertAttentionResponseReceipts(t, sub.sess, "attention:late", 1)
 }
 
 // Attention that lands after the round snapshots its history but before the
@@ -191,14 +192,14 @@ func TestDelegateConsumingPresentedAttentionClearsNeedsAttentionWithoutAParentDr
 	})
 }
 
-// A generation that consumed attention it presented while later attention is
-// still pending must not leave the consumed item among the delegate's wakes:
-// a Stop admitted before the successor generation discards every noted wake,
-// and discarding an already-consumed item is a conflicting resolution that
-// would leave the stop outstanding.
+// Stop completes with a consumed receipt and a later unobserved message.
+// It preserves the later message for an explicit resume, not a discard.
 func TestDelegateStopAfterConsumingPresentedAttentionCompletesWithLaterAttentionPending(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	var root *Session
+	lateAccepted, releaseResponse := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(releaseResponse) })
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("warm") },
 		func(llm.Request) llm.Response {
@@ -209,70 +210,59 @@ func TestDelegateStopAfterConsumingPresentedAttentionCompletesWithLaterAttention
 			if !requestContainsText(req, "gate job finished") {
 				t.Errorf("second request of the turn did not present the attention")
 			}
+			return communicateResponse(false, "presented-result-53")
+		},
+		func(llm.Request) llm.Response {
 			// Built after this request: still pending when the generation ends.
 			armStableSupervisionAttention(t, root.subagents.get(fixture.childID), "attention:late", "review finished: approved")
+			close(lateAccepted)
+			<-releaseResponse
 			return finalResponse("gates passed")
+		},
+		func(req llm.Request) llm.Response {
+			if !requestContainsText(req, "review finished: approved") || !requestContainsText(req, "resume-after-stop-53") {
+				t.Error("explicit resume omitted the preserved late message or new parent input")
+			}
+			return finalResponse("resumed-result-53")
 		},
 	}
 	root = restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
-	// Hold the successor attention drive so the Stop lands before it.
-	driveReached := make(chan struct{})
-	releaseDrive := make(chan struct{})
-	var reachOnce, releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseDrive) }) })
-	updateSessionTestConfig(root, func(cfg *testConfig) {
-		cfg.delegateAttentionBeforeDriveClaim = func(child *subagent) {
-			// Earlier drives (the mid-run one for the presented item) pass.
-			if pending, err := child.sess.pendingDelegateAttentionIDs(); err != nil || !slices.Equal(pending, []string{"attention:late"}) {
-				return
-			}
-			reachOnce.Do(func() { close(driveReached) })
-			<-releaseDrive
-		}
-	})
-	sendAndAcknowledge(t, root, fixture.delegateID, "run the gates")
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "run the gates", 0)
+	if outcome.result.Err != nil || outcome.result.Action != "started" {
+		t.Fatalf("start held gate run = %+v", outcome.result)
+	}
 	select {
-	case <-driveReached:
+	case <-lateAccepted:
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
 	case <-time.After(30 * time.Second):
-		t.Fatal("the successor attention drive was not reached")
+		t.Fatal("the late message was not accepted at the held provider boundary")
 	}
-	if resolution, _ := childAttentionResolution(t, sub, "attention:presented"); resolution != delegateAttentionConsumed {
-		t.Fatalf("presented attention resolution = %q, want consumed", resolution)
-	}
+	assertAttentionResponseReceipts(t, sub.sess, "attention:presented", 1)
 
 	controller := root.delegateController
-	result, cancelPlan, _, err := controller.StopSubtree(rootDelegateActor(root.delegateRootSessionID), fixture.delegateID)
+	result, cancelPlan, _, err := controller.StopSubtreeAndDrive(context.Background(), rootDelegateActor(root.delegateRootSessionID), fixture.delegateID)
 	if err != nil {
-		t.Fatalf("StopSubtree: %v", err)
+		t.Fatalf("StopSubtreeAndDrive: %v", err)
 	}
 	executeDelegateCancelPlan(cancelPlan)
-	for range 4 {
-		plans, err := controller.Reconcile(emptyDelegateReconcileEvidence(controller))
-		if err != nil {
-			t.Fatalf("Reconcile: %v", err)
-		}
-		for _, plan := range plans.attention {
-			if err := controller.executeDelegateAttentionCleanup(plan); err != nil {
-				t.Fatalf("discard %q for the stop: %v", plan.attentionID, err)
-			}
-		}
-		if delegateStopDone(controller.stop) {
-			break
-		}
-	}
+	releaseOnce.Do(func() { close(releaseResponse) })
 	select {
 	case <-result.done:
-	default:
-		t.Fatal("stop did not complete")
+	// TRIPWIRE: the held in-process response is released and cancellation is local.
+	case <-time.After(30 * time.Second):
+		t.Fatal("stop did not complete with the unobserved message retained")
 	}
-	if resolution, _ := childAttentionResolution(t, sub, "attention:late"); resolution != delegateAttentionDiscarded {
-		t.Fatalf("late attention resolution = %q, want discarded by the stop", resolution)
+	if pending, err := sub.sess.pendingNotificationIDs(); err != nil || !slices.Equal(pending, []string{"attention:late"}) {
+		t.Fatalf("Stop did not preserve the exact unobserved message: pending:%v err:%v", pending, err)
 	}
-	releaseOnce.Do(func() { close(releaseDrive) })
+	assertAttentionResponseReceipts(t, sub.sess, "attention:presented", 1)
+	assertAttentionResponseReceipts(t, sub.sess, "attention:late", 0)
+	sendAndAcknowledge(t, root, fixture.delegateID, "resume-after-stop-53")
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	assertAttentionResponseReceipts(t, sub.sess, "attention:late", 1)
 }
 
 // A needs-attention clear that fails once after a generation consumed the
@@ -353,6 +343,23 @@ func childAttentionResolution(t *testing.T, sub *subagent, attentionID string) (
 	return fold.resolutions[attentionID], fold.resumeGenerations[attentionID]
 }
 
+func assertAttentionResponseReceipts(t *testing.T, s *Session, id string, want int) {
+	t.Helper()
+	data, err := readTranscriptFull(s.TranscriptPath(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnAssistant && slices.Contains(entry.Turn.ObservedNotificationIDs, id) {
+			count++
+		}
+	}
+	if count != want {
+		t.Fatalf("response receipts for %s = %d, want %d", id, count, want)
+	}
+}
+
 // Attention already pending when a leased generation starts is consumed by
 // that generation too, once its request shows the model the item. Here the
 // item lands on the idle delegate and a delegate_send's reservation wins the
@@ -394,13 +401,13 @@ func TestDelegateAttentionPendingBeforeASendIsConsumedByThatSend(t *testing.T) {
 	}
 }
 
-// A delegate turn that presented attention in a settled request and then
-// failed consumes nothing: the item stays pending, and the delegate does not
+// A successful response owns observation even if a later round fails.
+// The delegate does not
 // take on the root's paused-updates rail (no "Background updates paused"
 // warning, which belongs to the root). A permanent provider failure gates the
 // delegate's attention drive until its parent re-engages, so recovery comes
-// from the parent's next message: that generation presents the item and
-// consumes it, and no attention generation runs.
+// from the parent's next message, without a second delivery or an attention
+// generation for the item already consumed.
 func TestDelegateFailedTurnLeavesPresentedAttentionPending(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	var root *Session
@@ -446,9 +453,10 @@ func TestDelegateFailedTurnLeavesPresentedAttentionPending(t *testing.T) {
 		defer sub.mu.Unlock()
 		return sub.fatalRunGated && !sub.running && !sub.finalizing && !sub.driving
 	})
-	if resolution, _ := childAttentionResolution(t, sub, "attention:failed-turn"); resolution != "" {
-		t.Fatalf("attention resolution after the failed turn = %q, want still pending", resolution)
+	if resolution, _ := childAttentionResolution(t, sub, "attention:failed-turn"); resolution != delegateAttentionConsumed {
+		t.Fatalf("attention resolution after the later failed round = %q, want the successful response's observation preserved", resolution)
 	}
+	assertAttentionResponseReceipts(t, sub.sess, "attention:failed-turn", 1)
 
 	sendAndAcknowledge(t, root, fixture.delegateID, "FOLLOW-UP: try again")
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -463,6 +471,25 @@ func TestDelegateFailedTurnLeavesPresentedAttentionPending(t *testing.T) {
 	}
 	if warnings := childPausedWarnings(); len(warnings) != 0 {
 		t.Fatalf("child emitted paused-updates warnings %+v, want none: that rail is the root's", warnings)
+	}
+	// Full-history requests may cover the same historical ID again. The
+	// accepted message and consumed resolution are not duplicated.
+	assertAttentionResponseReceipts(t, sub.sess, "attention:failed-turn", 2)
+	data, err := readTranscriptFull(sub.sess.TranscriptPath(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, consumed := 0, 0
+	for _, entry := range data.Entries {
+		if entry.Turn.AttentionID == "attention:failed-turn" {
+			accepted++
+		}
+		if resolution := entry.Turn.AttentionResolution; resolution != nil && resolution.AttentionID == "attention:failed-turn" && resolution.Disposition == string(delegateAttentionConsumed) {
+			consumed++
+		}
+	}
+	if accepted != 1 || consumed != 1 {
+		t.Fatalf("failed-turn durable transitions = accepted:%d consumed:%d, want one each", accepted, consumed)
 	}
 }
 

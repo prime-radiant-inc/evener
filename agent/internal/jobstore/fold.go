@@ -137,12 +137,12 @@ func applyWatchEvent(watches map[string]*WatchRecord, e Event) {
 	}
 }
 
-// FoldWatchSends reconstructs pending watch-send frames from durable events.
+// FoldWatchSends reconstructs pending heads and unsettled superseded candidates.
 func FoldWatchSends(events []Event) WatchSendRecord {
 	sorted := append([]Event(nil), events...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
 
-	rec := WatchSendRecord{Pending: make(map[WatchSendKey]*WatchSendState)}
+	rec := WatchSendRecord{Pending: make(map[WatchSendKey]*WatchSendState), Superseded: make(map[string]*WatchSendState)}
 	terminalSeq := make(map[WatchSendKey]uint64)
 	for _, e := range sorted {
 		if e.WatchSend == nil {
@@ -157,10 +157,14 @@ func FoldWatchSends(events []Event) WatchSendRecord {
 			if pending := rec.Pending[key]; pending != nil && e.WatchSend.UpdateSeq < pending.UpdateSeq {
 				continue
 			}
+			if pending := rec.Pending[key]; pending != nil && pending.DeliveryID != e.WatchSend.DeliveryID {
+				rec.Superseded[pending.DeliveryID] = pending
+			}
 			state := *e.WatchSend
 			state.Provenance = provenance.Clone(e.WatchSend.Provenance)
 			rec.Pending[key] = &state
 		case EventWatchSendDelivered, EventWatchSendDropped, EventWatchSendEvicted:
+			delete(rec.Superseded, e.WatchSend.DeliveryID)
 			if settled, ok := terminalSeq[key]; !ok || e.WatchSend.UpdateSeq > settled {
 				terminalSeq[key] = e.WatchSend.UpdateSeq
 			}

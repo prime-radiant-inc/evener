@@ -35,6 +35,9 @@ func TestCovAbortOwedDelegateBootstrap(t *testing.T) {
 		subagents:          newSubagentManager(nil, 3),
 		events:             make(chan events.SessionEvent, 4),
 	}
+	root.stateDir = controller.stateDir
+	writerRoot := attachDeliveryTestReceiver(t, controller)
+	root.attachTranscript(writerRoot.transcript)
 	controller.rootRuntime = root
 
 	newRestored := func(delegateID string) owedBootstrapRuntime {
@@ -76,12 +79,18 @@ func TestCovAbortOwedDelegateBootstrap(t *testing.T) {
 		t.Fatalf("abort owed bootstrap: %v", err)
 	}
 
-	root.delegateDeliveryMu.Lock()
-	gotOrder := make([]string, 0, len(root.pendingDelegateDeliveries))
-	for _, delivery := range root.pendingDelegateDeliveries {
-		gotOrder = append(gotOrder, delivery.delegateID)
+	fold, err := readDelegateAttentionFold(transcriptPath(controller.stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatal(err)
 	}
-	root.delegateDeliveryMu.Unlock()
+	gotOrder := []string{}
+	for _, id := range fold.order {
+		for _, name := range []string{"dlg_second", "dlg_first"} {
+			if id == delegateAttentionID(delegateDeliveryID(name, 1)) {
+				gotOrder = append(gotOrder, name)
+			}
+		}
+	}
 	if want := []string{"dlg_second", "dlg_first"}; !reflect.DeepEqual(gotOrder, want) {
 		t.Fatalf("cleanup delivery order = %v, want reverse restored order %v", gotOrder, want)
 	}

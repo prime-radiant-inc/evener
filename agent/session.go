@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/contextmgr"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/installid"
@@ -434,6 +437,7 @@ type Session struct {
 	turnStartedAt                 time.Time // wall-clock instant the current turn began (stamped at the processing-begin transition); zero when no turn is in flight. Guarded by mu, like workMillis.
 	lastTurnEndedAt               time.Time // when the last turn ended (stamped by endTurnLocked); seeded from SessionMeta on restore, mapped out via Meta(). Guarded by mu, like workMillis.
 	lastMessage                   string    // the opening of the last agent message the session wrote (S1d, noteAgentMessageLocked); seeded from SessionMeta on restore, mapped out via Meta(). Guarded by mu.
+	retirementReason              string    // why this session retired (idle, manual, archive); guarded by mu
 	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
 	history                       []schema.Turn
 	historyRevision               int           // bumped by every publishFoldedHistory publish and every other non-append history mutation (orphaned-tool-result repair, attention-turn replace/remove — see bumpHistoryRevisionLocked), never by an ordinary append. Lets a fold snapshot detect whether a competing publish OR mutation already happened since it started, distinct from the ordinary concurrent appends publishFoldedHistory's merge-back already tolerates. Guarded by mu.
@@ -1031,27 +1035,19 @@ type Session struct {
 
 	// transcript writer (nil when StateDir is empty, or when opening it failed)
 	transcript *transcript.Writer
-	// attentionMu serializes transcript-backed attention resolution for this
-	// resident Session. The transcript remains the only stored attention state.
-	attentionMu               sync.Mutex
-	attentionCallbacks        int // guarded by attentionMu; includes pre-retirement-attachment callbacks
-	delegateDeliveryMu        sync.Mutex
-	delegateDeliveryCommits   map[string][]*delegateToolResultCommit
-	pendingDelegateDeliveries []delegateDeliveryPlan
-	// attentionFoldCursor is the incremental fold of this Session's own
-	// transcript behind its attention reads. Guarded by attentionMu.
+	// attentionMu serializes attention acceptance, observation and resolution
+	// before s.mu. Persisted sessions derive attention from their transcript.
+	attentionMu             sync.Mutex
+	attentionCallbacks      int // guarded by attentionMu; includes pre-retirement-attachment callbacks
+	delegateDeliveryMu      sync.Mutex
+	delegateDeliveryCommits map[string][]*delegateToolResultCommit
+	// attentionFoldCursor caches this Session's transcript fold. Only when
+	// StateDir is intentionally empty, after transcript initialization, its
+	// fold is canonical for this lifetime, not for restart. Guarded by attentionMu.
 	attentionFoldCursor delegateAttentionFoldCursor
-	// rootAttentionWakeIDs is a process-local wake cache keyed by unresolved
-	// attention IDs from the root transcript. The transcript fold remains the
-	// sole durable authority; restart rebuilds this map from that fold.
-	rootAttentionWakeIDs map[string]struct{}
-	rootAttentionWake    bool
-	rootAttentionRetry   notificationRetry
-	// rootAttentionPaused records that a permanent provider failure deferred
-	// the pending root attention and the session has said so (see
-	// finishRootDelegateAttentionTurn); a delivery or a model switch ends
-	// the episode. Guarded by attentionMu.
-	rootAttentionPaused bool
+	// notificationSchedule shares the input lifetime's s.mu. It holds only
+	// dispatch/recovery state, never message IDs or bodies.
+	notificationSchedule notificationSchedule
 	// attentionCoveredIDs is the running turn's coverage set. Stage it per
 	// round, promote it on settle, and read it at turn finish; the contract
 	// lives on stagePresentedAttentionCoverage and unionCoveredAttention.
@@ -1069,10 +1065,9 @@ type Session struct {
 	// turn; promoteStagedAttentionCoverage clears it. Guarded by attentionMu.
 	attentionAcceptedID string
 
-	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
-	// runs while the session goroutine is mid-stand-down, so it must not queue
-	// behind s.mu -- and notify() takes s.mu, which this must never be held
-	// across.
+	// turnNameRetryMu guards naming retry generations and the warning latch.
+	// Publishing or clearing their common readiness deferral takes s.mu inside
+	// this lock. No I/O or wake callback runs under either lock.
 	turnNameRetryMu sync.Mutex
 	// turnNameRetry paces the re-wake for a notification that stood down
 	// unnamed. See scheduleRunningTurnNameRetry (session_active_turn.go).
@@ -1080,9 +1075,8 @@ type Session struct {
 	// turnNameStoreUnhealthy latches the client-mutation-store failure warning
 	// to once per unhealthy episode. See warnStoreUnhealthyOnce.
 	turnNameStoreUnhealthy bool
-	// releaseRetryMu guards runningTurnReleaseRetry alone, for the same reason
-	// turnNameRetryMu guards turnNameRetry: the re-attempt it schedules runs on
-	// the clock's goroutine and can reach notify(), which takes s.mu.
+	// releaseRetryMu guards runningTurnReleaseRetry alone. Its clock callback
+	// can reach notify(), so callbacks run outside this lock too.
 	//
 	// It is deliberately not turnNameRetryMu's state. Minting and releasing the
 	// name fail independently -- a release can be losing writes while nothing
@@ -1100,14 +1094,10 @@ type Session struct {
 	// delegateAttentionWarnMu guards delegateAttentionWarned alone: per
 	// failing delegate-attention action and delegate, the error the session
 	// last warned about (see warnDelegateAttentionFailed).
-	delegateAttentionWarnMu   sync.Mutex
-	delegateAttentionWarned   map[delegateAttentionWarning]string
-	delegateAttentionArmIDs   map[string]struct{}
-	delegateAttentionArmRetry notificationRetry
-	stableAttentionRetry      notificationRetry
-	delegateDeliveryWake      bool
-	delegateDeliveryPumping   bool
-	delegateDeliveryRetry     notificationRetry
+	delegateAttentionWarnMu sync.Mutex
+	delegateAttentionWarned map[delegateAttentionWarning]string
+	delegateDeliveryPumping bool
+	delegateDeliveryRetry   notificationRetry
 	// transcriptReady records that attachTranscript has run, i.e. that the
 	// session has finished deciding whether it has a transcript at all. Until
 	// then a turn has nowhere to go and is held in pendingTranscriptTurns; a
@@ -1322,36 +1312,27 @@ func (s *Session) SetNotifyFunc(f func()) {
 	if f == nil {
 		return
 	}
-	s.pendingJobNotifsMu.Lock()
-	pending := len(s.pendingJobNotifs) > 0
-	s.pendingJobNotifsMu.Unlock()
-	// The USER's steering and queued input both count as pending work here for
-	// the same reason the rest does. Either one accepted durably and then lost
-	// to a crash is rebuilt by restoreDurableClientMutationQueues, and nothing
-	// else asks the session to run: the client may never retry, and the round
-	// loop only drains steering inside a turn that is not going to start on its
-	// own. Registering the callback is the moment a wake can provably be
-	// delivered.
-	//
-	// Daemon-authored steering is deliberately NOT counted. It is injected
-	// during startup, before the user has said anything, and it is context for
-	// their first turn rather than work of its own -- so waking for it would
-	// start a turn nobody asked for, ahead of the opening prompt.
-	//
-	// A steer parked by a Stop (SteeringHeld) is NOT counted: it is waiting on
-	// the user, not work in progress, and waking for it at attach would restart
-	// the session and deliver the steer the user just stopped -- the open
-	// steering rail issue #174 closes (issue #146, Option C — park in place).
-	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	s.mu.Lock()
+	s.notificationSchedule.version++
+	s.notificationSchedule.hinted = false
+	s.mu.Unlock()
+	if s.hasRunnableUserSteering() || s.QueueDepth() > 0 {
 		f()
+	}
+	if err := s.dispatchNotificationWake(); err != nil {
+		slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
+	}
+	if s.isRootDelegateAttentionReceiver() && s.delegateController != nil {
+		s.delegateController.recheckNotificationReceivers()
 	}
 }
 
 func (s *Session) notify() {
 	s.mu.Lock()
 	f := s.notifyFunc
+	closed := s.closingOrClosedLocked()
 	s.mu.Unlock()
-	if f != nil {
+	if f != nil && !closed {
 		f()
 	}
 }
@@ -1459,7 +1440,9 @@ type communicateResult struct {
 	reply      string
 	output     string // canonical structured output (CommunicateOutput)
 	structured any    // raw args["output"] object before communicate canonicalization
-	endReason  string // why the terminal call ended the turn (tool.CommunicateEndReasons); "" on a delegate
+	endReason  string // why the terminal call ended the turn (a root or delegate disposition)
+	blocker    string // what a delegate's blocked report waits on
+	waitingOn  string // the job, watch, child, or input that will wake a waiting delegate
 }
 
 // sessionName holds the session's auto-generated display name and its
@@ -1773,7 +1756,9 @@ func (s *Session) SetModel(model string) error {
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
 	s.maybeAutoSave()
-	s.resumeRootAttentionAfterModelSwitch()
+	if err := s.requestNotificationWake(); err != nil {
+		slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
+	}
 	return nil
 }
 
@@ -2037,42 +2022,68 @@ func (s *Session) communicateStructuredResult() (any, bool) {
 }
 
 // communicateEndReason is why this input's terminal communicate call ended
-// the turn: "" when none was accepted, or on a delegate.
+// the turn: "" when none was accepted.
 func (s *Session) communicateEndReason() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.comm.endReason
 }
 
-// acceptCommunicateTerminal is the atomic terminal-result writer for the
-// communicate tool (issue #570). A call's message, reply, canonical output,
-// and raw structured value are accepted together under s.mu — the first
-// completed terminal call wins BOTH slots, so a later competing call can never
-// pair its structured value with another call's message or fill the winner's
-// still-empty structured slot. It returns whether this call won; losers report
-// accepted:false. The stable-delegate lease, when the context carries one, is
-// recorded after the lock is released.
-func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any, endReason string) bool {
+// acceptCommunicateTerminal captures one whole call under the session lock.
+// Completion admission and child-start admission share the controller lock.
+// Delivery runs off that lock because event subscribers may reenter the tree.
+// A failed capture rolls back both the report and its generation-owned fence.
+func (s *Session) acceptCommunicateTerminal(ctx context.Context, info schema.CommunicateInfo, reply, output string, structured any) (bool, error) {
+	actor, err := s.delegateActor(ctx)
+	if err != nil {
+		return false, err
+	}
 	s.mu.Lock()
 	if s.comm.called {
 		s.mu.Unlock()
-		return false
+		return false, nil
 	}
-	s.comm = communicateResult{
-		called:     true,
-		text:       message,
-		reply:      reply,
-		output:     output,
-		structured: structured,
-		endReason:  endReason,
+	c := s.delegateController
+	var evidence *delegateGenerationEvidence
+	if actor.lease != nil && c != nil {
+		c.mu.Lock()
+		if _, _, err = c.admitLeaseLocked(*actor.lease, delegatestore.PhaseRunning); err == nil {
+			evidence, err = c.completionEvidenceLocked(*actor.lease)
+		}
+		if err == nil && info.EndReason == tool.CommunicateEndReasonDone {
+			err = c.validateCompletionLocked(actor)
+		}
+		if err != nil {
+			c.mu.Unlock()
+			s.mu.Unlock()
+			return false, err
+		}
 	}
+	previous, latest := s.comm, s.latestReport
+	s.comm = communicateResult{called: true, text: info.Message, reply: reply, output: output, structured: structured, endReason: info.EndReason, blocker: info.Blocker, waitingOn: info.WaitingOn}
 	s.latestReport = s.comm
-	s.mu.Unlock()
-	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
-	if stableRun && s.delegateController != nil {
-		_ = s.delegateController.recordTerminalSeen(lease)
+	if evidence != nil {
+		evidence.completionAdmitted = info.EndReason == tool.CommunicateEndReasonDone
+		c.mu.Unlock()
 	}
-	return true
+	s.mu.Unlock()
+	if err := s.deliverCommunicate(events.CommunicateData{CallID: info.CallID, EndTurn: info.EndTurn, Message: info.Message, EndReason: info.EndReason, Blocker: info.Blocker, WaitingOn: info.WaitingOn}); err != nil {
+		s.mu.Lock()
+		s.comm, s.latestReport = previous, latest
+		if evidence != nil {
+			c.mu.Lock()
+			evidence.completionAdmitted = false
+			c.mu.Unlock()
+		}
+		s.mu.Unlock()
+		return false, err
+	}
+	if evidence != nil {
+		if err := c.recordTerminalSeen(*actor.lease); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 // extractOriginalPrompt returns a delegate's assignment or the first user
@@ -2509,6 +2520,20 @@ func (s *Session) recordTranscriptLocked(t schema.Turn, door transcript.Door, pl
 		// The writer refuses everything from here: a served session stops.
 		_ = s.failClosed(errTranscriptRefusesRecords())
 	}
+	// A nil writer is intentional only with empty StateDir. Keep successful
+	// response receipts in the same canonical lifetime fold, without claiming
+	// a disk record. Configured persistence failures never take this branch.
+	s.mu.Lock()
+	ephemeral := s.transcriptReady && s.stateDir == "" && s.id != ""
+	s.mu.Unlock()
+	if err == nil && ephemeral && (t.AttentionID != "" || len(t.ObservedNotificationIDs) != 0 || t.AttentionResolution != nil || len(t.DelegateDeliveryCommits) != 0) {
+		fold, _ := s.delegateAttentionFoldLocked()
+		var next delegateAttentionFold
+		next, err = extendDelegateAttention(fold, []transcript.Entry{{Turn: t}})
+		if err == nil {
+			s.attentionFoldCursor.fold = next
+		}
+	}
 	s.mu.Lock()
 	s.noteRecordedLocked(rec)
 	s.mu.Unlock()
@@ -2680,7 +2705,7 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
-func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata) error {
+func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata, observedNotificationIDs ...string) error {
 	t := schema.Turn{
 		Kind:                            schema.TurnAssistant,
 		Message:                         assistantHistoryMessage(resp.Message),
@@ -2699,10 +2724,20 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
 		ResponseContextMarker:           finalAttempt.ContextMarker,
 		RoundID:                         s.roundIDForModelCall(),
+		ObservedNotificationIDs:         slices.Clone(observedNotificationIDs),
 	}
+	var receiptErr error
 	err := s.appendTurnAfterTranscriptWrite(
 		t,
-		func() error { return s.writeTranscriptDurableLocked(t) },
+		func() error {
+			if len(t.ObservedNotificationIDs) != 0 {
+				// A recorded line alone is not observation credit. The receipt
+				// and response cross the same strict filesystem sync boundary.
+				receiptErr = s.writeTranscriptSyncedLocked(t)
+				return receiptErr
+			}
+			return s.writeTranscriptDurableLocked(t)
+		},
 		func() {
 			s.history = append(s.history, t)
 			// The round's entry is recorded: the next model call is a new
@@ -2712,6 +2747,9 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 			s.noteAgentMessageLocked(lastAgentText(t.Message))
 		},
 	)
+	// The append pair adopts a retained unsynced line to avoid duplicating it.
+	// Adoption must not promote notification coverage before its sync succeeds.
+	err = errors.Join(err, receiptErr)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}

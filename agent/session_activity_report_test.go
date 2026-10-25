@@ -62,6 +62,11 @@ func TestSessionActivityReportPreviewFollowsSettledGeneration(t *testing.T) {
 			if len(page.Delegates) != 1 {
 				t.Fatalf("rows=%+v", page)
 			}
+			if row := page.Delegates[0]; generation == 2 && want == "" {
+				if row.Outcome != "" || row.Reason != "" || row.Error != "" || row.RunEndedAt != "" || row.Terminal {
+					t.Fatalf("open generation borrowed a prior ending: %+v", row)
+				}
+			}
 			raw, err := json.Marshal(page.Delegates[0])
 			if err != nil {
 				t.Fatal(err)

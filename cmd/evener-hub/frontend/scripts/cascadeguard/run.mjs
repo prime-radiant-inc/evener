@@ -412,6 +412,21 @@ const LATE_MEASUREMENT_DELAY_MS = 400;
 
 async function nativePositioningInterruption(input) {
   assert.ok(input === "wheel" || input === "pill" || input === "Shift-Space", "the native interruption uses a real reader input");
+  // Each leg needs its own tall-content baseline. A preceding backward input
+  // can leave a Tools-only entry that disappears when Chat is restored.
+  const starting = await settledReadingPoint(sourcePortExpr, `${input} baseline before positioning`);
+  if (!starting.followingBottom) {
+    const point = await wait(`(() => {
+      const pill = ${driver.paneScopeExpr(fixture.rootRef)}?.querySelector('[data-testid="new-content-pill"]');
+      const r = pill?.getBoundingClientRect();
+      if (!r || r.width <= 0 || r.height <= 0) return null;
+      const x = r.x + r.width / 2, y = r.y + r.height / 2;
+      return pill.contains(document.elementFromPoint(x, y)) ? { x, y } : null;
+    })()`, "the source pill offers a real native baseline target");
+    await driver.clickAt(point.x, point.y);
+    await wait(`(${sourceReadingPointExpr})?.followingBottom`, "the source baseline reaches live content");
+  }
+  await readInsideTallEntry(sourcePortExpr, `${input} independent baseline`);
   const original = await openSourceVerbosity();
   assert.ok(["Chat", "Tools"].includes(original.selected), "the native interruption starts from a real Chat or Tools preset");
   if (original.selected !== "Chat") {

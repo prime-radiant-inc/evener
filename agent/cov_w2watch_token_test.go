@@ -1,37 +1,24 @@
 package agent
 
-import "testing"
+import (
+	"testing"
 
-// jobManagerForToken resolves which jobManager owns a token's pending state:
-// nil token -> nil; own-session token (empty child id) -> the session's manager;
-// child token with no subagent manager -> nil; child token whose subagent exists
-// -> that child's manager; child token with no matching subagent -> nil.
-func TestW2Watch_jobManagerForToken(t *testing.T) {
-	t.Parallel()
+	"primeradiant.com/evener/agent/internal/jobstore"
+)
+
+// Caller frames address a session, never a parent's child-manager token slot.
+func TestWatchFrameRequiresExactReceiver(t *testing.T) {
+	s, _ := notificationReceiverForTest(t, nil)
 	jm := newTestJM(t)
-
-	// No subagent manager: a child-scoped token cannot resolve.
-	noSub := &Session{id: "S1", jobManager: jm}
-	if got := noSub.jobManagerForToken(nil); got != nil {
-		t.Fatalf("nil token -> %v, want nil", got)
+	jm.retirementOwner = s
+	state := jobstore.WatchSendState{DeliveryID: "exact-caller-7", UpdateSeq: 1, ReceiverSessionID: "missing", Frame: "exact-frame-7"}
+	if err := jm.acceptWatchFrame(state); err == nil {
+		t.Fatal("accepted a frame addressed to another receiver")
 	}
-	if got := noSub.jobManagerForToken(&watchSendToken{}); got != jm {
-		t.Fatalf("own-session token -> %v, want the session manager", got)
+	assertNotificationPending(t, s, []string{})
+	state.ReceiverSessionID = s.ID()
+	if err := jm.acceptWatchFrame(state); err != nil {
+		t.Fatal(err)
 	}
-	if got := noSub.jobManagerForToken(&watchSendToken{ChildSessionID: "C1"}); got != nil {
-		t.Fatalf("child token with no subagent manager -> %v, want nil", got)
-	}
-
-	// With a subagent manager holding one child session.
-	sm := newSubagentManager(nil, 0)
-	parent := &Session{id: "S1", jobManager: jm, subagents: sm}
-	child := newSession(t)
-	sm.track(&subagent{id: "C1", sess: child})
-
-	if got := parent.jobManagerForToken(&watchSendToken{ChildSessionID: "C1"}); got != child.jobManager {
-		t.Fatalf("child token -> %v, want the child's manager", got)
-	}
-	if got := parent.jobManagerForToken(&watchSendToken{ChildSessionID: "MISSING"}); got != nil {
-		t.Fatalf("child token with no matching subagent -> %v, want nil", got)
-	}
+	assertNotificationPending(t, s, []string{stableWatchAttentionID(state)})
 }

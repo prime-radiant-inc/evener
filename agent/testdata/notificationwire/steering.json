@@ -41,7 +41,7 @@
       "type": "steering",
       "id": "item_steering_3",
       "turnId": "turn_1",
-      "text": "\u003cdelegate-notification delegate_id=\"dlg_1\" name=\"Fix race in tree settle\" kind=\"report\"\u003e{\"kind\":\"reported\",\"message\":\"Done: the settle pass now waits for the drain.\\n\\nTests: go test ./agent/... passes.\",\"metadata\":{\"outcome\":\"completed\",\"name\":\"Fix race in tree settle\",\"task\":\"Find and fix the race between tree settle and the drain.\",\"description\":\"Fix race in tree settle\",\"agent_type\":\"general-purpose\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"run_ended_at\":\"2026-09-28T20:02:00Z\"}}\u003c/delegate-notification\u003e",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_1\" name=\"Fix race in tree settle\" kind=\"report\"\u003e{\"kind\":\"reported\",\"message\":\"Done: the settle pass now waits for the drain.\\n\\nTests: go test ./agent/... passes.\",\"metadata\":{\"agent_type\":\"general-purpose\",\"description\":\"Fix race in tree settle\",\"name\":\"Fix race in tree settle\",\"outcome\":\"completed\",\"report_notice\":\"Generation final (done). Task list unavailable. Resume this delegate if the work is unfinished; a later message may start a new generation.\",\"run_ended_at\":\"2026-09-28T20:02:00Z\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"task\":\"Find and fix the race between tree settle and the drain.\"}}\u003c/delegate-notification\u003e",
       "status": "completed"
     }
   },
@@ -52,7 +52,7 @@
       "type": "steering",
       "id": "item_steering_4",
       "turnId": "turn_1",
-      "text": "\u003cdelegate-notification delegate_id=\"dlg_2\" kind=\"report\"\u003e{\"kind\":\"terminal_error\",\"message\":\"go test exited 1 three times\",\"metadata\":{\"outcome\":\"failed\",\"reason\":\"run_error\",\"error\":\"go test exited 1 three times\",\"task\":\"Find and fix the race between tree settle and the drain.\",\"agent_type\":\"general-purpose\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"run_ended_at\":\"2026-09-28T20:06:00Z\"}}\u003c/delegate-notification\u003e",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_2\" kind=\"report\"\u003e{\"kind\":\"terminal_error\",\"message\":\"go test exited 1 three times\",\"metadata\":{\"agent_type\":\"general-purpose\",\"error\":\"go test exited 1 three times\",\"outcome\":\"failed\",\"reason\":\"run_error\",\"report_notice\":\"Generation final (failed). Task list unavailable. Resume this delegate if the work is unfinished; a later message may start a new generation.\",\"run_ended_at\":\"2026-09-28T20:06:00Z\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"task\":\"Find and fix the race between tree settle and the drain.\"}}\u003c/delegate-notification\u003e",
       "status": "completed"
     }
   },
@@ -63,7 +63,7 @@
       "type": "steering",
       "id": "item_steering_5",
       "turnId": "turn_1",
-      "text": "\u003cdelegate-notification delegate_id=\"dlg_3\" name=\"Check drain ordering\" kind=\"report\"\u003e{\"kind\":\"terminal_error\",\"message\":\"Stopped by the user.\",\"metadata\":{\"outcome\":\"cancelled\",\"reason\":\"cancelled\",\"name\":\"Check drain ordering\",\"task\":\"Find and fix the race between tree settle and the drain.\",\"description\":\"Check drain ordering\",\"agent_type\":\"general-purpose\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"run_ended_at\":\"2026-09-28T20:01:00Z\"}}\u003c/delegate-notification\u003e",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_3\" name=\"Check drain ordering\" kind=\"report\"\u003e{\"kind\":\"terminal_error\",\"message\":\"Stopped by the user.\",\"metadata\":{\"agent_type\":\"general-purpose\",\"description\":\"Check drain ordering\",\"name\":\"Check drain ordering\",\"outcome\":\"cancelled\",\"reason\":\"cancelled\",\"report_notice\":\"Generation final (cancelled). Task list unavailable. Resume this delegate if the work is unfinished; a later message may start a new generation.\",\"run_ended_at\":\"2026-09-28T20:01:00Z\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"task\":\"Find and fix the race between tree settle and the drain.\"}}\u003c/delegate-notification\u003e",
       "status": "completed"
     }
   },
@@ -85,7 +85,7 @@
       "type": "steering",
       "id": "item_steering_7",
       "turnId": "turn_1",
-      "text": "\u003cdelegate-notification delegate_id=\"dlg_6\" name=\"Index the docs\" kind=\"report\"\u003e{\"kind\":\"terminal_error\",\"message\":\"context canceled\",\"metadata\":{\"outcome\":\"cancelled\",\"reason\":\"cancelled\",\"name\":\"Index the docs\",\"task\":\"Find and fix the race between tree settle and the drain.\",\"description\":\"Index the docs\",\"agent_type\":\"general-purpose\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"run_ended_at\":\"2026-09-28T20:01:00Z\"}}\u003c/delegate-notification\u003e",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_6\" name=\"Index the docs\" kind=\"report\"\u003e{\"kind\":\"terminal_error\",\"message\":\"context canceled\",\"metadata\":{\"agent_type\":\"general-purpose\",\"description\":\"Index the docs\",\"name\":\"Index the docs\",\"outcome\":\"cancelled\",\"reason\":\"cancelled\",\"report_notice\":\"Generation final (cancelled). Task list unavailable. Resume this delegate if the work is unfinished; a later message may start a new generation.\",\"run_ended_at\":\"2026-09-28T20:01:00Z\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"task\":\"Find and fix the race between tree settle and the drain.\"}}\u003c/delegate-notification\u003e",
       "status": "completed"
     }
   },
@@ -96,7 +96,7 @@
       "type": "steering",
       "id": "item_steering_8",
       "turnId": "turn_1",
-      "text": "\u003cdelegate-notification delegate_id=\"dlg_5\" name=\"Sweep the flaky tests\" kind=\"report\"\u003e{\"kind\":\"terminal_error\",\"message\":\"max_turns exhausted at limit 40\",\"metadata\":{\"outcome\":\"exhausted\",\"reason\":\"turn_budget_exhausted\",\"name\":\"Sweep the flaky tests\",\"task\":\"Find and fix the race between tree settle and the drain.\",\"description\":\"Sweep the flaky tests\",\"agent_type\":\"general-purpose\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"run_ended_at\":\"2026-09-28T20:14:00Z\",\"exhaustion_budget\":\"max_turns\",\"exhaustion_limit\":40,\"resumable\":false}}\u003c/delegate-notification\u003e",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_5\" name=\"Sweep the flaky tests\" kind=\"report\"\u003e{\"kind\":\"terminal_error\",\"message\":\"max_turns exhausted at limit 40\",\"metadata\":{\"agent_type\":\"general-purpose\",\"description\":\"Sweep the flaky tests\",\"exhaustion_budget\":\"max_turns\",\"exhaustion_limit\":40,\"name\":\"Sweep the flaky tests\",\"outcome\":\"exhausted\",\"reason\":\"turn_budget_exhausted\",\"report_notice\":\"Generation final (exhausted). Task list unavailable. Resume this delegate if the work is unfinished; a later message may start a new generation.\",\"resumable\":false,\"run_ended_at\":\"2026-09-28T20:14:00Z\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"task\":\"Find and fix the race between tree settle and the drain.\"}}\u003c/delegate-notification\u003e",
       "status": "completed"
     }
   },

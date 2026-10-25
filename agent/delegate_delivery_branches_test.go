@@ -303,7 +303,7 @@ func TestHasPendingDelegateDeliveriesNil(t *testing.T) {
 func TestNotifyStableDelegateAttentionNil(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
-	c.notifyStableDelegateAttention() // should be a no-op
+	c.recheckNotificationReceivers() // should be a no-op
 }
 
 // ---------------------------------------------------------------------------
@@ -594,29 +594,29 @@ func TestExecuteDelegateMutationPlansNilController(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// requeueReplayableDelegateDeliveries nil session
+// scheduleDelegateDeliveryRetry nil session
 // ---------------------------------------------------------------------------
 
-func TestRequeueReplayableDelegateDeliveriesNil(t *testing.T) {
+func TestScheduleDelegateDeliveryRetryNil(t *testing.T) {
 	t.Parallel()
 	var s *Session
-	s.requeueReplayableDelegateDeliveries(nil) // should be a no-op
+	s.scheduleDelegateDeliveryRetry() // should be a no-op
 }
 
-func TestRequeueReplayableDelegateDeliveriesNilController(t *testing.T) {
+func TestScheduleDelegateDeliveryRetryNilController(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	s.requeueReplayableDelegateDeliveries(nil) // should be a no-op
+	s.scheduleDelegateDeliveryRetry() // should be a no-op
 }
 
 // ---------------------------------------------------------------------------
-// flushPendingDelegateDeliveries nil session
+// replayDelegateDeliveries nil session
 // ---------------------------------------------------------------------------
 
-func TestFlushPendingDelegateDeliveriesNil(t *testing.T) {
+func TestReplayDelegateDeliveriesNil(t *testing.T) {
 	t.Parallel()
 	var s *Session
-	if err := s.flushPendingDelegateDeliveries(); err != nil {
+	if err := s.replayDelegateDeliveries(); err != nil {
 		t.Fatalf("expected nil error for nil session, got %v", err)
 	}
 }

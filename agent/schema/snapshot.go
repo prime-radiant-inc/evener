@@ -152,6 +152,9 @@ type SessionMeta struct {
 	EnvInfo     EnvironmentInfo `json:"env_info"`   // captured environment description
 	CreatedAt   time.Time       `json:"created_at"` // when the session was first created
 	UpdatedAt   time.Time       `json:"updated_at"` // last time the meta was written
+	// RetirementReason records the trigger that retired this session: idle,
+	// manual, or archive. UpdatedAt is its record time.
+	RetirementReason string `json:"retirement_reason,omitempty"`
 	// Revision is a monotonic per-session counter bumped on every save, so two
 	// revisions that share a timestamp (a fork tag or an ObservedBy append
 	// re-saves without advancing UpdatedAt) can still be ordered. Zero on metas

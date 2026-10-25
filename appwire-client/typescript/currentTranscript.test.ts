@@ -193,9 +193,15 @@ describe("current transcript checkpoints", () => {
     expect(resumed.turns).toEqual(uninterrupted.turns);
     expect(resumed.turns).toHaveLength(1);
     expect(resumed.turns[0]?.status).toBe("completed");
-    expect(resumed.turns[0]?.items.map((item) => item.text)).toEqual([
-      '<delegate-notification delegate_id="dlg_1" name="Fix race in tree settle" kind="report">{"kind":"reported","message":"Done: the settle pass now waits for the drain.\\n\\nTests: go test ./agent/... passes.","metadata":{"outcome":"completed","name":"Fix race in tree settle","task":"Find and fix the race between tree settle and the drain.","description":"Fix race in tree settle","agent_type":"general-purpose","run_started_at":"2026-09-28T20:00:00Z","run_ended_at":"2026-09-28T20:02:00Z"}}</delegate-notification>',
-      "alpha",
+    expect(resumed.turns[0]?.items).toMatchObject([
+      {
+        id: steering.id,
+        type: "steering",
+        text: steering.text,
+        version: 41,
+        position: { entry: 40, item: 0 },
+      },
+      { id: "a1", type: "agentMessage", text: "alpha", overlayKey: "stream:s1:agentMessage" },
     ]);
   });
 

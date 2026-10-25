@@ -2,6 +2,7 @@
 // the frames the daemon actually writes (agent/testdata/notificationwire)
 // through the same pipeline ConversationScreen runs: hydrate, project, group,
 // fold into session rows, then TimelineItem for each row.
+import reportProducers from "../../agent/testdata/notificationwire/reports.json";
 import { type EvenerDelegateInfo, hydrateThread, type Thread, type ThreadItem } from "@evener/appwire-client";
 import {
 	type NotificationWireCase,
@@ -14,6 +15,7 @@ import { hasTestID, markers, withTestID } from "./markerTestUtils";
 import { projectConversation } from "./projectedRows";
 import { render, renderedText, textOf } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
+import { EvidenceView } from "./session/StepEvidence";
 import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
 import { groupTimeline, type TimelineRow } from "./timeline";
@@ -163,6 +165,35 @@ function press(tree: ReactTestRenderer) {
 }
 
 describe("delegate and job notifications", () => {
+	it.each(reportProducers)("renders real $case publication through the shared adapter", (recorded) => {
+		const { tree } = showItem(recorded.item as ThreadItem);
+		const content = renderedText(tree);
+		if (recorded.case !== "interruption") {
+			const message = recorded.case.endsWith("-json")
+				? '{"message":"JSON example, not a captured result","data":{"unproven":"must remain prose"},"artifacts":[]}'
+				: `payload-${recorded.case}-9c2f`;
+			expect.soft(content).toContain(message);
+			if (recorded.case.endsWith("-json") || recorded.case.startsWith("waiting-empty")) {
+				expect.soft(detail(tree)).toBe(message);
+			}
+			if (recorded.case.startsWith("waiting-empty")) {
+				expect(content).not.toContain("structured_result");
+				expect(content).not.toContain("Result");
+				expect(tree.root.findAllByType(EvidenceView)).toHaveLength(0);
+			} else {
+				expect(content).toContain("result-9c2f");
+				const results = tree.root.findAllByType(EvidenceView).filter((node) => node.props.title === "Result");
+				expect(results).toHaveLength(1);
+				expect(results[0]?.props.evidence.text).not.toContain("unproven");
+			}
+		}
+		const settled = ["done", "blocked", "interruption"].includes(recorded.case);
+		expect(detail(tree)?.includes("task-b") ?? false).toBe(settled);
+		if (recorded.case === "done") expect(outcomes(tree)).toEqual(["completed"]);
+		if (recorded.case === "interruption") expect(outcomes(tree)).toEqual(["stopped"]);
+		if (!settled) expect(outcomes(tree)).not.toContain("completed");
+	});
+
 	it.each(LEVELS.filter((level) => level !== "chat"))("never show notification markup at %s", (level) => {
 		const { rows, delegates } = rowsAt(level);
 		const notificationRows = rows.filter((row: TimelineRow) => row.id.startsWith("item_steering_"));

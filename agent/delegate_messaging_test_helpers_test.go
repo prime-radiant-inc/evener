@@ -23,13 +23,16 @@ import (
 // on a channel the test controls: steps run outside the adapter's lock. An
 // unscripted request is answered with a plain final report.
 type messagingAdapter struct {
-	mu       sync.Mutex
-	rootID   string
-	markers  []string
-	scripts  map[string][]func(llm.Request) llm.Response
-	sessions map[string]string
-	requests map[string][]llm.Request
-	arrived  chan struct{}
+	mu           sync.Mutex
+	rootID       string
+	markers      []string
+	scripts      map[string][]func(llm.Request) llm.Response
+	sessions     map[string]string
+	requests     map[string][]llm.Request
+	arrived      chan struct{}
+	finite       map[string][]func(context.Context, llm.Request) (llm.Response, error)
+	answered     map[string][]llm.Response
+	onUnexpected func(string)
 }
 
 func newMessagingAdapter(markers ...string) *messagingAdapter {
@@ -61,7 +64,7 @@ func (a *messagingAdapter) requestsFor(key string) []llm.Request {
 	return slices.Clone(a.requests[key])
 }
 
-// waitForRequests waits until key's script has answered at least n requests.
+// waitForRequests waits until key's script has received at least n requests.
 func (a *messagingAdapter) waitForRequests(t *testing.T, key string, n int) []llm.Request {
 	t.Helper()
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
@@ -99,10 +102,28 @@ func (a *messagingAdapter) keyLocked(req llm.Request) string {
 	return ""
 }
 
-func (a *messagingAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+// finiteScript opts this adapter into bounded scripts. Exhaustion cancels the
+// provider call instead of manufacturing another successful done response.
+func (a *messagingAdapter) finiteScript(key string, steps ...func(context.Context, llm.Request) (llm.Response, error)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.finite == nil {
+		a.finite = make(map[string][]func(context.Context, llm.Request) (llm.Response, error))
+		a.answered = make(map[string][]llm.Response)
+	}
+	a.finite[key] = append(a.finite[key], steps...)
+}
+
+func (a *messagingAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	a.mu.Lock()
 	key := a.keyLocked(req)
 	a.requests[key] = append(a.requests[key], req)
+	n := len(a.requests[key])
+	finite := a.finite != nil
+	var finiteStep func(context.Context, llm.Request) (llm.Response, error)
+	if steps := a.finite[key]; len(steps) > 0 {
+		finiteStep, a.finite[key] = steps[0], steps[1:]
+	}
 	var step func(llm.Request) llm.Response
 	if steps := a.scripts[key]; len(steps) > 0 {
 		step, a.scripts[key] = steps[0], steps[1:]
@@ -111,6 +132,24 @@ func (a *messagingAdapter) Complete(_ context.Context, req llm.Request) (llm.Res
 	select {
 	case a.arrived <- struct{}{}:
 	default:
+	}
+	if finite {
+		if finiteStep == nil {
+			if a.onUnexpected != nil {
+				a.onUnexpected(fmt.Sprintf("unexpected provider request session=%s script=%s request=%d", req.SessionID, key, n))
+			}
+			return llm.Response{}, context.Canceled
+		}
+		response, err := finiteStep(ctx, req)
+		if err != nil {
+			return llm.Response{}, err
+		}
+		response.ID = fmt.Sprintf("fixture-%s-%s-%d", req.SessionID, key, n)
+		response.Provider, response.Model = a.Name(), req.Model
+		a.mu.Lock()
+		a.answered[key] = append(a.answered[key], response)
+		a.mu.Unlock()
+		return response, nil
 	}
 	response := finalResponse("done")
 	if step != nil {
@@ -251,4 +290,128 @@ func waitForRootAttention(t *testing.T, root *Session, n int) []string {
 		return len(pending) >= n
 	})
 	return pending
+}
+
+// notificationReportWakesParent uses real delegate creation, delivery and
+// provider requests. Worker B cannot send any stimulus until A's report has
+// reached the coordinator and its successful request has consumed that report.
+func notificationReportWakesParent(t *testing.T, _ bool) {
+	t.Helper()
+	const payload = "c18f90d2-45ca-4c50-b17b-a67fb0e92783"
+	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-A", "WORKER-B")
+	reportGate, siblingGate := make(chan struct{}), make(chan struct{})
+	releaseReport := sync.OnceFunc(func() { close(reportGate) })
+	releaseSibling := sync.OnceFunc(func() { close(siblingGate) })
+	defer releaseReport()
+	defer releaseSibling()
+	workerIDs := make(chan string, 2)
+	presented := make(chan llm.Request, 1)
+	var siblingID string
+	waitResponse := func() llm.Response {
+		// Done with live children is now refused at admission. The old
+		// ordinary-drain route therefore converges on the same valid wait.
+		return toolCallResponse(communicateCallArgs("wait", map[string]any{
+			"message": "waiting", "end_turn": true,
+			"end_reason": "waiting_on_work", "waiting_on": siblingID,
+		}))
+	}
+	adapter.script("root",
+		func(llm.Request) llm.Response {
+			return delegateToolResponse("coord", "COORD-BRIEF: coordinate two workers.")
+		},
+		func(llm.Request) llm.Response { return finalResponse("waiting") },
+	)
+	adapter.script("COORD-BRIEF",
+		func(llm.Request) llm.Response { return delegateToolResponse("a", "WORKER-A: report.") },
+		func(req llm.Request) llm.Response {
+			workerIDs <- deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
+			return delegateToolResponse("b", "WORKER-B: report.")
+		},
+		func(req llm.Request) llm.Response {
+			siblingID = deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
+			workerIDs <- siblingID
+			return waitResponse()
+		},
+		func(req llm.Request) llm.Response {
+			presented <- req
+			return waitResponse()
+		},
+	)
+	adapter.script("WORKER-A", func(llm.Request) llm.Response {
+		awaitSignal(t, reportGate, "the coordinator to wait")
+		return finalResponse(payload)
+	})
+	adapter.script("WORKER-B", func(llm.Request) llm.Response {
+		awaitSignal(t, siblingGate, "A's report to be observed")
+		return finalResponse("sibling finished")
+	})
+	root := newMessagingRoot(t, adapter, nil)
+	serveSupervisionRootWakes(t, root)
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	adapter.waitForRequests(t, "COORD-BRIEF", 3)
+	coordinator := waitForSoleChildIdle(t, root)
+	workerID, sibling := <-workerIDs, <-workerIDs
+	if workerID == "" || sibling == "" || workerID == sibling {
+		t.Fatalf("worker identities = %q, %q", workerID, sibling)
+	}
+	releaseReport()
+	var req llm.Request
+	select {
+	case req = <-presented:
+	case <-ctx.Done():
+		t.Fatalf("report did not wake coordinator before sibling release: coordinator requests=%d, error=%v", len(adapter.requestsFor("COORD-BRIEF")), ctx.Err())
+	}
+	if text := messagesText(req.Messages); strings.Count(text, payload) != 1 || !strings.Contains(text, `delegate_id="`+workerID+`"`) {
+		t.Fatalf("coordinator request did not carry worker A's payload exactly once: %s", text)
+	}
+	attentionID := "delegate:" + workerID + "/delivery/1"
+	// Await the successful response's resolution, not just provider entry.
+	waitForCondition(t, 30*time.Second, "the report's successful request to consume its delivery", func() bool {
+		fold := rootAttentionFold(t, coordinator)
+		return fold.resolutions[attentionID] == delegateAttentionConsumed
+	})
+	fold := rootAttentionFold(t, coordinator)
+	if !slices.Equal(fold.order, []string{attentionID}) || fold.resumeGenerations[attentionID] != 0 {
+		t.Fatalf("report delivery fold = order %v generations %v, want the presenting generation only", fold.order, fold.resumeGenerations)
+	}
+	if got := len(adapter.requestsFor("COORD-BRIEF")); got != 4 {
+		t.Fatalf("coordinator requests = %d, want 4 without a duplicate observation", got)
+	}
+	coordRows := stableDelegateRowsForSession(root, false)
+	if len(coordRows) != 1 || !coordRows[0].snapshot.currentRunOpen {
+		t.Fatalf("coordinator settled while B remained live: %#v", coordRows)
+	}
+	if row := delegateAggregateSnapshot(t, root.delegateController, sibling); !row.CurrentRunOpen {
+		t.Fatal("worker B stopped before it was released")
+	}
+	ownerFold := rootAttentionFold(t, root)
+	for _, id := range ownerFold.order {
+		if !strings.HasPrefix(id, "delegate:"+coordinator.owningDelegateID+"/update/") || !strings.Contains(ownerFold.content[id].Text(), `kind="update"`) {
+			t.Fatalf("coordinator published a terminal report while B remained live: %s", id)
+		}
+	}
+	for _, event := range publicationEvents(t, root) {
+		if event.DelegateID == coordinator.owningDelegateID && event.RunFinished != nil {
+			t.Fatal("coordinator RunFinished while B remained live")
+		}
+		if update := event.UpdatePosted; event.DelegateID == coordinator.owningDelegateID && update != nil {
+			if update.Communicate == nil || update.Communicate.EndReason != "waiting_on_work" || update.Communicate.WaitingOn != sibling {
+				t.Fatalf("coordinator publication is not its valid wait: %+v", update)
+			}
+		}
+	}
+	releaseSibling()
+	waitForCondition(t, 30*time.Second, "coordinator RunFinished after sibling release", func() bool {
+		for _, event := range publicationEvents(t, root) {
+			if event.DelegateID == coordinator.owningDelegateID && event.RunFinished != nil {
+				return true
+			}
+		}
+		return false
+	})
 }

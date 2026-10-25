@@ -69,7 +69,7 @@ func TestDelegateUpdateShownByThePrecedingTurnIsNotRerunByTheDrain(t *testing.T)
 		}
 		return "", nil
 	}
-	if _, err := sess.drainJobTreeWith(context.Background(), make(chan time.Time), func(context.Context) error { return nil }, deltaTurn); err != nil {
+	if _, err := sess.drainJobTreeWith(context.Background(), drainWakeForTest(sess), make(chan time.Time), func(context.Context) error { return nil }, deltaTurn); err != nil {
 		t.Fatalf("drainJobTreeWith: %v", err)
 	}
 	if turns != 0 {
@@ -106,7 +106,7 @@ func TestDelegateUpdateIsNotRerunWhenMarkersAndTheFollowingReadFail(t *testing.T
 		_ = sess.finishAttentionTurn(nil, nil)
 		return "", nil
 	}
-	if _, err := sess.drainJobTreeWith(context.Background(), make(chan time.Time), func(context.Context) error { return nil }, fullHistoryTurn); err != nil {
+	if _, err := sess.drainJobTreeWith(context.Background(), drainWakeForTest(sess), make(chan time.Time), func(context.Context) error { return nil }, fullHistoryTurn); err != nil {
 		t.Fatalf("drainJobTreeWith: %v", err)
 	}
 	if !readFailed.Load() {

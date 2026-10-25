@@ -13,8 +13,8 @@ import (
 func TestAcceptDelegateDeliveryPlanWhileProcessing(t *testing.T) {
 	t.Run("claimed inline waiter resolves immediately", func(t *testing.T) {
 		controller, _ := newDelegateControllerTestHarness(t, 1, 1)
-		root := &Session{id: "root-session", state: SessionProcessing, delegateController: controller}
-		controller.rootRuntime = root
+		root := attachDeliveryTestReceiver(t, controller)
+		root.state = SessionProcessing
 		seedDelegateControllerIdle(t, controller, "dlg_target", "")
 		lease, waiter := startDelegateDeliveryGeneration(t, controller, "dlg_target", true)
 		plan := finishDelegateDeliveryGeneration(t, controller, lease, "finished inline").deliveries[0]
@@ -26,11 +26,8 @@ func TestAcceptDelegateDeliveryPlanWhileProcessing(t *testing.T) {
 		if deferred {
 			t.Fatal("waiter-bearing delivery was deferred behind its own processing turn")
 		}
-		root.delegateDeliveryMu.Lock()
-		queued := len(root.pendingDelegateDeliveries)
-		root.delegateDeliveryMu.Unlock()
-		if queued != 0 {
-			t.Fatalf("pending deliveries = %d, want no queued inline plan", queued)
+		if ids, err := root.pendingNotificationIDs(); err != nil || len(ids) != 1 {
+			t.Fatalf("canonical custody=%v err=%v", ids, err)
 		}
 		select {
 		case resolution := <-waiter.resolution:
@@ -43,15 +40,15 @@ func TestAcceptDelegateDeliveryPlanWhileProcessing(t *testing.T) {
 		default:
 			t.Fatal("accepted inline waiter was not resolved synchronously")
 		}
-		if len(plans.updates) != 0 || len(plans.deliveries) != 0 {
-			t.Fatalf("inline acceptance plans = %#v, want handoff only", plans)
+		if len(plans.updates) != 1 || len(plans.deliveries) != 0 {
+			t.Fatalf("inline acceptance plans = %#v, want source acknowledgment update", plans)
 		}
 	})
 
-	t.Run("ordinary delivery remains deferred", func(t *testing.T) {
+	t.Run("ordinary delivery takes canonical custody", func(t *testing.T) {
 		controller, _ := newDelegateControllerTestHarness(t, 1, 1)
-		root := &Session{id: "root-session", state: SessionProcessing, delegateController: controller}
-		controller.rootRuntime = root
+		root := attachDeliveryTestReceiver(t, controller)
+		root.state = SessionProcessing
 		seedDelegateControllerIdle(t, controller, "dlg_target", "")
 		lease, _ := startDelegateDeliveryGeneration(t, controller, "dlg_target", false)
 		plan := finishDelegateDeliveryGeneration(t, controller, lease, "finished in background").deliveries[0]
@@ -60,24 +57,22 @@ func TestAcceptDelegateDeliveryPlanWhileProcessing(t *testing.T) {
 		if err != nil {
 			t.Fatalf("acceptDelegateDeliveryPlan: %v", err)
 		}
-		if !deferred {
-			t.Fatal("ordinary delivery bypassed processing-turn deferral")
+		if deferred {
+			t.Fatal("ordinary custody was deferred")
 		}
-		root.delegateDeliveryMu.Lock()
-		defer root.delegateDeliveryMu.Unlock()
-		if len(root.pendingDelegateDeliveries) != 1 || root.pendingDelegateDeliveries[0].deliveryID != plan.deliveryID {
-			t.Fatalf("pending deliveries = %#v, want ordinary plan queued", root.pendingDelegateDeliveries)
+		if ids, err := root.pendingNotificationIDs(); err != nil || len(ids) != 1 || ids[0] != delegateAttentionID(plan.deliveryID) {
+			t.Fatalf("ordinary custody=%v err=%v", ids, err)
 		}
-		if len(plans.updates) != 0 || len(plans.deliveries) != 0 {
-			t.Fatalf("deferred acceptance plans = %#v", plans)
+		if len(plans.updates) != 1 || len(plans.deliveries) != 0 {
+			t.Fatalf("custody plans=%#v", plans)
 		}
 	})
 }
 
-func TestCanceledToolResultPersistenceAbortsClaimedInlineDelivery(t *testing.T) {
+func TestCanceledToolResultPersistencePreservesCanonicalInlineDelivery(t *testing.T) {
 	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
-	root := &Session{id: "root-session", state: SessionProcessing, delegateController: controller}
-	controller.rootRuntime = root
+	root := attachDeliveryTestReceiver(t, controller)
+	root.state = SessionProcessing
 	seedDelegateControllerIdle(t, controller, "dlg_target", "")
 	lease, waiter := startDelegateDeliveryGeneration(t, controller, "dlg_target", true)
 	plan := finishDelegateDeliveryGeneration(t, controller, lease, "finished inline").deliveries[0]
@@ -120,18 +115,19 @@ func TestCanceledToolResultPersistenceAbortsClaimedInlineDelivery(t *testing.T) 
 	if admissions != 0 {
 		t.Fatalf("delivery admissions after canceled persistence = %d, want aborted", admissions)
 	}
-	if pending != 1 {
-		t.Fatalf("durable pending deliveries = %d, want delivery retained for replay", pending)
+	if pending != 0 {
+		t.Fatalf("durable pending deliveries = %d, want source already acknowledged", pending)
 	}
 	replay := controller.ReplayDeliveries()
-	if len(replay) != 1 || replay[0].deliveryID != plan.deliveryID || replay[0].waiter != nil {
-		t.Fatalf("replay after canceled persistence = %#v, want one ordinary delivery", replay)
+	if len(replay) != 0 {
+		t.Fatalf("replay after canceled persistence = %#v, want source already settled", replay)
 	}
+	assertNotificationPending(t, root, []string{delegateAttentionID(plan.deliveryID)})
 }
 
-func TestCanceledAfterTakingInlineCommitAbortsBeforeDurableToolResult(t *testing.T) {
+func TestCanceledAfterTakingInlineProjectionPreservesCanonicalDelivery(t *testing.T) {
 	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
-	root := &Session{id: "root-session", state: SessionProcessing, delegateController: controller}
+	root := &Session{id: "root-session", stateDir: controller.stateDir, state: SessionProcessing, delegateController: controller}
 	controller.rootRuntime = root
 	path := transcriptPath(controller.stateDir, root.ID())
 	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: root.ID()})
@@ -186,14 +182,14 @@ func TestCanceledAfterTakingInlineCommitAbortsBeforeDurableToolResult(t *testing
 	admissions := len(controller.deliveries)
 	pending := len(controller.durable["dlg_target"].PendingDeliveries)
 	controller.mu.Unlock()
-	if evidenceDelta != 1 {
-		t.Errorf("controller evidence delta = %d, want one exact abort", evidenceDelta)
+	if evidenceDelta != 0 {
+		t.Errorf("controller evidence delta = %d, want projection cancellation not to mutate transport", evidenceDelta)
 	}
 	if admissions != 0 {
 		t.Errorf("delivery admissions after cancellation = %d, want none", admissions)
 	}
-	if pending != 1 {
-		t.Errorf("durable pending deliveries = %d, want delivery retained", pending)
+	if pending != 0 {
+		t.Errorf("durable pending deliveries = %d, want canonical receiver custody", pending)
 	}
 	fold, err := readDelegateAttentionFold(path, root.ID())
 	if err != nil {
@@ -203,7 +199,8 @@ func TestCanceledAfterTakingInlineCommitAbortsBeforeDurableToolResult(t *testing
 		t.Errorf("persisted delivery commit = %q for %q, want none", callID, plan.deliveryID)
 	}
 	replay := controller.ReplayDeliveries()
-	if len(replay) != 1 || replay[0].deliveryID != plan.deliveryID || replay[0].waiter != nil {
-		t.Errorf("replay after post-take cancellation = %#v, want one ordinary delivery", replay)
+	if len(replay) != 0 {
+		t.Errorf("replay after post-take cancellation = %#v, want source already settled", replay)
 	}
+	assertNotificationPending(t, root, []string{delegateAttentionID(plan.deliveryID)})
 }

@@ -64,6 +64,7 @@ native:agent:.:FuzzSessionLoopRecoveryProgram
 native:agent:.:FuzzLxClassifyDurableNotifications
 native:agent:.:FuzzWxEvaluateWatchEvent
 native:agent:.:FuzzRootWatchTreeProgram
+native:agent:.:FuzzRootWatchNotificationRestartCuts
 native:agent:.:FuzzWatchConfigValidationProgram
 native:agent:.:FuzzWatchRestoreClearHistoryProgram
 native:agent:.:FuzzWatchAttachTerminalProgram

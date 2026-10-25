@@ -82,9 +82,11 @@ var rootOnlyJobPresenceTools = []string{"delegate"}
 var rootOnlyWorktreeTools = []string{"manage_worktree"}
 
 type subagent struct {
-	id   string
-	sess *Session
-	emit func(events.EventKind, events.EventData)
+	id                 string
+	sess               *Session
+	emit               func(events.EventKind, events.EventData)
+	drainWake          <-chan struct{}
+	parentResourceWake func()
 
 	mu                    sync.Mutex
 	running               bool
@@ -1286,13 +1288,9 @@ func (s *Session) prepareSubagentRunFromSelection(
 	// Drive-down wake (spec §3): a child's notify must reach its parent, which
 	// drives the child's own drain loop for a notification turn. This is the
 	// parent-side analog of serve.go's SetNotifyFunc on the root — the child's
-	// jm.wake (= subSess.notify) fires whenever the child arms a job notification
-	// (enqueueJobNotificationAndNotify), so the parent learns of undelivered
-	// attention on an idle child and drives it. The drive is launched only when
-	// the child is live and idle (driveSubagentNotificationTurn's guard) and not
-	// stop-gated (a deliberately stopped child is never resurrected by a wake for
-	// pre-stop attention — spec §3 stop-gating).
-	subSess.SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })
+	// The exact child's common readiness callback enters the existing leased
+	// delegate admission adapter. No parent provider request selects it.
+	s.installDelegateNotify(sub)
 
 	// Subagent execution must outlive the parent tool-call context.
 	// The parent may stop waiting, finish its input, or time out while the
@@ -1488,8 +1486,8 @@ func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, er
 // after re-verifying under sub.mu that no run or drive turn is live. It returns
 // false (gate NOT set) when the child is running or driving — a drive/resume that
 // raced the dispose op wins, and the caller must refuse the dispose. On success
-// the child is frozen: driveSubagentNotificationTurn and the retained delegate_send
-// path refuse until clearDisposeGate reverses it.
+// the child is frozen: leased notification and delegate_send admission refuse
+// until clearDisposeGate reverses it.
 func (a *subagent) trySetDisposeGate() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1509,158 +1507,9 @@ func (a *subagent) clearDisposeGate() {
 	a.mu.Unlock()
 }
 
-// driveTurnTimeout bounds a single drive-down notification turn: a hung child
-// turn is cancelled and its drive slot freed rather than pinned until parent
-// close. A var so tests can shrink it.
+// driveTurnTimeout bounds the existing leased notification executor: a hung
+// provider cannot pin its controller drive capacity until parent close.
 var driveTurnTimeout = 5 * time.Minute
-
-// driveRedriveMinInterval paces the post-turn re-drive: when attention remains
-// after a drive turn, the next drive of the same child waits this long instead
-// of launching immediately, so a child whose attention never drains cannot
-// hot-loop its budget slot. A var so tests can shrink it.
-var driveRedriveMinInterval = 1 * time.Second
-
-// driveSubagentNotificationTurn launches ONE EntryNotification turn on a live,
-// idle direct child whose own loop has undelivered attention (spec §3 drive-down:
-// a parent never renders a non-owned job's notification; it runs the child whose
-// own loop delivers). It is the parent-side analog of serve.go's notify→
-// EntryNotification wake, but driven internally by the parent at its loop
-// boundaries. NO delegate job record is minted and the child's terminal subagent
-// record is left intact — this is the child processing its OWN notification queue
-// (acceptNotificationInput drains it), not new tasked work or a delegate resume.
-//
-// Concurrency discipline (T11-T13): the live/idle guard reads sub.closed and
-// sub.running under sub.mu; a child that is closing, mid-run, or already being
-// driven is skipped so no run goroutine is launched on a torn-down or active
-// child. The driving flag makes the launch idempotent — exactly one drive turn is
-// in flight per child at a time (the EntryNotification drain loop self-services
-// every queued notification within that single turn, so one launch suffices). No
-// session or jobManager lock is held while ProcessInputKind runs.
-// driveSubagentNotificationTurn returns true when it launches a drive turn
-// (a successful handoff) and false when the live/idle guard skips the child
-// (closed, mid-run, or already being driven). The caller uses the handoff result
-// to settle the parent's forwarded drive signal (spec §3 settle).
-func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
-	if sub == nil {
-		return false
-	}
-	release, err := s.beginRetirementMutation("delegate_drive")
-	if err != nil {
-		return false
-	}
-	launched := false
-	defer func() {
-		if !launched {
-			release()
-		}
-	}()
-	sub.mu.Lock()
-	if sub.sess == nil || sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing || s.childCommittedSendStart(sub.sess.id) {
-		sub.mu.Unlock()
-		return false
-	}
-	// Reserve a drive-budget slot for the drive turn: a drive launches a running
-	// delegate turn (the child's EntryNotification render) and holds the slot for
-	// its duration. Drive turns budget separately from spawns (driveCounter), so
-	// notification maintenance never starves user fan-out. At capacity the drive
-	// does not launch — return false, the not-launched signal the caller already
-	// honors (no settle), so the child's durable ledger stays queued and the next
-	// loop boundary retries (spec §3).
-	treeSlot, ok := s.reserveDriveSlot()
-	if !ok {
-		sub.mu.Unlock()
-		return false
-	}
-	// The drive ctx is parented to the session's lifetime ctx (cancelled by
-	// cancelFunc at the very start of close(), before child closes and before
-	// sendersWG.Wait) — NOT to context.Background(): the drive goroutine holds
-	// s.sendersWG, so a drive whose ctx nothing cancels on teardown parks
-	// session Close until driveTurnTimeout (5m) whenever the child turn or the
-	// paced re-drive wait below is blocked on something close cannot otherwise
-	// reach (e.g. a frozen session clock: sclock().After never fires). Close
-	// cancelling sessionCtx both interrupts the child's ProcessInputKind turn
-	// and fires the driveCtx.Done() arm of the re-drive select, so sendersWG
-	// drains promptly and the Close comment "already cancelled above" is true
-	// again. The ctx is still independent of the LAUNCHING turn's ctx:
-	// sessionCtx outlives every turn and dies only at Close.
-	driveCtx, driveCancel := context.WithTimeout(s.sessionCtx, driveTurnTimeout)
-	s.mu.Lock()
-	if s.closingOrClosedLocked() {
-		s.mu.Unlock()
-		sub.mu.Unlock()
-		treeSlot.release()
-		driveCancel()
-		return false
-	}
-	s.sendersWG.Add(1)
-	s.mu.Unlock()
-	sub.driving = true
-	childSess := sub.sess
-	sub.mu.Unlock()
-
-	launched = true
-	go func() {
-		defer release()
-		defer s.sendersWG.Done()
-		defer driveCancel()
-		// The re-check defer is registered BEFORE treeSlot.release so LIFO runs
-		// the release first: the paced re-drive wait below holds no slot, and
-		// the re-drive can claim one even at drive budget 1.
-		defer func() {
-			if releaseDriveGuard(sub) {
-				s.redriveLiveChild(childSess.id)
-			}
-			s.redriveChildIfAttentionRemains(driveCtx, sub, childSess)
-		}()
-		defer treeSlot.release()
-		_, err := childSess.ProcessInputKind(driveCtx, "", nil, EntryNotification)
-		if err != nil {
-			if cleanupErr := sub.gateFatalRun(err); cleanupErr != nil {
-				childSess.emit(events.EventWarning, warningDataFromError("delegate owned-work cleanup incomplete", cleanupErr))
-			}
-		}
-	}()
-	return true
-}
-
-// redriveChildIfAttentionRemains is the post-turn re-drive check (spec §3): a
-// notify that fired while driving==true was dropped at the live/idle guard, so
-// a notification landing after the child's final in-turn peek would otherwise
-// strand (the parent is idle and there is no autonomous poll). It runs AFTER
-// sub.driving is cleared so the inner guard passes, and AFTER the drive slot
-// is released so the wait holds no budget. It is idempotent and
-// self-terminating: it re-drives only when real attention remains, each
-// re-drive is a fresh goroutine, and it stops when
-// peek==0 && !hasPendingWatchSends. The re-drive is paced: it waits
-// driveRedriveMinInterval (or drive cancel) before launching so a child whose
-// attention never drains cannot hot-loop its budget slot.
-func (s *Session) redriveChildIfAttentionRemains(driveCtx context.Context, sub *subagent, childSess *Session) {
-	if sub == nil || childSess == nil {
-		return
-	}
-	if sub.fatalRunGatedSnapshot() {
-		return
-	}
-	stopGated := s.childStopGated(childSess.id)
-	if hook := s.cfg.testOnly.subagentStopGated; hook != nil {
-		if stopped, handled := hook(s, childSess.id); handled {
-			stopGated = stopped
-		}
-	}
-	if stopGated {
-		return
-	}
-	if childSess.peekNotifications() > 0 || (childSess.jobManager != nil && childSess.jobManager.hasPendingWatchSends()) {
-		select {
-		case <-s.sclock().After(driveRedriveMinInterval):
-		case <-driveCtx.Done():
-			return
-		}
-		if s.driveSubagentNotificationTurn(sub) {
-			s.settleDrivenChildForwardedPendings(childSess.id)
-		}
-	}
-}
 
 func (a *subagent) gateFatalRun(err error) error {
 	if a == nil || err == nil {
@@ -1788,7 +1637,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	hookAvailable := true
 	var res string
 	var err error
-	var restoreParentDriveNotify func()
+	var finalization activationFinalization
 	var finish delegateFinish
 	var noActionClaim *delegateSettlementClaim
 	iteration := 0
@@ -1843,9 +1692,15 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			hookAvailable = false
 			res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 		}
-		restoreParentDriveNotify = nil
 		if err == nil {
-			res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
+			finalization, err = a.drainForFinalization(ctx, res)
+			res = finalization.Text
+			if err == nil && finalization.Disposition == activationYielded {
+				err = a.yieldActivation(ctx, finalization.Checkpoint)
+				if err == nil {
+					return
+				}
+			}
 		}
 		if stableRun && a.sess.delegateController != nil && nudgeAvailable && !cancelRequested && !budgetExhausted && a.nudgeEnabled &&
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted)) {
@@ -1854,10 +1709,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				err = errors.Join(err, decisionErr)
 			} else if decision == delegateCompletionNeedsNudge {
 				nudgeAvailable = false
-				if restoreParentDriveNotify != nil {
-					a.sess.SetNotifyFunc(restoreParentDriveNotify)
-					restoreParentDriveNotify = nil
-				}
 				a.mu.Lock()
 				a.finalizing = false
 				a.mu.Unlock()
@@ -1878,7 +1729,14 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				case delegateSupervisionSuppress:
 				}
 				if err == nil {
-					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
+					finalization, err = a.drainForFinalization(ctx, res)
+					res = finalization.Text
+					if err == nil && finalization.Disposition == activationYielded {
+						err = a.yieldActivation(ctx, finalization.Checkpoint)
+						if err == nil {
+							return
+						}
+					}
 				}
 			}
 		}
@@ -1918,9 +1776,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			break
 		}
 		if continueRun {
-			if restoreParentDriveNotify != nil {
-				a.sess.SetNotifyFunc(restoreParentDriveNotify)
-			}
 			a.mu.Lock()
 			a.finalizing = false
 			a.settlementClaimed = false
@@ -1930,6 +1785,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			continue
 		}
 		<-settlementClaim.ready
+		<-settlementClaim.batchReady
 		attentionPlans, attentionErr := a.sess.delegateController.AttentionResolutionsForFinalization(settlementClaim)
 		if executeErr := a.sess.executeDelegateMutationPlans(attentionPlans); attentionErr == nil {
 			attentionErr = executeErr
@@ -2037,13 +1893,10 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			a.sess.emit(events.EventWarning, warningDataFromError("delegate generation settlement incomplete", finishErr))
 		}
 	}
-	if restoreParentDriveNotify != nil {
-		a.sess.SetNotifyFunc(restoreParentDriveNotify)
-	}
 	a.mu.Lock()
 	a.finalizing = false
 	a.mu.Unlock()
-	if restoreParentDriveNotify != nil && a.sess.peekNotifications() > 0 {
+	if a.sess.peekNotifications() > 0 {
 		a.sess.notify()
 	}
 	if stableRun && a.sess.delegateController != nil {
@@ -2063,7 +1916,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		if pending, pendingErr := a.sess.pendingDelegateAttentionIDs(); pendingErr != nil {
 			a.sess.emit(events.EventWarning, warningDataFromError("inspect remaining delegate attention", pendingErr))
 		} else if len(pending) != 0 {
-			if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
+			if armErr := a.sess.requestNotificationWake(); armErr != nil {
 				a.sess.emit(events.EventWarning, warningDataFromError("rearm remaining delegate attention", armErr))
 			}
 		} else if clearErr := a.sess.delegateController.clearResolvedDelegateAttention(a.sess.owningDelegateID); clearErr != nil {
@@ -2072,6 +1925,9 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	}
 	if done != nil {
 		close(done)
+	}
+	if a.parentResourceWake != nil {
+		a.parentResourceWake()
 	}
 	if stableRun && a.sess.delegateController != nil {
 		// The schedule is armed whether or not the quiescence report
@@ -2107,27 +1963,62 @@ func (a *subagent) announceFinishedGeneration(lease delegateLease, announcements
 	a.sess.releaseFinishedGeneration(lease, a.sess)
 }
 
-func (a *subagent) drainForFinalization(ctx context.Context, result string) (string, func(), error) {
-	a.sess.mu.Lock()
-	parentDriveNotify := a.sess.notifyFunc
-	a.sess.mu.Unlock()
-	a.mu.Lock()
-	a.finalizing = true
-	a.mu.Unlock()
-	drained, err := a.sess.DrainJobTreeKeepingReport(ctx)
-	if err != nil {
-		return result, parentDriveNotify, err
+func (a *subagent) drainForFinalization(ctx context.Context, result string) (activationFinalization, error) {
+	drained := false
+	for {
+		a.sess.mu.Lock()
+		report := a.sess.comm
+		a.sess.mu.Unlock()
+		if a.sess.delegateController != nil && report.called {
+			switch report.endReason {
+			case tool.CommunicateEndReasonBlocked:
+				return activationFinalization{Text: report.reply}, nil
+			case tool.CommunicateEndReasonWaitingOnWork:
+				checkpoint, err := readWaitCheckpoint(transcriptPath(a.sess.stateDir, a.sess.id), a.sess.id)
+				if err == nil && (checkpoint == nil || checkpoint.ResumedByTurnID != "") {
+					err = errors.New("wait checkpoint is unavailable")
+				}
+				return activationFinalization{Text: result, Disposition: activationYielded, Checkpoint: checkpoint}, err
+			}
+		}
+		if drained {
+			break
+		}
+		a.mu.Lock()
+		a.finalizing = true
+		a.mu.Unlock()
+		text, err := a.sess.DrainJobTreeKeepingReport(ctx, a.drainWake)
+		if err != nil {
+			return activationFinalization{Text: result}, err
+		}
+		if text != "" {
+			result = text
+		}
+		drained = true
 	}
-	// The report is the latest one the session accepted, taken whole: its
-	// text and its structured output come from the same source, whatever
-	// text the drain's turns returned.
+	// A drain cannot mix a newer reply with an older structured report.
 	if reply, reported := a.sess.communicatedReply(); reported {
-		return reply, parentDriveNotify, nil
+		result = reply
 	}
-	if drained != "" {
-		result = drained
-	}
-	return result, parentDriveNotify, nil
+	return activationFinalization{Text: result}, nil
+}
+
+// installDelegateNotify publishes one callback for the runtime's whole life.
+// A running finalizer consumes the hint, idle and yielded runtimes still enter
+// the common admission adapter. The channel is never closed or reset by a run.
+func (s *Session) installDelegateNotify(sub *subagent) {
+	wake, hint := newDrainWake()
+	sub.drainWake = wake
+	sub.parentResourceWake = s.notify
+	sub.sess.SetNotifyFunc(func() {
+		hint()
+		sub.mu.Lock()
+		owned := sub.running || sub.finalizing
+		sub.mu.Unlock()
+		if !owned {
+			s.driveStableDelegateAttention(sub)
+		}
+	})
 }
 
 // runEndClass is the shared classification of a delegate run's terminal error.
@@ -2262,6 +2153,9 @@ type delegateTerminalRunInputs struct {
 	communicated            bool
 	structuredResult        any
 	structuredResultPresent bool
+	disposition             string
+	blocker                 string
+	waitingOn               string
 	descriptor              delegatestore.Descriptor
 	startedAt               time.Time
 	endedAt                 time.Time
@@ -2276,7 +2170,7 @@ type delegateTerminalRunInputs struct {
 }
 
 // captureCommunicateReport keeps the accepted human report and structured value
-// paired without changing the generic reply or a failed run's diagnostic text.
+// paired even when a later failure changes the generation's outcome.
 func (inputs *delegateTerminalRunInputs) captureCommunicateReport(sess *Session) {
 	if sess == nil {
 		return
@@ -2286,7 +2180,10 @@ func (inputs *delegateTerminalRunInputs) captureCommunicateReport(sess *Session)
 	inputs.communicated = sess.comm.called
 	inputs.structuredResult = sess.comm.structured
 	inputs.structuredResultPresent = sess.comm.structured != nil
-	if inputs.communicated && inputs.runErr == nil {
+	inputs.disposition = sess.comm.endReason
+	inputs.blocker = sess.comm.blocker
+	inputs.waitingOn = sess.comm.waitingOn
+	if inputs.communicated {
 		inputs.result = sess.comm.text
 	}
 }
@@ -2319,6 +2216,11 @@ type delegateTerminalPacketMetadata struct {
 	ExhaustionBudget    delegatestore.ExhaustionBudget `json:"exhaustion_budget,omitempty"`
 	ExhaustionLimit     int                            `json:"exhaustion_limit,omitempty"`
 	ExhaustionResumable *bool                          `json:"resumable,omitempty"`
+	Disposition         string                         `json:"disposition,omitempty"`
+	Blocker             string                         `json:"blocker,omitempty"`
+	WaitingOn           string                         `json:"waiting_on,omitempty"`
+	OutstandingWork     []string                       `json:"outstanding_work,omitempty"`
+	Report              *ReportSummary                 `json:"report,omitempty"`
 }
 
 type delegateTerminalWorktreeReport struct {
@@ -2361,7 +2263,6 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 		finish.outcome = delegatestore.OutcomeCompleted
 		finish.disposition = delegatestore.DispositionReported
 		finish.reason = ""
-		captureDelegateStructuredResult(&packet, inputs)
 	} else if exhaustion, exhausted := budgetExhaustionFromError(inputs.runErr); exhausted {
 		finish.outcome = delegatestore.OutcomeExhausted
 		finish.reason = exhaustion.reason()
@@ -2379,6 +2280,9 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 			packet.Message, _ = json.Marshal(delegateUserStopMessage)
 		}
 	}
+	if inputs.communicated {
+		captureDelegateStructuredResult(&packet, inputs)
+	}
 	if finish.outcome == delegatestore.OutcomeFailed && inputs.runErr != nil {
 		firstLine, _, _ := strings.Cut(strings.TrimSpace(inputs.runErr.Error()), "\n")
 		finish.errorText = boundedFinishText(firstLine)
@@ -2386,6 +2290,24 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 	metadata.Outcome = finish.outcome
 	metadata.Reason = finish.reason
 	metadata.Error = finish.errorText
+	metadata.Disposition = inputs.disposition
+	metadata.Blocker = inputs.blocker
+	metadata.WaitingOn = inputs.waitingOn
+	reportKind := inputs.disposition
+	if reportKind == "" {
+		reportKind = "done"
+	}
+	switch finish.outcome {
+	case delegatestore.OutcomeFailed:
+		reportKind = "failed"
+	case delegatestore.OutcomeCancelled:
+		reportKind = "cancelled"
+	case delegatestore.OutcomeExhausted:
+		reportKind = "exhausted"
+	}
+	report := buildReportSummary(inputs.session, reportKind)
+	report.Blocker = inputs.blocker
+	metadata.Report = &report
 	if raw, err := json.Marshal(metadata); err == nil && string(raw) != "{}" {
 		packet.Metadata = raw
 	}

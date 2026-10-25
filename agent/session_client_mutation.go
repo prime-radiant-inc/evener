@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"strconv"
@@ -375,7 +376,9 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 	// callback, so it releases no QueueHeld, and a Stop that landed after the
 	// original must keep the rail parked.
 	if lookup.Disposition != clientMutationDispositionReplayed {
-		s.unparkRootDelegateAttention()
+		if err := s.requestNotificationWake(); err != nil {
+			slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
+		}
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		if err := replayClientMutationResult(lookup.Record, &response); err != nil {
@@ -696,7 +699,9 @@ func (s *Session) SimulateCrashMidExecutionForTest() (turnID string, err error) 
 	if !ok {
 		return "", errors.New("no client-mutation start is pending to claim")
 	}
-	s.beginExecution(claimed.StableTurnID)
+	if err := s.beginExecution(claimed.StableTurnID); err != nil {
+		return "", err
+	}
 	if err := s.acceptUserInput(withQueuedClientMutation(context.Background(), claimed), claimed.Text, claimed.Images, nil, true); err != nil {
 		return "", err
 	}
@@ -1008,7 +1013,7 @@ func (s *Session) InterruptClientMutation(
 		// re-park the rail past their live engagement, and a Stop whose
 		// steering hold outlived its queue hold still owes the rail silence.
 		if snapshot := s.clientMutations.snapshot(); snapshot.QueueHeld || snapshot.SteeringHeld {
-			s.parkRootDelegateAttention()
+			s.suspendNotificationWake()
 		}
 		s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
 		return interruptResponseFromRecord(lookup.Record, appwire.MutationDispositionReplayed)
@@ -1039,7 +1044,7 @@ func (s *Session) InterruptClientMutation(
 		// rail's lock across an append pair; park where every outcome of this
 		// Stop passes (the rule the comment below records). The re-park on
 		// the non-terminal fall-through is a no-op.
-		s.parkRootDelegateAttention()
+		s.suspendNotificationWake()
 		if terminal {
 			s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
 			return interruptResponseFromRecord(current, appwire.MutationDispositionApplied)
@@ -1054,7 +1059,7 @@ func (s *Session) InterruptClientMutation(
 	// deadlocks exactly when the turn's own unblocking waits on this Stop's
 	// cancelAndWait. A paced retry the unwound turn's failure path armed in
 	// the window before this park is cancelled by the park's generation bump.
-	s.parkRootDelegateAttention()
+	s.suspendNotificationWake()
 	current := s.clientMutations.snapshot().Journal[params.ClientMutationID]
 	if current.OperationState == clientMutationOperationTerminal {
 		s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)

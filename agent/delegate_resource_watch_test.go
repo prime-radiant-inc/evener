@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 const expectedStableDelegateWatchSourceKind watchSourceKind = 3
@@ -176,19 +178,26 @@ func TestStableDelegateWatch_ParentGrantIsNonTransitive(t *testing.T) {
 }
 
 func TestStableDelegateWatch_PreservesFiltersEveryCoalescingAndBudget(t *testing.T) {
-	_ = requireStableDelegateWatchArgs(t)
-	jm := newStableWatchTestJobManager(t)
-	installWatchBelowValidation(t, jm, watchArgs{
-		Source: "dlg_source",
-		Target: runtimeMessageAliasCaller,
-		Events: []string{"assistant.tool"},
-		Every:  2,
-		EventFilter: &watchEventFilter{
-			ToolName: "read_file",
-			Status:   "ok",
-		},
-		Send: &watchSendArgs{To: "dlg_receiver"},
-	})
+	t.Parallel()
+	fs := &notificationFaultFS{Fs: afero.NewOsFs()}
+	fixture := newStableWatchRuntimeBase(t, fs)
+	jm := fixture.sourceJM
+	if _, err := jobWatchToolWithContext(context.Background(), fixture.root, map[string]any{
+		"operation": "create", "source": "dlg_source", "events": []any{"assistant.tool"}, "every": 2,
+		"event_filter": map[string]any{"tool_name": "read_file", "status": "ok"},
+	}, 4096); err != nil {
+		t.Fatal(err)
+	}
+	fs.writeErr = errors.New("controlled pre-custody write failure")
+	for _, event := range []events.ToolCallEndData{
+		{ToolName: "shell", Output: "miss"},
+		{ToolName: "read_file", Error: "miss"},
+	} {
+		onSessionEventKD(jm, events.EventToolCallEnd, event)
+	}
+	if len(producerSourceEvents(t, jm, jobstore.EventWatchSendPending)) != 0 {
+		t.Fatal("nonmatching tool or status produced a frame")
+	}
 	for range 4 {
 		onSessionEventKD(jm, events.EventToolCallEnd, events.ToolCallEndData{ToolName: "read_file", Output: "ok"})
 	}
@@ -201,12 +210,25 @@ func TestStableDelegateWatch_PreservesFiltersEveryCoalescingAndBudget(t *testing
 		t.Fatalf("stable watch coalescing = seq %d count %d, want 2/1", state.UpdateSeq, state.CoalescedCount)
 	}
 	cfg := deliveries[0].cfg
+	if len(producerSourceEvents(t, jm, jobstore.EventWatchSendPending)) != 2 || producerRecordCount(t, fixture.root) != 0 {
+		t.Fatal("every=2 must produce two source frames before receiver custody")
+	}
+	fs.writeErr = nil
+	if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), jm); err != nil {
+		t.Fatal(err)
+	}
+	if producerRecordCount(t, fixture.root) != 1 || len(jm.pendingWatchSendDeliveries(nil)) != 0 {
+		t.Fatal("only the latest coalesced frame must transfer custody")
+	}
+	assertNotificationPending(t, fixture.root, []string{stableWatchAttentionID(state)})
 	jm.mu.Lock()
-	cfg.conditionFires = watchDeliveryBudget
-	crossed := jm.recordWatchDeliveryLocked(cfg)
+	cfg.conditionFires = watchDeliveryBudget - 1
 	jm.mu.Unlock()
-	if !crossed {
-		t.Fatal("stable watch did not preserve the delivery budget")
+	for range 2 {
+		onSessionEventKD(jm, events.EventToolCallEnd, events.ToolCallEndData{ToolName: "read_file", Output: "budget-sentinel"})
+	}
+	if !cfg.budgetTripped || jm.inspectWatchByID(cfg.watchID).Watching {
+		t.Fatal("the next persisted condition fire must trip the budget and end the watch")
 	}
 }
 
@@ -306,17 +328,23 @@ func TestStableDelegateWatch_EnqueueFsyncPrecedesCursorAdvance(t *testing.T) {
 	}
 	close(release)
 	<-done
-	if pending := fixture.sourceJM.pendingWatchSendDeliveries(nil); len(pending) != 1 {
-		t.Fatalf("durable pending frames = %d, want 1", len(pending))
-	} else if pending[0].state.SourceDelegateID != "dlg_source" || pending[0].state.SourceDelegateGeneration != 1 {
-		t.Fatalf("durable stable source binding = %q/%d, want dlg_source/1", pending[0].state.SourceDelegateID, pending[0].state.SourceDelegateGeneration)
+	produced := producerSourceEvents(t, fixture.sourceJM, jobstore.EventWatchSendPending)
+	if len(produced) != 1 {
+		t.Fatalf("durable source frames = %d, want 1", len(produced))
+	}
+	state := produced[0].WatchSend
+	if state.SourceDelegateID != "dlg_source" || state.SourceDelegateGeneration != 1 {
+		t.Fatalf("durable stable source binding = %q/%d, want dlg_source/1", state.SourceDelegateID, state.SourceDelegateGeneration)
+	}
+	if !fixture.sourceJM.watchSendDelivered(state.DeliveryID) || countAttentionEntries(t, fixture.rootTranscriptPath, stableWatchAttentionID(*state)) != 1 {
+		t.Fatal("source completion did not transfer exactly one canonical receiver frame")
 	}
 	fixture.controller.mu.Lock()
 	enqueuesAfterFsync := len(fixture.controller.watchEnqueues)
 	deliveriesAfterFsync := len(fixture.controller.watchDeliveries)
 	fixture.controller.mu.Unlock()
-	if enqueuesAfterFsync != 0 || deliveriesAfterFsync != 1 {
-		t.Fatalf("receipt phase after source fsync = enqueue:%d delivery:%d, want 0/1", enqueuesAfterFsync, deliveriesAfterFsync)
+	if enqueuesAfterFsync != 0 || deliveriesAfterFsync != 0 {
+		t.Fatalf("receipt phase after immediate custody = enqueue:%d delivery:%d, want 0/0", enqueuesAfterFsync, deliveriesAfterFsync)
 	}
 }
 
@@ -325,27 +353,42 @@ func TestStableDelegateWatch_ControllerReceiptRunsAfterJobManagerUnlock(t *testi
 	boundaries := 0
 	fixture.sourceJM.watchReceiptBoundary = func() {
 		boundaries++
+		if !fixture.sourceJM.mu.TryLock() {
+			t.Fatal("stable watch entered the delegate controller while holding the job-manager lock")
+		}
+		fixture.sourceJM.mu.Unlock()
 		if !fixture.sourceJM.watchPersistMu.TryLock() {
 			t.Fatal("stable watch entered the delegate controller while holding the job-manager persistence lock")
 		}
 		fixture.sourceJM.watchPersistMu.Unlock()
+		if boundaries == 3 {
+			produced := producerSourceEvents(t, fixture.sourceJM, jobstore.EventWatchSendPending)
+			if len(produced) != 1 || !fixture.sourceJM.watchSendDelivered(produced[0].WatchSend.DeliveryID) || len(fixture.sourceJM.pendingWatchSendDeliveries(nil)) != 0 {
+				t.Fatal("delivery completion entered the controller before source settlement was observable")
+			}
+			if err := fixture.sourceJM.dispatchProducedWatchSendsFrom(fixture.sourceJM.store.LoadWatchSends); err != nil {
+				t.Fatalf("reentrant source pump at delivery completion: %v", err)
+			}
+		}
 	}
 
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "lock order"})
-	if boundaries != 2 {
-		t.Fatalf("controller receipt boundaries = %d, want enqueue admission and completion", boundaries)
+	// Immediate transport calls BeginWatchEnqueue, CompleteWatchEnqueue, then
+	// CompleteWatchDelivery. Each real controller entry must be outside both locks.
+	if boundaries != 3 {
+		t.Fatalf("controller receipt boundaries = %d, want enqueue admission, enqueue completion, and delivery completion", boundaries)
 	}
 }
 
 func TestStableDelegateWatch_ReceiverFsyncPrecedesDeliveredAck(t *testing.T) {
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
-	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "receiver barrier"})
+	fixture.persistFrameBeforeTransport(t, "receiver barrier")
 	pending := fixture.requireOnePending(t)
 	fs.arm()
 	done := make(chan error, 1)
 	go func() {
-		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM)
 		done <- err
 	}()
 	<-fs.syncEntered
@@ -380,7 +423,7 @@ func TestStableDelegateWatch_ReceiverFsyncPrecedesDeliveredAck(t *testing.T) {
 
 func TestStableDelegateWatch_SourceAcknowledgementWaitsForRootWakeArm(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
-	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "ordered receiver wake"})
+	fixture.persistFrameBeforeTransport(t, "ordered receiver wake")
 	ackEntered := make(chan struct{}, 1)
 	releaseAck := make(chan struct{})
 	released := false
@@ -398,10 +441,15 @@ func TestStableDelegateWatch_SourceAcknowledgementWaitsForRootWakeArm(t *testing
 		return originalAppend(event)
 	}
 	wakes := make(chan struct{}, 1)
-	fixture.root.SetNotifyFunc(func() { wakes <- struct{}{} })
+	fixture.root.SetNotifyFunc(func() {
+		select {
+		case wakes <- struct{}{}:
+		default:
+		}
+	})
 	done := make(chan error, 1)
 	go func() {
-		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM)
 		done <- err
 	}()
 	<-ackEntered
@@ -450,14 +498,19 @@ func TestStableDelegateWatch_LaterCoalescedUpdateSurvivesEarlierAck(t *testing.T
 func TestStableDelegateWatch_CoalescingRetainsInflightReceiverReceipt(t *testing.T) {
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
-	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "old frame"})
+	fixture.persistFrameBeforeTransport(t, "old frame")
 	old := fixture.requireOnePending(t).state
 	wakes := make(chan struct{}, 1)
-	fixture.root.SetNotifyFunc(func() { wakes <- struct{}{} })
+	fixture.root.SetNotifyFunc(func() {
+		select {
+		case wakes <- struct{}{}:
+		default:
+		}
+	})
 	fs.arm()
 	done := make(chan error, 1)
 	go func() {
-		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM)
 		done <- err
 	}()
 	<-fs.syncEntered
@@ -468,7 +521,7 @@ func TestStableDelegateWatch_CoalescingRetainsInflightReceiverReceipt(t *testing
 		}
 	}()
 
-	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "new frame"})
+	fixture.persistFrameBeforeTransport(t, "new frame")
 	newer := fixture.requireOnePending(t).state
 	fixture.controller.mu.Lock()
 	liveReceipts := len(fixture.controller.watchDeliveries)
@@ -514,7 +567,7 @@ func TestStableDelegateWatch_CoalescingRetainsInflightReceiverReceipt(t *testing
 		t.Fatalf("newer coalesced cursor after old acknowledgement = %#v, want delivery %q seq %d", current, newer.DeliveryID, newer.UpdateSeq)
 	}
 	fixture.root.attentionMu.Lock()
-	_, armed := fixture.root.rootAttentionWakeIDs[stableWatchAttentionID(old)]
+	_, armed := notificationTestPending(t, fixture.root)[stableWatchAttentionID(old)]
 	fixture.root.attentionMu.Unlock()
 	if !armed {
 		t.Fatalf("coalesced receiver attention %q was not armed", stableWatchAttentionID(old))
@@ -525,7 +578,12 @@ func TestStableDelegateWatch_SupersededAckFailureRetainsArmedAttentionBeforeCurr
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
 	wakes := make(chan struct{}, 2)
-	fixture.root.SetNotifyFunc(func() { wakes <- struct{}{} })
+	fixture.root.SetNotifyFunc(func() {
+		select {
+		case wakes <- struct{}{}:
+		default:
+		}
+	})
 	old, newer, originalAppend := seedSupersededStableWatchAckFailure(t, fixture, fs)
 
 	select {
@@ -536,8 +594,11 @@ func TestStableDelegateWatch_SupersededAckFailureRetainsArmedAttentionBeforeCurr
 	if receipt := fixture.sourceJM.stableWatchReceipt(old.DeliveryID); receipt == nil {
 		t.Fatal("failed old source acknowledgement released its delivery receipt")
 	}
-	if !fixture.source.sessionWorkPending() {
-		t.Fatal("failed old source acknowledgement disappeared from session work-pending")
+	if !fixture.sourceJM.hasPendingStableWatchSettlementRetry() {
+		t.Fatal("failed old source acknowledgement lost its source settlement retry")
+	}
+	if !fixture.root.sessionWorkPending() {
+		t.Fatal("already-armed receiver attention disappeared from receiver work-pending")
 	}
 
 	newAckEntered := make(chan struct{}, 1)
@@ -557,7 +618,7 @@ func TestStableDelegateWatch_SupersededAckFailureRetainsArmedAttentionBeforeCurr
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM)
 		done <- err
 	}()
 	<-newAckEntered
@@ -575,7 +636,7 @@ func TestStableDelegateWatch_SupersededAckFailureRetainsArmedAttentionBeforeCurr
 	}
 	current := folded.Pending[newer.Key]
 	fixture.root.attentionMu.Lock()
-	_, oldArmed := fixture.root.rootAttentionWakeIDs[stableWatchAttentionID(old)]
+	_, oldArmed := notificationTestPending(t, fixture.root)[stableWatchAttentionID(old)]
 	fixture.root.attentionMu.Unlock()
 	close(releaseNewAck)
 	released = true
@@ -631,7 +692,7 @@ func TestStableDelegateWatch_ConcurrentRedrainsClaimSupersededAckOnce(t *testing
 		return originalAppend(event)
 	}
 	drain := func(done chan<- error) {
-		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM)
 		done <- err
 	}
 	firstDone := make(chan error, 1)
@@ -680,66 +741,99 @@ func TestStableDelegateWatch_ConcurrentRedrainsClaimSupersededAckOnce(t *testing
 }
 
 func TestStableDelegateWatch_RetryAddedDuringClaimSettlesBeforeCurrentCursor(t *testing.T) {
-	fs := newAttentionSyncBarrierFS()
-	fixture := newStableWatchRuntimeFixture(t, fs)
-	retryA, staleB, originalAppend := seedSupersededStableWatchAckFailure(t, fixture, fs)
-	cfg := fixture.onlyWatchConfig(t)
-
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	jm := fixture.sourceJM
+	originalAppend := jm.appendEvent
+	ackFailure := errors.New("source acknowledgement failed")
 	retryAAckEntered := make(chan struct{}, 1)
 	releaseRetryAAck := make(chan struct{})
+	staleBAckEntered := make(chan struct{}, 1)
+	releaseStaleBAck := make(chan struct{})
 	currentAckEntered := make(chan struct{}, 1)
 	releaseCurrentAck := make(chan struct{})
 	releasedRetryA := false
+	releasedStaleB := false
 	releasedCurrent := false
 	defer func() {
 		if !releasedRetryA {
 			close(releaseRetryAAck)
 		}
+		if !releasedStaleB {
+			close(releaseStaleBAck)
+		}
 		if !releasedCurrent {
 			close(releaseCurrentAck)
 		}
-		fixture.sourceJM.appendEvent = originalAppend
+		jm.appendEvent = originalAppend
 	}()
-	staleBAckFailure := errors.New("second stale source acknowledgement failed")
-	var staleBAckFailed atomic.Bool
-	var current jobstore.WatchSendState
-	fixture.sourceJM.appendEvent = func(event jobstore.Event) error {
+	var retryA, staleB, current jobstore.WatchSendState
+	var retryReady atomic.Bool
+	var staleBAckHeld atomic.Bool
+	produced := 0
+	// Install before production: transport no longer waits for an explicit drain.
+	// B holds its real delivery claim while C supersedes it. Only after the retry
+	// batch has snapshotted A do we fail B's append and hand B to that same batch.
+	jm.appendEvent = func(event jobstore.Event) error {
+		if event.Kind == jobstore.EventWatchSendPending {
+			produced++
+			switch produced {
+			case 1:
+				retryA = *event.WatchSend
+			case 2:
+				staleB = *event.WatchSend
+			case 3:
+				current = *event.WatchSend
+			}
+		}
 		if exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, retryA) {
+			if !retryReady.Load() {
+				return ackFailure
+			}
 			retryAAckEntered <- struct{}{}
 			<-releaseRetryAAck
 		}
-		if exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, staleB) && staleBAckFailed.CompareAndSwap(false, true) {
-			return staleBAckFailure
+		if exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, staleB) && staleBAckHeld.CompareAndSwap(false, true) {
+			staleBAckEntered <- struct{}{}
+			<-releaseStaleBAck
+			return ackFailure
 		}
 		if exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, current) {
+			if !retryReady.Load() {
+				return ackFailure
+			}
 			currentAckEntered <- struct{}{}
 			<-releaseCurrentAck
 		}
 		return originalAppend(event)
 	}
 
-	fs.rearm()
-	staleBDone := make(chan error, 1)
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "retry A"})
+	staleBDone := make(chan struct{})
 	go func() {
-		_, err := fixture.sourceJM.deliverStableWatchSend(cfg, staleB)
-		staleBDone <- err
+		onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "stale B"})
+		close(staleBDone)
 	}()
-	<-fs.syncEntered
-	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "current frame"})
-	current = fixture.requireOnePending(t).state
+	<-staleBAckEntered
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "current frame"})
+	if got := fixture.requireOnePending(t).state; got.DeliveryID != current.DeliveryID {
+		t.Fatalf("current cursor = %q, want %q", got.DeliveryID, current.DeliveryID)
+	}
+	if !stableWatchSettlementRetrying(jm, retryA.DeliveryID) || stableWatchSettlementRetrying(jm, staleB.DeliveryID) {
+		t.Fatal("batch setup must retain A's retry while B still owns its delivery claim")
+	}
 
+	retryReady.Store(true)
 	drainDone := make(chan error, 1)
 	go func() {
-		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), jm)
 		drainDone <- err
 	}()
 	<-retryAAckEntered
-	fs.release()
-	if err := <-staleBDone; !errors.Is(err, staleBAckFailure) {
-		close(releaseRetryAAck)
-		releasedRetryA = true
-		<-drainDone
-		t.Fatalf("second stale delivery error = %v, want %v", err, staleBAckFailure)
+	close(releaseStaleBAck)
+	releasedStaleB = true
+	<-staleBDone
+	if !stableWatchSettlementRetrying(jm, staleB.DeliveryID) {
+		t.Fatal("B's failed acknowledgement did not join the already active retry batch")
 	}
 	close(releaseRetryAAck)
 	releasedRetryA = true
@@ -760,11 +854,14 @@ func TestStableDelegateWatch_RetryAddedDuringClaimSettlesBeforeCurrentCursor(t *
 	if staleBReceipt != nil {
 		t.Fatal("second stale delivery receipt remained held at current cursor acknowledgement")
 	}
+	if got := countExactWatchSendEvents(eventsAtCurrentAck, jobstore.EventWatchSendDelivered, retryA); got != 1 {
+		t.Fatalf("first stale source acknowledgements before current cursor = %d, want exactly 1", got)
+	}
 }
 
 func TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
-	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "crash repair"})
+	fixture.persistFrameBeforeTransport(t, "crash repair")
 	pending := fixture.requireOnePending(t)
 	if !pending.state.StableReceiver || pending.state.ReceiverSessionID != fixture.root.ID() {
 		t.Fatalf("stable pending identity = %#v", pending.state)
@@ -777,7 +874,7 @@ func TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked(t *testi
 		}
 		return originalAppend(event)
 	}
-	if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, ""); !errors.Is(err, sourceAckFailure) {
+	if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM); !errors.Is(err, sourceAckFailure) {
 		t.Fatalf("first delivery error = %v, want %v", err, sourceAckFailure)
 	}
 	if got := countAttentionEntries(t, fixture.rootTranscriptPath, stableWatchAttentionID(pending.state)); got != 1 {
@@ -809,6 +906,17 @@ func TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked(t *testi
 	t.Cleanup(func() { _ = fresh.delegateController.store.Close() })
 	if got := countAttentionEntries(t, fixture.rootTranscriptPath, stableWatchAttentionID(pending.state)); got != 1 {
 		t.Fatalf("receiver attention count after restart repair = %d, want 1", got)
+	}
+	receiverFold, err := readDelegateAttentionFold(fixture.rootTranscriptPath, fixture.root.ID())
+	if err != nil {
+		t.Fatalf("fold repaired receiver: %v", err)
+	}
+	receiverTurn := receiverFold.turns[stableWatchAttentionID(pending.state)]
+	if !reflect.DeepEqual(receiverTurn.Message, llm.UserMachinery(stableWatchNotificationContent(pending.state))) {
+		t.Fatalf("repaired receiver message lost canonical machinery content: %#v", receiverTurn.Message)
+	}
+	if pending.state.Provenance == nil || !reflect.DeepEqual(receiverTurn.NotificationProvenance, pending.state.Provenance) {
+		t.Fatalf("repaired receiver provenance = %#v, want nonempty source provenance %#v", receiverTurn.NotificationProvenance, pending.state.Provenance)
 	}
 	restarted, err := jobstore.Open(filepath.Join(jobsDir(fixture.controller.stateDir, fixture.source.ID()), "jobs.jsonl"))
 	if err != nil {
@@ -848,12 +956,12 @@ func TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked(t *testi
 		}); err != nil {
 			t.Fatalf("configure cold receiver watch: %v", err)
 		}
-		onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "cold arm retry"})
+		fixture.persistFrameBeforeTransport(t, "cold arm retry")
 		pending := fixture.requireOnePending(t)
 		if err := fixture.controller.store.Close(); err != nil {
 			t.Fatalf("close controller before cold arm: %v", err)
 		}
-		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, ""); err == nil {
+		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM); err == nil {
 			t.Fatal("cold watch arm unexpectedly succeeded with closed delegate journal")
 		}
 		if got := fixture.sourceJM.pendingWatchSendDeliveries(nil); len(got) != 1 || got[0].state.DeliveryID != pending.state.DeliveryID {
@@ -883,7 +991,7 @@ func TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked(t *testi
 		fixture.root.delegateController = restarted
 		fixture.source.delegateController = restarted
 		fixture.sourceJM.delegateController = restarted
-		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, ""); err != nil {
+		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM); err != nil {
 			t.Fatalf("retry cold watch arm: %v", err)
 		}
 		if got := fixture.sourceJM.pendingWatchSendDeliveries(nil); len(got) != 0 {
@@ -1034,11 +1142,8 @@ func TestStableDelegateWatch_StopFencesAndDrainsBothReceiptClasses(t *testing.T)
 		}); err != nil {
 			t.Fatalf("configure nested stable watch: %v", err)
 		}
-		onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "stop cleanup"})
+		fixture.persistFrameBeforeTransport(t, "stop cleanup")
 		pending := fixture.requireOnePending(t)
-		if _, _, _, err := fixture.controller.StopSubtree(rootDelegateActor(fixture.root.ID()), "dlg_source"); err != nil {
-			t.Fatalf("StopSubtree: %v", err)
-		}
 		ackFailure := errors.New("stop cleanup source ack failed")
 		originalAppend := fixture.sourceJM.appendEvent
 		fixture.sourceJM.appendEvent = func(event jobstore.Event) error {
@@ -1047,8 +1152,11 @@ func TestStableDelegateWatch_StopFencesAndDrainsBothReceiptClasses(t *testing.T)
 			}
 			return originalAppend(event)
 		}
-		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, ""); !errors.Is(err, ackFailure) {
+		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM); !errors.Is(err, ackFailure) {
 			t.Fatalf("deliver before crash = %v, want %v", err, ackFailure)
+		}
+		if _, _, _, err := fixture.controller.StopSubtree(rootDelegateActor(fixture.root.ID()), "dlg_source"); err != nil {
+			t.Fatalf("StopSubtree: %v", err)
 		}
 		attentionID := stableWatchAttentionID(pending.state)
 		fixture.sourceJM.releaseStableWatchReceipt(pending.state.DeliveryID)
@@ -1104,83 +1212,83 @@ func TestStableDelegateWatch_StopFencesAndDrainsBothReceiptClasses(t *testing.T)
 	})
 }
 
-func TestStableDelegateWatch_TerminalFramePrecedesEndNotice(t *testing.T) {
-	_ = requireStableDelegateWatchArgs(t)
-	jm := newStableWatchTestJobManager(t)
-	installWatchBelowValidation(t, jm, watchArgs{
-		Source: "dlg_source",
-		Target: runtimeMessageAliasCaller,
-		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: "dlg_receiver"},
-	})
-	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "terminal frame", EndTurn: true})
-	deliveries := jm.pendingWatchSendDeliveries(nil)
-	if len(deliveries) != 1 || !strings.Contains(deliveries[0].state.Frame, "terminal frame") {
-		t.Fatalf("terminal watch frame = %#v", deliveries)
-	}
-	stored, err := jm.store.LoadEvents()
-	if err != nil {
-		t.Fatalf("load watch events: %v", err)
-	}
-	if indexWatchEvent(stored, jobstore.EventWatchSendPending) < 0 {
-		t.Fatal("terminal frame was not durable before watch teardown")
-	}
+func TestStableDelegateWatch_TerminalFrameSurvivesRegistrationClear(t *testing.T) {
+	t.Parallel()
+	proveStableWatchRegistrationClear(t)
 }
 
+// Job-manager restore/end-policy component proof, not a full runtime restart.
 func TestStableDelegateWatch_RestartCancellationEmitsEndNotice(t *testing.T) {
-	_ = requireStableDelegateWatchArgs(t)
-	stateDir := t.TempDir()
-	jm, err := newJobManagerNoSync(stateDir, "source-session", func(jobNotification) {})
-	if err != nil {
-		t.Fatalf("new source job manager: %v", err)
-	}
-	result, err := jm.configureWatch(watchArgs{
-		Source:               "dlg_source",
-		Target:               runtimeMessageAliasCaller,
-		Events:               []string{"communicate"},
-		ReceiverSessionID:    "receiver-session",
-		ReceiverDelegateID:   "dlg_receiver",
-		StableReceiver:       true,
-		ReceiverSendInternal: true,
-		SourceDelegateID:     "dlg_source",
-		SourceGeneration:     1,
-	})
-	if err != nil {
-		t.Fatalf("configure stable watch: %v", err)
-	}
-	if err := jm.closeStoreOnly(); err != nil {
-		t.Fatalf("close source job manager: %v", err)
-	}
-	restarted, err := newJobManagerNoSync(stateDir, "source-session", func(jobNotification) {})
-	if err != nil {
-		t.Fatalf("restart source job manager: %v", err)
-	}
-	t.Cleanup(func() { _ = restarted.closeStoreOnly() })
-	controller, _ := newDelegateControllerTestHarness(t, 2, 1)
-	seedDelegateControllerRunning(t, controller, "dlg_source", "")
-	seedDelegateControllerRunning(t, controller, "dlg_receiver", "")
-	if _, err := controller.FinishGeneration(delegateLease{delegateID: "dlg_source", generation: 1}, delegateFinish{}); err != nil {
-		t.Fatalf("finish watched generation before restart notice: %v", err)
-	}
-	restarted.delegateController = controller
-	if err := restarted.noticeUnrestoredWatchEnds(); err != nil {
-		t.Fatalf("notice unrestored watch end: %v", err)
-	}
-	record, err := restarted.store.LoadWatchSends()
-	if err != nil {
-		t.Fatalf("load restart end notice: %v", err)
-	}
-	if len(record.Pending) != 1 {
-		t.Fatalf("restart end notices = %#v, want one", record.Pending)
-	}
-	for _, pending := range record.Pending {
-		if !pending.EndNotice || !strings.Contains(pending.Frame, "watch ended") || !strings.Contains(pending.Frame, "dlg_source") {
-			t.Fatalf("restart end notice for %s = %#v", result.WatchID, pending)
-		}
-		if !pending.StableReceiver || pending.ReceiverSessionID != "receiver-session" || pending.ReceiverDelegateID != "dlg_receiver" || pending.SourceDelegateID != "dlg_source" || pending.SourceDelegateGeneration != 1 {
-			t.Fatalf("restart end notice lost stable routing identity: %#v", pending)
+	t.Parallel()
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	watchID, generation := soleStableWatchRegistration(t, fixture.sourceJM, fixture.root, fixture.source)
+	for _, event := range loadJobStoreEvents(t, fixture.sourceJM) {
+		if event.WatchSend != nil {
+			t.Fatal("unfired registration already has watch-send evidence")
 		}
 	}
+	reopenSettledWatchManager(t, fixture)
+	requireRuntimeLostWatchClear(t, fixture.sourceJM, watchID, generation)
+	var state jobstore.WatchSendState
+	var firstEvents []jobstore.Event
+	var firstEntries []transcript.Entry
+	for pass := range 2 {
+		if err := fixture.sourceJM.noticeUnrestoredWatchEnds(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM); err != nil {
+			t.Fatal(err)
+		}
+		state = soleProducedWatchState(t, fixture.sourceJM, watchID, generation)
+		requireStableWatchState(t, state, watchID, generation, fixture.root, fixture.source, true)
+		requireSettledComponentWatch(t, fixture, state)
+		currentEvents := loadJobStoreEvents(t, fixture.sourceJM)
+		currentEntries := readAttentionTranscriptEntries(t, fixture.rootTranscriptPath)
+		if pass == 0 {
+			firstEvents, firstEntries = currentEvents, currentEntries
+		} else if !reflect.DeepEqual(currentEvents, firstEvents) || !reflect.DeepEqual(currentEntries, firstEntries) {
+			t.Fatal("repeated restart notice/drain changed physical source or receiver records")
+		}
+	}
+	t.Logf("component manager restore: watch=%s generation=%s end_notice=true delivery=%s acceptance=1 acknowledgement=1, repeated notice/drain unchanged", watchID, generation, state.DeliveryID)
+}
+
+func TestStableDelegateWatch_RestartOmitsEndNoticeAfterTerminalFrame(t *testing.T) {
+	t.Parallel()
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	watchID, generation := soleStableWatchRegistration(t, fixture.sourceJM, fixture.root, fixture.source)
+	const payload = "settled-terminal-payload-98"
+	// Real event entry, journal, controller and transcript, not communicate tool
+	// execution. The provider-to-tool boundary is covered by the clear case above.
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: payload, EndTurn: true})
+	state := soleProducedWatchState(t, fixture.sourceJM, watchID, generation)
+	requireStableWatchState(t, state, watchID, generation, fixture.root, fixture.source, false)
+	requireTerminalWatchFrame(t, state.Frame, watchID, state.DeliveryID, payload)
+	requireSettledComponentWatch(t, fixture, state)
+	originalEntries := readAttentionTranscriptEntries(t, fixture.rootTranscriptPath)
+	originalPendingCount := countExactWatchSendEvents(loadJobStoreEvents(t, fixture.sourceJM), jobstore.EventWatchSendPending, state)
+	reopenSettledWatchManager(t, fixture)
+	for range 2 {
+		if err := fixture.sourceJM.noticeUnrestoredWatchEnds(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM); err != nil {
+			t.Fatal(err)
+		}
+		requireRuntimeLostWatchClear(t, fixture.sourceJM, watchID, generation)
+		requireSettledComponentWatch(t, fixture, state)
+		stored := loadJobStoreEvents(t, fixture.sourceJM)
+		for _, event := range stored {
+			if send := event.WatchSend; send != nil && send.Key.WatchID == watchID && send.Key.WatchGeneration == generation && send.EndNotice {
+				t.Fatal("spoken registration produced a redundant end notice")
+			}
+		}
+		got := soleProducedWatchState(t, fixture.sourceJM, watchID, generation)
+		if !reflect.DeepEqual(got, state) || countExactWatchSendEvents(stored, jobstore.EventWatchSendPending, state) != originalPendingCount || !reflect.DeepEqual(readAttentionTranscriptEntries(t, fixture.rootTranscriptPath), originalEntries) {
+			t.Fatal("manager restore changed original settled source or receiver evidence")
+		}
+	}
+	t.Logf("component manager restore: watch=%s generation=%s end_notices=0 original_delivery=%s acceptance=1 acknowledgement=1 unchanged", watchID, generation, state.DeliveryID)
 }
 
 func TestStableDelegateWatch_LegacyDelegateJobRowFailsClosed(t *testing.T) {
@@ -1217,15 +1325,6 @@ func newStableWatchTestJobManager(t *testing.T) *jobManager {
 	}
 	t.Cleanup(func() { _ = jm.closeStoreOnly() })
 	return jm
-}
-
-func indexWatchEvent(events []jobstore.Event, kind jobstore.EventKind) int {
-	for i, event := range events {
-		if event.Kind == kind {
-			return i
-		}
-	}
-	return -1
 }
 
 type stableWatchRuntimeFixture struct {
@@ -1377,9 +1476,31 @@ func (f *stableWatchRuntimeFixture) requireOnePending(t *testing.T) pendingWatch
 	return pending[0]
 }
 
+// persistFrameBeforeTransport sets up downstream custody/ack fault boundaries.
+// Production onSessionEvent pumps transport immediately, so tests that need to
+// install a fault first exercise its existing source stage explicitly.
+func (f *stableWatchRuntimeFixture) persistFrameBeforeTransport(t *testing.T, message string) {
+	t.Helper()
+	jm := f.sourceJM
+	ev := events.SessionEvent{SessionID: jm.sessionID, Kind: events.EventCommunicate, Data: events.CommunicateData{Message: message}}
+	jm.mu.Lock()
+	cfg := f.onlyWatchConfig(t)
+	dec := evaluateWatchEvent(cfg.eventSnapshot(isActiveWatchTargetLocked(jm, cfg.target)), ev)
+	cfg.eventCount = dec.eventCount
+	if !dec.matched || !dec.send {
+		jm.mu.Unlock()
+		t.Fatal("fixture event did not produce a watch frame")
+	}
+	delivery := jm.watchSendSnapshot(cfg, dec.watchedIdentity, "event: communicate", ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance))
+	jm.mu.Unlock()
+	if !jm.recordWatchSends([]watchSendDelivery{delivery}) {
+		t.Fatal("fixture source frame was not persisted")
+	}
+}
+
 func seedSupersededStableWatchAckFailure(t *testing.T, fixture *stableWatchRuntimeFixture, fs *attentionSyncBarrierFS) (jobstore.WatchSendState, jobstore.WatchSendState, func(jobstore.Event) error) {
 	t.Helper()
-	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "old frame"})
+	fixture.persistFrameBeforeTransport(t, "old frame")
 	old := fixture.requireOnePending(t).state
 	sourceAckFailure := errors.New("old source delivered acknowledgement failed")
 	originalAppend := fixture.sourceJM.appendEvent
@@ -1394,7 +1515,7 @@ func seedSupersededStableWatchAckFailure(t *testing.T, fixture *stableWatchRunti
 	fs.arm()
 	done := make(chan error, 1)
 	go func() {
-		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM)
 		done <- err
 	}()
 	<-fs.syncEntered
@@ -1404,7 +1525,7 @@ func seedSupersededStableWatchAckFailure(t *testing.T, fixture *stableWatchRunti
 			fs.release()
 		}
 	}()
-	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "new frame"})
+	fixture.persistFrameBeforeTransport(t, "new frame")
 	newer := fixture.requireOnePending(t).state
 	fs.release()
 	released = true
@@ -1461,14 +1582,14 @@ func countAttentionEntries(t *testing.T, path, attentionID string) int {
 // delivery counter moves AND the owner is left with pending attention.
 func TestStableWatchBoundarySettleWakesOwnerForEnvelopeRefresh(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
-	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "boundary frame"})
+	fixture.persistFrameBeforeTransport(t, "boundary frame")
 	cfg := fixture.onlyWatchConfig(t)
 
 	fixture.sourceJM.mu.Lock()
 	before := cfg.deliveries
 	fixture.sourceJM.mu.Unlock()
 
-	if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, ""); err != nil {
+	if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM); err != nil {
 		t.Fatalf("drain stable watch send: %v", err)
 	}
 
@@ -1478,7 +1599,7 @@ func TestStableWatchBoundarySettleWakesOwnerForEnvelopeRefresh(t *testing.T) {
 	if after != before+1 {
 		t.Fatalf("watch deliveries = %d, want %d after the boundary drain settled the frame", after, before+1)
 	}
-	if !fixture.root.hasPendingRootDelegateAttention() {
+	if !fixture.root.hasPendingNotifications() {
 		t.Fatal("a settled stable watch delivery left the owner unwoken; its envelope watch row would stay stale")
 	}
 }

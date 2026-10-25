@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 var errJobManagerClosing = errors.New("job manager is closing")
@@ -69,6 +70,9 @@ type jobManager struct {
 	watchActivityMu        sync.Mutex
 	watchActivityReceivers map[string]struct{}
 	watchNotifyMu          sync.Mutex
+	watchCallbackMu        sync.Mutex
+	watchProductionFenced  bool
+	watchCallbacksDone     chan struct{}
 	watchPersistMu         sync.Mutex
 	// watchPersistDone is non-nil while one watch-journal transition owns the
 	// process-local serialization token. Waiters observe it under watchPersistMu
@@ -80,7 +84,10 @@ type jobManager struct {
 	store            *jobstore.Store
 	running          map[string]*runningJob
 	watches          map[watchKey]*watchConfig
-	terminalFlush    map[*watchConfig]bool
+	// watchCallbacks counts entered source callbacks through persistence and
+	// routing. Guarded by jm.mu, with entry/exit serialized by watchCallbackMu.
+	watchCallbacks int
+	terminalFlush  map[*watchConfig]bool
 	// watchHistory is a bounded, latest-trimmed ring of watches that have left
 	// the active set, surfaced by job_list so a fired-then-removed watch stays
 	// legible. Guarded by jm.mu.
@@ -218,6 +225,11 @@ type jobManager struct {
 	// process-only settlement batch. Other drains must wait for that batch before
 	// visiting current cursors so one source acknowledgement is charged once.
 	stableWatchSettlementRetrying bool
+	// Transport retry is only a paced hint to replay the source journal. It owns
+	// neither receiver custody nor model execution, and stops with this manager.
+	watchTransportRetry       notificationRetry
+	watchTransportRetryTimer  clock.Timer
+	watchTransportRetryClosed bool
 }
 
 // defaultCloseGrace is the graceful-shutdown window closeRuntimeState gives a
@@ -578,10 +590,6 @@ type jobNotification struct {
 	// triggering watch's lineage so the notification turn it drives stamps the
 	// same origin and a same-watch retrigger is suppressed.
 	Provenance *provenance.Causal
-	// WatchSend marks this entry as a watch-send wake token: render-by-key
-	// against the owning jobManager's CURRENT pending state at accept time
-	// (spec §4.3). The frame text is deliberately NOT carried here.
-	WatchSend *watchSendToken
 	// Watch fields (in-memory only). WatchID identifies the firing timer so
 	// the session can fold repeated ticks; Fires is how many folded into this
 	// entry; IntervalSeconds and Terminal carry what the timer block needs.
@@ -611,9 +619,8 @@ type jobNotification struct {
 	receiverSessionID string
 	receiverNotify    func(jobNotification)
 	receiverHoldWake  func() func()
-	// watchSendFrame is the rendered frame, populated only between filter and
-	// format inside one accept pass (never persisted, never enqueued).
-	watchSendFrame string
+	callbackConfig    *watchConfig
+	callbackTrigger   string
 }
 
 func (n jobNotification) isWatch() bool {
@@ -854,6 +861,16 @@ waitLoop:
 func (jm *jobManager) closeStoreOnly() error {
 	if jm == nil || jm.store == nil {
 		return nil
+	}
+	jm.mu.Lock()
+	jm.watchTransportRetryClosed = true
+	jm.watchTransportRetry.generation++
+	jm.watchTransportRetry.active = false
+	timer := jm.watchTransportRetryTimer
+	jm.watchTransportRetryTimer = nil
+	jm.mu.Unlock()
+	if timer != nil {
+		timer.Stop()
 	}
 	if err := jm.store.Close(); err != nil {
 		return fmt.Errorf("close store: %w", err)
@@ -1769,6 +1786,7 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 	_ = run.output.Close()
 	run.delegateShell.finish()
 	run.closeDoneDurable()
+	jm.kick()
 	return nil
 }
 
@@ -2083,9 +2101,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		watchNotifications, watchDeliveries = jm.completeExpiredJobWatchesLocked(run.rec.JobID, expiredWatches, watchRootProvenance)
 		jm.mu.Unlock()
 		ownNotices = jm.routeWatchNotifications(watchNotifications)
-		var tokens []jobNotification
-		tokens, watchSendRecorded = jm.recordWatchSends(watchDeliveries)
-		ownNotices = append(ownNotices, tokens...)
+		watchSendRecorded = jm.recordWatchSends(watchDeliveries)
 	} else {
 		jm.mu.Unlock()
 	}
@@ -2170,8 +2186,11 @@ func (jm *jobManager) persistStableShellAttention(jobID string) (string, *Sessio
 	jm.mu.Lock()
 	owner := jm.stableOwner
 	parentDelegateID := jm.parentDelegateID
+	if owner == nil {
+		owner = jm.retirementOwner
+	}
 	jm.mu.Unlock()
-	if owner == nil || parentDelegateID == "" {
+	if owner == nil {
 		return "", nil, nil
 	}
 	records, err := jm.store.Load()
@@ -2179,16 +2198,13 @@ func (jm *jobManager) persistStableShellAttention(jobID string) (string, *Sessio
 		return "", owner, err
 	}
 	record := records[jobID]
-	if record == nil || record.Type != jobstore.JobShell || record.ParentDelegateID != parentDelegateID || record.TerminalGen == "" || !record.Status.IsTerminal() {
+	if record == nil || record.Type != jobstore.JobShell || (parentDelegateID != "" && record.ParentDelegateID != parentDelegateID) || record.TerminalGen == "" || !record.Status.IsTerminal() {
 		return "", owner, errors.New("stable shell attention source is incomplete")
 	}
 	attentionID := stableShellAttentionID(record.JobID, record.TerminalGen)
-	notification := jobNotificationFromRecord(record)
-	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: notification, terminalGen: record.TerminalGen}})
-	if _, err := owner.appendDelegateNotificationDurably(attentionID, content); err != nil {
-		return "", owner, err
-	}
-	if err := owner.armDelegateAttention(attentionID); err != nil {
+	notice := jobNotificationFromRecord(record)
+	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: notice, terminalGen: record.TerminalGen}})
+	if err := owner.enqueueNotification(notification{ID: attentionID, Message: llm.UserMachinery(content), Provenance: notice.Provenance}); err != nil {
 		return "", owner, err
 	}
 	if record.NotifyState != jobstore.NotifyDelivered {

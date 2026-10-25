@@ -24,14 +24,22 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/doctor"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
@@ -40,10 +48,277 @@ import (
 // notificationWireFixturePath is the committed corpus both clients read.
 const notificationWireFixturePath = "testdata/notificationwire/steering.json"
 
+// TestNotificationReportProjection records real communicate -> journal ->
+// receiver -> AppWire production, not a hand-built controller outcome.
+func TestNotificationReportProjection(t *testing.T) {
+	t.Parallel()
+	var fixtures []notificationWireFixture
+	const jsonProse = `{"message":"JSON example, not a captured result","data":{"unproven":"must remain prose"},"artifacts":[]}`
+	for _, kind := range []string{"update", "readiness", "waiting", "waiting-empty", "done", "blocked", "interruption", "waiting-empty-json", "waiting-json", "update-json"} {
+		t.Run(kind, func(t *testing.T) {
+			message := "payload-" + kind + "-9c2f"
+			if strings.HasSuffix(kind, "-json") {
+				message = jsonProse
+			}
+			if strings.HasPrefix(kind, "waiting") {
+				adapter := newMessagingAdapter("WAIT-WORKER", "WAIT-TARGET")
+				adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "WAIT-WORKER") }, func(llm.Request) llm.Response { return finalResponse("root-finished") })
+				gate := make(chan struct{})
+				release := sync.OnceFunc(func() { close(gate) })
+				defer release()
+				adapter.script("WAIT-TARGET", func(llm.Request) llm.Response { <-gate; return finalResponse("target-finished") })
+				adapter.script("WAIT-WORKER", func(llm.Request) llm.Response { return delegateToolResponse("target", "WAIT-TARGET") }, func(req llm.Request) llm.Response {
+					id := deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
+					output := publicationOutput("result-9c2f")
+					if strings.HasPrefix(kind, "waiting-empty") {
+						output = map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}
+					}
+					return toolCallResponse(publicationCall("projection-"+kind, map[string]any{"message": message, "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": id, "output": output}))
+				})
+				root := newMessagingRoot(t, adapter, nil)
+				if _, err := root.ProcessInput(t.Context(), "start", nil); err != nil {
+					t.Fatal(err)
+				}
+				// Release the held descendant before root.Close cleanup.
+				t.Cleanup(release)
+				waitForCondition(t, 30*time.Second, "waiting projection", func() bool { return len(rootAttentionFold(t, root).order) == 1 })
+				child := waitForSoleChildIdle(t, root)
+				before, err := root.pendingNotificationIDs()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, e := range publicationEvents(t, root) {
+					if e.RunFinished != nil && e.DelegateID == child.owningDelegateID {
+						t.Fatal("wait settled generation")
+					}
+					if u := e.UpdatePosted; u != nil && e.DelegateID == child.owningDelegateID {
+						if u.Generation != 1 || u.Communicate == nil || u.Communicate.CallID != "projection-"+kind || !u.Communicate.EndTurn || u.Communicate.EndReason != "waiting_on_work" || u.Communicate.WaitingOn == "" || u.Packet == nil {
+							t.Fatalf("wait publication=%+v", u)
+						}
+						var capturedMessage string
+						if err := json.Unmarshal(u.Packet.Message, &capturedMessage); err != nil || capturedMessage != message {
+							t.Fatalf("wait message=%s, want %q: %v", u.Packet.Message, message, err)
+						}
+						if strings.HasPrefix(kind, "waiting-empty") {
+							if len(u.Packet.StructuredResult) != 0 || u.Packet.StructuredResultSource != "" || u.Packet.StructuredResultValid != nil {
+								t.Fatalf("empty output captured as a result: %+v", u.Packet)
+							}
+						} else if u.Packet.StructuredResultSource != delegatestore.StructuredResultSourceDefaultEnvelope || !strings.Contains(string(u.Packet.StructuredResult), "result-9c2f") {
+							t.Fatalf("wait provenance=%+v", u.Packet)
+						}
+						frame := rootAttentionFold(t, root).content[before[0]].Text()
+						frame = strings.NewReplacer(root.ID(), "root", child.ID(), "worker", child.owningDelegateID, "dlg_projection", u.Communicate.WaitingOn, "dlg_target").Replace(frame)
+						items := apptranscript.ProjectTurn("turn_1", 0, notificationWireAttention("projection-"+kind, frame), nil, nil, nil)
+						fixtures = append(fixtures, notificationWireFixture{Case: kind, Generation: u.Generation, Note: "Real delegate target and yielded communicate publication before target settlement, receiver and AppWire projection. Identities normalized.", Item: items[0]})
+					}
+				}
+				return
+			}
+			nextEntered, nextGate := make(chan struct{}), make(chan struct{})
+			root, child, lease, release := publicationRunningChild(t, func(adapter *messagingAdapter) {
+				if kind == "done" {
+					adapter.script("BATCH-WORKER", func(llm.Request) llm.Response { close(nextEntered); <-nextGate; return finalResponse("next-finished") })
+				}
+			})
+			t.Cleanup(func() { close(nextGate) })
+			writeTaskStoreFixture(t, child.stateDir, child.ID(), []task.Task{
+				{ID: 1, Description: "task-a", Status: task.TaskDone},
+				{ID: 2, Description: "task-b", Status: task.TaskInProgress},
+				{ID: 3, Description: "task-c", Status: task.TaskOpen},
+			})
+			ctx := context.WithValue(t.Context(), delegateRunLeaseContextKey{}, lease)
+			args := map[string]any{"message": message, "end_turn": kind == "done" || kind == "blocked", "output": publicationOutput("result-9c2f")}
+			if kind == "readiness" {
+				args["readiness"] = "ready"
+			}
+
+			if kind == "blocked" {
+				args["end_reason"], args["blocker"] = "blocked", "blocker-4d2a"
+				path := filepath.Join(child.jobManager.dir, "jobs.jsonl")
+				original, err := os.ReadFile(path)
+				if err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("invalid inventory journal\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				restore := func() {
+					if os.IsNotExist(err) {
+						if err := os.Remove(path); err != nil {
+							t.Error(err)
+						}
+					} else if err := os.WriteFile(path, original, 0600); err != nil {
+						t.Error(err)
+					}
+				}
+				defer restore()
+			}
+			terminal := kind == "done" || kind == "blocked" || kind == "interruption"
+			if kind == "interruption" {
+				if _, err := root.StopDelegateRun(lease.delegateID); err != nil {
+					t.Fatal(err)
+				}
+			} else if out := publicationExecute(ctx, child, publicationCall("projection-"+kind, args)); out.IsError {
+				t.Fatalf("communicate: %+v", out)
+			}
+			if terminal {
+				release()
+			}
+			waitForCondition(t, 30*time.Second, "report receiver custody", func() bool {
+				ids, err := root.pendingNotificationIDs()
+				return err == nil && len(ids) == 1
+			})
+			var packet *delegatestore.TerminalPacket
+			for _, e := range publicationEvents(t, root) {
+				if p := e.TerminalPrepared; p != nil {
+					if !terminal || p.Generation != lease.generation {
+						t.Fatalf("unexpected terminal generation: %+v", p)
+					}
+					packet = &p.Packet
+				}
+				if u := e.UpdatePosted; u != nil {
+					if terminal || u.Generation != lease.generation || u.Communicate == nil || u.Communicate.CallID != "projection-"+kind {
+						t.Fatalf("unexpected update: %+v", u)
+					}
+					packet = u.Packet
+				}
+			}
+			if packet == nil {
+				t.Fatal("no captured producer packet")
+			}
+			if kind == "update-json" {
+				var capturedMessage string
+				if err := json.Unmarshal(packet.Message, &capturedMessage); err != nil || capturedMessage != message {
+					t.Fatalf("update message=%s, want %q: %v", packet.Message, message, err)
+				}
+			}
+			if kind != "interruption" && (packet.StructuredResultSource != delegatestore.StructuredResultSourceDefaultEnvelope || !strings.Contains(string(packet.StructuredResult), "result-9c2f")) {
+				t.Fatalf("provenance=%+v", packet)
+			}
+			var metadata delegateTerminalPacketMetadata
+			if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
+				t.Fatal(err)
+			}
+			if terminal {
+				if metadata.Report == nil || metadata.Report.Tasks.Done != 1 || metadata.Report.Tasks.Remaining != 2 || len(metadata.Report.Tasks.Incomplete) != 2 || metadata.Report.Tasks.Current == nil || metadata.Report.Tasks.Current.ID != 2 {
+					t.Fatalf("task summary=%+v", metadata.Report)
+				}
+				if kind != "interruption" && (packet.StructuredResultValid == nil || !*packet.StructuredResultValid) {
+					t.Fatalf("result validity=%+v", packet)
+				}
+				if kind == "blocked" && (metadata.Blocker != "blocker-4d2a" || !strings.Contains(renderReportNotice(*metadata.Report), "unknown:job-journal")) {
+					t.Fatalf("blocked inventory=%+v", metadata)
+				}
+			}
+			// Metadata reads are not model observation or delivery acknowledgement.
+			before, err := root.pendingNotificationIDs()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"job_status", "job_list"} {
+				toolArgs := map[string]any{"intent": "projection metadata"}
+				if name == "job_status" {
+					toolArgs["target"] = lease.delegateID
+				}
+				raw, _ := json.Marshal(toolArgs)
+				out := publicationExecute(t.Context(), root, llm.ToolCallData{ID: "projection-" + name, Name: name, Type: "function", Arguments: raw})
+				if out.IsError {
+					t.Fatalf("%s: %+v", name, out)
+				}
+			}
+			if _, err := root.JobActivityTree(appwire.JobsListParams{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := root.ListActivityDelegates(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", root.ID()), Scope: appwire.SessionActivityScopeSubtree}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := doctor.Jobs(root.stateDir, root.ID(), doctor.JobOpts{}); err != nil {
+				t.Fatal(err)
+			}
+			after, err := root.pendingNotificationIDs()
+			if err != nil || !slices.Equal(before, after) {
+				t.Fatalf("reads consumed notifications: %v -> %v, %v", before, after, err)
+			}
+			writeTaskStoreFixture(t, child.stateDir, child.ID(), []task.Task{{ID: 1, Status: task.TaskDone}})
+			for _, e := range publicationEvents(t, root) {
+				if e.TerminalPrepared != nil && !reflect.DeepEqual(packet, &e.TerminalPrepared.Packet) {
+					t.Fatal("accepted report changed after task refresh")
+				}
+			}
+			fold := rootAttentionFold(t, root)
+			frame := fold.content[before[0]].Text()
+			if metadata.ScratchPath != "" {
+				frame = strings.ReplaceAll(frame, metadata.ScratchPath, "/fixture/scratch")
+			}
+			frame = strings.NewReplacer(root.ID(), "root", child.ID(), "worker", lease.delegateID, "dlg_projection").Replace(frame)
+			frame = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z`).ReplaceAllString(frame, wireFixtureStart.Format(time.RFC3339))
+			items := apptranscript.ProjectTurn("turn_1", 0, notificationWireAttention("projection-"+kind, frame), nil, nil, nil)
+			if len(items) != 1 {
+				t.Fatalf("items=%d", len(items))
+			}
+			fixture := notificationWireFixture{Case: kind, Generation: lease.generation, Note: "Real tool publication or user stop, journal, receiver custody and AppWire projection. Identities, scratch path and clocks normalized.", Item: items[0]}
+			if kind == "done" {
+				readRow := func() *appwire.SessionDelegate {
+					rows, err := root.ListActivityDelegates(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", root.ID()), Scope: appwire.SessionActivityScopeSubtree})
+					if err != nil || len(rows.Delegates) != 1 {
+						t.Fatalf("activity: %+v %v", rows, err)
+					}
+					raw, _ := json.Marshal(rows.Delegates[0])
+					normalized := strings.NewReplacer(root.ID(), "root", child.ID(), "worker", lease.delegateID, "dlg_projection").Replace(string(raw))
+					normalized = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z`).ReplaceAllString(normalized, wireFixtureStart.Format(time.RFC3339))
+					var row appwire.SessionDelegate
+					if err := json.Unmarshal([]byte(normalized), &row); err != nil {
+						t.Fatal(err)
+					}
+					return &row
+				}
+				fixture.Activity = readRow()
+				if fixture.Activity.RunGeneration != 1 || fixture.Activity.ReportPreview != "payload-done-9c2f" {
+					t.Fatalf("settled row=%+v", fixture.Activity)
+				}
+				raw, _ := json.Marshal(map[string]any{"to": lease.delegateID, "message": "resume-3a7c", "max_wait_ms": 0, "intent": "projection resume"})
+				if out := publicationExecute(t.Context(), root, llm.ToolCallData{ID: "projection-resume", Name: "delegate_send", Type: "function", Arguments: raw}); out.IsError {
+					t.Fatalf("resume: %+v", out)
+				}
+				awaitSignal(t, nextEntered, "new generation provider")
+				fixture.NextActivity = readRow()
+				if fixture.NextActivity.RunGeneration != 2 || fixture.NextActivity.Terminal || fixture.NextActivity.ReportPreview != "" || fixture.NextActivity.Outcome != "" {
+					t.Fatalf("prior report attached to new generation: %+v", fixture.NextActivity)
+				}
+			}
+			fixtures = append(fixtures, fixture)
+		})
+	}
+	if len(fixtures) != 10 {
+		t.Fatalf("captured %d report fixtures, want ten producer cases", len(fixtures))
+	}
+	checkWireFixture(t, "testdata/notificationwire/reports.json", fixtures, "shared adapter, web and native report projection tests")
+}
+
 type notificationWireFixture struct {
-	Case string             `json:"case"`
-	Note string             `json:"note"`
-	Item appwire.ThreadItem `json:"item"`
+	Case         string                   `json:"case"`
+	Note         string                   `json:"note"`
+	Item         appwire.ThreadItem       `json:"item"`
+	Generation   uint64                   `json:"generation,omitempty"`
+	Activity     *appwire.SessionDelegate `json:"activity,omitempty"`
+	NextActivity *appwire.SessionDelegate `json:"-"`
+}
+
+// The shared client corpus uses nextActivity, unlike the snake-case appwire
+// fields. Append that fixture-only key last to preserve its existing bytes.
+func (f notificationWireFixture) MarshalJSON() ([]byte, error) {
+	type fixture notificationWireFixture
+	body, err := json.Marshal(fixture(f))
+	if err != nil || f.NextActivity == nil {
+		return body, err
+	}
+	next, err := json.Marshal(f.NextActivity)
+	if err != nil {
+		return nil, err
+	}
+	body = append(body[:len(body)-1], `,"nextActivity":`...)
+	body = append(body, next...)
+	return append(body, '}'), nil
 }
 
 func notificationWireDelegateFrame(t *testing.T, delegateID, name string, inputs delegateTerminalRunInputs) string {
@@ -139,12 +414,8 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 		Terminal:        true,
 		Note:            "Check whether CI finished.",
 	}
-	watchSend := watchSendTokenNotification("", jobstore.WatchSendState{
-		Key:           jobstore.WatchSendKey{ResolvedWatchedIdentity: "job_7"},
-		TriggerReason: "output_match: PASS",
-		DeliveryID:    "wsd_1",
-	})
-	watchSend.watchSendFrame = "CI finished: 3 checks passed."
+	// Frozen historical token wrapper, retained only to test old transcript readers.
+	watchSend := "<job-notification job_id=\"job_7\" event=\"watch_send\" delivery_id=\"wsd_1\" trigger=\"output_match: PASS\">\nCI finished: 3 checks passed.\n</job-notification>"
 	completedExcerpt := notificationExcerpt{text: "ok  \tprimeradiant.com/evener/agent\t12.3s", complete: true}
 	failedExcerpt := notificationExcerpt{
 		text:     "--- FAIL: TestTreeSettle (0.02s)\n    tree_test.go:88: drain ran before settle\nFAIL",
@@ -289,7 +560,7 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 		{
 			name: "job-watch-send",
 			note: "A watch's send frame delivered on its trigger.",
-			turn: notificationWireReminder(frame(watchSend, notificationExcerpt{})),
+			turn: notificationWireReminder(watchSend),
 		},
 	}
 

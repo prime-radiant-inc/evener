@@ -425,6 +425,16 @@ func TestDelegateControllerRestartRepairsPreparedTerminalOnce(t *testing.T) {
 	if got := countDelegateRunFinished(t, restarted, "dlg_target"); got != firstCount {
 		t.Fatalf("run-finished count after second reconcile = %d, want %d", got, firstCount)
 	}
+	again := reopenDelegateController(t, restarted, path)
+	if _, err := again.Reconcile(emptyDelegateReconcileEvidence(again)); err != nil {
+		t.Fatal(err)
+	}
+	if got := countDelegateRunFinished(t, again, "dlg_target"); got != firstCount {
+		t.Fatalf("second reopen settlement count=%d want%d", got, firstCount)
+	}
+	if deliveries := again.durable["dlg_target"].PendingDeliveries; len(deliveries) != 1 || deliveries[0].Generation != 1 {
+		t.Fatalf("prepared packet changed across second reopen: %+v", deliveries)
+	}
 }
 
 // A run that failed and prepared its terminal packet, then lost its process
@@ -474,7 +484,24 @@ func TestDelegateControllerRestartCompletesStopBeforeAdmission(t *testing.T) {
 	if restarted.stop != nil || restarted.durable["dlg_target"].PendingStopSeq != 0 {
 		t.Fatalf("restart stop remained pending: stop=%#v aggregate=%#v", restarted.stop, restarted.durable["dlg_target"])
 	}
-	if _, err := restarted.ReserveStart(rootDelegateActor("root-session"), "dlg_target"); err != nil {
+	again := reopenDelegateController(t, restarted, path)
+	events, err := again.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	completions := 0
+	for _, event := range events {
+		if event.SubtreeStopCompleted != nil {
+			completions++
+			if event.SubtreeStopCompleted.RequestSeq != requestSeq {
+				t.Fatal("second reopen changed Stop request identity")
+			}
+		}
+	}
+	if completions != 1 || again.stop != nil || again.durable["dlg_target"].PendingStopSeq != 0 {
+		t.Fatalf("second reopen stop completions=%d pending=%+v", completions, again.stop)
+	}
+	if _, err := again.ReserveStart(rootDelegateActor("root-session"), "dlg_target"); err != nil {
 		t.Fatalf("ReserveStart after completion: %v", err)
 	}
 }

@@ -87,7 +87,7 @@ func armOneRootAttention(t *testing.T, s *Session, delegateID, attentionID strin
 	if _, err := s.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		t.Fatalf("append attention %s: %v", attentionID, err)
 	}
-	if err := s.armDelegateAttention(attentionID); err != nil {
+	if err := s.requestNotificationWake(); err != nil {
 		t.Fatalf("arm attention %s: %v", attentionID, err)
 	}
 }
@@ -95,9 +95,14 @@ func armOneRootAttention(t *testing.T, s *Session, delegateID, attentionID strin
 // attentionRailState snapshots the wake flag, the paced retry's armed flag,
 // and the cached pending ID count under one lock acquisition.
 func attentionRailState(s *Session) (wake, retryActive bool, pending int) {
-	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
-	return s.rootAttentionWake, s.rootAttentionRetry.active, len(s.rootAttentionWakeIDs)
+	ids, err := s.pendingNotificationIDs()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := len(ids)
+	if err != nil {
+		count++
+	}
+	return s.notificationSchedule.hinted, s.notificationSchedule.retry.active, count
 }
 
 // A permanent provider failure must not re-arm the paced retry. A 401 cannot
@@ -250,7 +255,7 @@ func TestRootAttentionTransientRetryAfterAPauseReadsWorking(t *testing.T) {
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("delivery turn after the provider recovered: %v", err)
 	}
-	if s.hasPendingRootDelegateAttention() {
+	if s.hasPendingNotifications() {
 		t.Fatal("the recovered delivery left root attention pending")
 	}
 	if got := s.WireState(); got != string(SessionIdle) {
@@ -773,7 +778,7 @@ func TestRestartSeedsTheAttentionParkFromTheDurableHolds(t *testing.T) {
 	}, func() {}); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if !s.rootAttentionRailParked() {
+	if !s.notificationStopHeld() {
 		t.Fatal("this test is not in the state it means to be: the accepted Stop left the live rail unparked")
 	}
 	// The crash: no re-engagement, the process just ends. The holds and the
@@ -805,7 +810,7 @@ func TestRestartSeedsTheAttentionParkFromTheDurableHolds(t *testing.T) {
 		}
 	}()
 
-	if !restored.rootAttentionRailParked() {
+	if !restored.notificationStopHeld() {
 		t.Fatal("the restart lost the Stop's park: restore rebuilt the rail unparked, and the pending attention can re-arm the paced retry over a queue the user parked")
 	}
 	wake, retryActive, pending := attentionRailState(restored)
@@ -868,7 +873,7 @@ func TestAttentionRailParkedIsAProjectionOfTheDurableHolds(t *testing.T) {
 		}
 	}()
 
-	if s.rootAttentionRailParked() {
+	if s.notificationStopHeld() {
 		t.Fatal("a session with no holds must read unparked")
 	}
 	// The hold arrives through the store only — the way a Stop's admission
@@ -879,7 +884,7 @@ func TestAttentionRailParkedIsAProjectionOfTheDurableHolds(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed the hold: %v", err)
 	}
-	if !s.rootAttentionRailParked() {
+	if !s.notificationStopHeld() {
 		t.Fatal("a standing durable hold must park the rail with no in-memory park write; a stored flag could disagree with the holds")
 	}
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
@@ -888,7 +893,7 @@ func TestAttentionRailParkedIsAProjectionOfTheDurableHolds(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("clear the hold: %v", err)
 	}
-	if s.rootAttentionRailParked() {
+	if s.notificationStopHeld() {
 		t.Fatal("a released hold must release the rail with no in-memory unpark write")
 	}
 }

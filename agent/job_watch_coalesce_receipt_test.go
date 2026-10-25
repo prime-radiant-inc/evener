@@ -2,9 +2,12 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
@@ -61,7 +64,9 @@ func requireSettlementRetryAcknowledges(t *testing.T, fixture *stableWatchRuntim
 // receipt fences the receiver's stop forever, and closing the root waits out
 // the close budget.
 func TestCoalescedStableWatchFrameReleasesSupersededReceipt(t *testing.T) {
-	fixture := newStableWatchRuntimeFixture(t, nil)
+	fs := &notificationFaultFS{Fs: afero.NewOsFs()}
+	fixture := newStableWatchRuntimeFixture(t, fs)
+	fs.writeErr = errors.New("receiver custody unavailable")
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "first"})
 	first := fixture.requireOnePending(t).state
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "second"})
@@ -70,6 +75,16 @@ func TestCoalescedStableWatchFrameReleasesSupersededReceipt(t *testing.T) {
 		t.Fatalf("coalesced frame kept delivery id %s", first.DeliveryID)
 	}
 	requireOnlyStableWatchReceipts(t, fixture, second.DeliveryID)
+	fs.writeErr = nil
+	fixture.sourceJM.dispatchProducedWatchSends()
+	entries := notificationRawEntries(t, fixture.rootTranscriptPath)
+	if len(entries) != 1 || entries[0].Turn.AttentionID != fmt.Sprintf("watch:%s:%d", second.DeliveryID, second.UpdateSeq) {
+		t.Fatalf("survivor custody entries=%#v", entries)
+	}
+	requireOnlyStableWatchReceipts(t, fixture)
+	if !fixture.sourceJM.watchSendDelivered(second.DeliveryID) {
+		t.Fatal("surviving frame was not acknowledged")
+	}
 }
 
 // A deliverer already handing off the first frame when the second coalesces
@@ -348,20 +363,62 @@ func TestAcceptedFrameWithFailedArmRetriesAfterACoalesce(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	cfg := fixture.onlyWatchConfig(t)
 	jm := fixture.sourceJM
-	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
+	fixture.persistFrameBeforeTransport(t, "first")
 	first := fixture.requireOnePending(t).state
 	armFailure := errors.New("arm failed")
 	jm.stableWatchArmFailure = func(string) error { return armFailure }
 	if _, err := jm.deliverPendingWatchSend(cfg, first, false); !errors.Is(err, armFailure) {
 		t.Fatalf("deliver first frame: err = %v, want the arm failure", err)
 	}
-	jm.stableWatchArmFailure = nil
-	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "second"})
+	attentionID := stableWatchAttentionID(first)
+	fold, err := readDelegateAttentionFold(fixture.rootTranscriptPath, fixture.root.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, accepted := fold.content[attentionID]; !accepted {
+		t.Fatal("arm failed before the real receiver took durable custody")
+	}
+	fixture.persistFrameBeforeTransport(t, "second")
 	second := fixture.requireOnePending(t).state
 	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Contains(got, first.DeliveryID) {
 		t.Fatalf("the accepted, unarmed frame lost its receipt: %v", got)
 	}
+	if _, err := jm.retryStableWatchSettlements(); !errors.Is(err, armFailure) {
+		t.Fatalf("settlement before arm repair: %v, want the retained arm failure", err)
+	}
+	if got := countExactWatchSendEvents(loadJobStoreEvents(t, jm), jobstore.EventWatchSendDelivered, first); got != 0 {
+		t.Fatalf("source acknowledgements before arm repair=%d, want zero", got)
+	}
+	jm.stableWatchArmFailure = nil
 	requireSettlementRetryAcknowledges(t, fixture, first, second)
+	if got := countExactWatchSendEvents(loadJobStoreEvents(t, jm), jobstore.EventWatchSendDelivered, first); got != 1 {
+		t.Fatalf("source acknowledgements after arm repair=%d, want one", got)
+	}
+	assertNotificationRecords(t, fixture.rootTranscriptPath, attentionID, fold.content[attentionID], 1)
+
+	t.Run("real producer takes canonical custody without source staging", func(t *testing.T) {
+		live := newStableWatchRuntimeFixture(t, nil)
+		const body = "real-watch-producer-custody-73af"
+		onSessionEventKD(live.sourceJM, events.EventCommunicate, events.CommunicateData{Message: body})
+		sourceEvents := loadJobStoreEvents(t, live.sourceJM)
+		var produced *jobstore.WatchSendState
+		for _, event := range sourceEvents {
+			if event.Kind == jobstore.EventWatchSendPending {
+				produced = event.WatchSend
+			}
+		}
+		if produced == nil || !strings.Contains(produced.Frame, body) {
+			t.Fatal("real communicate event did not persist its source frame")
+		}
+		entries := notificationRawEntries(t, live.rootTranscriptPath)
+		wantID := fmt.Sprintf("watch:%s:%d", produced.DeliveryID, produced.UpdateSeq)
+		if len(entries) != 1 || entries[0].Turn.AttentionID != wantID || !strings.Contains(entries[0].Turn.Message.Text(), body) {
+			t.Fatalf("real producer canonical receiver records=%+v, want one exact identity and payload", entries)
+		}
+		if got := countExactWatchSendEvents(sourceEvents, jobstore.EventWatchSendDelivered, *produced); got != 1 {
+			t.Fatalf("real producer source acknowledgements=%d, want one after canonical custody", got)
+		}
+	})
 }
 
 // The settlement retry for an accepted frame whose arm failed arms it before
@@ -369,15 +426,11 @@ func TestAcceptedFrameWithFailedArmRetriesAfterACoalesce(t *testing.T) {
 // stay; once it succeeds the frame is armed, acknowledged and released.
 func TestSettlementRetryArmsBeforeItAcknowledges(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
-	cfg := fixture.onlyWatchConfig(t)
 	jm := fixture.sourceJM
-	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
-	first := fixture.requireOnePending(t).state
 	armFailure := errors.New("arm failed")
 	jm.stableWatchArmFailure = func(string) error { return armFailure }
-	if _, err := jm.deliverPendingWatchSend(cfg, first, false); !errors.Is(err, armFailure) {
-		t.Fatalf("deliver first frame: err = %v, want the arm failure", err)
-	}
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
+	first := fixture.requireOnePending(t).state
 	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "second"})
 	second := fixture.requireOnePending(t).state
 	if _, err := jm.retryStableWatchSettlements(); !errors.Is(err, armFailure) {
@@ -390,12 +443,18 @@ func TestSettlementRetryArmsBeforeItAcknowledges(t *testing.T) {
 	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Contains(got, first.DeliveryID) {
 		t.Fatalf("a failed retry arm released the receipt: %v", got)
 	}
+	if got := countExactWatchSendEvents(loadJobStoreEvents(t, jm), jobstore.EventWatchSendDelivered, first); got != 0 {
+		t.Fatalf("source acknowledgements before successful arm = %d, want 0", got)
+	}
 	jm.stableWatchArmFailure = nil
 	if _, err := jm.retryStableWatchSettlements(); err != nil {
 		t.Fatalf("retry once the arm succeeds: %v", err)
 	}
 	if !jm.watchSendDelivered(first.DeliveryID) {
 		t.Fatal("the retry did not acknowledge the frame")
+	}
+	if got := countExactWatchSendEvents(loadJobStoreEvents(t, jm), jobstore.EventWatchSendDelivered, first); got != 1 {
+		t.Fatalf("source acknowledgements after successful arm = %d, want 1", got)
 	}
 	requireOnlyStableWatchReceipts(t, fixture, second.DeliveryID)
 }

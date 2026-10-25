@@ -17,10 +17,12 @@ func FuzzWatchStoreLoadFaultSeams(f *testing.F) {
 
 		jm := newTestJM(t)
 		s := &Session{jobManager: jm}
-		s.renderUnreachableChildPendingsWithLoaders(nil,
-			func() (map[string]*jobstore.JobRecord, error) { return map[string]*jobstore.JobRecord{}, nil },
-			func() (jobstore.WatchSendRecord, error) { return jobstore.WatchSendRecord{}, want },
-		)
+		jm.retirementOwner = s
+		if err := s.retryRestoredPendingWatchSendsFrom(func() (jobstore.WatchSendRecord, error) {
+			return jobstore.WatchSendRecord{}, want
+		}); !errors.Is(err, want) {
+			t.Fatalf("host retry load failure = %v", err)
+		}
 		if got := s.peekNotifications(); got != 0 {
 			t.Fatalf("load failure enqueued %d notifications", got)
 		}

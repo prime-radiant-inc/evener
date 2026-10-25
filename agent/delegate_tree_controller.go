@@ -118,6 +118,7 @@ type delegateTreeController struct {
 type delegateActor struct {
 	rootSessionID string
 	lease         *delegateLease
+	batch         *delegateToolBatch
 }
 
 // describe renders the actor as human-readable provenance for a cancellation
@@ -158,7 +159,11 @@ type delegateGenerationEvidence struct {
 	requirement  delegateCompletionRequirement
 	outcome      delegateCompletionOutcome
 	terminalSeen bool
-	fallback     *delegateFinish
+	// completionAdmitted fences child starts after accepted done until the next
+	// input is admitted, and never survives this generation.
+	completionAdmitted bool
+	batch              *delegateToolBatch
+	fallback           *delegateFinish
 }
 
 type delegateRuntimeBinding struct {
@@ -168,6 +173,10 @@ type delegateRuntimeBinding struct {
 	ready      bool
 	inputClaim uint64
 	evidence   *delegateGenerationEvidence
+	// yielded releases execution capacity, not this generation's resources.
+	yielded          bool
+	yieldCancelBound bool
+	executionCancel  context.CancelFunc
 }
 
 // delegateFinalization is a finished generation whose runtime has not yet

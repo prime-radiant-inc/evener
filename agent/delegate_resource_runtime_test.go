@@ -758,30 +758,54 @@ func TestDelegateResourceRuntime_ConcurrentIdleSendsStartOneGeneration(t *testin
 }
 
 func TestDelegateResourceRuntime_CallerCannotWriteIntoUnfinishedRootToolRound(t *testing.T) {
-	receiver := newDelegateAttentionTestSession(t)
-	receiver.mu.Lock()
-	receiver.state = SessionProcessing
-	receiver.mu.Unlock()
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	c.rootRuntime = receiver
-	receiver.delegateController = c
-	seedDelegateControllerIdle(t, c, "dlg_target", "")
-	lease, _ := startDelegateDeliveryGeneration(t, c, "dlg_target", false)
-	plans := finishDelegateDeliveryGeneration(t, c, lease, "finished during caller tool round")
-
-	if err := receiver.executeDelegateMutationPlans(plans); err != nil {
-		t.Fatalf("execute delivery plan: %v", err)
-	}
-	fold, err := readDelegateAttentionFold(transcriptPath(receiver.stateDir, receiver.id), receiver.id)
+	adapter := newMessagingAdapter()
+	adapter.script("root", func(llm.Request) llm.Response {
+		return notificationToolCall("open-round-56", "finish_source", map[string]any{})
+	}, func(req llm.Request) llm.Response {
+		notificationValidToolPairs(t, req)
+		if !requestContainsText(req, "source-payload-56") {
+			t.Error("next safe model boundary omitted the accepted source")
+		}
+		return finalResponse("caller-result-56")
+	})
+	receiver := newMessagingRoot(t, adapter, nil)
+	c := receiver.delegateController
+	c.mu.Lock()
+	_, err := c.appendLocked(delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: "dlg_tool_round", Created: &delegatestore.DelegateCreated{Descriptor: stableToolDescriptor(receiver, "dlg_tool_round", "")}})
+	c.mu.Unlock()
 	if err != nil {
-		t.Fatalf("read attention fold: %v", err)
+		t.Fatal(err)
 	}
-	if len(fold.order) != 0 {
-		t.Fatalf("delegate delivery appended into unfinished caller tool round: %#v", fold.order)
+	reservation, err := c.ReserveStart(rootDelegateActor(receiver.ID()), "dlg_tool_round")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := len(c.durable["dlg_target"].PendingDeliveries); got != 1 {
-		t.Fatalf("pending deliveries = %d, want 1 until caller boundary fsync", got)
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatal(err)
 	}
+	const id = "delegate:dlg_tool_round/delivery/1"
+	receiver.RegisterTool("finish_source", "Finish the test source inside an open tool round", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+		plans := finishDelegateDeliveryGeneration(t, c, started.lease, "source-payload-56")
+		if err := receiver.executeDelegateMutationPlans(plans); err != nil {
+			return nil, err
+		}
+		if pending, err := receiver.pendingNotificationIDs(); err != nil || !slices.Equal(pending, []string{id}) {
+			t.Errorf("in-tool receiver custody = %v, %v", pending, err)
+		}
+		assertAttentionResponseReceipts(t, receiver, id, 0)
+		if got := pendingDeliveryIDs(c, "dlg_tool_round"); len(got) != 0 {
+			t.Errorf("source not acknowledged after canonical fsync: %v", got)
+		}
+		return "tool-result-56", nil
+	})
+	if _, err := receiver.ProcessInput(context.Background(), "caller-input-56", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(adapter.requestsFor("root")); got != 2 {
+		t.Fatalf("caller requests = %d, want one tool call and one paired-result request", got)
+	}
+	assertAttentionResponseReceipts(t, receiver, id, 1)
 }
 
 func TestDelegateResourceRuntime_CallerNestedPersistsAtNextModelBoundary(t *testing.T) {
@@ -798,9 +822,6 @@ func TestDelegateResourceRuntime_CallerNestedPersistsAtNextModelBoundary(t *test
 	if err := receiver.executeDelegateMutationPlans(plans); err != nil {
 		t.Fatalf("queue caller delivery: %v", err)
 	}
-	if err := receiver.flushPendingDelegateDeliveries(); err != nil {
-		t.Fatalf("flush at model boundary: %v", err)
-	}
 	snapshot := receiver.delegateModelHistorySnapshot()
 	if len(snapshot) != 1 || snapshot[0].AttentionID != delegateAttentionID(plans.deliveries[0].deliveryID) {
 		t.Fatalf("next model-boundary history = %#v", snapshot)
@@ -812,12 +833,16 @@ func TestDelegateResourceRuntime_CallerRootWaitsForToolRoundPersistence(t *testi
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
 	plan := finishDelegateDeliveryGeneration(t, c, lease, "inline caller delivery").deliveries[0]
-	if _, err := deliverDelegatePacket(plan, nil); err != nil {
+	fs := newDelegateToolResultBarrierFS()
+	fs.Fs = afero.NewOsFs()
+	sess := newDelegateToolResultPersistenceSession(t, c, fs)
+	if _, err := deliverDelegatePacket(plan, sess); err != nil {
 		t.Fatalf("handoff caller delivery: %v", err)
 	}
 	resolution := <-waiter.resolution
-	fs := newDelegateToolResultBarrierFS()
-	sess := newDelegateToolResultPersistenceSession(t, c, fs)
+	if resolution.commit == nil || resolution.packet == nil {
+		t.Fatalf("inline resolution = %+v", resolution)
+	}
 	fs.blockSync = true
 	sess.queueDelegateDeliveryCommit("delegate-send", resolution.commit)
 	done := make(chan error, 1)
@@ -827,8 +852,8 @@ func TestDelegateResourceRuntime_CallerRootWaitsForToolRoundPersistence(t *testi
 	case err := <-done:
 		t.Fatalf("caller returned before tool-round persistence: %v", err)
 	}
-	if got := len(c.durable["dlg_target"].PendingDeliveries); got != 1 {
-		t.Fatalf("pending caller delivery during fsync = %d, want 1", got)
+	if got := len(c.durable["dlg_target"].PendingDeliveries); got != 0 {
+		t.Fatalf("source pending after canonical custody = %d, want 0 independent of inline publication", got)
 	}
 	close(fs.allowSync)
 	if err := <-done; err != nil {
@@ -836,6 +861,20 @@ func TestDelegateResourceRuntime_CallerRootWaitsForToolRoundPersistence(t *testi
 	}
 	if got := len(c.durable["dlg_target"].PendingDeliveries); got != 0 {
 		t.Fatalf("pending caller delivery after fsync = %d, want 0", got)
+	}
+	entries := decodeTranscriptEntries(t, fs, sess.TranscriptPath())
+	accepted, published := 0, 0
+	for _, entry := range entries {
+		if entry.Turn.AttentionID == delegateAttentionID(plan.deliveryID) {
+			accepted++
+		}
+		published += len(entry.Turn.DelegateDeliveryCommits)
+		if len(entry.Turn.ObservedNotificationIDs) != 0 {
+			t.Fatal("tool-result fsync granted model observation")
+		}
+	}
+	if accepted != 1 || published != 1 {
+		t.Fatalf("canonical acceptance = %d, inline publications = %d, want one each", accepted, published)
 	}
 }
 
@@ -1269,7 +1308,7 @@ func TestDelegateResourceRuntime_StableStopActiveCompletionReportsCancelledByReq
 	if sub == nil || sub.sess == nil {
 		t.Fatal("stable stop harness has no child Session")
 	}
-	if appended, err := sub.sess.appendDelegateNotificationDurably("attention-before-stop", "stop must discard this pending attention"); err != nil || !appended {
+	if appended, err := sub.sess.appendDelegateNotificationDurably("attention-before-stop", "stop must preserve this pending attention"); err != nil || !appended {
 		t.Fatalf("append pending stop attention: appended=%t err=%v", appended, err)
 	}
 	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
@@ -1309,9 +1348,10 @@ func TestDelegateResourceRuntime_StableStopActiveCompletionReportsCancelledByReq
 	if err != nil {
 		t.Fatalf("read attention after stable stop: %v", err)
 	}
-	if len(pending) != 0 {
-		t.Fatalf("pending attention after stable stop = %#v", pending)
+	if !slices.Equal(pending, []string{"attention-before-stop"}) {
+		t.Fatalf("pending attention after stable stop = %#v, want the preserved unobserved message", pending)
 	}
+	assertAttentionResponseReceipts(t, sub.sess, "attention-before-stop", 0)
 }
 
 // TestDelegateResourceRuntime_StableStopReportsActorAndResumability proves kata
@@ -1845,9 +1885,9 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 		drainSteering:      func() []steeringMessage { return nil },
 		prependSteering:    func([]steeringMessage) {},
 		resultToolName:     func() string { return "communicate" },
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
+		setCommunicateTerminal: func(_ context.Context, _ schema.CommunicateInfo, _, _ string, raw any) (bool, error) {
 			captured = raw
-			return true
+			return true, nil
 		},
 	}
 	reg := toolpkg.NewRegistry()

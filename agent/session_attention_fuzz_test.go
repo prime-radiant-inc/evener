@@ -12,7 +12,6 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -101,13 +100,14 @@ func FuzzStableDelegateWatchDelivery(f *testing.F) {
 			if i < len(program) {
 				value = program[i]
 			}
-			onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{
-				Message: fmt.Sprintf("stable-watch-%d-%02x", i, value),
-			})
+			fixture.persistFrameBeforeTransport(t, fmt.Sprintf("stable-watch-%d-%02x", i, value))
 		}
 
 		pending := fixture.requireOnePending(t)
 		state := pending.state
+		if state.UpdateSeq != uint64(len(program)+1) || state.CoalescedCount != len(program) {
+			t.Fatalf("pre-custody coalescing seq/count = %d/%d, want %d/%d", state.UpdateSeq, state.CoalescedCount, len(program)+1, len(program))
+		}
 		if state.SourceDelegateID != "dlg_source" || state.SourceDelegateGeneration != 1 {
 			t.Fatalf("stable source identity = %q/%d, want dlg_source/1", state.SourceDelegateID, state.SourceDelegateGeneration)
 		}
@@ -116,7 +116,7 @@ func FuzzStableDelegateWatchDelivery(f *testing.F) {
 		}
 
 		attentionID := stableWatchAttentionID(state)
-		result, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		result, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM)
 		if err != nil {
 			t.Fatalf("deliver stable watch: %v", err)
 		}
@@ -129,8 +129,9 @@ func FuzzStableDelegateWatchDelivery(f *testing.F) {
 		if got := countAttentionEntries(t, fixture.rootTranscriptPath, attentionID); got != 1 {
 			t.Fatalf("stable watch attention count = %d, want 1", got)
 		}
+		assertNotificationPending(t, fixture.root, []string{attentionID})
 
-		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, ""); err != nil {
+		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM); err != nil {
 			t.Fatalf("repeat stable watch drain: %v", err)
 		}
 		if got := countAttentionEntries(t, fixture.rootTranscriptPath, attentionID); got != 1 {

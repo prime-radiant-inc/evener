@@ -239,7 +239,9 @@ func (s *Session) routeSystemNotification(receiverSessionID, message string) boo
 }
 
 func (s *Session) enqueueSystemNotification(message string) bool {
-	return s.trySteerWithProvenanceAndNotify(message, nil, events.SteeringKindNotification)
+	// The canonical source transcript record is also the receiver's custody
+	// record. It remains pending independently of any terminal tool result.
+	return s.enqueueSystemNotificationFromSource("system:"+s.ID()+":"+newQueueEntryID(), message) == nil
 }
 
 func (s *Session) trySteer(msg string) (bool, error) {

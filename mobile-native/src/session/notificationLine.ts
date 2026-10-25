@@ -77,9 +77,14 @@ export function notificationLine(
 			// first and the code never wins - `reason` is never display prose for
 			// legacy frames, so it never takes this seat at all.
 			const detail =
-				notification.message ??
-				(notification.excerpt || undefined) ??
-				(notification.outcome === "failed" || notification.outcome === "stopped" ? notification.ending : undefined);
+				[
+					notification.message ??
+						(notification.excerpt || undefined) ??
+						(notification.outcome === "failed" || notification.outcome === "stopped" ? notification.ending : undefined),
+					notification.reportNotice,
+				]
+					.filter(Boolean)
+					.join("\n\n") || undefined;
 			if (detail) line.detail = detail;
 			if (ref)
 				line.subagent = {

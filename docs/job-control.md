@@ -127,7 +127,25 @@ This reference contract is not itself the runtime system prompt, but the followi
   and may be woken by: delegates send one only when the parent needs to know
   something or act, never as narration, and finish with
   `communicate(end_turn=true)`.
-- When an observer readiness delegate result includes `watching:true` and `watches`, the observer is watching. Continue with the planned watched action and use the later observer `communicate(end_turn=true)` as the callback.
+- A delegate's terminal `communicate` carries an explicit disposition:
+  `done` (the assignment is complete and nothing will wake it), `blocked`
+  (it names a `blocker` and may carry live work), or `waiting_on_work` (it
+  names a live `waiting_on` job, watch, child delegate, or queued input).
+  A valid wait publishes its message and yields execution after a synced
+  checkpoint, keeping the same generation and its resources open. Any addressed
+  notification or admitted input may resume it, not just the named producer.
+  `done` is refused while a child remains live, including a reserved start;
+  unfinished tasks, shell jobs, watches and unread attention are not completion
+  gates. The parent sees the captured versioned task and inventory summary on
+  the durable notification and inline and earlier `delegate_send` results.
+- Every notification is a message into its addressed session. Update, readiness
+  and report are payload labels, not wake policies. Acceptance establishes
+  receiver custody; only a successful response records observation of the
+  exact notifications its request presented, synced when persistence is enabled.
+  Neither custody nor observation means the sender's generation settled.
+- Send observer readiness with `communicate(end_turn=false, readiness="ready")`.
+  It is not completion. Continue with the watched action and use the observer's
+  later final report as the callback.
 - After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_status`.
 - Evener injects typed terminal attention: `<job-notification>` for owner shell
   jobs and `<delegate-notification delegate_id="dlg_..." kind="report">` for direct delegates.
@@ -514,8 +532,9 @@ Defaults:
   not guaranteed. A generation whose `last_outcome.status="completed"` ended
   normally; that does not by itself assert task success. Inspect its canonical
   terminal packet or conversation for the task-specific result.
-- An observer that installs watches reports readiness through its terminal packet;
-  the stable watch remains active and later frames resume the same `dlg_...`.
+- An observer that installs watches sends readiness as a nonterminal update.
+  A valid `waiting_on_work` yields on its live producer while retaining that
+  generation and its watches; the later report describes actual settlement.
 
 Create return shape:
 
@@ -756,9 +775,9 @@ Practical observer guidance for agents:
 
 - Start the observer with `watch_parent:true` when it needs to observe the parent.
 - Inside the observer, call `job_watch(source:"parent")`; omit trigger fields for the default bounded parent frame stream, or add `events`/`event_filter` for precision.
-- When the readiness delegate result carries `watching:true` and `watches`, treat the observer as watching and perform the planned watched action.
+- Send readiness with `communicate(end_turn=false, readiness="ready")` after installing watches. The parent can perform the planned watched action without treating the observer as complete.
 - Send an update with `communicate(end_turn=false)` only when the parent needs to know something or act: it reaches the parent and may wake it.
-- Report the observer result with `communicate(end_turn=true)`. That terminal communicate is the callback to the parent. The parent receives it as that observer delegate's ordinary terminal frame — a `<delegate-notification delegate_id="dlg_..." kind="report">` block carrying the result packet — which arms delegate attention and wakes the parent.
+- Report the observer result with `communicate(end_turn=true)`. After settlement the parent receives the ordinary `<delegate-notification delegate_id="dlg_..." kind="report">` frame. It schedules through the same addressed readiness as updates and readiness markers, not a separate report-only wake path.
 - Keep observer instructions narrow and frame-driven. Tell the observer what frame fields to read (`watch_id`, `delivery_id`, typed source identity, event kind/status/arguments, and optional excerpt), what action to take, and when to stop.
 - A watch-origin observer delegate's terminal `communicate(end_turn=true)` is delivered to the parent as that generation's owner notification; there is no separate observer-callback frame and no suppression of the owner notification. Other typed terminal notifications remain lifecycle confirmations, not additional watch frames. Clear long-lived session watches before continuing a free-form conversation when later acknowledgements should not themselves be observed.
 
@@ -777,9 +796,11 @@ Rules:
   the separate journal and restart rules below.
 - A structured terminal shell notification names `read_transcript(transcript_ref="job:<job_id>")`. Delegate attention names `delegate_id` and the child session transcript ref, never a job read. References do not widen list/status/stop/watch scope.
 - `SessionMeta.ObservedBy` is append-only, deduplicated UI metadata for hub auto-open. A worker is never recorded as observing itself; metadata failures never change or delay delivery.
-- The watch journal preserves registration configuration, pending/coalesced send
-  deliveries, acknowledgements, and end records. On job-manager restore, pending
-  sends are recovered, but active watch registrations end with `runtime_lost`;
+- The watch journal preserves registration configuration, pending/coalesced
+  callback frames and explicit sends, custody acknowledgements, and end records.
+  A rendered payload is persisted before its firing budget or one-shot end is
+  consumed. Failed production leaves the firing retryable. On job-manager restore,
+  pending frames are recovered, but active registrations end with `runtime_lost`;
   future observation and timer ticks require a new registration. This includes
   saved declarative repeating timers. Callback closures remain process-local.
   A send generation that has already spoken can omit an individual restart-end
@@ -788,7 +809,15 @@ Rules:
   recovery outcome exists but is not implemented: a restart does not yet
   re-establish an active watch, and the owner is told the watch ended rather
   than left to assume it still runs.
-- Already-fired parent-watch frames are durable until delivered, replaced by a newer frame for the same durable key, evicted by watch cleanup, or dropped with a caller-visible diagnostic on hard/non-resumable failure. The durable key includes the `watch_id`, visible session, configured watch source/target, receiver identity, resolved watched identity, and watch generation.
+- Already-produced frames survive clearing or replacing their registration.
+  Before receiver custody, a newer frame may replace a pending frame for the same
+  durable key. Each retained payload version has its own immutable delivery ID,
+  reused on retries. The key includes the `watch_id`, visible session, configured
+  source/target, receiver identity, resolved watched identity, and watch generation.
+  Dispatch uses the host/controller transport without executing the holder's model.
+  Missing or temporarily unavailable receivers remain retryable. Authoritative
+  permanent closure drops only frames not already in receiver custody, with a
+  durable diagnostic. Accepted frames still settle their source acknowledgement.
 - `job_watch(operation="clear", watch_id=...)` is the model-facing unwatch operation; there is no separate unwatch tool.
 
 #### Registration and timers
@@ -800,6 +829,9 @@ identity replaces the existing watch and reports `replaced_existing=true`.
 
 **Timers are additive:** every timer create adds an independent watch, even with
 identical arguments. To replace a timer, clear its `watch_id` and create another.
+Timers may use an explicit send. Pending timer frames retain the registration's
+existing slot identity across restart, so separate registrations remain distinct.
+The timer ranges and registration limits below are unchanged.
 
 #### Output matching
 
@@ -865,6 +897,12 @@ identical arguments. To replace a timer, clear its `watch_id` and create another
   delivery keeps its claim until it finishes. If replaced, it stands down without
   an error, unless the receiver already took the frame and only acknowledgement
   remains to retry.
+- Shell completions, watch frames, delegate packets, and actionable system notices
+  share durable canonical receiver custody. A source acknowledgement proves that
+  custody, not model observation. A successful persisted assistant response records
+  observation of exactly the canonical IDs presented to it. A terminal `communicate`
+  result cannot consume a newly arrived actionable notice as inbox text instead.
+  Passive startup/context snapshots do not independently wake the model.
 - Each watch configuration has a model-facing delivery budget of 50 condition fires:
   output matches and event frames. Periodic ticks, timer or job progress, count as
   deliveries but never trip the budget, so the `deliveries` count `job_list` reports can

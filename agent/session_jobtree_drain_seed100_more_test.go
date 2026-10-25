@@ -5,11 +5,17 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/llm"
 )
+
+func TestJobTreeDrainSeed100More(t *testing.T) {
+	seed100JobtreeDrainMore(t)
+}
 
 func seed100JobtreeDrainMore(t *testing.T) {
 	t.Helper()
@@ -23,25 +29,32 @@ func seed100JobtreeDrainMore(t *testing.T) {
 		t.Fatal("drain wake was not queued")
 	}
 	notify()
-	if woke, err := waitDrainWake(context.Background(), wake, make(chan time.Time)); err != nil || !woke {
-		t.Fatalf("queued wake: woke=%v err=%v", woke, err)
+	if !takeDrainWake(wake) {
+		t.Fatal("queued wake was not consumed")
 	}
-	recheck := make(chan time.Time, 1)
-	recheck <- frozenTestTime
-	if woke, err := waitDrainWake(context.Background(), make(chan struct{}), recheck); err != nil || woke {
-		t.Fatalf("queued recheck: woke=%v err=%v", woke, err)
-	}
-	waitCtx, waitCancel := context.WithCancel(context.Background())
-	waitCancel()
-	if woke, err := waitDrainWake(waitCtx, make(chan struct{}), make(chan time.Time)); !errors.Is(err, context.Canceled) || woke {
-		t.Fatalf("cancelled wake = woke=%v err=%v", woke, err)
+	if takeDrainWake(wake) || takeDrainWake(nil) {
+		t.Fatal("empty wake channel reported work")
 	}
 
 	root := newSession(t)
 	child := newSession(t)
+	sub := &subagent{id: child.ID(), sess: child, finalizing: true}
 	root.subagents.mu.Lock()
-	root.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child}
+	root.subagents.subs[child.ID()] = sub
 	root.subagents.mu.Unlock()
+	waitCtx, waitCancel := context.WithCancel(context.Background())
+	waitCancel()
+	if result, err := root.drainJobTreeWith(waitCtx, make(chan struct{}), make(chan time.Time), func(context.Context) error {
+		return nil
+	}, func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+		t.Fatal("cancelled drain processed without notification work")
+		return "", nil
+	}); result != "" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled drain = %q, %v", result, err)
+	}
+	sub.mu.Lock()
+	sub.finalizing = false
+	sub.mu.Unlock()
 	if err := child.jobManager.store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -53,13 +66,13 @@ func seed100JobtreeDrainMore(t *testing.T) {
 	if err := closed.jobManager.store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if result, err := closed.drainJobTree(context.Background(), make(chan time.Time)); result != "" || err == nil {
+	if result, err := closed.drainJobTree(context.Background(), drainWakeForTest(closed), make(chan time.Time)); result != "" || err == nil {
 		t.Fatalf("closed-store drain = %q, %v; want empty, error", result, err)
 	}
 
 	want := errors.New("seed100 drain fault")
 	faulted := newSession(t)
-	if result, err := faulted.drainJobTreeWith(context.Background(), make(chan time.Time), func(context.Context) error {
+	if result, err := faulted.drainJobTreeWith(context.Background(), drainWakeForTest(faulted), make(chan time.Time), func(context.Context) error {
 		return want
 	}, func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
 		t.Fatal("processed after kick failure")
@@ -69,7 +82,7 @@ func seed100JobtreeDrainMore(t *testing.T) {
 	}
 
 	faulted.enqueueJobNotification(jobNotification{Kind: jobNotificationKindWatch, Status: jobNotificationEventWatch})
-	if result, err := faulted.drainJobTreeWith(context.Background(), make(chan time.Time), func(context.Context) error {
+	if result, err := faulted.drainJobTreeWith(context.Background(), drainWakeForTest(faulted), make(chan time.Time), func(context.Context) error {
 		return nil
 	}, func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
 		return "", want
@@ -77,7 +90,12 @@ func seed100JobtreeDrainMore(t *testing.T) {
 		t.Fatalf("process-fault drain = %q, %v; want empty, fault", result, err)
 	}
 
-	kickRoot := newSession(t)
+	kickRoot := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1}), withSteps(func(req llm.Request) llm.Response {
+		if !requestContainsText(req, "dlg_seed100_stop_gate") {
+			t.Error("root request omitted its owed Stop result")
+		}
+		return finalResponse("stop-result-observed-59")
+	}))
 	if err := kickRoot.kickDriveTreeWith(context.Background(), func(*Session, context.Context) error { return want }); !errors.Is(err, want) {
 		t.Fatalf("root kick fault = %v", err)
 	}
@@ -101,7 +119,7 @@ func seed100JobtreeDrainMore(t *testing.T) {
 	lease := delegateLease{delegateID: "dlg_seed100_stop_gate", generation: 1}
 	packet := delegateStoppedTerminalPacket()
 	kickRoot.delegateController.mu.Lock()
-	_, err := kickRoot.delegateController.appendLocked(
+	appended, err := kickRoot.delegateController.appendLocked(
 		delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: lease.delegateID, Created: &delegatestore.DelegateCreated{Descriptor: descriptor}},
 		delegateControllerRunStartedEvent(lease.delegateID, lease.generation, delegatestore.TriggerInitial, started),
 		delegatestore.Event{Kind: delegatestore.EventDelegateSubtreeStopRequested, DelegateID: lease.delegateID, SubtreeStopRequested: &delegatestore.SubtreeStopRequested{TargetDelegateID: lease.delegateID}},
@@ -119,7 +137,41 @@ func seed100JobtreeDrainMore(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("stop-gated kick: %v", err)
 	}
-	kickChild.enqueueJobNotification(jobNotification{JobID: "seed100-gated-attention"})
+	if err := kickChild.enqueueNotification(notification{ID: "seed100-gated-attention", Message: llm.User("gated-payload-59")}); err != nil {
+		t.Fatal(err)
+	}
+	if outstanding, err := kickRoot.treeHasOutstandingWork(); err != nil || !outstanding {
+		t.Fatalf("owed Stop result outstanding = %v, %v; want true, nil before source custody", outstanding, err)
+	}
+	// Complete the durable Stop before transporting its result. The child's
+	// latest stopped outcome still fences execution and preserves its message.
+	kickRoot.delegateController.mu.Lock()
+	_, err = kickRoot.delegateController.appendLocked(delegatestore.Event{
+		Kind: delegatestore.EventDelegateSubtreeStopCompleted, DelegateID: lease.delegateID,
+		SubtreeStopCompleted: &delegatestore.SubtreeStopCompleted{RequestSeq: appended[2].Seq},
+	})
+	kickRoot.delegateController.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kickRoot.replayDelegateDeliveries(); err != nil {
+		t.Fatal(err)
+	}
+	if ids := pendingDeliveryIDs(kickRoot.delegateController, lease.delegateID); len(ids) != 0 {
+		t.Fatalf("Stop result source not acknowledged after custody: %v", ids)
+	}
+	id := delegateAttentionID(delegateDeliveryID(lease.delegateID, lease.generation))
+	assertAttentionResponseReceipts(t, kickRoot, id, 0)
+	if outstanding, err := kickRoot.treeHasOutstandingWork(); err != nil || !outstanding {
+		t.Fatalf("unobserved root Stop result outstanding = %v, %v; want true, nil", outstanding, err)
+	}
+	if _, err := kickRoot.ProcessInput(context.Background(), "observe-stop-59", nil); err != nil {
+		t.Fatal(err)
+	}
+	assertAttentionResponseReceipts(t, kickRoot, id, 1)
+	if pending, err := kickChild.pendingNotificationIDs(); err != nil || !slices.Equal(pending, []string{"seed100-gated-attention"}) {
+		t.Fatalf("stop-gated child message was not preserved: %v, %v", pending, err)
+	}
 	if outstanding, err := kickRoot.treeHasOutstandingWork(); err != nil || outstanding {
 		t.Fatalf("stop-gated tree outstanding = %v, %v; want false, nil", outstanding, err)
 	}

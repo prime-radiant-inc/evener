@@ -38,13 +38,13 @@ func outstandingWorkReasons(s *Session) []string {
 	if n := s.peekNotifications(); n > 0 {
 		reasons = append(reasons, fmt.Sprintf("peekNotifications=%d", n))
 	}
-	if s.hasPendingRootDelegateAttention() {
-		reasons = append(reasons, "hasPendingRootDelegateAttention")
+	if s.hasPendingNotifications() {
+		reasons = append(reasons, "hasPendingNotifications")
 	}
-	if s.hasPendingDelegateAttentionArmRetry() {
+	if s.notificationWorkPending() {
 		reasons = append(reasons, "hasPendingDelegateAttentionArmRetry")
 	}
-	if s.hasPendingStableDelegateAttention() {
+	if s.notificationWorkPending() {
 		reasons = append(reasons, "hasPendingStableDelegateAttention")
 	}
 	for _, sub := range s.liveDirectSubagents() {
@@ -102,7 +102,7 @@ func TestDrainJobTreeNoJobsReturnsImmediately(t *testing.T) {
 	var res string
 	var err error
 	go func() {
-		res, err = sess.DrainJobTree(context.Background())
+		res, err = sess.DrainJobTree(context.Background(), drainWakeForTest(sess))
 		close(done)
 	}()
 
@@ -161,7 +161,7 @@ func TestDrainJobTreeRescansWhenAWakeLandsMidPass(t *testing.T) {
 
 	// recheck never fires: only the mid-pass wake may cause the second pass, so a
 	// lost wake cannot be masked by the periodic re-check.
-	res, err := sess.drainJobTreeWith(context.Background(), make(chan time.Time), kick, process)
+	res, err := sess.drainJobTreeWith(context.Background(), drainWakeForTest(sess), make(chan time.Time), kick, process)
 	if err != nil {
 		t.Fatalf("drainJobTreeWith: %v", err)
 	}
@@ -173,33 +173,12 @@ func TestDrainJobTreeRescansWhenAWakeLandsMidPass(t *testing.T) {
 	}
 }
 
-// TestTreeHasOutstandingWorkCountsPendingDelegateDeliveries pins a sibling gap
-// to the straddle above, through a different channel entirely:
-// pendingDelegateDeliveries.
-//
-// acceptDelegateDeliveryPlan defers a delivery into that queue instead of
-// delivering it immediately whenever the receiving session is
-// SessionProcessing at that instant -- e.g. a second, unrelated delegate's
-// completion targeting this session while the drain loop's own notification
-// turn is already running one delivery. The deferral calls notify() exactly
-// once, but treeHasOutstandingWork never reads pendingDelegateDeliveries at
-// all (unlike outstandingDrainJobCount, peekNotifications, and every attention
-// signal it does read). So once that one-shot wake is consumed, nothing about
-// this session's state says a completion is still owed, and the drain
-// concludes quiescence with a real delivery sitting undelivered -- letting
-// Close() SIGKILL it. Same PRI-2441 symptom, different signal the original fix
-// didn't touch.
-//
-// This test seeds the queue exactly the way acceptDelegateDeliveryPlan does
-// (append under delegateDeliveryMu) and asks the read function the drain loop
-// actually calls, so it is independent of how the entry got there.
+// A producer obligation keeps drain open before receiver custody.
 func TestTreeHasOutstandingWorkCountsPendingDelegateDeliveries(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t)
 
-	sess.delegateDeliveryMu.Lock()
-	sess.pendingDelegateDeliveries = append(sess.pendingDelegateDeliveries, delegateDeliveryPlan{})
-	sess.delegateDeliveryMu.Unlock()
+	seedPendingDeliverySource(t, sess)
 
 	outstanding, err := sess.treeHasOutstandingWork()
 	if err != nil {
@@ -218,23 +197,21 @@ func TestTreeHasOutstandingWorkCountsPendingDelegateDeliveries(t *testing.T) {
 	}
 }
 
-// TestDrainJobTreeWaitsWhilePendingDelegateDeliveryUnflushed proves the drain
+// TestDrainJobTreeWaitsWhileSourceDeliveryPending proves the drain
 // loop itself, not just the read function, respects a pending delegate
 // delivery: with a kick that deliberately never flushes anything (isolating
 // treeHasOutstandingWork's verdict from kickDriveTree's own behavior, which
-// TestKickDriveTreeFlushesPendingDelegateDeliveries covers separately),
+// TestKickDriveTreeReplaysPendingDelegateDeliveries covers separately),
 // drainJobTreeWith must block rather than ever declaring quiescence, exactly
 // as TestDrainJobTreeReturnsOnContextCancel already pins for a stuck managed
 // job. recheck is left permanently unfired, so the only way this run ends is
 // wrongly quiescing (an immediate nil-error return, independent of ctx) or
 // correctly blocking in waitDrainWake until cancel() reaches it.
-func TestDrainJobTreeWaitsWhilePendingDelegateDeliveryUnflushed(t *testing.T) {
+func TestDrainJobTreeWaitsWhileSourceDeliveryPending(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t)
 
-	sess.delegateDeliveryMu.Lock()
-	sess.pendingDelegateDeliveries = append(sess.pendingDelegateDeliveries, delegateDeliveryPlan{})
-	sess.delegateDeliveryMu.Unlock()
+	seedPendingDeliverySource(t, sess)
 
 	kick := func(context.Context) error { return nil } // deliberately never flushes
 	process := func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
@@ -246,7 +223,7 @@ func TestDrainJobTreeWaitsWhilePendingDelegateDeliveryUnflushed(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := sess.drainJobTreeWith(ctx, make(chan time.Time), kick, process)
+		_, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), make(chan time.Time), kick, process)
 		done <- err
 	}()
 	cancel()
@@ -263,29 +240,12 @@ func TestDrainJobTreeWaitsWhilePendingDelegateDeliveryUnflushed(t *testing.T) {
 	}
 }
 
-// TestKickDriveTreeFlushesPendingDelegateDeliveries pins the other half of the
-// fix: counting a pending delivery as outstanding work only stops the drain
-// from a FALSE quiescence. Something still has to resolve it, or the drain
-// just waits out its stall timeout instead of making progress. kickDriveTree
-// runs at the top of every pass (before the outstanding check), alongside
-// drivePendingStableDelegateAttention and rematerializeDurablePendings -- the
-// same "drive whatever is waiting" role -- so it is where the flush belongs.
-//
-// The seeded entry is a placeholder with no live controller, not a delegate
-// produced by the real accept/defer path, so its OWN delivery attempt reports
-// errDelegateStaleLease (the same "something else already resolved this"
-// outcome a genuinely superseded delivery would produce) -- deliverDelegatePacket
-// checks plan.controller before anything else. flushPendingDelegateDeliveries
-// pops the queue entry before attempting delivery, so that pop -- not the
-// placeholder's delivery outcome -- is the fact this test pins: did
-// kickDriveTree reach into the queue at all.
-func TestKickDriveTreeFlushesPendingDelegateDeliveries(t *testing.T) {
+// The drain replays source obligations rather than popping receiver placeholders.
+func TestKickDriveTreeReplaysPendingDelegateDeliveries(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t)
 
-	sess.delegateDeliveryMu.Lock()
-	sess.pendingDelegateDeliveries = append(sess.pendingDelegateDeliveries, delegateDeliveryPlan{})
-	sess.delegateDeliveryMu.Unlock()
+	seedPendingDeliverySource(t, sess)
 
 	err := sess.kickDriveTree(context.Background())
 	if err != nil && !errors.Is(err, errDelegateStaleLease) {
@@ -296,29 +256,8 @@ func TestKickDriveTreeFlushesPendingDelegateDeliveries(t *testing.T) {
 	}
 }
 
-// TestKickDriveTreeDoesNotFlushBusyChildsPendingDelegateDeliveries pins a
-// hazard in TestKickDriveTreeFlushesPendingDelegateDeliveries's own fix:
-// kickDriveTreeWith recurses into every live child (liveDirectSubagents
-// filters only on sub.closed) and, before this test, called
-// flushPendingDelegateDeliveries there unconditionally. flushPendingDelegateDeliveries
-// has no s.state check -- it was safe at its four pre-existing call sites only
-// because every one of them runs ON the owning session's own turn goroutine.
-// The drain's recursive call runs on the ANCESTOR's drain goroutine instead, so
-// flushing a child that is actively running/driving/finalizing can splice a
-// delivered notification into that child's history at a point its own round
-// loop did not choose -- e.g. between an in-flight assistant tool call and its
-// tool result, breaking message alternation. -race cannot catch this: every
-// lock is held correctly, the hazard is purely about WHEN the mutation lands,
-// not whether it races.
-//
-// driveSubagentNotificationTurn (subagents.go) already refuses to touch a
-// child where sub.running || sub.driving || sub.finalizing; this test holds
-// kickDriveTree to the same gate for the flush specifically. The child's own
-// delivery queue must still count as outstanding work (so the ancestor's drain
-// correctly keeps waiting on it) even though the ancestor must not be the one
-// to flush it — the child's own turn machinery flushes at its next natural
-// boundary instead.
-func TestKickDriveTreeDoesNotFlushBusyChildsPendingDelegateDeliveries(t *testing.T) {
+// Busy receivers may take custody, but only their own turn constructs a request.
+func TestKickDriveTreeAcceptsBusyChildDeliveryWithoutDrivingIt(t *testing.T) {
 	t.Parallel()
 	root := newSession(t)
 	child := newSession(t)
@@ -326,36 +265,22 @@ func TestKickDriveTreeDoesNotFlushBusyChildsPendingDelegateDeliveries(t *testing
 	root.subagents.mu.Lock()
 	root.subagents.subs[child.ID()] = sub
 	root.subagents.mu.Unlock()
-
-	child.delegateDeliveryMu.Lock()
-	child.pendingDelegateDeliveries = append(child.pendingDelegateDeliveries, delegateDeliveryPlan{})
-	child.delegateDeliveryMu.Unlock()
-
+	id := seedPendingDeliverySource(t, child)
 	if err := root.kickDriveTree(context.Background()); err != nil {
-		t.Fatalf("kickDriveTree: %v", err)
-	}
-	if !child.hasPendingDelegateDeliveries() {
-		t.Fatal("kickDriveTree flushed a running child's pending delegate delivery; a busy child's own turn owns that mutation, not the ancestor's drain")
-	}
-
-	outstanding, err := root.treeHasOutstandingWork()
-	if err != nil {
-		t.Fatalf("treeHasOutstandingWork: %v", err)
-	}
-	if !outstanding {
-		t.Fatal("treeHasOutstandingWork = false with the running child's delegate delivery still pending; skipping the flush must not also drop it from the outstanding count")
-	}
-
-	// Once the child is no longer busy, its own turn boundary has passed and
-	// the ancestor's kick may flush it like any other idle child.
-	sub.mu.Lock()
-	sub.running = false
-	sub.mu.Unlock()
-	if err := root.kickDriveTree(context.Background()); err != nil && !errors.Is(err, errDelegateStaleLease) {
-		t.Fatalf("kickDriveTree: %v", err)
+		t.Fatal(err)
 	}
 	if child.hasPendingDelegateDeliveries() {
-		t.Fatal("kickDriveTree did not flush the child's pending delegate delivery once it stopped running")
+		t.Fatal("busy child did not take custody")
+	}
+	ids, err := child.pendingNotificationIDs()
+	if err != nil || len(ids) != 1 || ids[0] != delegateAttentionID(id) {
+		t.Fatalf("busy child custody=%v err=%v", ids, err)
+	}
+	sub.mu.Lock()
+	running := sub.running
+	sub.mu.Unlock()
+	if !running {
+		t.Fatal("ancestor changed the busy child's execution state")
 	}
 }
 
@@ -423,7 +348,7 @@ func TestDrainJobTreeReturnsOnContextCancel(t *testing.T) {
 			defer cancel()
 			done := make(chan error, 1)
 			go func() {
-				_, err := sess.DrainJobTree(ctx)
+				_, err := sess.DrainJobTree(ctx, drainWakeForTest(sess))
 				done <- err
 			}()
 			cancel()
@@ -473,7 +398,7 @@ func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
 	kickCount := 0
 	drainDone := make(chan error, 1)
 	go func() {
-		_, err := sess.drainJobTreeWith(ctx, recheck, func(ctx context.Context) error {
+		_, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), recheck, func(ctx context.Context) error {
 			kickCount++
 			select {
 			case kickEntered <- kickCount:
@@ -694,7 +619,7 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 			// (a wedged drain, the regression this test guards against).
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			if _, err := sess.DrainJobTree(ctx); err != nil {
+			if _, err := sess.DrainJobTree(ctx, drainWakeForTest(sess)); err != nil {
 				t.Fatalf("DrainJobTree wedged on a durable-only pending: %v", err)
 			}
 			requireNotificationState(t, jm, tt.jobID, jobstore.NotifyDelivered)
@@ -706,13 +631,10 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 }
 
 // TestDrainSettlesAlreadyInjectedDurablePending is the adversarial-review
-// regression for kata h8mq: an owned NotifyPending managed job whose
-// <job-notification> block is ALREADY in history (a crash between
-// appendSteeringTurnDurably and markJobNotificationsDelivered left it injected but
-// unmarked) with an empty in-memory queue is still counted outstanding, so the
-// drain must re-materialize it. The already-injected record settles through the
-// injectedJobNotifs path, which marks it Delivered WITHOUT re-appending to
-// history — so the drain settles and the block is not duplicated.
+// regression for an owned NotifyPending shell whose canonical receiver record
+// survived a crash before source acknowledgement. Drain settles the source
+// without duplicate custody or presentation. Notification-like text and a watch
+// identity for the same job do not prove shell custody.
 func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -723,32 +645,50 @@ func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
 		{name: "shell", jobID: "shell-injected", typ: jobstore.JobShell},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			steps := make([]func(llm.Request) llm.Response, 6)
-			for i := range steps {
-				steps[i] = func(llm.Request) llm.Response { return finalResponse("ack") }
-			}
-			sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{}))
+			adapter := newMessagingAdapter()
+			sess := newMessagingRoot(t, adapter, nil)
 			jm := sess.jobManager
 			seedOwnedDurablePending(t, jm, tt.jobID, tt.typ)
 
 			injected := `<job-notification job_id="` + tt.jobID + `" status="completed"></job-notification>`
 			sess.appendTurn(schema.TurnSteering, llm.User(injected))
-			if !sess.jobNotificationAlreadyInjected(tt.jobID) {
-				t.Fatalf("precondition: %s must be detected as already injected in history", tt.jobID)
+			recs, err := jm.store.Load()
+			if err != nil {
+				t.Fatal(err)
 			}
-			blocksBefore := countHistoryNeedle(sess, `job_id="`+tt.jobID+`"`)
+			id := "shell:" + tt.jobID + ":" + recs[tt.jobID].TerminalGen
+			if accepted, err := sess.notificationSourceAccepted(id); err != nil || accepted {
+				t.Fatalf("notification-like text established custody: %t, %v", accepted, err)
+			}
+			if err := sess.enqueueNotification(notification{ID: "watch:" + tt.jobID, Message: llm.UserMachinery(injected)}); err != nil {
+				t.Fatal(err)
+			}
+			if accepted, err := sess.notificationSourceAccepted(id); err != nil || accepted {
+				t.Fatalf("watch identity established shell custody: %t, %v", accepted, err)
+			}
+			if err := sess.enqueueNotification(notification{ID: id, Message: llm.UserMachinery(injected)}); err != nil {
+				t.Fatal(err)
+			}
+			if accepted, err := sess.notificationSourceAccepted(id); err != nil || !accepted {
+				t.Fatalf("canonical source not accepted: %t, %v", accepted, err)
+			}
 
-			// TRIPWIRE: scripted in-process adapter steps plus fully in-memory
-			// job-manager fixtures, no real I/O; only fires on a genuine hang
-			// (a wedged drain, the regression this test guards against).
+			// TRIPWIRE: scripted in-process provider with temporary journals.
+			// This bounds a wedged drain, not a production delivery deadline.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			if _, err := sess.DrainJobTree(ctx); err != nil {
+			if _, err := sess.DrainJobTree(ctx, drainWakeForTest(sess)); err != nil {
 				t.Fatalf("DrainJobTree wedged on an already-injected durable pending: %v", err)
 			}
 			requireNotificationState(t, jm, tt.jobID, jobstore.NotifyDelivered)
-			if blocksAfter := countHistoryNeedle(sess, `job_id="`+tt.jobID+`"`); blocksAfter != blocksBefore {
-				t.Fatalf("already-injected block must not be re-appended: had %d, now %d", blocksBefore, blocksAfter)
+			count := 0
+			for _, entry := range notificationRawEntries(t, transcriptPath(sess.stateDir, sess.ID())) {
+				if entry.Turn.AttentionID == id {
+					count++
+				}
+			}
+			if count != 1 || len(adapter.requestsFor("root")) != 1 {
+				t.Fatalf("receiver records=%d provider requests=%d, want 1 each", count, len(adapter.requestsFor("root")))
 			}
 		})
 	}
@@ -764,18 +704,6 @@ func requireNotificationState(t *testing.T, jm *jobManager, jobID string, want j
 	if record == nil || record.NotifyState != want {
 		t.Fatalf("record %s notification state = %v, want %v", jobID, record, want)
 	}
-}
-
-func countHistoryNeedle(s *Session, needle string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	n := 0
-	for _, turn := range s.history {
-		if strings.Contains(turn.Message.Text(), needle) {
-			n++
-		}
-	}
-	return n
 }
 
 // TestDrainSettlesChildDurableOnlyPending is the recursive (isolation-delegate)
@@ -828,7 +756,7 @@ func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
 			// regression this test guards against).
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			if _, err := root.DrainJobTree(ctx); err != nil {
+			if _, err := root.DrainJobTree(ctx, drainWakeForTest(root)); err != nil {
 				t.Fatalf("DrainJobTree wedged on a child's durable-only pending: %v", err)
 			}
 			requireNotificationState(t, child.jobManager, tt.jobID, jobstore.NotifyDelivered)
@@ -853,7 +781,7 @@ func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
 	// genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	result, err := sess.DrainJobTree(ctx)
+	result, err := sess.DrainJobTree(ctx, drainWakeForTest(sess))
 	if err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
 	}
@@ -890,11 +818,11 @@ func TestDrainJobTreeConsumesRootDelegateAttentionBeforeCompletion(t *testing.T)
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		t.Fatalf("append root attention: %v", err)
 	}
-	if err := root.armDelegateAttention(attentionID); err != nil {
+	if err := root.requestNotificationWake(); err != nil {
 		t.Fatalf("arm root attention after source settlement: %v", err)
 	}
 
-	result, err := root.drainJobTreeWith(context.Background(), make(chan time.Time), root.kickDriveTree, root.ProcessInputKind)
+	result, err := root.drainJobTreeWith(context.Background(), drainWakeForTest(root), make(chan time.Time), root.kickDriveTree, root.ProcessInputKind)
 	if err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
 	}
@@ -950,7 +878,7 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 	// delegate child, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := sess.DrainJobTree(ctx); err != nil {
+	if _, err := sess.DrainJobTree(ctx, drainWakeForTest(sess)); err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
 	}
 
@@ -1030,7 +958,7 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 	// genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	result, err := sess.DrainJobTree(ctx)
+	result, err := sess.DrainJobTree(ctx, drainWakeForTest(sess))
 	if err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
 	}

@@ -167,6 +167,7 @@ func trender_canonicalEntry(line string, redactPrivate bool) string {
 			delete(turn, "attention_id")
 			delete(turn, "attention_resolution")
 			delete(turn, "delegate_delivery_commits")
+			delete(turn, "notification_provenance")
 		}
 		encodedTurn, err := json.Marshal(turn)
 		if err != nil {

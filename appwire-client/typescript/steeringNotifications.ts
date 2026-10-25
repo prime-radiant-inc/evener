@@ -62,6 +62,9 @@ export interface ParsedNotification {
   // reason code, so a phone line can say it beneath a headline. Legacy
   // attribute frames claim none - their `reason` is a raw code.
   ending?: string;
+  // A terminal report's rendered task/inventory notice, when the daemon
+  // included one in the packet metadata.
+  reportNotice?: string;
   outputBytes?: number;
   exitCode?: number;
   transcriptRef?: string;
@@ -247,8 +250,8 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
   const body = (match[2] ?? "").trim();
   const delegateId = attrs.delegate_id?.trim() || undefined;
   const name = decodeNotificationAttributeEntities(attrs.name ?? "").trim();
-  // An update names its kind; its body is the delegate's text whatever its
-  // shape, so it routes before the packet and watchdog shapes are tried.
+  // Updates retain the historical plain-text shape and also carry current
+  // captured publication packets. Both routes stay nonterminal.
   if (attrs.kind === "update") return delegateUpdateNotification(block, name, delegateId, body);
   // No update packet without a kind attribute ever existed (PacketUpdate first
   // appeared with it), so a packet-shaped body whose packet kind is "update"
@@ -308,14 +311,32 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
 }
 
 // A delegate's mid-work update (agent/delegate_delivery.go's
-// delegateNotificationContent, kind="update"): the body is the delegate's
-// message with "&" and "<" escaped, decoded here once.
+// delegateNotificationContent, kind="update"): plain messages escape "&" and "<".
+// Captured results and waits instead carry packet JSON, even when the wait's
+// default output envelope is empty and no structured result was captured.
 function delegateUpdateNotification(
   block: string,
   name: string,
   delegateId: string | undefined,
   body: string,
 ): ParsedNotification {
+  const packet = parseTerminalPacket(body);
+  if (
+    packet?.kind === "update" &&
+    (packet.waitingOnWork ||
+      ((packet.structuredResultSource === "schema" || packet.structuredResultSource === "default_envelope") &&
+        packet.structuredResult !== undefined))
+  ) {
+    return {
+      ...delegatePacketNotification(block, name, delegateId, packet),
+      title: "Delegate update",
+      tone: "neutral",
+      update: true,
+      outcome: undefined,
+      status: undefined,
+      reason: undefined,
+    };
+  }
   const message = decodeNotificationEntities(body);
   return {
     type: "delegate",
@@ -349,9 +370,7 @@ const PACKET_KIND_OUTCOMES = new Map([
 ]);
 
 interface TerminalPacket {
-  // The daemon's PacketKind (reported | terminal_error): the reported kind is
-  // the only path that captures a validated structured result, so both
-  // structured-result sources and their verdict fields key on it.
+  // Existing packet kinds, including captured nonterminal updates.
   kind: string;
   // The settled outcome: metadata's delegatestore.OutcomeStatus, or the one
   // the packet kind implies when metadata carries none (the fold's own bare
@@ -377,6 +396,9 @@ interface TerminalPacket {
   // renders). Absent on frames recorded before the marker existed, where the
   // default-envelope shape heuristic remains the fallback.
   structuredResultSource?: string;
+  reportNotice?: string;
+  // The captured same-call wait tuple, not an assertion about result validity.
+  waitingOnWork: boolean;
 }
 
 // parseTerminalPacket reads the daemon's TerminalPacket JSON. json.Marshal
@@ -403,6 +425,13 @@ function parseTerminalPacket(body: string): TerminalPacket | null {
       typeof parsed.structured_result_valid === "boolean" ? parsed.structured_result_valid : undefined,
     structuredResultReason: text(parsed.structured_result_reason) || undefined,
     structuredResultSource: text(parsed.structured_result_source) || undefined,
+    reportNotice: text(metadata.report_notice) || undefined,
+    waitingOnWork:
+      typeof parsed.message === "string" &&
+      text(metadata.call_id) !== "" &&
+      metadata.end_turn === true &&
+      metadata.disposition === "waiting_on_work" &&
+      text(metadata.waiting_on) !== "",
   };
 }
 
@@ -510,27 +539,19 @@ function delegatePacketNotification(
   const label = name || packet.description || delegateId;
   const outcome = DELEGATE_OUTCOMES.get(packet.outcome);
   const ending = delegateEndingText(packet);
-  const envelope = parsePacketEnvelope(packet.message);
+  // Current updates capture the human message separately from structured_result.
+  // Only terminal packets use the historical message-envelope reader and its
+  // data fallback, never JSON-looking update prose, with or without a capture.
+  const envelope = packet.kind === "update" ? null : parsePacketEnvelope(packet.message);
   const message = packetBodyMessage(envelope?.message ?? packet.message, ending, outcome);
-  // Both structured-result sources and their verdict fields are gated on the
-  // reported kind: the daemon captures and validates a structured result on
-  // the reported path only (captureDelegateStructuredResult runs inside the
-  // reported branch, agent/subagents.go), so a terminal_error body carries no
-  // validation verdict behind whatever structured-result fields or
-  // envelope-shaped data it happens to hold (a provider error, a report the
-  // run managed before failing). Its message field still reads as content;
-  // nothing else becomes rows. Within the reported kind, a capture failure, an
-  // oversized result, or a missing one leaves the packet's structured_result
-  // field unset - but a result that fails SCHEMA validation still rides the
-  // field, marked valid=false (agent/subagents.go stores the marshaled result
-  // before validating it). The structuredResultValid !== false check below,
-  // not field absence, is what suppresses both the raw invalid result and its
-  // envelope copy: only a valid verdict's data renders, from whichever copy
-  // the frame carries, and a no-schema delegate's default-envelope capture
-  // unwraps to its data (isDefaultEnvelopeCopy).
-  // A result with no record shape (a top-level array or scalar schema, or an
-  // explicit null) passes through as-is for the card's value grammar.
-  const reported = packet.kind === "reported";
+  // A captured publication can precede a blocked/error settlement. Its
+  // explicit provenance and affirmative verdict, not the ending's kind, prove
+  // the captured field. Envelope-shaped error prose alone proves nothing.
+  const provenResult =
+    (packet.structuredResultSource === "schema" || packet.structuredResultSource === "default_envelope") &&
+    packet.structuredResultValid === true &&
+    packet.structuredResult !== undefined;
+  const carriesResult = packet.kind === "reported" || packet.kind === "update" || provenResult;
   const captured = packet.structuredResult !== undefined ? packet.structuredResult : envelope?.data;
   // #3548: the packet names its capture source, so a result schema whose output
   // wears the default envelope's exact shape is never mistaken for a no-schema
@@ -544,7 +565,7 @@ function delegatePacketNotification(
   const unwraps =
     packet.structuredResultSource !== "schema" && isPlainObject(captured) && isDefaultEnvelopeCopy(captured, envelope);
   const structuredResult =
-    reported && packet.structuredResultValid !== false ? (unwraps ? captured.data : captured) : undefined;
+    carriesResult && packet.structuredResultValid !== false ? (unwraps ? captured.data : captured) : undefined;
   return {
     type: "delegate",
     // In the outcome's own words; an ending this client doesn't know still reported.
@@ -561,8 +582,9 @@ function delegatePacketNotification(
     message: message || undefined,
     structuredResult,
     ending,
-    structuredResultValid: reported ? packet.structuredResultValid : undefined,
-    structuredResultReason: reported ? packet.structuredResultReason : undefined,
+    reportNotice: packet.reportNotice,
+    structuredResultValid: carriesResult ? packet.structuredResultValid : undefined,
+    structuredResultReason: carriesResult ? packet.structuredResultReason : undefined,
     concerns: [],
     rawText: block,
   };

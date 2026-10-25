@@ -3,6 +3,7 @@ package agent
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -555,12 +556,35 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 	if childJM.watchCount() != 0 {
 		t.Fatalf("child watch count = %d, want cleared", childJM.watchCount())
 	}
+	registry, err := childJM.store.LoadWatches()
+	if err != nil {
+		t.Fatalf("load cleared watch: %v", err)
+	}
+	cleared := registry[state.WatchID]
+	if cleared == nil || cleared.Active || cleared.EndReason != "cleared" || cleared.ReceiverSessionID != root.id {
+		t.Fatalf("durable watch after clear = %+v, want receiver-owned cleared registration", cleared)
+	}
+	history := childJM.visibleWatchHistorySnapshots(root.id)
+	if len(history) != 1 || history[0].id != state.WatchID || history[0].endReason != "cleared" || history[0].endedAt.IsZero() {
+		t.Fatalf("receiver history after clear = %+v, want one ended cleared watch", history)
+	}
+	// Clearing registration must not discard the firing's outstanding source
+	// custody. That drain-only residue must not hide the watch's ended history.
+	pending := loadWatchSendRecord(t, childJM).Pending
+	if len(pending) != 1 {
+		t.Fatalf("pending source frames after clear = %d, want the retained firing", len(pending))
+	}
+	for _, frame := range pending {
+		if frame.Key.WatchID != state.WatchID || frame.ReceiverSessionID != root.id {
+			t.Fatalf("pending source frame after clear = %+v, want the receiver-owned firing", frame)
+		}
+	}
 	recentOut, err := jobWatchTool(root, map[string]any{"operation": "inspect", "watch_id": state.WatchID}, 20000)
 	if err != nil {
 		t.Fatalf("root inspect recent: %v", err)
 	}
 	recent := recentOut.(tooldefs.StateResult).State.(jobWatchInspectToolResult)
-	if recent.Watching || recent.Source != childRec.JobID || recent.EndReason != "cleared" {
+	if recent.Watching || recent.Source != childRec.JobID || recent.EndReason != "cleared" || recent.EndedAt != history[0].endedAt.Format(time.RFC3339Nano) {
 		t.Fatalf("root recent inspect = %+v, want receiver-owned cleared history", recent)
 	}
 	childListOut, err = jobWatchTool(child, map[string]any{"operation": "list"}, 20000)
