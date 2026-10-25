@@ -96,6 +96,54 @@ test("a marker that detaches and re-attaches resolves its document again", () =>
   }
 });
 
+// Observation has to start when the marker does. A marker that arrives after
+// the first commit must leave the seam watching it, or a later window move is
+// invisible and the panel stays behind.
+test("a late-attached marker follows a later move", async () => {
+  const { frame, doc } = appendPopout();
+  const seen: (Document | null)[] = [];
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    act(() => root.render(<Probe seen={seen} attach={false} />));
+    act(() => root.render(<Probe seen={seen} />));
+    expect(seen.at(-1)).toBe(document);
+    act(() => {
+      doc.body.appendChild(host);
+    });
+    await act(async () => {});
+    expect(seen.at(-1)).toBe(doc);
+  } finally {
+    act(() => root.unmount());
+    frame.remove();
+    host.remove();
+  }
+});
+
+test("a re-attached marker follows a later move", async () => {
+  const { frame, doc } = appendPopout();
+  const seen: (Document | null)[] = [];
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    act(() => root.render(<Probe seen={seen} />));
+    act(() => root.render(<Probe seen={seen} attach={false} />));
+    act(() => root.render(<Probe seen={seen} />));
+    expect(seen.at(-1)).toBe(document);
+    act(() => {
+      doc.body.appendChild(host);
+    });
+    await act(async () => {});
+    expect(seen.at(-1)).toBe(doc);
+  } finally {
+    act(() => root.unmount());
+    frame.remove();
+    host.remove();
+  }
+});
+
 // A closed popover keeps its trigger mounted but renders no panel, so it has
 // nothing to follow. Watching its document anyway multiplies one idle
 // subscriber per closed popover across the document.
