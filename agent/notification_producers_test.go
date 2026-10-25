@@ -1534,7 +1534,7 @@ func TestCallbackOneShotSourceRecoveryBeforeNextTick(t *testing.T) {
 func TestWatchSourceFailureRetainsAllMatchedFirings(t *testing.T) {
 	for _, kind := range []string{"event send", "output send", "budget boundary", "two callbacks"} {
 		t.Run(kind, func(t *testing.T) {
-			s := newMessagingRoot(t, newMessagingAdapter(), nil)
+			var s *Session
 			var cold coldStableDelegateFixture
 			if kind == "two callbacks" {
 				cold = newColdStableDelegateFixture(t, "")
@@ -1542,6 +1542,8 @@ func TestWatchSourceFailureRetainsAllMatchedFirings(t *testing.T) {
 					return finalResponse("recovered second callback")
 				}}
 				s = restoreSupervisionRoot(t, cold, agenttest.NewFakeClock())
+			} else {
+				s = newMessagingRoot(t, newMessagingAdapter(), nil)
 			}
 			jm := s.jobManager
 			var configs []*watchConfig
