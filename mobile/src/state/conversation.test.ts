@@ -984,17 +984,16 @@ describe("ConversationStore", () => {
 	});
 
 	describe("send", () => {
-		it("clears draft on success and sets pendingSend", async () => {
+		it("clears draft on success", async () => {
 			const service = new FakeConversationService();
 			service.receipt = makeReceipt({ clientMutationId: "cmid-99" });
 			const store = createConversationStore();
 			await store.getState().open(service, "ref-1");
 			store.getState().setDraft("my message");
 			const p = store.getState().send(service, textInput("my message"));
-			// While in-flight, draft should be cleared and pendingSend set
+			// While in-flight, the draft should be cleared.
 			expect(store.getState().draft).toBe("");
 			await p;
-			expect(store.getState().pendingSend).toBeNull();
 			expect(store.getState().draft).toBe("");
 		});
 
@@ -1026,7 +1025,6 @@ describe("ConversationStore", () => {
 			const s = store.getState();
 			expect(s.draft).toBe("my message");
 			expect(s.error).not.toBeNull();
-			expect(s.pendingSend).toBeNull();
 		});
 
 		it("does not auto-retry on failure", async () => {
@@ -19112,7 +19110,6 @@ describe("ConversationStore", () => {
 				status: s.status,
 				error: s.error,
 				draft: s.draft,
-				pendingSend: s.pendingSend,
 				pendingMutation: s.pendingMutation,
 			};
 		}
