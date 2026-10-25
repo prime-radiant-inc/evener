@@ -82,10 +82,8 @@ export function Popover({
   // The document the trigger lives in. A Dockview popout is a separate window:
   // portaling into the opener's body would put the panel in the wrong one, and
   // listeners on the opener's window never see the popout's scroll, resize, or
-  // outside click.
-  // The trigger's document, current across a Dockview move: the shared portal
-  // seam supplies it once the trigger element exists, re-rendering before paint
-  // so a popover that mounts already open never portals into the opener.
+  // outside click. The shared portal seam supplies it once the trigger exists
+  // and follows a move while open.
   const panelDocument = usePortalDocument(triggerRef, open);
   const panelWindow = panelDocument?.defaultView ?? null;
 

@@ -201,13 +201,10 @@ function restoreOwnProperty(target: object, key: string, descriptor: PropertyDes
 // land in that window and hear that window's dismissal events; the opener's
 // document would show the list in the wrong window and never close it.
 function popoutHost(): { host: HTMLElement; document: Document; cleanup: () => void } {
-  const frame = document.createElement("iframe");
-  document.body.appendChild(frame);
-  const popout = frame.contentDocument;
-  const host = popout?.createElement("div");
-  if (!popout || !host) throw new Error("missing popout window");
-  popout.body.appendChild(host);
-  return { host, document: popout, cleanup: () => frame.remove() };
+  const { frame, doc } = appendPopout();
+  const host = doc.createElement("div");
+  doc.body.appendChild(host);
+  return { host, document: doc, cleanup: () => frame.remove() };
 }
 
 test("in a popout the panel portals into the trigger's document and dismisses there", ({ onTestFinished }) => {

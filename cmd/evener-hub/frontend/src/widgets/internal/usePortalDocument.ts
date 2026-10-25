@@ -22,10 +22,12 @@ export function usePortalDocument<T extends Node>(ref: RefObject<T | null>, enab
   const ownerDocument = useOwnedDocument(ref, enabled);
   const [attached, setAttached] = useState(false);
   // After every commit, not keyed on `attached`: a marker may attach in a later
-  // commit, and the ref object's identity does not change then. Re-setting true
-  // bails out without rendering.
+  // commit, and the ref object's identity does not change then. Track the live
+  // state rather than only the first attach, so a marker that detaches renders
+  // the panel away and one that re-attaches brings it back.
   useLayoutEffect(() => {
-    if (ref.current !== null) setAttached(true);
+    const attachedNow = ref.current !== null;
+    if (attached !== attachedNow) setAttached(attachedNow);
   });
   return attached && ref.current !== null ? ownerDocument : null;
 }
