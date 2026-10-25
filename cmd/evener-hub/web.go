@@ -78,11 +78,7 @@ type WebServer struct {
 	// shutdown cancels it instead of leaving the child to outlive the hub.
 	// runMain overrides the Background default; a WebServer built elsewhere
 	// (tests) keeps it.
-	lifetime context.Context
-	// treeCache memoizes the shared tree projection used by the remaining
-	// mutation handlers. NavigationService owns AppWire navigation generations
-	// and captures its source directly rather than using this cache.
-	treeCache  *hubcore.TreeCache
+	lifetime   context.Context
 	manifestFS fs.FS
 
 	frontendHash              string
@@ -192,7 +188,6 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		liveModels:                &modelsCache{},
 		launchModels:              &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},
 		lifetime:                  context.Background(),
-		treeCache:                 &hubcore.TreeCache{},
 		manifestFS:                assetsRoot(),
 		frontendHash:              fHash,
 		deletionStoreErr:          deletionStoreErr,
@@ -247,7 +242,6 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	// constructor: this is the one place that both built cfg.PluginManager
 	// and now has a broadcaster to give it.
 	wirePluginStoreBroadcast(web.cfg.PluginManager, server)
-	registerArchiveHandler(web.appRPC, web.cfg, web.sources, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
 	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)
 	if deletionStoreErr == nil && recoveryStoreErr == nil {

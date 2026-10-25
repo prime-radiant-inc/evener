@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent"
@@ -775,25 +774,9 @@ func hubForkLiveDelegateFenced(cfg hubcore.WebConfig, threadID string) bool {
 	return cfg.Roster != nil && cfg.Roster.IsSubagentActive(threadID)
 }
 
-// resumeRequiredActiveFlag is the ThreadStatus.ActiveFlags entry that says a
-// session's own daemon is holding it behind recovery.
-//
-// NOTHING IN THE TREE EMITS IT. The daemon's status egress builds
-// appwire.ThreadStatus with a Type and no flags (server/appwire_runtime.go's
-// appCapabilities path, internal/appprojector's threadStatus), and appwire
-// defines no constant for it, so this spelling has one side. It is named here
-// rather than left as a literal so the hub's own uses cannot be spelled apart,
-// and so a producer added later has one name to match.
-//
-// The hub-side recovery signal this complements — the one that does have a
-// producer — is cfg.ResumeLocks.RecoveryState, which hubForkRecoveryFencedNow
-// consults beside this predicate.
-const resumeRequiredActiveFlag = "resumeRequired"
-
 func hubForkRecoveryFenced(thread appwire.Thread) bool {
 	return thread.Evener.ResumeRequired ||
-		thread.Status.Type == appwire.ThreadStatusRestartRequired ||
-		slices.Contains(thread.Status.ActiveFlags, resumeRequiredActiveFlag)
+		thread.Status.Type == appwire.ThreadStatusRestartRequired
 }
 
 // hubForkRecoveryFencedNow fences the alias the client is holding against
@@ -1630,79 +1613,6 @@ func outputImageDescriptorKey(img appwire.OutputImage) string {
 		return "path:" + img.Path
 	}
 	return ""
-}
-
-func reconcileDelegateThreadItemForTest(item appwire.ThreadItem, rec agent.HistoricalJobRecord) appwire.ThreadItem {
-	return reconcileDelegateThreadItem(item, rec)
-}
-
-func reconcileDelegateThreadItems(thread appwire.Thread, jobsByID map[string]agent.HistoricalJobRecord) appwire.Thread {
-	if len(jobsByID) == 0 || len(thread.Turns) == 0 {
-		return thread
-	}
-	var turns []appwire.Turn
-	clonedItems := map[int]bool{}
-	for ti := range thread.Turns {
-		for ii := range thread.Turns[ti].Items {
-			item := thread.Turns[ti].Items[ii]
-			if item.Type != "commandExecution" || item.ToolName != "delegate" {
-				continue
-			}
-			jobID := delegateJobIDFromRaw(item.Raw)
-			if jobID == "" {
-				continue
-			}
-			rec, ok := jobsByID[jobID]
-			if !ok {
-				continue
-			}
-			reconciled := reconcileDelegateThreadItem(item, rec)
-			if turns == nil {
-				turns = append([]appwire.Turn(nil), thread.Turns...)
-			}
-			if !clonedItems[ti] {
-				turns[ti].Items = append([]appwire.ThreadItem(nil), thread.Turns[ti].Items...)
-				clonedItems[ti] = true
-			}
-			turns[ti].Items[ii] = reconciled
-		}
-	}
-	if turns != nil {
-		thread.Turns = turns
-	}
-	return thread
-}
-
-func reconcileDelegateThreadItem(item appwire.ThreadItem, rec agent.HistoricalJobRecord) appwire.ThreadItem {
-	_ = rec
-	return item
-}
-
-func delegateJobIDFromRaw(raw json.RawMessage) string {
-	var payload struct {
-		JobID        string `json:"job_id"`
-		StartedJobID string `json:"started_job_id"`
-		CurrentJobID string `json:"current_job_id"`
-		LatestJobID  string `json:"latest_job_id"`
-	}
-	if len(raw) == 0 || json.Unmarshal(raw, &payload) != nil {
-		return ""
-	}
-	for _, value := range []string{payload.JobID, payload.StartedJobID, payload.CurrentJobID, payload.LatestJobID} {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
-
-func isTerminalHistoricalJobStatus(status string) bool {
-	switch status {
-	case "completed", "failed", "cancelled", "stopped", "exhausted", "command_exited_nonzero", "command_killed":
-		return true
-	default:
-		return false
-	}
 }
 
 // applyThreadResumeRequirement projects the hub-owned action fence on both

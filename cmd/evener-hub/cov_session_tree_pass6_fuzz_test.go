@@ -37,7 +37,7 @@ func FuzzSessionTreePass6(f *testing.F) {
 			thread.Evener.Ref = ""
 			thread.Source = ""
 			web := NewWebServer(hubcore.WebConfig{})
-			_ = web.refreshRemoteThreads(context.Background())
+			_ = web.refreshRemoteThreadSnapshot(context.Background()).threads
 			source := &stubThreadLister{id: "remote", resp: appwire.ThreadListResponse{Data: []appwire.Thread{thread}}}
 			_ = web.listThreadsWithFallback(context.Background(), source)
 			source.err = errors.New("transient")
@@ -70,7 +70,6 @@ func FuzzSessionTreePass6(f *testing.F) {
 			empty := NewWebServer(hubcore.WebConfig{})
 			_, _, _ = empty.navigationTreeInputs(context.Background())
 			_ = empty.apiTreeSources()
-			_, _ = empty.liveEntry("missing")
 			_ = appThreadTreeLive(appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}})
 			_ = appThreadTreeLive(appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded}})
 			_ = appThreadTreeLive(thread)

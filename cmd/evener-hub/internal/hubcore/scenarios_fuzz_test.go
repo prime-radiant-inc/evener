@@ -263,7 +263,6 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioStatusProber_NetworkFailure,
 		fuzzScenarioStatusProber_NonOKStatus,
 		fuzzScenarioStatusProber_Success,
-		fuzzScenarioTreeCacheMemoizesByVersionAndBucket,
 		fuzzScenarioUnixMilliTime_RoundTripsTheWireStamp,
 		fuzzScenarioUnixSeconds,
 		fuzzScenarioUnixTime,

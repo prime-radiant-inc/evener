@@ -502,7 +502,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	// remoteCache holds the last-refreshed remote-source thread list; the
 	// refresher goroutine below Stores into it on a ~30s ticker + poke, and
-	// the tree read path (remoteTreeThreads) reads it via WebConfig instead of
+	// the tree read path (remoteThreadFetch) reads it via WebConfig instead of
 	// performing a synchronous network walk per request.
 	remoteCache := &hubcore.RemoteThreadCache{}
 
@@ -936,11 +936,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// existing and resumable sessions. `evener plugin gc`, also run once here,
 	// cleans unused marketplace clones without reclaiming published packages.
 	startHubPluginMaintenance(ctx, cfg, web, startBackground)
-	// Remote-thread cache refresher: refreshRemoteThreads (web_api_tree.go)
+	// Remote-thread cache refresher: refreshRemoteThreadSnapshot (web_api_tree.go)
 	// walks every configured remote source's ListThreads, a synchronous
 	// network hop that used to run inline on every navigation read. Move it
 	// to a ~30s ticker + poke so a tree render never blocks on it; the navigation
-	// read path (remoteTreeThreads) reads remoteCache.Get() instead whenever
+	// read path (remoteThreadFetch) reads remoteCache.Snapshot() instead whenever
 	// RemoteThreadCache is configured.
 	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, web) })
 	// Live-model prefetch: fetch every instance's /models listing into the

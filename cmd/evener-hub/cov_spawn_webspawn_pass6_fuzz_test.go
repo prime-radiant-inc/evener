@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -86,12 +87,12 @@ sleep 1`)
 
 		// Cover start failure, timeout, and both process-exit error forms.
 		missing := filepath.Join(root, "missing-evener")
-		_, _ = SpawnDaemon(ctx, missing, root, hubcore.SpawnRequest{}, time.Millisecond)
-		_, _ = ResumeDaemon(ctx, missing, root, hubcore.ResumeRequest{}, time.Millisecond)
+		_, _ = spawnDaemonWithProviderConfig(ctx, missing, root, hubcore.SpawnRequest{}, time.Millisecond, io.Discard, nil)
+		_, _ = resumeDaemon(ctx, missing, root, hubcore.ResumeRequest{}, time.Millisecond, io.Discard)
 		for _, body := range []string{"exit 0", "echo detail >&2; exit 7", "sleep 2"} {
 			bin := pass6Executable(t, body)
-			_, _ = SpawnDaemon(ctx, bin, root, hubcore.SpawnRequest{}, time.Millisecond)
-			_, _ = ResumeDaemon(ctx, bin, root, hubcore.ResumeRequest{}, time.Millisecond)
+			_, _ = spawnDaemonWithProviderConfig(ctx, bin, root, hubcore.SpawnRequest{}, time.Millisecond, io.Discard, nil)
+			_, _ = resumeDaemon(ctx, bin, root, hubcore.ResumeRequest{}, time.Millisecond, io.Discard)
 		}
 
 		// Complete the launch-check and model-list response/error matrices.

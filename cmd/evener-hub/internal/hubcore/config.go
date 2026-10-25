@@ -93,11 +93,11 @@ type WebConfig struct {
 	// sessions by title and prompt only.
 	MessageSearch *MessageSearch
 
-	Inputs *InputsVersion // shared inputs-version counter; nil in tests (memo treats as version 0)
+	Inputs *InputsVersion // shared inputs-version counter; nil in tests (revision treats as version 0)
 
 	// RemoteThreadCache holds the last-refreshed remote-source thread list so
 	// the tree read path never blocks on a network hop. Nil in tests, which
-	// fall back to the old synchronous walk (see remoteTreeThreads).
+	// fall back to the old synchronous walk (see remoteThreadFetch).
 	RemoteThreadCache *RemoteThreadCache
 
 	// RemoteHosts are the validated [[hosts]] entries (component 03) in

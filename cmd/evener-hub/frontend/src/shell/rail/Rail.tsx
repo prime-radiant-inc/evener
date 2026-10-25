@@ -987,8 +987,7 @@ function isNavigationMutationReceipt(result: unknown): result is NavigationMutat
 // session ID instead (tree.go builds local nodes with ID: m.ID; the local
 // entries in web_api_tree.go carry SessionID: past.Meta.ID), and archive
 // decisions reach the read model through archiveDecisions() verbatim
-// (web_api_tree.go's memoTreeWithAuthority and navigation_service.go's
-// Capture), with no alias expansion - unlike favorites, which pass through
+// (navigation_service.go's Capture), with no alias expansion - unlike favorites, which pass through
 // ClassifyFavoriteDecisions.
 //
 // The write side normalizes, so those two spellings are ONE stored key rather

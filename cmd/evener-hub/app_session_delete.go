@@ -14,9 +14,6 @@ type sessionDeleteHandler func(context.Context, appwire.SessionDeleteParams) (ap
 
 func registerSessionDeleteHandler(server *appserver.Server, handler sessionDeleteHandler) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionDelete, func(ctx context.Context, params appwire.SessionDeleteParams) (appwire.SessionDeleteResponse, error) {
-		if handler == nil {
-			return appwire.SessionDeleteResponse{}, appwire.Unavailable("session deletion unavailable")
-		}
 		return handler(ctx, params)
 	})
 }

@@ -243,10 +243,10 @@ func TestCovSpawnMainFaultSeams(t *testing.T) {
 		t.Fatal("clean process exit before rendezvous succeeded")
 	}
 
-	if _, err := SpawnDaemon(context.Background(), filepath.Join(t.TempDir(), "missing"), t.TempDir(), hubcore.SpawnRequest{}, time.Second); err == nil {
+	if _, err := spawnDaemonWithProviderConfig(context.Background(), filepath.Join(t.TempDir(), "missing"), t.TempDir(), hubcore.SpawnRequest{}, time.Second, io.Discard, nil); err == nil {
 		t.Fatal("missing spawn binary succeeded")
 	}
-	if _, err := ResumeDaemon(context.Background(), filepath.Join(t.TempDir(), "missing"), t.TempDir(), hubcore.ResumeRequest{SessionID: "s"}, time.Second); err == nil {
+	if _, err := resumeDaemon(context.Background(), filepath.Join(t.TempDir(), "missing"), t.TempDir(), hubcore.ResumeRequest{SessionID: "s"}, time.Second, io.Discard); err == nil {
 		t.Fatal("missing resume binary succeeded")
 	}
 

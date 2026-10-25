@@ -100,11 +100,10 @@ func FuzzExactLifecycleTree(f *testing.F) {
 		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: treeRoster, Favorite: fav})
 
 		oldBuild, oldDerive := hubBuildNavigationTree, hubDeriveNavigationAttention
-		oldNavigation, oldRank := hubNavigationInputs, hubTreeAttentionRank
+		oldNavigation := hubNavigationInputs
 		t.Cleanup(func() {
 			hubBuildNavigationTree, hubDeriveNavigationAttention = oldBuild, oldDerive
 			hubNavigationInputs = oldNavigation
-			hubTreeAttentionRank = oldRank
 		})
 		key := testProjectID(t, "/work/p")
 		node := func(id, kind, state string, updated time.Time) hubcore.TreeNode {
@@ -131,17 +130,8 @@ func FuzzExactLifecycleTree(f *testing.F) {
 				{Entry: rendezvous.Entry{SessionID: "pathless", StartedAt: now}, SessionID: "pathless", Status: "idle"},
 			}}
 		}
-		rankCalls := 0
-		hubTreeAttentionRank = func(string) int {
-			rankCalls++
-			if rankCalls%2 == 1 {
-				return 10
-			}
-			return 0
-		}
 		_ = NewWebServer(hubcore.WebConfig{Roster: structuredRoster, Favorite: fav})
 		hubNavigationInputs = oldNavigation
-		hubTreeAttentionRank = oldRank
 
 		invalidCache := &hubcore.RemoteThreadCache{}
 		invalidCache.Store([]appwire.Thread{{}})
@@ -149,7 +139,7 @@ func FuzzExactLifecycleTree(f *testing.F) {
 
 		// Invalid remote rows are ignored, local sources are skipped, successful
 		// empty lists clear last-good data, and nil registries are valid.
-		_ = (&WebServer{}).refreshRemoteThreads(ctx)
+		_ = (&WebServer{}).refreshRemoteThreadSnapshot(ctx).threads
 		_ = (&WebServer{}).apiTreeSources()
 		_ = (&WebServer{}).listThreadsWithFallback(ctx, &exactTreeLister{scriptedAppSource: &scriptedAppSource{id: "fresh"}})
 		local := &exactTreeLister{scriptedAppSource: &scriptedAppSource{id: "local"}}
@@ -158,7 +148,7 @@ func FuzzExactLifecycleTree(f *testing.F) {
 		sources.Add(local)
 		sources.Add(lister)
 		web.sources = sources
-		_ = web.refreshRemoteThreads(ctx)
+		_ = web.refreshRemoteThreadSnapshot(ctx).threads
 		lister.err = errors.New("temporary")
 		_ = web.listThreadsWithFallback(ctx, lister)
 		lister.err, lister.data = nil, nil

@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -98,8 +99,8 @@ func FuzzSpawnLiveContracts(f *testing.F) {
 		_ = validateEvenerLaunchContract(ctx, filepath.Join(dir, "missing"), "", nil)
 
 		bad := filepath.Join(dir, "missing")
-		_, _ = SpawnDaemon(ctx, bad, dir, hubcore.SpawnRequest{}, time.Millisecond)
-		_, _ = ResumeDaemon(ctx, bad, dir, hubcore.ResumeRequest{}, time.Millisecond)
+		_, _ = spawnDaemonWithProviderConfig(ctx, bad, dir, hubcore.SpawnRequest{}, time.Millisecond, io.Discard, nil)
+		_, _ = resumeDaemon(ctx, bad, dir, hubcore.ResumeRequest{}, time.Millisecond, io.Discard)
 
 		liveDir := t.TempDir()
 		live := fuzzExecutable(t, `
@@ -120,14 +121,14 @@ sleep 1
 		baseResolved := launchconfig.Resolved{}
 		_, _ = h.Spawn(ctx, hubcore.SpawnRequest{WorkingDir: dir, StateDir: t.TempDir(), Resolved: baseResolved})
 		_, _ = h.Resume(ctx, hubcore.ResumeRequest{SessionID: "old", WorkingDir: dir, StateDir: t.TempDir(), Resolved: baseResolved})
-		_, _ = SpawnDaemon(ctx, live, liveDir, hubcore.SpawnRequest{RunDir: liveDir}, time.Second)
-		_, _ = ResumeDaemon(ctx, live, liveDir, hubcore.ResumeRequest{RunDir: liveDir}, time.Second)
+		_, _ = spawnDaemonWithProviderConfig(ctx, live, liveDir, hubcore.SpawnRequest{RunDir: liveDir}, time.Second, io.Discard, nil)
+		_, _ = resumeDaemon(ctx, live, liveDir, hubcore.ResumeRequest{RunDir: liveDir}, time.Second, io.Discard)
 
 		exitBin := fuzzExecutable(t, `echo failed >&2; exit 3`)
-		_, _ = SpawnDaemon(ctx, exitBin, liveDir, hubcore.SpawnRequest{}, time.Second)
-		_, _ = ResumeDaemon(ctx, exitBin, liveDir, hubcore.ResumeRequest{}, time.Second)
+		_, _ = spawnDaemonWithProviderConfig(ctx, exitBin, liveDir, hubcore.SpawnRequest{}, time.Second, io.Discard, nil)
+		_, _ = resumeDaemon(ctx, exitBin, liveDir, hubcore.ResumeRequest{}, time.Second, io.Discard)
 		timeoutBin := fuzzExecutable(t, `sleep 2`)
-		_, _ = SpawnDaemon(ctx, timeoutBin, liveDir, hubcore.SpawnRequest{}, time.Millisecond)
-		_, _ = ResumeDaemon(ctx, timeoutBin, liveDir, hubcore.ResumeRequest{}, time.Millisecond)
+		_, _ = spawnDaemonWithProviderConfig(ctx, timeoutBin, liveDir, hubcore.SpawnRequest{}, time.Millisecond, io.Discard, nil)
+		_, _ = resumeDaemon(ctx, timeoutBin, liveDir, hubcore.ResumeRequest{}, time.Millisecond, io.Discard)
 	})
 }
