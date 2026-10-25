@@ -1038,6 +1038,8 @@ func TestDelegateLeafFinalizationDoesNotWaitForForeignReceiverDelivery(t *testin
 	foreignBeforeAnnouncement := make(chan struct{})
 	allowForeignAnnouncement := make(chan struct{})
 	leafDrainEntered := make(chan struct{})
+	foreignResourceWakeDone := make(chan struct{})
+	leafResourceWakeDone := make(chan struct{})
 	var announcementSeen, failRootRead atomic.Bool
 	var drainEntries, rootReadFailures atomic.Int32
 	var recoveredRequests atomic.Int32
@@ -1047,10 +1049,19 @@ func TestDelegateLeafFinalizationDoesNotWaitForForeignReceiverDelivery(t *testin
 		StateDir: t.TempDir(), MaxSubagentDepth: 1, ForceRealIO: true,
 		testOnly: testConfig{
 			minimalSystemPrompt: true, disableDelegateIdleRelease: true,
-			subagentBeforeGenerationAnnounced: func(*subagent) {
+			subagentBeforeGenerationAnnounced: func(sub *subagent) {
+				wakeDone := leafResourceWakeDone
 				if announcementSeen.CompareAndSwap(false, true) {
+					wakeDone = foreignResourceWakeDone
 					close(foreignBeforeAnnouncement)
 					<-allowForeignAnnouncement
+				}
+				// done closes before the parent-resource wake. Observe that real
+				// callback too, before registering the receiver's recovery callback.
+				parentWake := sub.parentResourceWake
+				sub.parentResourceWake = func() {
+					parentWake()
+					close(wakeDone)
 				}
 			},
 			jobTreeDrainEntered: func() {
@@ -1107,6 +1118,7 @@ func TestDelegateLeafFinalizationDoesNotWaitForForeignReceiverDelivery(t *testin
 	failRootRead.Store(true)
 	unblockForeign()
 	await(foreignDone, "foreign runner")
+	await(foreignResourceWakeDone, "foreign post-completion resource wake")
 	if rootReadFailures.Load() == 0 {
 		t.Fatal("foreign delivery did not exercise the real receiver failure")
 	}
@@ -1143,6 +1155,7 @@ func TestDelegateLeafFinalizationDoesNotWaitForForeignReceiverDelivery(t *testin
 	})
 	t.Logf("leaf=%s session=%s must finish independently of foreign delivery=%s receiver=%s", leaf.DelegateID, leaf.ChildSessionID, plans[0].deliveryID, root.id)
 	await(leafDone, "independent leaf runner")
+	await(leafResourceWakeDone, "leaf post-completion resource wake")
 	leafSub.mu.Lock()
 	status, runErr := leafSub.status, leafSub.err
 	leafSub.mu.Unlock()

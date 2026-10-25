@@ -21,14 +21,28 @@ func TestAsyncAttentionJoinsTheRunningTurnAndNeverACompletedOne(t *testing.T) {
 	adapter.script(func(context.Context) (llm.Response, error) {
 		close(inCall)
 		<-release
+		// Let the next request observe the mid-call attention before this
+		// execution completes, so it cannot start another execution ahead of late.
+		return communicateResponse(false, "checkpoint"), nil
+	}, func(context.Context) (llm.Response, error) {
 		return communicateResponse(true, "done"), nil
 	})
 
 	var lateDone sync.WaitGroup
 	completing := make(chan struct{})
+	var originalExecution string
+	completionCounts := map[string]int{}
 	s.attachedTranscript().OnRecorded(func(rec transcript.Record) {
+		if rec.Turn.Kind == schema.TurnUserInput {
+			originalExecution = rec.Turn.TurnID
+		}
 		if rec.Turn.Kind == schema.TurnCompletion {
-			close(completing)
+			completionCounts[rec.Turn.TurnID]++
+			// A late notification may run another execution in this ProcessInput.
+			// Count every completion, but signal only this input's first one.
+			if rec.Turn.TurnID == originalExecution && completionCounts[rec.Turn.TurnID] == 1 {
+				close(completing)
+			}
 		}
 	})
 
@@ -54,6 +68,11 @@ func TestAsyncAttentionJoinsTheRunningTurnAndNeverACompletedOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	lateDone.Wait()
+	for id, count := range completionCounts {
+		if count != 1 {
+			t.Errorf("execution %s completed %d times, want exactly once", id, count)
+		}
+	}
 
 	var execution string
 	byAttention := map[string]schema.Turn{}
