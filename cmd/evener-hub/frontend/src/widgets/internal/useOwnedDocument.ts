@@ -66,6 +66,16 @@ export function useOwnedDocument<T extends Node>(ref: RefObject<T | null>, enabl
     if (root === null) return;
     let recheck: ReturnType<typeof setTimeout> | undefined;
     let detachedAt: number | undefined;
+    let stopped = false;
+    // One pending recheck at a time: every document mutation calls `check`,
+    // and a second chain would be untracked by `recheck` and survive cleanup.
+    const schedule = () => {
+      if (stopped || recheck !== undefined) return;
+      recheck = setTimeout(() => {
+        recheck = undefined;
+        check();
+      }, ADOPTION_RECHECK_MS);
+    };
     const check = () => {
       const next = ownerDocumentOf(root);
       if (next !== doc) {
@@ -84,11 +94,12 @@ export function useOwnedDocument<T extends Node>(ref: RefObject<T | null>, enabl
       }
       detachedAt ??= Date.now();
       if (Date.now() - detachedAt < ADOPTION_GRACE_MS) {
-        recheck = setTimeout(check, ADOPTION_RECHECK_MS);
+        schedule();
       }
     };
     const stop = watchDocument(doc, check);
     return () => {
+      stopped = true;
       stop();
       if (recheck !== undefined) clearTimeout(recheck);
     };

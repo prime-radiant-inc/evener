@@ -104,3 +104,37 @@ test("a long-lived node's later move is followed after a detached turn", async (
     vi.useRealTimers();
   }
 });
+
+// While a node is detached, document activity keeps the recheck chain alive.
+// More than one chain would be untracked and outlive cleanup.
+test("a detached node keeps one pending recheck, and unmount clears it", async () => {
+  vi.useFakeTimers();
+  const { frame } = appendPopout();
+  const seen: Document[] = [];
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    act(() => root.render(<Probe seen={seen} />));
+    act(() => host.remove());
+    await act(async () => {});
+    expect(vi.getTimerCount()).toBe(1);
+
+    for (let index = 0; index < 3; index += 1) {
+      act(() => {
+        const noise = document.createElement("div");
+        document.body.append(noise);
+        noise.remove();
+      });
+      await act(async () => {});
+    }
+    expect(vi.getTimerCount()).toBe(1);
+
+    act(() => root.unmount());
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    frame.remove();
+    host.remove();
+    vi.useRealTimers();
+  }
+});
