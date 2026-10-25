@@ -509,6 +509,7 @@ export interface UseTranscriptViewRegistrationOptions {
 export interface UseTranscriptViewRegistrationResult {
   restoreAfterMeasurement(): void;
   hasRetainedPlacement(): boolean;
+  isPlacementPending(): boolean;
   restoreAfterLayout(layout: CommittedVirtualListLayout): void;
 }
 
@@ -864,6 +865,7 @@ export function useTranscriptViewRegistration(
   return {
     restoreAfterMeasurement,
     restoreAfterLayout,
+    isPlacementPending: () => pendingRef.current !== null,
     hasRetainedPlacement: () => {
       const captured = pendingRef.current?.captured ?? retainedTranscriptCapture(id, logicalRef);
       return captured !== undefined && !captured.followingBottom;
@@ -917,7 +919,7 @@ export interface UseTranscriptScrollResult {
   /** Capture the top stable row immediately before changing view mode. */
   captureViewAnchor: () => void;
   /** Finish a pending restore after VirtualList reports new measurements. */
-  restoreViewAnchorAfterMeasurement: () => void;
+  restoreViewAnchorAfterMeasurement: (layout?: CommittedVirtualListLayout) => void;
 }
 
 function totalItemCount(model: ThreadModel | undefined): number {
@@ -1460,6 +1462,10 @@ export function useTranscriptScroll({
   // the new session is treated as a fresh open (always land at the bottom).
   const refForInitRef = useRef<string | undefined>(ref);
   const pendingInitialEndRef = useRef<string | null>(null);
+  // True while the end position we asked for is still the reader's wish. A
+  // reader's own scroll replaces it; an index target the caller asked for (a
+  // failed-turn jump) is never replaced by this flag.
+  const pendingEndTargetRef = useRef(false);
   const pendingViewAnchorRef = useRef<{
     anchor: ViewAnchor | undefined;
     proportion: number;
@@ -1570,6 +1576,32 @@ export function useTranscriptScroll({
     pending: openingPending,
   });
 
+  const resumeOpening = useCallback(
+    (layout?: CommittedVirtualListLayout) => {
+      const list = listRef.current;
+      const port = list?.getScrollElement();
+      const previous = openingTransitionRef.current;
+      if (!port || openingPendingRef.current || previous.ref !== ref || previous.port !== port || !previous.pending)
+        return;
+      // Real readers resume only after child registration and our own placement.
+      // Older handles without committed geometry retain their immediate check.
+      if (
+        list?.isMeasurementReady &&
+        (!layout?.isCurrent() ||
+          layout.virtualizer.scrollElement !== port ||
+          pendingInitialEndRef.current === ref ||
+          pendingViewAnchorRef.current !== null)
+      )
+        return;
+      openingTransitionRef.current = { ref, port, pending: false };
+      port.removeAttribute("data-opening-hold");
+      const metrics = measure(port);
+      if (isNearTop(metrics.scrollTop) && !contentIsUnmeasured(port)) loadOlderRef.current().catch(() => {});
+      else if (shouldAutoLoadOlder(port)) loadOlderRef.current().catch(() => {});
+    },
+    [ref, listRef, measure],
+  );
+
   // While the recorded opening is pending, hold BOTH paging triggers: stamp the
   // scroll port so the short-page row's own geometry check holds (that row owns
   // its own observer), and gate the near-top trigger above. When the opening
@@ -1593,15 +1625,11 @@ export function useTranscriptScroll({
       openingTransitionRef.current = { ref, port, pending: true };
       return;
     }
-    port.removeAttribute("data-opening-hold");
-    if (!previous.pending) return;
-    openingTransitionRef.current = { ref, port, pending: false };
-    // Resume only through the SAME readiness gates the normal triggers keep:
-    // near-top demand still requires measured content, and short-page demand
-    // still goes through shouldAutoLoadOlder (whose own guards apply).
-    const metrics = measure(port);
-    if (isNearTop(metrics.scrollTop) && !contentIsUnmeasured(port)) loadOlderRef.current().catch(() => {});
-    else if (shouldAutoLoadOlder(port)) loadOlderRef.current().catch(() => {});
+    if (!previous.pending) {
+      port.removeAttribute("data-opening-hold");
+      return;
+    }
+    resumeOpening();
   });
 
   const rowIndexForTurn = useCallback((turnId: string, sourceIndex: number): number => {
@@ -1697,6 +1725,7 @@ export function useTranscriptScroll({
         // in that window increments the pill instead of auto-sticking on an
         // unconfirmed jump, and a landing that later corrections leave short
         // keeps the pill on offer.
+        pendingEndTargetRef.current = false;
         if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
         if (el) {
           // Pin from LIVE geometry, re-measured after scrollToIndex: the
@@ -1731,52 +1760,64 @@ export function useTranscriptScroll({
     };
   }, [listRef, measure, measureAnchors]);
 
-  const restoreViewAnchorAfterMeasurement = useCallback(() => {
-    if (pendingInitialEndRef.current === ref) {
-      const list = listRef.current;
-      const el = list?.getScrollElement();
-      if (!el || list?.isMeasurementReady?.() === false) return;
-      pendingInitialEndRef.current = null;
-      // An end request made against the initial sizer can be clamped to zero.
-      // Finish that fresh-open default once the real measured sizer commits.
-      const retained = retainedPlacements.get(el);
-      if (retained?.logicalRef !== ref && gestureFramesLeftRef.current <= 0) {
-        scrollToLastRow(listRef, renderedRowCountRef.current);
-        const metrics = measure(el);
-        el.scrollTop = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
+  const restorePendingViewAnchor = useCallback(
+    (layout?: CommittedVirtualListLayout) => {
+      if (pendingInitialEndRef.current === ref) {
+        const list = listRef.current;
+        const el = list?.getScrollElement();
+        if (!el || (list?.isMeasurementReady?.() === false && !layout?.isCurrent())) return;
+        pendingInitialEndRef.current = null;
+        // An end request made against the initial sizer can be clamped to zero.
+        // Finish that fresh-open default once the real measured sizer commits.
+        const retained = retainedPlacements.get(el);
+        if (retained?.logicalRef !== ref && gestureFramesLeftRef.current <= 0) {
+          pendingEndTargetRef.current = true;
+          scrollToLastRow(listRef, renderedRowCountRef.current);
+          const metrics = measure(el);
+          el.scrollTop = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
+        }
       }
-    }
-    const pending = pendingViewAnchorRef.current;
-    if (!pending) return;
-    const el = listRef.current?.getScrollElement();
-    if (!el) return;
+      const pending = pendingViewAnchorRef.current;
+      if (!pending) return;
+      const el = listRef.current?.getScrollElement();
+      if (!el) return;
 
-    const measured = measureAnchors(el);
-    const positions = anchorEntries?.map((entry) => ({ ...entry, offset: 0 })) ?? measured;
-    const restored = pending.target ?? (pending.anchor ? restoreTopAnchor(pending.anchor, positions) : undefined);
-    if (!restored) {
-      const m = measure(el);
-      el.scrollTop = pending.proportion * Math.max(0, m.scrollHeight - m.clientHeight);
-      pendingViewAnchorRef.current = null;
-      return;
-    }
+      const measured = measureAnchors(el);
+      const positions = anchorEntries?.map((entry) => ({ ...entry, offset: 0 })) ?? measured;
+      const restored = pending.target ?? (pending.anchor ? restoreTopAnchor(pending.anchor, positions) : undefined);
+      if (!restored) {
+        const m = measure(el);
+        el.scrollTop = pending.proportion * Math.max(0, m.scrollHeight - m.clientHeight);
+        pendingViewAnchorRef.current = null;
+        return;
+      }
 
-    const current = measured.find((position) => position.id === restored.id);
-    if (current) {
-      el.scrollTop += current.offset - restored.offset;
-      pendingViewAnchorRef.current = null;
-      return;
-    }
+      const current = measured.find((position) => position.id === restored.id);
+      if (current) {
+        el.scrollTop += current.offset - restored.offset;
+        pendingViewAnchorRef.current = null;
+        return;
+      }
 
-    // Keep the target and desired offset pending. VirtualList's onChange seam
-    // calls this function again after scrollToIndex renders/measures the row.
-    // Mark first because react-virtual can notify synchronously from the call.
-    if (!pending.scrollRequested) {
-      pending.target = restored;
-      pending.scrollRequested = true;
-      listRef.current?.scrollToIndex(restored.index, { align: "start" });
-    }
-  }, [ref, listRef, measure, measureAnchors, anchorEntries]);
+      // Keep the target and desired offset pending. VirtualList's onChange seam
+      // calls this function again after scrollToIndex renders/measures the row.
+      // Mark first because react-virtual can notify synchronously from the call.
+      if (!pending.scrollRequested) {
+        pending.target = restored;
+        pending.scrollRequested = true;
+        listRef.current?.scrollToIndex(restored.index, { align: "start" });
+      }
+    },
+    [ref, listRef, measure, measureAnchors, anchorEntries],
+  );
+
+  const restoreViewAnchorAfterMeasurement = useCallback(
+    (layout?: CommittedVirtualListLayout) => {
+      restorePendingViewAnchor(layout);
+      if (layout) resumeOpening(layout);
+    },
+    [restorePendingViewAnchor, resumeOpening],
+  );
 
   // Mount / (re)attach. Guarded by initializedRef so the one-time restore-
   // or-default-to-bottom positioning and baseline recording happen exactly
@@ -1840,6 +1881,7 @@ export function useTranscriptScroll({
       const retained = retainedPlacements.get(el);
       const captured = retained?.logicalRef === ref ? retained.captured : undefined;
       if (!captured && (!initialViewCapture || initialViewCapture.followingBottom)) {
+        pendingEndTargetRef.current = true;
         scrollToLastRow(listRef, renderedRowCountRef.current);
         pendingInitialEndRef.current = listRef.current?.isMeasurementReady?.() === false ? ref : null;
       }
@@ -1947,6 +1989,18 @@ export function useTranscriptScroll({
         readerGestureRef.current = { beforeOffset: m.scrollTop, admitted: true };
       }
       lastScrollGeometryRef.current = m;
+      // A reader's own movement replaces an END target the virtualizer is still
+      // reconciling. A mount's or a restore's scrollToIndex lands a frame or two
+      // later (react-virtual reconciles in an animation frame), and re-applying
+      // it would throw away the position the reader just took. Only end targets
+      // are replaced: an index target the caller asked for (a failed-turn jump)
+      // must still land on its row.
+      if (isAtBottom(m)) {
+        pendingEndTargetRef.current = false;
+      } else if (pendingEndTargetRef.current && m.scrollTop !== previous.scrollTop) {
+        pendingEndTargetRef.current = false;
+        listRef.current?.scrollToOffset?.(m.scrollTop);
+      }
       if (!gestured && wasAtBottomRef.current && contentGrewBelowViewport(previous, m)) {
         el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
         return;
@@ -2295,6 +2349,7 @@ export function useTranscriptScroll({
       // the bottom, re-issuing the end target with the NEW last row keeps that
       // loop pointed at the bottom; a reader scrolled away is left alone.
       if (wasAtBottomRef.current) {
+        pendingEndTargetRef.current = true;
         scrollToLastRow(listRef, renderedRowCountRef.current);
       }
     } else {
@@ -2331,6 +2386,7 @@ export function useTranscriptScroll({
       const unseen = itemCount - baselineItemCountRef.current;
       if (unseen > 0) {
         if (wasAtBottomRef.current) {
+          pendingEndTargetRef.current = true;
           scrollToLastRow(listRef, renderedRowCountRef.current);
           wasAtBottomRef.current = true;
           baselineItemCountRef.current = itemCount;

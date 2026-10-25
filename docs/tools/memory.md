@@ -14,8 +14,9 @@ paths, escapes and symlink indirection are rejected by shared confinement.
 Write, edit and delete results and every memory tool error name paths the same
 way, relative to the scope root, never by the scope's host path; an error
 message is rewritten whole, including any page text it quotes. Read and search
-results return page text as stored, and search names files relative to the
-searched path. There is no `root` or `project_id` argument.
+results return page text as stored and name files relative to the scope root,
+including an explicit file search (`p.md`, not `.`). There is no `root` or
+`project_id` argument.
 
 Disabled or unbound sessions expose none of these tools. A delegate exposes
 only `memory_read` and `memory_search`, whatever its role or parent grants; it

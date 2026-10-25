@@ -1,8 +1,11 @@
 import { bindFilePath } from "@evener/appwire-client/docContent";
 import { beforeEach, expect, test } from "vitest";
+import { captureAttentionPlacement, presentAttentionTarget } from "../../shell/attentionPlacement";
+import "../session";
 import {
   documentPaneState,
   type OpenPaneRecord,
+  recordDocumentPaneState,
   resetWorkspaceStoreForTests,
   workspaceStore,
 } from "../../shell/workspace";
@@ -77,4 +80,65 @@ test.each(["session", "transcript"] as const)("openDocBeside retains the invalid
 
   expect(() => openDocBeside({ session: "sess_1", reference, sourcePaneId: source.id })).toThrow(TypeError);
   expect(workspaceStore.getState().panes).toEqual([source]);
+});
+
+test("openDocBeside chooses presented source and document duplicates", () => {
+  const parkedSourceId = workspaceStore.getState().openPane("session", { ref: "sess_1" });
+  const sourceEntry = captureAttentionPlacement();
+  if (!sourceEntry) throw new Error("missing source placement");
+  presentAttentionTarget("sess_away");
+  const presentedSourceId = workspaceStore.getState().openPane("session", { ref: "sess_1" });
+  const parkedDocId = workspaceStore.getState().openPane("doc", { session: "sess_1", path: "src/x.ts", kind: "file" });
+  const parkedDoc = workspaceStore.getState().panes.find((pane) => pane.id === parkedDocId);
+  const reference = bindFilePath("src/x.ts", "/work");
+  if (!parkedDoc || !reference) throw new Error("missing document fixture");
+  recordDocumentPaneState(parkedDoc, { reference, origin: sourceEntry.pane, reopen: 7 });
+  const docEntry = captureAttentionPlacement();
+  if (!docEntry) throw new Error("missing document placement");
+  presentAttentionTarget("sess_elsewhere");
+  const presentedDocId = workspaceStore.getState().openPane("doc", {
+    session: "sess_1",
+    path: "src/x.ts",
+    kind: "file",
+  });
+
+  openDocBeside({ session: "sess_1", reference, sourcePaneId: parkedSourceId });
+
+  const state = workspaceStore.getState();
+  const presentedDoc = state.panes.find((pane) => pane.id === presentedDocId);
+  expect(state.focusedPaneId).toBe(presentedDocId);
+  if (!presentedDoc) throw new Error("missing presented duplicate document");
+  expect(documentPaneState(presentedDoc)).toEqual({
+    reference,
+    origin: state.panes.find((pane) => pane.id === presentedSourceId),
+    reopen: 0,
+  });
+  expect(documentPaneState(parkedDoc)).toEqual({ reference, origin: sourceEntry.pane, reopen: 7 });
+  expect(state.panes.find((pane) => pane.id === docEntry.pane.id)).toBe(docEntry.pane);
+});
+
+test("openDocBeside opens a fresh presented document when only parked matches exist", () => {
+  const sourceId = workspaceStore.getState().openPane("session", { ref: "sess_1" });
+  const sourceEntry = captureAttentionPlacement();
+  if (!sourceEntry) throw new Error("missing source placement");
+  presentAttentionTarget("sess_away");
+  const parkedDocId = workspaceStore.getState().openPane("doc", { session: "sess_1", path: "src/x.ts", kind: "file" });
+  const parkedDoc = workspaceStore.getState().panes.find((pane) => pane.id === parkedDocId);
+  const reference = bindFilePath("src/x.ts", "/work");
+  if (!parkedDoc || !reference) throw new Error("missing parked document fixture");
+  recordDocumentPaneState(parkedDoc, { reference, origin: sourceEntry.pane, reopen: 4 });
+  const docEntry = captureAttentionPlacement();
+  if (!docEntry) throw new Error("missing document placement");
+  presentAttentionTarget("sess_elsewhere");
+
+  openDocBeside({ session: "sess_1", reference, sourcePaneId: sourceId });
+
+  const state = workspaceStore.getState();
+  const opened = state.panes.find((pane) => pane.type === "doc" && pane.slot !== "parked");
+  if (!opened) throw new Error("missing fresh presented document");
+  expect(opened.id).not.toBe(parkedDocId);
+  expect(opened.params).toEqual({ session: "sess_1", path: "src/x.ts", kind: "file" });
+  expect(documentPaneState(opened)).toEqual({ reference, origin: undefined, reopen: 0 });
+  expect(documentPaneState(parkedDoc)).toEqual({ reference, origin: sourceEntry.pane, reopen: 4 });
+  expect(state.panes).toContain(docEntry.pane);
 });
