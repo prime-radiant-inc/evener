@@ -493,6 +493,37 @@ async function mount(
 	return { tree, hub, route };
 }
 
+/** One view under the real sessions provider, with the shared entry in hand so
+ * a test can inspect the store the screen itself reads. */
+async function mountTracked(served: Thread) {
+	const hub = hubClient(served);
+	harness.connection = {
+		...screenConnection(hub.client, "ready"),
+		profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
+		error: null,
+		disconnect: () => {},
+	};
+	const ref = String((served as unknown as { evener: { ref: string } }).evener.ref);
+	const route = {
+		key: `conversation-${ref}`,
+		name: "Conversation",
+		params: { hubId: "hub-1", ref, title: "Session" },
+	} as unknown as ConversationScreenProps["route"];
+	navigationState.state = { index: 0, routes: [route] };
+	const seen = { current: null as NativeConversationSessions | null };
+	let tree!: ReactTestRenderer;
+	await act(async () => {
+		tree = render(
+			<NativeConversationSessionsProvider>
+				<RegistryProbe seen={seen} />
+				<ConversationScreen route={route} navigation={navigation} />
+			</NativeConversationSessionsProvider>,
+		);
+	});
+	await settle();
+	return { tree, hub, route, seen, entry: seen.current!.entryFor("hub-1", ref)! };
+}
+
 function field(tree: ReactTestRenderer) {
 	return tree.root
 		.findAll((node) => String(node.type) === "TextInput")
@@ -1185,6 +1216,139 @@ it("holds Stop while a queued message is handed to the outbox", async () => {
 	expect(pressable(tree, "Stop")?.props.accessibilityState).toMatchObject({
 		disabled: false,
 	});
+});
+
+/** Holds the production runtime's admission of the first press, so the store's
+ * click-to-commit marker stays set while the test inspects the screen's guards.
+ * The runtime underneath is the real one: release runs its real submit. */
+function holdFirstAdmission() {
+	const runtime = getNativeMutationRuntime();
+	const submit = runtime.submit;
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	let first = true;
+	runtime.submit = (request) => {
+		if (!first) return submit.call(runtime, request);
+		first = false;
+		return gate.then(() => submit.call(runtime, request));
+	};
+	return {
+		release: () => release(),
+		restore: () => {
+			runtime.submit = submit;
+		},
+	};
+}
+
+// Stage B: the store's click-to-commit marker is one any-mutation fact. Stop
+// must refuse while a Send, a Queue, or Stop itself is still being admitted,
+// and it must be allowed again as soon as that attempt settles.
+describe("Stop refuses while any mutation is in its click-to-commit window", () => {
+	it("holds Stop while a send is admitted, then lets it stop", async () => {
+		const ref = "ref-stop-send-admission";
+		const served = thread(ref, "idle");
+		const { tree, hub } = await mount(served);
+		const held = holdFirstAdmission();
+		try {
+			await type(tree, "first");
+			act(() => pressable(tree, "Send")!.props.onPress());
+			await settle();
+			// A status frame reports the turn running before the send's admission
+			// settles: Stop takes the slot, disabled by the any-mutation marker.
+			act(() =>
+				hub.notify({
+					method: "thread/status/changed",
+					params: { threadId: served.id, ref, status: { type: "active" } },
+				} as AnyNotification),
+			);
+			await settle();
+			const stop = pressable(tree, "Stop");
+			expect(stop).toBeDefined();
+			expect(stop?.props.accessibilityState).toEqual({ disabled: true });
+			// A press that reaches the guard sends no interrupt.
+			act(() => stop!.props.onPress());
+			await settle();
+			expect(hub.mutations()).toEqual([]);
+
+			held.release();
+			await until(() => expect(pressable(tree, "Stop")?.props.accessibilityState).toEqual({ disabled: false }));
+			await press(tree, "Stop");
+			await until(() => expect(hub.mutations()).toEqual(["turn/start", "turn/interrupt"]));
+		} finally {
+			held.release();
+			await settle();
+			held.restore();
+		}
+	});
+
+	it("holds Stop while a queued message is admitted, then lets it stop", async () => {
+		const ref = "ref-stop-queue-admission";
+		const { tree, hub } = await mount(thread(ref, "active"));
+		const held = holdFirstAdmission();
+		try {
+			await type(tree, "later");
+			act(() => pressable(tree, "Queue message")!.props.onPress());
+			await settle();
+			const stop = pressable(tree, "Stop");
+			expect(stop).toBeDefined();
+			expect(stop?.props.accessibilityState).toEqual({ disabled: true });
+			act(() => stop!.props.onPress());
+			await settle();
+			expect(hub.mutations()).toEqual([]);
+
+			held.release();
+			await until(() => expect(pressable(tree, "Stop")?.props.accessibilityState).toEqual({ disabled: false }));
+			await press(tree, "Stop");
+			await until(() => expect(hub.mutations()).toEqual(["turn/queue", "turn/interrupt"]));
+		} finally {
+			held.release();
+			await settle();
+			held.restore();
+		}
+	});
+
+	it("holds a repeated Stop while the first interrupt is admitted, then lets it stop again", async () => {
+		const ref = "ref-stop-interrupt-admission";
+		const { tree, hub } = await mount(thread(ref, "active"));
+		const held = holdFirstAdmission();
+		try {
+			act(() => pressable(tree, "Stop")!.props.onPress());
+			await settle();
+			const stop = pressable(tree, "Stop");
+			expect(stop).toBeDefined();
+			expect(stop?.props.accessibilityState).toEqual({ disabled: true });
+			act(() => stop!.props.onPress());
+			await settle();
+			expect(hub.mutations()).toEqual([]);
+
+			held.release();
+			await until(() => expect(pressable(tree, "Stop")?.props.accessibilityState).toEqual({ disabled: false }));
+			await press(tree, "Stop");
+			await until(() => expect(hub.mutations()).toEqual(["turn/interrupt", "turn/interrupt"]));
+		} finally {
+			held.release();
+			await settle();
+			held.restore();
+		}
+	});
+});
+
+it("refuses answers while a mutation owns the click-to-commit marker", async () => {
+	const ref = "ref-question-marker";
+	const { tree, hub, entry } = await mountTracked(thread(ref, "awaiting", true));
+	await press(tree, "Drop them");
+	const sendAnswer = pressable(tree, "Send answer");
+	expect(sendAnswer?.props.accessibilityState).toMatchObject({ disabled: false });
+	// A send still in its click-to-commit window, with no legacy pending record:
+	// the marker alone is what the answer path must read.
+	act(() => entry.store.setState({ pendingSubmission: { kind: "send" } }));
+	await settle();
+	expect(pressable(tree, "Send answer")?.props.accessibilityState).toMatchObject({ disabled: true });
+	act(() => sendAnswer!.props.onPress());
+	await settle();
+	expect(hub.mutations()).toEqual([]);
 });
 
 // Two finished turns, each your message and the agent's reply.
@@ -3067,37 +3231,6 @@ describe("Retry's one owner on the shared session binding", () => {
 			release = resolve;
 		});
 		return { gate, release };
-	}
-
-	/** One view under the real sessions provider, with the shared entry in
-	 * hand so a test can advance the canonical model or drive its pending seam. */
-	async function mountTracked(served: Thread) {
-		const hub = hubClient(served);
-		harness.connection = {
-			...screenConnection(hub.client, "ready"),
-			profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
-			error: null,
-			disconnect: () => {},
-		};
-		const ref = String((served as unknown as { evener: { ref: string } }).evener.ref);
-		const route = {
-			key: `conversation-${ref}`,
-			name: "Conversation",
-			params: { hubId: "hub-1", ref, title: "Session" },
-		} as unknown as ConversationScreenProps["route"];
-		navigationState.state = { index: 0, routes: [route] };
-		const seen = { current: null as NativeConversationSessions | null };
-		let tree!: ReactTestRenderer;
-		await act(async () => {
-			tree = render(
-				<NativeConversationSessionsProvider>
-					<RegistryProbe seen={seen} />
-					<ConversationScreen route={route} navigation={navigation} />
-				</NativeConversationSessionsProvider>,
-			);
-		});
-		await settle();
-		return { tree, hub, route, seen, entry: seen.current!.entryFor("hub-1", ref)! };
 	}
 
 	function nextTurn(id: string, status: "completed" | "failed") {
