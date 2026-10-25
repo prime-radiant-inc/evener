@@ -12,15 +12,20 @@ import { useOwnedDocument } from "./useOwnedDocument";
  * panel's first mount is already in the right window.
  *
  * The document itself comes from `useOwnedDocument`, so it also follows a
- * Dockview move while mounted.
+ * Dockview move while mounted. Pass `enabled` from a widget that stays mounted
+ * while closed: a closed panel has nothing to follow, and the owner document
+ * is re-read from the node when it opens.
  */
-export function usePortalDocument<T extends Node>(ref: RefObject<T | null>): Document | null {
+export function usePortalDocument<T extends Node>(ref: RefObject<T | null>, enabled = true): Document | null {
   // The hook's render-time read answers from the node whenever the ref is
   // attached, which is exactly the value this re-render needs.
-  const ownerDocument = useOwnedDocument(ref);
+  const ownerDocument = useOwnedDocument(ref, enabled);
   const [attached, setAttached] = useState(false);
+  // After every commit, not keyed on `attached`: a marker may attach in a later
+  // commit, and the ref object's identity does not change then. Re-setting true
+  // bails out without rendering.
   useLayoutEffect(() => {
-    if (!attached && ref.current !== null) setAttached(true);
-  }, [attached, ref]);
+    if (ref.current !== null) setAttached(true);
+  });
   return attached && ref.current !== null ? ownerDocument : null;
 }

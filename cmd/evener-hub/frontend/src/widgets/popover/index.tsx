@@ -86,7 +86,7 @@ export function Popover({
   // The trigger's document, current across a Dockview move: the shared portal
   // seam supplies it once the trigger element exists, re-rendering before paint
   // so a popover that mounts already open never portals into the opener.
-  const panelDocument = usePortalDocument(triggerRef);
+  const panelDocument = usePortalDocument(triggerRef, open);
   const panelWindow = panelDocument?.defaultView ?? null;
 
   // Measure the trigger and the panel's own natural size and set the actual
