@@ -189,6 +189,16 @@ export interface ConversationMutationState {
 	admittedMutationId?: string;
 }
 
+/** The any-mutation click-to-commit window: present from a Send, Queue or Stop
+ * press until that attempt settles. Screens read this one fact so every guard
+ * — not only Stop's — refuses while any mutation is in flight. The admitted id
+ * is recorded once the durable submitter returns one. */
+export interface ConversationPendingSubmission {
+	readonly kind: ConversationMutationState["kind"];
+	/** @internal — the durable row's clientMutationId once admitted. */
+	readonly admittedMutationId?: string;
+}
+
 /** Display-safe local acknowledgement of a completed production mutation. A
  * durable admission has no wire receipt to carry (the runtime settles at the
  * enqueue boundary, before the daemon answers), so the receipt is optional and
@@ -408,6 +418,9 @@ export interface ConversationState {
 
 	readonly draft: string;
 	readonly pendingMutation?: ConversationMutationState | null;
+	/** The in-flight mutation's click-to-commit marker: non-null from the
+	 * Send/Queue/Stop press until the attempt settles. */
+	readonly pendingSubmission: ConversationPendingSubmission | null;
 	// Slice 7a: the durable pending rows a host's bound seam projects. Null until
 	// a seam is bound (LiveConversationState.bindPendingMutations); never a
 	// per-process memory fact, so it survives a cold reopen.
@@ -1797,7 +1810,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			mutation: ConversationMutationState,
 		) => {
 			if (admission === undefined || get().pendingMutation?.mutationId !== mutationId) return;
-			set({ pendingMutation: { ...mutation, admittedMutationId: admission.clientMutationId } });
+			set({
+				pendingMutation: { ...mutation, admittedMutationId: admission.clientMutationId },
+				pendingSubmission: { kind: mutation.kind, admittedMutationId: admission.clientMutationId },
+			});
 		};
 		storeGet = get;
 		// The one chokepoint for canonical-read validity transitions. Guarded so
@@ -1854,6 +1870,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 
 			draft: "",
 			pendingMutation: null,
+			pendingSubmission: null,
 			pendingMutations: null,
 			pendingMutationsReady: false,
 			lastAcceptedMutation: null,
@@ -1971,6 +1988,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					loadingOlder: false,
 					draft: "",
 					pendingMutation: null,
+					pendingSubmission: null,
 					pendingMutations: null,
 					pendingMutationsReady: false,
 					lastAcceptedMutation: null,
@@ -2042,6 +2060,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					loadingOlder: false,
 					draft: "",
 					pendingMutation: null,
+					pendingSubmission: null,
 					pendingMutations: null,
 					pendingMutationsReady: false,
 					lastAcceptedMutation: null,
@@ -2123,6 +2142,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					error: null,
 					latestReadState: "unknown",
 					pendingMutation: null,
+					pendingSubmission: null,
 					loadingOlder: false,
 					conversationGeneration: conversationGen,
 				});
@@ -2156,6 +2176,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					error: null,
 					latestReadState: "reading",
 					pendingMutation: null,
+					pendingSubmission: null,
 					loadingOlder: false,
 					conversationGeneration: gen,
 				});
@@ -2255,7 +2276,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// Settle the old pending mutation — it belongs to A's binding.
 						// Do NOT write error (a newer error owner may own it). Just
 						// clear the pending state so it's not permanently stuck.
-						set({ pendingMutation: null });
+						set({ pendingMutation: null, pendingSubmission: null });
 					}
 					// I5: Settle held loadingOlder from the old binding.
 					if (get().loadingOlder) {
@@ -3116,6 +3137,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				set({
 					draft: "",
 					pendingMutation: mutation,
+					pendingSubmission: { kind: "send" },
 					lastAcceptedMutation: null,
 					error: null,
 				});
@@ -3150,12 +3172,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						if (entryErrorRev === errorOwnerRev) {
 							set({
 								pendingMutation: null,
+								pendingSubmission: null,
 								lastAcceptedMutation: accepted,
 								error: null,
 							});
 						} else {
 							set({
 								pendingMutation: null,
+								pendingSubmission: null,
 								lastAcceptedMutation: accepted,
 							});
 						}
@@ -3169,7 +3193,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// ghost. Only a still-current binding owns the store's marker.
 					if (err instanceof MutationNotSentError) {
 						if (isBindingCurrent(opBinding) && get().pendingMutation?.mutationId === mutationId)
-							set({ pendingMutation: null });
+							set({ pendingMutation: null, pendingSubmission: null });
 						throw err;
 					}
 					// C1: Recheck the exact operation binding after the await.
@@ -3217,6 +3241,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				set({
 					draft: "",
 					pendingMutation: mutation,
+					pendingSubmission: { kind: "queue" },
 					lastAcceptedMutation: null,
 					error: null,
 				});
@@ -3242,12 +3267,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						if (entryErrorRev === errorOwnerRev) {
 							set({
 								pendingMutation: null,
+								pendingSubmission: null,
 								lastAcceptedMutation: accepted,
 								error: null,
 							});
 						} else {
 							set({
 								pendingMutation: null,
+								pendingSubmission: null,
 								lastAcceptedMutation: accepted,
 							});
 						}
@@ -3257,7 +3284,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				} catch (err) {
 					if (err instanceof MutationNotSentError) {
 						if (isBindingCurrent(opBinding) && get().pendingMutation?.mutationId === mutationId)
-							set({ pendingMutation: null });
+							set({ pendingMutation: null, pendingSubmission: null });
 						throw err;
 					}
 					// C1: Recheck the exact operation binding after the await.
@@ -3305,6 +3332,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// Fix round 1 I3: atomically clear prior error with new pending mutation.
 				set({
 					pendingMutation: mutation,
+					pendingSubmission: { kind: "interrupt" },
 					lastAcceptedMutation: null,
 					error: null,
 				});
@@ -3322,12 +3350,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						if (entryErrorRev === errorOwnerRev) {
 							set({
 								pendingMutation: null,
+								pendingSubmission: null,
 								lastAcceptedMutation: accepted,
 								error: null,
 							});
 						} else {
 							set({
 								pendingMutation: null,
+								pendingSubmission: null,
 								lastAcceptedMutation: accepted,
 							});
 						}
@@ -3386,6 +3416,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					ref: null,
 					draft: "",
 					pendingMutation: null,
+					pendingSubmission: null,
 					pendingMutations: null,
 					pendingMutationsReady: false,
 					lastAcceptedMutation: null,
@@ -3621,6 +3652,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					latestReadState: "unknown",
 					draft: "",
 					pendingMutation: null,
+					pendingSubmission: null,
 					pendingMutations: null,
 					pendingMutationsReady: false,
 					lastAcceptedMutation: null,
@@ -3705,6 +3737,7 @@ function handleMutationError(
 		if (entryErrorRev === getErrorOwnerRev()) {
 			set({
 				pendingMutation: { ...mutation, status: "failed" },
+				pendingSubmission: null,
 				...(shouldRestore ? { draft: draftSnapshot } : {}),
 				error: newError,
 			});
@@ -3714,6 +3747,7 @@ function handleMutationError(
 			// pending/draft restoration.
 			set({
 				pendingMutation: { ...mutation, status: "failed" },
+				pendingSubmission: null,
 				...(shouldRestore ? { draft: draftSnapshot } : {}),
 			});
 		}

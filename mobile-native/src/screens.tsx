@@ -845,10 +845,7 @@ function ConversationScreenView({
 				);
 			},
 			() => store.getState().conversation,
-			() =>
-				!commandBusy.current &&
-				!document.getSnapshot().submitting &&
-				store.getState().pendingMutation?.status !== "pending",
+			() => !commandBusy.current && !document.getSnapshot().submitting && store.getState().pendingSubmission === null,
 			knownCatalog.current,
 		);
 	}, [
@@ -1888,7 +1885,7 @@ function ConversationScreenView({
 	}, []);
 	const controlsState = useControlsState(controls);
 	const settingsPending = controlsState?.pending != null || commandPending;
-	const pending = snapshot.pendingMutation?.status === "pending";
+	const pending = snapshot.pendingSubmission !== null;
 	const ready = connected && focused && snapshot.status === "open" && !pending && !settingsPending;
 	const questions = batches.flatMap((batch) => batch.questions);
 	// The ask dock shows the first batch only; the rest wait behind it.
@@ -2129,7 +2126,7 @@ function ConversationScreenView({
 					current.conversation?.instanceId !== bindingInstance) ||
 			!screenInFront(navigation, route.key) ||
 			controls?.getSnapshot().pending != null ||
-			current.pendingMutation?.status === "pending" ||
+			current.pendingSubmission !== null ||
 			!(current.conversation && conversationControls(current.conversation).send) ||
 			text === null ||
 			!questionBatches.getSnapshot().includes(batch)
@@ -2395,8 +2392,7 @@ function ConversationScreenView({
 	// store reports why), "notStopped" when nothing was tried.
 	async function stop(): Promise<"stopped" | "stopping" | "notKept" | "notStopped"> {
 		if (stopBusy.current) return "stopping";
-		if (!service || !connectionReady.current || store.getState().pendingMutation?.status === "pending")
-			return "notStopped";
+		if (!service || !connectionReady.current || store.getState().pendingSubmission !== null) return "notStopped";
 		stopBusy.current = true;
 		setStopping(true);
 		try {
@@ -2585,7 +2581,7 @@ function ConversationScreenView({
 			!ready ||
 			controls?.getSnapshot().pending != null ||
 			unconfirmedSend !== null ||
-			live.pendingMutation?.status === "pending" ||
+			live.pendingSubmission !== null ||
 			!live.conversation ||
 			// A waiting question takes Send's text as its answer instead.
 			pendingQuestions(live.conversation).length > 0
