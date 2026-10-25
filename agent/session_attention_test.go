@@ -1673,6 +1673,7 @@ func TestDelegateAttention_RestartFoldIsProviderFreeAndReadOnly(t *testing.T) {
 
 func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToolResult(t *testing.T) {
 	stateDir := t.TempDir()
+	workspace := t.TempDir()
 	const (
 		rootSessionID   = "root-session"
 		ownerDelegateID = "dlg_parent"
@@ -1698,6 +1699,8 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 	ownerCreated := delegateControllerCreatedEvent(ownerDelegateID, "")
 	ownerCreated.Created.Descriptor.ResolvedProfileID = "openai"
 	ownerCreated.Created.Descriptor.ResolvedModel = "gpt-5.2"
+	ownerCreated.Created.Descriptor.WorkingDir = workspace
+	ownerCreated.Created.Descriptor.LocalEnvPolicy = "default"
 	c.mu.Lock()
 	_, err = c.appendLocked(ownerCreated)
 	c.mu.Unlock()
@@ -1787,17 +1790,78 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 	if len(pending) != 1 || pending[0].DeliveryID != delegateDeliveryID("dlg_target", 2) || claims != 0 {
 		t.Fatalf("cold replay pending=%#v claims=%d, want unclaimed source N+1 until attachment", pending, claims)
 	}
+	if err := fresh.closeOwnedDelegateStore(); err != nil {
+		t.Fatalf("close transport-only bootstrap: %v", err)
+	}
 
+	// Attachment permits execution. Unlike the provider-free bootstrap above,
+	// restore the root through its production constructor, and hold the actual
+	// child request so custody and source settlement can be checked before response.
 	rootPath := transcriptPath(stateDir, rootSessionID)
 	reopened, err := transcript.NewWriter(rootPath, transcript.Header{SessionID: rootSessionID})
 	if err != nil {
 		t.Fatalf("create root transcript: %v", err)
 	}
-	t.Cleanup(func() { _ = reopened.Close() })
-	fresh.attachTranscript(reopened)
-	if err := fresh.replayDelegateDeliveries(); err != nil {
-		t.Fatalf("release N+1 after transcript attachment: %v", err)
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("close root transcript before restore: %v", err)
 	}
+	entered, release := make(chan llm.Request, 1), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	executionAdapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			entered <- req
+			<-release
+			return finalResponse("replay-observed-76")
+		},
+	}}
+	executionClient := llm.NewClient()
+	executionClient.Register(executionAdapter)
+	profile := withTestSessionNamer(executionClient, NewOpenAIProfile("gpt-5.2"))
+	root, err := RestoreSessionFromMetaWithConfig(executionClient, profile, execenv.NewLocalExecutionEnvironment(workspace), schema.SessionMeta{
+		ID:        rootSessionID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    schema.ConfigSnapshot{MaxSubagentDepth: 2},
+	}, RestoreSessionConfig{
+		StateDir:    stateDir,
+		ForceRealIO: true,
+		testOnly: testConfig{
+			skipGitSnapshot:            true,
+			minimalSystemPrompt:        true,
+			sandboxProber:              bwrapCapableProber(workspace),
+			disableDelegateIdleRelease: true,
+		},
+	})
+	if err != nil {
+		unblock()
+		t.Fatalf("restore execution-capable root: %v", err)
+	}
+	t.Cleanup(root.Close)
+	started := false
+	defer func() {
+		unblock()
+		if started {
+			waitForStableSupervisionRun(t, root, ownerSessionID)
+			root.sendersWG.Wait()
+		}
+	}()
+	var req llm.Request
+	select {
+	case req = <-entered:
+		started = true
+	// TRIPWIRE: only bounds a missing automatic replay wake, not its ordering.
+	case <-time.After(10 * time.Second):
+		t.Fatal("restored caller replay did not launch its initialized receiver")
+	}
+	observationRequest(t, req, []string{"seed"}, nil)
+	root.delegateController.mu.Lock()
+	runtime := root.delegateController.live[ownerDelegateID].runtime
+	root.delegateController.mu.Unlock()
+	if runtime == nil || runtime.subagents == nil || root.subagents == nil || root.jobManager == nil {
+		t.Fatal("production restore did not initialize the root and addressed receiver")
+	}
+	secondID := delegateAttentionID(delegateDeliveryID("dlg_target", 2))
+	assertAttentionResponseReceipts(t, runtime, secondID, 0)
 
 	fold, err := readDelegateAttentionFold(path, ownerSessionID)
 	if err != nil {
@@ -1823,11 +1887,23 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 	if len(fold.pendingIDs()) != 1 || fold.pendingIDs()[0] != delegateAttentionID(delegateDeliveryID("dlg_target", 2)) {
 		t.Fatalf("final pending attention = %#v, want N+1 only", fold.pendingIDs())
 	}
-	fresh.delegateController.mu.Lock()
-	remaining := len(fresh.delegateController.durable["dlg_target"].PendingDeliveries)
-	fresh.delegateController.mu.Unlock()
-	if remaining != 0 {
-		t.Fatalf("pending deliveries after N+1 replay = %d, want 0", remaining)
+	if got := fold.deliveryCommits[firstPlan.deliveryID]; got != "delegate-send-N" {
+		t.Fatalf("recovered caller commit=%q, want original tool call", got)
+	}
+	root.delegateController.mu.Lock()
+	remaining := len(root.delegateController.durable["dlg_target"].PendingDeliveries)
+	claims = len(root.delegateController.deliveryClaims)
+	root.delegateController.mu.Unlock()
+	if remaining != 0 || claims != 0 {
+		t.Fatalf("after N+1 replay pending=%d claims=%d, want neither", remaining, claims)
+	}
+	unblock()
+	waitForStableSupervisionRun(t, root, ownerSessionID)
+	root.sendersWG.Wait()
+	assertAttentionResponseReceipts(t, runtime, secondID, 1)
+	assertNotificationPending(t, runtime, []string{})
+	if got := supervisionRequestCount(executionAdapter); got != 1 {
+		t.Fatalf("provider requests=%d, want one canonical N+1 response", got)
 	}
 }
 

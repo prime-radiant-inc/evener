@@ -18,6 +18,7 @@ type notificationSchedule struct {
 	hinted           bool
 	running          bool // outer-input suppression, not admission authority
 	paused           bool
+	pauseWarned      bool // survives fresh wake eligibility until successful recovery
 	retry            notificationRetry
 	admissionBlocked bool
 	nameBlocked      bool
@@ -208,6 +209,7 @@ func (s *Session) finishNotificationExecution(turnErr error) error {
 	s.notificationSchedule.hinted = false
 	if err == nil && (!pending || turnErr == nil) {
 		s.notificationSchedule.paused = false
+		s.notificationSchedule.pauseWarned = false
 		if s.notificationSchedule.releaseTurnID == "" {
 			s.notificationSchedule.retry.generation++
 			s.notificationSchedule.retry.active = false
@@ -217,7 +219,10 @@ func (s *Session) finishNotificationExecution(turnErr error) error {
 		return nil
 	}
 	permanent := err == nil && turnErr != nil && !roundWasCancelled(turnErr) && llm.Classify(turnErr) == llm.ErrorClassPermanent
-	announce := permanent && !s.notificationSchedule.paused
+	announce := permanent && !s.notificationSchedule.pauseWarned
+	if announce {
+		s.notificationSchedule.pauseWarned = true
+	}
 	s.notificationSchedule.paused = permanent
 	s.mu.Unlock()
 	if permanent {
