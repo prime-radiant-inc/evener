@@ -448,12 +448,22 @@ func appendColdAttentionResolutionForGenerationWithOpen(path, expectedSessionID 
 	if open == nil {
 		return errors.New("cold attention resolution writer opener is nil")
 	}
-	preflight, err := readDelegateAttentionFold(path, expectedSessionID)
-	if err != nil {
-		return err
-	}
-	if err := validateDelegateAttentionResolutions(preflight, ids, disposition, resumeGeneration); err != nil {
-		return err
+	// The discard-unless-resolved mode takes its concrete resolution from the
+	// transcript it is about to write, so its one fold read is the writer's own
+	// (below). Every other request keeps the cheap preflight refusal before a
+	// writer is opened.
+	if disposition == delegateAttentionDiscardUnlessResolved {
+		if err := validateDiscardUnlessResolvedShape(disposition, ids, resumeGeneration); err != nil {
+			return err
+		}
+	} else {
+		preflight, err := readDelegateAttentionFold(path, expectedSessionID)
+		if err != nil {
+			return err
+		}
+		if err := validateDelegateAttentionResolutions(preflight, ids, disposition, resumeGeneration); err != nil {
+			return err
+		}
 	}
 	if len(ids) == 0 {
 		return nil
@@ -464,6 +474,10 @@ func appendColdAttentionResolutionForGenerationWithOpen(path, expectedSessionID 
 	}
 	defer func() { err = errors.Join(err, writer.Close()) }()
 	fold, err := foldDelegateAttention(entries)
+	if err != nil {
+		return err
+	}
+	disposition, resumeGeneration, err = discardUnlessResolvedResolution(fold, ids, disposition, resumeGeneration)
 	if err != nil {
 		return err
 	}
@@ -493,6 +507,37 @@ func delegateAttentionResolutionTurnForGeneration(attentionID string, dispositio
 		ResumeGeneration: resumeGeneration,
 	}
 	return turn
+}
+
+// discardUnlessResolvedResolution maps the discard-unless-resolved mode to the
+// concrete resolution its fold decides: the transcript's own recorded
+// disposition and resume generation when it has one, and a discard with no
+// resume generation otherwise. Every other disposition passes through. It runs
+// on the same fold the caller validates and appends against, so the mode never
+// leaves a check/append gap.
+func discardUnlessResolvedResolution(fold delegateAttentionFold, ids []string, disposition delegateAttentionResolution, resumeGeneration uint64) (delegateAttentionResolution, uint64, error) {
+	if disposition != delegateAttentionDiscardUnlessResolved {
+		return disposition, resumeGeneration, nil
+	}
+	if err := validateDiscardUnlessResolvedShape(disposition, ids, resumeGeneration); err != nil {
+		return "", 0, err
+	}
+	if recorded, resolved := fold.resolutions[ids[0]]; resolved {
+		return recorded, fold.resumeGenerations[ids[0]], nil
+	}
+	return delegateAttentionDiscarded, 0, nil
+}
+
+var errDiscardUnlessResolvedShape = errors.New("discard-unless-resolved resolution requires one attention ID and no resume generation")
+
+// validateDiscardUnlessResolvedShape keeps the resolver mode's "one attention
+// ID, no resume generation" rule in one place. A non-mode disposition passes
+// through to validateDelegateAttentionResolutions.
+func validateDiscardUnlessResolvedShape(disposition delegateAttentionResolution, ids []string, resumeGeneration uint64) error {
+	if disposition == delegateAttentionDiscardUnlessResolved && (len(ids) != 1 || resumeGeneration != 0) {
+		return errDiscardUnlessResolvedShape
+	}
+	return nil
 }
 
 // appendDelegateNotificationDurably appends one private, model-bound attention
@@ -1755,6 +1800,10 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 	}
 	path := transcriptPath(stateDir, sessionID)
 	fold, err := s.attentionFoldCursor.read(path, sessionID)
+	if err != nil {
+		return err
+	}
+	disposition, resumeGeneration, err = discardUnlessResolvedResolution(fold, ids, disposition, resumeGeneration)
 	if err != nil {
 		return err
 	}

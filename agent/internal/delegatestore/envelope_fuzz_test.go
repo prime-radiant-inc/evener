@@ -6,23 +6,33 @@ import (
 	"testing"
 )
 
-// eventKinds is every kind validateEventEnvelope recognises, paired with the
-// payload it demands. Order matters only in that the bitmask below indexes it.
-var envelopeKinds = []struct {
+// envelopePayload pairs a kind with a function that attaches its payload. The
+// pairs are derived from Event's own payload fields (JSON name x belongs to
+// "delegate_x"), not from eventKindSpecs, so this target stays an independent
+// oracle: a table row bound to the wrong payload, or a row missing for a
+// payload field, disagrees with the expectation below.
+//
+// A kind with no payload field is invisible to this enumeration;
+// TestEventKindTableComplete owns that case. Order is Event field declaration
+// order, which fixes what the f.Add seed indices below mean.
+type envelopePayload struct {
 	kind   EventKind
 	attach func(*Event)
-}{
-	{EventDelegateCreated, func(e *Event) { e.Created = &DelegateCreated{} }},
-	{EventDelegateRunStarted, func(e *Event) { e.RunStarted = &RunStarted{} }},
-	{EventDelegateTerminalPrepared, func(e *Event) { e.TerminalPrepared = &TerminalPrepared{} }},
-	{EventDelegateRunFinished, func(e *Event) { e.RunFinished = &RunFinished{} }},
-	{EventDelegateResumabilityClosed, func(e *Event) { e.ResumabilityClosed = &ResumabilityClosed{} }},
-	{EventDelegateSubtreeStopRequested, func(e *Event) { e.SubtreeStopRequested = &SubtreeStopRequested{} }},
-	{EventDelegateSubtreeStopCompleted, func(e *Event) { e.SubtreeStopCompleted = &SubtreeStopCompleted{} }},
-	{EventDelegateDeliveryAcknowledged, func(e *Event) { e.DeliveryAcknowledged = &DeliveryAcknowledged{} }},
-	{EventDelegateAttentionChanged, func(e *Event) { e.AttentionChanged = &DelegateAttentionChanged{} }},
-	{EventDelegateUpdatePosted, func(e *Event) { e.UpdatePosted = &UpdatePosted{} }},
-	{EventDelegateIntentStated, func(e *Event) { e.IntentStated = &IntentStated{} }},
+}
+
+func envelopePayloads(tb testing.TB) []envelopePayload {
+	tb.Helper()
+	fields := eventPayloadFields(tb)
+	payloads := make([]envelopePayload, 0, len(fields))
+	for _, field := range fields {
+		payloads = append(payloads, envelopePayload{
+			kind: eventKindForField(field),
+			attach: func(event *Event) {
+				attachEventPayloadField(event, field)
+			},
+		})
+	}
+	return payloads
 }
 
 // FuzzDelegateEventEnvelope drives the envelope rule over the cross product of
@@ -36,9 +46,11 @@ var envelopeKinds = []struct {
 //
 // Enumerating the cross product is the point. Every kind against every payload
 // combination is far more than a table of hand-written cases covers, and the
-// switch in validateEventEnvelope is maintained by hand — a kind added to the
-// enum but forgotten there is exactly what this finds.
+// pairs are derived from Event's fields rather than from the table the
+// validator walks, so a row whose payload binding is wrong or missing fails the
+// derived expectation.
 func FuzzDelegateEventEnvelope(f *testing.F) {
+	payloads := envelopePayloads(f)
 	f.Add(0, uint16(1), "dlg_1")     // created, matching payload
 	f.Add(0, uint16(0), "dlg_1")     // created, no payload
 	f.Add(0, uint16(3), "dlg_1")     // created, two payloads
@@ -56,16 +68,16 @@ func FuzzDelegateEventEnvelope(f *testing.F) {
 		}
 
 		event := Event{DelegateID: delegateID, Seq: 1}
-		knownKind := kindIndex >= 0 && kindIndex < len(envelopeKinds)
+		knownKind := kindIndex >= 0 && kindIndex < len(payloads)
 		if knownKind {
-			event.Kind = envelopeKinds[kindIndex].kind
+			event.Kind = payloads[kindIndex].kind
 		} else {
 			event.Kind = EventKind("not-a-kind")
 		}
 
 		attached := 0
 		matching := false
-		for i, entry := range envelopeKinds {
+		for i, entry := range payloads {
 			if payloadMask&(1<<uint(i)) == 0 {
 				continue
 			}

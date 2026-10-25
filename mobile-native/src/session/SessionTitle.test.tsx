@@ -149,6 +149,28 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 		expect(maxWidthOf(tree)).toBe(390 - 2 * 100);
 	});
 
+	it("bounds the title text and its state line inside that span, so a long title truncates between the buttons (#2988)", () => {
+		// The wrapper's maxWidth bounds the row, but the title Text is centered
+		// in a column and was measured at its intrinsic width, so a long one
+		// could overflow the wrapper and draw under Back and the ellipsis
+		// button. The Text needs its own bound, the wrapper clips what is left,
+		// and the state-line row needs the same bound for its own shrink.
+		const tree = render(
+			<SessionTitle
+				title="Reproduce TestRetirementTreeSettleDrains"
+				line={{ state: "idle", text: "Idle" }}
+				{...base}
+			/>,
+		);
+		const button = tree.root.find((node) => node.props.accessibilityRole === "button");
+		const title = button.findAllByType("Text" as never)[0];
+		expect(title?.props.style).toMatchObject({ maxWidth: "100%" });
+		expect(title?.props).toMatchObject({ numberOfLines: 1, ellipsizeMode: "tail" });
+		expect(button.parent?.props.style).toMatchObject({ maxWidth: 390 - 2 * NAV_BAR_BUTTON_SPAN, overflow: "hidden" });
+		const stateRow = button.findAllByType("View" as never)[0];
+		expect(stateRow?.props.style).toMatchObject({ maxWidth: "100%" });
+	});
+
 	it("shares the header scale cap with Back instead of letting the title disappear", () => {
 		mockWindow.fontScale = 3;
 		try {

@@ -24,6 +24,7 @@ import {
 } from "./draft";
 import {
   discardRecoveryPendingTurn,
+  preserveRecoveryPendingTurn,
   refreshPendingTurnsProjection,
   subscribeComposerSubmissionCommitted,
   updateRecoveryPendingTurn,
@@ -216,6 +217,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   let recoveryOperations: Promise<void> = Promise.resolve();
   let recoveryOperationHeld = false;
   const currentRecoveryId = () => recoveryOwnerLeaseRef.current?.clientMutationId ?? null;
+  // The last durable shape this pane owned, so a refused write can preserve
+  // the local composition under a fresh owner with the same method and target.
+  let recoveryBaseRecord: MutationRecoveryRecord | null = null;
   let committedRecoveryComposition: string | null = null;
   let refreshVersion = 0;
   let persistenceScheduled = false;
@@ -318,6 +322,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     recoveryOwnerLeaseRef.current = record
       ? { clientMutationId: record.clientMutationId, compositionRevision: recoveryCompositionRevision(record) }
       : null;
+    recoveryBaseRecord = record;
     state.setState({ activeRecoveryId });
   }
   function persistDraft(text: string): void {
@@ -458,10 +463,28 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           if (!disposed && currentRecoveryId() === clientMutationId) {
             // The row was consumed or advanced by another pane. Keeping this
             // stale lease would make every later save and send fail against an
-            // owner this tab can no longer write. Preserve the local
-            // composition as an ordinary draft before retiring it.
-            persistDraft(textRef.current);
-            setActiveRecoveryId(null);
+            // owner this tab can no longer write. A draft carries no image
+            // bytes, so preserve the complete local composition under a fresh
+            // recovery owner before retiring the lease.
+            const preserved = await preserveStaleRecovery(clientMutationId, localDraftRevisionId);
+            if (
+              !disposed &&
+              currentRecoveryId() === clientMutationId &&
+              recoveryReplacementEpochRef.current === replacementEpoch
+            ) {
+              if (preserved) {
+                // Own the returned row, including the identical-composition
+                // fast path and its current revision: later edits update it,
+                // Send consumes it, and a reload restores its attachment
+                // bytes.
+                setActiveRecoveryId(preserved);
+              } else {
+                // Preservation failed, so nothing durable carries the images.
+                // Fall back to the ordinary draft and retire the lease.
+                persistDraft(textRef.current);
+                setActiveRecoveryId(null);
+              }
+            }
           }
           if (!disposed) {
             pushToast("info", "This message changed in another tab. Refresh and try again.");
@@ -479,6 +502,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             clientMutationId,
             compositionRevision: recoveryCompositionRevision(updated),
           };
+          recoveryBaseRecord = updated;
           committedRecoveryComposition = recoveryCompositionFingerprint({
             text: nextText,
             attachments: nextAttachments,
@@ -510,6 +534,34 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       pushToast("error", `Couldn't save recovered message: ${error instanceof Error ? error.message : String(error)}`);
     });
     return operation;
+  }
+
+  async function preserveStaleRecovery(
+    clientMutationId: string,
+    localDraftRevisionId?: string,
+  ): Promise<MutationRecoveryRecord | undefined> {
+    const base = recoveryBaseRecord;
+    if (!base || base.clientMutationId !== clientMutationId) return undefined;
+    try {
+      return await preserveRecoveryPendingTurn(
+        base,
+        ref,
+        textRef.current,
+        operations.toInputAttachments(),
+        skillNamesRef.current,
+        selectionMetaRef.current.commandNames,
+        selectionMetaRef.current.mentions,
+        compositionOwnerId,
+        localDraftRevisionId,
+      );
+    } catch (error) {
+      if (!disposed)
+        pushToast(
+          "error",
+          `Couldn't preserve recovered message: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      return undefined;
+    }
   }
 
   function activateRecovery(record: MutationRecoveryRecord): Promise<boolean> {

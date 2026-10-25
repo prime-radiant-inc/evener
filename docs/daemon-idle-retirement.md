@@ -138,10 +138,16 @@ Controls:
   retires; a namer still running after that refuses the retire as above. The
   wait looks only at work in flight, and work that holds no lease shuts it off:
   an open question, a pending job notification, an active goal between goal
-  turns, or the shared tree's in-memory owner state beside the namer is
-  reported at once, not once the namer settles. Evidence whose read has to
-  block (a running job, a watch, the job journal, or the attention registry) is
-  not pre-checked, so a retire beside only that work still waits the namer out.
+  turns, the shared tree's in-memory owner state, a running job, a watch, a
+  journal-only pending notification, or pending attention beside the namer is
+  reported at once, not once the namer settles. Those sources are read without
+  waiting on the locks admitted work holds: the job and watch counters under a
+  try-lock, a bounded scan of the job journal (4 MiB), and the attention
+  registry under a try-lock. A source that cannot be read, a larger or
+  concurrently changing journal, or a busy owner lock contributes no evidence,
+  so a retire beside only that work still waits the namer out rather than
+  treating contention as clear. A refusal's fresh blockers may name an unread
+  source as a caution.
   While the daemon
   waits, the session stays usable from the Hub, and a resume, force stop,
   deletion or archive can overlap the retire: a force stop cancels it and stops

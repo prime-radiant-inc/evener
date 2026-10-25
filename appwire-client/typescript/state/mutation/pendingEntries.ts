@@ -136,7 +136,37 @@ export function pendingEntryPreview(entry: {
 // not count: Stop wrote its cancellation before dispatch, so no turn can be
 // running because of it.
 export function ownPendingSend(entries: readonly PendingTurnEntry[] | null | undefined): boolean {
-  return (entries ?? []).some((entry) => entry.method === "send" && entry.fromThisClient && entry.state !== "canceled");
+  return ownUnsettledInput(entries, ["send"]);
+}
+
+// The provenance/state half of "this client has input the session has not
+// settled": another client's entry never counts, and a canceled row is a
+// cancellation the client itself wrote before dispatch, so no submission of
+// ours can still be in flight because of it.
+function isOwnUnsettledEntry(entry: PendingTurnEntry): boolean {
+  return entry.fromThisClient && entry.state !== "canceled";
+}
+
+// Whether THIS client has any composer input still unresolved, for Retry's
+// repeated-press guard. Ordinary routing can put the shared continuation on
+// either turn/start or turn/queue, so both count; steering a message is not a
+// submitted turn input and neither is a drain or promote. The payload need not
+// be a continuation: any unresolved submission of this client's blocks a
+// second Retry from acting on a stale failure.
+//
+// This is not readiness. Null or undefined entries mean the pending read has
+// not answered yet, so a false result here is not proof the read completed;
+// the caller loads that state from its owner. ownPendingSend above keeps its
+// narrower send-only meaning for ordinary composer routing.
+export function ownPendingTurnInput(entries: readonly PendingTurnEntry[] | null | undefined): boolean {
+  return ownUnsettledInput(entries, ["send", "queue"]);
+}
+
+function ownUnsettledInput(
+  entries: readonly PendingTurnEntry[] | null | undefined,
+  methods: readonly PendingTurnEntry["method"][],
+): boolean {
+  return (entries ?? []).some((entry) => methods.includes(entry.method) && isOwnUnsettledEntry(entry));
 }
 
 const DEFAULT_MAX_DISPLAY_LENGTH = 140;

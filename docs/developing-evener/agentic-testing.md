@@ -137,8 +137,11 @@ Seven successful visible checker calls used export-style environment setup that
 the narrow application oracle does not credit. Those checks prove execution,
 not memory application or benefit. Recall, correction, reliability and savings
 remain unproved. Initial verifier diagnostics and the exact live wire tool
-advertisement were not retained. Collector completion/duration fields are not
-valid outcome evidence; actual terminal events and elapsed timings are used.
+advertisement were not retained. The retained run predates the collector
+`completed` assignment, so its constant false values are not evidence.
+`completed` records whether the latest observed session-input boundary was
+successful; it is not task outcome evidence, and duration is timing, not
+outcome. Actual terminal events and elapsed timings are used.
 Infrastructure-stop diagnostic retention also remains limited. Historical invalid
 attempts remain in retained reports, not evidence of a valid comparison. Any
 later live run needs fresh controller authorization and valid executed held-out
