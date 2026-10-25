@@ -1934,14 +1934,15 @@ func TestDelegateAttention_BootstrapDrainsRestoredStopAttention(t *testing.T) {
 	}
 	seedDelegateControllerRunning(t, c, delegateID, "")
 	writeDelegateAttentionTranscript(t, transcriptPath(stateDir, childSessionID), childSessionID, attentionID)
-	if _, _, _, err := c.StopSubtree(rootDelegateActor(rootSessionID), delegateID); err != nil {
-		_ = store.Close()
-		t.Fatalf("persist stop request: %v", err)
-	}
+	// Persist the historical missing-bit request, then let bootstrap restore it
+	// from the real journal. A new Stop intentionally preserves this attention.
+	appendDelegateControllerStopRequest(t, c, delegateID)
 	if err := store.Close(); err != nil {
 		t.Fatalf("close crashed delegate store: %v", err)
 	}
 
+	// This partial Session is provider-free bootstrap only. Do not attach it as
+	// an execution runtime; initialized new-Stop release is covered separately.
 	fresh := &Session{
 		id:       rootSessionID,
 		stateDir: stateDir,
@@ -1969,6 +1970,19 @@ func TestDelegateAttention_BootstrapDrainsRestoredStopAttention(t *testing.T) {
 	}
 	if got := fold.resolutions[attentionID]; got != delegateAttentionDiscarded {
 		t.Fatalf("restored stop attention disposition = %q, want discarded", got)
+	}
+	resolutions := 0
+	for _, entry := range readAttentionTranscriptEntries(t, transcriptPath(stateDir, childSessionID)) {
+		if entry.Turn.Kind == schema.TurnAttentionResolution {
+			resolution := entry.Turn.AttentionResolution
+			if resolution == nil || resolution.AttentionID != attentionID || resolution.Disposition != string(delegateAttentionDiscarded) {
+				t.Fatalf("unexpected historical attention resolution: %+v", resolution)
+			}
+			resolutions++
+		}
+	}
+	if resolutions != 1 || len(fold.pendingIDs()) != 0 || len(fold.observed) != 0 {
+		t.Fatalf("historical cleanup resolutions=%d pending=%v observed=%v", resolutions, fold.pendingIDs(), fold.observed)
 	}
 	pendingIDs := pendingDeliveryIDs(fresh.delegateController, delegateID)
 	if claims != 0 || !reflect.DeepEqual(pendingIDs, []string{delegateDeliveryID(delegateID, 1)}) {
@@ -2614,10 +2628,8 @@ func TestDelegateAttention_StopDrainDoesNotResolveAttentionTwice(t *testing.T) {
 	path := transcriptPath(c.stateDir, sessionID)
 	writeDelegateAttentionTranscript(t, path, sessionID, attentionID)
 
-	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
-	if err != nil {
-		t.Fatalf("StopSubtree: %v", err)
-	}
+	result := restoreHistoricalDelegateStop(t, c, "dlg_target")
+	// This root is only the nonexecuting historical cleanup mutation executor.
 	root := &Session{delegateController: c}
 	if err := c.drainStop(context.Background(), c.stopForResult(result), root); err != nil {
 		t.Fatalf("drain stop with root mutation executor: %v", err)
@@ -2628,6 +2640,19 @@ func TestDelegateAttention_StopDrainDoesNotResolveAttentionTwice(t *testing.T) {
 	}
 	if len(pending) != 0 {
 		t.Fatalf("pending attention after drain = %#v", pending)
+	}
+	resolutions := 0
+	for _, entry := range readAttentionTranscriptEntries(t, path) {
+		if entry.Turn.Kind == schema.TurnAttentionResolution {
+			resolution := entry.Turn.AttentionResolution
+			if resolution == nil || resolution.AttentionID != attentionID || resolution.Disposition != string(delegateAttentionDiscarded) {
+				t.Fatalf("unexpected historical attention resolution: %+v", resolution)
+			}
+			resolutions++
+		}
+	}
+	if resolutions != 1 {
+		t.Fatalf("historical attention resolutions=%d, want exactly one", resolutions)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
@@ -27,6 +28,16 @@ import (
 
 func TestNotificationColdAcceptanceDuringEmptyWakePass(t *testing.T) {
 	// Not parallel: the barrier wraps the package-wide filesystem fold seam.
+	testNotificationColdAcceptanceDuringEmptyWakePass(t, false)
+}
+
+func TestNotificationColdAcceptanceDuringEmptyWakeClearFailure(t *testing.T) {
+	// Not parallel: the barrier wraps the package-wide filesystem fold seam.
+	testNotificationColdAcceptanceDuringEmptyWakePass(t, true)
+}
+
+func testNotificationColdAcceptanceDuringEmptyWakePass(t *testing.T, clearFails bool) {
+	t.Helper()
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
@@ -34,7 +45,11 @@ func TestNotificationColdAcceptanceDuringEmptyWakePass(t *testing.T) {
 			return finalResponse("cold-empty-response-83")
 		},
 	}
-	root := restoreSupervisionRoot(t, fixture, nil)
+	var clock *agenttest.FakeClock
+	if clearFails {
+		clock = agenttest.NewFakeClock()
+	}
+	root := restoreSupervisionRoot(t, fixture, clock)
 	c := root.delegateController
 	if _, err := c.openDelegateAttention(fixture.delegateID, "stale-empty-wake-83"); err != nil {
 		t.Fatal(err)
@@ -46,8 +61,20 @@ func TestNotificationColdAcceptanceDuringEmptyWakePass(t *testing.T) {
 	compute := readExistingDelegateAttentionFoldCompute
 	entered, release := make(chan struct{}), make(chan struct{})
 	unblock := sync.OnceFunc(func() { close(release) })
+	faultArmed, faultResult := make(chan struct{}), make(chan error, 1)
+	backup := path + ".clear-failure"
+	var faultOnce sync.Once
 	var once sync.Once
 	readExistingDelegateAttentionFoldCompute = func(readPath, sessionID string) (delegateAttentionFold, int64, error) {
+		if readPath == path {
+			select {
+			case <-faultArmed:
+				// The initial empty fold has already completed. Fault the next
+				// real filesystem read, which belongs to projection clearing.
+				faultOnce.Do(func() { faultResult <- os.Rename(path, backup) })
+			default:
+			}
+		}
 		fold, consumed, err := compute(readPath, sessionID)
 		if readPath == path && err == nil && len(fold.pendingIDs()) == 0 {
 			once.Do(func() { close(entered); <-release })
@@ -79,14 +106,51 @@ func TestNotificationColdAcceptanceDuringEmptyWakePass(t *testing.T) {
 		t.Fatalf("acceptance missed the cold held empty-read boundary: held=%t cold=%t", held, cold)
 	}
 	assertNotificationRecords(t, path, id, llm.User("cold-empty-payload-83"), 1)
-	restoreRead()
+	var recoverStorage func()
+	if clearFails {
+		close(faultArmed)
+		recoverStorage = sync.OnceFunc(func() {
+			if err := os.Rename(backup, path); err != nil {
+				t.Fatal(err)
+			}
+		})
+		defer recoverStorage()
+	} else {
+		restoreRead()
+	}
 	unblock()
 	err := <-done
 	joined = true
-	if err != nil {
+	restoreRead()
+	if clearFails {
+		select {
+		case faultErr := <-faultResult:
+			if faultErr != nil {
+				t.Fatal(faultErr)
+			}
+		default:
+			t.Fatal("clear never reached the armed filesystem fault")
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("clear error = %v, want actual missing-transcript error", err)
+		}
+		c.mu.Lock()
+		held = c.attentionRestoreHeldLocked(fixture.delegateID)
+		_, retained := c.delegateAttentionWakeIDsLocked(fixture.delegateID)[id]
+		c.mu.Unlock()
+		if held || !retained || supervisionRequestCount(fixture.adapter) != 0 {
+			t.Fatalf("clear failure lost custody or dispatched: held=%t retained=%t", held, retained)
+		}
+		recoverStorage()
+		assertNotificationRecords(t, path, id, llm.User("cold-empty-payload-83"), 1)
+		// Only the receiver's own paced recovery may dispatch the retained ID.
+		// No fresh input or explicit recheck runs after storage recovers.
+		clock.Advance(jobNotificationRetryInitialDelay)
+		clock.Drain()
+	} else if err != nil {
 		t.Fatal(err)
 	}
-	// No clock advance, fresh input or unrelated recheck may rescue this ID.
+	// The successful-clear case needs no clock advance at all.
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	root.sendersWG.Wait()
 	c.mu.Lock()
@@ -94,8 +158,292 @@ func TestNotificationColdAcceptanceDuringEmptyWakePass(t *testing.T) {
 	c.mu.Unlock()
 	assertAttentionResponseReceipts(t, runtime, id, 1)
 	assertNotificationPending(t, runtime, []string{})
+	assertNotificationRecords(t, path, id, llm.User("cold-empty-payload-83"), 1)
 	if got := supervisionRequestCount(fixture.adapter); got != 1 {
 		t.Fatalf("provider requests=%d, want one automatically observed acceptance", got)
+	}
+}
+
+func TestNotificationColdRetryHandoff(t *testing.T) {
+	// Not parallel: the clear cases observe the package-wide real fold compute.
+	for _, tc := range []struct {
+		name                  string
+		oldRetry              bool
+		initialRead           bool
+		consumeBeforeSchedule bool
+		fireBeforeReturn      bool
+	}{
+		{name: "clear_old_active_before_return", oldRetry: true, fireBeforeReturn: true},
+		{name: "clear_new_before_return", fireBeforeReturn: true},
+		{name: "clear_old_consumed_before_schedule", oldRetry: true, consumeBeforeSchedule: true},
+		{name: "clear_old_after_return", oldRetry: true},
+		{name: "initial_read_old_active_before_return", oldRetry: true, initialRead: true, fireBeforeReturn: true},
+		{name: "initial_read_new_before_return", initialRead: true, fireBeforeReturn: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newColdStableDelegateFixture(t, "")
+			const id, payload = "retry-handoff-id-91", "retry-handoff-payload-91"
+			n := notification{ID: id, Message: llm.User(payload)}
+			fixture.adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+				if req.SessionID != fixture.childID {
+					t.Errorf("request receiver=%q, want %q", req.SessionID, fixture.childID)
+				}
+				observationRequest(t, req, []string{payload}, nil)
+				return finalResponse("retry-handoff-response-91")
+			}}
+			clock := agenttest.NewFakeClock()
+			root := restoreSupervisionRoot(t, fixture, clock)
+			c := root.delegateController
+			// The real root also arms its ten-minute lane-residue sweep. These
+			// subsecond cuts count receiver callbacks above that unchanged base.
+			baselineCallbacks := clock.PendingCallbacks()
+			if root.subagents == nil || root.jobManager == nil {
+				t.Fatal("production restore did not initialize runtime managers")
+			}
+			path, backup := transcriptPath(root.stateDir, fixture.childID), transcriptPath(root.stateDir, fixture.childID)+".retry-handoff"
+			recoverStorage := func() error {
+				if _, err := os.Stat(backup); errors.Is(err, os.ErrNotExist) {
+					return nil
+				}
+				return os.Rename(backup, path)
+			}
+			t.Cleanup(func() {
+				if err := recoverStorage(); err != nil {
+					t.Error(err)
+				}
+			})
+			if _, err := c.openDelegateAttention(fixture.delegateID, "retry-handoff-stale-91"); err != nil {
+				t.Fatal(err)
+			}
+			type receiverState struct {
+				holds      int
+				active     bool
+				generation int
+				retained   bool
+				runtime    *Session
+			}
+			state := func() receiverState {
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				s := receiverState{holds: c.attentionRestoreHolds[fixture.delegateID]}
+				if a := c.attention[fixture.delegateID]; a != nil {
+					s.active, s.generation = a.retry.active, a.retry.generation
+					_, s.retained = a.wakeIDs[id]
+				}
+				if live := c.live[fixture.delegateID]; live != nil {
+					s.runtime = live.runtime
+				}
+				return s
+			}
+			var oldGeneration int
+			if tc.oldRetry {
+				// A genuine earlier read failure owns the old retry, not test state.
+				if err := os.Rename(path, backup); err != nil {
+					t.Fatal(err)
+				}
+				if err := c.requestSessionWake(fixture.childID); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("old retry setup error=%v, want ENOENT", err)
+				}
+				if err := recoverStorage(); err != nil {
+					t.Fatal(err)
+				}
+				s := state()
+				if s.holds != 0 || !s.active || s.runtime != nil || clock.PendingCallbacks() != baselineCallbacks+1 {
+					t.Fatalf("old retry setup=%+v callbacks=%d", s, clock.PendingCallbacks())
+				}
+				oldGeneration = s.generation
+			}
+			if tc.initialRead {
+				// Build real canonical custody under the production cold-I/O claim,
+				// then address it below. Unlike enqueueNotification, splitting these
+				// real admission steps lets us fault the initial read before its wake.
+				c.mu.Lock()
+				token, err := c.beginColdNotificationIOLocked(fixture.delegateID, id)
+				ref := c.durable[fixture.delegateID].Descriptor.TranscriptRef
+				c.mu.Unlock()
+				if err != nil {
+					t.Fatal(err)
+				}
+				cold := coldDelegateDeliveryReceiver{stateDir: root.stateDir, transcriptRef: ref}
+				appended, appendErr := cold.appendNotificationDurably(n)
+				_, openErr := c.openDelegateAttention(fixture.delegateID, id)
+				_, completeErr := c.CompleteDelivery(token, false)
+				if err := errors.Join(appendErr, openErr, completeErr); err != nil || !appended {
+					t.Fatalf("canonical acceptance appended=%t error=%v", appended, err)
+				}
+				assertNotificationRecords(t, path, id, n.Message, 1)
+				if err := os.Rename(path, backup); err != nil {
+					t.Fatal(err)
+				}
+			}
+			scheduled, releaseSchedule := make(chan struct{}), make(chan struct{})
+			unblockSchedule := sync.OnceFunc(func() { close(releaseSchedule) })
+			var scheduledErr error
+			var scheduledState receiverState
+			var scheduleOnce sync.Once
+			root.cfg.testOnly.afterSessionWakeRecoveryScheduled = func(sessionID string, err error) {
+				if sessionID != fixture.childID {
+					t.Errorf("recovery receiver=%q, want %q", sessionID, fixture.childID)
+				}
+				scheduleOnce.Do(func() {
+					scheduledErr, scheduledState = err, state()
+					close(scheduled)
+					<-releaseSchedule
+				})
+			}
+			emptyRead, releaseEmpty := make(chan struct{}), make(chan struct{})
+			faultArmed, faultRead, releaseFault := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			faultResult := make(chan error, 1)
+			unblockEmpty := sync.OnceFunc(func() { close(releaseEmpty) })
+			unblockFault := sync.OnceFunc(func() { close(releaseFault) })
+			compute := readExistingDelegateAttentionFoldCompute
+			if !tc.initialRead {
+				if err := os.Chtimes(path, time.Unix(1, 0), time.Unix(1, 0)); err != nil {
+					t.Fatal(err)
+				}
+				var emptyOnce, faultOnce sync.Once
+				readExistingDelegateAttentionFoldCompute = func(readPath, sessionID string) (delegateAttentionFold, int64, error) {
+					faulted := false
+					if readPath == path {
+						select {
+						case <-faultArmed:
+							faultOnce.Do(func() { faulted = true; faultResult <- os.Rename(path, backup) })
+						default:
+						}
+					}
+					fold, consumed, err := compute(readPath, sessionID)
+					if faulted && tc.consumeBeforeSchedule {
+						close(faultRead)
+						<-releaseFault
+					}
+					if readPath == path && err == nil && len(fold.pendingIDs()) == 0 {
+						emptyOnce.Do(func() { close(emptyRead); <-releaseEmpty })
+					}
+					return fold, consumed, err
+				}
+			}
+			done, joined := make(chan error, 1), false
+			go func() { done <- c.requestSessionWake(fixture.childID) }()
+			defer func() {
+				unblockEmpty()
+				unblockFault()
+				unblockSchedule()
+				if !joined {
+					<-done
+				}
+				clock.Drain()
+				root.sendersWG.Wait()
+				readExistingDelegateAttentionFoldCompute = compute
+			}()
+			if !tc.initialRead {
+				notificationAwait(t, emptyRead)
+				if err := c.enqueueNotification(fixture.childID, n); err != nil {
+					t.Fatal(err)
+				}
+				s := state()
+				if s.holds != 1 || !s.retained || s.runtime != nil || supervisionRequestCount(fixture.adapter) != 0 {
+					t.Fatalf("canonical arrival missed held cold pass: %+v", s)
+				}
+				assertNotificationRecords(t, path, id, n.Message, 1)
+				close(faultArmed)
+				unblockEmpty()
+				if tc.consumeBeforeSchedule {
+					notificationAwait(t, faultRead)
+					clock.Advance(jobNotificationRetryInitialDelay)
+					clock.Drain()
+					s = state()
+					if s.active || s.holds != 1 || s.runtime != nil || s.generation != oldGeneration || clock.PendingCallbacks() != baselineCallbacks {
+						t.Fatalf("old callback not consumed before scheduling: %+v callbacks=%d", s, clock.PendingCallbacks())
+					}
+					unblockFault()
+				}
+			}
+			notificationAwait(t, scheduled)
+			if !errors.Is(scheduledErr, os.ErrNotExist) {
+				t.Fatalf("recovery error=%v, want real ENOENT", scheduledErr)
+			}
+			wantGeneration := oldGeneration
+			if !tc.oldRetry || tc.consumeBeforeSchedule {
+				wantGeneration++
+			}
+			if !scheduledState.active || !scheduledState.retained || scheduledState.runtime != nil || scheduledState.generation != wantGeneration || clock.PendingCallbacks() != baselineCallbacks+1 {
+				t.Fatalf("scheduled handoff=%+v generation=%d callbacks=%d", scheduledState, wantGeneration, clock.PendingCallbacks())
+			}
+			t.Logf("recovery barrier: holds=%d active=%t generation=%d old=%d", scheduledState.holds, scheduledState.active, scheduledState.generation, oldGeneration)
+			if !tc.initialRead {
+				if err := <-faultResult; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := recoverStorage(); err != nil {
+				t.Fatal(err)
+			}
+			assertNotificationRecords(t, path, id, n.Message, 1)
+			advanceRetry := func() {
+				delay := jobNotificationRetryInitialDelay
+				if tc.consumeBeforeSchedule {
+					delay *= 2
+				}
+				clock.Advance(delay)
+				clock.Drain()
+			}
+			if tc.fireBeforeReturn {
+				advanceRetry()
+			}
+			unblockSchedule()
+			err := <-done
+			joined = true
+			if err != scheduledErr {
+				t.Fatalf("returned error=%v, want same recovery error object %v", err, scheduledErr)
+			}
+			if !tc.fireBeforeReturn {
+				advanceRetry()
+			}
+			s := state()
+			if s.holds != 0 || s.runtime == nil {
+				t.Fatalf("timer-only recovery stranded canonical ID: %+v callbacks=%d requests=%d", s, clock.PendingCallbacks(), supervisionRequestCount(fixture.adapter))
+			}
+			waitForStableSupervisionRun(t, root, fixture.childID)
+			root.sendersWG.Wait()
+			assertAttentionResponseReceipts(t, s.runtime, id, 1)
+			assertNotificationPending(t, s.runtime, []string{})
+			assertNotificationRecords(t, path, id, n.Message, 1)
+			if got := supervisionRequestCount(fixture.adapter); got != 1 {
+				t.Fatalf("provider requests=%d, want one same-receiver request", got)
+			}
+		})
+	}
+}
+
+func TestNotificationColdEmptyWakeDoesNotRecurse(t *testing.T) {
+	t.Parallel()
+	fixture := newColdStableDelegateFixture(t, "")
+	clock := agenttest.NewFakeClock()
+	root := restoreSupervisionRoot(t, fixture, clock)
+	c := root.delegateController
+	baselineCallbacks := clock.PendingCallbacks()
+	path := transcriptPath(root.stateDir, fixture.childID)
+	fold, err := readExistingDelegateAttentionFold(path, fixture.childID)
+	if err != nil || len(fold.pendingIDs()) != 0 {
+		t.Fatalf("empty fixture pending=%v error=%v", fold.pendingIDs(), err)
+	}
+	if _, err := c.openDelegateAttention(fixture.delegateID, "empty-stale-wake-91"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.requestSessionWake(fixture.childID); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	held := c.attentionRestoreHolds[fixture.delegateID]
+	wakes := len(c.delegateAttentionWakeIDsLocked(fixture.delegateID))
+	live := c.live[fixture.delegateID]
+	c.mu.Unlock()
+	if held != 0 || wakes != 0 || live != nil && live.runtime != nil || clock.PendingCallbacks() != baselineCallbacks || supervisionRequestCount(fixture.adapter) != 0 {
+		t.Fatalf("empty wake retained work or dispatched: holds=%d wakes=%d callbacks=%d requests=%d", held, wakes, clock.PendingCallbacks(), supervisionRequestCount(fixture.adapter))
+	}
+	fold, err = readExistingDelegateAttentionFold(path, fixture.childID)
+	if err != nil || len(fold.pendingIDs()) != 0 {
+		t.Fatalf("empty wake changed membership: pending=%v error=%v", fold.pendingIDs(), err)
 	}
 }
 

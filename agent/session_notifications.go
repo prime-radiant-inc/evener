@@ -513,6 +513,13 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		fold, err = readExistingDelegateAttentionFold(path, expectedID)
 		if err == nil && len(fold.pendingIDs()) == 0 {
 			if err := c.clearResolvedDelegateAttention(id); err != nil {
+				// A current retry must not be consumed against our own hold.
+				c.releaseAttentionRestoreHold(id)
+				holdingRestore = false
+				c.scheduleSessionWakeRetry(sessionID)
+				if hook := root.cfg.testOnly.afterSessionWakeRecoveryScheduled; hook != nil {
+					hook(sessionID, err)
+				}
 				return err
 			}
 			// Acceptance may have coalesced behind this empty pass's hold.
@@ -537,7 +544,12 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 	if err != nil {
 		root.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, id, err)
 		root.countDelegateAttentionRestoreFailure(id, err)
+		c.releaseAttentionRestoreHold(id)
+		holdingRestore = false
 		c.scheduleSessionWakeRetry(sessionID)
+		if hook := root.cfg.testOnly.afterSessionWakeRecoveryScheduled; hook != nil {
+			hook(sessionID, err)
+		}
 		return err
 	}
 	c.delegateAttentionRestored(id)
