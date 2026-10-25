@@ -43,10 +43,24 @@ export interface GhostBubbleProps {
 	/** What the bubble sits on: the transcript's page, or a sheet's canvas.
 	 * A swipe paints it under the unfilled bubble. */
 	backdrop: GhostBackdrop;
+	/** How far the bubble's row starts from the screen's left edge: the
+	 * horizontal padding of the list or sheet that holds it. The swipe row
+	 * measures the screen's edge band from that edge, so a padded caller trims
+	 * only the rest. */
+	edgeInset: number;
 	onAction(action: GhostAction): void;
 }
 
-export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, backdrop, onAction }: GhostBubbleProps) {
+export function GhostBubble({
+	ghost,
+	disabled,
+	canEdit,
+	editHint,
+	attachments,
+	backdrop,
+	edgeInset,
+	onAction,
+}: GhostBubbleProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const reading = useReadingType();
@@ -178,6 +192,7 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 			destructive={{ key: "cancel", label: removalLabel, run: () => run("cancel") }}
 			backdrop={palette[backdrop]}
 			enabled={!disabled}
+			edgeInset={edgeInset}
 		>
 			{bubble}
 		</SwipeRow>

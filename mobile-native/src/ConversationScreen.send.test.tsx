@@ -4364,6 +4364,17 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		expect(textOf(bottomBar(tree))).not.toContain("check the logs");
 	});
 
+	it("starts a ghost row's edge band at the transcript's padded left edge, not the row's", async () => {
+		const { tree } = await mount(thread("ref-queue-edge-band", "active", false, ["check the logs"]));
+		const swipeables = tree.root.findAllByType("ReanimatedSwipeable" as never);
+		expect(swipeables).toHaveLength(1);
+		const [swipeable] = swipeables;
+		const tracker = swipeable?.props.simultaneousWithExternalGesture as PanGestureMock | undefined;
+		expect(swipeable?.props.hitSlop).toEqual({ left: -8 });
+		expect(tracker?.config.hitSlop).toEqual({ left: -8 });
+		expect(transcriptList(tree).props.contentContainerStyle.paddingHorizontal).toBe(16);
+	});
+
 	// A message you queue shows once at every frame on its way: its ghost
 	// while it sends and while it waits in the queue, then your message once
 	// its turn starts, never beside its ghost.
