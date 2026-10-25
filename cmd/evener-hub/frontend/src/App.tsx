@@ -1,5 +1,8 @@
 import { lazy, Suspense } from "react";
-import { AppShell } from "./shell/AppShell";
+import { parseComicRoute } from "./comic/route";
+
+const WorkspaceRoute = lazy(() => import("./shell/AppShell").then((module) => ({ default: module.AppShell })));
+const ComicRoute = lazy(() => import("./comic/ComicApp").then((module) => ({ default: module.ComicApp })));
 
 // Dev-only routes, at /dev/widgets, /dev/surfaces, /dev/type and
 // /dev/harness. import.meta.env.DEV
@@ -26,6 +29,13 @@ const DevHarnessRoute = import.meta.env.DEV
   : null;
 
 export function App() {
+  if (parseComicRoute(window.location.pathname) !== null) {
+    return (
+      <Suspense fallback={null}>
+        <ComicRoute />
+      </Suspense>
+    );
+  }
   if (WidgetGallery !== null && window.location.pathname === "/dev/widgets") {
     return (
       <Suspense fallback={null}>
@@ -54,5 +64,9 @@ export function App() {
       </Suspense>
     );
   }
-  return <AppShell />;
+  return (
+    <Suspense fallback={null}>
+      <WorkspaceRoute />
+    </Suspense>
+  );
 }

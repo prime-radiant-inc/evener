@@ -12,12 +12,14 @@ import { capability, manifest } from "@evener/appwire-client/testing/navigation"
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
+import { bindNavigationConnection } from "../stores/navigation/binding";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
 import { initNotifications, resetNotificationsForTests } from "./index";
 import { resetLeaderForTests, setLeaderForTests } from "./leader";
 
 const navigationCapability = capability;
+let unbindNavigation: (() => void) | undefined;
 const navigationManifest = (generationId = "generation_test") => manifest({ generation_id: generationId });
 const navigationInitialize = (generationId = "generation_test"): InitializeResponse => ({
   serverInfo: { name: "fake", version: "1" },
@@ -155,6 +157,7 @@ function setFocused(value: boolean): void {
 beforeEach(() => {
   resetNotificationsForTests();
   resetNavigationStoreForTests();
+  unbindNavigation = bindNavigationConnection();
   resetLeaderForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   localStorage.clear();
@@ -171,6 +174,7 @@ beforeEach(() => {
   vi.stubGlobal("AudioContext", FakeAudioContext);
 });
 afterEach(() => {
+  unbindNavigation?.();
   resetNotificationsForTests();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -232,7 +236,7 @@ async function boot(baseline: {
   return client;
 }
 
-describe("initNotifications lifecycle", () => {
+describe("notifications with shared navigation connection", () => {
   test("supported v2 boots navigation through the typed AppWire read", async () => {
     const client = new FakeClient("ready");
     scriptNavigationManifest(client);
@@ -288,14 +292,8 @@ describe("initNotifications lifecycle", () => {
     expect(() => initNotifications()).not.toThrow();
   });
 
-  // The navigation manifest is this engine's whole data source, and nothing
-  // else guarantees a read: the rail is the app's only other mount-time
-  // fetcher and it does not mount at all on a mobile boot (it lives inside the
-  // tree drawer's sheet, which renders null while closed). AppShell calls
-  // initNotifications() at module evaluation, so this baseline fetch is what
-  // makes the manifest arrive on every host. Kata bbsv mis-read its absence as
-  // the cause of mobile deep links being discarded; it is present, and the
-  // shell relies on it.
+  // The shared connection binding reads navigation on every surface, even
+  // without notification election or a mounted workspace rail.
   test("reads the manifest after the handshake selects v2 mode", async () => {
     const client = await boot(attentionFromNodes([]));
 

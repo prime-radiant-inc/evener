@@ -1,12 +1,11 @@
-// The application shell: constructs the one AppwireClient per window,
-// drives its connect() handshake, provides it via context, and hosts the
-// workspace - DockHost (dockview) on desktop; renders NotFound in its
+// The workspace shell uses the shared browser connection lifetime, provides
+// its client via context, and hosts DockHost (dockview) on desktop; renders NotFound in its
 // place for a path urlToPane() can't resolve at all.
 
 import type { AppwireClientLike, NavigationSessionLocation } from "@evener/appwire-client";
-import { ACTIONS, AppwireClient, rpcURLFromLocation } from "@evener/appwire-client";
+import { ACTIONS } from "@evener/appwire-client";
 import { isNavigationUnavailable, isSettledGone, keyID } from "@evener/appwire-client/state/navigation";
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { isEditableTarget } from "../keybindings/dispatcher";
 import { MotionProvider } from "../motion";
@@ -17,7 +16,7 @@ import { isKnownSettingsSection, resolveSettingsSection } from "../panes/setting
 import { zoomParamsCoverConversation } from "../panes/zoom/cascadeCoverage";
 import { parseZoomParams, type SessionZoomParams } from "../panes/zoom/intent";
 import { startBackgroundTranscripts } from "../stores/backgroundTranscripts";
-import { connectionStore, useConnectionStore } from "../stores/connection";
+import { useConnectionStore } from "../stores/connection";
 import {
   selectLiveRows,
   selectLocation,
@@ -49,6 +48,7 @@ import { navigate, observeRouteHistory, openSessionRoute, refParam, urlToPane } 
 import { cycleSessionPane } from "./sessionCycle";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
+import { useBrowserConnection } from "./useBrowserConnection";
 import { useIsMobile } from "./useIsMobile";
 import { useKeyboardInset } from "./useKeyboardInset";
 import {
@@ -84,9 +84,8 @@ initTranscriptDisplay();
 // Wires the activity summary store to the activity panel store: the panel
 // requires it before it fetches a continuation page.
 
-// Start the notifications engine once, at module evaluation, beside initPrefs.
-// Idempotent no-op in T1; T4 fills it (title count / favicon badge / OS
-// notification / sound / single-tab election off the pinned all-OFF prefs).
+// Workspace-only notification election and attention chrome start at module
+// evaluation; the comic entry never imports this module.
 initNotifications();
 
 import styles from "./AppShell.module.css";
@@ -99,17 +98,9 @@ import styles from "./AppShell.module.css";
 // in its own chunk that only a desktop session ever fetches.
 
 export interface AppShellProps {
-  // Test seam: production (main.tsx) omits this, and AppShell constructs +
-  // connects the one real AppwireClient itself (below). Tests inject a
-  // FakeClient (whose connect() is a separately-scripted promise, see
-  // protocol/testing/fakeClient.ts) so the rest of AppShell's wiring -
-  // including the shared connection binding's metadata publication - runs
-  // with no real sockets.
-  // AppShell calls .connect() on whatever `client` is, injected or not; the
-  // `owned` half of ClientSlot below exists to gate the ONE thing that
-  // still differs between them - never opening a real socket under a test
-  // runner - and to know which client this component itself is responsible
-  // for closing again on unmount.
+  // Tests inject a FakeClient so the shared connection lifetime's handshake
+  // and navigation publication run without real sockets. Production constructs
+  // and retires the one real client through useBrowserConnection.
   client?: AppwireClientLike;
   // Test seam: production (main.tsx) omits this, so the banner uses its
   // built-in 10s reveal delay. Tests pass 0 to drive the banner synchronously
@@ -121,28 +112,8 @@ export interface AppShellProps {
   bannerCreateClient?: () => AppwireClientLike;
 }
 
-interface ClientSlot {
-  client: AppwireClientLike;
-  owned: AppwireClient | null;
-}
-
-// Constructing an AppwireClient has no side effects on its own (the
-// constructor only stores config; dialing a socket happens inside
-// connect()), so computing this in a useState lazy initializer is safe even
-// under StrictMode's double-invoke - the discarded extra instance (if any)
-// never opened a socket. The actual connect() call lives in the effect
-// below, which IS where a side effect belongs.
-function createClientSlot(injected: AppwireClientLike | undefined): ClientSlot {
-  if (injected) return { client: injected, owned: null };
-  const real = new AppwireClient({ url: rpcURLFromLocation(window.location) });
-  return { client: real, owned: real };
-}
-
-// Adopting a banner-retry client into the provider slot. Same ownership
-// rule as construction: the shell closes real clients it provides on
-// unmount, while injected (test) clients stay their owner's responsibility.
-function adoptClientSlot(fresh: AppwireClientLike): ClientSlot {
-  return { client: fresh, owned: fresh instanceof AppwireClient ? fresh : null };
+function startWorkspaceBackground() {
+  return startBackgroundTranscripts(navigationStore);
 }
 
 // Hand-rolled rather than react-router (see Task 1's report for the
@@ -460,67 +431,11 @@ function reconcileWelcomeRouteWithLocation(location: NavigationSessionLocation |
 }
 
 function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateClient }: AppShellProps) {
-  const [slot, setSlot] = useState(() => createClientSlot(injectedClient));
-  const { client, owned } = slot;
-  // A banner retry wires a fresh client into connectionStore; adopting it
-  // here keeps ClientProvider (shell-owned, fixed at mount otherwise)
-  // pointed at the live client instead of a closed orphan. connect() is
-  // idempotent on an already-connected client, so the mount effect below
-  // safely re-runs for the adopted instance.
-  const handleClientReplaced = useCallback((fresh: AppwireClientLike) => setSlot(adoptClientSlot(fresh)), []);
+  const { client, onClientReplaced } = useBrowserConnection({
+    client: injectedClient,
+    startBackground: startWorkspaceBackground,
+  });
   const { controller } = useNeedsYou();
-
-  useEffect(() => {
-    connectionStore.getState().connect(client);
-    // One background transcript owner per actual client lifetime: it follows
-    // the complete Live roster (across projects and attached remote hosts,
-    // including idle sessions) through the navigation store's own background
-    // page lease, independent of the selected pane, rail expansion, width or
-    // visibility. Navigation initialization is already performed by the app
-    // (notifications/index.ts), so this adds no initialize request.
-    const backgroundTranscripts = startBackgroundTranscripts(navigationStore);
-    // jsdom (unlike a real browser-less environment) implements a global
-    // WebSocket that would otherwise dial the page's own origin for real.
-    // App.test.tsx renders <App/> - and therefore <AppShell/> with its
-    // default, no-prop production wiring - with no injected client, so a
-    // REAL client's connect() must never run under vitest. An injected
-    // client (AppShellProps.client - always a FakeClient in tests) has no
-    // socket to open, so it's fine to exercise its handshake under test by
-    // allowing connect() to run even
-    // under MODE==="test" (mirrors dev/DevHarness.tsx's identical
-    // guard/rationale, narrowed to only the client AppShell itself dialed).
-    if (!(owned && import.meta.env.MODE === "test")) {
-      void client.connect().catch(() => {
-        // State and negotiated metadata are published by the shared binding;
-        // a failure is already reflected through its state listener.
-      });
-    }
-    // Tear down the client we constructed ourselves on unmount (HMR
-    // remount, navigating away, etc.) - the one-client-per-window invariant
-    // means this component must retire what it dialed. An injected client's
-    // lifecycle stays its owner's (the test's) responsibility, so this only
-    // ever acts on `owned`, never the interface-typed `client`.
-    return () => {
-      // Stop and release this owner's claims before the shared client is torn
-      // down; dispose never closes the client itself. Match the repository's
-      // 30-second final-retirement bound even if a disposal stops settling.
-      const disposal = backgroundTranscripts.dispose();
-      if (!owned) {
-        void disposal.catch(() => {});
-        return;
-      }
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const deadline = new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, 30_000);
-      });
-      void Promise.race([disposal, deadline])
-        .catch(() => {})
-        .then(() => {
-          clearTimeout(timer);
-          owned.close();
-        });
-    };
-  }, [client, owned]);
 
   // Global chord wiring (floor §2.1 + the UX-fix chords), now driven by the
   // keybindings dispatcher (src/keybindings/, installed app-wide by
@@ -1082,7 +997,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
             state={connectionState}
             delayMs={bannerDelayMs}
             createClient={bannerCreateClient}
-            onClientReplaced={handleClientReplaced}
+            onClientReplaced={onClientReplaced}
           />
           <ToastRegion />
           <CommandPalette />
