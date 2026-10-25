@@ -16,9 +16,9 @@ A client sees an action on a remote session only when both sides answer for it:
 is the policy that combines those answers. It reads the remote hub's
 `FeatureSet`; attachment already enforces the controller's exact AppWire
 protocol version, so a compatible peer routes every v7 mutation the controller
-forwards. An explicit Connect probes the host's capability snapshot; a read
-that finds no snapshot uses the client's own initialize response, which carries
-the same handshake facts.
+forwards. Every read uses the client's own initialize response,
+which carries the handshake facts; Connect reads no other hub surface to warm
+them.
 
 The feature set gates the five actions it names: Send (`turn/start`), Steer
 (`turn/steer`), Clear (`thread/clear`), ForkFromTurn (`thread/fork`), and
