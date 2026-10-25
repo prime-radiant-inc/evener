@@ -64,7 +64,14 @@ const (
 // ~shellDigestHalfBytes with the middle elided. The full output stays in the
 // OutputStore, reachable via the job transcript_ref.
 func shellInlineDigest(full string, total, dropped int64) string {
-	if window, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, dropped > 0); ok {
+	return shellInlineDigestFrom(full, total, dropped, false)
+}
+
+// shellInlineDigestFrom is shellInlineDigest with the retention boundary's line
+// state: startsMidLine says the first visible byte continues a line whose
+// beginning was evicted, so that fragment is not structural diff text.
+func shellInlineDigestFrom(full string, total, dropped int64, startsMidLine bool) string {
+	if window, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, dropped > 0, startsMidLine); ok {
 		return renderDiffDigest(full, window, total, dropped)
 	}
 	b := []byte(full)

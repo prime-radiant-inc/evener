@@ -611,7 +611,7 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int, turnEndsProces
 
 	// The model sees only a small head+tail digest + the job_id; it reads the rest
 	// through the job transcript_ref. The full output is retained in the durable job.
-	digest := shellInlineDigest(res.Output, res.TotalBytes, res.DroppedBytes)
+	digest := shellInlineDigestFrom(res.Output, res.TotalBytes, res.DroppedBytes, res.RetainedStartPartial)
 	peekTruncated := true
 	out.Output = &digest
 	out.Truncated = &peekTruncated

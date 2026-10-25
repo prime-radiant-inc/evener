@@ -63,6 +63,14 @@ classify the output as a diff. Plain `diff -u` output is not recognized because
 a deleted line whose content starts `-- ` is indistinguishable from a `--- `
 file header without `diff --git `; it keeps the existing digest.
 
+When the retention cap cut the stream mid-line (`RetainedStartPartial`), the
+first visible line is a fragment, not a line. It is excluded from structural
+classification: it can neither establish a file-header section nor be a
+boundary, and the window starts from the first complete line. This keeps a
+fragment such as `index ...` (what remains when the evicted prefix held the `+`
+of a `+index ...` body line) from turning following `--- `/`+++ ` body lines
+into a filename.
+
 Within a `diff --git ` section, the scanner tracks whether a hunk is open:
 
 - `diff --git ` closes any hunk and opens a file section;
@@ -104,6 +112,12 @@ falls back to the existing line-aligned peek: the first line start at or after
 `len(full)-512`. That keeps the last view the model had before this change
 instead of dropping it, and the result still ends at the natural end of the
 output. The head and tail never overlap.
+
+When the head cut falls between boundaries (for example a leading binary or
+mode-only section larger than the head budget), the omitted range begins inside
+the section that started at the last file boundary at or before the cut. The
+marker names that containing file and does not borrow the next file's header or
+name a hunk from the next file.
 
 Both windows keep `shellDigestHalfBytes` (512 bytes) as their bound. The digest
 does not apply the existing 200-line cap (`shellDigestLines`) to either diff
@@ -196,6 +210,14 @@ This case is documented rather than guessed at.
    - a retained prefix that starts with path-like hunk body lines (`--- old
      comment`, `+++ new comment`) followed by surviving hunks: the marker does
      not report either comment as the filename.
+   - a retained prefix whose first visible line is a fragment of a `+index ...`
+     body line (`RetainedStartPartial`) followed by path-like body lines: the
+     fragment is excluded and the filename stays unknown, while a fragment of a
+     real `diff --git ` header still lets the retained `index `/`--- `/`+++ `
+     lines name the file.
+   - a leading hunkless section (binary patch) larger than the head budget
+     followed by a text file: the cut inside the hunkless section names that
+     file and no hunk from the following file.
    Each boundary assertion uses the parsed `diffLine` state and reads the
    source bytes at the chosen offset; range assertions compare numeric offsets
    and source-derived file and hunk strings. Record the red run.

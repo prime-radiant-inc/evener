@@ -84,12 +84,17 @@ func isUnifiedHunkHeader(text string) bool {
 // a git file-header section (a diff --git line or a git metadata line), so a
 // retained prefix that starts inside a hunk never reads its path-like body
 // lines as a filename.
-func classifyDiffLines(full string, lines []diffLine) (firstHunk, firstHunkAfterFile int) {
+func classifyDiffLines(full string, lines []diffLine, startsMidLine bool) (firstHunk, firstHunkAfterFile int) {
 	firstFile := -1
 	firstHunk, firstHunkAfterFile = -1, -1
 	inHunk := false
 	inHeader := false
 	for i := range lines {
+		if i == 0 && startsMidLine {
+			// The retention cap cut the first line mid-way. Its remaining bytes
+			// may look like metadata or a path, so it cannot establish structure.
+			continue
+		}
 		text := diffLineText(full, lines[i])
 		switch {
 		case strings.HasPrefix(text, "diff --git "):
@@ -118,6 +123,27 @@ func classifyDiffLines(full string, lines []diffLine) (firstHunk, firstHunkAfter
 		}
 	}
 	return firstHunk, firstHunkAfterFile
+}
+
+// firstCompleteLine returns the first complete line's text, skipping the
+// fragment a mid-line retention cut left. ok is false when only the fragment
+// is visible.
+func firstCompleteLine(full string, startsMidLine bool) (string, bool) {
+	lineEnd := strings.IndexByte(full, '\n')
+	if !startsMidLine {
+		if lineEnd >= 0 {
+			return strings.TrimSuffix(full[:lineEnd], "\r"), true
+		}
+		return strings.TrimSuffix(full, "\r"), true
+	}
+	if lineEnd < 0 || lineEnd+1 >= len(full) {
+		return "", false
+	}
+	rest := full[lineEnd+1:]
+	if nextEnd := strings.IndexByte(rest, '\n'); nextEnd >= 0 {
+		rest = rest[:nextEnd]
+	}
+	return strings.TrimSuffix(rest, "\r"), true
 }
 
 func isDiffBoundary(ln diffLine) bool {
@@ -204,7 +230,7 @@ func lastLineBoundaryAtOrBefore(lines []diffLine, limit int) int {
 // output that is a git-style unified diff. headBudget and tailBudget are byte
 // bounds. startsMidStream says the retention cap evicted the output's prefix,
 // so a hunk header without a visible file header can still identify a diff.
-func unifiedDiffWindow(full string, headBudget, tailBudget int, startsMidStream bool) (diffWindow, bool) {
+func unifiedDiffWindow(full string, headBudget, tailBudget int, startsMidStream, startsMidLine bool) (diffWindow, bool) {
 	if full == "" || headBudget <= 0 || tailBudget <= 0 {
 		return diffWindow{}, false
 	}
@@ -212,11 +238,8 @@ func unifiedDiffWindow(full string, headBudget, tailBudget int, startsMidStream 
 	// anchored at its first line; a retained diff must still start like diff
 	// content. Either way, only then is the hunk marker scan worth a pass.
 	if startsMidStream {
-		firstLine := full
-		if i := strings.IndexByte(firstLine, '\n'); i >= 0 {
-			firstLine = firstLine[:i]
-		}
-		if !isDiffContentStart(strings.TrimSuffix(firstLine, "\r")) {
+		first, ok := firstCompleteLine(full, startsMidLine)
+		if !ok || !isDiffContentStart(first) {
 			return diffWindow{}, false
 		}
 	} else if !strings.HasPrefix(full, "diff --git ") {
@@ -226,29 +249,43 @@ func unifiedDiffWindow(full string, headBudget, tailBudget int, startsMidStream 
 		return diffWindow{}, false
 	}
 	lines := scanDiffLines(full)
-	firstHunk, firstHunkAfterFile := classifyDiffLines(full, lines)
+	firstHunk, firstHunkAfterFile := classifyDiffLines(full, lines, startsMidLine)
 	if startsMidStream {
 		// The retention cap may have evicted the file header, but the visible
 		// prefix must still look like diff content and carry a hunk header
 		// close enough to be the one the head window is about.
-		if !isDiffContentStart(diffLineText(full, lines[0])) || firstHunk < 0 || lines[firstHunk].start > headBudget {
+		contentIndex := 0
+		if startsMidLine {
+			contentIndex = 1
+		}
+		if contentIndex >= len(lines) || !isDiffContentStart(diffLineText(full, lines[contentIndex])) ||
+			firstHunk < 0 || lines[firstHunk].start > headBudget {
 			return diffWindow{}, false
 		}
-	} else {
+	} else if !strings.HasPrefix(diffLineText(full, lines[0]), "diff --git ") || firstHunkAfterFile < 0 {
 		// Anchor a complete diff at its first line. A log or test failure that
 		// merely quotes a diff keeps the existing head-and-tail digest.
-		if !strings.HasPrefix(diffLineText(full, lines[0]), "diff --git ") || firstHunkAfterFile < 0 {
-			return diffWindow{}, false
-		}
+		return diffWindow{}, false
 	}
 
 	headStart := 0
-	if startsMidStream && !isDiffBoundary(lines[0]) {
-		next := diffBoundaryIndexAtOrAfter(lines, 0)
-		if next < 0 {
+	if startsMidStream {
+		firstIndex := 0
+		if startsMidLine {
+			firstIndex = 1
+		}
+		if firstIndex >= len(lines) {
 			return diffWindow{}, false
 		}
-		headStart = lines[next].start
+		if !isDiffBoundary(lines[firstIndex]) {
+			next := diffBoundaryIndexAtOrAfter(lines, lines[firstIndex].start)
+			if next < 0 {
+				return diffWindow{}, false
+			}
+			headStart = lines[next].start
+		} else {
+			headStart = lines[firstIndex].start
+		}
 	}
 
 	limit := headStart + headBudget
@@ -281,7 +318,7 @@ func unifiedDiffWindow(full string, headBudget, tailBudget int, startsMidStream 
 	}
 
 	tailIndex := diffBoundaryIndexAtOrAfter(lines, max(len(full)-tailBudget, headEnd+1))
-	tailStart := len(full)
+	var tailStart int
 	if tailIndex >= 0 {
 		tailStart = lines[tailIndex].start
 	} else {
@@ -303,24 +340,53 @@ func unifiedDiffWindow(full string, headBudget, tailBudget int, startsMidStream 
 // hunk at cut. A hunk at or after limit (the tail start) is visible in the tail
 // and must not be described as omitted.
 func describeDiffCut(full string, lines []diffLine, cut, limit int) (file, hunk string) {
-	cutIndex := diffBoundaryIndexAtOrAfter(lines, cut)
-	if cutIndex < 0 {
+	next := diffBoundaryIndexAtOrAfter(lines, cut)
+	if next < 0 {
 		return "", ""
 	}
-	for i := cutIndex; i < len(lines); i++ {
+	if lines[next].start == cut {
+		return diffPathAroundCut(full, lines, next), firstHunkAtOrAfter(full, lines, next, limit)
+	}
+
+	// The cut is inside a section: the omitted range begins in the file that
+	// started at the last file boundary at or before it, not in the next one.
+	// A following file start cannot begin an omitted hunk in this section.
+	if fileIndex := lastDiffFileIndexAtOrBefore(lines, cut); fileIndex >= 0 {
+		file = diffPathAroundCut(full, lines, fileIndex)
+	}
+	if lines[next].kind == diffLineHunk {
+		hunk = firstHunkAtOrAfter(full, lines, next, limit)
+	}
+	return file, hunk
+}
+
+// firstHunkAtOrAfter returns the first hunk header at or after from, before
+// limit and before the next file section.
+func firstHunkAtOrAfter(full string, lines []diffLine, from, limit int) string {
+	for i := from; i < len(lines); i++ {
 		if lines[i].start >= limit {
 			break
 		}
-		if i > cutIndex && lines[i].kind == diffLineFile {
+		if i > from && lines[i].kind == diffLineFile {
 			break
 		}
 		if lines[i].kind == diffLineHunk {
-			hunk = clipDiffText(diffLineText(full, lines[i]))
-			break
+			return clipDiffText(diffLineText(full, lines[i]))
 		}
 	}
-	file = diffPathAroundCut(full, lines, cutIndex)
-	return file, hunk
+	return ""
+}
+
+// lastDiffFileIndexAtOrBefore returns the last file-start index at or before
+// at, or -1.
+func lastDiffFileIndexAtOrBefore(lines []diffLine, at int) int {
+	i := sort.Search(len(lines), func(i int) bool { return lines[i].start > at }) - 1
+	for ; i >= 0; i-- {
+		if lines[i].kind == diffLineFile {
+			return i
+		}
+	}
+	return -1
 }
 
 func diffPathAroundCut(full string, lines []diffLine, cutIndex int) string {
