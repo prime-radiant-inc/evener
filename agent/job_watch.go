@@ -73,6 +73,9 @@ const (
 	// tick counts a delivery but is a clock rather than a condition, so it never
 	// counts against this. Hard-coded, no config knob.
 	watchDeliveryBudget = 50
+	// The budget notice has no triggering job, so it must not coalesce with
+	// the final condition firing that the ended watch still owes its receiver.
+	watchBudgetEndTrigger = "budget_exhausted"
 	// watchDeliveryTimeCap bounds the per-watch ring of recent delivery instants
 	// that feeds the activity panel's delivery timeline. The ring is a display
 	// aid, not an audit log: progress ticks make a watch's delivery count
@@ -1992,7 +1995,9 @@ func (jm *jobManager) autoClearWatchOverBudgetNotification(cfg *watchConfig) (jo
 	}
 	jm.detachOverBudgetWatch(targets[0])
 
-	return jm.watchNotificationFromWatch(cfg, "", watchBudgetClearedMessage(cfg.target), nil), true
+	n := jm.watchNotificationFromWatch(cfg, "", watchBudgetClearedMessage(cfg.target), nil)
+	n.callbackTrigger = watchBudgetEndTrigger
+	return n, true
 }
 
 // detachOverBudgetWatch removes the over-budget config from the live set and, in
@@ -3298,12 +3303,19 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 	kind := ev.Kind
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
+	var budgetRetries []*watchConfig
 
 	jm.mu.Lock()
 	for _, cfg := range jm.watches {
 		dec := evaluateWatchEvent(cfg.eventSnapshot(isActiveWatchTargetLocked(jm, cfg.target)), ev)
 		cfg.eventCount = dec.eventCount
 		if !dec.matched {
+			continue
+		}
+		if cfg.conditionFires >= watchDeliveryBudget {
+			if tripConditionFireBudgetLocked(cfg) {
+				budgetRetries = append(budgetRetries, cfg)
+			}
 			continue
 		}
 		// Source persistence spends the firing and trips the breaker. A failed
@@ -3329,6 +3341,9 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 	}
 	jm.mu.Unlock()
 
+	for _, cfg := range budgetRetries {
+		jm.autoClearWatchOverBudget(cfg)
+	}
 	// Session.emit may synchronously transfer canonical receiver custody here.
 	// Source persistence precedes budget teardown, and model presentation still
 	// waits for the receiver's safe execution boundary.
@@ -3582,6 +3597,7 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 	var deliveries []watchSendDelivery
 
 	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: provenance.Union(jobProvenanceForWatch(jm, jobID), p)}
+	var budgetRetries []*watchConfig
 	jm.mu.Lock()
 	if last, ok := jm.lastFedOffset[jobID]; ok && endOffset < last {
 		jm.mu.Unlock()
@@ -3597,6 +3613,12 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 			continue
 		}
 		matches := cfg.outputMatcher.FeedAtWithProvenance(chunk, endOffset, root.Provenance)
+		if len(matches) > 0 && cfg.conditionFires >= watchDeliveryBudget {
+			if tripConditionFireBudgetLocked(cfg) {
+				budgetRetries = append(budgetRetries, cfg)
+			}
+			continue
+		}
 		for i, match := range matches {
 			if cfg.budgetTripped || cfg.conditionFires+i >= watchDeliveryBudget {
 				break
@@ -3612,6 +3634,9 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 	}
 	jm.mu.Unlock()
 
+	for _, cfg := range budgetRetries {
+		jm.autoClearWatchOverBudget(cfg)
+	}
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
 }
@@ -3694,6 +3719,16 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 	defer jm.publishWatchActivity()
 	last, matched := cfg.outputMatcher.ScanRetained(data)
 	if !matched {
+		return false
+	}
+	jm.mu.Lock()
+	overBudget := cfg.conditionFires >= watchDeliveryBudget
+	retryBudget := tripConditionFireBudgetLocked(cfg)
+	jm.mu.Unlock()
+	if retryBudget {
+		jm.autoClearWatchOverBudget(cfg)
+	}
+	if overBudget {
 		return false
 	}
 	reason := "output_match: " + last
@@ -6569,7 +6604,11 @@ func (jm *jobManager) produceCallbackNotifications(notifications []jobNotificati
 			jm.mu.Unlock()
 			continue
 		}
-		d := jm.watchSendSnapshot(cfg, cfg.target, trigger, events.SessionEvent{SessionID: jm.sessionID, Provenance: n.Provenance}).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, n.Provenance))
+		identity := cfg.target
+		if trigger == watchBudgetEndTrigger {
+			identity = ""
+		}
+		d := jm.watchSendSnapshot(cfg, identity, trigger, events.SessionEvent{SessionID: jm.sessionID, Provenance: n.Provenance}).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, n.Provenance))
 		d.callback = true
 		// Terminal notices and callbacks that entered before a clear retain their
 		// source home independently of the declarative registration.
@@ -6611,14 +6650,13 @@ func (jm *jobManager) noteProducedWatchFiringLocked(cfg *watchConfig, state jobs
 
 func (jm *jobManager) finishProducedWatchFiring(cfg *watchConfig) {
 	jm.mu.Lock()
-	budget, oneShot := cfg.budgetTripped, cfg.oneShot && cfg.firedPendingEnd
+	budget := cfg.budgetTripped
 	jm.mu.Unlock()
 	if budget {
 		jm.autoClearWatchOverBudget(cfg)
 	}
-	if oneShot {
-		jm.endFiredOneShot(cfg)
-	}
+	// fireProgressTick owns one-shot teardown, once per firing or retry tick.
+	// Source completion and custody dispatch must not retry its failed end.
 }
 
 func callbackFiringReason(reason string) bool {

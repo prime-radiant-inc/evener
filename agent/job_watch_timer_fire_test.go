@@ -287,14 +287,19 @@ func TestConditionFireBudget_FailedTeardownRearmsTheBreaker(t *testing.T) {
 	var mu sync.Mutex
 	teardownFails := true
 	teardownErr := errors.New("budget teardown append failed")
+	var teardownResults []error
 	realAppendEvents := jm.appendEvents
 	jm.appendEvents = func(evs []jobstore.Event) error {
 		mu.Lock()
+		defer mu.Unlock()
 		fails := teardownFails
-		mu.Unlock()
 		for _, ev := range evs {
-			if fails && ev.Kind == jobstore.EventWatchCleared {
-				return teardownErr
+			if ev.Kind == jobstore.EventWatchCleared {
+				if fails {
+					teardownResults = append(teardownResults, teardownErr)
+					return teardownErr
+				}
+				teardownResults = append(teardownResults, nil)
 			}
 		}
 		return realAppendEvents(evs)
@@ -319,11 +324,19 @@ func TestConditionFireBudget_FailedTeardownRearmsTheBreaker(t *testing.T) {
 		fire()
 	}
 	jm.mu.Lock()
-	_, _, live := jm.watchConfigByIDLocked(res.WatchID)
+	_, cfg, live := jm.watchConfigByIDLocked(res.WatchID)
 	jm.mu.Unlock()
 	if !live {
 		t.Fatal("a teardown that did not persist still dropped the watch from the live set")
 	}
+	if cfg.conditionFires != watchDeliveryBudget || cfg.budgetTripped || cfg.rejectingDelivery || len(producerSourceEvents(t, jm, jobstore.EventWatchSendPending)) != watchDeliveryBudget {
+		t.Fatal("failed teardown changed the firing cap, lost rollback, or produced an extra condition")
+	}
+	mu.Lock()
+	if len(teardownResults) != 1 || !errors.Is(teardownResults[0], teardownErr) {
+		t.Errorf("first teardown results=%v, want the injected error once", teardownResults)
+	}
+	mu.Unlock()
 
 	mu.Lock()
 	teardownFails = false
@@ -334,6 +347,14 @@ func TestConditionFireBudget_FailedTeardownRearmsTheBreaker(t *testing.T) {
 	jm.mu.Unlock()
 	if live {
 		t.Fatal("the condition fire after a failed teardown did not retry the over-budget auto-clear")
+	}
+	mu.Lock()
+	if len(teardownResults) != 2 || teardownResults[1] != nil {
+		t.Errorf("teardown results=%v, want failure then success", teardownResults)
+	}
+	mu.Unlock()
+	if cfg.conditionFires != watchDeliveryBudget || cfg.deliveries != watchDeliveryBudget || len(producerSourceEvents(t, jm, jobstore.EventWatchSendPending)) != watchDeliveryBudget+1 {
+		t.Fatal("teardown retry spent condition 51, reset the firing count, or omitted the separate budget notice")
 	}
 	history := jm.recentWatchSummaries()
 	if len(history) == 0 || history[0].ID != res.WatchID || history[0].EndReason != "budget_exhausted" {
@@ -442,14 +463,36 @@ func TestOneShotTimer_FailedTeardownWarnsThroughTheSession(t *testing.T) {
 	}
 	realAppendEvents := jm.appendEvents
 	teardownErr := errors.New("one-shot teardown append failed")
+	fail := true
+	var teardownResults []error
 	jm.appendEvents = func(evs []jobstore.Event) error {
+		mu.Lock()
+		defer mu.Unlock()
 		for _, ev := range evs {
-			if ev.Kind == jobstore.EventWatchCleared {
-				return teardownErr
+			if ev.Kind == jobstore.EventWatchCleared && ev.Watch != nil && ev.Watch.EndReason == "fired" {
+				if fail {
+					teardownResults = append(teardownResults, teardownErr)
+					return teardownErr
+				}
+				teardownResults = append(teardownResults, nil)
 			}
 		}
 		return realAppendEvents(evs)
 	}
+	t.Cleanup(func() {
+		mu.Lock()
+		fail = false
+		mu.Unlock()
+		if err := jm.close(); err != nil {
+			t.Error(err)
+		}
+		waitForCondition(t, 5*time.Second, "closed timer to stop", func() bool { return clk.BlockedCount() == 0 })
+		mu.Lock()
+		defer mu.Unlock()
+		if len(warnings) != 1 || len(teardownResults) != 1 || !errors.Is(teardownResults[0], teardownErr) {
+			t.Errorf("including cleanup warnings=%d teardown results=%v, want one failed firing teardown", len(warnings), teardownResults)
+		}
+	})
 
 	clk.BlockUntil(1)
 	clk.Advance(60 * time.Second)
@@ -459,6 +502,9 @@ func TestOneShotTimer_FailedTeardownWarnsThroughTheSession(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+	if len(teardownResults) != 1 || !errors.Is(teardownResults[0], teardownErr) {
+		t.Errorf("firing teardown results=%v, want one injected failure", teardownResults)
+	}
 	if len(warnings) != 1 {
 		t.Fatalf("warnings = %+v, want exactly one", warnings)
 	}
@@ -481,18 +527,46 @@ func TestOneShotTimer_FailedTeardownRetriesOnTheNextTick(t *testing.T) {
 	}
 	var mu sync.Mutex
 	teardownFails := true
+	teardownErr := errors.New("one-shot teardown append failed")
+	var teardownResults []error
+	var warnings []events.WarningData
+	jm.emit = func(kind events.EventKind, data events.EventData, _ *provenance.Causal) {
+		if warning, ok := data.(events.WarningData); kind == events.EventWarning && ok {
+			mu.Lock()
+			warnings = append(warnings, warning)
+			mu.Unlock()
+		}
+	}
 	realAppendEvents := jm.appendEvents
 	jm.appendEvents = func(evs []jobstore.Event) error {
 		mu.Lock()
+		defer mu.Unlock()
 		fails := teardownFails
-		mu.Unlock()
 		for _, ev := range evs {
-			if fails && ev.Kind == jobstore.EventWatchCleared {
-				return errors.New("one-shot teardown append failed")
+			if ev.Kind == jobstore.EventWatchCleared && ev.Watch != nil && ev.Watch.EndReason == "fired" {
+				if fails {
+					teardownResults = append(teardownResults, teardownErr)
+					return teardownErr
+				}
+				teardownResults = append(teardownResults, nil)
 			}
 		}
 		return realAppendEvents(evs)
 	}
+	t.Cleanup(func() {
+		mu.Lock()
+		teardownFails = false
+		mu.Unlock()
+		if err := jm.close(); err != nil {
+			t.Error(err)
+		}
+		waitForCondition(t, 5*time.Second, "retried timer to stop", func() bool { return clk.BlockedCount() == 0 })
+		mu.Lock()
+		defer mu.Unlock()
+		if len(warnings) != 1 {
+			t.Errorf("including cleanup warnings=%d, want one failed teardown warning", len(warnings))
+		}
+	})
 
 	clk.BlockUntil(1)
 	clk.Advance(60 * time.Second)
@@ -505,8 +579,15 @@ func TestOneShotTimer_FailedTeardownRetriesOnTheNextTick(t *testing.T) {
 	if !live {
 		t.Fatal("a teardown that did not persist still dropped the one-shot from the live set")
 	}
+	produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+	if len(produced) != 1 || produced[0].WatchSend == nil || produced[0].WatchSend.DeliveryID == "" {
+		t.Fatalf("first tick source firings=%+v, want one identified firing", produced)
+	}
 
 	mu.Lock()
+	if len(teardownResults) != 1 || !errors.Is(teardownResults[0], teardownErr) {
+		t.Errorf("first tick teardown results=%v, want one injected failure", teardownResults)
+	}
 	teardownFails = false
 	mu.Unlock()
 	clk.Advance(60 * time.Second)
@@ -532,6 +613,15 @@ func TestOneShotTimer_FailedTeardownRetriesOnTheNextTick(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("history lacks a fired row with deliveries 1: %+v", recent)
+	}
+	mu.Lock()
+	if len(teardownResults) != 2 || teardownResults[1] != nil || len(warnings) != 1 {
+		t.Errorf("after retry results=%v warnings=%d, want failure then success and one warning", teardownResults, len(warnings))
+	}
+	mu.Unlock()
+	after := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+	if len(after) != 1 || after[0].WatchSend.DeliveryID != produced[0].WatchSend.DeliveryID || len(producerSourceEvents(t, jm, jobstore.EventWatchCleared)) != 1 {
+		t.Fatal("retry duplicated the source firing or its durable end")
 	}
 }
 

@@ -832,6 +832,9 @@ identical arguments. To replace a timer, clear its `watch_id` and create another
 Timers may use an explicit send. Pending timer frames retain the registration's
 existing slot identity across restart, so separate registrations remain distinct.
 The timer ranges and registration limits below are unchanged.
+A one-shot persists its firing before attempting its durable end once on that
+tick. If the end fails, the next tick retries only the end, not the firing.
+Transport retries do not make additional one-shot teardown attempts.
 
 #### Output matching
 
@@ -908,8 +911,13 @@ The timer ranges and registration limits below are unchanged.
   deliveries but never trip the budget, so the `deliveries` count `job_list` reports can
   run past the fires the budget counts.
 - A watch that exhausts its budget is auto-cleared with a final notification
-  giving its match count. Re-arm with a tighter condition: higher `every` or
-  narrower `output_match`.
+  giving its match count. The last permitted firing and the budget notice retain
+  separate delivery identities; the notice cannot replace that firing before
+  receiver custody. Both remain recoverable after temporary receiver failure and
+  source restart under the existing pending-frame limits. A failed budget teardown
+  retries on the next matching condition without producing a 51st firing or
+  resetting the count. Re-arm with a tighter condition: higher `every` or narrower
+  `output_match`.
 - Terminal notification ordering: flush any queued watch notification/frame for a
   concrete job, then deliver the terminal notification. Both are facts about the same
   completion, so they arrive in one notification turn, watch settlement first.
