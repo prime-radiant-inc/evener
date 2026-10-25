@@ -370,6 +370,30 @@ func checkPromptInput[T comparable](t *testing.T, name string, got, want T) {
 	}
 }
 
+// TestPromptDataDetachCapability proves promptData carries the execution
+// environment's own detach answer, the same capability the shell schema reads
+// (#4922): a sandboxed delegate's environment refuses DetachCommand, while a
+// plain delegate's environment reports its platform's answer.
+func TestPromptDataDetachCapability(t *testing.T) {
+	t.Parallel()
+	sandboxed := buildPromptDelegate(t, 0, "explorer")
+	requireDetachUnsupported(t, sandboxed)
+	sandboxedData, _ := sandboxed.buildPromptData(sandboxed.env)
+	if sandboxedData.DetachSupported {
+		t.Error("promptData.DetachSupported = true for a sandboxed delegate whose environment refuses DetachCommand")
+	}
+
+	plain := buildPromptDelegate(t, 0, "")
+	reporter, ok := plain.env.(execenv.DetachSupportReporter)
+	if !ok {
+		t.Fatalf("plain delegate environment %T does not report detach capability", plain.env)
+	}
+	plainData, _ := plain.buildPromptData(plain.env)
+	if plainData.DetachSupported != reporter.DetachSupported() {
+		t.Errorf("promptData.DetachSupported = %v, want the environment's %v", plainData.DetachSupported, reporter.DetachSupported())
+	}
+}
+
 // TestSystemPromptCarriesEachOperatorInputOnce proves each operator input
 // crosses into the rendered prompt exactly once, using opaque sentinels, so a
 // dropped input and a doubled one both fail.
