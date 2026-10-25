@@ -17,7 +17,7 @@ import (
 func projectTranscriptFile(t *testing.T, path string) []appwire.Turn {
 	t.Helper()
 	reg := apptranscript.NewToolCallRegistry()
-	turns, err := apptranscript.ItemTurnsFromFile(path, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, nil)
 	})
 	if err != nil {
