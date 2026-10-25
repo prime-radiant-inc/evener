@@ -2,8 +2,8 @@
 
 ## Status and intent
 
-Proposed design, awaiting Jesse's approval. The visual preview is approved; no
-live client has been implemented.
+Jesse approved this design and the recorded tool-image amendment. The visual
+preview is approved; no live client has been implemented.
 
 Add a self-contained conversation client at a separate Evener hub endpoint.
 The conversation itself is the comic: original Microsoft Comic Chat characters,
@@ -32,7 +32,7 @@ unneeded tools, panes and settings into this surface.
 
 ## Scope and builder calls
 
-These choices are proposals covered by approval of this document:
+These choices define the approved first version:
 
 - `/comic` opens a compact conversation picker. `/comic/s/:ref` opens a session;
   serialize and encode the complete existing AppWire ref, retaining host identity.
@@ -47,7 +47,8 @@ These choices are proposals covered by approval of this document:
 - The comic composer supports text, the shared pending-input recovery actions,
   questions and sandbox approvals. New attachment upload and voice capture are
   outside this version. Recorded images remain visible through the existing
-  `ImageGallery` and image routes, including image-only messages.
+  `ImageGallery` and image routes, including image-only messages and tool-produced
+  images such as screenshots returned by `read_file`.
 - Retain the preview's scene and human-expression controls as local presentation
   choices. They never alter submitted text, prompts or model behavior. Default
   casting is Anna for the human and Xeno for the assistant.
@@ -74,8 +75,10 @@ not meet this design.
   harness notices retain their actual source; do not cast them as something
   Jesse or the assistant said. Non-dialogue attention appears as a clearly
   identified caption or interaction panel, without exposing ordinary tool logs.
-- Hide reasoning, routine tool calls/results, tool intents and diagnostics from
-  the comic transcript. Preserve actionable failures, pending questions,
+- Hide reasoning, routine tool call/result text, tool intents and diagnostics
+  from the comic transcript. Project recorded tool `outputImages` into attributed
+  image panels in source order, without exposing the accompanying log text or
+  casting it as dialogue. Preserve actionable failures, pending questions,
   approvals and connection state through their existing typed owners.
 - Use the preview's varied wide, paired and spotlight compositions. Staging is
   deterministic presentation, not inferred sentiment. Never invent dialogue or
@@ -198,7 +201,9 @@ components in end-to-end tests.
    retains its existing appearance and behavior.
 2. **Read literally.** Feed independent fixtures through the real projector:
    dialogue, `communicate`, human and parent steering, interleaved turns,
-   streaming reset/settlement, image-only messages and excluded tool activity.
+   streaming reset/settlement, image-only messages, recorded tool screenshots
+   and excluded tool activity. Verify tool images retain attribution and source
+   order while their routine call/result text stays hidden.
    Reconstruct balloon text by source identity and compare with the original
    input, including whitespace, long tokens, code and grapheme clusters.
 3. **Read responsively.** Inspect Chrome at 1360, 760, 600, 390 and 320 pixels.
@@ -210,6 +215,11 @@ components in end-to-end tests.
    and Stop. Disconnect/reconnect and reload around pending delivery; verify one
    accepted mutation and one transcript message, with draft and uncertainty
    preserved. Exercise send-driven resume including an identity-changing case.
+   Create independent structured draft and recovery fixtures through the existing
+   owner, then switch regular UI → comic → regular UI, edit and reload. Verify
+   selections, mentions, attachment recovery and ownership as well as text.
+   Repeat across identity-changing resume using the existing draft-carry and
+   image-lifetime rules, rather than silently dropping or flattening metadata.
 5. **Answer and approve.** Drive actual `ask_user` questions and sandbox approval
    requests through the session runtime. Answer, decline and approve through the
    comic; prove runtime outcomes and failure recovery. Switch sessions while a
