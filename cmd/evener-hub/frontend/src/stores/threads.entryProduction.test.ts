@@ -1878,19 +1878,24 @@ it("a stalled restore merges a local older page instead of discarding it", async
       .filter(Boolean);
   expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 66}`));
   expect(productionEntryTranscriptForTests("local:a").lastLocalOpenUsable).toBe(true);
-  // An in-flight raw older page holds the view through the pane's release; it
-  // answers inside its own lookup deadline, so it serves from disk rather
-  // than reconciling over the wire.
+  // An in-flight raw older page holds the view through the pane's release.
+  // Fake timers own every production deadline in the gated phase, so the
+  // page's deferred release can never race the raw lookup deadline into a
+  // wire reconciliation: the test decides when each deadline fires.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const pageEntered = deferred<void>();
+  const pageReleased = deferred<void>();
   let pageReads = 0;
   const pageOriginal = storage.getBefore.bind(storage);
   vi.spyOn(storage, "getBefore").mockImplementation(async (...args) => {
     pageReads += 1;
     if (pageReads > 1) return pageOriginal(...args);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    pageEntered.resolve();
+    await pageReleased.promise;
     return pageOriginal(...args);
   });
   const historyRequest = threadsStore.getState().loadOlderTurns("local:a");
-  await vi.waitFor(() => expect(pageReads).toBe(1));
+  await pageEntered.promise;
   threadsStore.getState().releaseThread("local:a");
   const readsBefore = client.calls.filter((call) => call.method === "thread/read").length;
   const listCallsBefore = client.calls.filter((call) => call.method === "thread/turns/list").length;
@@ -1903,13 +1908,13 @@ it("a stalled restore merges a local older page instead of discarding it", async
   setSessionCacheStalledOpenForTests(250);
   try {
     const reopened = threadsStore.getState().ensureThread("local:a");
-    await reopened;
-    expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
-    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore);
-    expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(listCallsBefore);
+    // The held page and the next older page complete from disk while the
+    // stalled restore's own wait is still pending: the fake clock keeps every
+    // production deadline frozen until the test advances it, so the raw
+    // lookup can never race its deadline into a wire reconciliation.
+    pageReleased.resolve();
+    await historyRequest;
     expect(bodies()).toEqual(Array.from({ length: 240 }, (_, index) => `row-${index + 26}`));
-    // Paging resumes on the settled opening: the next raw older page serves
-    // from disk while the stalled restore is still in flight.
     await threadsStore.getState().loadOlderTurns("local:a");
     expect(bodies()).toEqual(Array.from({ length: 265 }, (_, index) => `row-${index + 1}`));
     const continuation = () => productionEntryTranscriptForTests("local:a").repository?.localOlderPosition();
@@ -1922,7 +1927,14 @@ it("a stalled restore merges a local older page instead of discarding it", async
       latePublished.resolve(),
     );
     try {
+      await vi.advanceTimersByTimeAsync(300);
+      await reopened;
+      expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
+      expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore);
+      expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(listCallsBefore);
+      expect(bodies()).toEqual(Array.from({ length: 265 }, (_, index) => `row-${index + 1}`));
       released.resolve();
+      await vi.advanceTimersByTimeAsync(0);
       await latePublished.promise;
       expect(bodies()).toEqual(Array.from({ length: 265 }, (_, index) => `row-${index + 1}`));
       // The exhausted continuation stays exhausted: the late restore must
@@ -1936,8 +1948,10 @@ it("a stalled restore merges a local older page instead of discarding it", async
     }
   } finally {
     setSessionCacheStalledOpenForTests(5000);
+    vi.useRealTimers();
     released.resolve();
     await Promise.all(windowLookup.mock.results.map((result) => result.value));
+    pageReleased.resolve();
     await historyRequest;
     threadsStore.getState().releaseThread("local:a");
     await background.release();
