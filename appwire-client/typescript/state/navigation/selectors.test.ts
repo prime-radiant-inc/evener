@@ -260,6 +260,16 @@ test("a page that reports remaining rows may demand another page", () => {
   }
 });
 
+// A page that answered with no data is a settled tombstone: the section has
+// nothing more to fetch, so a stale-high manifest count must not keep demand
+// alive.
+test("a settled page with no data owns completion", () => {
+  for (const section of ["live", "needs_you"] as const) {
+    const state = demandState([sectionPage(section, { data: null })], manifestWithCount(section, 3));
+    expect(selectSectionCanDemand(section, state)).toBe(false);
+  }
+});
+
 test("a failed page keeps demand even when no rows remain", () => {
   for (const section of ["live", "needs_you"] as const) {
     const state = demandState(
@@ -281,6 +291,8 @@ test("an unsettled page falls back to the manifest count against the loaded rows
 });
 
 test("a settled page the reader cannot see does not own completion", () => {
-  const state = demandState([sectionPage("needs_you", { rows: ["a"] })], manifestWithCount("needs_you", 4), "none");
-  expect(selectSectionCanDemand("needs_you", state)).toBe(true);
+  // Only live pages load without visibility (the background lease); a needs_you
+  // page is always registered as the reader's, so the hidden case is live's.
+  const state = demandState([sectionPage("live", { rows: ["a"] })], manifestWithCount("live", 4), "none");
+  expect(selectSectionCanDemand("live", state)).toBe(true);
 });

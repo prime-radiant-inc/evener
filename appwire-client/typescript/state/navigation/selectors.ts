@@ -103,12 +103,13 @@ export function selectNeedsYouCount(state: NavigationStoreState): number {
 }
 /** Whether a navigation section may ask for another page.
  *
- * A settled page owns completion: once a visible page has data and is neither
- * loading, failed nor re-validating, the section's own reported `remaining`
- * decides. The manifest count refreshes on its own schedule and can lag a
- * queue that has drained, so it may only justify demand before any page has
- * settled. A failed page keeps demand of its own, and so does a positive
- * remaining count.
+ * A settled page owns completion: once a visible page has answered and is
+ * neither loading nor re-validating, the section's own reported `remaining`
+ * decides. An answer with no data is a settled tombstone, not an absent page,
+ * so it owns completion too. The manifest count refreshes on its own schedule
+ * and can lag a queue that has drained, so it may only justify demand before
+ * any page has settled. A failed page keeps demand of its own, even while the
+ * reader cannot see it, and so does a positive remaining count.
  *
  * Before any manifest has reported a count, nothing says the section is
  * empty, so the rule answers demand. The needs-you controller's pre-manifest
@@ -121,14 +122,7 @@ export function selectSectionCanDemand(section: "live" | "needs_you", state: Nav
   );
   if (pages.some((page) => !!page.error)) return true;
   if (selectSectionRemaining(section, state) > 0) return true;
-  const settled = pages.some(
-    (page) =>
-      page.data !== null &&
-      !page.loading &&
-      !page.error &&
-      !page.stale &&
-      state.visibleResourceKeys.has(keyID(page.key)),
-  );
+  const settled = pages.some((page) => !page.loading && !page.stale && state.visibleResourceKeys.has(keyID(page.key)));
   if (settled) return false;
   const count = state.manifest?.data?.sections[section].count;
   return count === undefined || count > selectSectionRows(section, state).length;
