@@ -940,12 +940,16 @@ func stableDelegateRowsForSession(s *Session, includeDescendants bool) []stableD
 
 	depths := make(map[string]int)
 	for _, snapshot := range snapshots {
-		if !delegateRowVisibleTo(s, snapshot.parentID, snapshot.descriptor.OwnerSessionID) {
+		if !delegateRowVisibleTo(s, snapshot.parentID, snapshot.descriptor.OwnerSessionID, snapshot.descriptor.VisibleSessionID) {
 			continue
 		}
 		depths[snapshot.id] = 0
 	}
 	if includeDescendants {
+		// Every row reachable from a visible base row over ParentDelegateID is a
+		// descendant of this session, whoever ran each create. Filtering these by
+		// VisibleSessionID would hide a child delegate's own delegates from its
+		// ancestors (issue #4904).
 		for changed := true; changed; {
 			changed = false
 			for _, snapshot := range snapshots {
@@ -954,9 +958,6 @@ func stableDelegateRowsForSession(s *Session, includeDescendants bool) []stableD
 				}
 				parentDepth, parentVisible := depths[snapshot.parentID]
 				if !parentVisible {
-					continue
-				}
-				if snapshot.descriptor.VisibleSessionID != "" && snapshot.descriptor.VisibleSessionID != s.id {
 					continue
 				}
 				depths[snapshot.id] = parentDepth + 1
@@ -1527,8 +1528,10 @@ type jobListEntry struct {
 	ParentJobID      *string  `json:"parent_job_id,omitempty"`
 	ParentDelegateID *string  `json:"parent_delegate_id,omitempty"`
 	OwnerSessionID   string   `json:"owner_session_id"`
-	// VisibleToSessionID is internal visibility routing — in a plain list it always
-	// equals the owner, so it is kept for tooling but omitted from the model wire.
+	// VisibleToSessionID is internal visibility routing: the session that ran the
+	// create, which differs from OwnerSessionID for a nested delegate (the owner
+	// names the tree root that admitted the runtime). Kept for tooling but omitted
+	// from the model wire.
 	VisibleToSessionID string `json:"-"`
 	// TranscriptRef/Resumable/NotResumableReason are omitempty: nil for the common
 	// running-shell scan (so they vanish), present where they carry signal (a

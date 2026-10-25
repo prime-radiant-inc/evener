@@ -48,6 +48,10 @@ export interface NotesHost {
 
 export const notesHosts = sheetHosts<NotesHost>();
 
+/** The sheet's content padding: a link row starts at the screen's left edge
+ * plus this, so its swipe band trims only the screen's 24pt. */
+const NOTES_SHEET_GUTTER_PT = 20;
+
 export function NotesSheet({ route, navigation }: NativeStackScreenProps<Routes, "NotesSheet">) {
 	const { hubId, ref, focusEditor = false } = route.params;
 	const toast = useToast();
@@ -89,7 +93,12 @@ export function NotesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 				automaticallyAdjustKeyboardInsets
 				keyboardShouldPersistTaps="handled"
 				keyboardDismissMode="on-drag"
-				contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 24, gap: 24 }}
+				contentContainerStyle={{
+					paddingHorizontal: NOTES_SHEET_GUTTER_PT,
+					paddingTop: 8,
+					paddingBottom: 24,
+					gap: 24,
+				}}
 			>
 				<NotesBody
 					host={host}
@@ -450,7 +459,11 @@ function LinkRow({
 		</Pressable>
 	);
 	return writable ? (
-		<SwipeRow destructive={{ ...removeAction, label: "Remove" }} backdrop={palette.canvas}>
+		<SwipeRow
+			destructive={{ ...removeAction, label: "Remove" }}
+			backdrop={palette.canvas}
+			edgeInset={NOTES_SHEET_GUTTER_PT}
+		>
 			{row}
 		</SwipeRow>
 	) : (

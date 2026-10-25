@@ -830,7 +830,7 @@ func (c *delegateTreeController) hasWakePendingDelegateFor(owner *Session) bool 
 		if aggregate.Phase != delegatestore.PhaseRunning && aggregate.Phase != delegatestore.PhaseSettling && aggregate.Phase != delegatestore.PhaseStopping {
 			continue
 		}
-		if !delegateRowVisibleTo(owner, aggregate.Descriptor.ParentDelegateID, aggregate.Descriptor.OwnerSessionID) {
+		if !delegateRowVisibleTo(owner, aggregate.Descriptor.ParentDelegateID, aggregate.Descriptor.OwnerSessionID, aggregate.Descriptor.VisibleSessionID) {
 			continue
 		}
 		return true
@@ -840,15 +840,28 @@ func (c *delegateTreeController) hasWakePendingDelegateFor(owner *Session) bool 
 
 // delegateRowVisibleTo is the base-row visibility filter the session's stable
 // delegate listings are built on: a row is visible to s when it hangs off s's
-// own delegate slot (parentID == s.owningDelegateID) and is either unowned or
-// owned by s. stableDelegateRowsForSession and the goal gate's
+// own delegate slot (parentID == s.owningDelegateID) and was created within it.
+// ParentDelegateID identifies logical ownership and a delegate id belongs to one
+// creator, so for a nested row the parentage check alone proves the row came
+// from s's delegation chain, including a non-delegate subagent running under s.
+// Root-level rows belong to the physical root that admitted the runtime
+// (OwnerSessionID) and to the session that ran the create
+// (VisibleSessionID, issue #4904; descriptors that predate it fall back to the
+// owner). stableDelegateRowsForSession and the goal gate's
 // hasWakePendingDelegateFor both key on it so the hold cannot see a delegate
 // the session's own listings would not show.
-func delegateRowVisibleTo(s *Session, parentID, ownerSessionID string) bool {
+func delegateRowVisibleTo(s *Session, parentID, ownerSessionID, visibleSessionID string) bool {
 	if parentID != s.owningDelegateID {
 		return false
 	}
-	return ownerSessionID == "" || ownerSessionID == s.id
+	if parentID != "" {
+		return true
+	}
+	creator := visibleSessionID
+	if creator == "" {
+		creator = ownerSessionID
+	}
+	return ownerSessionID == "" || creator == s.id || ownerSessionID == s.id
 }
 
 // closeStableWorktreeResumability atomically revalidates that a direct-owned

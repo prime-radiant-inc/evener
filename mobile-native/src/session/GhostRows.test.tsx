@@ -6,7 +6,15 @@ import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { playedHaptics, pressable, render, renderedText, swipeableCalls, swipeRowFully } from "../renderNative.testkit";
+import {
+	type PanGestureMock,
+	playedHaptics,
+	pressable,
+	render,
+	renderedText,
+	swipeableCalls,
+	swipeRowFully,
+} from "../renderNative.testkit";
 import { SwipeRow } from "../board/SwipeRow";
 import { GhostBubble } from "./GhostBubble";
 import { GhostRowContext, GhostRowView } from "./GhostRows";
@@ -354,6 +362,14 @@ describe("swiping a ghost left (spec 8.5)", () => {
 		expect(onAction).not.toHaveBeenCalled();
 	});
 
+	it("starts its edge band at the transcript's padded left edge, not the row's", () => {
+		const { tree } = mount([queued]);
+		const swipeable = swipeables(tree)[0];
+		const tracker = swipeable?.props.simultaneousWithExternalGesture as PanGestureMock | undefined;
+		expect(swipeable?.props.hitSlop).toEqual({ left: -8 });
+		expect(tracker?.config.hitSlop).toEqual({ left: -8 });
+	});
+
 	it("doesn't swipe a message with nothing to cancel, or while another action runs", () => {
 		for (const ghost of [steering, sending, unconfirmed, refused])
 			expect(swipeables(mount([ghost]).tree)).toHaveLength(0);
@@ -378,6 +394,7 @@ describe("swiping a ghost left (spec 8.5)", () => {
 				canEdit
 				editHint={null}
 				backdrop="page"
+				edgeInset={16}
 				attachments={<Attachment />}
 				onAction={() => {}}
 			/>

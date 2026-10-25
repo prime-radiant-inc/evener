@@ -8,6 +8,7 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import {
+	type PanGestureMock,
 	alertRequests,
 	playedHaptics,
 	pressable,
@@ -501,6 +502,20 @@ describe("links", () => {
 		expect(tree.root.findByProps({ testID: "swipe-row-content" }).props.style).toEqual({
 			backgroundColor: palette.canvas,
 		});
+	});
+
+	it("starts a link row's edge band at the sheet's padded left edge", () => {
+		provide(session({ sessionUrls: [web, file] }));
+		const tree = sheet();
+		const scroller = tree.root.findAllByType("ScrollView" as never)[0];
+		expect(scroller?.props.contentContainerStyle).toMatchObject({ paddingHorizontal: 20 });
+		const swipeables = tree.root.findAllByType("ReanimatedSwipeable" as never);
+		expect(swipeables).toHaveLength(2);
+		for (const swipeable of swipeables) {
+			const tracker = swipeable.props.simultaneousWithExternalGesture as PanGestureMock | undefined;
+			expect(swipeable.props.hitSlop).toEqual({ left: -4 });
+			expect(tracker?.config.hitSlop).toEqual({ left: -4 });
+		}
 	});
 
 	it("offers VoiceOver Remove link, the swipe's own remove, on a session whose notes you can change", async () => {
