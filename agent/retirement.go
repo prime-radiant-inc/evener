@@ -222,9 +222,10 @@ func (c *RetirementController) beginMutation(sessionID, category string, naming 
 // that holds no lease but appears in the non-blocking evidence read (an open
 // question, an in-memory job notification, an active goal between turns, the
 // shared tree's in-memory owner state) cannot end the wait on its own, and
-// TryClaim refuses over it while it is present, so awaitNaming reads those
-// directly and skips the wait when one exists (#4055). Evidence whose read has
-// to block (a
+// TryClaim refuses over it while it is present (the shared tree's wake set is a
+// conservative proxy; the full read decides from the transcript folds), so
+// awaitNaming reads those directly and skips the wait when one exists (#4055).
+// Evidence whose read has to block (a
 // running job, a watch, the job journal, the attention registry) is not
 // pre-checked, so a retire beside only that work still waits out the namer.
 func (c *RetirementController) TryManualClaim(ctx context.Context) (*RetirementClaim, RetirementSnapshot, error) {
