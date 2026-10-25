@@ -33,10 +33,7 @@ func TestDelegateStopDrainScopesAttentionToMembers(t *testing.T) {
 	if _, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements()); err == nil {
 		t.Fatal("general reconciliation omitted unrelated corrupt attention")
 	}
-	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
-	if err != nil {
-		t.Fatal(err)
-	}
+	result := restoreHistoricalDelegateStop(t, c, "dlg_target")
 	stop := c.stopForResult(result)
 	if err := c.drainStopForClose(context.Background(), stop); err != nil {
 		t.Fatalf("stop read attention outside its subtree: %v", err)
@@ -116,10 +113,7 @@ func TestDelegateStopReconcileRejectsScopedEvidence(t *testing.T) {
 			seedDelegateControllerIdle(t, c, "dlg_unrelated", "")
 			childPath := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_child.transcript.jsonl")
 			writeDelegateAttentionTranscriptState(t, childPath, "child-dlg_child", "child-attention", false)
-			result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
-			if err != nil {
-				t.Fatal(err)
-			}
+			result := restoreHistoricalDelegateStop(t, c, "dlg_target")
 			stop := c.stopForResult(result)
 			requirements, current := c.stopReconcileRequirements(stop)
 			if !current || requirements.stopRequestSeq == 0 || requirements.stopRequestSeq != stop.requestSeq {
@@ -169,6 +163,17 @@ func TestDelegateStopReconcileRejectsScopedEvidence(t *testing.T) {
 			plans, err = c.Reconcile(evidence)
 			if err != nil || len(plans.attention) != 1 || plans.attention[0].delegateID != "dlg_child" || plans.attention[0].attentionID != "child-attention" {
 				t.Fatalf("fresh scoped evidence: error=%v attention=%#v", err, plans.attention)
+			}
+			if err := c.executeDelegateAttentionCleanup(plans.attention[0]); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.drainStopForClose(context.Background(), stop); err != nil {
+				t.Fatal(err)
+			}
+			c = reopenDelegateController(t, c, storePath)
+			fold, err := readDelegateAttentionFold(childPath, "child-dlg_child")
+			if err != nil || fold.resolutions["child-attention"] != delegateAttentionDiscarded || c.stop != nil {
+				t.Fatalf("historical cleanup not durable: fold=%+v stop=%+v err=%v", fold, c.stop, err)
 			}
 		})
 	}

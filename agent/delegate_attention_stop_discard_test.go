@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -12,12 +13,14 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
 func TestSubtreeStopPreservesNotificationCustody(t *testing.T) {
 	t.Parallel()
 	t.Run("registered tools observe after release", testSubtreeStopCustodyObservedAfterRelease)
+	t.Run("permanent ancestor reaches root", testStopPermanentAncestorReachesRoot)
 	for _, historical := range []bool{false, true} {
 		name := "new request"
 		if historical {
@@ -28,6 +31,7 @@ func TestSubtreeStopPreservesNotificationCustody(t *testing.T) {
 			seedDelegateControllerIdle(t, c, "dlg_parent", "")
 			seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
 			seedDelegateControllerDelivery(t, c, "dlg_child")
+			producedDelivery := c.durable["dlg_child"].PendingDeliveries[0]
 			childPath := transcriptPath(c.stateDir, "child-dlg_parent")
 			writeDelegateAttentionTranscript(t, childPath, "child-dlg_parent", "accepted-stop-731a")
 			shellPath := filepath.Join(jobsDir(c.stateDir, "child-dlg_parent"), "jobs.jsonl")
@@ -71,20 +75,73 @@ func TestSubtreeStopPreservesNotificationCustody(t *testing.T) {
 				}
 				return
 			}
-			if len(fold.pendingIDs()) != 1 || len(fold.resolutions) != 0 {
+			if !reflect.DeepEqual(fold.pendingIDs(), []string{"accepted-stop-731a"}) || len(fold.resolutions) != 0 || len(fold.observed) != 0 {
 				t.Fatalf("Stop discarded accepted input: pending=%v resolutions=%v", fold.pendingIDs(), fold.resolutions)
 			}
 			if consumed != 0 {
 				t.Fatalf("Stop wrote %d unearned shell observation receipts", consumed)
 			}
-			if len(c.durable["dlg_child"].PendingDeliveries) != 1 {
+			if got := c.durable["dlg_child"].PendingDeliveries; !reflect.DeepEqual(got, []delegatestore.PendingDelivery{producedDelivery}) {
 				t.Fatal("Stop erased produced-but-undelivered child source")
 			}
-			// Stop completion is this controller fence's existing release path.
-			if got := c.ReplayDeliveries(); len(got) != 1 {
+			// Completion releases only this controller's cancellation fence, not
+			// a human execution hold. Transport may acquire custody while held.
+			if got := c.ReplayDeliveries(); len(got) != 1 || got[0].deliveryID != producedDelivery.DeliveryID {
 				t.Fatalf("retained delivery not eligible after Stop completion: %+v", got)
 			}
 		})
+	}
+}
+
+func testStopPermanentAncestorReachesRoot(t *testing.T) {
+	fenced := newFencedGrandchildAttention(t)
+	root, fixture := fenced.root, fenced.fixture
+	sourcePath := transcriptPath(fixture.stateDir, fenced.grandchildSessionID)
+	before, err := readDelegateAttentionFold(sourcePath, fenced.grandchildSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.adapter.mu.Lock()
+	fixture.adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+		found := 0
+		for _, msg := range req.Messages {
+			if reflect.DeepEqual(msg, before.content[fenced.attentionID]) {
+				found++
+			}
+		}
+		if found != 1 {
+			t.Errorf("root request carried original message %d times, want once", found)
+		}
+		return finalResponse("permanent-handoff-result-42")
+	}}
+	fixture.adapter.mu.Unlock()
+	result, cancelPlan, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.ID()), fixture.delegateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executeDelegateCancelPlan(cancelPlan)
+	if err := root.delegateController.drainStop(context.Background(), root.delegateController.stopForResult(result), nil); err != nil {
+		t.Fatal(err)
+	}
+	fenced.closeParent(t)
+	// The ordinary wake owner must hand accepted content to the reachable root,
+	// not revive the permanently closed parent or run its fenced descendant.
+	root.delegateController.recheckNotificationReceivers()
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	requireOwnedDrainAttentionObservedOnce(t, root, fenced.attentionID)
+	source, err := readDelegateAttentionFold(sourcePath, fenced.grandchildSessionID)
+	if err != nil || source.resolutions[fenced.attentionID] != delegateAttentionDiscarded || len(source.observed) != 0 {
+		t.Fatalf("unreachable receiver has no durable transfer disposition: %+v err=%v", source, err)
+	}
+	if got := len(fixture.adapter.Requests()); got != 1 {
+		t.Fatalf("permanent handoff requests=%d, want one reachable root request", got)
+	}
+	for _, id := range []string{fixture.delegateID, fenced.grandchildDelegateID} {
+		if a := delegateAggregateSnapshot(t, root.delegateController, id); a.CurrentRunOpen || (id == fixture.delegateID && a.Resumable) {
+			t.Fatalf("permanent handoff revived %s: %+v", id, a)
+		}
 	}
 }
 
@@ -93,6 +150,8 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 	fifo, releaseShell := waitProducerFIFO(t)
 	defer releaseShell()
 	entered, modelGate, observed := make(chan struct{}), make(chan struct{}), make(chan struct{}, 1)
+	var contentMu sync.Mutex
+	var releasedContent map[string]llm.Message
 	releaseModel := sync.OnceFunc(func() { close(modelGate) })
 	defer releaseModel()
 	adapter.script("root", func(llm.Request) llm.Response {
@@ -109,6 +168,22 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 		return finalResponse("canceled-before-observation-731a")
 	}, func(req llm.Request) llm.Response {
 		observationRequest(t, req, []string{"stop-produced-frame-731a"}, nil)
+		contentMu.Lock()
+		defer contentMu.Unlock()
+		if len(releasedContent) != 2 {
+			t.Errorf("released request did not wait for the two real producer records: %v", releasedContent)
+		}
+		for id, message := range releasedContent {
+			found := 0
+			for _, msg := range req.Messages {
+				if reflect.DeepEqual(msg, message) {
+					found++
+				}
+			}
+			if found != 1 {
+				t.Errorf("released request carried %s content %d times, want once", id, found)
+			}
+		}
 		observed <- struct{}{}
 		return finalResponse("observed-after-stop-release-731a")
 	})
@@ -125,11 +200,44 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 	if err != nil || len(ids) != 1 {
 		t.Fatalf("accepted frame before Stop: ids=%v err=%v", ids, err)
 	}
-	result, cancelPlan, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.ID()), child.owningDelegateID)
-	if err != nil {
-		t.Fatal(err)
+	produced := producerSourceEvents(t, child.jobManager, jobstore.EventWatchSendPending)
+	if len(produced) != 1 || ids[0] != "watch:"+produced[0].WatchSend.DeliveryID+":1" {
+		t.Fatalf("accepted frame lost exact produced identity: ids=%v source=%+v", ids, produced)
 	}
-	executeDelegateCancelPlan(cancelPlan)
+	admitted := make(chan delegateStopResult, 1)
+	interruptDone := make(chan error, 1)
+	go func() {
+		var stopErr error
+		_, interruptErr := child.InterruptClientMutation(ctx, appwire.TurnInterruptParams{ClientMutationID: "stop-custody-hold-731a"}, func() {
+			result, cancelPlan, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.ID()), child.owningDelegateID)
+			if err != nil {
+				stopErr = err
+				return
+			}
+			executeDelegateCancelPlan(cancelPlan)
+			admitted <- result
+			select {
+			case <-result.done:
+			case <-ctx.Done():
+				stopErr = ctx.Err()
+			}
+		})
+		if interruptErr != nil {
+			stopErr = interruptErr
+		}
+		interruptDone <- stopErr
+	}()
+	var result delegateStopResult
+	select {
+	case result = <-admitted:
+	case err := <-interruptDone:
+		t.Fatalf("human Stop returned before subtree admission: %v", err)
+	case <-ctx.Done():
+		t.Fatal("human Stop did not admit subtree cancellation")
+	}
+	if !child.notificationStopHeld() {
+		t.Fatal("human Stop did not establish its execution hold")
+	}
 	stop := root.delegateController.stopForResult(result)
 	if stop == nil {
 		t.Fatal("real Stop did not retain its cancellation fence")
@@ -142,6 +250,7 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 	if err != nil || len(fold.resolutions) != 0 {
 		t.Fatalf("Stop earned a false receiver receipt: resolutions=%v err=%v", fold.resolutions, err)
 	}
+	originalContent := fold.content[ids[0]]
 	// The registered tool joins the same admitted Stop, not another policy or
 	// synthetic completion. Its fence cannot settle until the real run unwinds.
 	toolDone := make(chan error, 1)
@@ -163,12 +272,42 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 	if err := <-toolDone; err != nil {
 		t.Fatal(err)
 	}
+	if err := <-interruptDone; err != nil {
+		t.Fatalf("human Stop cancellation and wait: %v", err)
+	}
 	if got := len(producerSourceEvents(t, child.jobManager, jobstore.EventJobNotificationConsumed)); got != 0 {
 		t.Fatalf("Stop wrote %d shell observation receipts before successful coverage", got)
 	}
-	// Stop completion releases this subtree fence. No new resume API or inbox
-	// append overrides it, and the ordinary common executor owns the successor.
+	// Cancelling the real owned FIFO shell produces one more source obligation.
+	// It must keep the journal's exact job/terminal generation at the receiver.
+	shellProduced := producerSourceEvents(t, child.jobManager, jobstore.EventJobNotificationPending)
+	if len(shellProduced) != 1 {
+		t.Fatalf("cancellation produced shell obligations=%+v, want one", shellProduced)
+	}
+	shellID := "shell:" + shellProduced[0].JobID + ":" + shellProduced[0].TerminalGen
+	ids = append(ids, shellID)
+	// Finishing cancellation releases the controller fence, not the separately
+	// persisted human hold. Even an explicit common wake cannot run through it.
 	if err := root.kickDriveTree(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !child.notificationStopHeld() || len(adapter.requestsFor("STOP-CUSTODY-731a")) != 3 {
+		t.Fatal("Stop completion released the human hold or made a model request")
+	}
+	assertNotificationPending(t, child, ids)
+	fold, err = readDelegateAttentionFold(child.TranscriptPath(), child.ID())
+	if err != nil || len(fold.resolutions) != 0 || len(fold.observed) != 0 {
+		t.Fatalf("held Stop fabricated a receiver receipt: %+v err=%v", fold, err)
+	}
+	if !reflect.DeepEqual(fold.content[ids[0]], originalContent) {
+		t.Fatal("Stop replaced the originally accepted content")
+	}
+	contentMu.Lock()
+	releasedContent = map[string]llm.Message{ids[0]: originalContent, shellID: fold.content[shellID]}
+	contentMu.Unlock()
+	// This user mutation is the explicit release itself, not an unrelated event
+	// needed to make retained input discoverable. It releases both durable rails.
+	if _, err := child.AcceptClientMutationStart(appwire.TurnStartParams{ClientMutationID: "stop-custody-release-731a", Input: []appwire.InputItem{{Type: "text", Text: "continue"}}}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -177,7 +316,9 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 		t.Fatal("retained accepted frame did not reach the eligible provider")
 	}
 	waitForStableSupervisionRun(t, root, child.ID())
-	requireOwnedDrainAttentionObservedOnce(t, child, ids[0])
+	for _, id := range ids {
+		requireOwnedDrainAttentionObservedOnce(t, child, id)
+	}
 	if got := len(adapter.requestsFor("STOP-CUSTODY-731a")); got != 4 {
 		t.Fatalf("post-release requests=%d, want exactly one successor", got)
 	}

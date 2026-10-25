@@ -14,12 +14,31 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 type delegateStopWaitBarrierContext struct {
 	entered  chan struct{}
 	canceled chan struct{}
 	once     sync.Once
+}
+
+// restoreHistoricalDelegateStop writes the old missing-bit record, then uses
+// the real restore reader. It never rewrites a newly admitted preserving Stop.
+func restoreHistoricalDelegateStop(t *testing.T, c *delegateTreeController, targetID string) delegateStopResult {
+	t.Helper()
+	seq := appendDelegateControllerStopRequest(t, c, targetID)
+	events, err := c.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.restorePendingStop(events); err != nil {
+		t.Fatal(err)
+	}
+	if c.stop == nil || c.stop.requestSeq != seq || c.stop.preserveNotifications {
+		t.Fatalf("historical Stop not restored: %+v", c.stop)
+	}
+	return c.stopResultLocked(c.stop)
 }
 
 func newDelegateStopWaitBarrierContext() *delegateStopWaitBarrierContext {
@@ -442,12 +461,13 @@ func TestDelegateControllerRestartThenStopUsesNewRequestSequence(t *testing.T) {
 func TestDelegateControllerStopRescansCancellationAttentionBeforeCompletion(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
-	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+	path := transcriptPath(c.stateDir, "child-dlg_target")
+	writeDelegateAttentionTranscript(t, path, "child-dlg_target", "attention-1")
+	result := restoreHistoricalDelegateStop(t, c, "dlg_target")
+	evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
 	if err != nil {
-		t.Fatalf("StopSubtree: %v", err)
+		t.Fatal(err)
 	}
-	evidence := emptyDelegateReconcileEvidence(c)
-	evidence.attention["dlg_target"] = []string{"attention-1"}
 	plans, err := c.Reconcile(evidence)
 	if err != nil {
 		t.Fatalf("Reconcile attention: %v", err)
@@ -460,19 +480,26 @@ func TestDelegateControllerStopRescansCancellationAttentionBeforeCompletion(t *t
 		t.Fatal("stop completed before attention resolution")
 	default:
 	}
-	if _, err := c.ReportAttentionResolved(result.requestSeq, evidence.evidenceVersion, "dlg_target", "attention-1", delegateAttentionDiscarded, nil); err != nil {
-		t.Fatalf("ReportAttentionResolved: %v", err)
+	if err := c.executeDelegateAttentionCleanup(plans.attention[0]); err != nil {
+		t.Fatalf("execute cleanup: %v", err)
 	}
 	if _, err := c.Reconcile(evidence); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("stale Reconcile error = %v, want busy", err)
 	}
-	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+	// A real cancellation-tail append after the first fold must be discovered
+	// before the fence completes, not erased by reporting synthetic resolution.
+	appendDelegateAttentionTurn(t, path, "child-dlg_target", "attention-tail")
+	if err := c.drainStopForClose(context.Background(), c.stop); err != nil {
 		t.Fatalf("fresh Reconcile: %v", err)
 	}
 	select {
 	case <-result.done:
 	default:
 		t.Fatal("stop remained pending after fresh empty attention fold")
+	}
+	fold, err := readDelegateAttentionFold(path, "child-dlg_target")
+	if err != nil || len(fold.pendingIDs()) != 0 || fold.resolutions["attention-1"] != delegateAttentionDiscarded || fold.resolutions["attention-tail"] != delegateAttentionDiscarded {
+		t.Fatalf("historical cleanup omitted real tail: %+v err=%v", fold, err)
 	}
 }
 
@@ -504,9 +531,7 @@ func TestDelegateControllerStopSuppressesCoveredOwnerDelivery(t *testing.T) {
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
 	seedDelegateControllerDelivery(t, c, "dlg_child")
-	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_parent"); err != nil {
-		t.Fatalf("StopSubtree: %v", err)
-	}
+	restoreHistoricalDelegateStop(t, c, "dlg_parent")
 	plans, err := c.Reconcile(emptyDelegateReconcileEvidence(c))
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -1176,7 +1201,14 @@ func TestDelegateControllerRootCloseInvalidatesCollectedEvidence(t *testing.T) {
 }
 
 func TestDelegateControllerRootCloseReconcilesClosedRootDescendantWork(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 3, 1)
+	c, storePath := newDelegateControllerTestHarness(t, 3, 1)
+	writer, err := transcript.NewWriter(transcriptPath(c.stateDir, c.rootSessionID), transcript.Header{SessionID: c.rootSessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
 	seedDelegateControllerIdle(t, c, "dlg_root", "")
 	seedDelegateControllerRunning(t, c, "dlg_running", "dlg_root")
 	seedDelegateControllerIdle(t, c, "dlg_delivery", "dlg_root")
@@ -1239,12 +1271,40 @@ func TestDelegateControllerRootCloseReconcilesClosedRootDescendantWork(t *testin
 	if err != nil {
 		t.Fatalf("read attention after Close: %v", err)
 	}
-	if len(pending) != 0 {
-		t.Fatalf("pending attention after Close = %#v", pending)
+	if !reflect.DeepEqual(pending, []string{"attention-close-closed-root"}) {
+		t.Fatalf("Close lost accepted attention before transfer = %#v", pending)
 	}
 	raw := readDelegateControllerFile(t, filepath.Join(c.stateDir, "delegate-events.jsonl"))
 	if got := bytes.Count(raw, []byte(`"delegate_subtree_stop_requested"`)); got != 1 {
 		t.Fatalf("root stop request count = %d, want 1\n%s", got, raw)
+	}
+	// Close cannot run an executor. Actual restart repair transfers content
+	// out of the permanently fenced descendant before model admission. Retained
+	// debt below the closed ancestor alone would not be a reachable result.
+	c = reopenDelegateController(t, c, storePath)
+	before, err := readDelegateAttentionFold(attentionPath, "child-dlg_attention")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := repairPermanentlyUnreachableDelegateAttention(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source, err := readDelegateAttentionFold(attentionPath, "child-dlg_attention")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := readDelegateAttentionFold(transcriptPath(c.stateDir, c.rootSessionID), c.rootSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "attention-close-closed-root"
+	if source.resolutions[id] != delegateAttentionDiscarded || !reflect.DeepEqual(root.pendingIDs(), []string{id}) || !reflect.DeepEqual(root.content[id], before.content[id]) || len(root.resolutions) != 0 || len(root.order) != 1 {
+		t.Fatalf("permanent transfer lost identity/content or duplicated: source=%+v root=%+v", source, root)
+	}
+	if a := c.durable["dlg_root"]; a.Resumable || a.Phase != delegatestore.PhaseClosed {
+		t.Fatal("transfer resurrected the permanently closed ancestor")
 	}
 }
 
