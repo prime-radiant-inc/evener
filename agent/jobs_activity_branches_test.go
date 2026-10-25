@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -496,6 +497,25 @@ func TestTrimActivityTreeToFit_TrimsExcessEntries(t *testing.T) {
 	}
 }
 
+// diagnosticLogCapture synchronizes snapshots with every handler write,
+// including warnings from asynchronous work outside the capturing test.
+type diagnosticLogCapture struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (c *diagnosticLogCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *diagnosticLogCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
+}
+
 // TestTrimActivityTreeToFit_SkipIsMeasuredWithTheTokenItCarries pins that a
 // page too tight even for the advanced position is recognised as such rather
 // than assumed to fit. Advancing past the skipped entry lengthens the
@@ -506,7 +526,7 @@ func TestTrimActivityTreeToFit_TrimsExcessEntries(t *testing.T) {
 func TestTrimActivityTreeToFit_SkipIsMeasuredWithTheTokenItCarries(t *testing.T) {
 	// Not parallel: this swaps the default logger to read what was reported
 	// and to keep the run's output pristine.
-	var logged bytes.Buffer
+	var logged diagnosticLogCapture
 	restore := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
 	t.Cleanup(func() { slog.SetDefault(restore) })
@@ -596,7 +616,7 @@ func TestTrimActivityTreeToFit_SkipDiagnosticStaysInsideTheLimit(t *testing.T) {
 	// Not parallel: the silent tier warns through the default logger, which
 	// this test swaps out to keep the run's output pristine and to read what
 	// was reported.
-	var logged bytes.Buffer
+	var logged diagnosticLogCapture
 	restore := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
 	t.Cleanup(func() { slog.SetDefault(restore) })
