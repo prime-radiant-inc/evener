@@ -72,8 +72,10 @@ Kinds are `human`, `agent`, `system` and `unknown`. A valid agent author require
 proven session ID/ref. A delegate tuple requires both owner and delegate ID. Other
 kinds have no agent identity fields. The canonical name uses the existing
 `activitybound.MaxLabelRunes` bound of 200. Do not add text payloads or lineage
-arrays. Malformed or unsupported attribution stays neutral without dropping the
-entry or changing whether its input can run.
+arrays. Structurally decodable but semantically invalid or unsupported attribution
+stays neutral without dropping the entry or changing whether its input can run.
+Wrong-typed JSON and unknown fields still follow the existing strict decoder's
+quarantine or whole-read failure behavior; this amendment does not relax it.
 
 Preserve these values through in-memory snapshots, persisted records, full and
 indexed projection, live history, live overlays, remote forwarding and the shared
@@ -191,5 +193,8 @@ caption, without assigning it a character. No text, mutation-ID heuristic or
 
 The shared producer/wire/SDK change has its own test and independent review gate.
 Only then does the original paused Comic worker consume it and update the owning
-product guides. Accepted discovery and name-metadata work is not reopened. No
-behavior is verified merely by approving this design.
+product guides, including S05/S10 authorship ownership and S02 Comic consumption in
+the subsystem map. The shared change updates `docs/product/history-content.md`.
+Both guides must accompany the code in the combined feature PR; a local prerequisite
+commit is not a separately published change. Accepted discovery and name-metadata
+work is not reopened. No behavior is verified merely by approving this design.
