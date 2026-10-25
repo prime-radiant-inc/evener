@@ -23,7 +23,7 @@ targets. Top priorities first.
 5. **Transcript scannability.** Tool-call rows led with the command and buried the *purpose*;
    identical `· 1ms` on every row; system/skill churn given divider-weight; thinking discarded.
 
-The fixes are the [design-system](design-system.md) component grammar + the work below.
+The fixes are the [design-system](../design-system.md) component grammar + the work below.
 
 ---
 
@@ -32,7 +32,7 @@ The fixes are the [design-system](design-system.md) component grammar + the work
 - **Vertical slice → golden example → generalize.** We mocked the live-session workspace,
   iterated it to a restrained, content-led [golden example](examples/01-golden-live-session.html),
   proved it against [hard cases](examples/02-hard-cases.html), and are extracting the
-  [style guide](design-system.md) + reusable component exemplars from it.
+  [style guide](../design-system.md) + reusable component exemplars from it.
 - **3 directions explored** ([refined-terminal](examples/direction-a-refined-terminal.html),
   [calm-product](examples/direction-b-calm-product.html),
   [bold-spine](examples/direction-c-bold-spine.html)); converged on a restrained synthesis (the
