@@ -43,8 +43,8 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 		return protocolhttp.CompleteViaStream(ctx, res.Instance, func(ctx context.Context) (llm.Stream, error) { return p.Stream(ctx, req, res) })
 	}
 	return runImageRecovery(ctx, p, req, res, false, func(call *protocolhttp.Call, recovery *imageRecovery) (llm.Response, error) {
-		return protocolhttp.Complete(ctx, call, func(raw map[string]any) (llm.Response, error) {
-			resp, err := fromChatCompletionResponse(raw, res.Caps.FinishReasonMap)
+		return protocolhttp.Complete(ctx, call, func(r *protocolhttp.Result) (llm.Response, error) {
+			resp, err := fromChatCompletionResponse(r.Raw, res.Caps.FinishReasonMap, r.Body)
 			resp.Warnings = append(resp.Warnings, recovery.warnings...)
 			return resp, err
 		})

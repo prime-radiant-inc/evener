@@ -53,7 +53,7 @@ func normalizeJSONNumbers(v any) any {
 	}
 }
 
-func fromGeminiResponse(raw map[string]any, requestedModel string) llm.Response {
+func fromGeminiResponse(raw map[string]any, requestedModel string, body []byte) llm.Response {
 	r := llm.Response{
 		Provider: "google",
 		Model:    requestedModel,
@@ -67,7 +67,9 @@ func fromGeminiResponse(raw map[string]any, requestedModel string) llm.Response 
 		if c0, ok := cands[0].(map[string]any); ok {
 			if content, ok := c0["content"].(map[string]any); ok {
 				if parts, ok := content["parts"].([]any); ok {
-					for _, pAny := range parts {
+					var rawArgs []json.RawMessage
+					var rawCaptured bool
+					for partIdx, pAny := range parts {
 						p, ok := pAny.(map[string]any)
 						if !ok {
 							continue
@@ -94,6 +96,15 @@ func fromGeminiResponse(raw map[string]any, requestedModel string) llm.Response 
 							name, _ := fc["name"].(string)
 							argsAny := fc["args"]
 							argsRaw, _ := json.Marshal(argsAny)
+							// Decode the raw body once; index this part's
+							// byte-faithful args token.
+							if !rawCaptured {
+								rawCaptured = true
+								rawArgs = captureGeminiArgsRaw(body)
+							}
+							if partIdx < len(rawArgs) && rawArgs[partIdx] != nil {
+								argsRaw = rawArgs[partIdx]
+							}
 							thoughtSig := geminiThoughtSignature(p, fc)
 							msg.Content = append(msg.Content, llm.ContentPart{
 								Kind: llm.ContentToolCall,
@@ -234,4 +245,44 @@ func classifyGeminiError(httpStatus int, body []byte, retryAfter *time.Duration,
 	_ = json.Unmarshal(body, &raw)
 
 	return llm.ErrorFromHTTPStatus("google", syntheticHTTP, errResp.Error.Message, raw, retryAfter)
+}
+
+// rawArgsBodyDecode is the focused raw-args body decode. Tests replace it to
+// count focused decodes per response body or streamed event body.
+var rawArgsBodyDecode = json.Unmarshal
+
+// captureGeminiArgsRaw decodes a response or streamed event body once with a
+// focused struct and returns one args token per candidates[0].content.parts
+// entry, in order. For objects the token IS the content (byte-identical,
+// preserves key-order/spacing/invalid-UTF-8). Non-functionCall parts hold nil.
+// It returns nil if the focused decode fails, so callers fall back to the
+// existing re-marshal path.
+func captureGeminiArgsRaw(body []byte) []json.RawMessage {
+	if len(body) == 0 {
+		return nil
+	}
+	type partRaw struct {
+		FunctionCall struct {
+			Args json.RawMessage `json:"args,omitempty"`
+		} `json:"functionCall"`
+	}
+	var focused struct {
+		Candidates []struct {
+			Content struct {
+				Parts []partRaw `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	if err := rawArgsBodyDecode(body, &focused); err != nil {
+		return nil
+	}
+	if len(focused.Candidates) == 0 {
+		return nil
+	}
+	parts := focused.Candidates[0].Content.Parts
+	args := make([]json.RawMessage, len(parts))
+	for i, part := range parts {
+		args[i] = part.FunctionCall.Args
+	}
+	return args
 }

@@ -7,7 +7,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Response {
+func fromAnthropicResponse(raw map[string]any, requestedModel string, body []byte) llm.Response {
 	r := llm.Response{
 		Provider: "anthropic",
 		Model:    requestedModel,
@@ -22,7 +22,9 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Respon
 
 	msg := llm.Message{Role: llm.RoleAssistant}
 	if content, ok := raw["content"].([]any); ok {
-		for _, itAny := range content {
+		var rawInputs []json.RawMessage
+		var rawCaptured bool
+		for contentIdx, itAny := range content {
 			it, ok := itAny.(map[string]any)
 			if !ok {
 				continue
@@ -38,6 +40,15 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Respon
 				name, _ := it["name"].(string)
 				argsAny := it["input"]
 				argsRaw, _ := json.Marshal(argsAny)
+				// Decode the raw body once; index this block's byte-faithful
+				// input token.
+				if !rawCaptured {
+					rawCaptured = true
+					rawInputs = captureAnthropicInputRaw(body)
+				}
+				if contentIdx < len(rawInputs) && rawInputs[contentIdx] != nil {
+					argsRaw = rawInputs[contentIdx]
+				}
 				msg.Content = append(msg.Content, llm.ContentPart{
 					Kind: llm.ContentToolCall,
 					ToolCall: &llm.ToolCallData{
@@ -245,4 +256,37 @@ func parseUsage(u map[string]any) llm.Usage {
 // of maintaining its own narrower hierarchy that can drift out of sync.
 func clampEffort(requested string, supportedLevels []string) string {
 	return llm.ClampReasoningEffort(requested, supportedLevels)
+}
+
+// rawArgsBodyDecode is the focused raw-args body decode. Tests replace it to
+// count focused decodes per response body.
+var rawArgsBodyDecode = json.Unmarshal
+
+// captureAnthropicInputRaw decodes the response body once with a focused
+// struct and returns one input token per content block, in order. For objects
+// the token IS the content (byte-identical, preserves key-order/spacing/
+// invalid-UTF-8). Blocks whose type is not tool_use hold nil. It returns nil
+// if the focused decode fails, so the caller falls back to the existing
+// re-marshal path.
+func captureAnthropicInputRaw(body []byte) []json.RawMessage {
+	if len(body) == 0 {
+		return nil
+	}
+	type contentItemRaw struct {
+		Type  string          `json:"type"`
+		Input json.RawMessage `json:"input,omitempty"`
+	}
+	var focused struct {
+		Content []contentItemRaw `json:"content"`
+	}
+	if err := rawArgsBodyDecode(body, &focused); err != nil {
+		return nil
+	}
+	inputs := make([]json.RawMessage, len(focused.Content))
+	for i, item := range focused.Content {
+		if item.Type == "tool_use" {
+			inputs[i] = item.Input
+		}
+	}
+	return inputs
 }

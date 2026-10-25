@@ -204,9 +204,9 @@ func TestComplete(t *testing.T) {
 			call := &Call{Operation: "test.complete", EndpointFamily: "test", Method: http.MethodPost, URL: URL(res, res.Transport.Endpoint), Body: map[string]any{"input": "hi"}, Req: llm.Request{Model: "m"}, Res: res, Client: srv.Client()}
 			var decodeCalled bool
 			var gotRaw map[string]any
-			resp, err := Complete(ctx, call, func(raw map[string]any) (llm.Response, error) {
+			resp, err := Complete(ctx, call, func(r *Result) (llm.Response, error) {
 				decodeCalled = true
-				gotRaw = raw
+				gotRaw = r.Raw
 				if tc.decodeErr != nil {
 					return llm.Response{}, tc.decodeErr
 				}

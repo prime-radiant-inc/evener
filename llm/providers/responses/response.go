@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
 )
 
 // responseContentFromOutputItems converts a Responses API output-item array
@@ -14,9 +15,15 @@ import (
 // come from a terminal response.completed payload's "output" field or from
 // decodeStream's accumulated response.output_item.done events, so both
 // callers share this one walk.
-func responseContentFromOutputItems(out []any) []llm.ContentPart {
+func responseContentFromOutputItems(out []any, body []byte) []llm.ContentPart {
+	return responseContentFromOutputItemsRaw(out, body, nil)
+}
+
+func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.RawMessage) []llm.ContentPart {
+	var rawBodyItems []json.RawMessage
+	var rawBodyCaptured bool
 	var content []llm.ContentPart
-	for _, itemAny := range out {
+	for itemIdx, itemAny := range out {
 		item, ok := itemAny.(map[string]any)
 		if !ok {
 			continue
@@ -48,6 +55,26 @@ func responseContentFromOutputItems(out []any) []llm.ContentPart {
 			itemID, _ := item["id"].(string)
 			if itemID == "" {
 				itemID, _ = item["item_id"].(string)
+			}
+			// Decode the raw body once; index this item's token (rawItems
+			// entries win when present).
+			var token json.RawMessage
+			if itemIdx < len(rawItems) {
+				token = rawItems[itemIdx]
+			}
+			if len(token) == 0 {
+				if !rawBodyCaptured {
+					rawBodyCaptured = true
+					rawBodyItems = captureResponsesArgsRaw(body)
+				}
+				if itemIdx < len(rawBodyItems) {
+					token = rawBodyItems[itemIdx]
+				}
+			}
+			if rawArgs, rawOK := captureResponsesItemArgsRaw(token); rawOK && rawArgs != nil {
+				if content, cerr := protocolhttp.RawStringContent(rawArgs); cerr == nil {
+					args = string(content)
+				}
 			}
 			content = append(content, llm.ContentPart{
 				Kind: llm.ContentToolCall,
@@ -110,7 +137,7 @@ func responseContentFromOutputItems(out []any) []llm.ContentPart {
 // response.output_item.done events in the same stream carried real content).
 // Shared by the live streaming decoder (decodeStream) and offline
 // recomputation so both apply the identical terminal-wins rule.
-func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accumulatedOutput []any) {
+func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accumulatedOutput []any, accumulatedRawOutput []json.RawMessage) {
 	terminalOutput, _ := rawResp["output"].([]any)
 	switch {
 	case len(terminalOutput) == 0 && len(accumulatedOutput) > 0:
@@ -118,7 +145,7 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 		// output_item.done events carried real content (observed on
 		// affected sessions). Synthesize the settled message from what the
 		// stream actually sent, reusing fromResponses' item-walk.
-		r.Message.Content = responseContentFromOutputItems(accumulatedOutput)
+		r.Message.Content = responseContentFromOutputItemsRaw(accumulatedOutput, nil, accumulatedRawOutput)
 		if status, _ := rawResp["status"].(string); status != "incomplete" {
 			if len(r.ToolCalls()) > 0 {
 				r.Finish = llm.FinishReason{Reason: "tool_calls"}
@@ -141,7 +168,10 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 // protocolhttp.Do) stamps it to res.Instance after this returns, and the
 // streaming caller (stream.go's decodeStream) stamps it itself since it
 // calls this directly, outside Do.
-func fromResponses(raw map[string]any, requestedModel string) llm.Response {
+//
+// body is the raw response body bytes for byte-faithful argument capture;
+// nil falls back to the existing string-form path.
+func fromResponses(raw map[string]any, requestedModel string, body []byte) llm.Response {
 	// Best-effort mapping. OpenAI Responses output is a list of typed items.
 	r := llm.Response{
 		Provider: "openai",
@@ -159,7 +189,7 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 
 	// Parse output items.
 	if out, ok := raw["output"].([]any); ok {
-		msg.Content = responseContentFromOutputItems(out)
+		msg.Content = responseContentFromOutputItems(out, body)
 	}
 
 	r.Message = msg
@@ -196,6 +226,39 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 	// every branch, so a decoded response always carries a finish reason.
 	invariant.Hold(r.Finish.Reason != "", "fromResponses produced an empty finish reason (status %q)", status)
 	return r
+}
+
+// rawArgsBodyDecode is the focused raw-args body decode. Tests replace it to
+// count focused decodes per response body.
+var rawArgsBodyDecode = json.Unmarshal
+
+// captureResponsesArgsRaw decodes the response body once into raw output-item
+// tokens, aligned with the output array. The walk passes the selected token to
+// captureResponsesItemArgsRaw, so a malformed sibling item does not lose
+// capture for well-formed function calls. It returns nil if the focused decode
+// fails, so the caller falls back to the existing string-form args.
+func captureResponsesArgsRaw(body []byte) []json.RawMessage {
+	if len(body) == 0 {
+		return nil
+	}
+	var focused struct {
+		Output []json.RawMessage `json:"output"`
+	}
+	if err := rawArgsBodyDecode(body, &focused); err != nil {
+		return nil
+	}
+	return focused.Output
+}
+
+func captureResponsesItemArgsRaw(item []byte) (json.RawMessage, bool) {
+	var focused struct {
+		Type      string          `json:"type"`
+		Arguments json.RawMessage `json:"arguments,omitempty"`
+	}
+	if err := json.Unmarshal(item, &focused); err != nil || focused.Type != "function_call" {
+		return nil, false
+	}
+	return focused.Arguments, true
 }
 
 // parseUsage maps a Responses API usage object into an llm.Usage.
