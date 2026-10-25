@@ -1751,6 +1751,7 @@ function validStableDelegate(value: unknown): boolean {
     "runGeneration",
     "delegateId",
     "ownerSessionId",
+    "logicalOwnerSessionId",
     "rootSessionId",
     "childSessionId",
     "transcriptRef",
@@ -1767,6 +1768,8 @@ function validStableDelegate(value: unknown): boolean {
     "needsAttention",
     "notResumableReason",
     "projectionRevision",
+    "reportPreview",
+    "reportPreviewTruncated",
     "task",
     "description",
     "agentType",
@@ -1781,6 +1784,7 @@ function validStableDelegate(value: unknown): boolean {
     "runStartedAt",
     "runEndedAt",
     "latestActivityAt",
+    "latestIntent",
     "runningForMs",
     "quietForMs",
     "durationMs",
@@ -1800,11 +1804,13 @@ function validStableDelegate(value: unknown): boolean {
     "worktree",
   ];
   const stringFields = [
+    "logicalOwnerSessionId",
     "parentDelegateId",
     "outcome",
     "reason",
     "error",
     "notResumableReason",
+    "reportPreview",
     "task",
     "description",
     "agentType",
@@ -1819,11 +1825,18 @@ function validStableDelegate(value: unknown): boolean {
     "runStartedAt",
     "runEndedAt",
     "latestActivityAt",
+    "latestIntent",
     "packetKind",
     "structuredResultReason",
     "exhaustionBudget",
   ];
-  const booleanFields = ["terminal", "structuredResultValid", "exhaustionResumable", "parentWatchGranted"];
+  const booleanFields = [
+    "terminal",
+    "reportPreviewTruncated",
+    "structuredResultValid",
+    "exhaustionResumable",
+    "parentWatchGranted",
+  ];
   const numberFields = ["runningForMs", "quietForMs", "durationMs", "exhaustionLimit", "delegationAllowance"];
   return (
     isRecord(value) &&
