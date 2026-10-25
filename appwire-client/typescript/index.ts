@@ -553,10 +553,26 @@ export {
   threadModelFromCache,
   threadModelFromCurrentState,
 } from "./reducer";
+export {
+  type RetryEligibility,
+  type RetryEligibilityDenialReason,
+  type RetryEligibilityInput,
+  type RetryEligibilityReason,
+  retryEligibility,
+} from "./retryEligibility";
 export type { GroupedSearch, GroupedSearchRow } from "./searchGrouping";
 export { countSearchMatches, groupSearchResults } from "./searchGrouping";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
+export type {
+  SendQueueAction,
+  SendQueueDecision,
+  SendQueueGateInput,
+  SendQueuePolicy,
+  SendQueueReason,
+  SendQueueRecovery,
+} from "./sendQueueGate";
+export { BROWSER_SEND_QUEUE_POLICY, NATIVE_SEND_QUEUE_POLICY, sendQueueGate } from "./sendQueueGate";
 export type { QuietState } from "./sessionActivity";
 export { decodeActivityRead, QUIET_AFTER_MS, quietState, STUCK_AFTER_MS } from "./sessionActivity";
 export { projectSessionActivity, type SessionActivityPresentation } from "./sessionActivityPresentation";
@@ -568,7 +584,7 @@ export type {
   SessionActivityReadState,
   SessionActivitySnapshot,
 } from "./sessionActivityStore";
-export { SessionActivityStore } from "./sessionActivityStore";
+export { isValidActivityTimestamp, SessionActivityStore } from "./sessionActivityStore";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 export type { SettingsHubGeneration } from "./settingsHubGeneration";
 export { createSettingsHubGeneration } from "./settingsHubGeneration";
@@ -702,6 +718,7 @@ export {
   parseJSONObject,
   str,
   tailFold,
+  tailFoldNote,
   tailSlice,
   trailingBracketFooter,
 } from "./toolCallText";
@@ -833,7 +850,12 @@ export {
 } from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
-export { TURN_CONTINUATION_TEXT } from "./turnContinuation";
+export {
+  isLatestRetryTurn,
+  latestTurnId,
+  type RetryTurnThread,
+  TURN_CONTINUATION_TEXT,
+} from "./turnContinuation";
 export type * from "./types.gen";
 export {
   HOST_REQUEST_METHODS,

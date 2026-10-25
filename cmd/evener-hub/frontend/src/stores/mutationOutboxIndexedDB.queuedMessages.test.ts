@@ -1,4 +1,5 @@
 // @vitest-environment node
+import type { InputItem } from "@evener/appwire-client";
 import {
   describeQueuedMessageStorage,
   queuedIntent,
@@ -568,4 +569,66 @@ test("legacy reopen preserves unknown attempts and editing image bytes", async (
   const blob = recovery?.attachments[0]?.blob;
   if (!blob) throw new Error("missing image bytes");
   expect(new Uint8Array(await blob.arrayBuffer())).toEqual(new Uint8Array([0, 255, 7]));
+});
+
+test("preserveRecoveryComposition writes a fresh owner with image bytes", async () => {
+  const f = fixture();
+  const outbox = await f.storage.enqueueIntent(queuedIntent());
+  const original = await f.storage.transferToRecovery(outbox.clientMutationId, "editing");
+  if (!original) throw new Error("failed to seed recovery");
+  const input: InputItem[] = [
+    { type: "text", text: "keep this [image 1]" },
+    { type: "image", mediaType: "image/png", data: "AQID", name: "recovered.png" },
+  ];
+  const fresh = await f.storage.preserveRecoveryComposition(
+    original,
+    input,
+    [
+      {
+        presentationId: "image-a",
+        marker: 1,
+        name: "recovered.png",
+        mediaType: "image/png",
+        blob: new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }),
+      },
+    ],
+    "keep this [image 1]",
+    [],
+    "pane-owner",
+    "draft-9",
+  );
+  expect(fresh?.clientMutationId).not.toBe(original.clientMutationId);
+  expect(fresh).toMatchObject({
+    targetRef: original.targetRef,
+    threadId: original.threadId,
+    method: "turn/queue",
+    recoveryKind: "rejected",
+    composerText: "keep this [image 1]",
+    compositionOwnerId: "pane-owner",
+    localDraftRevisionId: "draft-9",
+    payload: { input },
+    attachments: [expect.objectContaining({ marker: 1, name: "recovered.png" })],
+  });
+  expect(await f.storage.getRecovery(original.clientMutationId)).toMatchObject({
+    composerText: original.composerText,
+  });
+  const reopened = await f.reopen();
+  expect(await reopened.getRecovery(fresh?.clientMutationId ?? "")).toMatchObject({ payload: { input } });
+});
+
+test("preserveRecoveryComposition reuses a row that already holds the composition", async () => {
+  const f = fixture();
+  const outbox = await f.storage.enqueueIntent(queuedIntent());
+  const original = await f.storage.transferToRecovery(outbox.clientMutationId, "editing");
+  if (!original) throw new Error("failed to seed recovery");
+  const preserved = await f.storage.preserveRecoveryComposition(
+    original,
+    original.payload.input as InputItem[],
+    original.attachments,
+    original.composerText ?? "",
+    original.composerMentions,
+    "pane-owner",
+  );
+  expect(preserved?.clientMutationId).toBe(original.clientMutationId);
+  expect(await f.storage.listRecovery(original.targetRef)).toHaveLength(1);
 });

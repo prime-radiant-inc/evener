@@ -9,9 +9,22 @@ import (
 
 // evalMetrics holds metrics collected during an evaluation run.
 type evalMetrics struct {
-	Strategy          string   `json:"strategy"`
-	Model             string   `json:"model"`
-	Task              string   `json:"task"`
+	Strategy string `json:"strategy"`
+	Model    string `json:"model"`
+	Task     string `json:"task"`
+
+	// Completed reports whether the latest session-input boundary the collector
+	// observed was successful: an EventSessionEnd whose SessionEndData.Reason is
+	// "input_complete". "turn_failed" (unless the session is closing, which
+	// emits no input boundary) and "interrupted" clear it, so the latest input
+	// wins; a failed skill route can record a turn failure and still reach
+	// "input_complete". The teardown-only "session_closed" leaves it unchanged,
+	// so false means no successful boundary was observed.
+	//
+	// It records session-input completion, not task success: a
+	// communicate(end_turn=true) call only ends the turn, and the eval's
+	// executable task checks and retained tool chronology remain the task
+	// evidence.
 	Completed         bool     `json:"completed"`
 	TurnCount         int      `json:"turn_count"`
 	TotalInputTokens  int      `json:"total_input_tokens"`
@@ -35,6 +48,16 @@ type evalMetrics struct {
 	// Diff captures the agent's code changes (git diff) after the run.
 	Diff string `json:"diff,omitempty"`
 }
+
+// Session-end reasons that report an input's terminal boundary. session_closed
+// reports session teardown instead and must not change Completed. A newly added
+// input-terminal reason must be added to the switch in ProcessEvent; an
+// unlisted reason leaves the last observed boundary unchanged.
+const (
+	evalSessionEndInputComplete = "input_complete"
+	evalSessionEndTurnFailed    = "turn_failed"
+	evalSessionEndInterrupted   = "interrupted"
+)
 
 // f2pResults captures fail-to-pass test evaluation outcomes.
 type f2pResults struct {
@@ -84,6 +107,16 @@ func (c *evalCollector) ProcessEvent(ev events.SessionEvent) {
 
 	case events.EventForkSummary:
 		c.metrics.ForkSummaryCalls++
+
+	case events.EventSessionEnd:
+		if d, ok := ev.Data.(events.SessionEndData); ok {
+			switch d.Reason {
+			case evalSessionEndInputComplete:
+				c.metrics.Completed = true
+			case evalSessionEndTurnFailed, evalSessionEndInterrupted:
+				c.metrics.Completed = false
+			}
+		}
 	}
 }
 
