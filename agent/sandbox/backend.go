@@ -246,7 +246,11 @@ func (w *Wrapper) commandCWDVisible(cwd string, resolveRoots bool) bool {
 	if tree := scratchTreeOf(w.sessionTmp); tree != "" && pathUnder(cwd, tree) {
 		return true
 	}
-	readRoots, writeRoots, unmaskedRoots := w.policy.Spawned.ReadRoots, w.policy.Spawned.WriteRoots, w.policy.UnmaskedRoots
+	readRoots := slices.Clone(w.policy.Spawned.ReadRoots)
+	if w.policy.Git.WorktreeRoot != "" {
+		readRoots = append(readRoots, w.policy.Git.WorktreeRoot)
+	}
+	writeRoots, unmaskedRoots := w.policy.Spawned.WriteRoots, w.policy.UnmaskedRoots
 	if resolveRoots {
 		readRoots, writeRoots, unmaskedRoots = resolveRootSlice(readRoots), resolveRootSlice(writeRoots), resolveRootSlice(unmaskedRoots)
 	}

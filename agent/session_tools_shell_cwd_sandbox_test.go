@@ -27,6 +27,11 @@ func newSandboxedShellEnv(t *testing.T, policy sandbox.SandboxPolicy, root strin
 	if !facts.BwrapCapable && !facts.SeatbeltAvailable() {
 		t.Skip("no usable sandbox backend on this host")
 	}
+	return newSandboxedShellEnvWithFacts(t, policy, facts, root)
+}
+
+func newSandboxedShellEnvWithFacts(t *testing.T, policy sandbox.SandboxPolicy, facts sandbox.HostFacts, root string) *execenv.LocalExecutionEnvironment {
+	t.Helper()
 	net := true
 	policy.Network = &net
 	rp, err := sandbox.Resolve(policy, facts, root)
@@ -440,5 +445,105 @@ func TestShellToolWorkspaceWriteCwdSymlinkedWritableRoot(t *testing.T) {
 	res = executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"pwd","cwd":%q}`, filepath.Join(realDir, "sub")))
 	if !res.IsError {
 		t.Fatalf("target spelling of a symlinked writable root was accepted: %s", res.Output)
+	}
+}
+
+// TestShellToolReadOnlyCwdContentCarveOutGitMasked pins the content carve-out
+// path: a cwd inside a carve-out under the private /tmp is bound by the
+// validated carve-out handler, not early, so .git stays masked at the resolved
+// root even when the config directory is a symlink.
+func TestShellToolReadOnlyCwdContentCarveOutGitMasked(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("bubblewrap private /tmp is Linux-only")
+	}
+	base, err := os.MkdirTemp("/tmp", "evener-4332-carve-")
+	if err != nil {
+		t.Skipf("no writable /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	home := filepath.Join(base, "home")
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realConfig, err := os.MkdirTemp("/var/tmp", "evener-4332-config-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(realConfig) })
+	skills := filepath.Join(realConfig, "skills")
+	if err := os.MkdirAll(filepath.Join(skills, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skills, ".git", "config"), []byte("SECRET-CARVE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(home, ".config", "evener")); err != nil {
+		t.Skipf("cannot create config symlink: %v", err)
+	}
+	root, err := os.MkdirTemp("/var/tmp", "evener-4332-carve-root-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+
+	facts := sandbox.RealProber{}.Probe()
+	if !facts.BwrapCapable {
+		t.Skip("bubblewrap is unavailable")
+	}
+	facts.Home = home
+	facts.EvenerConfigRoot = filepath.Join(home, ".config", "evener")
+	facts.EvenerContentRoots = []string{filepath.Join(home, ".config", "evener", "skills")}
+	facts.EvenerManagedContentRoots = nil
+	facts.EvenerManagedContentClean = false
+	env := newSandboxedShellEnvWithFacts(t, sandbox.SandboxPolicy{Mode: sandbox.ModeReadOnly}, facts, root)
+	requireBwrapPrivateMounts(t, env)
+	if len(env.Sandbox.UnmaskedRoots) == 0 {
+		t.Fatalf("fixture did not carve out the skills root: %+v", env.Sandbox.MaskedPaths)
+	}
+	s := newSandboxedShellSession(t, env)
+
+	literal := filepath.Join(home, ".config", "evener", "skills")
+	res := executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"cat .git/config","cwd":%q}`, literal))
+	out := decodeSandboxedShellOutput(t, res)
+	if strings.Contains(*out.Output, "SECRET-CARVE") {
+		t.Fatalf("carve-out .git was readable through cwd: %q", *out.Output)
+	}
+}
+
+// TestShellToolReadOnlyCwdWorkspaceSymlinkUnderTmp pins the workspace-anchor
+// visibility case: a symlink inside a workspace under /tmp points to a readable
+// /var/tmp directory, so the symlink spelling is accepted as cwd.
+func TestShellToolReadOnlyCwdWorkspaceSymlinkUnderTmp(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("bubblewrap private /tmp is Linux-only")
+	}
+	base, err := os.MkdirTemp("/tmp", "evener-4332-ws-link-")
+	if err != nil {
+		t.Skipf("no writable /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	root := filepath.Join(base, "workspace")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside, err := os.MkdirTemp("/var/tmp", "evener-4332-ws-target-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	env := newSandboxedShellEnv(t, sandbox.SandboxPolicy{Mode: sandbox.ModeReadOnly}, root)
+	requireBwrapPrivateMounts(t, env)
+	s := newSandboxedShellSession(t, env)
+
+	res := executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"pwd","cwd":%q}`, link))
+	out := decodeSandboxedShellOutput(t, res)
+	if got := strings.TrimSpace(*out.Output); got != link {
+		t.Fatalf("shell pwd with a workspace symlink = %q, want the literal cwd %q", got, link)
 	}
 }

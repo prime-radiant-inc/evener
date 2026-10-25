@@ -118,6 +118,13 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		if r == "" || r == "/tmp" || (r != "/dev/shm" && !pathUnder(r, "/tmp") && !pathUnder(r, "/dev/shm")) {
 			continue
 		}
+		// A cwd or anchor inside a content carve-out takes the validated
+		// carve-out handler below, which binds the resolved root and recreates
+		// the literal spelling as a link. Binding it here instead would land
+		// before the masks and the .git denials.
+		if isUnderAnyRoot(r, rp.UnmaskedRoots) {
+			continue
+		}
 		if r == sessionTmp || (sessionTmp != "" && pathUnder(r, sessionTmp)) {
 			continue
 		}

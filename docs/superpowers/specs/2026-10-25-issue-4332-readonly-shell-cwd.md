@@ -61,6 +61,13 @@ Revision notes:
   under `/tmp` is accepted. The symlinked-read-root test's `pwd` expectation
   is backend-specific (bubblewrap binds the literal path, Seatbelt keeps the
   host link).
+- **Amendment 5 (RoboRev branch review, round 4).** A cwd or anchor inside a
+  content carve-out under a private mount must not take the early cwd bind:
+  that lands before the masks and the `.git` denials. It goes to the
+  validated carve-out handler, which binds the resolved root and recreates
+  the literal spelling as a link. The visibility predicate also includes the
+  workspace anchor it binds, so a workspace symlink under `/tmp` to a
+  readable outside directory is accepted.
 
 ## Intent and scope
 
@@ -335,7 +342,11 @@ fixture.
    accepted `/var/tmp` cwd, proving the workspace anchor survives the cwd
    change. A workspace-write session accepts a literal cwd under a symlinked
    extra writable root under `/tmp`, writes there, and refuses the target's
-   own spelling.
+   own spelling. A read-only `/tmp` workspace symlink to a readable
+   `/var/tmp` directory is accepted as cwd.
+   A read-only cwd inside a content carve-out under `/tmp`, with the config
+   directory itself a symlink, cannot read `.git/config`; the validated
+   carve-out handler keeps the `.git` denial at the resolved root.
 8. `agent/sandbox/resolve_canread_test.go`: `SpawnedCanRead` accepts
    read-anywhere paths, rejects masked paths and `.git` under a carve-out,
    accepts restricted read roots and unmasked roots, rejects a restricted
