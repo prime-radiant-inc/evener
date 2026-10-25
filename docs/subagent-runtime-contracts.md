@@ -181,6 +181,12 @@ An already settled named target is an ordinary refusal carrying its actual
 terminal state, with no publication, checkpoint or synthetic wake. Completion
 after validation remains owed through ordinary durable delivery.
 
+A root wait that subsequently has a durable failed completion is not resumable.
+After proving its complete wait boundary and establishing writer durability,
+new input may start a distinct execution through ordinary input admission.
+The old checkpoint remains unchanged, with no resumption or observation claim.
+Missing, unreadable or incomplete boundary evidence still refuses admission.
+
 The resumption claim is synced before new model/tool activity while holding
 the original lease admission lock. Stop either wins before that claim or cancels
 the admitted execution of that exact generation. Retained-unsynced records use
