@@ -1224,12 +1224,6 @@ func TestCommittedSourceAckRetryDoesNotHoldColdRestore(t *testing.T) {
 	}
 	assertNotificationPending(t, s, []string{})
 	assertAttentionResponseReceipts(t, s, rootID, 1)
-	unblockListing()
-	deliveryErr := <-delivered
-	joinedDelivery = true
-	if deliveryErr == nil {
-		t.Fatal("closed source acknowledged the canonical receiver write")
-	}
 	entries, retries := notificationRawEntries(t, path), c.ReplayDeliveries()
 	if len(entries) != 1 || entries[0].Turn.AttentionID != attentionID || len(retries) != 1 || retries[0].deliveryID != deliveryID {
 		t.Fatal("source-only retry lost receiver custody or the source obligation")
@@ -1237,8 +1231,9 @@ func TestCommittedSourceAckRetryDoesNotHoldColdRestore(t *testing.T) {
 	if _, _, err := c.idleDelegateRestoreCommit(fixture.delegateID); err != nil {
 		t.Fatalf("committed receiver custody still holds cold restore: %v", err)
 	}
-	// Recover the shared journal. Automatic reconstruction can now replay the
-	// source acknowledgment, and its existing receiver retry must run the body.
+	// Repair the shared journal before releasing reconstruction so the failed
+	// source acknowledgment does not also cause an unrelated CommitStart failure.
+	// The root's existing transport retry still owns the exact source debt.
 	reopened, err := delegatestore.Open(delegateResourceStorePath(s.stateDir, s.ID()))
 	if err != nil {
 		t.Fatal(err)
@@ -1246,6 +1241,12 @@ func TestCommittedSourceAckRetryDoesNotHoldColdRestore(t *testing.T) {
 	c.mu.Lock()
 	c.store = reopened
 	c.mu.Unlock()
+	unblockListing()
+	deliveryErr := <-delivered
+	joinedDelivery = true
+	if deliveryErr == nil {
+		t.Fatal("closed source acknowledged the canonical receiver write")
+	}
 	clock.Advance(jobNotificationRetryInitialDelay)
 	notificationAwait(t, ready)
 	started = true
