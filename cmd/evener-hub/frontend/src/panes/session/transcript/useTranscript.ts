@@ -3,11 +3,10 @@
 // active readers own only the paging schedule.
 
 import type { ThreadModel } from "@evener/appwire-client";
-import { HistoryPaging, sessionActionError } from "@evener/appwire-client";
+import { sessionActionError } from "@evener/appwire-client";
 import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from "react";
-import { workspaceStore } from "../../../shell/workspace";
 import { useConnectionStore } from "../../../stores/connection";
-import { olderTranscriptPageKey, threadsStore, useThreadsStore } from "../../../stores/threads";
+import { olderTranscriptPageKey, useThreadsStore } from "../../../stores/threads";
 import type { TranscriptReadView } from "./transcriptReadView";
 
 export interface UseTranscriptResult {
@@ -28,119 +27,37 @@ export interface UseTranscriptResult {
   olderError: string | null;
 }
 
-// A browser page serves one hub. Socket replacements retain demand for the
-// same ref and session binding; a new binding owns a separate history window.
-interface TranscriptPaging {
-  ref: string;
-  binding: string | undefined;
-  paging: HistoryPaging;
-  paneConsumers: Map<string, ConsumerMembership>;
-}
-interface ConsumerMembership {
-  paneId: string;
-  type?: "session" | "transcript";
-  view?: TranscriptReadView;
-  unsubscribe?: () => void;
-}
-const pagingByRef = new Map<string, TranscriptPaging>();
+import {
+  createPaging,
+  forgetConsumer,
+  matchesBinding,
+  pagingByRef,
+  rememberConsumer,
+  resetTranscriptPagingForTests,
+  type TranscriptPaging,
+  type TranscriptReader,
+} from "./transcriptPaging";
+import { adoptRemovedConsumers, cancelRemovedConsumers } from "./workspaceTranscriptMembership";
 
-// Tests reset the thread store between hub fixtures.
-export function resetTranscriptPagingForTests(): void {
-  for (const entry of pagingByRef.values()) {
-    for (const id of entry.paneConsumers.keys()) {
-      entry.paging.cancel(id);
-      forgetConsumer(entry, id);
-    }
-  }
-  pagingByRef.clear();
-}
-
-function matchesBinding(entry: TranscriptPaging | undefined, binding: string | undefined): entry is TranscriptPaging {
-  return entry !== undefined && (binding === undefined || entry.binding === undefined || entry.binding === binding);
-}
-
-function createPaging(ref: string, binding: string | undefined): TranscriptPaging {
-  const entry: TranscriptPaging = {
-    ref,
-    binding,
-    paneConsumers: new Map(),
-    paging: new HistoryPaging(
-      () => {
-        const current = threadsStore.getState().threads.get(ref);
-        if (current === undefined || (current.instanceId ?? current.threadId) !== entry.binding) return undefined;
-        // Local bodies may remain even when the server has no continuation.
-        // The store's tagged scheduling key never goes onto the wire.
-        return olderTranscriptPageKey(ref);
-      },
-      () => threadsStore.getState().loadOlderTurns(ref),
-      () => {
-        if (pagingByRef.get(ref) === entry) pagingByRef.delete(ref);
-      },
-    ),
-  };
-  return entry;
-}
-
-function forgetConsumer(entry: TranscriptPaging, id: string): void {
-  entry.paneConsumers.get(id)?.unsubscribe?.();
-  entry.paneConsumers.delete(id);
-}
-
-function rememberConsumer(entry: TranscriptPaging, viewId: string, view?: TranscriptReadView): HistoryPaging {
-  // Unresolved reads and permanent failures both retain consumers. Only a
-  // successful settlement or explicit cancellation can retire their ownership.
-  const state = entry.paging.getSnapshot();
-  if (!state.pending && state.error === null) {
-    for (const id of entry.paneConsumers.keys()) forgetConsumer(entry, id);
-  }
-  if (entry.paneConsumers.get(viewId)?.view !== view || !entry.paneConsumers.has(viewId)) {
-    forgetConsumer(entry, viewId);
-    const paneId = view?.paneId ?? viewId;
-    const pane = workspaceStore.getState().panes.find((pane) => pane.id === paneId);
-    const membership: ConsumerMembership = {
-      paneId,
-      type: pane?.type === "session" || pane?.type === "transcript" ? pane.type : undefined,
-      view,
-    };
-    if (view) {
-      membership.unsubscribe = view.subscribe(() => {
-        if (view.alive || view.role !== "cascade") return;
-        entry.paging.cancel(viewId);
-        forgetConsumer(entry, viewId);
-      });
-    }
-    entry.paneConsumers.set(viewId, membership);
-  }
-  return entry.paging;
-}
-
-// Ordinary navigation retains its removed predecessor's browse intent. Adopt
-// only that intent, never an independently open or collapsed cascade reader's.
-function adoptRemovedConsumers(entry: TranscriptPaging, viewId: string, view?: TranscriptReadView): void {
-  if (view?.role === "cascade") return;
-  const panes = workspaceStore.getState().panes;
-  const paneId = view?.paneId ?? viewId;
-  const current = panes.find((pane) => pane.id === paneId && (pane.params as { ref?: unknown })?.ref === entry.ref);
-  if (!current || (current.type !== "session" && current.type !== "transcript")) return;
-  for (const [id, membership] of entry.paneConsumers) {
-    if (id === viewId || membership.view?.alive || membership.view?.role === "cascade" || membership.type === undefined)
-      continue;
-    const stillOpen = panes.some(
-      (pane) =>
-        pane.id === membership.paneId &&
-        pane.type === membership.type &&
-        (pane.params as { ref?: unknown })?.ref === entry.ref,
-    );
-    if (stillOpen && (membership.view?.alive !== false || membership.paneId !== paneId)) continue;
-    const paging = rememberConsumer(entry, viewId, view);
-    void paging.request(viewId).catch(() => {});
-    paging.cancel(id);
-    forgetConsumer(entry, id);
-  }
-}
+export type { TranscriptReader } from "./transcriptPaging";
+export { resetTranscriptPagingForTests };
 
 export function useTranscript(ref: string, reader: string | TranscriptReadView | null = ref): UseTranscriptResult {
-  const view = typeof reader === "string" ? undefined : (reader ?? undefined);
+  return useTranscriptInternal(ref, reader);
+}
+
+export function useTranscriptReader(ref: string, reader: TranscriptReader): UseTranscriptResult {
+  return useTranscriptInternal(ref, reader);
+}
+
+function useTranscriptInternal(
+  ref: string,
+  reader: string | TranscriptReadView | TranscriptReader | null,
+): UseTranscriptResult {
+  const typedReader = typeof reader === "object" && reader !== null && "membership" in reader ? reader : undefined;
+  const standalone = typedReader?.membership === "standalone" ? typedReader : undefined;
+  const view =
+    typeof reader === "object" && reader !== null && !typedReader ? (reader as TranscriptReadView) : undefined;
   const viewId = typeof reader === "string" ? reader : (reader?.id ?? ref);
   const model = useThreadsStore((s) => s.threads.get(ref));
   const hasOlder = useThreadsStore(() => olderTranscriptPageKey(ref) != null);
@@ -165,9 +82,9 @@ export function useTranscript(ref: string, reader: string | TranscriptReadView |
     }
     if (binding !== undefined) selected.binding = binding;
     pagingByRef.set(ref, selected);
-    adoptRemovedConsumers(selected, viewId, view);
+    if (!standalone) adoptRemovedConsumers(selected, viewId, view);
     if (selected !== entry) setEntry(selected);
-  }, [entry, ref, binding, viewId, view]);
+  }, [entry, ref, binding, viewId, view, standalone]);
   const paging = entry.paging;
   const state = useSyncExternalStore(paging.subscribe, paging.getSnapshot);
   // Wait for hydration when a pane returns before resuming its demand.
@@ -180,55 +97,47 @@ export function useTranscript(ref: string, reader: string | TranscriptReadView |
     if (!ready || pagingByRef.get(ref) !== entry) return;
     let release: (() => void) | undefined;
     const sync = () => {
-      if (document.visibilityState === "hidden" || (view && !view.readable)) {
+      if (document.visibilityState === "hidden" || (view && !view.readable) || (typedReader && !typedReader.readable)) {
         release?.();
         release = undefined;
       } else if (!release) release = paging.activate(viewId);
     };
     sync();
-    const unsubscribe = view?.subscribe(sync);
+    const unsubscribe = (typedReader ?? view)?.subscribe(sync);
     document.addEventListener("visibilitychange", sync);
     return () => {
       document.removeEventListener("visibilitychange", sync);
       unsubscribe?.();
       release?.();
     };
-  }, [paging, ready, ref, entry, viewId, view]);
+  }, [paging, ready, ref, entry, viewId, view, typedReader]);
+
+  useEffect(() => {
+    if (!standalone) return;
+    return () => {
+      const selected = pagingByRef.get(ref);
+      if (!selected) return;
+      selected.paging.cancel(viewId);
+      forgetConsumer(selected, viewId);
+    };
+  }, [standalone, ref, viewId]);
 
   // A layout commit can adopt another pane's owner before the state update
   // renders. Automatic effects must already route to the committed ref.
   const committedEntry = useCallback(() => pagingByRef.get(ref) ?? entry, [ref, entry]);
   const loadOlder = useCallback(
     () =>
-      reader === null || view?.alive === false
+      reader === null || view?.alive === false || typedReader?.alive === false
         ? Promise.resolve()
-        : rememberConsumer(committedEntry(), viewId, view).request(viewId),
-    [committedEntry, viewId, view, reader],
+        : rememberConsumer(committedEntry(), viewId, view, standalone).request(viewId),
+    [committedEntry, viewId, view, reader, standalone, typedReader],
   );
   const cancelOlder = useCallback(() => {
     const selected = committedEntry();
     selected.paging.cancel(viewId);
     forgetConsumer(selected, viewId);
-    // Navigation retains demand but creates a fresh pane ID on return. Jump
-    // to live abandons those removed predecessors, while an independently
-    // open pane keeps its demand even when its reader is currently inactive.
-    const panes = workspaceStore.getState().panes;
-    for (const [consumer, membership] of selected.paneConsumers) {
-      if (membership.view?.alive) continue;
-      if (membership.type === undefined) continue;
-      if (
-        panes.some(
-          (pane) =>
-            pane.id === membership.paneId &&
-            pane.type === membership.type &&
-            (pane.params as { ref?: unknown })?.ref === ref,
-        )
-      )
-        continue;
-      selected.paging.cancel(consumer);
-      forgetConsumer(selected, consumer);
-    }
-  }, [committedEntry, viewId, ref]);
+    if (!standalone) cancelRemovedConsumers(selected, ref);
+  }, [committedEntry, viewId, ref, standalone]);
   return {
     model,
     hasOlder,
@@ -236,8 +145,8 @@ export function useTranscript(ref: string, reader: string | TranscriptReadView |
     cancelOlder,
     loadingOlder: state.loading || (state.pending && state.error === null),
     loadOlderReportingError: () => {
-      if (reader === null || view?.alive === false) return;
-      const owner = rememberConsumer(committedEntry(), viewId, view);
+      if (reader === null || view?.alive === false || typedReader?.alive === false) return;
+      const owner = rememberConsumer(committedEntry(), viewId, view, standalone);
       // Geometry can repeat quiet demand; only the error row's explicit Retry
       // should bypass pacing after a rejected read.
       const request = owner.getSnapshot().error === null ? owner.request : owner.retryNow;

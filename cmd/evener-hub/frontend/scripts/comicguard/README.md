@@ -1,0 +1,5 @@
+# Comic Chat browser guard
+
+`GOCACHE="$EVENER_SCRATCH_DIR/comic-go-cache" go test -tags browserguard ./cmd/evener-hub -run '^TestComicChatBrowser$' -count=1 -v` starts an isolated real daemon and an authenticated production hub. Its only scripted dependency is the daemon's external LLM adapter, through the existing `skillGuardStartHelper` serve fixture. The Go test sends one input to the daemon before Chrome opens the Comic Chat URL; the browser driver checks the canonical text from the explicit JSON fixture, and Go checks the durable transcript.
+
+Rebuild the production frontend first with `npm run build` from `cmd/evener-hub/frontend`, after inspecting `scripts/clean-dist.mjs`. `node scripts/comicguard/run.mjs --fixture <absolute-json-path>` accepts `baseURL`, `refs.live` (with optional `saved` and `remote` for later journeys), `expectedSourceText`, `evidenceDir`, and `requirePrivateFonts` (false for this checkpoint). It writes `reader.json` and `reader.png` in the evidence directory. A skipped Go test or absent Chrome does not establish the browser journey. The fixture and Chrome processes are test-owned and cleaned up; no running hub or preview is touched.
