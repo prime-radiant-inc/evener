@@ -18,6 +18,7 @@ type notificationSchedule struct {
 	hinted           bool
 	running          bool // outer-input suppression, not admission authority
 	paused           bool
+	pauseWarned      bool // survives fresh wake eligibility until successful recovery
 	retry            notificationRetry
 	admissionBlocked bool
 	nameBlocked      bool
@@ -208,6 +209,7 @@ func (s *Session) finishNotificationExecution(turnErr error) error {
 	s.notificationSchedule.hinted = false
 	if err == nil && (!pending || turnErr == nil) {
 		s.notificationSchedule.paused = false
+		s.notificationSchedule.pauseWarned = false
 		if s.notificationSchedule.releaseTurnID == "" {
 			s.notificationSchedule.retry.generation++
 			s.notificationSchedule.retry.active = false
@@ -217,7 +219,10 @@ func (s *Session) finishNotificationExecution(turnErr error) error {
 		return nil
 	}
 	permanent := err == nil && turnErr != nil && !roundWasCancelled(turnErr) && llm.Classify(turnErr) == llm.ErrorClassPermanent
-	announce := permanent && !s.notificationSchedule.paused
+	announce := permanent && !s.notificationSchedule.pauseWarned
+	if announce {
+		s.notificationSchedule.pauseWarned = true
+	}
 	s.notificationSchedule.paused = permanent
 	s.mu.Unlock()
 	if permanent {
@@ -458,6 +463,14 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		}
 		return sub.sess.releaseNotificationAdmission()
 	}
+	// Restore can replay a committed receiver's still-unacknowledged source
+	// packet. Its deferred wake must not join the reconstruction it is inside.
+	// The existing owner dispatches again after attachment, or schedules recovery
+	// on failure. This hold is receiver-scoped, not a fence on other receivers.
+	if c.attentionRestoreHeldLocked(id) {
+		c.mu.Unlock()
+		return nil
+	}
 	state := c.attention[id]
 	paused := state != nil && state.parked
 	ready := c.delegateAttentionWakeEligibleLocked(id) && !c.hasColdDeliveryWorkForOwnerLocked(id)
@@ -488,13 +501,40 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 	stateDir := c.stateDir
 	c.holdAttentionRestoreLocked(id)
 	c.mu.Unlock()
-	defer c.releaseAttentionRestoreHold(id)
+	holdingRestore := true
+	defer func() {
+		if holdingRestore {
+			c.releaseAttentionRestoreHold(id)
+		}
+	}()
 	path, expectedID, err := delegateTranscriptPathFromRef(stateDir, ref)
 	if err == nil {
 		var fold delegateAttentionFold
 		fold, err = readExistingDelegateAttentionFold(path, expectedID)
 		if err == nil && len(fold.pendingIDs()) == 0 {
-			return c.clearResolvedDelegateAttention(id)
+			if err := c.clearResolvedDelegateAttention(id); err != nil {
+				// A current retry must not be consumed against our own hold.
+				c.releaseAttentionRestoreHold(id)
+				holdingRestore = false
+				c.scheduleSessionWakeRetry(sessionID)
+				if hook := root.cfg.testOnly.afterSessionWakeRecoveryScheduled; hook != nil {
+					hook(sessionID, err)
+				}
+				return err
+			}
+			// Acceptance may have coalesced behind this empty pass's hold.
+			// Clear revalidates custody but does not dispatch pending content.
+			// Inspect retained wakes and release our hold under one lock, so an
+			// acceptance is either ours to recheck or owns its own unheld wake.
+			c.mu.Lock()
+			releaseCountedLocked(c.attentionRestoreHolds, id)
+			pending := len(c.delegateAttentionWakeIDsLocked(id)) != 0
+			c.mu.Unlock()
+			holdingRestore = false
+			if pending {
+				return c.requestSessionWake(sessionID)
+			}
+			return nil
 		}
 	}
 	var sub *subagent
@@ -504,7 +544,12 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 	if err != nil {
 		root.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, id, err)
 		root.countDelegateAttentionRestoreFailure(id, err)
+		c.releaseAttentionRestoreHold(id)
+		holdingRestore = false
 		c.scheduleSessionWakeRetry(sessionID)
+		if hook := root.cfg.testOnly.afterSessionWakeRecoveryScheduled; hook != nil {
+			hook(sessionID, err)
+		}
 		return err
 	}
 	c.delegateAttentionRestored(id)

@@ -83,7 +83,15 @@ func TestDelegateAttention_LaunchClaimDoesNotObserve(t *testing.T) {
 	if _, err := c.FinishGeneration(first.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "first handled"}); err != nil {
 		t.Fatalf("FinishGeneration first: %v", err)
 	}
+	wakeDone := make(chan struct{}, 1)
+	runtime.SetNotifyFunc(func() { wakeDone <- struct{}{} })
+	// Registration dispatches existing pending content synchronously. Consume
+	// that distinct event before finalization is allowed to emit its own wake.
+	notificationAwait(t, wakeDone)
 	reportFinalizeTailDone(t, c, first.lease, runtime)
+	// Finalization rechecks the real pending IDs asynchronously. Wait until that
+	// wake has published them before claiming the second ID or inspecting maps.
+	notificationAwait(t, wakeDone)
 	secondReservation, err := c.ReserveAttention(runtime, secondID)
 	if err != nil {
 		t.Fatalf("ReserveAttention second: %v", err)
@@ -95,9 +103,12 @@ func TestDelegateAttention_LaunchClaimDoesNotObserve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("commit final attention: %v", err)
 	}
-	aggregate = c.durable["dlg_target"]
-	if aggregate.Generation != 2 || !aggregate.NeedsAttention || !reflect.DeepEqual(attentionWakeIDsOf(c, "dlg_target"), map[string]struct{}{firstID: {}}) {
-		t.Fatalf("final acceptance aggregate=%#v unresolved=%#v", aggregate, attentionWakeIDsOf(c, "dlg_target"))
+	c.mu.Lock()
+	finalAggregate := *c.durable["dlg_target"]
+	finalWakeIDs := maps.Clone(attentionWakeIDsOf(c, "dlg_target"))
+	c.mu.Unlock()
+	if finalAggregate.Generation != 2 || !finalAggregate.NeedsAttention || !reflect.DeepEqual(finalWakeIDs, map[string]struct{}{firstID: {}}) {
+		t.Fatalf("final acceptance aggregate=%#v unresolved=%#v", finalAggregate, finalWakeIDs)
 	}
 	fold, err = readDelegateAttentionFold(path, sessionID)
 	if err != nil {
@@ -513,7 +524,7 @@ func newDelegateAttentionAcceptanceHarness(t *testing.T, sessionID string, fs af
 			t.Fatalf("append attention %q: %v", attentionID, err)
 		}
 	}
-	runtime := &Session{id: sessionID, stateDir: c.stateDir, delegateController: c}
+	runtime := &Session{id: sessionID, stateDir: c.stateDir, delegateController: c, owningDelegateID: "dlg_target"}
 	runtime.attachTranscript(writer)
 	c.mu.Lock()
 	if _, err := c.appendLocked(delegatestore.Event{
@@ -544,16 +555,25 @@ func attachDelegateAttentionTranscriptForTest(t *testing.T, c *delegateTreeContr
 	}
 	sessionID := aggregate.Descriptor.ChildSessionID
 	path := transcriptPath(c.stateDir, sessionID)
-	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
-	if err != nil {
-		t.Fatalf("create attention transcript: %v", err)
+	writer := runtime.attachedTranscript()
+	if writer == nil {
+		var err error
+		writer, err = transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+		if err != nil {
+			t.Fatalf("create attention transcript: %v", err)
+		}
+		t.Cleanup(func() { _ = writer.Close() })
+		runtime.id = sessionID
+		runtime.stateDir = c.stateDir
+		runtime.delegateController = c
+		runtime.owningDelegateID = delegateID
+		runtime.attachTranscript(writer)
+	} else if runtime.id != sessionID || runtime.stateDir != c.stateDir || runtime.delegateController != c || runtime.owningDelegateID != delegateID {
+		t.Fatal("attention transcript is bound to a different receiver")
 	}
-	t.Cleanup(func() { _ = writer.Close() })
-	runtime.id = sessionID
-	runtime.stateDir = c.stateDir
-	runtime.delegateController = c
-	runtime.owningDelegateID = delegateID
-	runtime.attachTranscript(writer)
+	if attentionID == "" {
+		return
+	}
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("attention "+attentionID))
 	turn.AttentionID = attentionID
 	if err := writer.AppendDurable(turn); err != nil {
@@ -619,7 +639,6 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 		attentionID = "interleaved-attention"
 	)
 	c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
-	runtime.owningDelegateID = "dlg_target"
 	reservation, err := c.ReserveAttention(runtime, attentionID)
 	if err != nil {
 		t.Fatalf("ReserveAttention: %v", err)
@@ -1654,6 +1673,7 @@ func TestDelegateAttention_RestartFoldIsProviderFreeAndReadOnly(t *testing.T) {
 
 func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToolResult(t *testing.T) {
 	stateDir := t.TempDir()
+	workspace := t.TempDir()
 	const (
 		rootSessionID   = "root-session"
 		ownerDelegateID = "dlg_parent"
@@ -1679,6 +1699,8 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 	ownerCreated := delegateControllerCreatedEvent(ownerDelegateID, "")
 	ownerCreated.Created.Descriptor.ResolvedProfileID = "openai"
 	ownerCreated.Created.Descriptor.ResolvedModel = "gpt-5.2"
+	ownerCreated.Created.Descriptor.WorkingDir = workspace
+	ownerCreated.Created.Descriptor.LocalEnvPolicy = "default"
 	c.mu.Lock()
 	_, err = c.appendLocked(ownerCreated)
 	c.mu.Unlock()
@@ -1768,17 +1790,78 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 	if len(pending) != 1 || pending[0].DeliveryID != delegateDeliveryID("dlg_target", 2) || claims != 0 {
 		t.Fatalf("cold replay pending=%#v claims=%d, want unclaimed source N+1 until attachment", pending, claims)
 	}
+	if err := fresh.closeOwnedDelegateStore(); err != nil {
+		t.Fatalf("close transport-only bootstrap: %v", err)
+	}
 
+	// Attachment permits execution. Unlike the provider-free bootstrap above,
+	// restore the root through its production constructor, and hold the actual
+	// child request so custody and source settlement can be checked before response.
 	rootPath := transcriptPath(stateDir, rootSessionID)
 	reopened, err := transcript.NewWriter(rootPath, transcript.Header{SessionID: rootSessionID})
 	if err != nil {
 		t.Fatalf("create root transcript: %v", err)
 	}
-	t.Cleanup(func() { _ = reopened.Close() })
-	fresh.attachTranscript(reopened)
-	if err := fresh.replayDelegateDeliveries(); err != nil {
-		t.Fatalf("release N+1 after transcript attachment: %v", err)
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("close root transcript before restore: %v", err)
 	}
+	entered, release := make(chan llm.Request, 1), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	executionAdapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			entered <- req
+			<-release
+			return finalResponse("replay-observed-76")
+		},
+	}}
+	executionClient := llm.NewClient()
+	executionClient.Register(executionAdapter)
+	profile := withTestSessionNamer(executionClient, NewOpenAIProfile("gpt-5.2"))
+	root, err := RestoreSessionFromMetaWithConfig(executionClient, profile, execenv.NewLocalExecutionEnvironment(workspace), schema.SessionMeta{
+		ID:        rootSessionID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    schema.ConfigSnapshot{MaxSubagentDepth: 2},
+	}, RestoreSessionConfig{
+		StateDir:    stateDir,
+		ForceRealIO: true,
+		testOnly: testConfig{
+			skipGitSnapshot:            true,
+			minimalSystemPrompt:        true,
+			sandboxProber:              bwrapCapableProber(workspace),
+			disableDelegateIdleRelease: true,
+		},
+	})
+	if err != nil {
+		unblock()
+		t.Fatalf("restore execution-capable root: %v", err)
+	}
+	t.Cleanup(root.Close)
+	started := false
+	defer func() {
+		unblock()
+		if started {
+			waitForStableSupervisionRun(t, root, ownerSessionID)
+			root.sendersWG.Wait()
+		}
+	}()
+	var req llm.Request
+	select {
+	case req = <-entered:
+		started = true
+	// TRIPWIRE: only bounds a missing automatic replay wake, not its ordering.
+	case <-time.After(10 * time.Second):
+		t.Fatal("restored caller replay did not launch its initialized receiver")
+	}
+	observationRequest(t, req, []string{"seed"}, nil)
+	root.delegateController.mu.Lock()
+	runtime := root.delegateController.live[ownerDelegateID].runtime
+	root.delegateController.mu.Unlock()
+	if runtime == nil || runtime.subagents == nil || root.subagents == nil || root.jobManager == nil {
+		t.Fatal("production restore did not initialize the root and addressed receiver")
+	}
+	secondID := delegateAttentionID(delegateDeliveryID("dlg_target", 2))
+	assertAttentionResponseReceipts(t, runtime, secondID, 0)
 
 	fold, err := readDelegateAttentionFold(path, ownerSessionID)
 	if err != nil {
@@ -1804,11 +1887,23 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 	if len(fold.pendingIDs()) != 1 || fold.pendingIDs()[0] != delegateAttentionID(delegateDeliveryID("dlg_target", 2)) {
 		t.Fatalf("final pending attention = %#v, want N+1 only", fold.pendingIDs())
 	}
-	fresh.delegateController.mu.Lock()
-	remaining := len(fresh.delegateController.durable["dlg_target"].PendingDeliveries)
-	fresh.delegateController.mu.Unlock()
-	if remaining != 0 {
-		t.Fatalf("pending deliveries after N+1 replay = %d, want 0", remaining)
+	if got := fold.deliveryCommits[firstPlan.deliveryID]; got != "delegate-send-N" {
+		t.Fatalf("recovered caller commit=%q, want original tool call", got)
+	}
+	root.delegateController.mu.Lock()
+	remaining := len(root.delegateController.durable["dlg_target"].PendingDeliveries)
+	claims = len(root.delegateController.deliveryClaims)
+	root.delegateController.mu.Unlock()
+	if remaining != 0 || claims != 0 {
+		t.Fatalf("after N+1 replay pending=%d claims=%d, want neither", remaining, claims)
+	}
+	unblock()
+	waitForStableSupervisionRun(t, root, ownerSessionID)
+	root.sendersWG.Wait()
+	assertAttentionResponseReceipts(t, runtime, secondID, 1)
+	assertNotificationPending(t, runtime, []string{})
+	if got := supervisionRequestCount(executionAdapter); got != 1 {
+		t.Fatalf("provider requests=%d, want one canonical N+1 response", got)
 	}
 }
 
@@ -2203,10 +2298,18 @@ func TestDelegateAttention_PostAckArmReadFailureRetriesExactID(t *testing.T) {
 		}),
 	)
 	c := root.delegateController
-	c.mu.Lock()
 	created := delegateControllerCreatedEvent("dlg_target", "")
 	created.Created.Descriptor.OwnerSessionID = root.ID()
-	_, err := c.appendLocked(created)
+	childID := created.Created.Descriptor.ChildSessionID
+	childWriter, err := transcript.NewWriter(transcriptPath(stateDir, childID), transcript.Header{SessionID: childID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := childWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	_, err = c.appendLocked(created)
 	c.mu.Unlock()
 	if err != nil {
 		t.Fatalf("seed target delegate: %v", err)
@@ -2217,11 +2320,11 @@ func TestDelegateAttention_PostAckArmReadFailureRetriesExactID(t *testing.T) {
 		t.Fatalf("delivery plans = %#v, want one", plans)
 	}
 
-	readCalls := 0
 	injected := errors.New("injected post-ack attention fold failure")
 	root.cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
-		readCalls++
-		if readCalls == 3 {
+		// Fail every verification after source acknowledgment until recovery,
+		// rather than depending on the number of best-effort fold reads.
+		if !c.deliveryPending("dlg_target", plans[0].deliveryID) {
 			return delegateAttentionFold{}, injected
 		}
 		return readDelegateAttentionFold(path, sessionID)
@@ -2229,6 +2332,9 @@ func TestDelegateAttention_PostAckArmReadFailureRetriesExactID(t *testing.T) {
 	wakes := make(chan struct{}, 2)
 	root.SetNotifyFunc(func() { wakes <- struct{}{} })
 	retryTimersBefore := clock.BlockedCount()
+	root.mu.Lock()
+	receiverRetryBefore := root.notificationSchedule.retry.generation
+	root.mu.Unlock()
 	err = root.executeDelegateMutationPlans(delegateMutationPlans{deliveries: plans})
 	if !errors.Is(err, injected) {
 		t.Fatalf("delivery error = %v, want post-ack fold failure", err)
@@ -2245,8 +2351,17 @@ func TestDelegateAttention_PostAckArmReadFailureRetriesExactID(t *testing.T) {
 		t.Fatal("post-ack fold failure emitted an unverified wake")
 	default:
 	}
-	if got := clock.BlockedCount(); got != retryTimersBefore+1 {
-		t.Fatalf("post-ack fold failure retry timers = %d, want baseline %d plus one", got, retryTimersBefore)
+	root.mu.Lock()
+	receiverRetry := root.notificationSchedule.retry
+	root.mu.Unlock()
+	root.delegateDeliveryMu.Lock()
+	transportRetry := root.delegateDeliveryRetry
+	root.delegateDeliveryMu.Unlock()
+	if !receiverRetry.active || receiverRetry.generation != receiverRetryBefore+1 || !transportRetry.active {
+		t.Fatalf("post-ack recovery receiver=%+v transport=%+v, want one receiver retry and transport replay hint", receiverRetry, transportRetry)
+	}
+	if got := clock.BlockedCount(); got != retryTimersBefore+2 {
+		t.Fatalf("post-ack recovery timers = %d, want baseline %d plus receiver retry and transport replay hint", got, retryTimersBefore)
 	}
 	root.cfg.testOnly.delegateAttentionReadFold = nil
 	clock.Advance(jobNotificationRetryInitialDelay)

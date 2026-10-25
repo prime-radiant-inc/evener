@@ -229,7 +229,8 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 	if s.peekNotifications() > 0 {
 		return true, nil
 	}
-	if s.hasPendingDelegateDeliveries() {
+	children := s.liveDirectSubagents()
+	if s.hasPendingDrainDelegateDeliveries(false, children) {
 		return true, nil
 	}
 	// A Stop's park defers pending attention to re-engagement, so it must
@@ -237,7 +238,7 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 	if s.isRootDelegateAttentionReceiver() && s.notificationWorkPending() {
 		return true, nil
 	}
-	for _, sub := range s.liveDirectSubagents() {
+	for _, sub := range children {
 		active, child := s.subagentActive(sub)
 		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id)) {
 			// A deliberately stopped or failed subtree is not runnable. Its
@@ -504,6 +505,26 @@ func (s *Session) subagentActive(sub *subagent) (bool, *Session) {
 	return active, child
 }
 
+func (s *Session) hasPendingDrainDelegateDeliveries(liveOnly bool, children []*subagent) bool {
+	liveChildren := make(map[string]struct{}, len(children))
+	for _, sub := range children {
+		liveChildren[sub.sess.id] = struct{}{}
+	}
+	for _, receiverID := range s.pendingDrainDelegateReceivers(liveChildren) {
+		if receiverID == s.id {
+			return true
+		}
+		if s.childStopGated(receiverID) || s.childFatalRunGated(receiverID) || s.childDrainAbandoned(receiverID) {
+			continue
+		}
+		if liveOnly && s.childDrainGracePending(receiverID) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // subtreeHasLiveComponent reports whether any live or deliverable drain
 // component (see drainSubtreeIsStalled) exists in this session or any live,
 // non-gated descendant.
@@ -516,7 +537,8 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	if s.peekNotifications() > 0 {
 		return true, nil
 	}
-	if s.hasPendingDelegateDeliveries() {
+	children := s.liveDirectSubagents()
+	if s.hasPendingDrainDelegateDeliveries(true, children) {
 		return true, nil
 	}
 	// A Stop's park defers pending attention to re-engagement, so it must
@@ -524,7 +546,7 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	if s.isRootDelegateAttentionReceiver() && s.notificationWorkPending() {
 		return true, nil
 	}
-	for _, sub := range s.liveDirectSubagents() {
+	for _, sub := range children {
 		active, child := s.subagentActive(sub)
 		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) || s.childDrainGracePending(child.id)) {
 			continue

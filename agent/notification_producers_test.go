@@ -17,11 +17,13 @@ import (
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func producerSourceEvents(t *testing.T, jm *jobManager, kind jobstore.EventKind) []jobstore.Event {
@@ -1123,29 +1125,151 @@ func TestRestoredWatchDispatchVisitsUnavailableRecipientsOnce(t *testing.T) {
 }
 
 func TestCommittedSourceAckRetryDoesNotHoldColdRestore(t *testing.T) {
-	s, _ := notificationReceiverForTest(t, nil)
+	fixture := newColdStableDelegateFixture(t, "")
+	clock := agenttest.NewFakeClock()
+	entered, release := make(chan llm.Request, 1), make(chan struct{})
+	ready := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			observationRequest(t, req, []string{"independent-root-payload-72"}, nil)
+			return finalResponse("independent-root-response-72")
+		},
+		func(req llm.Request) llm.Response {
+			entered <- req
+			close(ready)
+			<-release
+			return finalResponse("source-ack-recovery-72")
+		},
+	}
+	s := restoreSupervisionRoot(t, fixture, clock)
+	listingEntered, listingRelease := make(chan struct{}), make(chan struct{})
+	var listingOnce, listingReleaseOnce sync.Once
+	unblockListing := func() { listingReleaseOnce.Do(func() { close(listingRelease) }) }
+	fixture.adapter.liveModels = func(context.Context) ([]registry.Model, error) {
+		listingOnce.Do(func() { close(listingEntered); <-listingRelease })
+		return nil, errors.New("catalog-unavailable-72")
+	}
+	started := false
+	defer func() {
+		unblockListing()
+		unblock()
+		if started {
+			waitForStableSupervisionRun(t, s, fixture.childID)
+			s.sendersWG.Wait()
+		}
+	}()
+	if s.subagents == nil || s.jobManager == nil {
+		t.Fatal("production restore did not initialize runtime managers")
+	}
 	c := s.delegateController
-	seedDelegateControllerIdle(t, c, "dlg_owner", "")
-	seedDelegateControllerIdle(t, c, "dlg_source", "dlg_owner")
+	created := delegateControllerCreatedEvent("dlg_source", fixture.delegateID)
+	created.Created.Descriptor.OwnerSessionID = fixture.childID
+	writeEmptyAttentionTranscript(t, transcriptPath(s.stateDir, created.Created.Descriptor.ChildSessionID), created.Created.Descriptor.ChildSessionID)
+	c.mu.Lock()
+	_, err := c.appendLocked(created)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
 	seedDelegateControllerDelivery(t, c, "dlg_source")
-	id := c.durable["dlg_owner"].Descriptor.ChildSessionID
-	path := transcriptPath(s.stateDir, id)
-	writeEmptyAttentionTranscript(t, path, id)
+	path := transcriptPath(s.stateDir, fixture.childID)
 	plans := c.ReplayDeliveries()
 	if len(plans) != 1 {
 		t.Fatalf("actual pending source packets=%d, want 1", len(plans))
 	}
+	deliveryID := plans[0].deliveryID
+	attentionID := delegateAttentionID(deliveryID)
 	if err := c.store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := deliverColdDelegatePacket(plans[0]); err == nil {
+	delivered := make(chan error, 1)
+	go func() { _, err := deliverColdDelegatePacket(plans[0]); delivered <- err }()
+	joinedDelivery := false
+	defer func() {
+		unblockListing()
+		if !joinedDelivery {
+			<-delivered
+		}
+	}()
+	notificationAwait(t, listingEntered)
+	// The child is inside real production reconstruction at the provider catalog
+	// boundary. Another receiver must still accept, wake and observe content.
+	rootWake := make(chan struct{}, 1)
+	s.SetNotifyFunc(func() {
+		select {
+		case rootWake <- struct{}{}:
+		default:
+		}
+	})
+	const rootID = "independent-root-custody-72"
+	if err := s.enqueueNotification(notification{ID: rootID, Message: llm.User("independent-root-payload-72")}); err != nil {
+		t.Fatal(err)
+	}
+	notificationAwait(t, rootWake)
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	assertNotificationPending(t, s, []string{})
+	assertAttentionResponseReceipts(t, s, rootID, 1)
+	unblockListing()
+	deliveryErr := <-delivered
+	joinedDelivery = true
+	if deliveryErr == nil {
 		t.Fatal("closed source acknowledged the canonical receiver write")
 	}
-	if len(notificationRawEntries(t, path)) != 1 || len(c.ReplayDeliveries()) != 1 {
+	entries, retries := notificationRawEntries(t, path), c.ReplayDeliveries()
+	if len(entries) != 1 || entries[0].Turn.AttentionID != attentionID || len(retries) != 1 || retries[0].deliveryID != deliveryID {
 		t.Fatal("source-only retry lost receiver custody or the source obligation")
 	}
-	if _, _, err := c.idleDelegateRestoreCommit("dlg_owner"); err != nil {
+	if _, _, err := c.idleDelegateRestoreCommit(fixture.delegateID); err != nil {
 		t.Fatalf("committed receiver custody still holds cold restore: %v", err)
+	}
+	// Recover the shared journal. Automatic reconstruction can now replay the
+	// source acknowledgment, and its existing receiver retry must run the body.
+	reopened, err := delegatestore.Open(delegateResourceStorePath(s.stateDir, s.ID()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.store = reopened
+	c.mu.Unlock()
+	clock.Advance(jobNotificationRetryInitialDelay)
+	notificationAwait(t, ready)
+	started = true
+	req := <-entered
+	observationRequest(t, req, []string{"seed"}, nil)
+	c.mu.Lock()
+	runtime := c.live[fixture.delegateID].runtime
+	generation := c.durable[fixture.delegateID].Generation
+	boundGeneration := c.live[fixture.delegateID].binding.lease.generation
+	c.mu.Unlock()
+	if runtime == nil || runtime.subagents == nil || generation != 1 || boundGeneration != generation {
+		t.Fatalf("automatic receiver binding=%p generation=%d bound=%d, want initialized generation 1", runtime, generation, boundGeneration)
+	}
+	assertNotificationPending(t, runtime, []string{attentionID})
+	assertAttentionResponseReceipts(t, runtime, attentionID, 0)
+	unblock()
+	waitForStableSupervisionRun(t, s, fixture.childID)
+	s.sendersWG.Wait()
+	assertAttentionResponseReceipts(t, runtime, attentionID, 1)
+	assertNotificationPending(t, runtime, []string{})
+	if notificationCanonicalCount(t, runtime, attentionID) != 1 || c.deliveryPending("dlg_source", deliveryID) {
+		t.Fatal("recovery duplicated canonical content or failed to replay source acknowledgment")
+	}
+	journal, err := c.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	acknowledgments := 0
+	for _, event := range journal {
+		if event.DeliveryAcknowledged != nil && event.DeliveryAcknowledged.DeliveryID == deliveryID {
+			acknowledgments++
+		}
+	}
+	if acknowledgments != 1 {
+		t.Fatalf("durable source acknowledgments=%d, want exactly 1 after journal recovery", acknowledgments)
 	}
 }
 

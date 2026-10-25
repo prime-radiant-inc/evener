@@ -2595,7 +2595,14 @@ func TestHubRelayRemapRetainsAuthoritativeRouteDuringReplacementRead(t *testing.
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+	commandReleased := make(chan struct{}, 2)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.AfterCommandRelease = func(key string) {
+		if key == downstreamRef {
+			commandReleased <- struct{}{}
+		}
+	}
+	appServer := newHubAppServer(cfg, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -2605,6 +2612,13 @@ func TestHubRelayRemapRetainsAuthoritativeRouteDuringReplacementRead(t *testing.
 	}
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: downstreamRef, Subscribe: true}); err != nil {
 		t.Fatalf("initial ThreadRead: %v", err)
+	}
+	// Join the initial read before issuing another command with the same key,
+	// so the next release event unambiguously belongs to the replacement.
+	select {
+	case <-commandReleased:
+	case <-time.After(time.Second):
+		t.Fatal("initial ThreadRead did not release hydration")
 	}
 	resolveMu.Lock()
 	resolved = canonicalNew
@@ -2656,6 +2670,13 @@ func TestHubRelayRemapRetainsAuthoritativeRouteDuringReplacementRead(t *testing.
 	case <-acknowledged:
 	case <-time.After(time.Second):
 		t.Fatal("changed-target notification was not acknowledged after replacement routes published")
+	}
+	// The response and relay acknowledgement can precede replay of a buffered
+	// notification. AfterCommandRelease joins that replay before BroadcastAll.
+	select {
+	case <-commandReleased:
+	case <-time.After(time.Second):
+		t.Fatal("replacement ThreadRead did not release hydration")
 	}
 	const barrierMethod = "test/remap-read-barrier"
 	appServer.BroadcastAll(barrierMethod, map[string]any{})

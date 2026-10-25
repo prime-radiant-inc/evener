@@ -37,6 +37,10 @@ type RelayLifecycleHooks struct {
 	BeforeLaunchCommit         func(threadID string)
 	BeforeCanonicalPublish     func(relayKey string, notification appwire.Notification)
 	AfterCanonicalPublishEntry func(relayKey string, notification appwire.Notification)
+	// Command release callbacks run outside relayMu. AfterCommandRelease means
+	// the command counter was released, not that a later closeRelayHandle finished.
+	BeforeCommandRelease func(relayKey string)
+	AfterCommandRelease  func(relayKey string)
 }
 
 // WebConfig is everything the web server needs.

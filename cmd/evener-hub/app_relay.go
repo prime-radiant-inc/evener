@@ -1308,6 +1308,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			release := func() {
 				var closeHandle bool
+				if cfg.RelayHooks.BeforeCommandRelease != nil {
+					cfg.RelayHooks.BeforeCommandRelease(relayKey)
+				}
 				relayMu.Lock()
 				if state.commands > 0 && handle.commandOwners > 0 {
 					state.commands--
@@ -1327,6 +1330,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				}
 				closeHandle = maybeFinishHandleLocked(handle)
 				relayMu.Unlock()
+				if cfg.RelayHooks.AfterCommandRelease != nil {
+					cfg.RelayHooks.AfterCommandRelease(relayKey)
+				}
 				if closeHandle {
 					closeRelayHandle(handle)
 				}

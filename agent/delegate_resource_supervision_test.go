@@ -4046,21 +4046,20 @@ func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriv
 	assertAttentionResponseReceipts(t, sub.sess, "attention:notification-turn", 1)
 }
 
-// TestStableDelegateAttentionDriveClearsResolvedProjection pins that a
-// delegate whose attention already resolved in its transcript does not stay
-// flagged. A resolution can outrun the committed attention run that would emit
-// the clearing event -- acceptDelegateAttention makes the marker durable, and a
-// later-declined CommitStart leaves the last journal event at
-// needs_attention:true with nothing pending -- and the transcript-driven retry
-// then finds no pending attention and never starts the run that would clear it.
+// A stale empty read must not clear a new canonical acceptance. Fully observed
+// content, in contrast, clears the projection without another provider request.
 func TestStableDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
+	// Not parallel: the read-boundary barrier wraps the package-wide fold seam.
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("warm result") },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
-	sub := warmStableSupervisionDelegate(t, root, fixture)
+	sub := warmStableDelegateUnservedRoot(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
+	root.sendersWG.Wait()
+	// No host consumes wakes while the clearing interleaving is under test.
+	sub.sess.SetNotifyFunc(nil)
 
 	controller := root.delegateController
 	const attentionID = "delegate:resolved-before-the-run"
@@ -4091,30 +4090,73 @@ func TestStableDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 		t.Fatalf("pending attention projection = needs:%t wakeIDs:%d, want true/1", keptFlag, keptWakeIDs)
 	}
 
-	// Model the accepted resolution whose committed run never landed: the
-	// marker is durable in the child transcript, so the drive finds nothing
-	// pending while the aggregate still carries the true event.
+	// This marker represents already-observed content. Launch admission itself
+	// does not resolve content and is covered separately by the start tests.
 	if err := sub.sess.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed); err != nil {
 		t.Fatalf("resolve stable attention: %v", err)
 	}
+	root.driveStableDelegateAttention(sub)
+	controller.mu.Lock()
+	resolvedFlag := controller.durable[fixture.delegateID].NeedsAttention
+	resolvedWakes := len(attentionWakeIDsOf(controller, fixture.delegateID))
+	controller.mu.Unlock()
+	if resolvedFlag || resolvedWakes != 0 || supervisionRequestCount(fixture.adapter) != 1 {
+		t.Fatalf("observed-only clear = needs:%t wakes:%d requests:%d, want false/0/1", resolvedFlag, resolvedWakes, supervisionRequestCount(fixture.adapter))
+	}
+	// Recreate the lingering derived flag over the already-resolved transcript.
+	if _, err := controller.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
+		t.Fatal(err)
+	}
 
-	// An attention opened between the transcript fold and the locked clearing
-	// update must survive: the update revalidates the evidence version, so a
-	// stale empty fold never drops the concurrently opened wake.
+	// Preserve the real filesystem fold and pause only its return. The reader
+	// uses os.Open, not an injectable filesystem, so this existing read seam is
+	// the narrowest boundary available without adding runtime instrumentation.
 	const racedID = "delegate:opened-during-the-fold"
+	path := sub.sess.TranscriptPath()
+	if _, err := readExistingDelegateAttentionFold(path, sub.sess.ID()); err != nil {
+		t.Fatal(err)
+	}
+	// Force a real cache miss even if an asynchronous finalizer already folded
+	// the resolution. Changing only file metadata leaves the content unchanged.
+	if err := os.Chtimes(path, time.Unix(1, 0), time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
 	compute := readExistingDelegateAttentionFoldCompute
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once, releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
 	readExistingDelegateAttentionFoldCompute = func(path, sessionID string) (delegateAttentionFold, int64, error) {
 		fold, consumed, err := compute(path, sessionID)
-		if _, openErr := controller.openDelegateAttention(fixture.delegateID, racedID); openErr != nil {
-			t.Errorf("open raced attention: %v", openErr)
+		if path == sub.sess.TranscriptPath() && err == nil && len(fold.pendingIDs()) == 0 {
+			once.Do(func() { close(entered); <-release })
 		}
 		return fold, consumed, err
 	}
-	t.Cleanup(func() { readExistingDelegateAttentionFoldCompute = compute })
-	if err := controller.clearResolvedDelegateAttention(fixture.delegateID); err != nil {
-		t.Fatalf("clear with a racing open: %v", err)
+	clearDone := make(chan error, 1)
+	joined := false
+	go func() { clearDone <- controller.clearResolvedDelegateAttention(fixture.delegateID) }()
+	defer func() {
+		unblock()
+		if !joined {
+			<-clearDone
+		}
+		readExistingDelegateAttentionFoldCompute = compute
+	}()
+	notificationAwait(t, entered)
+	if err := sub.sess.enqueueNotification(notification{ID: racedID, Message: llm.User("projection-payload-72a9")}); err != nil {
+		t.Fatal(err)
 	}
-	readExistingDelegateAttentionFoldCompute = compute
+	unblock()
+	clearErr := <-clearDone
+	joined = true
+	if clearErr != nil {
+		t.Fatalf("clear with a racing acceptance: %v", clearErr)
+	}
+	assertNotificationPending(t, sub.sess, []string{racedID})
+	if !sub.sess.notificationsRunnable() || notificationCanonicalCount(t, sub.sess, racedID) != 1 {
+		t.Fatal("racing acceptance lost runnable canonical custody")
+	}
 	controller.mu.Lock()
 	racedFlag := controller.durable[fixture.delegateID].NeedsAttention
 	_, racedKept := attentionWakeIDsOf(controller, fixture.delegateID)[racedID]
@@ -4122,8 +4164,28 @@ func TestStableDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 	if !racedFlag || !racedKept {
 		t.Fatalf("racing open projection = needs:%t keptRacedWake:%t, want true/true", racedFlag, racedKept)
 	}
+	t.Log("stale empty-fold barrier fired, one canonical raced ID remains pending and runnable")
+	readExistingDelegateAttentionFoldCompute = compute
+
+	// The accepted body must reach a real successful request before clearing.
+	fixture.adapter.mu.Lock()
+	fixture.adapter.steps = append(fixture.adapter.steps, func(req llm.Request) llm.Response {
+		observationRequest(t, req, []string{"projection-payload-72a9"}, nil)
+		return llm.Response{Message: llm.Assistant("projection-response-72a9")}
+	})
+	fixture.adapter.mu.Unlock()
 
 	root.driveStableDelegateAttention(sub)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	root.sendersWG.Wait()
+	assertAttentionResponseReceipts(t, sub.sess, racedID, 1)
+	if err := controller.clearResolvedDelegateAttention(fixture.delegateID); err != nil {
+		t.Fatal(err)
+	}
+	root.driveStableDelegateAttention(sub)
+	if got := supervisionRequestCount(fixture.adapter); got != 2 {
+		t.Fatalf("provider requests = %d, want warm plus one accepted-content request", got)
+	}
 
 	controller.mu.Lock()
 	cleared := !controller.durable[fixture.delegateID].NeedsAttention
@@ -4136,9 +4198,12 @@ func TestStableDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load delegate journal: %v", err)
 	}
-	tail := events[len(events)-1]
-	if tail.Kind != delegatestore.EventDelegateAttentionChanged || tail.DelegateID != fixture.delegateID || tail.AttentionChanged == nil || tail.AttentionChanged.NeedsAttention {
-		t.Fatalf("cleared projection tail = %#v", tail)
+	reloaded, err := delegatestore.Fold(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded[fixture.delegateID].NeedsAttention {
+		t.Fatal("journal replay retained an observed attention projection")
 	}
 }
 
