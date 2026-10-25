@@ -177,7 +177,14 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
     if (!el) return;
     const win = ownerDocument.defaultView ?? window;
     const remeasure = () => resizeToFitContent(el, win);
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(remeasure);
+    // The field's own window's constructor: a popout's element cannot be
+    // observed through the opener's, and delivery follows the constructing
+    // document's rendering lifecycle.
+    // The field's own window's constructor: a popout's element cannot be
+    // observed through the opener's, and delivery follows the constructing
+    // document's rendering lifecycle.
+    const Observer = win.ResizeObserver;
+    const observer = typeof Observer === "undefined" ? null : new Observer(remeasure);
     observer?.observe(el);
     win.addEventListener("resize", remeasure);
     return () => {

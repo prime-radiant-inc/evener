@@ -530,3 +530,27 @@ test("a field mounted in a popout measures against the popout window and re-clam
     if (originalScrollHeight) Object.defineProperty(win.HTMLElement.prototype, "scrollHeight", originalScrollHeight);
   }
 });
+
+// The auto-grow observer belongs to the field's own window: a popout's
+// element cannot be observed through the opener's constructor, and delivery
+// follows the constructing document's lifecycle.
+test("auto-grow in a popout observes through that window's ResizeObserver", () => {
+  const { frame, doc, win } = appendPopout();
+  const observe = vi.fn();
+  class WindowResizeObserver {
+    observe = observe;
+    disconnect = vi.fn();
+  }
+  Object.defineProperty(win, "ResizeObserver", { configurable: true, value: WindowResizeObserver });
+  const view = render(
+    createPortal(<Textarea aria-label="prompt" value="hello" onChange={() => {}} autoGrow />, doc.body),
+  );
+  try {
+    const field = doc.querySelector("textarea");
+    if (!field) throw new Error("popout textarea missing");
+    expect(observe).toHaveBeenCalledWith(field);
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
