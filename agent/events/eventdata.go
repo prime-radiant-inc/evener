@@ -20,11 +20,16 @@ type EventData interface {
 	eventKind() EventKind
 }
 
+// KindOf reports the EventKind the payload belongs to.
+func KindOf(data EventData) EventKind {
+	return data.eventKind()
+}
+
 // New builds a SessionEvent for the given payload, owning the Kind (derived
 // from the payload) and Timestamp. The caller sets SessionID afterward.
 func New(data EventData) SessionEvent {
 	return SessionEvent{
-		Kind:      data.eventKind(),
+		Kind:      KindOf(data),
 		Timestamp: time.Now().UTC(),
 		Data:      data,
 	}
