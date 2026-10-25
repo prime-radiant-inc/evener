@@ -131,7 +131,9 @@ func RegroupTurnFragments(candidates []TranscriptItemCandidate) ([]appwire.Turn,
 	turns := make([]appwire.Turn, 0, len(candidates))
 	for i := 0; i < len(candidates); {
 		first := candidates[i]
-		turn := cloneTurnWithoutItems(first.Turn)
+		source := first.Turn
+		source.Items = nil
+		turn := appwire.CloneTurn(source)
 		turn.ID = first.TurnID
 		turn.ItemsView = appwire.TurnItemsViewFragment
 		turn.HasEarlierItems = false
@@ -139,7 +141,7 @@ func RegroupTurnFragments(candidates []TranscriptItemCandidate) ([]appwire.Turn,
 		j := i
 		for j < len(candidates) && candidates[j].TurnID == first.TurnID {
 			candidate := candidates[j]
-			turn.Items = append(turn.Items, cloneThreadItem(candidate.Item))
+			turn.Items = append(turn.Items, appwire.CloneThreadItem(candidate.Item))
 			turn.HasEarlierItems = turn.HasEarlierItems || candidate.HasEarlierItems
 			turn.HasLaterItems = turn.HasLaterItems || candidate.HasLaterItems
 			j++
@@ -198,27 +200,4 @@ func comparePosition(a, b appwire.ThreadItemPosition) int {
 // ComparePosition orders every part of an atomic transcript item position.
 func ComparePosition(a, b appwire.ThreadItemPosition) int {
 	return cmp.Or(cmp.Compare(a.Entry, b.Entry), cmp.Compare(a.Item, b.Item), cmp.Compare(a.Sub, b.Sub))
-}
-
-func cloneTurnWithoutItems(turn appwire.Turn) appwire.Turn {
-	turn.Items = nil
-	return turn
-}
-
-func cloneThreadItem(item appwire.ThreadItem) appwire.ThreadItem {
-	cloned := item
-	if item.Position != nil {
-		position := *item.Position
-		cloned.Position = &position
-	}
-	if item.Images != nil {
-		cloned.Images = make([]appwire.InputItem, len(item.Images))
-		copy(cloned.Images, item.Images)
-	}
-	cloned.OutputImages = appwire.CloneOutputImages(item.OutputImages)
-	if item.Raw != nil {
-		cloned.Raw = make([]byte, len(item.Raw))
-		copy(cloned.Raw, item.Raw)
-	}
-	return cloned
 }

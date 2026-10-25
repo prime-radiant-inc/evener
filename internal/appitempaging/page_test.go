@@ -301,3 +301,30 @@ func TestComparePositionOrdersBySub(t *testing.T) {
 		t.Errorf("comparePosition(equal) = %d, want 0", got)
 	}
 }
+
+func TestRegroupTurnFragmentsSharesNoPointersWithCandidates(t *testing.T) {
+	started, completed, duration, exitCode := int64(1), int64(2), int64(3), int64(4)
+	turnStarted := int64(5)
+	position := appwire.ThreadItemPosition{Entry: 1}
+	candidates := []TranscriptItemCandidate{{
+		TurnID:   "turn",
+		Turn:     appwire.Turn{ID: "turn", StartedAt: &turnStarted},
+		Position: position,
+		Item: appwire.ThreadItem{
+			ID: "item", TranscriptKey: "key", Position: &position,
+			StartedAt: &started, CompletedAt: &completed, DurationMS: &duration, ExitCode: &exitCode,
+		},
+	}}
+	turns, err := RegroupTurnFragments(candidates)
+	if err != nil {
+		t.Fatalf("regroup: %v", err)
+	}
+	got := turns[0].Items[0]
+	src := candidates[0].Item
+	if got.StartedAt == src.StartedAt || got.CompletedAt == src.CompletedAt || got.DurationMS == src.DurationMS || got.ExitCode == src.ExitCode {
+		t.Fatal("regrouped item aliases the candidate's timing or exit pointers")
+	}
+	if turns[0].StartedAt == candidates[0].Turn.StartedAt {
+		t.Fatal("regrouped turn aliases the candidate turn's pointers")
+	}
+}
