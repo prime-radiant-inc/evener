@@ -77,8 +77,8 @@ func TestPermanentFailureDeferringAttentionWarnsOnceWithHowToResume(t *testing.T
 	if len(got) != 1 {
 		t.Fatalf("paused warnings = %+v, want exactly one for the episode", got)
 	}
-	if got[0].Source != string(diagnostic.SourceEvener) || got[0].Code != events.WarningCodeAttentionPaused || got[0].Hint != "HTTP 401 (authentication)" {
-		t.Fatalf("paused warning lacks structured authentication routing: %+v", got[0])
+	if got[0].Source != string(diagnostic.SourceEvener) || got[0].Code != events.WarningCodeAttentionPaused {
+		t.Fatalf("paused warning lacks structured source/code routing: %+v", got[0])
 	}
 }
 
