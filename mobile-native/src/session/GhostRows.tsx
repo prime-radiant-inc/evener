@@ -7,6 +7,7 @@ import { Pressable, Text } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { GhostBubble } from "./GhostBubble";
 import type { Ghost, GhostAction } from "./ghosts";
+import { TRANSCRIPT_GUTTER_PT } from "./transcriptLayout";
 import type { GhostRow } from "./transcriptRows";
 
 /** What a ghost row of the transcript needs from the screen besides the row.
@@ -48,6 +49,7 @@ export function GhostRowView({ row }: { row: GhostRow }) {
 			canEdit={parked ? host.canEditParked : host.canEdit}
 			editHint={parked ? host.parkedEditHint : host.editHint}
 			backdrop="page"
+			edgeInset={TRANSCRIPT_GUTTER_PT}
 			attachments={
 				ghost.origin.kind === "parked"
 					? host.parkedAttachments?.(ghost.origin.parkId)
