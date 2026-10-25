@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -46,7 +48,22 @@ func TestNotificationRetryLoggerCaptureAcrossFixtureCleanup(t *testing.T) {
 	// Not parallel: swaps the process default slog logger.
 	clock := agenttest.NewFakeClock()
 	var controller *delegateTreeController
-	const receiver = "child-dlg_logger_retry"
+	var wakeError string
+	const delegateID = "dlg_logger_retry"
+	const receiver = "child-" + delegateID
+	var logged diagnosticLogCapture
+	handler := &retryLoggerGateHandler{
+		Handler: slog.NewJSONHandler(&logged, nil), receiver: receiver,
+		entered: make(chan struct{}), permit: make(chan struct{}),
+	}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	unblock := sync.OnceFunc(func() { close(handler.permit) })
+	t.Cleanup(func() {
+		unblock()
+		clock.Drain()
+		slog.SetDefault(previous)
+	})
 	if !t.Run("store_only_fixture", func(owner *testing.T) {
 		c, _ := newDelegateControllerTestHarness(owner, 2, 1)
 		controller = c
@@ -56,22 +73,30 @@ func TestNotificationRetryLoggerCaptureAcrossFixtureCleanup(t *testing.T) {
 			c.mu.Lock()
 			c.closing = true
 			c.mu.Unlock()
+			unblock()
+			clock.Drain()
 			clock.Advance(jobNotificationRetryMaxDelay)
 			clock.Drain()
 			if got := clock.PendingCallbacks(); got != 0 {
 				t.Errorf("callbacks after final cleanup = %d, want 0", got)
 			}
 		})
-		seedDelegateControllerIdle(owner, c, "dlg_logger_retry", "")
+		seedDelegateControllerIdle(owner, c, delegateID, "")
 		c.rootRuntime = &Session{id: c.rootSessionID, clock: clock, delegateController: c}
-		if _, err := c.openDelegateAttention("dlg_logger_retry", "logger-retry-id"); err != nil {
+		if _, err := c.openDelegateAttention(delegateID, "logger-retry-id"); err != nil {
 			owner.Fatal(err)
 		}
 		// A real missing transcript starts the real receiver's retry. No test
 		// directly sets active/generation state or invokes the callback.
-		if err := c.requestSessionWake(receiver); !errors.Is(err, os.ErrNotExist) {
+		err := c.requestSessionWake(receiver)
+		if !errors.Is(err, os.ErrNotExist) {
 			owner.Fatalf("initial wake error = %v, want missing transcript", err)
 		}
+		var pathError *os.PathError
+		if !errors.As(err, &pathError) || pathError.Path != filepath.Join(c.stateDir, "sessions", receiver+".transcript.jsonl") {
+			owner.Fatalf("initial wake error = %v, want missing receiver transcript path", err)
+		}
+		wakeError = err.Error()
 		if got := clock.PendingCallbacks(); got != 1 {
 			owner.Fatalf("callbacks before fixture cleanup = %d, want 1", got)
 		}
@@ -87,19 +112,6 @@ func TestNotificationRetryLoggerCaptureAcrossFixtureCleanup(t *testing.T) {
 	}
 	t.Logf("store-only fixture ended with callbacks=%d closing=%t, outer test retains cleanup ownership", pendingAfterFixture, closing)
 
-	var logged diagnosticLogCapture
-	handler := &retryLoggerGateHandler{
-		Handler: slog.NewJSONHandler(&logged, nil), receiver: receiver,
-		entered: make(chan struct{}), permit: make(chan struct{}),
-	}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(handler))
-	unblock := sync.OnceFunc(func() { close(handler.permit) })
-	t.Cleanup(func() {
-		unblock()
-		clock.Drain()
-		slog.SetDefault(previous)
-	})
 	clock.Advance(jobNotificationRetryInitialDelay)
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
@@ -115,7 +127,7 @@ func TestNotificationRetryLoggerCaptureAcrossFixtureCleanup(t *testing.T) {
 	clock.Drain()
 
 	decoder := json.NewDecoder(strings.NewReader(logged.String()))
-	warnings := 0
+	var records []map[string]any
 	for {
 		var record map[string]any
 		if err := decoder.Decode(&record); errors.Is(err, io.EOF) {
@@ -123,19 +135,27 @@ func TestNotificationRetryLoggerCaptureAcrossFixtureCleanup(t *testing.T) {
 		} else if err != nil {
 			t.Fatalf("decode captured warning: %v", err)
 		}
-		if record["msg"] != "notification wake failed" {
-			continue
-		}
-		warnings++
-		if record["level"] != "WARN" || record["session_id"] != receiver {
-			t.Errorf("retry warning attributes = %v, want WARN for %s", record, receiver)
-		}
-		errText, _ := record["error"].(string)
-		if !strings.Contains(errText, receiver+".transcript.jsonl") {
-			t.Errorf("retry warning error = %q, want missing receiver transcript", errText)
-		}
+		records = append(records, record)
 	}
-	if warnings != 1 {
-		t.Fatalf("captured retry warnings = %d, want 1", warnings)
+	want := []map[string]any{
+		{"level": "WARN", "session": controller.rootSessionID, "delegate": delegateID, "error": wakeError},
+		{"level": "WARN", "session_id": receiver, "error": wakeError},
+	}
+	if len(records) != len(want) {
+		t.Fatalf("captured records = %v, want exactly one setup and one retry warning", records)
+	}
+	for i, record := range records {
+		// Timestamps and human-readable messages are not semantic oracles.
+		delete(record, "time")
+		delete(record, "msg")
+		if i == 0 {
+			if action, ok := record["action"].(string); !ok || action == "" {
+				t.Errorf("setup warning has no action attribute: %v", record)
+			}
+			delete(record, "action") // its text is a human-readable label
+		}
+		if !reflect.DeepEqual(record, want[i]) {
+			t.Errorf("warning %d attributes = %v, want %v", i, record, want[i])
+		}
 	}
 }
