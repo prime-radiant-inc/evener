@@ -60,11 +60,13 @@ export function useOwnedDocument<T extends Node>(ref: RefObject<T | null>, enabl
   // tracked state exists to schedule renders for moves that happen while the
   // widget is live.
   const ownerDocument = ref.current === null ? doc : ownerDocumentOf(ref.current);
-  // Catch a move that happened before this effect ran (the ref attaches during
-  // commit, after the initial state was computed).
+  // The ref attaches during commit, after this render resolved a null node, so
+  // a widget mounted directly in a popout starts on the opener: re-read the
+  // attached node after every commit and correct the render it schedules.
   useEffect(() => {
-    if (ownerDocument !== doc) setDoc(ownerDocument);
-  }, [doc, ownerDocument]);
+    const next = ownerDocumentOf(ref.current);
+    if (next !== doc) setDoc(next);
+  });
   useEffect(() => {
     if (!enabled) return;
     const root = ref.current;

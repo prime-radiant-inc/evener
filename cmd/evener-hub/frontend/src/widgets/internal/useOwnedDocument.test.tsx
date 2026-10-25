@@ -1,5 +1,6 @@
-import { act } from "@testing-library/react";
+import { act, render } from "@testing-library/react";
 import { useRef } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
 import { appendPopout } from "./popoutTestUtils";
@@ -136,5 +137,21 @@ test("a detached node keeps one pending recheck, and unmount clears it", async (
     frame.remove();
     host.remove();
     vi.useRealTimers();
+  }
+});
+
+// A widget mounted directly in a popout renders before its ref exists, so the
+// hook starts on the opener; the post-commit read has to correct it even
+// though nothing else rendered.
+test("a widget mounted directly in another document resolves it after mount", async () => {
+  const { frame, doc } = appendPopout();
+  const seen: Document[] = [];
+  const view = render(createPortal(<Probe seen={seen} />, doc.body));
+  try {
+    await act(async () => {});
+    expect(seen.at(-1)).toBe(doc);
+  } finally {
+    view.unmount();
+    frame.remove();
   }
 });
