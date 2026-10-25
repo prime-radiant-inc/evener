@@ -111,8 +111,12 @@ export function useFloatingLabel({
   useEffect(() => {
     if (!visible) return;
     const observedEl = observe.current;
-    if (!observedEl || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
+    // The observer belongs to the observed element's own window: a popout's
+    // element cannot be observed through the opener's constructor, and
+    // delivery would follow the opener's rendering lifecycle.
+    const Observer = observedEl?.ownerDocument.defaultView?.ResizeObserver;
+    if (!observedEl || typeof Observer === "undefined") return;
+    const observer = new Observer(measure);
     observer.observe(observedEl);
     const anchor = observeAnchor?.();
     if (anchor) observer.observe(anchor);
