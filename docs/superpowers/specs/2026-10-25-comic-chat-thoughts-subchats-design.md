@@ -15,6 +15,11 @@ The font, mobile, original-art and no-deployment constraints remain unchanged.
 Human questions and sandbox approvals retain Evener's interactive-root-only rules.
 This client adds no child-to-human interaction mechanism or permission change.
 
+The shared-authorship amendment in
+`2026-10-25-comic-chat-authorship-design.md` refines author attribution below.
+Original authors survive inherited history; page context alone cannot establish
+who spoke. Unknown older authors receive neutral captions.
+
 ## Approaches
 
 - **Expandable “Meanwhile…” strips, selected by Jesse.** Child conversations unfold
@@ -43,9 +48,10 @@ The details below were Bot's implementation proposals, accepted with this amendm
   measured continuation panels, with the same literal text, grapheme, font and
   reading-position guarantees as speech. Empty thinking has no fabricated text;
   an in-progress content-free entry can show its honest activity state.
-- The main assistant's thoughts belong to its character. A child's thoughts belong
-  to that child's character. Parent instructions and harness notices keep their
-  actual source and remain attributed captions, never human speech or child thought.
+- Thoughts belong to their proven original author's character, including when
+  inherited into another conversation. Parent instructions and harness notices
+  keep their actual source and remain attributed captions, never human speech or
+  child thought. Unknown older attribution follows the shared-authorship amendment.
 
 ## A stable cast
 
@@ -72,8 +78,9 @@ The details below were Bot's implementation proposals, accepted with this amendm
   roster for labels. Names remain bounded display data; existing ancestor titles
   and qualified routing identities retain their meanings. Unnamed or unresolved
   identities keep truthful attribution without an invented name.
-- A child's parent instructions are attributed to its actual parent. They are not
-  relabeled as something Jesse said. Poses never imply success or inferred emotion.
+- A child's parent instructions are attributed to the proven sending agent.
+  Inherited entries retain their original author. Missing author evidence receives
+  a neutral source caption. Poses never imply success or inferred emotion.
 
 ## “Meanwhile…” strips
 
