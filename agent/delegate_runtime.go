@@ -3480,7 +3480,7 @@ func missingDelegateRestoreInputReason(
 			return "", fmt.Errorf("stat working directory %s: %w", workingDir, err)
 		}
 	}
-	metaPath := filepath.Join(stateDir, sessionsSubdir, childID+".meta.json")
+	metaPath := schema.SessionMetaPath(stateDir, childID)
 	metaBytes, err := readFile(metaPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -3495,7 +3495,7 @@ func missingDelegateRestoreInputReason(
 	if strings.TrimSpace(meta.ID) != childID {
 		return notResumableCorruptChildSessionMeta, nil
 	}
-	path := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
+	path := schema.SessionTranscriptPath(stateDir, childID)
 	if _, err := stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return notResumableMissingChildTranscript, nil
