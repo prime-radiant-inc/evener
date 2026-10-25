@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/fuzz/schemagen"
 )
 
