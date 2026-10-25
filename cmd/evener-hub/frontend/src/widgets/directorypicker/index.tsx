@@ -91,7 +91,7 @@ export function DirectoryPicker({
   // The marker's ref attaches after the first render; re-render once, before
   // paint, so the panel portals straight into the owning document's body.
   useLayoutEffect(() => {
-    if (hostRef.current !== null && panelDocument === null) setHostMounted((renders) => renders + 1);
+    if (panelDocument === null) setHostMounted((renders) => renders + 1);
   }, [panelDocument]);
 
   async function browse(path: string, preserveFocusedInput = false) {
@@ -197,7 +197,9 @@ export function DirectoryPicker({
     }
   }
 
-  const panel = (
+  // Built only when the portal renders: the first render exists to attach the
+  // host marker, and constructing this tree there would throw it away.
+  const renderPanel = () => (
     <OverlayPanel
       open
       onClose={onClose}
@@ -416,7 +418,7 @@ export function DirectoryPicker({
       {/* The hidden marker is where the picker was mounted; its document is
           the one the panel belongs to. */}
       <span ref={hostRef} hidden />
-      {panelDocument !== null && createPortal(panel, panelDocument.body)}
+      {panelDocument !== null && createPortal(renderPanel(), panelDocument.body)}
     </>
   );
 }

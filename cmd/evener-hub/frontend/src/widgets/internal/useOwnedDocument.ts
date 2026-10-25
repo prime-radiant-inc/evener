@@ -63,10 +63,14 @@ export function useOwnedDocument<T extends Node>(ref: RefObject<T | null>, enabl
   // The ref attaches during commit, after this render resolved a null node, so
   // a widget mounted directly in a popout starts on the opener: re-read the
   // attached node after every commit and correct the render it schedules.
+  // Mount correction only: the render-time read above resolves a live node on
+  // every later render, and the watch below catches a move while live. Running
+  // this on every commit put one extra effect on every consumer render (the
+  // composer's textarea re-renders per keystroke).
   useEffect(() => {
     const next = ownerDocumentOf(ref.current);
     if (next !== doc) setDoc(next);
-  });
+  }, [doc, ref]);
   useEffect(() => {
     if (!enabled) return;
     const root = ref.current;
