@@ -1612,6 +1612,7 @@ func testManageContextShrinksBaselineWithStrategy(t *testing.T, withGoalSteering
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
 		ContextStrategy:  "ooda",
+		StateDir:         t.TempDir(),
 		testOnly:         testConfig{skipGitSnapshot: true},
 	}))
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
@@ -1739,6 +1740,7 @@ func TestSession_ManageContext_ShrinksBaselineOnFold_MarkerBeforeBaseline(t *tes
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
 		ContextStrategy:  "ooda",
+		StateDir:         t.TempDir(),
 		testOnly:         testConfig{skipGitSnapshot: true},
 	}))
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
