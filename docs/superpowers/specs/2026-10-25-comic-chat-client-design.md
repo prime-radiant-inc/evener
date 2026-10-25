@@ -2,8 +2,10 @@
 
 ## Status and intent
 
-Jesse approved this design and the recorded tool-image amendment. The visual
-preview is approved; no live client has been implemented.
+Jesse approved this design, the recorded tool-image amendment and the
+[thought-bubble and sub-chat amendment](2026-10-25-comic-chat-thoughts-subchats-design.md).
+The linked amendment is part of this specification and governs thinking and child
+conversations. The visual preview is approved; live-client verification is pending.
 
 Add a self-contained conversation client at a separate Evener hub endpoint.
 The conversation itself is the comic: original Microsoft Comic Chat characters,
@@ -42,8 +44,10 @@ These choices define the approved first version:
   session fetch. Honor an explicit child-session deep link without inventing a
   second activity tree.
 - A link opens the same session in the regular UI for logs and settings. New
-  session creation, model configuration, forks, host administration and detailed
-  activity inspection remain there for this first version.
+  session creation, model configuration, forks, host administration and general
+  job/watch inspection remain there for this first version. Child conversations
+  unfold in expandable “Meanwhile…” strips with stable per-subagent identities,
+  as specified in the linked amendment.
 - The comic composer supports text, the shared pending-input recovery actions,
   questions and sandbox approvals. New attachment upload and voice capture are
   outside this version. Recorded images remain visible through the existing
@@ -75,8 +79,10 @@ not meet this design.
   harness notices retain their actual source; do not cast them as something
   Jesse or the assistant said. Non-dialogue attention appears as a clearly
   identified caption or interaction panel, without exposing ordinary tool logs.
-- Hide reasoning, routine tool call/result text, tool intents and diagnostics
-  from the comic transcript. Project recorded tool `outputImages` into attributed
+- Show available thinking as thought bubbles under the linked amendment. Hide
+  routine tool call/result text, tool intents and diagnostics from the comic
+  transcript, while retaining canonical delegation anchors for sub-chat strips.
+  Project recorded tool `outputImages` into attributed
   image panels in source order, without exposing the accompanying log text or
   casting it as dialogue. Preserve actionable failures, pending questions,
   approvals and connection state through their existing typed owners.
@@ -125,7 +131,7 @@ behavior both client surfaces need; preserve workspace behavior and tests.
 | Entry and connection | `src/App.tsx`, `src/shell/AppShell.tsx`, `src/shell/clientContext.tsx`, `src/stores/connection.ts`. Extract client creation, wiring, replacement adoption and disposal into a shared lifetime. Mount exactly one surface and one client per window. Keep workspace-only registration and effects out of the comic entry. |
 | Selected conversation | `src/stores/useThreadModel.ts`. Acquire foreground ownership for the selected ref and release it on replacement/unmount. Plain store selection does not retain completed transcript bodies. |
 | Older history | `src/panes/session/transcript/useTranscript.ts` and `src/stores/threads.ts`. Reuse the existing pager; separate its workspace-membership adapter where necessary. The comic supplies an explicit reader lifetime and cancels its own retired demand without cancelling another reader's demand. |
-| Navigation | Existing navigation store/resources own membership, paging and invalidation. Comic selection does not initialize workspace panes. Keep workspace background transcript prefetch unchanged; the comic acquires only its selected conversation plus navigation demand. |
+| Navigation and sub-chats | Existing navigation store/resources own membership, paging and invalidation. Comic selection does not initialize workspace panes. Keep workspace background transcript prefetch unchanged. Comic acquires its selected conversation and explicitly expanded children, with shared activity demand and reader lifetimes as specified in the amendment. Never infer child ownership from navigation rows. |
 | Draft and editor | `src/panes/session/composer/sourceState.ts` and `src/panes/session/composer/draft.ts`. Reuse the existing source, editor bindings and structured draft storage. Preserve any pre-existing selections, mentions or attachment recovery when moving between clients; do not flatten a structured draft into plain text. No new draft database. |
 | Submission | `src/stores/threads.ts`, `src/stores/liveControls.ts`, `src/panes/session/composer/queue/pendingTurnsStore.ts` and `src/panes/session/composer/Composer.tsx`. Extract the private composer admission/press-time checks into shared behavior as needed. Use existing Send/Queue/Stop and pending tracking; never send directly to `turn/start` or guess availability from a status word. |
 | Questions | Existing `askDockStore` and `AskDock`, backed by the unfiltered model. Render their controls within the comic's interaction area; retain batching, draft answers, submission exclusion and reconciliation. A pending question must never hide the composer without providing its answering surface. |
@@ -234,6 +240,9 @@ components in end-to-end tests.
    targeted tests, frontend typecheck/Biome and relevant real-stack browser
    guards; let CI run the full gates. Keep missing-font and empty-state paths
    usable. Verify required notices and absence of fonts from tracked files.
+8. **Thoughts and child comics.** Meet the linked amendment's additional proof
+   obligations for thought content, stable casting, canonical subagent producers,
+   child reader ownership, nested navigation and mobile reading anchors.
 
 Update the web guide, hub routing guide, product subsystem map and the owning
 Comic Chat guide with verified behavior in the implementation change. This design
