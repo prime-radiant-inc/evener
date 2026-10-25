@@ -79,7 +79,8 @@ func forkSessionAtUserTurnFS(fs afero.Fs, stateDir, parentID string, divergenceT
 		return "", "", fmt.Errorf("%w: divergenceTurn must be >= 1, got %d", ErrDivergencePositionOutOfRange, divergenceTurn)
 	}
 
-	parentHeader, allEntries, err := readForkParent(fs, stateDir, parentID, 10*1024*1024)
+	deps := defaultForkDeps()
+	parentHeader, allEntries, err := readForkParent(fs, stateDir, parentID, deps.maxScanToken)
 	if err != nil {
 		return "", "", err
 	}
@@ -95,14 +96,6 @@ func forkSessionAtUserTurnFS(fs afero.Fs, stateDir, parentID string, divergenceT
 	parentMeta, err := schema.LoadSessionMetaWithFS(fs, stateDir, parentID)
 	if err != nil {
 		return "", "", fmt.Errorf("load parent session meta: %w", err)
-	}
-
-	deps := forkSessionDeps{
-		newWriter: func(fs afero.Fs, path string, header transcript.Header) (forkTranscriptWriter, error) {
-			return transcript.NewWriterWithFS(fs, path, header)
-		},
-		saveMeta:     schema.SaveSessionMetaWithFS,
-		maxScanToken: 10 * 1024 * 1024,
 	}
 
 	// The child gets only the prefix before the divergence turn, with nil
@@ -125,13 +118,17 @@ func forkSessionAtUserTurnFS(fs afero.Fs, stateDir, parentID string, divergenceT
 }
 
 func forkSessionFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string) (string, error) {
-	return forkSessionWithDeps(fs, stateDir, parentID, divergenceTurn, editedMessage, parentForkLabel, forkSessionDeps{
+	return forkSessionWithDeps(fs, stateDir, parentID, divergenceTurn, editedMessage, parentForkLabel, defaultForkDeps())
+}
+
+func defaultForkDeps() forkSessionDeps {
+	return forkSessionDeps{
 		newWriter: func(fs afero.Fs, path string, header transcript.Header) (forkTranscriptWriter, error) {
 			return transcript.NewWriterWithFS(fs, path, header)
 		},
 		saveMeta:     schema.SaveSessionMetaWithFS,
-		maxScanToken: 10 * 1024 * 1024,
-	})
+		maxScanToken: transcript.DefaultMaxLineBytes,
+	}
 }
 
 type forkTranscriptWriter interface {
@@ -208,7 +205,7 @@ func readForkParent(fs afero.Fs, stateDir, parentID string, maxScanToken int) (t
 	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
 
 	if maxScanToken <= 0 {
-		maxScanToken = 10 * 1024 * 1024
+		maxScanToken = transcript.DefaultMaxLineBytes
 	}
 	reader := bufio.NewReaderSize(f, min(64*1024, maxScanToken))
 

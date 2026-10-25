@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/fuzz/schemagen"
 )
 
@@ -69,9 +70,9 @@ func FuzzTranscriptReplayStructured(f *testing.F) {
 		assertResumeHistoryIdempotent(t, d.Entries)
 
 		sid := d.Header.SessionID
-		_, _ = readStrictChildTranscript(inPath, "", sid, transcriptJSONLMaxLineBytes)
-		_, _ = validateStrictChildTranscript(inPath, "", sid, transcriptJSONLMaxLineBytes)
-		_, _ = readStrictChildTranscript(inPath, "", sid+"_mismatch", transcriptJSONLMaxLineBytes)
+		_, _ = readStrictChildTranscript(inPath, "", sid, transcript.DefaultMaxLineBytes)
+		_, _ = validateStrictChildTranscript(inPath, "", sid, transcript.DefaultMaxLineBytes)
+		_, _ = readStrictChildTranscript(inPath, "", sid+"_mismatch", transcript.DefaultMaxLineBytes)
 		_, _ = readStrictChildTranscript(inPath, "", sid, 4)
 	})
 }

@@ -14,6 +14,7 @@ import {
 	type NavigationSessionSummary,
 	pendingTextJoined,
 	type SessionActivity,
+	STUCK_AFTER_MS,
 	type ThreadModel,
 	toolFamily,
 	toolStepProgress,
@@ -22,9 +23,6 @@ import { runningSubagentCount } from "../subagents/subagentModel";
 import { AGENT_QUIET_AFTER_MS, quietOrWorking, waitingOnSubagents } from "../board/attention";
 import { PULSE_BARS } from "../board/pulse";
 import { compactDuration } from "./format";
-
-/** No frame for this long reads "May be stuck" (spec 13.1). */
-export const STUCK_AFTER_MS = 10 * 60_000;
 
 export interface TrayLine {
 	text: string;

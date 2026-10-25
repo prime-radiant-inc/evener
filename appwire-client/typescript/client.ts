@@ -4,7 +4,7 @@
 // reconnect with backoff. Unlike the legacy client's fixed 250ms retry, it
 // backs off exponentially up to a cap.
 
-import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
+import { CODE_INVALID_REQUEST, ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import { isPlainObject } from "./plainObject";
 import type { WebSocketLike } from "./transport";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "./types.gen";
@@ -78,8 +78,6 @@ class HandshakeRejectedError extends Error {
     this.name = "HandshakeRejectedError";
   }
 }
-
-const CODE_INVALID_REQUEST = -32600;
 
 // TerminalReason names a close a human has to resolve, as opposed to an
 // ordinary drop the client retries on its own.

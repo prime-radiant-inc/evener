@@ -1,4 +1,4 @@
-import { WireError } from "./errors";
+import { CODE_UNAVAILABLE, WireError } from "./errors";
 import type { JobOutputPage } from "./types.gen";
 
 const MAX_PAGE_BYTES = 65536;
@@ -122,7 +122,7 @@ export function decodeJobOutputText(bytes: Uint8Array): string {
 }
 
 export function jobOutputPrunedBounds(error: unknown): { retainedStartBytes: number; totalBytes: number } | null {
-  if (!(error instanceof WireError) || error.code !== -32014 || error.evenerErrorInfo !== "jobOutputPruned")
+  if (!(error instanceof WireError) || error.code !== CODE_UNAVAILABLE || error.evenerErrorInfo !== "jobOutputPruned")
     return null;
   if (typeof error.data !== "object" || error.data === null || Array.isArray(error.data)) return null;
   const { retainedStartBytes, totalBytes } = error.data as Record<string, unknown>;

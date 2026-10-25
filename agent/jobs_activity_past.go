@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/internal/foldcache"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
 )
@@ -322,7 +323,7 @@ func (c *historicalActivityCache) rootDelegates(stateDir, rootSessionID string) 
 // ↑0 ↓0.
 func historicalActivityUsage(stateDir, sessionID string, meta schema.SessionMeta) *appwire.EvenerUsage {
 	path := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
-	total, err := activityUsageCache.UsageTotalFromFile(path, transcriptJSONLMaxLineBytes, meta.DivergenceTurn)
+	total, err := activityUsageCache.UsageTotalFromFile(path, transcript.DefaultMaxLineBytes, meta.DivergenceTurn)
 	if err != nil {
 		return nil
 	}

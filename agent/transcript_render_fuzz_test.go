@@ -72,7 +72,7 @@ const trenderLegacySession = "034UFS34rc5EKcH0qp1gaT"
 // would silently weaken the subsequence oracle instead of failing loudly.
 func trender_scanLines(content []byte) (lines []string, ok bool) {
 	scanner := bufio.NewScanner(bytes.NewReader(content))
-	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
+	scanner.Buffer(make([]byte, 0, 64*1024), transcript.DefaultMaxLineBytes)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
@@ -316,10 +316,10 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 
 // TestTrenderScanLines_ScanError verifies that trender_scanLines reports
 // ok=false (rather than silently returning a truncated line list) when a
-// single line exceeds transcriptJSONLMaxLineBytes.
+// single line exceeds transcript.DefaultMaxLineBytes.
 func TestTrenderScanLines_ScanError(t *testing.T) {
 	t.Parallel()
-	tooLong := bytes.Repeat([]byte("x"), transcriptJSONLMaxLineBytes+10)
+	tooLong := bytes.Repeat([]byte("x"), transcript.DefaultMaxLineBytes+10)
 	content := append([]byte("short line\n"), tooLong...)
 	lines, ok := trender_scanLines(content)
 	if ok {

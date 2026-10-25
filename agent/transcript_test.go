@@ -61,8 +61,8 @@ func TestTranscriptJSONLMaxLineCoversMaxImagePayload(t *testing.T) {
 	)
 	encodedImageBytes := ((maxImageBytes + 2) / 3) * 4
 	encodedPayloadBytes := maxImages*encodedImageBytes + jsonHeadroom
-	if transcriptJSONLMaxLineBytes < encodedPayloadBytes {
-		t.Fatalf("transcriptJSONLMaxLineBytes=%d, want at least %d", transcriptJSONLMaxLineBytes, encodedPayloadBytes)
+	if transcript.DefaultMaxLineBytes < encodedPayloadBytes {
+		t.Fatalf("transcript.DefaultMaxLineBytes=%d, want at least %d", transcript.DefaultMaxLineBytes, encodedPayloadBytes)
 	}
 }
 

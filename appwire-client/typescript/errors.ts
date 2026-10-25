@@ -26,8 +26,9 @@ export class WireError extends Error {
 }
 
 // Wire values of appwire's CodeInvalidRequest / CodeMethodNotFound /
-// CodeInvalidParams (appwire/errors.go), the standard JSON-RPC codes.
-const CODE_INVALID_REQUEST = -32600;
+// CodeInvalidParams / CodeUnavailable (appwire/errors.go).
+export const CODE_INVALID_REQUEST = -32600;
+export const CODE_UNAVAILABLE = -32014;
 const CODE_METHOD_NOT_FOUND = -32601;
 const CODE_INVALID_PARAMS = -32602;
 

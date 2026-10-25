@@ -19,7 +19,7 @@ import { WireError } from "@evener/appwire-client";
 import type { AppwireClientLike, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createConversationService } from "../../mobile/src/services/conversation";
-import { createConversationStore, type ConversationMutationState } from "../../mobile/src/state/conversation";
+import { createConversationStore, type ConversationPendingSubmission } from "../../mobile/src/state/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
@@ -237,7 +237,7 @@ test("a durable send clears the composer's durable unconfirmed draft at enqueue,
 	await runtime.stop();
 });
 
-test("the store records the durable row id the runtime admitted on the pending record", async () => {
+test("the store records the durable row id the runtime admitted on the in-flight marker", async () => {
 	const { runtime, client, host, service, store, targetKey } = compose({
 		createMutationId: () => "durable-row-42",
 	});
@@ -251,24 +251,22 @@ test("the store records the durable row id the runtime admitted on the pending r
 	);
 	await open(host, client, store, service);
 
-	const pendingRecords: ConversationMutationState[] = [];
+	const markers: ConversationPendingSubmission[] = [];
 	const unsubscribe = store.subscribe((state) => {
-		if (state.pendingMutation !== null && state.pendingMutation !== undefined)
-			pendingRecords.push(state.pendingMutation);
+		if (state.pendingSubmission !== null) markers.push(state.pendingSubmission);
 	});
 	store.getState().setDraft("my message");
 	await store.getState().send(service, [{ type: "text", text: "my message" }]);
 
 	// The row the production runtime committed is the identity the store
-	// recorded on the pending record.
+	// recorded on the in-flight marker.
 	const [row] = (await runtime.read(targetKey)).outbox;
 	expect(row?.clientMutationId).toBe("durable-row-42");
 	const admittedId = row!.clientMutationId;
-	expect(pendingRecords).toContainEqual(
-		expect.objectContaining({ kind: "send", status: "pending", admittedMutationId: admittedId }),
-	);
+	expect(markers).toContainEqual({ kind: "send", admittedMutationId: admittedId });
 	// It still settles on admission, and the durable path invents no receipt.
-	expect(store.getState().pendingMutation).toBeNull();
+	expect(store.getState().pendingSubmission).toBeNull();
+	expect(store.getState().failedSubmission).toBeNull();
 	expect(store.getState().lastAcceptedMutation).toEqual({ kind: "send" });
 
 	releaseTurn?.(appliedReceipt({ clientMutationId: admittedId }));

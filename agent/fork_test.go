@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
@@ -731,5 +733,55 @@ func TestForkSession_RejectsReservedDeviceNameParentID(t *testing.T) {
 	_, err := ForkSession(stateDir, "CON", 1, "hello", "")
 	if !errors.Is(err, schema.ErrInvalidSessionID) {
 		t.Fatalf("ForkSession with reserved device name parentID error = %v, want schema.ErrInvalidSessionID", err)
+	}
+}
+
+// A transcript record larger than the old 10 MiB fork limit is still within the
+// transcript line cap, so fork and aside must replay it.
+func TestForkAndAsideReplayLargeTranscriptLine(t *testing.T) {
+	t.Parallel()
+	fs := afero.NewMemMapFs()
+	stateDir := "/state"
+	parentID := "01PARENT00000000000000001"
+
+	tw, err := transcript.NewWriterWithFS(fs, filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl"), transcript.Header{
+		SessionID: parentID,
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+	})
+	if err != nil {
+		t.Fatalf("transcript.NewWriterWithFS: %v", err)
+	}
+	huge := strings.Repeat("x", 11<<20)
+	for _, turn := range []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User(huge)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("reply")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
+	} {
+		if err := tw.Append(turn); err != nil {
+			t.Fatalf("Append turn: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close transcript: %v", err)
+	}
+	if err := schema.SaveSessionMetaWithFS(fs, stateDir, schema.SessionMeta{
+		ID:        parentID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 50},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		TurnCount: 2,
+	}); err != nil {
+		t.Fatalf("SaveSessionMetaWithFS: %v", err)
+	}
+
+	if _, err := forkSessionFS(fs, stateDir, parentID, 3, "edited", ""); err != nil {
+		t.Fatalf("forkSessionFS: %v", err)
+	}
+	if _, err := asideSessionFSWithConfig(fs, stateDir, parentID, nil); err != nil {
+		t.Fatalf("asideSessionFSWithConfig: %v", err)
 	}
 }

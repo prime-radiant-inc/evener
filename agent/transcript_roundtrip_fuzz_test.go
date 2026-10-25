@@ -71,9 +71,9 @@ func FuzzTranscriptReplay(f *testing.F) {
 		// the session-match success, the session-mismatch rejection, and the
 		// per-line size-limit branch, none of which may panic.
 		sid := data.Header.SessionID
-		_, _ = readStrictChildTranscript(inPath, "", sid, transcriptJSONLMaxLineBytes)
-		_, _ = validateStrictChildTranscript(inPath, "", sid, transcriptJSONLMaxLineBytes)
-		_, _ = readStrictChildTranscript(inPath, "", sid+"_mismatch", transcriptJSONLMaxLineBytes)
+		_, _ = readStrictChildTranscript(inPath, "", sid, transcript.DefaultMaxLineBytes)
+		_, _ = validateStrictChildTranscript(inPath, "", sid, transcript.DefaultMaxLineBytes)
+		_, _ = readStrictChildTranscript(inPath, "", sid+"_mismatch", transcript.DefaultMaxLineBytes)
 		_, _ = readStrictChildTranscript(inPath, "", sid, 4)
 	})
 }
