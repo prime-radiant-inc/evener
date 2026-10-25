@@ -34,8 +34,17 @@ const CLASS = {
  * documents why a portaled, viewport-positioned bubble is required).
  */
 export function Tooltip({ label, children }: TooltipProps) {
-  const { visible, wrapperRef, triggerProps, setBubbleRef, bubbleStyle, bubbleID, describedBy, dismiss } =
-    useFloatingBubble();
+  const {
+    visible,
+    wrapperRef,
+    triggerProps,
+    setBubbleRef,
+    bubbleContainer,
+    bubbleStyle,
+    bubbleID,
+    describedBy,
+    dismiss,
+  } = useFloatingBubble();
   // An inactive tooltip is inert: it takes no hover/focus handlers that start a
   // reveal, so it never holds a "visible" state the reveal's measurement did
   // not run for, and one that goes inactive while shown dismisses. It keeps the
@@ -66,6 +75,7 @@ export function Tooltip({ label, children }: TooltipProps) {
         className={CLASS.bubble}
         style={bubbleStyle}
         setRef={setBubbleRef}
+        container={bubbleContainer}
       >
         {label}
       </FloatingBubblePortal>
