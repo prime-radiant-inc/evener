@@ -1,24 +1,21 @@
 import { ActivityPageBoundary } from "./ActivityPageBoundary";
 // The Watches tab observes the shared session watch collection and admits
-// continuation pages at its visible boundary. Cadence and delivery labels use
-// the shared clock, which ticks only while this tab is mounted.
+// continuation pages at its visible boundary.
 
 import { buildWatchRows } from "@evener/appwire-client";
-import { useNowTick } from "../../panes/session/liveness";
 import { useSessionActivity } from "../../stores/sessionActivity";
 import { EmptyState, InlineNotice, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import type { ActivityScope } from "../statusbar/statusScope";
 import { useActivityScrollProgress } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
 import { WatchRow } from "./activityRows";
+import type { ActivityTabBodyProps } from "./activityTabs";
 
 const CLASS = {
   stack: requireClass(styles.stack, "activitybar.module.css", "stack"),
 };
 
-export function WatchesTab({ scope }: { scope: ActivityScope }) {
-  const now = useNowTick(30_000);
+export function WatchesTab({ scope, now }: ActivityTabBodyProps) {
   const { snapshot, loadMore } = useSessionActivity(scope.leaf.ref, "session", "watches");
   const collection = snapshot?.watches;
   const watchRows = buildWatchRows(collection?.rows ?? []);

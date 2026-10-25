@@ -156,33 +156,137 @@ func touchedDelegates(state State, event Event) []string {
 	}
 }
 
+// eventKindSpec is the single per-kind description of a delegate journal
+// event: how to see whether its payload is attached, how to deep-clone that
+// payload, and how to apply it. validateEventEnvelope, cloneEvent and
+// applyEvent all walk eventKindSpecs, so a new kind is one row here instead of
+// an edit to five hand-kept lists.
+//
+// present is a bool rather than an any-returning accessor on purpose: a nil
+// *Payload stored in any is a non-nil interface, and that shape would let a
+// missing payload count as present and accept a foreign payload on a durable
+// journal event.
+type eventKindSpec struct {
+	kind    EventKind
+	present func(*Event) bool
+	clone   func(dst, src *Event)
+	apply   func(State, Event) error
+}
+
+// clonePointee replaces *dst with a copy of *src's pointee when present. Kinds
+// whose payload holds no nested mutable state use it so the "copy the struct
+// and take its address" rule has one home.
+func clonePointee[T any](dst, src **T) {
+	if *src == nil {
+		return
+	}
+	payload := **src
+	*dst = &payload
+}
+
+// eventKindSpecs is every delegate journal event kind, in Event payload-field
+// order.
+var eventKindSpecs = []eventKindSpec{
+	{
+		kind:    EventDelegateCreated,
+		present: func(event *Event) bool { return event.Created != nil },
+		clone: func(dst, src *Event) {
+			if src.Created != nil {
+				dst.Created = &DelegateCreated{Descriptor: cloneDescriptor(src.Created.Descriptor)}
+			}
+		},
+		apply: applyCreated,
+	},
+	{
+		kind:    EventDelegateRunStarted,
+		present: func(event *Event) bool { return event.RunStarted != nil },
+		clone:   func(dst, src *Event) { clonePointee(&dst.RunStarted, &src.RunStarted) },
+		apply:   applyRunStarted,
+	},
+	{
+		kind:    EventDelegateTerminalPrepared,
+		present: func(event *Event) bool { return event.TerminalPrepared != nil },
+		clone: func(dst, src *Event) {
+			if src.TerminalPrepared != nil {
+				payload := *src.TerminalPrepared
+				payload.Packet = *cloneTerminalPacket(&src.TerminalPrepared.Packet)
+				dst.TerminalPrepared = &payload
+			}
+		},
+		apply: applyTerminalPrepared,
+	},
+	{
+		kind:    EventDelegateRunFinished,
+		present: func(event *Event) bool { return event.RunFinished != nil },
+		clone: func(dst, src *Event) {
+			if src.RunFinished != nil {
+				payload := *src.RunFinished
+				payload.Outcome = *cloneOutcome(&src.RunFinished.Outcome)
+				payload.Packet = cloneTerminalPacket(src.RunFinished.Packet)
+				dst.RunFinished = &payload
+			}
+		},
+		apply: applyRunFinished,
+	},
+	{
+		kind:    EventDelegateResumabilityClosed,
+		present: func(event *Event) bool { return event.ResumabilityClosed != nil },
+		clone:   func(dst, src *Event) { clonePointee(&dst.ResumabilityClosed, &src.ResumabilityClosed) },
+		apply:   applyResumabilityClosed,
+	},
+	{
+		kind:    EventDelegateSubtreeStopRequested,
+		present: func(event *Event) bool { return event.SubtreeStopRequested != nil },
+		clone:   func(dst, src *Event) { clonePointee(&dst.SubtreeStopRequested, &src.SubtreeStopRequested) },
+		apply:   applySubtreeStopRequested,
+	},
+	{
+		kind:    EventDelegateSubtreeStopCompleted,
+		present: func(event *Event) bool { return event.SubtreeStopCompleted != nil },
+		clone:   func(dst, src *Event) { clonePointee(&dst.SubtreeStopCompleted, &src.SubtreeStopCompleted) },
+		apply:   applySubtreeStopCompleted,
+	},
+	{
+		kind:    EventDelegateDeliveryAcknowledged,
+		present: func(event *Event) bool { return event.DeliveryAcknowledged != nil },
+		clone:   func(dst, src *Event) { clonePointee(&dst.DeliveryAcknowledged, &src.DeliveryAcknowledged) },
+		apply:   applyDeliveryAcknowledged,
+	},
+	{
+		kind:    EventDelegateAttentionChanged,
+		present: func(event *Event) bool { return event.AttentionChanged != nil },
+		clone:   func(dst, src *Event) { clonePointee(&dst.AttentionChanged, &src.AttentionChanged) },
+		apply:   applyAttentionChanged,
+	},
+	{
+		kind:    EventDelegateUpdatePosted,
+		present: func(event *Event) bool { return event.UpdatePosted != nil },
+		clone:   func(dst, src *Event) { clonePointee(&dst.UpdatePosted, &src.UpdatePosted) },
+		apply:   applyUpdatePosted,
+	},
+	{
+		kind:    EventDelegateIntentStated,
+		present: func(event *Event) bool { return event.IntentStated != nil },
+		clone:   func(dst, src *Event) { clonePointee(&dst.IntentStated, &src.IntentStated) },
+		apply:   applyIntentStated,
+	},
+}
+
+func eventKindSpecFor(kind EventKind) (eventKindSpec, bool) {
+	for _, spec := range eventKindSpecs {
+		if spec.kind == kind {
+			return spec, true
+		}
+	}
+	return eventKindSpec{}, false
+}
+
 func applyEvent(state State, event Event) error {
-	switch event.Kind {
-	case EventDelegateCreated:
-		return applyCreated(state, event)
-	case EventDelegateRunStarted:
-		return applyRunStarted(state, event)
-	case EventDelegateTerminalPrepared:
-		return applyTerminalPrepared(state, event)
-	case EventDelegateRunFinished:
-		return applyRunFinished(state, event)
-	case EventDelegateResumabilityClosed:
-		return applyResumabilityClosed(state, event)
-	case EventDelegateSubtreeStopRequested:
-		return applySubtreeStopRequested(state, event)
-	case EventDelegateSubtreeStopCompleted:
-		return applySubtreeStopCompleted(state, event)
-	case EventDelegateDeliveryAcknowledged:
-		return applyDeliveryAcknowledged(state, event)
-	case EventDelegateAttentionChanged:
-		return applyAttentionChanged(state, event)
-	case EventDelegateUpdatePosted:
-		return applyUpdatePosted(state, event)
-	case EventDelegateIntentStated:
-		return applyIntentStated(state, event)
-	default:
+	spec, ok := eventKindSpecFor(event.Kind)
+	if !ok {
 		return fmt.Errorf("unknown delegate event kind %q", event.Kind)
 	}
+	return spec.apply(state, event)
 }
 
 func applyCreated(state State, event Event) error {
@@ -536,50 +640,20 @@ func validateEventEnvelope(event Event) error {
 	if event.DelegateID == "" {
 		return fmt.Errorf("delegate event %q has empty delegate id", event.Kind)
 	}
-	payloads := []bool{
-		event.Created != nil,
-		event.RunStarted != nil,
-		event.TerminalPrepared != nil,
-		event.RunFinished != nil,
-		event.ResumabilityClosed != nil,
-		event.SubtreeStopRequested != nil,
-		event.SubtreeStopCompleted != nil,
-		event.DeliveryAcknowledged != nil,
-		event.AttentionChanged != nil,
-		event.UpdatePosted != nil,
-		event.IntentStated != nil,
-	}
 	count := 0
-	for _, present := range payloads {
+	known := false
+	matching := false
+	for _, spec := range eventKindSpecs {
+		present := spec.present(&event)
 		if present {
 			count++
 		}
+		if spec.kind == event.Kind {
+			known = true
+			matching = present
+		}
 	}
-	matching := false
-	switch event.Kind {
-	case EventDelegateCreated:
-		matching = event.Created != nil
-	case EventDelegateRunStarted:
-		matching = event.RunStarted != nil
-	case EventDelegateTerminalPrepared:
-		matching = event.TerminalPrepared != nil
-	case EventDelegateRunFinished:
-		matching = event.RunFinished != nil
-	case EventDelegateResumabilityClosed:
-		matching = event.ResumabilityClosed != nil
-	case EventDelegateSubtreeStopRequested:
-		matching = event.SubtreeStopRequested != nil
-	case EventDelegateSubtreeStopCompleted:
-		matching = event.SubtreeStopCompleted != nil
-	case EventDelegateDeliveryAcknowledged:
-		matching = event.DeliveryAcknowledged != nil
-	case EventDelegateAttentionChanged:
-		matching = event.AttentionChanged != nil
-	case EventDelegateUpdatePosted:
-		matching = event.UpdatePosted != nil
-	case EventDelegateIntentStated:
-		matching = event.IntentStated != nil
-	default:
+	if !known {
 		return fmt.Errorf("unknown delegate event kind %q", event.Kind)
 	}
 	if count != 1 || !matching {

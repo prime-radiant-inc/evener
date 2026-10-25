@@ -1341,6 +1341,11 @@ function activityInstant(value: string): { seconds: number; nanos: number } | nu
     sign === undefined ? 0 : (sign === "-" ? -1 : 1) * (Number(offsetHour) * 3600 + Number(offsetMinute) * 60);
   return { seconds: utc / 1000 - offsetSeconds, nanos: Number((fraction ?? "").padEnd(9, "0").slice(0, 9)) };
 }
+
+export function isValidActivityTimestamp(value: string): boolean {
+  return activityInstant(value) !== null;
+}
+
 /** Mirrors internal/appprojector.delegateActivityAfter: a blank candidate never
  * wins, a blank current loses to any non-blank candidate, and otherwise the
  * candidate wins only when both values parse and it is strictly later. */

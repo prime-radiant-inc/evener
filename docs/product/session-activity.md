@@ -19,6 +19,12 @@ with it open) marks it seen through the later of an unseen turn end and motion
 after that mark. The web reads that session's activity once per open for this,
 and a read whose connection was replaced is read again through the new one.
 
+The phone Board's pulse meter and quiet presentation, and the `lastMovedAt`
+behind the web's seen mark, come from a different, hub-level read:
+`evener/activity/read` — see the [session pulse meter](pulse-meter.md). It is
+not one of the `evener/thread/*` activity reads below and carries no delegate,
+job or watch rows.
+
 Transcript delegate cards and status indicators use the same
 owner-qualified delegate entity projection as Activity. Retained transcripts do
 not require a live diagnostics roster to display authoritative delegate state.
@@ -806,10 +812,12 @@ Without a retained choice, the desktop [Jobs tab](../../cmd/evener-hub/frontend/
 folds every terminal background job under Completed, including failed,
 cancelled, stopped, killed and unknown outcomes. Current jobs remain outside
 the fold. Terminal Jobs and Agents glyphs use ordinary quiet color while their
-status text retains the actual outcome; live input and approval requests retain
-attention color. Closing history leaves the existing visible page boundary active,
-so current work on later pages remains discoverable. Opening output uses the
-returned job owner and transcript ref in a secondary pane.
+non-success status text retains the actual outcome. Successful settled Agents
+and Jobs use one compact title-and-time line; live work, failed, cancelled,
+stopped, exhausted and unknown outcomes keep their context line. Live input and
+approval requests retain attention color. Closing history leaves the existing
+visible page boundary active, so current work on later pages remains discoverable.
+Opening output uses the returned job owner and transcript ref in a secondary pane.
 
 The shared
 [task panel](../../cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx)
@@ -823,7 +831,22 @@ same) and starts its body with the task groups, without aggregate summary lines
 above them. The
 standalone Tasks pane and Tasks Sheet retain their aggregate headers and trigger
 labels. Loading, unavailable and empty states remain visible; a failed refresh
-retains loaded rows and the existing retry control.
+retains loaded rows and the existing retry control. Only the sidebar uses the
+compact task presentation; the standalone Tasks Sheet and pane keep their
+existing row appearance.
+
+The sidebar's Agents, Jobs, Watches and Tasks put a relative `<time>` beside
+their titles when authoritative timing exists. Running Agents and Jobs use
+latest activity or output, falling back to run/job start; settled rows use run
+or job end. Tasks use completion/cancellation time, falling back to last update
+for legacy rows; unfinished tasks use last update, not a claimed run time.
+Watches use their latest delivery, or their armed/creation time when no delivery
+timestamp is retained. A resumed Agent chooses the newer of run start and latest
+activity, so an older run cannot become the current run's timestamp. Missing or
+invalid times are omitted. The source ISO timestamp and its meaning and absolute
+time remain available through the time tooltip. One clock mounted with the
+visible sidebar body refreshes these labels every 30 seconds, including expanded
+Watch details, without adding activity reads or surviving sidebar close.
 
 Agents, Jobs, Watches and Tasks use `var(--space-1)` vertical and
 `var(--space-2)` horizontal row padding. Disclosure rows apply that padding once

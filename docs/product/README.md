@@ -13,6 +13,8 @@ changes; keep implementation history in Git and pull requests.
   points, dependencies, and recovery ownership across the product.
 - [Session activity](session-activity.md): scoped delegate, job and watch reads,
   navigation boundaries, pagination and shared recovery ownership.
+- [Session pulse meter](pulse-meter.md): the hub's live per-session activity
+  read behind the Board meter, quiet time and newest root tool intent.
 - [Remote session actions](remote-sessions.md): the effective capability a
   controller advertises for a session on another host, and the recovery
   boundary between the controller and that host.

@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -474,6 +477,10 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 	}
 	// Exercise the bulk byte bound at the first byte of a multibyte rune.
 	f.Add([]byte{5}, strings.Repeat("a", 47)+string(rune(0x20AC)))
+	f.Add([]byte{5}, `range="`)
+	f.Add([]byte{5}, "expand_turn=123")
+	f.Add([]byte{5}, "\n## Turn 123 — User\n")
+	f.Add([]byte{6}, "\n- read_transcript(transcript_ref, expand_turn=123)\n")
 
 	f.Fuzz(func(t *testing.T, program []byte, payload string) {
 		scenario := trenderScenario(program)
@@ -481,7 +488,7 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 
 		got, meta := renderTranscript(header, entries, rangeSpec, opt)
 		again, againMeta := renderTranscript(header, entries, rangeSpec, opt)
-		if got != again || meta != againMeta {
+		if got != again || !reflect.DeepEqual(meta, againMeta) {
 			t.Fatalf("renderTranscript was not deterministic for program=%x", program)
 		}
 		if meta.TurnsTotal != len(entries) {
@@ -496,8 +503,78 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 			}
 		} else if meta.FirstRendered < 0 || meta.LastRendered < meta.FirstRendered || meta.LastRendered >= len(entries) {
 			t.Fatalf("invalid render span = [%d,%d] for %d entries", meta.FirstRendered, meta.LastRendered, len(entries))
-		} else if meta.LastRendered-meta.FirstRendered+1 != meta.TurnsRendered {
+		} else if meta.SelectedTurns == nil && meta.LastRendered-meta.FirstRendered+1 != meta.TurnsRendered {
 			t.Fatalf("render span [%d,%d] has %d turns, metadata says %d", meta.FirstRendered, meta.LastRendered, meta.LastRendered-meta.FirstRendered+1, meta.TurnsRendered)
+		}
+		if meta.SelectedTurns != nil {
+			// Bulk fixtures contain complete literal text bodies. Remove those
+			// known source bytes before reading structure, since arbitrary payloads
+			// may themselves quote headings and recovery calls.
+			structure := got
+			for _, entry := range entries {
+				for _, part := range entry.Turn.Message.Content {
+					if part.Kind == llm.ContentText && part.Text != "" {
+						structure = strings.ReplaceAll(structure, part.Text, "")
+					}
+				}
+			}
+			shown := transcriptHeadingTurns(t, structure)
+			if !slices.Equal(shown, meta.SelectedTurns) || len(shown) != meta.TurnsRendered {
+				t.Fatalf("actual selected addresses=%v, metadata=%v count=%d", shown, meta.SelectedTurns, meta.TurnsRendered)
+			}
+			start, end := parseRange(rangeSpec, len(entries))
+			for _, seq := range shown {
+				if seq < start || seq > end {
+					t.Fatalf("selected turn %d outside requested [%d,%d]", seq, start, end)
+				}
+			}
+			if len(shown) > 0 && (shown[0] != meta.FirstRendered || shown[len(shown)-1] != meta.LastRendered) {
+				t.Fatalf("actual address bounds=%v, metadata=[%d,%d]", shown, meta.FirstRendered, meta.LastRendered)
+			}
+			var omittedUsers []int
+			for seq := start; seq <= end; seq++ {
+				if slices.Contains(shown, seq) {
+					if entries[seq].Turn.Kind == schema.TurnUserInput {
+						for _, part := range entries[seq].Turn.Message.Content {
+							if part.Kind == llm.ContentText && !strings.Contains(got, part.Text) {
+								t.Fatalf("selected user %d lost complete text", seq)
+							}
+						}
+					}
+					continue
+				}
+				if entries[seq].Turn.Kind == schema.TurnUserInput {
+					omittedUsers = append(omittedUsers, seq)
+				}
+			}
+			if !slices.IsSorted(shown) || len(slices.Compact(slices.Clone(shown))) != len(shown) {
+				t.Fatalf("selected addresses are not strictly chronological: %v", shown)
+			}
+			if recovered := transcriptRecoveryTurns(t, structure); !slices.Equal(recovered, omittedUsers) {
+				t.Fatalf("omitted user addresses=%v, want %v", recovered, omittedUsers)
+			}
+			var wantGaps []string
+			for seq := start; seq <= end; seq++ {
+				if slices.Contains(shown, seq) {
+					continue
+				}
+				first := seq
+				for seq < end && !slices.Contains(shown, seq+1) {
+					seq++
+				}
+				wantGaps = append(wantGaps, fmt.Sprintf(`range="%d-%d"`, first, seq))
+			}
+			var actualGaps []string
+			gapPattern := `(?m)^_[^\n]*read_transcript\(transcript_ref, range="(\d+)-(\d+)"\)[^\n]*_$`
+			for _, match := range regexp.MustCompile(gapPattern).FindAllStringSubmatch(structure, -1) {
+				actualGaps = append(actualGaps, fmt.Sprintf(`range="%s-%s"`, match[1], match[2]))
+			}
+			if !slices.Equal(actualGaps, wantGaps) {
+				t.Fatalf("range recovery addresses=%v, want exact omitted spans %v", actualGaps, wantGaps)
+			}
+			if len(got) > convBudgetChars {
+				t.Fatalf("user-prioritized range uses %d bytes, budget=%d", len(got), convBudgetChars)
+			}
 		}
 		if meta.TurnsRendered < meta.TurnsTotal && !meta.Truncated {
 			t.Fatal("elided turns did not set Truncated")

@@ -1772,6 +1772,15 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			continue
 		}
 		inFlight := scope.active() && i >= scope.InFlightFrom
+		if t.Kind == schema.TurnNotesContext && !scope.notesSelfEchoFiltered && isNotesSelfEchoTurn(historyTurns, i) {
+			continue
+		}
+		if t.Kind.HarnessContext() {
+			// Turn-boundary context only ever lands at a turn boundary, so no
+			// mid-tool-round deferral: pass the message straight through.
+			history = append(history, t.Message)
+			continue
+		}
 		switch t.Kind {
 		case schema.TurnSteering:
 			if len(pendingToolCalls) > 0 {
@@ -1779,13 +1788,6 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			} else {
 				history = append(history, t.Message)
 			}
-		case schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
-			if t.Kind == schema.TurnNotesContext && !scope.notesSelfEchoFiltered && isNotesSelfEchoTurn(historyTurns, i) {
-				continue
-			}
-			// Turn-boundary context only ever lands at a turn boundary, so no
-			// mid-tool-round deferral: pass the message straight through.
-			history = append(history, t.Message)
 		case schema.TurnToolResults:
 			// Expand aggregated tool results into individual messages.
 			for _, p := range t.Message.Content {

@@ -20,6 +20,7 @@ import {
 	NativeMutationRuntime,
 	type NativeMutationRequest,
 } from "./nativeMutationRuntime";
+import { MutationNotSentError } from "../../mobile/src/state/conversationMutation";
 
 const expoSQLite = vi.hoisted(() => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite", () => expoSQLite);
@@ -129,6 +130,61 @@ test("a target stays gated until a matching authoritative read opens it", async 
 	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
 
 	await vi.waitFor(() => expect(client.calls).toHaveLength(1));
+	await runtime.stop();
+});
+
+test("submit returns the durable row's id as a local admission after an ordinary enqueue", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	await registerAndStart(runtime, client);
+
+	const admission = await runtime.submit(request("send"));
+
+	const [row] = (await runtime.read(nativeMutationTargetKey("hub-1", "ref-1"))).outbox;
+	expect(row).toMatchObject({ clientMutationId: "mutation-1" });
+	expect(admission).toEqual({ clientMutationId: "mutation-1" });
+	// The production path acknowledges at the enqueue boundary, before the
+	// daemon answers, so the local admission carries no wire receipt.
+	expect(admission).not.toHaveProperty("receipt");
+	await runtime.stop();
+});
+
+test("submit returns the interrupt row's id as a local admission after a Stop", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+	});
+	const client = new FakeClient("connecting");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+
+	await runtime.submit(request("send"));
+	const admission = await runtime.submit(request("interrupt"));
+
+	expect(await runtime.storage.getOutbox("mutation-2")).toMatchObject({
+		clientMutationId: "mutation-2",
+		method: "turn/interrupt",
+	});
+	expect(admission).toEqual({ clientMutationId: "mutation-2" });
+	await runtime.stop();
+});
+
+test("submit returns the resend row's id as a local admission after a recovery resend", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+	});
+	await runtime.start();
+	await runtime.submit(request("send"));
+	expect(await runtime.storage.transferToRecovery("mutation-1", "editing")).toBeDefined();
+
+	const admission = await runtime.submit({ ...request("send"), recoverySourceIds: ["mutation-1"] });
+
+	const rows = (await runtime.read(nativeMutationTargetKey("hub-1", "ref-1"))).outbox;
+	expect(rows.map((row) => row.clientMutationId)).toEqual(["mutation-2"]);
+	expect(admission).toEqual({ clientMutationId: "mutation-2" });
 	await runtime.stop();
 });
 
@@ -1594,7 +1650,7 @@ test.each([
 			params: { ref: "ref-1", expectedInstanceId: "instance-1", ...extra },
 		});
 		expect((client.calls[0]?.params as { clientMutationId?: string }).clientMutationId).toEqual(expect.any(String));
-		expect(await runtime.storage.listOutbox("")).toEqual([]);
+		expect(await runtime.storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-1"))).toEqual([]);
 		await runtime.stop();
 	},
 );
@@ -1608,6 +1664,51 @@ test("a direct send is remembered as this phone's", async () => {
 
 	const sent = (client.calls[0]?.params as { clientMutationId: string }).clientMutationId;
 	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-1")).has(sent)).toBe(true);
+	await runtime.stop();
+});
+
+test("a direct fallback returns the request's clientMutationId as a local admission", async () => {
+	const { runtime, client } = await readyRuntimeWithClient(() => "mutation-1");
+	client.on("turn/start", (params) => appliedReceipt(params));
+	refuseWrites(database!);
+
+	const admission = await runtime.submit(request("send"));
+
+	expect(client.calls).toHaveLength(1);
+	expect((client.calls[0]?.params as { clientMutationId?: string }).clientMutationId).toBe("mutation-1");
+	expect(admission).toEqual({ clientMutationId: "mutation-1" });
+	expect(admission).not.toHaveProperty("receipt");
+	await runtime.stop();
+});
+
+test("a false precondition refuses before the durable enqueue", async () => {
+	const { runtime, client } = await readyRuntimeWithClient();
+	client.on("turn/start", (params) => appliedReceipt(params));
+	const precondition = vi.fn(() => false);
+
+	await expect(runtime.submit({ ...request("send"), precondition })).rejects.toBeInstanceOf(MutationNotSentError);
+
+	expect(precondition).toHaveBeenCalledTimes(1);
+	expect(await runtime.storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-1"))).toEqual([]);
+	expect(client.calls).toHaveLength(0);
+	await runtime.stop();
+});
+
+test("a precondition rechecked immediately before the storage fallback can still refuse it", async () => {
+	const { runtime, client } = await readyRuntimeWithClient();
+	client.on("turn/start", (params) => appliedReceipt(params));
+	refuseWrites(database!);
+	let checks = 0;
+	const precondition = () => {
+		checks += 1;
+		return checks === 1;
+	};
+
+	await expect(runtime.submit({ ...request("send"), precondition })).rejects.toBeInstanceOf(MutationNotSentError);
+
+	// Once before the enqueue, once again immediately before the direct request.
+	expect(checks).toBe(2);
+	expect(client.calls).toHaveLength(0);
 	await runtime.stop();
 });
 

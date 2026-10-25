@@ -130,7 +130,9 @@ func (c *delegateTreeController) retirementEvidence() ([]RetirementBlocker, []*S
 // per-Session work. It returns the owner blockers, the live sessions for members
 // with a resident runtime, the exact runtime pointer per member (the full read
 // revalidates these after dropping mu), the durable descriptors, and the sorted
-// member ids.
+// member ids. Noted wakes are not part of this scan: the full read decides
+// attention from each member's transcript fold, and the non-blocking read adds
+// retirementWakeBlockersLocked as its in-memory proxy.
 func (c *delegateTreeController) retirementOwnerScanLocked(members map[string]struct{}) (
 	blockers []RetirementBlocker,
 	sessions []*Session,
@@ -197,11 +199,6 @@ func (c *delegateTreeController) retirementOwnerScanLocked(members map[string]st
 		if a.CurrentRunOpen || a.Phase != delegatestore.PhaseIdle && a.Phase != delegatestore.PhaseClosed || len(a.PendingDeliveries) != 0 || a.PendingStopSeq != 0 || a.NeedsAttention || a.PreparedTerminal != nil {
 			block(id)
 		}
-		// A delegate that can no longer resume never acts on a noted wake, and
-		// the transcript evidence below still blocks on what is pending.
-		if state := c.attention[id]; state != nil && len(state.wakeIDs) != 0 && a.Resumable && a.Phase != delegatestore.PhaseClosed {
-			block(id)
-		}
 		if live := c.live[id]; live != nil {
 			if live.binding != nil || live.recoveryRequired || live.finalizationRecoveryRequired || live.recoveryRunnerPending || liveGenerationOwesSteering(live) || len(live.waiters) != 0 || live.quietClaim != nil || len(live.attentionIDs) != 0 {
 				block(id)
@@ -218,6 +215,26 @@ func (c *delegateTreeController) retirementOwnerScanLocked(members map[string]st
 		}
 	}
 	return blockers, sessions, exact, descriptors, ids
+}
+
+// retirementWakeBlockersLocked is the non-blocking read's in-memory proxy for
+// noted attention. That read deliberately skips the transcript folds the full
+// read performs, so a resumable delegate's wake stays a cautious blocker even
+// when its transcript already resolved the item. The full read never uses this.
+// Resumable alone excludes a closed delegate: every fold transition into
+// PhaseClosed requires !Resumable. Callers must hold c.mu.
+func (c *delegateTreeController) retirementWakeBlockersLocked() []RetirementBlocker {
+	var blockers []RetirementBlocker
+	for id, state := range c.attention {
+		if state == nil || len(state.wakeIDs) == 0 {
+			continue
+		}
+		if aggregate := c.durable[id]; aggregate == nil || !aggregate.Resumable {
+			continue
+		}
+		blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
+	}
+	return blockers
 }
 
 // retirementNonBlockingEvidenceRead reads the shared tree's in-memory owner state and
@@ -277,6 +294,7 @@ func (c *delegateTreeController) retirementNonBlockingEvidenceRead(includeNaming
 		members[id] = struct{}{}
 	}
 	blockers, sessions, _, _, _ := c.retirementOwnerScanLocked(members)
+	blockers = append(blockers, c.retirementWakeBlockersLocked()...)
 	c.mu.Unlock()
 	for _, s := range sessions {
 		blockers = append(blockers, s.retirementNonBlockingEvidenceWithNaming(includeNaming)...)

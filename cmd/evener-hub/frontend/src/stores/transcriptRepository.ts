@@ -595,6 +595,24 @@ export class TranscriptRepository {
   }
 
   /**
+   * True while the held view is still the one a completed local open
+   * established: no invalidation (recovery need, seed authority, cache
+   * continuity, invalidation marker, disposal) has overturned it since. A
+   * remount over a still-held view can serve it without a disk
+   * recertification, whose lookup-deadline expiry would discard the loaded
+   * range and fall back to a source read.
+   */
+  holdsEstablishedView(): boolean {
+    return (
+      !this.#recoveryNeeded &&
+      !this.#seedAuthorityInvalid &&
+      !this.#cacheContinuityLost &&
+      !this.#invalidated &&
+      !this.#disposed
+    );
+  }
+
+  /**
    * @internal The aggregate admission scalars this repository sees in the shared
    * queue, paired with `retainedInventoryForTesting` so a test can observe the
    * bound against real retained references, not only a counter.
@@ -1256,6 +1274,52 @@ export class TranscriptRepository {
     return this.#localOlder?.sourceRevision === this.#sourceRevision ? this.#localOlder.before : undefined;
   }
 
+  /**
+   * The oldest position still missing a real body below a restored window.
+   * Bodies the published model already holds are not debt: pages that loaded
+   * while a restore was in flight provided theirs, so the continuation must
+   * not re-advertise them.
+   */
+  #missingBodyFloor(model: ThreadModel | undefined, windowStart: ThreadItemPosition): ThreadItemPosition | undefined {
+    let floor: ThreadItemPosition | undefined;
+    for (const item of (model?.history?.turns ?? []).flatMap((turn) => turn.items)) {
+      if (!item.position || comparePosition(item.position, windowStart) >= 0) continue;
+      if (!encodeTranscriptItem(item).identityOnly) continue;
+      if (!floor || comparePosition(item.position, floor) < 0) floor = item.position;
+    }
+    return floor;
+  }
+
+  /**
+   * True when every item the retained foreground interval requires is
+   * resident with a real body. The interval runs from the oldest bodied
+   * position this revision published — the floor only ever moves deeper, so
+   * identities above it that lost their bodies (a release reclaimed them,
+   * later updates repopulated only the tail) stay inside the requirement,
+   * while identities below it are older demand, not debt. A settled stall
+   * accepts only on this standard: the latest window alone cannot vouch for
+   * a deeper range.
+   */
+  holdsResidentForegroundRange(): boolean {
+    if (this.#disposed || this.#invalidated) return false;
+    const model = this.#model;
+    const start = this.#foregroundStart;
+    if (!model || !start) return false;
+    const required = (model.history?.turns ?? model.turns)
+      .flatMap((turn) => turn.items)
+      .filter((item) => item.position && comparePosition(item.position, start) >= 0);
+    if (required.length === 0) return false;
+    const displayed = new Map(
+      model.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
+    );
+    return required.every((item) => {
+      const body = displayed.get(item.transcriptKey ?? item.id);
+      return (
+        body !== undefined && (body.version ?? 0) >= (item.version ?? 0) && !encodeTranscriptItem(body).identityOnly
+      );
+    });
+  }
+
   attachReader(): TranscriptReader {
     let active = true;
     this.#readerCount++;
@@ -1457,9 +1521,15 @@ export class TranscriptRepository {
           if (!restored || !openingCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
-          // A racing accepted model wins by item version; the stale query only fills absent slots.
+          // A racing accepted model wins by item version; the stale query only
+          // fills absent slots. Local older pages and accepted notifications
+          // also replace the model without advancing the read boundary, so
+          // merge whenever the repository's model moved past the opening's
+          // captured cut — a late restore must never discard them.
           latest =
-            this.#boundary > openingCutBoundary ? this.#mergeReaderModels(latest ?? current, restored) : restored;
+            this.#boundary > openingCutBoundary || this.#model !== current
+              ? this.#mergeReaderModels(latest ?? current, restored)
+              : restored;
           const retainedRangeComplete = checkRetainedRange(latest);
           const oldestReturned = boundedRows[0]?.position;
           const certifiedStart = window.coverage[0]?.start;
@@ -1468,14 +1538,17 @@ export class TranscriptRepository {
               ? oldestReturned
               : undefined;
           // Keep the unrestored identities: raw paging uses them to detect
-          // eviction rather than mistaking a short page for exhaustion.
+          // eviction rather than mistaking a short page for exhaustion. The
+          // continuation must describe bodies still missing in the published
+          // model, not the opening's captured cut: local pages that loaded
+          // while this restore was in flight already provided theirs, and
+          // re-advertising loaded history only risks a redundant lookup that
+          // can reconcile the retained range away.
           this.#model = latest;
-          const heldStart = this.#oldestPosition(current);
-          const heldBefore =
-            oldestReturned && heldStart && comparePosition(heldStart, oldestReturned) < 0 ? oldestReturned : undefined;
+          const missingFloor = oldestReturned ? this.#missingBodyFloor(latest, oldestReturned) : undefined;
           this.#localOlder =
-            heldBefore && heldStart
-              ? { before: heldBefore, floor: heldStart, sourceRevision: sourceRevisionAtOpen }
+            missingFloor && oldestReturned
+              ? { before: oldestReturned, floor: missingFloor, sourceRevision: sourceRevisionAtOpen }
               : undefined;
           this.#publish();
           const certifiedSnapshot = window.coverage.at(-1)?.representedSnapshot;
@@ -1516,7 +1589,7 @@ export class TranscriptRepository {
                 ? "stale"
                 : "recovery-needed";
           if (localBefore) this.#localReadContinuation = this.#coverageReadId;
-          const before = heldBefore ?? localBefore;
+          const before = (missingFloor ? oldestReturned : undefined) ?? localBefore;
           return {
             model: latest ?? current,
             status: retainedRangeComplete === false ? "recovery-needed" : status,

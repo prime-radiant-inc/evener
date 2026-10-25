@@ -1,8 +1,10 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Profiler } from "react";
+import { createPortal } from "react-dom";
 import { expect, test, vi } from "vitest";
 import { DirectoryIcon as FromBarrel } from "..";
+import { appendPopout } from "../internal/popoutTestUtils";
 import { DirectoryIcon, DirectoryPicker, type DirectoryPickerProps } from "./index";
 
 function setup(overrides: Partial<DirectoryPickerProps> = {}, onCommit: () => void = () => {}) {
@@ -364,4 +366,94 @@ test("initial validation after closing a focused picker starts no listing or sel
   await act(async () => resolveInitial());
   expect(complete).not.toHaveBeenCalled();
   expect(onPick).not.toHaveBeenCalled();
+});
+
+// --- popout realm (Dockview) ---------------------------------------------
+// A Dockview popout is a separate Window with its own Document. The picker's
+// panel is its only DOM output, so the picker resolves the document it was
+// mounted in and portals into THAT body, and its focus reads must ask that
+// document what has focus.
+function popoutProps(overrides: Partial<DirectoryPickerProps> = {}): DirectoryPickerProps {
+  return {
+    value: "/work",
+    onClose: vi.fn(),
+    onPick: vi.fn(),
+    complete: async (prefix) => (prefix === "/work/" ? ["/work/app"] : []),
+    listRecents: async () => [],
+    validatePath: async (path) => ({ valid: true, path }),
+    createDirectory: async () => {},
+    ...overrides,
+  };
+}
+
+test("a picker mounted in a popout portals its panel into the popout body and focuses there", () => {
+  const { frame, doc } = appendPopout();
+  const view = render(createPortal(<DirectoryPicker {...popoutProps()} />, doc.body));
+  try {
+    const dialog = doc.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(doc.body.contains(dialog)).toBe(true);
+    expect(document.body.contains(dialog)).toBe(false);
+    // FocusScope moved focus in, in the popout's own document.
+    expect(dialog?.contains(doc.activeElement)).toBe(true);
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
+test("navigating from a focused path input in a popout keeps focus in that input", async () => {
+  const { frame, doc } = appendPopout();
+  const view = render(createPortal(<DirectoryPicker {...popoutProps()} />, doc.body));
+  try {
+    const folder = await waitFor(() => {
+      const button = doc.querySelector<HTMLButtonElement>('button[aria-label="Open /work/app"]');
+      if (button === null) throw new Error("popout folder row missing");
+      return button;
+    });
+    const input = doc.querySelector<HTMLInputElement>('input[aria-label="Path"]');
+    if (input === null) throw new Error("popout path input missing");
+    input.focus();
+    expect(doc.activeElement).toBe(input);
+
+    fireEvent.click(folder);
+
+    // browse() keeps a focused path input focused: reading the opener's
+    // document would see the input unfocused and steal focus to Go.
+    await waitFor(() => expect(doc.activeElement).toBe(input));
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
+test("initial validation in a popout reads focus from that document and preserves the focused draft", async () => {
+  const { frame, doc } = appendPopout();
+  let resolveInitial: (result: { valid: boolean; path: string }) => void = () => {};
+  const initial = new Promise<{ valid: boolean; path: string }>((resolve) => {
+    resolveInitial = resolve;
+  });
+  const validatePath = vi
+    .fn(async (path: string) => ({ valid: true, path: `/canonical${path}` }))
+    .mockReturnValueOnce(initial);
+  const complete = vi.fn(async (prefix: string) => [`${prefix}child`]);
+  const view = render(
+    createPortal(<DirectoryPicker {...popoutProps({ value: "~", validatePath, complete })} />, doc.body),
+  );
+  try {
+    const input = doc.querySelector<HTMLInputElement>('input[aria-label="Path"]');
+    if (input === null) throw new Error("popout path input missing");
+    input.focus();
+    expect(doc.activeElement).toBe(input);
+
+    await act(async () => resolveInitial({ valid: true, path: "/home/test" }));
+    await waitFor(() => expect(complete).toHaveBeenCalledWith("/home/test/", false));
+    // A focused input keeps its unsubmitted draft; reading the opener's
+    // document would see no focus there and collapse it to the canonical path.
+    expect(input.value).toBe("~");
+    expect(doc.activeElement).toBe(input);
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
 });
