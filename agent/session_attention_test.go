@@ -3849,7 +3849,7 @@ func TestRootDelegateAttention_FailedEmptySnapshotMemoryOnlyCoverageKeepsWake(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{coveredID}) || len(fold.resolutions) != 0 || !(root.notificationSchedule.hinted || root.notificationSchedule.retry.active) {
+	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{coveredID}) || len(fold.resolutions) != 0 || (!root.notificationSchedule.hinted && !root.notificationSchedule.retry.active) {
 		t.Fatalf("memory-only coverage lost unobserved work: pending=%v resolutions=%v wake=%t", pending, fold.resolutions, root.notificationSchedule.hinted)
 	}
 	if !root.sessionWorkPending() {
@@ -4419,16 +4419,6 @@ func (fs *attentionSyncBarrierFS) Create(name string) (afero.File, error) {
 func (fs *attentionSyncBarrierFS) arm() {
 	fs.mu.Lock()
 	fs.armed = true
-	fs.mu.Unlock()
-}
-
-func (fs *attentionSyncBarrierFS) rearm() {
-	fs.mu.Lock()
-	fs.armed = true
-	fs.syncEntered = make(chan struct{})
-	fs.allowSync = make(chan struct{})
-	fs.enterOnce = sync.Once{}
-	fs.releaseOnce = sync.Once{}
 	fs.mu.Unlock()
 }
 

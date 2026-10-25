@@ -237,8 +237,8 @@ func TestFinalCorrectionNonpersistentSourceCustody(t *testing.T) {
 	newer.UpdateSeq = 2
 	newer.Frame = "new-pending-85"
 	for _, state := range []jobstore.WatchSendState{old, newer} {
-		copy := state
-		if err := jm.appendWatchSendEvents([]jobstore.Event{{Kind: jobstore.EventWatchSendPending, TS: jm.now(), WatchSend: &copy}}); err != nil {
+		cloned := state
+		if err := jm.appendWatchSendEvents([]jobstore.Event{{Kind: jobstore.EventWatchSendPending, TS: jm.now(), WatchSend: &cloned}}); err != nil {
 			t.Fatal(err)
 		}
 	}

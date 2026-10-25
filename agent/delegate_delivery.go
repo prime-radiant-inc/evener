@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"slices"
 	"sort"
@@ -612,8 +613,7 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 			return plans, err
 		}
 	}
-	switch receiver := receiver.(type) {
-	case *Session:
+	if receiver, ok := receiver.(*Session); ok {
 		if !receiver.isRootDelegateAttentionReceiver() {
 			plan.controller.recheckNotificationReceivers()
 		}
@@ -853,15 +853,6 @@ func (c *delegateTreeController) retryDeliveryPlanLocked(receipt *delegateDelive
 	}
 }
 
-func (c *delegateTreeController) admittedDeliveryToken(deliveryID string) delegateDeliveryToken {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if receipt := c.deliveryReceiptLocked(deliveryID); receipt != nil {
-		return receipt.token
-	}
-	return delegateDeliveryToken{}
-}
-
 func (c *delegateTreeController) deliveryReceiptIsInline(token delegateDeliveryToken) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -983,10 +974,14 @@ func (c *delegateTreeController) recheckNotificationReceivers() bool {
 	}
 	c.mu.Unlock()
 	if root != nil {
-		root.dispatchNotificationWake()
+		if err := root.dispatchNotificationWake(); err != nil {
+			slog.Warn("notification wake failed", "session_id", root.ID(), "error", err)
+		}
 	}
 	for _, id := range sessionIDs {
-		c.requestSessionWake(id)
+		if err := c.requestSessionWake(id); err != nil {
+			slog.Warn("notification wake failed", "session_id", id, "error", err)
+		}
 	}
 	return len(sessionIDs) != 0
 }

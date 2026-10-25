@@ -123,7 +123,7 @@ func incidentWatchFields(req llm.Request, watchID string) map[string]string {
 			}
 			fields := map[string]string{}
 			inEvent := false
-			for _, line := range strings.Split(frame, "\n") {
+			for line := range strings.SplitSeq(frame, "\n") {
 				if line == "event:" {
 					inEvent = true
 					continue
@@ -240,11 +240,11 @@ func incidentCopy[T any](t *testing.T, value T) T {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var copy T
-	if err := json.Unmarshal(raw, &copy); err != nil {
+	var cloned T
+	if err := json.Unmarshal(raw, &cloned); err != nil {
 		t.Fatal(err)
 	}
-	return copy
+	return cloned
 }
 
 // These are mutations of captured evidence, not runtime failures. The source
@@ -253,10 +253,10 @@ func incidentFalsifyOracles(t *testing.T, req llm.Request, entries []transcript.
 	t.Helper()
 	expected := map[string][]string{response: {id}}
 	t.Run("oracle rejects missing payload with setup retained", func(t *testing.T) {
-		copy := incidentCopy(t, req)
+		cloned := incidentCopy(t, req)
 		setupRetained, removed := false, false
-		for i := range copy.Messages {
-			msg := &copy.Messages[i]
+		for i := range cloned.Messages {
+			msg := &cloned.Messages[i]
 			if msg.Role != llm.RoleUser {
 				raw, err := json.Marshal(msg)
 				if err != nil {
@@ -276,7 +276,7 @@ func incidentFalsifyOracles(t *testing.T, req llm.Request, entries []transcript.
 		if !removed || !setupRetained {
 			t.Fatal("mutation did not preserve actual shell setup history")
 		}
-		if incidentJobPayload(copy, jobID, "stopped", "runtime_lost") == nil {
+		if incidentJobPayload(cloned, jobID, "stopped", "runtime_lost") == nil {
 			t.Fatal("missing payload survived strengthened oracle")
 		}
 		if err := incidentCoverageError(entries, expected); err != nil {
@@ -285,10 +285,10 @@ func incidentFalsifyOracles(t *testing.T, req llm.Request, entries []transcript.
 		t.Log("removed delivered shell payload, retained setup job ID and valid receipts, payload oracle rejected copy")
 	})
 	t.Run("oracle rejects discarded disposition", func(t *testing.T) {
-		copy := incidentCopy(t, entries)
+		cloned := incidentCopy(t, entries)
 		changed := 0
-		for i := range copy {
-			if r := copy[i].Turn.AttentionResolution; r != nil && r.AttentionID == id {
+		for i := range cloned {
+			if r := cloned[i].Turn.AttentionResolution; r != nil && r.AttentionID == id {
 				r.Disposition = "discarded"
 				changed++
 			}
@@ -296,16 +296,16 @@ func incidentFalsifyOracles(t *testing.T, req llm.Request, entries []transcript.
 		if changed != 1 {
 			t.Fatalf("changed resolutions=%d", changed)
 		}
-		if incidentCustodyError(copy, id) == nil {
+		if incidentCustodyError(cloned, id) == nil {
 			t.Fatal("discarded notification counted as consumed")
 		}
 		t.Log("changed consumed to discarded with acceptance and coverage retained, custody oracle rejected copy")
 	})
 	for _, mutation := range []string{"extra coverage ID", "coverage on wrong response"} {
 		t.Run("oracle rejects "+mutation, func(t *testing.T) {
-			copy := incidentCopy(t, entries)
+			cloned := incidentCopy(t, entries)
 			covered, earlier := -1, -1
-			for i, entry := range copy {
+			for i, entry := range cloned {
 				if earlier == -1 && entry.Turn.Kind == schema.TurnAssistant {
 					earlier = i
 				}
@@ -320,15 +320,15 @@ func incidentFalsifyOracles(t *testing.T, req llm.Request, entries []transcript.
 				t.Fatal("missing distinct actual response records")
 			}
 			if mutation == "extra coverage ID" {
-				copy[covered].Turn.ObservedNotificationIDs = append(copy[covered].Turn.ObservedNotificationIDs, "foreign-notification-11")
+				cloned[covered].Turn.ObservedNotificationIDs = append(cloned[covered].Turn.ObservedNotificationIDs, "foreign-notification-11")
 			} else {
-				copy[covered].Turn.ObservedNotificationIDs = nil
-				copy[earlier].Turn.ObservedNotificationIDs = []string{id}
+				cloned[covered].Turn.ObservedNotificationIDs = nil
+				cloned[earlier].Turn.ObservedNotificationIDs = []string{id}
 			}
-			if err := incidentCustodyError(copy, id); err != nil {
+			if err := incidentCustodyError(cloned, id); err != nil {
 				t.Fatal("acceptance and consumption changed", err)
 			}
-			if incidentCoverageError(copy, expected) == nil {
+			if incidentCoverageError(cloned, expected) == nil {
 				t.Fatal("corrupt response coverage survived exact oracle")
 			}
 			t.Logf("%s with acceptance and consumption retained, exact response oracle rejected copy", mutation)

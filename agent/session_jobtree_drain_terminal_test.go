@@ -260,8 +260,6 @@ func requireNeverConsumed(t *testing.T, jm *jobManager, jobID string) {
 	}
 }
 
-var notificationJobIDPattern = regexp.MustCompile(`job_id="([^"]+)"`)
-
 // lastMessageText returns the text of the request's final message: for a
 // notification turn, the injected reminder carrying the <job-notification>
 // blocks delivered by that turn.
@@ -277,7 +275,7 @@ func requireTerminalShellCompletionInRequest(t *testing.T, req llm.Request, jobI
 			if !strings.Contains(block, `job_id="`+jobID+`"`) || !strings.Contains(block, `job_type="shell"`) {
 				continue
 			}
-			header := strings.SplitN(block, ">", 2)[0]
+			header, _, _ := strings.Cut(block, ">")
 			for _, fact := range []string{`event="` + status + `"`, `job_type="shell"`, `status="` + status + `"`, `reason="` + reason + `"`, `exit_code="` + exitCode + `"`} {
 				if !strings.Contains(header, fact) {
 					t.Fatalf("completion %s lacks %s: %s", jobID, fact, block)
@@ -561,7 +559,7 @@ func TestDrainColdYieldedDelegateDoesNotArmUnownedGraceDeadline(t *testing.T) {
 			AcquireSessionOwnership: func(id string) error {
 				if id == child.ID() {
 					denied.Add(1)
-					return fmt.Errorf("fixture child ownership unavailable")
+					return errors.New("fixture child ownership unavailable")
 				}
 				return nil
 			},

@@ -35,14 +35,6 @@ func (c *delegateTreeController) recordInputAdmission(lease delegateLease, requi
 	return nil
 }
 
-// validateCompletion is a sender rule, not an outstanding-work inventory gate.
-// The lock also admits child starts, including reservations not yet committed.
-func (c *delegateTreeController) validateCompletion(actor delegateActor) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.validateCompletionLocked(actor)
-}
-
 func (c *delegateTreeController) validateCompletionLocked(actor delegateActor) error {
 	if actor.lease == nil {
 		return nil

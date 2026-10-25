@@ -3,15 +3,92 @@ package agent
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"os"
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/evener/agent/diagnostic"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
+
+func TestClientMutationExecutionAdmissionFailure(t *testing.T) {
+	t.Parallel()
+	for _, recoverFailure := range []bool{false, true} {
+		name := "simulated_crash"
+		if recoverFailure {
+			name = "failure_recovery"
+		}
+		t.Run(name, func(t *testing.T) {
+			s := newQueuePersistTestSession(t, t.TempDir())
+			t.Cleanup(s.Close)
+			const mutationID = "admission-fault-63"
+			accepted, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+				ClientMutationID: mutationID,
+				Input:            []appwire.InputItem{{Type: "text", Text: "admission-input-63"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recoverFailure {
+				if err := s.beginClientMutationFailure(mutationID, errors.New("failure-63")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Keep the attached writer healthy while the wait-resumption read
+			// fails. Admission must fail before any execution or input is written.
+			path := s.TranscriptPath()
+			backup := path + ".admission-test"
+			if err := os.Rename(path, backup); err != nil {
+				t.Fatal(err)
+			}
+			moved := true
+			t.Cleanup(func() {
+				if moved {
+					if err := os.Rename(backup, path); err != nil {
+						t.Errorf("restore admission transcript: %v", err)
+					}
+				}
+			})
+			if recoverFailure {
+				err = s.recoverClientMutationFailures(false)
+			} else {
+				_, err = s.SimulateCrashMidExecutionForTest()
+			}
+			if !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("execution admission error = %v, want missing wait transcript", err)
+			}
+			if got := s.attachedTranscript().RunningTurnID(); got != "" {
+				t.Fatalf("failed admission started execution %q", got)
+			}
+			if items := s.clientMutationTranscriptItems(mutationID, accepted.Turn.ID); items.User || items.Failure {
+				t.Fatalf("failed admission appended mutation items: %+v", items)
+			}
+			pending, ok := s.clientMutations.snapshot().PendingExecutions[mutationID]
+			if !ok || pending.TurnID != accepted.Turn.ID {
+				t.Fatalf("failed admission lost pending mutation: %+v, present:%v", pending, ok)
+			}
+			if err := os.Rename(backup, path); err != nil {
+				t.Fatal(err)
+			}
+			moved = false
+			if recoverFailure {
+				if err := s.recoverClientMutationFailures(false); err != nil {
+					t.Fatalf("retry failure recovery after admission repair: %v", err)
+				}
+				if items := s.clientMutationTranscriptItems(mutationID, accepted.Turn.ID); !items.User || !items.Failure {
+					t.Fatalf("recovered mutation items: %+v", items)
+				}
+			}
+		})
+	}
+}
 
 // A transport fault belongs to the addressed receiver, not every executor
 // sharing its controller. Removing paced retry must also fail this test.
@@ -22,11 +99,13 @@ func TestNotificationReplayFailureDoesNotAbortHealthyExecution(t *testing.T) {
 	adapter.script("root", func(llm.Request) llm.Response { return finalResponse("healthy-result-41") })
 	var unavailable atomic.Bool
 	unavailable.Store(true)
+	var injectedFailures atomic.Int64
 	var coldPath string
 	root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
 		cfg.clock = clock
 		cfg.testOnly.delegateAttentionOpenWriter = func(path, sessionID string) (*transcript.Writer, []transcript.Entry, error) {
 			if path == coldPath && unavailable.Load() {
+				injectedFailures.Add(1)
 				return nil, nil, errInjectedTranscriptWrite
 			}
 			return transcript.OpenWriterForSession(path, sessionID)
@@ -35,10 +114,17 @@ func TestNotificationReplayFailureDoesNotAbortHealthyExecution(t *testing.T) {
 	eventsDone := captureSessionEvents(root)
 	t.Cleanup(func() {
 		root.Close()
-		warnings := warningEvents(<-eventsDone)
-		if len(warnings) != 1 || warnings[0].Message != "replay delegate deliveries: injected transcript write failure" {
+		captured := <-eventsDone
+		warnings := warningEvents(captured)
+		if len(warnings) != 1 || warnings[0].Source != string(diagnostic.SourceEvener) || warnings[0].Code != "" || warnings[0].DelegateID != "" {
 			t.Errorf("warnings = %+v, want only the injected receiver replay transport failure", warnings)
 		}
+		for _, event := range captured {
+			if event.Kind == events.EventWarning && event.SessionID != root.ID() {
+				t.Errorf("warning session = %q, want %q", event.SessionID, root.ID())
+			}
+		}
+		t.Logf("asserted %d replay transport warning, session %s, excluding restoration category %s", len(warnings), root.ID(), events.WarningCodeDelegateAttentionRestore)
 	})
 	c := root.delegateController
 	ownerID := "dlg_unavailable_owner"
@@ -88,8 +174,12 @@ func TestNotificationReplayFailureDoesNotAbortHealthyExecution(t *testing.T) {
 	if len(pendingDeliveryIDs(c, source.DelegateID)) != 1 {
 		t.Fatal("failed receiver lost its source obligation")
 	}
+	failuresBeforeExecution := injectedFailures.Load()
 	if _, err := root.ProcessInput(context.Background(), "healthy-input-41", nil); err != nil {
 		t.Fatalf("unrelated receiver aborted healthy execution: %v", err)
+	}
+	if injectedFailures.Load() <= failuresBeforeExecution {
+		t.Fatal("healthy execution did not encounter the injected receiver transport failure")
 	}
 	if got := len(adapter.requestsFor("root")); got != 1 {
 		t.Fatalf("healthy provider requests = %d, want 1", got)

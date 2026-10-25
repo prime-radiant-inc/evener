@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"strconv"
 	"strings"
@@ -425,7 +426,7 @@ func applySubtreeStopCompleted(state State, event Event) error {
 		kept := aggregate.PendingDeliveries[:0]
 		for _, delivery := range aggregate.PendingDeliveries {
 			owner := state[delivery.OwnerDelegateID]
-			if covered[delivery.OwnerDelegateID] && !(owner.Resumable && owner.PendingStopPreservesNotifications) {
+			if covered[delivery.OwnerDelegateID] && (!owner.Resumable || !owner.PendingStopPreservesNotifications) {
 				continue
 			}
 			kept = append(kept, delivery)
@@ -915,9 +916,7 @@ func cloneAggregate(aggregate *Aggregate) *Aggregate {
 	clone := *aggregate
 	if aggregate.PublicationIDs != nil {
 		clone.PublicationIDs = make(map[string]string, len(aggregate.PublicationIDs))
-		for id, delivery := range aggregate.PublicationIDs {
-			clone.PublicationIDs[id] = delivery
-		}
+		maps.Copy(clone.PublicationIDs, aggregate.PublicationIDs)
 	}
 	clone.Descriptor = cloneDescriptor(aggregate.Descriptor)
 	clone.PreparedTerminal = cloneTerminalPacket(aggregate.PreparedTerminal)

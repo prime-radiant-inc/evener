@@ -153,7 +153,7 @@ func TestCanonicalDeliveryOwnerStopDoesNotRestoreProjectionClaims(t *testing.T) 
 	actor := delegateActor{rootSessionID: "root-session", lease: &ownerLease}
 	var commits []*delegateToolResultCommit
 	var first delegateDeliveryPlan
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		reservation, err := c.ReserveStart(actor, "dlg_target")
 		if err != nil {
 			t.Fatal(err)

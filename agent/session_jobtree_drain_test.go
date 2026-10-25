@@ -706,18 +706,6 @@ func requireNotificationState(t *testing.T, jm *jobManager, jobID string, want j
 	}
 }
 
-func countHistoryNeedle(s *Session, needle string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	n := 0
-	for _, turn := range s.history {
-		if strings.Contains(turn.Message.Text(), needle) {
-			n++
-		}
-	}
-	return n
-}
-
 // TestDrainSettlesChildDurableOnlyPending is the recursive (isolation-delegate)
 // form of kata h8mq: a live retained child whose OWN subtree carries a durable-
 // only pending (peek==0) must not wedge the root drain. treeHasOutstandingWork

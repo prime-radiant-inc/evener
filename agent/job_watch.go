@@ -2060,15 +2060,6 @@ func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
 	jm.kick()
 }
 
-// autoClearOverBudgetWatches runs autoClearWatchOverBudget for each cfg that
-// crossed the budget during a single observation pass. Call it AFTER releasing
-// the observation's jm.mu critical section, alongside enqueueWatchNotifications.
-func (jm *jobManager) autoClearOverBudgetWatches(cfgs []*watchConfig) {
-	for _, cfg := range cfgs {
-		jm.autoClearWatchOverBudget(cfg)
-	}
-}
-
 func (jm *jobManager) hasWatchClearState(key watchKey) bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()

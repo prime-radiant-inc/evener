@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1318,7 +1319,9 @@ func (s *Session) SetNotifyFunc(f func()) {
 	if s.hasRunnableUserSteering() || s.QueueDepth() > 0 {
 		f()
 	}
-	s.dispatchNotificationWake()
+	if err := s.dispatchNotificationWake(); err != nil {
+		slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
+	}
 	if s.isRootDelegateAttentionReceiver() && s.delegateController != nil {
 		s.delegateController.recheckNotificationReceivers()
 	}
@@ -1753,7 +1756,9 @@ func (s *Session) SetModel(model string) error {
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
 	s.maybeAutoSave()
-	s.requestNotificationWake()
+	if err := s.requestNotificationWake(); err != nil {
+		slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
+	}
 	return nil
 }
 

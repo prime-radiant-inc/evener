@@ -758,45 +758,6 @@ func controllerWithNestedDelegateDeliveries(t *testing.T) (*delegateTreeControll
 	return c, path, plans[0]
 }
 
-func nestedInlineDelegateDelivery(t *testing.T) (*delegateTreeController, delegateDeliveryPlan, *delegateInlineWaiter) {
-	t.Helper()
-	c, _ := newDelegateControllerTestHarness(t, 2, 1)
-	seedDelegateControllerIdle(t, c, "dlg_owner", "")
-	seedDelegateControllerIdle(t, c, "dlg_target", "dlg_owner")
-	ownerReservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_owner")
-	if err != nil {
-		t.Fatalf("ReserveStart owner: %v", err)
-	}
-	owner, err := c.CommitStart(ownerReservation)
-	if err != nil {
-		t.Fatalf("CommitStart owner: %v", err)
-	}
-	ownerRuntime := &Session{}
-	if err := c.AttachRuntime(owner.lease, ownerRuntime); err != nil {
-		t.Fatalf("AttachRuntime owner: %v", err)
-	}
-	if _, err := c.AdmitStartInput(owner.lease, func() error { return nil }); err != nil {
-		t.Fatalf("AdmitStartInput owner: %v", err)
-	}
-	reservation, err := c.ReserveStart(delegateActor{lease: &owner.lease}, "dlg_target")
-	if err != nil {
-		t.Fatalf("ReserveStart nested target: %v", err)
-	}
-	waiter, err := c.RegisterInlineWaiter(reservation)
-	if err != nil {
-		t.Fatalf("RegisterInlineWaiter nested target: %v", err)
-	}
-	started, err := c.CommitStart(reservation)
-	if err != nil {
-		t.Fatalf("CommitStart nested target: %v", err)
-	}
-	plans := finishDelegateDeliveryGeneration(t, c, started.lease, "nested inline")
-	if len(plans.deliveries) != 1 {
-		t.Fatalf("nested inline delivery plans = %#v", plans.deliveries)
-	}
-	return c, plans.deliveries[0], waiter
-}
-
 func restartDelegateDeliveryController(t *testing.T, c *delegateTreeController, path string) *delegateTreeController {
 	t.Helper()
 	if err := c.store.Close(); err != nil {

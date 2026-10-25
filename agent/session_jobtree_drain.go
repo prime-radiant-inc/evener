@@ -1463,21 +1463,6 @@ func takeDrainWake(wake <-chan struct{}) bool {
 	}
 }
 
-// waitDrainWake blocks until a completion wakes us, the periodic re-check
-// fires, or the caller's context is cancelled. It reports whether the wake
-// rail released the wait, so the caller can carry that consumed edge forward
-// (via wakePending) instead of letting it vanish inside the select.
-func waitDrainWake(ctx context.Context, wake <-chan struct{}, recheck <-chan time.Time) (bool, error) {
-	select {
-	case <-wake:
-		return true, nil
-	case <-recheck:
-		return false, nil
-	case <-ctx.Done():
-		return false, ctx.Err()
-	}
-}
-
 // kickDriveTree repairs producer custody throughout the live managed-job
 // subtree. Each destination schedules its own execution. This walk never chooses
 // a child model executor, and skips lifecycle-fenced subtrees.

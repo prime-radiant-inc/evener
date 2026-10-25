@@ -128,7 +128,6 @@ func TestNotificationReportProjection(t *testing.T) {
 			})
 			ctx := context.WithValue(t.Context(), delegateRunLeaseContextKey{}, lease)
 			args := map[string]any{"message": message, "end_turn": kind == "done" || kind == "blocked", "output": publicationOutput("result-9c2f")}
-			restore := func() {}
 			if kind == "readiness" {
 				args["readiness"] = "ready"
 			}
@@ -143,7 +142,7 @@ func TestNotificationReportProjection(t *testing.T) {
 				if err := os.WriteFile(path, []byte("invalid inventory journal\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				restore = func() {
+				restore := func() {
 					if os.IsNotExist(err) {
 						if err := os.Remove(path); err != nil {
 							t.Error(err)
@@ -159,7 +158,7 @@ func TestNotificationReportProjection(t *testing.T) {
 				if _, err := root.StopDelegateRun(lease.delegateID); err != nil {
 					t.Fatal(err)
 				}
-			} else if out := publicationExecute(child, ctx, publicationCall("projection-"+kind, args)); out.IsError {
+			} else if out := publicationExecute(ctx, child, publicationCall("projection-"+kind, args)); out.IsError {
 				t.Fatalf("communicate: %+v", out)
 			}
 			if terminal {
@@ -222,7 +221,7 @@ func TestNotificationReportProjection(t *testing.T) {
 					toolArgs["target"] = lease.delegateID
 				}
 				raw, _ := json.Marshal(toolArgs)
-				out := publicationExecute(root, t.Context(), llm.ToolCallData{ID: "projection-" + name, Name: name, Type: "function", Arguments: raw})
+				out := publicationExecute(t.Context(), root, llm.ToolCallData{ID: "projection-" + name, Name: name, Type: "function", Arguments: raw})
 				if out.IsError {
 					t.Fatalf("%s: %+v", name, out)
 				}
@@ -278,7 +277,7 @@ func TestNotificationReportProjection(t *testing.T) {
 					t.Fatalf("settled row=%+v", fixture.Activity)
 				}
 				raw, _ := json.Marshal(map[string]any{"to": lease.delegateID, "message": "resume-3a7c", "max_wait_ms": 0, "intent": "projection resume"})
-				if out := publicationExecute(root, t.Context(), llm.ToolCallData{ID: "projection-resume", Name: "delegate_send", Type: "function", Arguments: raw}); out.IsError {
+				if out := publicationExecute(t.Context(), root, llm.ToolCallData{ID: "projection-resume", Name: "delegate_send", Type: "function", Arguments: raw}); out.IsError {
 					t.Fatalf("resume: %+v", out)
 				}
 				awaitSignal(t, nextEntered, "new generation provider")
@@ -302,7 +301,24 @@ type notificationWireFixture struct {
 	Item         appwire.ThreadItem       `json:"item"`
 	Generation   uint64                   `json:"generation,omitempty"`
 	Activity     *appwire.SessionDelegate `json:"activity,omitempty"`
-	NextActivity *appwire.SessionDelegate `json:"nextActivity,omitempty"`
+	NextActivity *appwire.SessionDelegate `json:"-"`
+}
+
+// The shared client corpus uses nextActivity, unlike the snake-case appwire
+// fields. Append that fixture-only key last to preserve its existing bytes.
+func (f notificationWireFixture) MarshalJSON() ([]byte, error) {
+	type fixture notificationWireFixture
+	body, err := json.Marshal(fixture(f))
+	if err != nil || f.NextActivity == nil {
+		return body, err
+	}
+	next, err := json.Marshal(f.NextActivity)
+	if err != nil {
+		return nil, err
+	}
+	body = append(body[:len(body)-1], `,"nextActivity":`...)
+	body = append(body, next...)
+	return append(body, '}'), nil
 }
 
 func notificationWireDelegateFrame(t *testing.T, delegateID, name string, inputs delegateTerminalRunInputs) string {

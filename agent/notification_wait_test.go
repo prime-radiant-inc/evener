@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -213,7 +214,7 @@ func TestParentSteeringResumesYieldedWait(t *testing.T) {
 					StateDir: copyDir, ForceRealIO: true, clock: agenttest.NewFakeClock(),
 					AcquireSessionOwnership: func(id string) error {
 						if deny.Load() && id == owner.ID() {
-							return fmt.Errorf("fixture ownership unavailable")
+							return errors.New("fixture ownership unavailable")
 						}
 						return nil
 					},
@@ -1212,7 +1213,7 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 					StateDir: copyDir, ForceRealIO: true, clock: agenttest.NewFakeClock(),
 					AcquireSessionOwnership: func(id string) error {
 						if denyRestore.Load() && (id == owner.ID() || id == child.ID()) {
-							return fmt.Errorf("fixture ownership unavailable")
+							return errors.New("fixture ownership unavailable")
 						}
 						return nil
 					},
@@ -1279,7 +1280,7 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 			if test.failedRead {
 				c.mu.Lock()
 				c.attentionOpen = func(string, string) (*transcript.Writer, []transcript.Entry, error) {
-					return nil, nil, fmt.Errorf("cold wait proof unavailable")
+					return nil, nil, errors.New("cold wait proof unavailable")
 				}
 				c.mu.Unlock()
 				if outcome, err := restored.StopDelegateRun(owner.owningDelegateID); err == nil || outcome != "" {

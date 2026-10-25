@@ -239,7 +239,7 @@ func assertUpdateEmptyWakes(t *testing.T, owner *Session) {
 	}
 }
 
-func finishUpdateRoot(t *testing.T, ctx context.Context, root *Session, a *messagingAdapter, payloads ...string) {
+func finishUpdateRoot(ctx context.Context, t *testing.T, root *Session, a *messagingAdapter, payloads ...string) {
 	t.Helper()
 	a.finiteScript("root", updateReply(finalResponse("ROOT_SETTLED")))
 	if _, err := root.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
@@ -1208,7 +1208,7 @@ func singleCoordinatorUpdate(t *testing.T, mode string) {
 	if mode == "relay" {
 		rootPayloads = []string{"WAIT_INITIAL", "COORD_RELAY", "WAIT_OBSERVED", "COORD_FINAL"}
 	}
-	finishUpdateRoot(t, ctx, root, a, rootPayloads...)
+	finishUpdateRoot(ctx, t, root, a, rootPayloads...)
 }
 
 // A report wakes a coordinator in its ordinary drain without waiting for
@@ -1321,7 +1321,7 @@ func drainingCoordinatorWithObservedReport(t *testing.T, failedMarkerWrites int)
 	}
 	awaitRootReport(t, root)
 	assertUpdateCompleted(t, root, coord)
-	finishUpdateRoot(t, ctx, root, a, "WAIT_INITIAL", "WAIT_OBSERVED", "COORD_FINAL")
+	finishUpdateRoot(ctx, t, root, a, "WAIT_INITIAL", "WAIT_OBSERVED", "COORD_FINAL")
 }
 
 // B's update takes custody while the coordinator's A-update request is in
@@ -1420,7 +1420,7 @@ func TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten(t *
 	}
 	awaitRootReport(t, root)
 	assertUpdateCompleted(t, root, coord)
-	finishUpdateRoot(t, ctx, root, a, "WAIT_INITIAL", "WAIT_UPDATES", "WAIT_REPORT_A", "COORD_FINAL")
+	finishUpdateRoot(ctx, t, root, a, "WAIT_INITIAL", "WAIT_UPDATES", "WAIT_REPORT_A", "COORD_FINAL")
 }
 
 // A coordinator that is mid-run when its worker's update arrives sees it at

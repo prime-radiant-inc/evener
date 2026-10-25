@@ -623,7 +623,7 @@ func TestNotificationExecutionReleaseOnUnwind(t *testing.T) {
 				_, err = s.ProcessInputKind(ctx, "", nil, EntryNotification)
 			}()
 			if cause == "panic" {
-				if recovered != failure {
+				if recoveredErr, ok := recovered.(error); !ok || !errors.Is(recoveredErr, failure) {
 					t.Fatalf("recovered=%v, want controlled panic", recovered)
 				}
 			} else if !errors.Is(err, failure) || recovered != nil {

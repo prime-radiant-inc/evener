@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -530,9 +532,10 @@ func notificationInlineFallback(t *testing.T, mode string) {
 	s = notificationSession(t, a, execenv.NewLocalExecutionEnvironment(t.TempDir()), firstDone)
 	settled := make(chan struct{})
 	s.cfg.testOnly.subagentBeforeGenerationReleased = func(_ *subagent, lease delegateLease) {
-		if lease.generation == 1 {
+		switch lease.generation {
+		case 1:
 			close(firstDone)
-		} else if lease.generation == 2 {
+		case 2:
 			close(settled)
 		}
 	}
@@ -550,11 +553,12 @@ func notificationInlineFallback(t *testing.T, mode string) {
 	}
 	s.cfg.testOnly.delegateInlineWaitReady = func(ctx context.Context, _ time.Duration) {
 		close(waitEntered)
-		if mode == "timeout before result" {
+		switch mode {
+		case "timeout before result":
 			<-ctx.Done()
-		} else if mode == "canceled waiter" {
+		case "canceled waiter":
 			cancelRoot()
-		} else {
+		default:
 			release()
 		}
 	}
@@ -659,7 +663,7 @@ func TestNotificationInlineDeliveryContentOwnership(t *testing.T) {
 			}
 			afterLive, _ := json.Marshal(live)
 			afterPersisted, _ := json.Marshal(persisted)
-			if string(afterLive) != string(beforeLive) || string(afterPersisted) != string(beforePersisted) {
+			if !bytes.Equal(afterLive, beforeLive) || !bytes.Equal(afterPersisted, beforePersisted) {
 				t.Fatal("normalization mutated caller-owned content or result objects")
 			}
 			stored := notificationRawEntries(t, s.TranscriptPath())
@@ -738,9 +742,10 @@ func notificationSameBatchSubscribers(t *testing.T, mode string) {
 	s := notificationSession(t, a, execenv.NewLocalExecutionEnvironment(t.TempDir()), delivered)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if mode == "canceled" {
+	switch mode {
+	case "canceled":
 		s.cfg.testOnly.delegateDeliveryCommitsTaken = cancel
-	} else if mode == "write_failure" {
+	case "write_failure":
 		if err := s.closeAttachedTranscript(); err != nil {
 			t.Fatal(err)
 		}
@@ -829,7 +834,7 @@ func notificationHistoricalCarrier(t *testing.T, withState bool) {
 	client := llm.NewClient()
 	client.Register(a)
 	meta := schema.SessionMeta{ID: sessionID, ProfileID: "openai", Model: "gpt-5.4"}
-	for reopen := 0; reopen < 2; reopen++ {
+	for reopen := range 2 {
 		s, err := RestoreSessionFromMeta(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, stateDir)
 		if err != nil {
 			t.Fatalf("reopen %d: %v", reopen, err)
@@ -921,7 +926,7 @@ func TestNotificationInlineDeliveryTruncatedCarrier(t *testing.T) {
 				}
 				message := fmt.Sprintf("shaped-payload-774b-%d", childCalls)
 				if mode == "registry clipping" && childCalls != 2 {
-					message += strings.Repeat(fmt.Sprint(childCalls), 40000)
+					message += strings.Repeat(strconv.Itoa(childCalls), 40000)
 				}
 				return toolCallResponse(communicateCall(fmt.Sprint("report", childCalls), message)), nil
 			}

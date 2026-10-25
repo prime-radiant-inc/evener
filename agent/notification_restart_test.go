@@ -420,7 +420,8 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 			t.Fatalf("source completion=%+v", source)
 		}
 		id := "shell:" + jobID + ":" + source[0].TerminalGen
-		if cut == "after request snapshot before response" || cut == "after resume claim before checkpoint" {
+		switch cut {
+		case "after request snapshot before response", "after resume claim before checkpoint":
 			entered, gate := make(chan llm.Request, 1), make(chan struct{})
 			unblock := sync.OnceFunc(func() { close(gate) })
 			defer unblock()
@@ -455,7 +456,7 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 			if err := <-done; err != nil {
 				t.Fatal(err)
 			}
-		} else if cut == "after response sync before receipt index" || cut == "after completed resume" {
+		case "after response sync before receipt index", "after completed resume":
 			a.script("root", func(req llm.Request) llm.Response { attempt = req; return finalResponse("response-synced-11") })
 			if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 				t.Fatal(err)
@@ -469,7 +470,7 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 					return turn.AttentionResolution != nil && turn.AttentionResolution.AttentionID == id
 				})
 			}
-		} else {
+		default:
 			copied = copyWaitingState(t, root.stateDir)
 			if cut == "before receiver append" {
 				truncateRestartTranscript(t, transcriptPath(copied, root.ID()), func(turn schema.Turn) bool { return turn.AttentionID == id })

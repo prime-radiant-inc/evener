@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -1200,7 +1201,9 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		if hook := s.cfg.testOnly.notificationExecutionRelease; hook != nil {
 			hook(true)
 		}
-		s.dispatchNotificationWake()
+		if err := s.dispatchNotificationWake(); err != nil {
+			slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
+		}
 	}()
 
 	// A test-only seam: fail the turn before its user entry is recorded, the

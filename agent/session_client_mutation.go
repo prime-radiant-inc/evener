@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"strconv"
@@ -375,7 +376,9 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 	// callback, so it releases no QueueHeld, and a Stop that landed after the
 	// original must keep the rail parked.
 	if lookup.Disposition != clientMutationDispositionReplayed {
-		s.requestNotificationWake()
+		if err := s.requestNotificationWake(); err != nil {
+			slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
+		}
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		if err := replayClientMutationResult(lookup.Record, &response); err != nil {
@@ -696,7 +699,9 @@ func (s *Session) SimulateCrashMidExecutionForTest() (turnID string, err error) 
 	if !ok {
 		return "", errors.New("no client-mutation start is pending to claim")
 	}
-	s.beginExecution(claimed.StableTurnID)
+	if err := s.beginExecution(claimed.StableTurnID); err != nil {
+		return "", err
+	}
 	if err := s.acceptUserInput(withQueuedClientMutation(context.Background(), claimed), claimed.Text, claimed.Images, nil, true); err != nil {
 		return "", err
 	}

@@ -14,37 +14,6 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// waitForTreeCount polls the tree counter until it reaches want or the deadline
-// elapses. Reservations and releases happen on spawn/resume/drive/finalize
-// goroutines, so the count is observed asynchronously. The 5 s deadline is
-// generous enough to accommodate -race on slow/few-core boxes without being so
-// long that a genuine hang goes undetected.
-func waitForTreeCount(t *testing.T, c *treeCounter, want int64) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if got := c.n.Load(); got == want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("tree counter = %d, want %d (timed out)", c.n.Load(), want)
-}
-
-// waitForDriveCount mirrors waitForTreeCount for the drive-down budget
-// counter.
-func waitForDriveCount(t *testing.T, c *treeCounter, want int64) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if got := c.n.Load(); got == want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("drive counter = %d, want %d (timed out)", c.n.Load(), want)
-}
-
 // TestTreeCounterReserveRelease verifies the atomic check-and-reserve logic:
 // 16 reservations succeed at cap 16, the 17th fails, releasing one allows
 // another to succeed.

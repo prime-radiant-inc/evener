@@ -534,7 +534,7 @@ func wrcExerciseClearHelpers(t *testing.T, r *wrcReader) {
 	}
 
 	// The budget cleaner must detach exactly one live config, issue its final
-	// message once, and become a no-op after that config is gone.
+	// message once, retain its source debt, and become a no-op after detaching.
 	budgetKey := watchKey{VisibleSessionID: jm.sessionID, Target: "job_budget", SendTo: "dlg_budget"}
 	budgetCfg := wrcConfig("watch-budget", "self", budgetKey.Target, budgetKey.SendTo, "", "")
 	var notifications []jobNotification
@@ -542,10 +542,30 @@ func wrcExerciseClearHelpers(t *testing.T, r *wrcReader) {
 	wrcInstall(jm, budgetKey, budgetCfg)
 	jm.autoClearWatchOverBudget(budgetCfg)
 	jm.autoClearWatchOverBudget(budgetCfg)
-	if jm.hasWatchClearState(budgetKey) || len(notifications) != 1 || !strings.Contains(notifications[0].Reason, "watch cleared") {
-		t.Fatalf("budget auto-clear state=%t notifications=%+v", jm.hasWatchClearState(budgetKey), notifications)
+	jm.mu.Lock()
+	budgetLive := jm.watches[budgetKey] != nil
+	jm.mu.Unlock()
+	if budgetLive || !jm.hasWatchClearState(budgetKey) || len(notifications) != 1 {
+		t.Fatalf("budget auto-clear live=%t clearable=%t notifications=%+v", budgetLive, jm.hasWatchClearState(budgetKey), notifications)
 	}
-	jm.autoClearOverBudgetWatches([]*watchConfig{nil, budgetCfg})
+	if n := notifications[0]; n.Kind != jobNotificationKindWatch || n.OriginWatchID != budgetCfg.watchID || n.callbackConfig != budgetCfg {
+		t.Fatalf("budget auto-clear callback identity = %+v", n)
+	}
+	budgetPending, err := jm.store.LoadWatchSends()
+	if err != nil {
+		t.Fatalf("load budget callback source debt: %v", err)
+	}
+	if len(budgetPending.Pending) != 1 {
+		t.Fatalf("budget auto-clear retained source debt = %+v", budgetPending)
+	}
+	for _, state := range budgetPending.Pending {
+		if state.Key.WatchID != budgetCfg.watchID || !state.CallbackFrame {
+			t.Fatalf("budget callback source identity = %+v", state)
+		}
+	}
+	for _, cfg := range []*watchConfig{nil, budgetCfg} {
+		jm.autoClearWatchOverBudget(cfg)
+	}
 	failingBudgetKey := watchKey{VisibleSessionID: jm.sessionID, Target: "job_budget_failed", SendTo: "dlg_budget_failed"}
 	failingBudget := wrcConfig("watch-budget-failed", "self", failingBudgetKey.Target, failingBudgetKey.SendTo, "", "")
 	wrcInstall(jm, failingBudgetKey, failingBudget)

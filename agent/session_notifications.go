@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"log/slog"
 	"slices"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -86,6 +87,9 @@ func (s *Session) requestNotificationWake() error {
 	return s.dispatchNotificationWake()
 }
 
+// dispatchNotificationWake retains pending custody and schedules paced recovery
+// before returning a transport error. Best-effort callers log that failure,
+// rather than rejecting an already committed mutation or owning another retry.
 func (s *Session) dispatchNotificationWake() error {
 	s.mu.Lock()
 	releaseTurnID := s.notificationSchedule.releaseTurnID
@@ -183,7 +187,9 @@ func (s *Session) scheduleNotificationRetry() {
 				observe()
 			}
 		}
-		s.dispatchNotificationWake()
+		if err := s.dispatchNotificationWake(); err != nil {
+			slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
+		}
 	})
 }
 
@@ -384,7 +390,9 @@ func (c *delegateTreeController) enqueueNotification(ownerSessionID string, n no
 	if err != nil {
 		return err
 	}
-	c.requestSessionWake(ownerSessionID)
+	if err := c.requestSessionWake(ownerSessionID); err != nil {
+		slog.Warn("notification wake failed", "session_id", ownerSessionID, "error", err)
+	}
 	return nil
 }
 
@@ -464,7 +472,7 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		err := root.escalateOneUnreachableDelegateAttention(plan, readExistingDelegateAttentionFold)
 		if err != nil {
 			root.warnDelegateAttentionFailed(delegateAttentionEscalateLabel, id, err)
-			if !(paused && parkedEscalationStandsDown(err)) {
+			if !paused || !parkedEscalationStandsDown(err) {
 				c.scheduleSessionWakeRetry(sessionID)
 			}
 		} else {
@@ -540,7 +548,9 @@ func (c *delegateTreeController) scheduleSessionWakeRetry(sessionID string) {
 		}
 		c.mu.Unlock()
 		if current {
-			c.requestSessionWake(sessionID)
+			if err := c.requestSessionWake(sessionID); err != nil {
+				slog.Warn("notification wake failed", "session_id", sessionID, "error", err)
+			}
 		}
 	})
 }
@@ -645,7 +655,7 @@ func (c *delegateTreeController) notificationCustodyAndClosure(ownerSessionID, n
 	if err != nil {
 		return false, false, err
 	}
-	if err = writer.EstablishDurability(); err != nil {
+	if err := writer.EstablishDurability(); err != nil {
 		return false, false, err
 	}
 	_, accepted = fold.content[notificationID]

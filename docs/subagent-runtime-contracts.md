@@ -68,9 +68,12 @@ flowchart LR
 
 Custody settles source transport, not model observation. Question, approval and
 explicit Stop holds remain execution gates. Registration, hold/capacity release
-and executor release recheck durable work, including a lost wake edge. Permanent
-provider failures defer that receiver, not healthy siblings. Exhausted fast
-`ActiveTurnID` release retries retain the exact release obligation in common
+and executor release recheck durable work, including a lost wake edge. A failed
+transport retains source-owned debt and paced retry, so repaired storage resumes
+delivery without another input. Healthy receivers remain usable while another
+receiver's transport fails. Permanent provider failures defer that receiver,
+not healthy siblings. Exhausted fast `ActiveTurnID` release retries retain the
+exact release obligation in common
 paced recovery, so repaired storage can resume admission without user input or
 a daemon restart. These callbacks do not reopen a Stop or bypass an executor.
 
@@ -139,9 +142,10 @@ readers retain them without adding numbered public turns or execution spans.
 The latest nonduplicate checkpoint is evidence, not execution authority.
 
 Before generic `runtime_lost`, cold recovery checks the session, descriptor,
-delegate and journal generation, the same accepted `communicate` call, all tool
-results, a checkpoint sealing the completed batch and absence of later contradicting
-execution, question or approval state. Stop and existing writer, restore,
+delegate and journal generation, the same accepted configured result-tool call
+(`communicate` by default), all tool results, a checkpoint sealing the completed
+batch and absence of later contradicting execution, question or approval state.
+Stop and existing writer, restore,
 reservation and finalization fences still own admission. The existing owned
 writer's `EstablishDurability` barrier must succeed, readable bytes alone do not
 prove a safe yield. Read/durability errors leave retryable uncertainty without

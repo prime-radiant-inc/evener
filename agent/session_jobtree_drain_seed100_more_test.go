@@ -29,25 +29,32 @@ func seed100JobtreeDrainMore(t *testing.T) {
 		t.Fatal("drain wake was not queued")
 	}
 	notify()
-	if woke, err := waitDrainWake(context.Background(), wake, make(chan time.Time)); err != nil || !woke {
-		t.Fatalf("queued wake: woke=%v err=%v", woke, err)
+	if !takeDrainWake(wake) {
+		t.Fatal("queued wake was not consumed")
 	}
-	recheck := make(chan time.Time, 1)
-	recheck <- frozenTestTime
-	if woke, err := waitDrainWake(context.Background(), make(chan struct{}), recheck); err != nil || woke {
-		t.Fatalf("queued recheck: woke=%v err=%v", woke, err)
-	}
-	waitCtx, waitCancel := context.WithCancel(context.Background())
-	waitCancel()
-	if woke, err := waitDrainWake(waitCtx, make(chan struct{}), make(chan time.Time)); !errors.Is(err, context.Canceled) || woke {
-		t.Fatalf("cancelled wake = woke=%v err=%v", woke, err)
+	if takeDrainWake(wake) || takeDrainWake(nil) {
+		t.Fatal("empty wake channel reported work")
 	}
 
 	root := newSession(t)
 	child := newSession(t)
+	sub := &subagent{id: child.ID(), sess: child, finalizing: true}
 	root.subagents.mu.Lock()
-	root.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child}
+	root.subagents.subs[child.ID()] = sub
 	root.subagents.mu.Unlock()
+	waitCtx, waitCancel := context.WithCancel(context.Background())
+	waitCancel()
+	if result, err := root.drainJobTreeWith(waitCtx, make(chan struct{}), make(chan time.Time), func(context.Context) error {
+		return nil
+	}, func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+		t.Fatal("cancelled drain processed without notification work")
+		return "", nil
+	}); result != "" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled drain = %q, %v", result, err)
+	}
+	sub.mu.Lock()
+	sub.finalizing = false
+	sub.mu.Unlock()
 	if err := child.jobManager.store.Close(); err != nil {
 		t.Fatal(err)
 	}

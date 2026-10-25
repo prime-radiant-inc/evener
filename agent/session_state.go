@@ -196,21 +196,6 @@ func (s *Session) pendingOwnDelegateAttentionIDs() []string {
 	return ids
 }
 
-// presentedDelegateAttentionIDs lists the notifications the turn that just ran
-// showed the model: the ones its settled requests credited (attentionCoveredIDs).
-// A notification that arrived after the turn's last request is not among them.
-// Coverage alone answers, with no transcript read to fail, so notifications
-// already marked consumed may be listed too.
-func (s *Session) presentedDelegateAttentionIDs() []string {
-	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
-	var ids []string
-	for id := range s.attentionCoveredIDs {
-		ids = append(ids, id)
-	}
-	return ids
-}
-
 // hasPendingOwnDelegateAttention reports whether a delegate session has any
 // unconsumed notification.
 func (s *Session) hasPendingOwnDelegateAttention() bool {

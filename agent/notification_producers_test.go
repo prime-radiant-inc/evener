@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1058,11 +1059,12 @@ func TestColdCustodyQueryCloseOwnsAdmission(t *testing.T) {
 
 func TestRestoredWatchDispatchVisitsUnavailableRecipientsOnce(t *testing.T) {
 	for _, count := range []int{1, 4, 8} {
-		t.Run(fmt.Sprint(count), func(t *testing.T) {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
 			s, _ := notificationReceiverForTest(t, nil)
 			c := s.delegateController
 			queries, syncs := 0, 0
-			queryFS := producerQueryFaultFS{Fs: afero.NewOsFs(), syncErr: errors.New("controlled unavailable cold recipient Sync"), syncCount: &syncs}
+			unavailable := errors.New("controlled unavailable cold recipient Sync")
+			queryFS := producerQueryFaultFS{Fs: afero.NewOsFs(), syncErr: unavailable, syncCount: &syncs}
 			c.attentionOpen = func(path, id string) (*transcript.Writer, []transcript.Entry, error) {
 				queries++
 				return transcript.OpenWriterForSessionWithFS(queryFS, path, id)
@@ -1092,8 +1094,8 @@ func TestRestoredWatchDispatchVisitsUnavailableRecipientsOnce(t *testing.T) {
 			t.Cleanup(func() { restored.close() })
 			s.jobManager, restored.retirementOwner, restored.delegateController = restored, s, c
 			queries, syncs = 0, 0
-			if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
-				t.Fatal(err)
+			if err := s.retryRestoredPendingWatchSends(context.Background()); !errors.Is(err, unavailable) {
+				t.Fatalf("restored retry error = %v, want recipient durability failure", err)
 			}
 			if queries != count || syncs != count {
 				t.Errorf("retained=%d delivery/query attempts=%d Sync attempts=%d, want %d each", count, queries, syncs, count)
@@ -1103,8 +1105,8 @@ func TestRestoredWatchDispatchVisitsUnavailableRecipientsOnce(t *testing.T) {
 			if err := s.retryRestoredPendingWatchSendsFrom(func() (jobstore.WatchSendRecord, error) {
 				sourceFolds++
 				return restored.store.LoadWatchSends()
-			}); err != nil {
-				t.Fatal(err)
+			}); !errors.Is(err, unavailable) {
+				t.Fatalf("single-fold retry error = %v, want recipient durability failure", err)
 			}
 			if sourceFolds != 1 || queries != count || syncs != count {
 				t.Fatalf("retained=%d source folds=%d delivery/query attempts=%d Sync attempts=%d, want 1/%d/%d", count, sourceFolds, queries, syncs, count, count)
@@ -1112,6 +1114,9 @@ func TestRestoredWatchDispatchVisitsUnavailableRecipientsOnce(t *testing.T) {
 			t.Logf("retained=%d source folds=%d delivery/query attempts=%d failed Sync attempts=%d", count, sourceFolds, queries, syncs)
 			if got := len(producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)); got != 0 {
 				t.Fatalf("unavailable recipients acknowledged %d frames", got)
+			}
+			if got := len(restored.pendingWatchSendDeliveries(nil)); got != count {
+				t.Fatalf("unavailable recipients retained %d source frames, want %d", got, count)
 			}
 		})
 	}
@@ -1305,13 +1310,14 @@ func TestRestartSystemNoticeRetainsSourceIdentity(t *testing.T) {
 			if len(producerSourceEvents(t, jm, jobstore.EventWatchCleared)) != 1 {
 				t.Fatal("actual restart did not retain its runtime-lost source event")
 			}
-			if boundary == "before source pending" {
+			switch boundary {
+			case "before source pending":
 				if err := jm.store.Close(); err != nil {
 					t.Fatal(err)
 				}
-			} else if boundary == "before custody" {
+			case "before custody":
 				fs.writeErr = errors.New("controlled notice write failure")
-			} else {
+			default:
 				fs.afterSync = func() {
 					if err := os.Rename(path, path+".held"); err != nil {
 						t.Fatal(err)

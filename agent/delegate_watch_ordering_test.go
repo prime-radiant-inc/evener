@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -155,7 +156,7 @@ func proveStableWatchRegistrationClear(t *testing.T) {
 	}
 
 	fs.blocked.Store(false)
-	for i := 0; i < 2; i++ { // A second real drain must be idempotent.
+	for range 2 { // A second real drain must be idempotent.
 		if _, err := source.drainJobManagerWatchSends(ctx, jm); err != nil {
 			t.Fatal(err)
 		}
@@ -248,7 +249,7 @@ func requireTerminalWatchFrame(t *testing.T, frame, watchID, deliveryID, payload
 	// This fixture's opaque payload is one line, so read exact machine fields.
 	fields := map[string]string{}
 	inEvent := false
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if line == "event:" {
 			inEvent = true
 			continue
@@ -286,7 +287,7 @@ func watchProductionBeforeClearError(events []jobstore.Event, state jobstore.Wat
 		if event.Kind == jobstore.EventWatchSendPending && event.WatchSend != nil && event.WatchSend.Key.WatchID == state.Key.WatchID && event.WatchSend.Key.WatchGeneration == state.Key.WatchGeneration {
 			got := *event.WatchSend
 			if got.Key != state.Key || got.DeliveryID != state.DeliveryID || got.UpdateSeq != state.UpdateSeq || got.Frame != state.Frame || got.EndNotice != state.EndNotice || got.StableReceiver != state.StableReceiver || got.ReceiverSessionID != state.ReceiverSessionID || got.ReceiverDelegateID != state.ReceiverDelegateID || got.SourceDelegateID != state.SourceDelegateID || got.SourceDelegateGeneration != state.SourceDelegateGeneration {
-				return fmt.Errorf("terminal pending identity or payload changed")
+				return errors.New("terminal pending identity or payload changed")
 			}
 			if firstPending < 0 {
 				firstPending = i
@@ -354,74 +355,75 @@ func watchPreservationNegativeControls(t *testing.T, source []jobstore.Event, ga
 	t.Helper()
 	for _, mutation := range []string{"missing production", "missing clear", "reversed production and clear"} {
 		t.Run("oracle rejects "+mutation, func(t *testing.T) {
-			copy := incidentCopy(t, source)
+			cloned := incidentCopy(t, source)
 			pendingAt, clearAt, changed := -1, -1, 0
-			for i, event := range copy {
+			for i, event := range cloned {
 				if exactWatchSendEvent(event, jobstore.EventWatchSendPending, state) {
 					if pendingAt < 0 {
 						pendingAt = i
 					}
 					if mutation == "missing production" {
-						copy[i] = jobstore.Event{}
+						cloned[i] = jobstore.Event{}
 						changed++
 					}
 				}
 				if event.Kind == jobstore.EventWatchCleared && event.WatchID == state.Key.WatchID && event.Watch != nil && event.Watch.Generation == state.Key.WatchGeneration {
 					clearAt = i
 					if mutation == "missing clear" {
-						copy[i] = jobstore.Event{}
+						cloned[i] = jobstore.Event{}
 						changed++
 					}
 				}
 			}
 			if mutation == "reversed production and clear" && pendingAt >= 0 && clearAt > pendingAt {
-				copy[pendingAt], copy[clearAt] = copy[clearAt], copy[pendingAt]
+				cloned[pendingAt], cloned[clearAt] = cloned[clearAt], cloned[pendingAt]
 				changed++
 			}
-			if changed == 0 || watchProductionBeforeClearError(copy, state) == nil {
+			if changed == 0 || watchProductionBeforeClearError(cloned, state) == nil {
 				t.Fatal("corrupt source order survived physical-record oracle")
 			}
 		})
 	}
 	for _, mutation := range []string{"missing acceptance", "duplicate acceptance", "incomplete response coverage", "extra response coverage", "coverage on wrong response"} {
 		t.Run("oracle rejects "+mutation, func(t *testing.T) {
-			copy := incidentCopy(t, finished)
+			cloned := incidentCopy(t, finished)
 			changed := 0
-			for i, entry := range copy {
+			for i, entry := range cloned {
 				if entry.Turn.AttentionID == ids[0] {
-					if mutation == "missing acceptance" {
-						copy[i] = transcript.Entry{}
+					switch mutation {
+					case "missing acceptance":
+						cloned[i] = transcript.Entry{}
 						changed++
-					} else if mutation == "duplicate acceptance" {
-						copy = append(copy, entry)
+					case "duplicate acceptance":
+						cloned = append(cloned, entry)
 						changed++
 					}
 				}
 				if entry.Turn.ResponseID == responseID {
 					switch mutation {
 					case "incomplete response coverage":
-						copy[i].Turn.ObservedNotificationIDs = slices.Clone(ids[1:])
+						cloned[i].Turn.ObservedNotificationIDs = slices.Clone(ids[1:])
 						changed++
 					case "extra response coverage":
-						copy[i].Turn.ObservedNotificationIDs = append(slices.Clone(ids), "foreign-notification-97")
+						cloned[i].Turn.ObservedNotificationIDs = append(slices.Clone(ids), "foreign-notification-97")
 						changed++
 					case "coverage on wrong response":
-						copy[i].Turn.ResponseID = "foreign-response-97"
+						cloned[i].Turn.ResponseID = "foreign-response-97"
 						changed++
 					}
 				}
 			}
-			custodyErr := incidentCustodyError(copy, ids[0])
-			coverageErr := watchResponseCoverageError(copy, responseID, ids)
+			custodyErr := incidentCustodyError(cloned, ids[0])
+			coverageErr := watchResponseCoverageError(cloned, responseID, ids)
 			if changed != 1 || (custodyErr == nil && coverageErr == nil) {
 				t.Fatal("corrupt receiver evidence survived physical-record oracle")
 			}
 		})
 	}
 	t.Run("oracle rejects early observation", func(t *testing.T) {
-		copy := incidentCopy(t, gated)
-		copy = append(copy, transcript.Entry{Turn: schema.Turn{Kind: schema.TurnAssistant, ResponseID: "early-response-97", ObservedNotificationIDs: slices.Clone(ids)}})
-		if watchUnobservedError(copy, ids, 1) == nil {
+		cloned := incidentCopy(t, gated)
+		cloned = append(cloned, transcript.Entry{Turn: schema.Turn{Kind: schema.TurnAssistant, ResponseID: "early-response-97", ObservedNotificationIDs: slices.Clone(ids)}})
+		if watchUnobservedError(cloned, ids, 1) == nil {
 			t.Fatal("early observed IDs survived held-response oracle")
 		}
 	})

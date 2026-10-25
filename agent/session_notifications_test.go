@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sync"
 	"syscall"
 	"testing"
@@ -184,10 +185,10 @@ func TestNotificationSourceAckFailureRetainsReceiverWake(t *testing.T) {
 	}
 	wakes := 0
 	root.SetNotifyFunc(func() { wakes++ })
-	// Registration repairs the hint for the already-pending source outbox.
+	// Source debt is transport-only: root readiness begins at receiver custody.
 	baseline := wakes
-	if baseline != 1 {
-		t.Fatalf("registration wakes for pending source delivery = %d, want 1", baseline)
+	if baseline != 0 {
+		t.Fatalf("registration woke before receiver custody: %d", baseline)
 	}
 	if _, err := deliverDelegatePacket(plans[0], root); err == nil {
 		t.Fatal("closed source journal accepted acknowledgment")
@@ -765,7 +766,7 @@ func TestNotificationAcceptance(t *testing.T) {
 			seedDelegateControllerDelivery(t, c, "dlg_good")
 			good := c.ReplayDeliveries()
 			fs.writeErr = syscall.ENOSPC
-			pending := append(bad.deliveries, good...)
+			pending := append(slices.Clone(bad.deliveries), good...)
 			if route == "pump" {
 				for _, plan := range pending {
 					if _, failure := deliverDelegatePacket(plan, nil); !errors.Is(failure, errDelegateDeliveryReceiverUnavailable) {

@@ -36,6 +36,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -568,9 +569,7 @@ func (c *delegateTreeController) reduceGenerationFinishIntent(intent finishInten
 			if finish.packet != nil {
 				actual := map[string]json.RawMessage{}
 				_ = json.Unmarshal(finish.packet.Metadata, &actual)
-				for key, value := range actual {
-					fields[key] = value
-				}
+				maps.Copy(fields, actual)
 			}
 			fields["outcome"], _ = json.Marshal(outcome)
 			fields["reason"], _ = json.Marshal(reason)

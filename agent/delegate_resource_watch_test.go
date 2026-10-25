@@ -1232,7 +1232,7 @@ func TestStableDelegateWatch_RestartCancellationEmitsEndNotice(t *testing.T) {
 	var state jobstore.WatchSendState
 	var firstEvents []jobstore.Event
 	var firstEntries []transcript.Entry
-	for pass := 0; pass < 2; pass++ {
+	for pass := range 2 {
 		if err := fixture.sourceJM.noticeUnrestoredWatchEnds(); err != nil {
 			t.Fatal(err)
 		}
@@ -1268,7 +1268,7 @@ func TestStableDelegateWatch_RestartOmitsEndNoticeAfterTerminalFrame(t *testing.
 	originalEntries := readAttentionTranscriptEntries(t, fixture.rootTranscriptPath)
 	originalPendingCount := countExactWatchSendEvents(loadJobStoreEvents(t, fixture.sourceJM), jobstore.EventWatchSendPending, state)
 	reopenSettledWatchManager(t, fixture)
-	for pass := 0; pass < 2; pass++ {
+	for range 2 {
 		if err := fixture.sourceJM.noticeUnrestoredWatchEnds(); err != nil {
 			t.Fatal(err)
 		}
@@ -1325,15 +1325,6 @@ func newStableWatchTestJobManager(t *testing.T) *jobManager {
 	}
 	t.Cleanup(func() { _ = jm.closeStoreOnly() })
 	return jm
-}
-
-func indexWatchEvent(events []jobstore.Event, kind jobstore.EventKind) int {
-	for i, event := range events {
-		if event.Kind == kind {
-			return i
-		}
-	}
-	return -1
 }
 
 type stableWatchRuntimeFixture struct {

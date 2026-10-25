@@ -797,7 +797,9 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		// The re-drive re-drives again only if a drive is refused on its own
 		// guard, so one that keeps losing stops (#3723).
 		if releaseDriveGuard(sub) {
-			s.delegateController.requestSessionWake(sub.sess.id)
+			if err := s.delegateController.requestSessionWake(sub.sess.id); err != nil {
+				slog.Warn("notification wake failed", "session_id", sub.sess.id, "error", err)
+			}
 		}
 	}()
 	s.mu.Lock()
@@ -998,7 +1000,9 @@ func (g *owedBootstrapRestore) open() {
 	if g.holdDrives {
 		for _, runtime := range restored {
 			if releaseDriveGuard(runtime.sub) {
-				runtime.owner.delegateController.requestSessionWake(runtime.sub.id)
+				if err := runtime.owner.delegateController.requestSessionWake(runtime.sub.id); err != nil {
+					slog.Warn("notification wake failed", "session_id", runtime.sub.id, "error", err)
+				}
 			}
 		}
 	}
@@ -1636,7 +1640,9 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
 			_ = s.executeDelegateMutationPlans(plans)
 			if childID, ok := c.childSessionIDFor(delegateID); ok {
-				c.requestSessionWake(childID)
+				if err := c.requestSessionWake(childID); err != nil {
+					slog.Warn("notification wake failed", "session_id", childID, "error", err)
+				}
 			}
 			name := ""
 			for _, update := range plans.updates {
@@ -1691,7 +1697,9 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			// Rollback released the exact child without handing an executor over.
 			// Recheck its common readiness outside all send locks. Successful
 			// handoff clears committedClaimHeld and leaves recovery to the run.
-			s.delegateController.requestSessionWake(committedChildID)
+			if err := s.delegateController.requestSessionWake(committedChildID); err != nil {
+				slog.Warn("notification wake failed", "session_id", committedChildID, "error", err)
+			}
 		}
 	}()
 	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {

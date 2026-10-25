@@ -449,8 +449,6 @@ type testConfig struct {
 	subagentReserveSlot func(*Session) ([]*subagent, error)
 	// subagentReserveTreeSlot replaces only the tree-capacity reservation boundary.
 	subagentReserveTreeSlot func(*Session) (*treeReservation, bool)
-	// subagentStopGated overrides child stop-gating when handled is true.
-	subagentStopGated func(*Session, string) (stopped, handled bool)
 	// subagentRunIteration observes each production subagent input iteration.
 	// Tests use it only as a deterministic barrier around continuation decisions.
 	subagentRunIteration func(*subagent, int)

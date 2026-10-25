@@ -65,7 +65,7 @@ func TestNotificationAuditCost(t *testing.T) {
 			s := observationSession(t, &skillContinuationAdapter{}, false)
 			observationEnqueue(t, s, "cost-receipt", "cost-payload")
 			writer := s.attachedTranscript()
-			for i := 0; i < history; i++ {
+			for i := range history {
 				turn := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant(fmt.Sprintf("history-%d", i))}
 				if i == history-1 {
 					turn.ObservedNotificationIDs = []string{"cost-receipt"}

@@ -1696,10 +1696,9 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			finalization, err = a.drainForFinalization(ctx, res)
 			res = finalization.Text
 			if err == nil && finalization.Disposition == activationYielded {
-				if yieldErr := a.yieldActivation(ctx, finalization.Checkpoint); yieldErr == nil {
+				err = a.yieldActivation(ctx, finalization.Checkpoint)
+				if err == nil {
 					return
-				} else {
-					err = yieldErr
 				}
 			}
 		}
@@ -1733,10 +1732,9 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 					finalization, err = a.drainForFinalization(ctx, res)
 					res = finalization.Text
 					if err == nil && finalization.Disposition == activationYielded {
-						if yieldErr := a.yieldActivation(ctx, finalization.Checkpoint); yieldErr == nil {
+						err = a.yieldActivation(ctx, finalization.Checkpoint)
+						if err == nil {
 							return
-						} else {
-							err = yieldErr
 						}
 					}
 				}

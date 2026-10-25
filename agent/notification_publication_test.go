@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -80,7 +81,7 @@ func TestNotificationPublication(t *testing.T) {
 			}
 			want, _ := json.Marshal(output)
 			actual, _ := json.Marshal(got)
-			if string(want) != string(actual) {
+			if !bytes.Equal(want, actual) {
 				t.Fatalf("structured=%s, want %s", actual, want)
 			}
 			if len(rootAttentionFold(t, root).order) != 1 {
@@ -168,7 +169,7 @@ func TestNotificationPublication(t *testing.T) {
 			adapter.script("BATCH-WORKER", func(llm.Request) llm.Response { close(entered); <-gate; return finalResponse("generation two") })
 		})
 		ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
-		out := publicationExecute(child, ctx, publicationCall("first-generation-done", map[string]any{"message": "generation one", "end_turn": true, "output": publicationOutput("one")}))
+		out := publicationExecute(ctx, child, publicationCall("first-generation-done", map[string]any{"message": "generation one", "end_turn": true, "output": publicationOutput("one")}))
 		if out.IsError {
 			t.Fatalf("done: %+v", out)
 		}
@@ -188,7 +189,7 @@ func TestNotificationPublication(t *testing.T) {
 		})
 		call := publicationCall("restart-generation", map[string]any{"to": lease.delegateID, "message": "continue", "max_wait_ms": 0})
 		call.Name = "delegate_send"
-		out = publicationExecute(root, context.Background(), call)
+		out = publicationExecute(context.Background(), root, call)
 		if out.IsError {
 			t.Fatalf("restart: %+v", out)
 		}
@@ -231,7 +232,7 @@ func publicationRunningChild(t *testing.T, configure ...func(*messagingAdapter))
 	return root, child, lease, release
 }
 
-func publicationExecute(s *Session, ctx context.Context, call llm.ToolCallData) toolpkg.ExecResult {
+func publicationExecute(ctx context.Context, s *Session, call llm.ToolCallData) toolpkg.ExecResult {
 	return s.reg.ExecuteCall(context.WithValue(ctx, ctxToolCallID, call.ID), s.currentEnv(), call)
 }
 
@@ -277,8 +278,8 @@ func testPublicationOwningBatch(t *testing.T) {
 		t.Fatalf("live batch finalization=%v", blocked)
 	}
 	call := publicationCall("same-call-retry", map[string]any{"message": "owning-batch-578c", "end_turn": false, "output": publicationOutput("owning-batch-578c")})
-	for i := 0; i < 2; i++ {
-		out := publicationExecute(child, ctx, call)
+	for i := range 2 {
+		out := publicationExecute(ctx, child, call)
 		if out.IsError || !strings.Contains(out.Output, `"delivery":"delivered"`) {
 			t.Fatalf("attempt %d: %+v", i, out)
 		}
@@ -336,7 +337,7 @@ func TestCompletionWithLiveChild(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		out := publicationExecute(child, ctx, publicationCall("reserved-done", map[string]any{"message": "done", "end_turn": true, "output": publicationOutput("done")}))
+		out := publicationExecute(ctx, child, publicationCall("reserved-done", map[string]any{"message": "done", "end_turn": true, "output": publicationOutput("done")}))
 		if !out.IsError {
 			t.Fatalf("reserved child failed to fence done: %+v", out)
 		}
@@ -351,7 +352,7 @@ func TestCompletionWithLiveChild(t *testing.T) {
 		if err := c.AbortStart(next); err != nil {
 			t.Fatal(err)
 		}
-		out = publicationExecute(child, ctx, publicationCall("after-abort", map[string]any{"message": "now done", "end_turn": true, "output": publicationOutput("now done")}))
+		out = publicationExecute(ctx, child, publicationCall("after-abort", map[string]any{"message": "now done", "end_turn": true, "output": publicationOutput("now done")}))
 		if out.IsError || !strings.Contains(out.Output, `"accepted":true`) {
 			t.Fatalf("aborted reservation still fences done: %+v", out)
 		}
@@ -369,11 +370,12 @@ func TestCompletionWithLiveChild(t *testing.T) {
 			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("coordinator", "COORD-PUB") }, func(llm.Request) llm.Response { return finalResponse("root-finished") })
 			create := delegateToolResponse("child", "LIVE-PUB").ToolCalls()[0]
 			done := publicationCall("premature-done", map[string]any{"message": "done-b83f", "end_turn": true, "output": publicationOutput("done-b83f")})
-			if order == "existing child" {
+			switch order {
+			case "existing child":
 				adapter.script("COORD-PUB", func(llm.Request) llm.Response { return toolCallResponse(create) }, func(llm.Request) llm.Response { return toolCallResponse(done) })
-			} else if order == "child then done" {
+			case "child then done":
 				adapter.script("COORD-PUB", func(llm.Request) llm.Response { return toolCallResponse(create, done) })
-			} else {
+			default:
 				adapter.script("COORD-PUB", func(llm.Request) llm.Response { return toolCallResponse(done, create) })
 			}
 			adapter.script("COORD-PUB", func(req llm.Request) llm.Response {
@@ -534,7 +536,7 @@ func TestCompletionAdmissionRetiresOnSameGenerationInput(t *testing.T) {
 		}
 	}
 	steer := delegateSendResponse("continue-owner-steer", lease.delegateID, "follow-up-74ac, create the requested child", 0).ToolCalls()[0]
-	result := publicationExecute(root, context.Background(), steer)
+	result := publicationExecute(context.Background(), root, steer)
 	var steered sendMessageResult
 	if err := json.Unmarshal(result.ToolState, &steered); err != nil || result.IsError || steered.Action != "steered" {
 		t.Fatalf("owner steer=%+v decode=%v, want steering into running generation", result, err)
