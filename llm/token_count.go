@@ -579,13 +579,10 @@ func dropsToolResultImages(res registry.Resolved) bool {
 // billsToolResultMedia reports whether the target's adapter puts this tool
 // result's bytes on the wire, so the estimate prices only media the request
 // carries. Image media follows the image rule (dropsToolResultImages). A
-// non-image media type rides inline only where the builder writes the claimed
-// type verbatim, which today is Google's function-response inlineData; the
-// Anthropic and Responses builders write image media only (a document media
-// type in an image block is rejected, #4209) and chat drops tool-result media
-// entirely, so billing their document media as an image overcounts bytes the
-// request never sends. An unknown protocol (a name-based target) cannot be
-// ruled out, so it bills like the permissive default.
+// non-image media type does not ride inline on Anthropic, Responses or Google:
+// documents take the user-message side-channel instead. Chat drops tool-result
+// media entirely. An unknown protocol (a name-based target) cannot be ruled
+// out, so it bills like the permissive default.
 func (t targetInfo) billsToolResultMedia(tr *ToolResultData) bool {
 	if len(tr.ImageData) == 0 && tr.ImageMediaType == "" {
 		return false
@@ -594,7 +591,7 @@ func (t targetInfo) billsToolResultMedia(tr *ToolResultData) bool {
 	if mt == "" || strings.HasPrefix(mt, "image/") {
 		return !t.dropsToolResultImages
 	}
-	if t.protocol == registry.ProtocolAnthropic || t.protocol == registry.ProtocolOpenAIResponses {
+	if t.protocol == registry.ProtocolAnthropic || t.protocol == registry.ProtocolOpenAIResponses || t.protocol == registry.ProtocolGoogle {
 		return false
 	}
 	return !t.dropsToolResultImages
@@ -614,12 +611,10 @@ func DeliversToolResultImages(res registry.Resolved) bool {
 // predicate is deliberately image-only: the Responses builder gates
 // tool-result images on image/* (image_input.go) and the Anthropic builder
 // writes inline bytes for image media only (anthropic/request.go; an image
-// block carrying a document media type is rejected, #4209), while Google's
-// functionResponse inlineData carries whatever media type the result claims.
-// Keep the gate image-only: treating a written document as delivered would
-// send PDFs down the inline path instead of the side-channel that describes
-// them. An empty media type reads as the image default the tool layer
-// applies.
+// block carrying a document media type is rejected, #4209). Google's
+// functionResponse likewise omits non-image media, so documents take the
+// user-message side-channel without also riding inline. An empty media type
+// reads as the image default the tool layer applies.
 func DeliversToolResultMedia(res registry.Resolved, mediaType string) bool {
 	mt := strings.ToLower(strings.TrimSpace(mediaType))
 	if mt == "" || strings.HasPrefix(mt, "image/") {
@@ -632,14 +627,14 @@ func DeliversToolResultMedia(res registry.Resolved, mediaType string) bool {
 // document part in a user message in a form the model can consume. The OpenAI
 // Responses builder writes input_file (responses/input.go) and the Anthropic
 // builder writes a document content block (anthropic/request.go; the Messages
-// API accepts base64 application/pdf user messages with no beta header, #4209);
-// the Google builder rejects the kind outright, and the chat builder silently
-// strips it. This is a different position from DeliversToolResultMedia: an
-// Anthropic or Responses row can take a user-message document while its
-// protocol still drops tool-result documents.
+// API accepts base64 application/pdf user messages with no beta header, #4209).
+// Google writes inlineData/fileData; chat silently strips the kind. This is a
+// different position from DeliversToolResultMedia: those document-capable
+// protocols still drop tool-result documents to avoid double delivery through
+// the side-channel.
 func DeliversUserMessageDocuments(res registry.Resolved) bool {
 	switch res.Protocol {
-	case registry.ProtocolAnthropic, registry.ProtocolOpenAIResponses:
+	case registry.ProtocolAnthropic, registry.ProtocolOpenAIResponses, registry.ProtocolGoogle:
 		return true
 	default:
 		return false

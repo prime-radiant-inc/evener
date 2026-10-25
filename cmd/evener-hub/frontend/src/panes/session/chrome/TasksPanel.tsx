@@ -79,7 +79,7 @@ import {
   type TaskRow,
   taskAggregateLabel,
 } from "@evener/appwire-client";
-import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
+import { forwardRef, type ReactNode, useEffect, useImperativeHandle, useState } from "react";
 import { tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
 import {
   Button,
@@ -275,10 +275,24 @@ function TaskNotesTimeline({ task }: { task: TaskRow }) {
 // Settled rows (the collapsed history group) render one line, dimmed, with
 // no latest-update excerpt: history costs one line per task. Live rows earn
 // their second line with the most recent note.
-function TaskRowView({ task, sessionRef, settled = false }: { task: TaskRow; sessionRef: string; settled?: boolean }) {
+interface TaskRowViewProps {
+  task: TaskRow;
+  sessionRef: string;
+  settled?: boolean;
+  renderTime?: (task: TaskRow) => ReactNode;
+}
+
+function TaskRowView({ task, sessionRef, settled = false, renderTime }: TaskRowViewProps) {
   const notes = task.notes ?? [];
   const latest = !settled && notes.length > 0 ? notes[notes.length - 1] : null;
   const descClass = task.status === "cancelled" ? CLASS.descStruck : settled ? CLASS.descDim : CLASS.description;
+  const time = renderTime ? (
+    renderTime(task)
+  ) : task.updatedAt ? (
+    <span className={CLASS.time} data-testid="task-row-time" title={absoluteTime(task.updatedAt)}>
+      {relativeTime(task.updatedAt)}
+    </span>
+  ) : null;
   const summary = (
     <>
       <TaskCheck touch={STATUS_TOUCH[task.status]} />
@@ -291,11 +305,7 @@ function TaskRowView({ task, sessionRef, settled = false }: { task: TaskRow; ses
           <span className={descClass} data-struck={task.status === "cancelled" ? "true" : undefined}>
             {task.description}
           </span>
-          {task.updatedAt && (
-            <span className={CLASS.time} data-testid="task-row-time" title={absoluteTime(task.updatedAt)}>
-              {relativeTime(task.updatedAt)}
-            </span>
-          )}
+          {time}
         </span>
         {latest && (
           <span className={CLASS.latest} data-testid="task-latest">
@@ -324,11 +334,13 @@ function LiveGroup({
   status,
   tasks,
   sessionRef,
+  renderTime,
 }: {
   label: string;
   status: string;
   tasks: TaskRow[];
   sessionRef: string;
+  renderTime?: (task: TaskRow) => ReactNode;
 }) {
   if (tasks.length === 0) return null;
   return (
@@ -338,14 +350,22 @@ function LiveGroup({
       </h4>
       <ul className={CLASS.list}>
         {tasks.map((row) => (
-          <TaskRowView key={row.id} task={row} sessionRef={sessionRef} />
+          <TaskRowView key={row.id} task={row} sessionRef={sessionRef} renderTime={renderTime} />
         ))}
       </ul>
     </section>
   );
 }
 
-function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: string }) {
+function TaskListGroups({
+  rows,
+  sessionRef,
+  renderTime,
+}: {
+  rows: TaskRow[];
+  sessionRef: string;
+  renderTime?: (task: TaskRow) => ReactNode;
+}) {
   const groups = groupTasks(rows);
   const completed = groups.settled.filter((task) => task.status === "done").length;
   const cancelled = groups.settled.length - completed;
@@ -365,13 +385,19 @@ function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: str
         >
           <ul className={CLASS.list}>
             {groups.settled.map((row) => (
-              <TaskRowView key={row.id} task={row} sessionRef={sessionRef} settled />
+              <TaskRowView key={row.id} task={row} sessionRef={sessionRef} settled renderTime={renderTime} />
             ))}
           </ul>
         </Disclosure>
       )}
-      <LiveGroup label="Current" status="in_progress" tasks={groups.inProgress} sessionRef={sessionRef} />
-      <LiveGroup label="Remaining" status="open" tasks={groups.open} sessionRef={sessionRef} />
+      <LiveGroup
+        label="Current"
+        status="in_progress"
+        tasks={groups.inProgress}
+        sessionRef={sessionRef}
+        renderTime={renderTime}
+      />
+      <LiveGroup label="Remaining" status="open" tasks={groups.open} sessionRef={sessionRef} renderTime={renderTime} />
     </>
   );
 }
@@ -380,10 +406,11 @@ export interface TasksPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
   showSummary?: boolean;
+  renderTime?: (task: TaskRow) => ReactNode;
 }
 
 /** Shared task-list body for the activity viewer, mobile Sheet and desktop pane. */
-export function TasksPanelBody({ sessionRef, model, showSummary = true }: TasksPanelBodyProps) {
+export function TasksPanelBody({ sessionRef, model, showSummary = true, renderTime }: TasksPanelBodyProps) {
   const toasts = useToasts();
   const entry = useTasksPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_TASKS_PANEL_ENTRY;
   // Bumped by Try again. The only fetch trigger a reader controls: the other
@@ -494,7 +521,7 @@ export function TasksPanelBody({ sessionRef, model, showSummary = true }: TasksP
         {rows.length === 0 ? (
           <EmptyState title="No tasks yet" hint="The agent's task list is empty for this session." reason="empty" />
         ) : (
-          <TaskListGroups rows={rows} sessionRef={sessionRef} />
+          <TaskListGroups rows={rows} sessionRef={sessionRef} renderTime={renderTime} />
         )}
       </>
     );

@@ -12,7 +12,7 @@
 // on narrow ones (narrowComposer.ts owns that gate).
 //
 // T2 (this file): the skill editor, send-vs-steer-vs-queue-vs-drain routing via
-// protocol/sendQueueAvailability's deriveSendQueueAvailability +
+// the shared sendQueueGate (over protocol/sendQueueAvailability's table) +
 // submitRouting.ts's own steer/drain fork, Enter-to-send preference,
 // per-ref drafts, attachments (paste/drag/picker), interrupt affordance.
 // T3/T4 render their own subtrees inside the two marked slots below without
@@ -23,7 +23,6 @@ import {
   type ComposerMention,
   decideSteerRoute,
   decideSubmitRoute,
-  deriveSendQueueAvailability,
   filterSlashMenuItems,
   matchBuiltinInvocation,
   mergeDraftText,
@@ -64,6 +63,7 @@ import {
   pressLocalRecoveryFenced,
   pressRefusal,
   recoveryFence,
+  sendQueueDecisionFor,
 } from "../../../stores/liveControls";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
@@ -139,7 +139,14 @@ export interface ComposerProps {
   // autofocus keys on it: a session loading into a background tab must never
   // yank keyboard focus away from what the reader is doing.
   focused: boolean;
+  // The seat may suppress mount autofocus for a navigation or restore intent.
+  mountAutofocus?: boolean;
   source: ComposerSourceState;
+  // An in-progress IME composition, reported for the floating attention
+  // control's visibility. Focus alone never counts: a session open autofocuses
+  // this editor, and hiding the control then would take it away before the
+  // reader could use it. Draft content alone is never editing either.
+  onEditingChange?: (editing: boolean) => void;
 }
 
 const CLASS = {
@@ -183,7 +190,7 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // shallow-equality bailout for a value that carries no information.
 const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 
-export function Composer({ ref, paneId, focused, source }: ComposerProps) {
+export function Composer({ ref, paneId, focused, mountAutofocus = true, source, onEditingChange }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   // Delivery-uncertain rows do NOT fence Send here: they clear the resume-only
@@ -205,6 +212,31 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   const toasts = useToasts();
   const isMobile = useIsMobile();
   const editorRef = useRef<SkillEditorHandle>(null);
+  // An in-progress IME composition drives the floating attention control's
+  // editing suppression. Editor focus never counts: a session open autofocuses
+  // this editor, and hiding the control then would take it away before the
+  // reader could use it. Draft content alone is never "editing" either, and
+  // broad footer focus (attachment buttons, the session menu) does not count.
+  const composingRef = useRef(false);
+  const editingReportedRef = useRef(false);
+  const onEditingChangeRef = useRef(onEditingChange);
+  onEditingChangeRef.current = onEditingChange;
+  const reportEditing = useCallback(() => {
+    const editing = composingRef.current;
+    if (editingReportedRef.current === editing) return;
+    editingReportedRef.current = editing;
+    onEditingChangeRef.current?.(editing);
+  }, []);
+  // A composer that unmounts mid-composition (a loading face replaces the live
+  // subtree) must not leave the seat believing a composition is still running.
+  useEffect(
+    () => () => {
+      if (!editingReportedRef.current) return;
+      editingReportedRef.current = false;
+      onEditingChangeRef.current?.(false);
+    },
+    [],
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
@@ -588,6 +620,15 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     if (wasPending && !askPending) setReadyAnnouncement("Message composer ready.");
   }, [askPending]);
 
+  // A pending question removes the editor from the surface without a
+  // composition end; clear the composition report so the control returns
+  // automatically when the batch resolves.
+  useEffect(() => {
+    if (!askPending) return;
+    composingRef.current = false;
+    reportEditing();
+  }, [askPending, reportEditing]);
+
   // Runs in the commit that carries a scheduled edit, after any text it
   // changed has reached the DOM through React's own controlled-value
   // reconciliation - only then is it safe to move the native cursor without
@@ -652,9 +693,9 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   });
 
   // Loading a session lands keyboard focus in its composer: writing the next
-  // message is what the pane is for. Mount-only, gated on the pane being
-  // focused at mount (see useMountAutofocus for the full rationale).
-  useMountAutofocus(editorRef, focused);
+  // message is what the pane is for. Mount-only, gated by the seat's focus and
+  // its general autofocus policy (see useMountAutofocus for the full rationale).
+  useMountAutofocus(editorRef, focused && mountAutofocus);
 
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
@@ -706,11 +747,18 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   const skillInputSupported = model.capabilities.skillInput === true;
   // Tier 6: see ownPendingSend in @evener/appwire-client/state/mutation.
   const hasPendingSend = ownPendingSend(pendingSendEntries);
-  // The Send/Queue availability of a model and this client's pending send: read
-  // at render for the button and its tooltip, and again at submit from the
-  // stores' live model and live pending entries, so a status frame or a
-  // pending send that landed (or cleared) between the two routes the submit
-  // rather than the render.
+  // The Send/Queue availability of a model and this client's pending send,
+  // projected to the composer's two booleans from the shared browser decision
+  // (stores/liveControls.ts's sendQueueDecisionFor: the recovery adapter around
+  // @evener/appwire-client's sendQueueGate under BROWSER_SEND_QUEUE_POLICY).
+  // The gate owns the composition this body used to spell out: the recovery
+  // fence's faces (Send-resumes, still fenced, folded resume), the send/queue
+  // table, and the shut-down send substitution.
+  //
+  // Read at render for the button and its tooltip, and again at submit from the
+  // stores' live model and live pending entries, so a status frame or a pending
+  // send that landed (or cleared) between the two routes the submit rather than
+  // the render.
   //
   // The restart-blocking obligation arrives as a parameter: the render passes
   // the subscribed value (so the availability updates with the store instead of
@@ -724,55 +772,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     restartObligated: boolean,
     signals: ResumeOnlySignals,
   ): { canSend: boolean; canQueue: boolean } {
-    // A recovery-fenced local session has no send/queue in WHATEVER status the
-    // snapshot carries - active included - EXCEPT a merely-resumable one. The
-    // fence's own window is exactly one where an ACTIVE snapshot can carry
-    // it: a live read during a Stop relays the daemon's still-active status
-    // while the hub overlays resumeRequired beside it
-    // (applyThreadResumeRequirement), and the store arms the obligation on
-    // that very hydration. The hub's recovery admission still refuses
-    // turn/queue for the whole window (sessionActionRecoveryError keys on the
-    // resume locks, never the projected status), so the availability table's
-    // queue-mode answer for the still-running turn could only mint durable
-    // intent that parks. turn/start is the exception the hub now admits: a
-    // merely-resumable session (shut-down snapshot, no Stop in flight) folds
-    // the resume into the send, so Send is offered while Queue is not.
-    const targetFence = recoveryFence(target, restartObligated, signals);
-    // The Send-resumes face offers Send and only Send, and a parked send in
-    // front of it does NOT suppress it: the store's driver resumes behind
-    // whichever rows are parked and the dispatcher drains them FIFO, so there
-    // is nothing for a second press to jump (reviewer A finding F1). Queue is
-    // not offered in the fence window.
-    if (targetFence.sendResumes) return { canSend: true, canQueue: false };
-    if (targetFence.stillFenced) return { canSend: false, canQueue: false };
-    // A pending send is already on its way; offering a second one here would
-    // route it to turn/start during the resume window instead of waiting. This
-    // mirrors the ended-session substitution's `!tableAvailability.canSend`
-    // guard below, which never offers Send while the table already has one.
-    if (targetFence.resumeOnly) return { canSend: !pendingSend, canQueue: false };
-    const tableAvailability = deriveSendQueueAvailability({
-      statusType: target.status.type,
-      capabilities: target.capabilities,
-      hasPendingSend: pendingSend,
-    });
-    // A finished session can still be sent to when the source says so: the hub
-    // advertises Send for an exited evener thread and auto-resumes it on the first
-    // message (turn/start alone carries that resume loop - app_rpc.go). The
-    // CAPABILITY is the authority for THAT question, not the availability table,
-    // which reports both-false for a finished session with nothing pending,
-    // because no turn is in flight to send to or queue behind.
-    //
-    // It only substitutes when the table has nothing to offer, which is what
-    // keeps it clear of tier 6. Overriding unconditionally turned every finished
-    // status' SECOND message back into the turn/start that bounces - the table
-    // answers queue-mode there, for the whole time the resume takes to produce a
-    // status frame, which for a session that has to spawn a daemon is seconds.
-    return SHUT_DOWN_STATUSES.has(target.status.type) &&
-      controlsFor(target).send &&
-      !tableAvailability.canSend &&
-      !tableAvailability.canQueue
-      ? { canSend: true, canQueue: false }
-      : tableAvailability;
+    const decision = sendQueueDecisionFor(target, pendingSend, restartObligated, signals);
+    return { canSend: decision.action === "send", canQueue: decision.action === "queue" };
   }
   const availability = availabilityFor(model, hasPendingSend, recoveryRequired, resumeOnlySignals);
   const showStop = controls.stop;
@@ -1544,8 +1545,30 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
 
   // Slash options prevent mousedown's default focus transfer, so only leaving
   // the editor closes its completion menu. The card owns collapse separately.
+  function isEditorEvent(target: EventTarget | null): boolean {
+    // Realm-independent: Dockview *moves* an existing editor into a popout
+    // window, which changes its ownerDocument but keeps its original realm and
+    // prototype, so any `instanceof Element` - the opener's or the popout's -
+    // rejects it. nodeType and closest survive adoption.
+    const element =
+      target !== null && typeof target === "object" && (target as Node).nodeType === 1 ? (target as Element) : null;
+    return element !== null && element.closest('[role="textbox"]') !== null && !!formRef.current?.contains(element);
+  }
+
   function handleEditorBlur(): void {
     setSlashToken(null);
+  }
+
+  function handleEditorCompositionStart(event: { target: EventTarget | null }): void {
+    if (!isEditorEvent(event.target)) return;
+    composingRef.current = true;
+    reportEditing();
+  }
+
+  function handleEditorCompositionEnd(event: { target: EventTarget | null }): void {
+    if (!isEditorEvent(event.target)) return;
+    composingRef.current = false;
+    reportEditing();
   }
 
   return (
@@ -1664,6 +1687,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
             onSubmit={handleFormSubmit}
             data-testid="composer-form"
             data-mode={ended ? "follow-up" : "message"}
+            onCompositionStart={handleEditorCompositionStart}
+            onCompositionEnd={handleEditorCompositionEnd}
           >
             <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
               <PromptCard
