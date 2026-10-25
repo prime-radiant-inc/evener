@@ -645,6 +645,99 @@ func (s *Session) seedFrozenSkillPreloads() {
 	}
 }
 
+// dropUnavailableSkillPreloads removes role preloads this session cannot
+// follow before the permanent prompt and the frozen preload inventory carry
+// them. A role preload is prepared on the creating parent, and a frozen
+// descriptor replays the body frozen at creation, so construction is the first
+// point either path can ask this session's own registry. It runs after the
+// tool registry is final (filterUnavailableMemoryTools) and before
+// refreshSystemPromptCache and seedFrozenSkillPreloads.
+//
+// The name and body slices are parallel; every production producer appends or
+// replaces them together. A body without a parallel name (a direct fixture that
+// predates the field) is left untouched because its capability cannot be
+// decided. A preload record already restored from SessionMeta.Skills is pruned
+// the same way, preserving an ordinary activation record for the same name, so
+// the durable inventory agrees with the prompt.
+func (s *Session) dropUnavailableSkillPreloads() {
+	names := s.cfg.spawn.activatedSkillNames
+	bodies := s.cfg.spawn.activatedSkillBodies
+	pairsAligned := len(names) > 0 && len(names) == len(bodies)
+	candidates := make([]string, 0, len(names)+len(s.cfg.spawn.frozenSkillMetadata))
+	if pairsAligned {
+		candidates = append(candidates, names...)
+	}
+	for _, metadata := range s.cfg.spawn.frozenSkillMetadata {
+		candidates = append(candidates, metadata.Name)
+	}
+	// A preload record restored from SessionMeta.Skills can outlive the spawn
+	// carrier that delivered it; include it in the same capability pass.
+	s.mu.Lock()
+	for name, entry := range s.skillLifecycle.Inventory {
+		if entry.Preload != nil {
+			candidates = append(candidates, name)
+		}
+	}
+	s.mu.Unlock()
+	if len(candidates) == 0 {
+		return
+	}
+	availability := s.skillAvailability()
+	dropped := make(map[string]bool)
+	for _, name := range candidates {
+		if !availability.SkillAvailable(name) {
+			dropped[name] = true
+		}
+	}
+	if len(dropped) == 0 {
+		return
+	}
+
+	if pairsAligned {
+		keptNames := make([]string, 0, len(names))
+		keptBodies := make([]string, 0, len(bodies))
+		for i, name := range names {
+			if dropped[name] {
+				continue
+			}
+			keptNames = append(keptNames, name)
+			keptBodies = append(keptBodies, bodies[i])
+		}
+		s.cfg.spawn.activatedSkillNames = keptNames
+		s.cfg.spawn.activatedSkillBodies = keptBodies
+	}
+	if len(s.cfg.spawn.frozenSkillMetadata) > 0 {
+		kept := make([]schema.FrozenSkillPreload, 0, len(s.cfg.spawn.frozenSkillMetadata))
+		for _, metadata := range s.cfg.spawn.frozenSkillMetadata {
+			if dropped[metadata.Name] {
+				continue
+			}
+			kept = append(kept, metadata)
+		}
+		s.cfg.spawn.frozenSkillMetadata = kept
+	}
+
+	s.mu.Lock()
+	inventoryChanged := false
+	for name := range dropped {
+		entry, ok := s.skillLifecycle.Inventory[name]
+		if !ok || entry.Preload == nil {
+			continue
+		}
+		entry.Preload = nil
+		if entry.Ordinary == nil {
+			delete(s.skillLifecycle.Inventory, name)
+		} else {
+			s.skillLifecycle.Inventory[name] = entry
+		}
+		inventoryChanged = true
+	}
+	if inventoryChanged {
+		s.skillLifecycle.Revision++
+	}
+	s.mu.Unlock()
+}
+
 // skillToolState is the typed pending identity a use_skill execution hands
 // the session through the tool-state side channel (TOOL_CALL_END's tool_state;
 // never model-facing prose). The round's tool-results append decodes it into

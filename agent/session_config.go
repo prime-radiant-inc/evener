@@ -921,9 +921,14 @@ type spawnConfig struct {
 	// file backs sharedTaskStore. Descendants propagate it with the exact pointer.
 	sharedTaskStoreOwnerSessionID string
 
-	// rolePromptOverride and the three fields below carry internal prompt and
+	// rolePromptOverride and the four fields below carry internal prompt and
 	// session shaping for restricted subagents and reviewer runs.
-	rolePromptOverride   string
+	rolePromptOverride string
+	// activatedSkillNames names each role preload, parallel to
+	// activatedSkillBodies. Session construction drops a pair this session
+	// cannot follow before the permanent prompt and inventory carry it; every
+	// producer appends or replaces both slices together.
+	activatedSkillNames  []string
 	activatedSkillBodies []string
 	// frozenSkillMetadata is the typed provenance of this delegate's role
 	// preloads, seeded into the skill lifecycle inventory once the permanent

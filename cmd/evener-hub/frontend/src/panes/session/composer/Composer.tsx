@@ -12,7 +12,7 @@
 // on narrow ones (narrowComposer.ts owns that gate).
 //
 // T2 (this file): the skill editor, send-vs-steer-vs-queue-vs-drain routing via
-// protocol/sendQueueAvailability's deriveSendQueueAvailability +
+// the shared sendQueueGate (over protocol/sendQueueAvailability's table) +
 // submitRouting.ts's own steer/drain fork, Enter-to-send preference,
 // per-ref drafts, attachments (paste/drag/picker), interrupt affordance.
 // T3/T4 render their own subtrees inside the two marked slots below without
@@ -23,7 +23,6 @@ import {
   type ComposerMention,
   decideSteerRoute,
   decideSubmitRoute,
-  deriveSendQueueAvailability,
   filterSlashMenuItems,
   matchBuiltinInvocation,
   mergeDraftText,
@@ -64,6 +63,7 @@ import {
   pressLocalRecoveryFenced,
   pressRefusal,
   recoveryFence,
+  sendQueueDecisionFor,
 } from "../../../stores/liveControls";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
@@ -747,11 +747,18 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   const skillInputSupported = model.capabilities.skillInput === true;
   // Tier 6: see ownPendingSend in @evener/appwire-client/state/mutation.
   const hasPendingSend = ownPendingSend(pendingSendEntries);
-  // The Send/Queue availability of a model and this client's pending send: read
-  // at render for the button and its tooltip, and again at submit from the
-  // stores' live model and live pending entries, so a status frame or a
-  // pending send that landed (or cleared) between the two routes the submit
-  // rather than the render.
+  // The Send/Queue availability of a model and this client's pending send,
+  // projected to the composer's two booleans from the shared browser decision
+  // (stores/liveControls.ts's sendQueueDecisionFor: the recovery adapter around
+  // @evener/appwire-client's sendQueueGate under BROWSER_SEND_QUEUE_POLICY).
+  // The gate owns the composition this body used to spell out: the recovery
+  // fence's faces (Send-resumes, still fenced, folded resume), the send/queue
+  // table, and the shut-down send substitution.
+  //
+  // Read at render for the button and its tooltip, and again at submit from the
+  // stores' live model and live pending entries, so a status frame or a pending
+  // send that landed (or cleared) between the two routes the submit rather than
+  // the render.
   //
   // The restart-blocking obligation arrives as a parameter: the render passes
   // the subscribed value (so the availability updates with the store instead of
@@ -765,55 +772,8 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     restartObligated: boolean,
     signals: ResumeOnlySignals,
   ): { canSend: boolean; canQueue: boolean } {
-    // A recovery-fenced local session has no send/queue in WHATEVER status the
-    // snapshot carries - active included - EXCEPT a merely-resumable one. The
-    // fence's own window is exactly one where an ACTIVE snapshot can carry
-    // it: a live read during a Stop relays the daemon's still-active status
-    // while the hub overlays resumeRequired beside it
-    // (applyThreadResumeRequirement), and the store arms the obligation on
-    // that very hydration. The hub's recovery admission still refuses
-    // turn/queue for the whole window (sessionActionRecoveryError keys on the
-    // resume locks, never the projected status), so the availability table's
-    // queue-mode answer for the still-running turn could only mint durable
-    // intent that parks. turn/start is the exception the hub now admits: a
-    // merely-resumable session (shut-down snapshot, no Stop in flight) folds
-    // the resume into the send, so Send is offered while Queue is not.
-    const targetFence = recoveryFence(target, restartObligated, signals);
-    // The Send-resumes face offers Send and only Send, and a parked send in
-    // front of it does NOT suppress it: the store's driver resumes behind
-    // whichever rows are parked and the dispatcher drains them FIFO, so there
-    // is nothing for a second press to jump (reviewer A finding F1). Queue is
-    // not offered in the fence window.
-    if (targetFence.sendResumes) return { canSend: true, canQueue: false };
-    if (targetFence.stillFenced) return { canSend: false, canQueue: false };
-    // A pending send is already on its way; offering a second one here would
-    // route it to turn/start during the resume window instead of waiting. This
-    // mirrors the ended-session substitution's `!tableAvailability.canSend`
-    // guard below, which never offers Send while the table already has one.
-    if (targetFence.resumeOnly) return { canSend: !pendingSend, canQueue: false };
-    const tableAvailability = deriveSendQueueAvailability({
-      statusType: target.status.type,
-      capabilities: target.capabilities,
-      hasPendingSend: pendingSend,
-    });
-    // A finished session can still be sent to when the source says so: the hub
-    // advertises Send for an exited evener thread and auto-resumes it on the first
-    // message (turn/start alone carries that resume loop - app_rpc.go). The
-    // CAPABILITY is the authority for THAT question, not the availability table,
-    // which reports both-false for a finished session with nothing pending,
-    // because no turn is in flight to send to or queue behind.
-    //
-    // It only substitutes when the table has nothing to offer, which is what
-    // keeps it clear of tier 6. Overriding unconditionally turned every finished
-    // status' SECOND message back into the turn/start that bounces - the table
-    // answers queue-mode there, for the whole time the resume takes to produce a
-    // status frame, which for a session that has to spawn a daemon is seconds.
-    return SHUT_DOWN_STATUSES.has(target.status.type) &&
-      controlsFor(target).send &&
-      !tableAvailability.canSend &&
-      !tableAvailability.canQueue
-      ? { canSend: true, canQueue: false }
-      : tableAvailability;
+    const decision = sendQueueDecisionFor(target, pendingSend, restartObligated, signals);
+    return { canSend: decision.action === "send", canQueue: decision.action === "queue" };
   }
   const availability = availabilityFor(model, hasPendingSend, recoveryRequired, resumeOnlySignals);
   const showStop = controls.stop;
