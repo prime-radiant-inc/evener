@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -159,10 +160,8 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 }
 
 // TestNotificationTurnOwnsDurableReminderAndPendingClientSteering pins the
-// grouping boundary shared by the notification opener and a client steer that
-// arrives while that opener is active. The reminder and the steer must carry
-// the same supplied notification turn owner so live and replay projections
-// retain both items in one logical turn.
+// named boundary of a client steer arriving during a canonical notification.
+// The accepted notification keeps its own stable identity across live/replay.
 func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.T) {
 	t.Parallel()
 	var sess *Session
@@ -170,7 +169,9 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 	adapter := &fakeAdapter{name: "openai"}
 	adapter.steps = []func(req llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("warmup") },
-		func(llm.Request) llm.Response {
+		func(req llm.Request) llm.Response {
+			observationRequest(t, req, []string{`job_id="job_X"`}, nil)
+			requireCanonicalShellNotification(t, sess, "job_X", 0)
 			if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
 				ClientMutationID:   "steer_notification_owner",
 				ExpectedInstanceID: sess.ID(),
@@ -181,7 +182,11 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 			close(steerAccepted)
 			return communicateResponse(false, "notification handled")
 		},
-		func(llm.Request) llm.Response { return finalResponse("steering handled") },
+		func(req llm.Request) llm.Response {
+			observationRequest(t, req, []string{"steer during notification"}, nil)
+			requireCanonicalShellNotification(t, sess, "job_X", 1)
+			return finalResponse("steering handled")
+		},
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
@@ -205,6 +210,10 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 	case <-time.After(5 * time.Second):
 		t.Fatal("notification provider call did not accept client steering")
 	}
+	id := requireCanonicalShellNotification(t, sess, "job_X", 2)
+	if id != "shell:job_X:gen-job_X" {
+		t.Fatalf("canonical identity=%q", id)
+	}
 	_, starts := recorder.snapshot()
 	if len(starts) != 1 || starts[0].TurnID == "" {
 		t.Fatalf("notification EventTurnStarted = %#v, want one nonempty owner", starts)
@@ -214,18 +223,54 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
-	var reminderOwner, steeringOwner string
+	var steeringOwner, notificationBody string
 	for _, entry := range data.Entries {
 		turn := entry.Turn
-		if turn.SteeringKind == events.SteeringKindNotification {
-			reminderOwner = turn.OwningTurnID
+		if turn.AttentionID == id {
+			notificationBody = turn.Message.Text()
 		}
 		if turn.ClientMutationID == "steer_notification_owner" {
 			steeringOwner = turn.OwningTurnID
 		}
 	}
-	if reminderOwner == "" || steeringOwner == "" || reminderOwner != steeringOwner || reminderOwner != owner {
-		t.Fatalf("durable owners reminder=%q steering=%q EventTurnStarted=%q", reminderOwner, steeringOwner, owner)
+	if steeringOwner != owner {
+		t.Fatalf("durable client steering owner=%q, EventTurnStarted=%q", steeringOwner, owner)
+	}
+	sess.mu.Lock()
+	liveEntries := make([]transcript.Entry, len(sess.history))
+	for i, turn := range sess.history {
+		liveEntries[i] = transcript.Entry{Kind: "entry", Seq: i + 1, Turn: turn}
+	}
+	sess.mu.Unlock()
+	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		return apptranscript.ProjectTurn(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, nil)
+	}
+	live, err := apptranscript.ItemTurnsFromEntries(data.Header, liveEntries, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := apptranscript.ItemTurnsFromEntries(data.Header, data.Entries, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type itemIdentity struct{ Key, TurnID, Status, Type, Text, Mutation string }
+	identities := func(turns []appwire.Turn) []itemIdentity {
+		t.Helper()
+		var result []itemIdentity
+		for _, turn := range turns {
+			for _, item := range turn.Items {
+				if item.Text == notificationBody || item.ClientMutationID == "steer_notification_owner" {
+					result = append(result, itemIdentity{item.TranscriptKey, item.TurnID, item.Status, item.Type, item.Text, item.ClientMutationID})
+				}
+			}
+		}
+		if len(result) != 2 {
+			t.Fatalf("projected notification and client steering identities=%+v, want two", result)
+		}
+		return result
+	}
+	if got, want := identities(live), identities(replayed); !reflect.DeepEqual(got, want) {
+		t.Fatalf("live/replay notification and steering identities: live=%+v replayed=%+v", got, want)
 	}
 }
 
@@ -399,38 +444,83 @@ func TestNotificationPendingAfterToolRunsBeforeAnotherNormalRound(t *testing.T) 
 	requireNotificationState(t, sess.jobManager, jobID, jobstore.NotifyDelivered)
 }
 
-// TestAcceptNotificationInput_PersistsNotificationKind verifies the durable
-// notification reminder turn carries SteeringKind on schema.Turn, not only on
-// the live SteeringInjectedData event, so a reload labels it the same way the
-// live transcript did (review round 2: this direct-append site bypasses the
-// SteerKind/consumeSteeringMessage queue path that already persisted its
-// kind). Uses the same minimal durable-record construction as
-// TestAcceptNotificationInputAdoptsNotificationProvenance
-// (session_provenance_test.go) rather than a full background delegate run.
+// Canonical job attention keeps its identity and steering representation on
+// disk. Acceptance alone cannot manufacture a successful-response receipt.
 func TestAcceptNotificationInput_PersistsNotificationKind(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
-	s.events = make(chan events.SessionEvent, 4)
+	a := &skillContinuationAdapter{}
+	s := observationSession(t, a, false)
 	appendPendingJobNotificationRecordWithProvenance(t, s.jobManager, s.ID(), "job_A", nil)
 	s.enqueueJobNotification(jobNotification{
 		JobID:   "job_A",
 		JobType: string(jobstore.JobShell),
 		Status:  string(jobstore.StatusCompleted),
 	})
-
-	if proceed := s.acceptNotificationInput(context.Background(), ""); !proceed {
-		t.Fatal("notification input should proceed")
+	a.steps = []func(llm.Request) (llm.Response, error){func(req llm.Request) (llm.Response, error) {
+		observationRequest(t, req, []string{`job_id="job_A"`, `job_type="shell"`}, nil)
+		if id := requireCanonicalShellNotification(t, s, "job_A", 0); id != "shell:job_A:GEN_job_A" {
+			t.Fatalf("attention ID = %q", id)
+		}
+		return finalResponse("acknowledged"), nil
+	}}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
 	}
+	requireCanonicalShellNotification(t, s, "job_A", 1)
+	if len(a.Requests()) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(a.Requests()))
+	}
+}
 
+// Check the actual accepted row and assistant receipts, independently of the
+// source's Delivered acknowledgment. The same assertions cover lifetime-only
+// sessions and persisted sessions, whose raw transcript is checked as well.
+func requireCanonicalShellNotification(t *testing.T, s *Session, jobID string, wantReceipts int) string {
+	t.Helper()
+	rec := loadShellRecord(t, s.jobManager, jobID)
+	if !rec.Status.IsTerminal() || rec.TerminalGen == "" || rec.NotifyState != jobstore.NotifyDelivered {
+		t.Fatalf("shell source %s = %+v, want terminal generation and custody acknowledgment", jobID, rec)
+	}
+	id := "shell:" + jobID + ":" + rec.TerminalGen
 	s.mu.Lock()
-	last := s.history[len(s.history)-1]
+	history := append([]schema.Turn(nil), s.history...)
 	s.mu.Unlock()
-	if last.Kind != schema.TurnSteering {
-		t.Fatalf("last turn kind = %v, want TurnSteering", last.Kind)
+	check := func(turns []schema.Turn) {
+		t.Helper()
+		accepted, receipts := 0, 0
+		for _, turn := range turns {
+			if turn.AttentionID == id {
+				accepted++
+				if turn.Kind != schema.TurnSteering || turn.StableTurnID == "" || !strings.Contains(turn.Message.Text(), fmt.Sprintf(`job_id=%q`, jobID)) {
+					t.Fatalf("canonical attention row = %+v", turn)
+				}
+			}
+			for _, seen := range turn.ObservedNotificationIDs {
+				if seen == id {
+					receipts++
+					if turn.Kind != schema.TurnAssistant {
+						t.Fatalf("observation of %s was not on an assistant response", id)
+					}
+				}
+			}
+		}
+		if accepted != 1 || receipts != wantReceipts {
+			t.Fatalf("%s accepted=%d receipts=%d, want 1 and %d", id, accepted, receipts, wantReceipts)
+		}
 	}
-	if last.SteeringKind != events.SteeringKindNotification {
-		t.Errorf("SteeringKind = %q, want %q", last.SteeringKind, events.SteeringKindNotification)
+	check(history)
+	if s.stateDir != "" {
+		var turns []schema.Turn
+		for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+			turns = append(turns, entry.Turn)
+		}
+		check(turns)
 	}
+	ids, err := s.pendingNotificationIDs()
+	if err != nil || slices.Contains(ids, id) == (wantReceipts != 0) {
+		t.Fatalf("pending IDs=%v error=%v, observed=%t for %s", ids, err, wantReceipts != 0, id)
+	}
+	return id
 }
 
 // TestNotification_EmptyNoOpDoesNotSuppressNextTurnEnd proves that an empty
