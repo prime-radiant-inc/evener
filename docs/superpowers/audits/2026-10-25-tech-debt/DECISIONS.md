@@ -110,7 +110,14 @@ Phase it out. New code and the shared durable writer use the real `os` package, 
 - W1-64 and W1-59 classify each fallback by version direction, as in Q1.
 - GAPS.md G3 names the real producers of the fuzz corpus.
 
+## Q12, second tier. Error strings in the copy-oracle ratchet
+
+Yes. The ratchet also counts tests that assert on error-message text, with an allowlist of today's sites so the count only goes down. W1-50 burns the allowlist down area by area. Unblocks W1-49.
+
+## Merge rule for Wave 1
+
+Final merges are serialized through a shared lock. The lock holder merges `origin/main`, pushes, waits for green CI on that head, then admin squash merges. No admin merge of a branch that is behind main.
+
 ## Still open
 
 - Q20 (`hub.toml` as machine database, and the 23 undocumented retention knobs). It is a Wave 2 design discussion (W2-13).
-- Q12, second tier only: whether the copy-oracle ratchet should also cover error-string assertions (W1-49). The AGENTS.md wording half is answered above.

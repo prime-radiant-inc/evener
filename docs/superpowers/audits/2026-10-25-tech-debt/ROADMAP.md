@@ -9,7 +9,7 @@ LOC figures are net lines of change (negative means removed), prod plus tests, a
 | Wave | Roadmap entries | Expected PRs incl. splits | Net LOC (est.) | Can start now (no open decision) |
 |---|---|---|---|---|
 | 0: guardrails, defects, dead-code deletions | 27 | 28 | -12,100 | 27 entries, -12,100 (W0-01, W0-05 and W0-18 were gated on Q12, Q10 and Q17; all answered) |
-| 1: consolidations | 69 | about 98 | -46,800 | 68 entries, about -46,500; W1-49 waits on the second tier of Q12 (error-string ratchet). Every other gate is answered in [DECISIONS.md](DECISIONS.md); the Deps: fields still order the work. The answers shrank several entries (W1-27 dedupe only, W1-56 keep-and-fix, W1-60 and W1-62..W1-64 simplify-only) |
+| 1: consolidations | 69 | about 98 | -46,800 | 69 entries, about -46,800. Every gate is answered in [DECISIONS.md](DECISIONS.md); the Deps: fields still order the work. The answers shrank several entries (W1-27 dedupe only, W1-56 keep-and-fix, W1-60 and W1-62..W1-64 simplify-only) |
 | 2: structural splits (all need design discussion) | 19 | about 45 | -9,300 (about 330,000 lines moved with no net change) | 1 entry, about -1,000 (W2-09 is now comment and dead-code trimming only, Q18 answered); the other 18 need design discussion, W2-13 also waits on Q20 |
 | Total | 115 | about 172 | about -68,000 | 96 entries, about -59,600 |
 
@@ -813,7 +813,7 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 - Tests: the ratchet's own tests for the new pattern.
 - Docs: `docs/developing-evener/testing.md` ratchet section.
 - LOC: ~+150 (plus a large allowlist data file)
-- Risk: low. Gate: Q12, second tier only (should the copy-oracle ratchet also cover error strings; still open). The AGENTS.md half of Q12 is answered (DECISIONS.md). Deps: none.
+- Risk: low. Gate: answered (DECISIONS.md, Q12 second tier: yes, with an allowlist of today's sites). Deps: none.
 
 ### W1-50 Convert phrase assertions to sentinels or behavior (per area)
 - Findings: go-tests-agent-4, go-tests-rest-14, agent-internal-state-12, agent-misc-root-18, hub-sshconn-18, hub-internal-small-8, hub-root-rest-13, internal-misc-cmds-19, web-dev-and-tests-7, web-shell-widgets-16, web-stores-15, web-panes-a (about 150), native-rest-12, native-tests-legacy-mobile-10, appwire-ts-state-testing-14.
