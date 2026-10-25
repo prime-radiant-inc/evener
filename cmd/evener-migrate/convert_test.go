@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -260,6 +261,9 @@ func TestExecuteConvertDoesNotFollowSymlinkPlantedAtTempName(t *testing.T) {
 // providers.toml can carry literal API keys, so the conversion keeps the mode
 // the user gave the file instead of widening it.
 func TestExecuteConvertKeepsProvidersConfigMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes are not POSIX permission bits on windows")
+	}
 	home := t.TempDir()
 	dir := filepath.Join(home, ".config", "evener")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

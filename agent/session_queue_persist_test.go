@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -500,6 +501,9 @@ func TestSaveQueues_DoesNotFollowSymlinkPlantedAtTempName(t *testing.T) {
 // them whatever the umask.
 func TestSaveQueues_SnapshotIsPrivate(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes are not POSIX permission bits on windows")
+	}
 	stateDir := t.TempDir()
 	if err := saveQueues(stateDir, "sid1", []steeringMessage{{Text: "steer"}}, nil); err != nil {
 		t.Fatal(err)

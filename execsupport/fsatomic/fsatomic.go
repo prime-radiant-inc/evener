@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"syscall"
 )
 
@@ -65,38 +67,75 @@ func Write(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
+// unsyncedDirs holds directories this process created whose parent entry is
+// not yet confirmed durable: a sync is in flight or failed. MkdirAll syncs them
+// again before reporting success, so neither a concurrent caller that sees the
+// directory early nor a retry after a failed sync skips the sync.
+var (
+	unsyncedMu   sync.Mutex
+	unsyncedDirs = map[string]bool{}
+)
+
+func setUnsynced(dir string, unsynced bool) {
+	unsyncedMu.Lock()
+	defer unsyncedMu.Unlock()
+	if unsynced {
+		unsyncedDirs[dir] = true
+	} else {
+		delete(unsyncedDirs, dir)
+	}
+}
+
+func isUnsynced(dir string) bool {
+	unsyncedMu.Lock()
+	defer unsyncedMu.Unlock()
+	return unsyncedDirs[dir]
+}
+
 // MkdirAll creates dir and any missing ancestors like os.MkdirAll, but one
 // component at a time, syncing each new directory's parent before creating the
-// next, so the new directory entries are durable and a failure part-way leaves
-// only ancestors that are already synced. Write syncs only the directory that
-// holds the file, so a caller whose first save also creates the directory runs
-// this before Write.
+// next, so the new directory entries are durable. Write syncs only the
+// directory that holds the file, so a caller whose first save also creates the
+// directory runs this before Write.
 func MkdirAll(dir string, perm os.FileMode) error {
-	var missing []string // innermost first
+	var todo []string // innermost first: missing, or created but not yet synced
 	for p := dir; ; p = filepath.Dir(p) {
-		_, err := os.Stat(p)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, os.ErrNotExist) {
+		info, err := os.Stat(p)
+		switch {
+		case err == nil && !info.IsDir():
+			return &os.PathError{Op: "mkdir", Path: p, Err: syscall.ENOTDIR}
+		case err == nil && !isUnsynced(p):
+			// An existing directory this process has not left unsynced:
+			// everything above it was settled when it was created.
+			return syncAll(todo, perm)
+		case err != nil && !errors.Is(err, os.ErrNotExist):
 			return err
 		}
-		missing = append(missing, p)
+		todo = append(todo, p)
 		if filepath.Dir(p) == p {
 			break
 		}
 	}
-	for i := len(missing) - 1; i >= 0; i-- {
-		p := missing[i]
-		if err := os.Mkdir(p, perm); err != nil && !errors.Is(err, os.ErrExist) {
-			return err
+	return syncAll(todo, perm)
+}
+
+// syncAll creates (if missing) and syncs the directories in todo, outermost
+// first.
+func syncAll(todo []string, perm os.FileMode) error {
+	for i := len(todo) - 1; i >= 0; i-- {
+		p := todo[i]
+		setUnsynced(p, true)
+		if err := os.Mkdir(p, perm); err != nil {
+			info, statErr := os.Stat(p)
+			if !errors.Is(err, os.ErrExist) || statErr != nil || !info.IsDir() {
+				setUnsynced(p, false)
+				return err
+			}
 		}
 		if err := syncDir(filepath.Dir(p)); err != nil {
-			// Take the new directory back out so a retry creates and syncs it
-			// again instead of finding it and skipping the sync.
-			_ = os.Remove(p)
 			return err
 		}
+		setUnsynced(p, false)
 	}
 	return nil
 }
@@ -115,6 +154,11 @@ func Remove(path string) error {
 }
 
 func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		// Windows cannot flush a directory through a handle; NTFS journals
+		// the rename itself.
+		return nil
+	}
 	d, err := os.Open(dir)
 	if err != nil {
 		return fmt.Errorf("open directory %s: %w", dir, err)

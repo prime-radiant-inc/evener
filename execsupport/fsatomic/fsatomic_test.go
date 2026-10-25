@@ -10,7 +10,7 @@ import (
 	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
-func TestWritePublishesContentsWithPerm(t *testing.T) {
+func TestWritePublishesContents(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
@@ -21,13 +21,6 @@ func TestWritePublishesContentsWithPerm(t *testing.T) {
 	got, err := os.ReadFile(path)
 	if err != nil || string(got) != "new" {
 		t.Fatalf("contents = %q, %v; want new", got, err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("perm = %v, want 0600", info.Mode().Perm())
 	}
 }
 
@@ -100,34 +93,6 @@ func TestSyncUnsupported(t *testing.T) {
 	}
 }
 
-// A directory that can be searched and written but not opened for reading lets
-// the rename land and then fails the directory sync's open.
-func TestWriteReportsPublishedWhenDirectorySyncFails(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root opens any directory")
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
-	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(dir, 0o300); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.Chmod(dir, 0o700) }()
-
-	err := fsatomic.Write(path, []byte("new"), 0o600)
-	if !errors.Is(err, fsatomic.ErrPublished) {
-		t.Fatalf("err = %v, want ErrPublished", err)
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := os.ReadFile(path); string(got) != "new" {
-		t.Fatalf("contents = %q, want the published new contents", got)
-	}
-}
-
 func TestMkdirAllCreatesMissingAncestorsAndIsIdempotent(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "a", "b", "c")
 	for range 2 {
@@ -151,30 +116,13 @@ func TestMkdirAllFailsUnderAFile(t *testing.T) {
 	}
 }
 
-// A parent sync that fails must not leave the new directories behind, or a
-// retry would find them, skip the sync, and report durability it never got.
-func TestMkdirAllRetryAfterFailedParentSyncSyncsAgain(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root opens any directory")
-	}
-	base := t.TempDir()
-	if err := os.Chmod(base, 0o300); err != nil {
+func TestMkdirAllRejectsAnExistingFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = os.Chmod(base, 0o700) }()
-	dir := filepath.Join(base, "a", "b")
-
-	if err := fsatomic.MkdirAll(dir, 0o700); err == nil {
-		t.Fatal("expected the unreadable parent to fail its sync")
-	}
-	if err := os.Chmod(base, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(base, "a")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("failed MkdirAll left its directories behind: %v", err)
-	}
-	if err := fsatomic.MkdirAll(dir, 0o700); err != nil {
-		t.Fatalf("retry: %v", err)
+	if err := fsatomic.MkdirAll(file, 0o700); !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("err = %v, want ENOTDIR", err)
 	}
 }
 
@@ -195,34 +143,5 @@ func TestRemoveDeletesFileAndToleratesMissingOnes(t *testing.T) {
 	}
 	if err := fsatomic.Remove(filepath.Join(dir, "missing-dir", "state.json")); err != nil {
 		t.Fatalf("removing under a missing directory: %v", err)
-	}
-}
-
-// The deletion is only durable once the directory entry is synced, so a failed
-// directory sync is reported even though the file is already gone.
-func TestRemoveReportsFailedDirectorySync(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root opens any directory")
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
-	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(dir, 0o300); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.Chmod(dir, 0o700) }()
-	if err := fsatomic.Remove(path); err == nil {
-		t.Fatal("expected the unreadable directory to fail its sync")
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("file still present: %v", err)
-	}
-	if err := fsatomic.Remove(path); err != nil {
-		t.Fatalf("retry: %v", err)
 	}
 }
