@@ -539,6 +539,9 @@ func TestShellToolReadOnlyCwdWorkspaceSymlinkUnderTmp(t *testing.T) {
 		t.Skipf("no writable /var/tmp: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+	if err := os.WriteFile(filepath.Join(outside, "ok.txt"), []byte("LINK-OK"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	link := filepath.Join(root, "link")
 	if err := os.Symlink(outside, link); err != nil {
 		t.Skipf("cannot create symlink: %v", err)
@@ -547,10 +550,17 @@ func TestShellToolReadOnlyCwdWorkspaceSymlinkUnderTmp(t *testing.T) {
 	requireBwrapPrivateMounts(t, env)
 	s := newSandboxedShellSession(t, env)
 
-	res := executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"pwd","cwd":%q}`, link))
+	res := executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"cat ok.txt","cwd":%q}`, link))
 	out := decodeSandboxedShellOutput(t, res)
-	if got := strings.TrimSpace(*out.Output); got != link {
-		t.Fatalf("shell pwd with a workspace symlink = %q, want the literal cwd %q", got, link)
+	if !strings.Contains(*out.Output, "LINK-OK") {
+		t.Fatalf("workspace-symlink cwd did not read its fixture: %q", *out.Output)
+	}
+	res = executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"pwd","cwd":%q}`, link))
+	out = decodeSandboxedShellOutput(t, res)
+	got := strings.TrimSpace(*out.Output)
+	physical, evalErr := filepath.EvalSymlinks(link)
+	if got != link && (evalErr != nil || got != physical) {
+		t.Fatalf("shell pwd with a workspace symlink = %q, want the literal %q or physical %q", got, link, physical)
 	}
 }
 
@@ -650,5 +660,45 @@ func TestShellToolReadOnlySymlinkedRootKeepsMasks(t *testing.T) {
 	out = decodeSandboxedShellOutput(t, res)
 	if strings.Contains(*out.Output, "SECRET-MASK") {
 		t.Fatalf("masked child was readable through the workspace alias: %q", *out.Output)
+	}
+}
+
+// TestShellToolReadOnlyRepoSubdirRootVisibleFromOutside pins the session
+// directory against the repository root: a session started in a repository
+// subdirectory under /tmp must not be linked to the repository root, which is
+// a different directory and already exists in the namespace.
+func TestShellToolReadOnlyRepoSubdirRootVisibleFromOutside(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("bubblewrap private /tmp is Linux-only")
+	}
+	base, err := os.MkdirTemp("/tmp", "evener-4332-repo-subdir-")
+	if err != nil {
+		t.Skipf("no writable /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	repo := filepath.Join(base, "repo")
+	subdir := filepath.Join(repo, "sub")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sbxGit(t, repo, "init", "-q")
+	sbxGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
+	if err := os.WriteFile(filepath.Join(subdir, "file.txt"), []byte("SUBDIR-OK"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside, err := os.MkdirTemp("/var/tmp", "evener-4332-repo-outside-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+	env := newSandboxedShellEnv(t, sandbox.SandboxPolicy{Mode: sandbox.ModeReadOnly}, subdir)
+	requireBwrapPrivateMounts(t, env)
+	s := newSandboxedShellSession(t, env)
+
+	res := executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"cat %s","cwd":%q}`, filepath.Join(subdir, "file.txt"), outside))
+	out := decodeSandboxedShellOutput(t, res)
+	if !strings.Contains(*out.Output, "SUBDIR-OK") {
+		t.Fatalf("repository-subdirectory root unreadable from an outside cwd: %q", *out.Output)
 	}
 }

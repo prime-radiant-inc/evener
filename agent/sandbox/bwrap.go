@@ -109,13 +109,13 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// modes carry no spawned read roots, and a workspace under /tmp must stay
 	// visible when the chosen cwd is elsewhere. Only the workspace root belongs
 	// here; content carve-outs take their validated path below, after the masks.
-	candidates := append([]string{cwd, rp.Git.WorktreeRoot}, sp.ReadRoots...)
+	candidates := append([]string{cwd, rp.WorkspaceRootResolved, rp.Git.WorktreeRoot}, sp.ReadRoots...)
 	if sp.Read == ReadAnywhere {
 		candidates = append(candidates, scratchTreeOf(sessionTmp))
 	}
 	// A cwd already covered by a root this argv binds or exposes needs no
 	// independent bind, which would alias the tree before the masks land.
-	cwdCovered := cwd != "" && (isUnderAnyRoot(cwd, []string{rp.WorkspaceRoot, rp.Git.WorktreeRoot}) ||
+	cwdCovered := cwd != "" && (isUnderAnyRoot(cwd, []string{rp.WorkspaceRoot, rp.WorkspaceRootResolved, rp.Git.WorktreeRoot}) ||
 		isUnderAnyRoot(cwd, sp.ReadRoots) || isUnderAnyRoot(cwd, sp.WriteRoots) ||
 		isUnderAnyRoot(cwd, rp.UnmaskedRoots) ||
 		(sessionTmp != "" && pathUnder(cwd, sessionTmp)))
@@ -147,13 +147,14 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// resolved anchor instead of a second bind: a bind at the literal path would
 	// bypass masks applied at canonical paths under it. The anchor is visible
 	// through the read baseline, a read root, or its own re-bind above.
-	if rp.WorkspaceRoot != "" && rp.WorkspaceRoot != rp.Git.WorktreeRoot && rp.Git.WorktreeRoot != "" {
+	if rp.WorkspaceRoot != "" && rp.WorkspaceRootResolved != "" && rp.WorkspaceRoot != rp.WorkspaceRootResolved {
 		hidden := sp.Read != ReadAnywhere || inPrivateMount(rp.WorkspaceRoot)
 		exposed := isUnderAnyRoot(rp.WorkspaceRoot, sp.ReadRoots) ||
 			isUnderAnyRoot(rp.WorkspaceRoot, rp.UnmaskedRoots) ||
+			isUnderAnyRoot(rp.WorkspaceRoot, []string{rp.Git.WorktreeRoot}) ||
 			(sessionTmp != "" && pathUnder(rp.WorkspaceRoot, sessionTmp))
 		if hidden && !exposed {
-			add("--symlink", rp.Git.WorktreeRoot, rp.WorkspaceRoot)
+			add("--symlink", rp.WorkspaceRootResolved, rp.WorkspaceRoot)
 		}
 	}
 	// A re-bound root can contain the session tmp (the scratch tree, or a

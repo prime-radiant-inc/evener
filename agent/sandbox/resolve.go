@@ -186,6 +186,12 @@ type ResolvedPolicy struct {
 	// session root itself sits under a private mount. Git.WorktreeRoot is the
 	// resolved counterpart. Empty for a hand-built policy.
 	WorkspaceRoot string
+	// WorkspaceRootResolved is WorkspaceRoot with every symlink resolved. It
+	// can differ from Git.WorktreeRoot when the session starts in a
+	// repository subdirectory: the resolved session directory is the anchor
+	// the literal spelling points at, while the worktree root is the
+	// repository root above it.
+	WorkspaceRootResolved string
 
 	// ToolchainBinDir is the macOS developer-toolchain bin directory the env floor
 	// puts on a spawned process's PATH, ahead of the system directories, so `git`
@@ -536,20 +542,21 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	worktree := layout.WorktreeRoot
 
 	rp := ResolvedPolicy{
-		Mode:                policy.Mode,
-		WriteBlocked:        policy.WriteBlocked,
-		Network:             netOn,
-		Backend:             backend,
-		CacheStrategy:       cacheStrategyFor(policy.Mode, backend, host),
-		CacheRoots:          cacheRootsFor(policy.Mode, host, layout.WorktreeRoot),
-		SessionTmp:          true,
-		MaskedPaths:         masked,
-		Git:                 layout,
-		WorkspaceRoot:       cwd,
-		ManagedContentRoots: host.EvenerManagedContentRoots,
-		ManagedContentClean: host.EvenerManagedContentClean,
-		resolveInputs:       policy,
-		resolveHost:         host,
+		Mode:                  policy.Mode,
+		WriteBlocked:          policy.WriteBlocked,
+		Network:               netOn,
+		Backend:               backend,
+		CacheStrategy:         cacheStrategyFor(policy.Mode, backend, host),
+		CacheRoots:            cacheRootsFor(policy.Mode, host, layout.WorktreeRoot),
+		SessionTmp:            true,
+		MaskedPaths:           masked,
+		Git:                   layout,
+		WorkspaceRoot:         cwd,
+		WorkspaceRootResolved: resolveExistingPrefix(cwd),
+		ManagedContentRoots:   host.EvenerManagedContentRoots,
+		ManagedContentClean:   host.EvenerManagedContentClean,
+		resolveInputs:         policy,
+		resolveHost:           host,
 	}
 	rp.FileTool, rp.Spawned = scopesFor(policy, host, layout, worktree)
 	rp.configMasks = configMasks

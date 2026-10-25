@@ -72,6 +72,10 @@ Revision notes:
   spelling is retained as `ResolvedPolicy.WorkspaceRoot` and bound alongside
   the resolved worktree, so a session rooted at a symlinked `/tmp` spelling
   keeps that advertised spelling readable when the chosen cwd is elsewhere.
+  `ResolvedPolicy.WorkspaceRootResolved` tracks the canonical **session**
+  directory separately from `Git.WorktreeRoot` (the repository root): the
+  literal spelling links to the canonical session directory, and a session
+  started in a repository subdirectory gets no link to the repository root.
   It is recreated as a **symlink** to the resolved anchor, not a second bind:
   a literal bind would alias masked children under the canonical path. A cwd
   already covered by a bound root takes no independent bind (only the cwd
@@ -365,6 +369,8 @@ fixture.
    A session rooted at a symlinked `/tmp` spelling reads a workspace file
    through that advertised spelling from an accepted outside cwd, and a
    masked child under the resolved root stays unreadable through the alias.
+   A session started in a repository subdirectory under `/tmp` reads a file
+   there from an accepted outside cwd, with no link to the repository root.
 8. `agent/sandbox/resolve_canread_test.go`: `SpawnedCanRead` accepts
    read-anywhere paths, rejects masked paths and `.git` under a carve-out,
    accepts restricted read roots and unmasked roots, rejects a restricted
