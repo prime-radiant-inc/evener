@@ -1,19 +1,23 @@
 import {
   delegateSendBase,
+  delegateSendEarlierLabel,
   delegateSendEarlierResponses,
   delegateSendResponse,
   delegateSendTarget,
   type EntityView,
   entryDisplayKey,
   findEntityView,
+  hasErrorText,
   hasItemFailure,
   type ItemModel,
   isDelegateSendResult,
+  isInformationalWarning,
   isParentSteer,
   isTurnError,
   isUserAuthoredSteer,
   itemTextPresence,
   joinedReasoningParagraphs,
+  MEMORY_CONTEXT_EVENT_KIND,
   makeTranscriptDisplayConfig,
   parseSteeringNotifications,
   pendingTextJoined,
@@ -25,10 +29,8 @@ import {
 import type { ImageGalleryProps } from "../panes/session/transcript/flow/ImageGallery";
 import { type ComicPersona, comicDelegatePersona } from "./cast";
 
-export type ComicEntry = {
+type ComicEntryFields = {
   id: string;
-  sourceItemId: string;
-  sourceIndex: number;
   kind: "dialogue" | "thought" | "caption" | "images";
   speaker: "human" | "assistant" | "source";
   sourceLabel: string;
@@ -36,7 +38,25 @@ export type ComicEntry = {
   streaming: boolean;
   persona?: ComicPersona;
   images?: ImageGalleryProps["images"];
+  delegateResult?: { kind: "earlierUpdate" | "earlierReply" | "reply" | "failure"; status?: string };
 };
+
+export type ComicItemEntry = ComicEntryFields & {
+  sourceItemId: string;
+  sourceIndex: number;
+  sourceTurnId?: never;
+};
+
+/** A failed turn with no recorded item has no honest SDK item position. */
+export type ComicTurnErrorEntry = ComicEntryFields & {
+  kind: "caption";
+  speaker: "source";
+  sourceTurnId: string;
+  sourceItemId?: never;
+  sourceIndex?: never;
+};
+
+export type ComicEntry = ComicItemEntry | ComicTurnErrorEntry;
 
 export type ComicProjectionContext = {
   assistant?: ComicPersona;
@@ -63,6 +83,11 @@ function textOf(item: ItemModel): string {
   return item.pendingText ? pendingTextJoined(item.pendingText) : item.text;
 }
 
+function failureText(item: ItemModel): string {
+  if (hasErrorText(item)) return item.error ?? "";
+  return item.status === "interrupted" ? "Tool interrupted" : "Tool failed";
+}
+
 function delegatePersona(
   ownerRef: string,
   delegateId: string | undefined,
@@ -76,12 +101,13 @@ function delegatePersona(
   return comicDelegatePersona(view.ownerRef, view.logicalId, view.name);
 }
 
-/** A pure, source-ordered view over the shared projection. No history or preference mutation. */
+/** Item-backed entries retain shared source order; positionless turn errors follow as a separate group. */
 export function projectComicConversation(
   model: ThreadModel,
   context: ComicProjectionContext = {},
 ): readonly ComicEntry[] {
-  const entries: ComicEntry[] = [];
+  const entries: ComicItemEntry[] = [];
+  const turnErrors: ComicTurnErrorEntry[] = [];
   for (const turn of projectThread(model, COMIC_TRANSCRIPT_CONFIG).turns) {
     for (const projected of turn.entries) {
       if (projected.kind !== "item" && projected.kind !== "critical") continue;
@@ -132,33 +158,70 @@ export function projectComicConversation(
           const target = delegateSendTarget(item);
           const raw = isDelegateSendResult(item.raw) ? item.raw : undefined;
           const persona = delegatePersona(model.ref, target, context.entities, raw?.transcript_ref);
-          const historical = delegateSendEarlierResponses(item).map((result) => result.text);
+          const historical = delegateSendEarlierResponses(item);
           const response = delegateSendResponse(item);
+          const sourceLabel = persona
+            ? `${persona.name} · ${persona.badge}`
+            : target
+              ? `Delegate ${target}`
+              : "Delegate";
+          historical.forEach((result, index) => {
+            entries.push({
+              ...base,
+              id: `${base.id}:earlier:${index}`,
+              kind: "caption",
+              speaker: "source",
+              sourceLabel: `${sourceLabel} · ${delegateSendEarlierLabel(result, index, historical.length)}`,
+              text: result.text,
+              persona,
+              delegateResult: result.update
+                ? { kind: "earlierUpdate" }
+                : { kind: "earlierReply", status: result.status },
+            });
+          });
           entries.push({
             ...base,
             kind: "caption",
             speaker: "source",
-            sourceLabel: persona ? `${persona.name} · ${persona.badge}` : target ? `Delegate ${target}` : "Delegate",
-            text: [...historical, response ?? delegateSendBase(item)].join("\n\n"),
+            sourceLabel: response ? `${sourceLabel} · Reply` : sourceLabel,
+            text: response ?? delegateSendBase(item),
             persona,
+            ...(response ? { delegateResult: { kind: "reply" as const } } : {}),
           });
-        } else if (item.outputImages?.length) {
-          entries.push({
-            ...base,
-            kind: "images",
-            speaker: "source",
-            sourceLabel: item.toolName ?? "Tool",
-            text: item.error ?? "",
-            images: item.outputImages,
-          });
-        } else if (hasItemFailure(item)) {
-          entries.push({
-            ...base,
-            kind: "caption",
-            speaker: "source",
-            sourceLabel: item.toolName ?? "Tool",
-            text: item.error ?? item.description ?? "",
-          });
+          if (hasItemFailure(item)) {
+            entries.push({
+              ...base,
+              id: `${base.id}:failure`,
+              kind: "caption",
+              speaker: "source",
+              sourceLabel: `${sourceLabel} · Failure`,
+              text: failureText(item),
+              persona,
+              delegateResult: { kind: "failure", status: item.status },
+            });
+          }
+        } else {
+          const failed = hasItemFailure(item);
+          if (failed) {
+            entries.push({
+              ...base,
+              kind: "caption",
+              speaker: "source",
+              sourceLabel: item.toolName ?? "Tool",
+              text: failureText(item),
+            });
+          }
+          if (item.outputImages?.length) {
+            entries.push({
+              ...base,
+              id: failed ? `${base.id}:images` : base.id,
+              kind: "images",
+              speaker: "source",
+              sourceLabel: item.toolName ?? "Tool",
+              text: "",
+              images: item.outputImages,
+            });
+          }
         }
       } else if (item.type === "steering") {
         if (isUserAuthoredSteer(item)) {
@@ -216,6 +279,12 @@ export function projectComicConversation(
           });
         }
       } else if (item.type === "systemMessage") {
+        if (
+          item.eventKind === MEMORY_CONTEXT_EVENT_KIND ||
+          item.eventKind === "notes-context" ||
+          isInformationalWarning(item)
+        )
+          continue;
         entries.push({
           ...base,
           kind: "caption",
@@ -224,6 +293,7 @@ export function projectComicConversation(
           text: textOf(item),
         });
       } else if (item.type === "warning") {
+        if (isInformationalWarning(item)) continue;
         entries.push({
           ...base,
           kind: "caption",
@@ -247,7 +317,17 @@ export function projectComicConversation(
         text: turn.source.error.message,
         streaming: false,
       });
+    } else if (isTurnError(turn.source.error)) {
+      turnErrors.push({
+        id: `turn:${turn.source.id}:error`,
+        sourceTurnId: turn.source.id,
+        kind: "caption",
+        speaker: "source",
+        sourceLabel: "Turn error",
+        text: turn.source.error.message,
+        streaming: false,
+      });
     }
   }
-  return entries.sort((a, b) => a.sourceIndex - b.sourceIndex);
+  return [...entries.sort((a, b) => a.sourceIndex - b.sourceIndex), ...turnErrors];
 }

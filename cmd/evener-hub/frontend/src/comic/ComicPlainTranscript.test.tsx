@@ -79,3 +79,49 @@ test("plain transcript keeps literal text, thought/source semantics and complete
   );
   expect(rows[4]?.textContent).toContain("frame.png");
 });
+
+test("plain transcript puts positionless turn errors in a separate error group", () => {
+  const error = "Failed before any item was recorded.";
+  const entries: ComicEntry[] = [
+    {
+      id: "first",
+      sourceItemId: "first",
+      sourceIndex: 0,
+      kind: "dialogue",
+      speaker: "human",
+      sourceLabel: "Human",
+      text: "First",
+      streaming: false,
+    },
+    {
+      id: "turn:missing:error",
+      sourceTurnId: "missing",
+      kind: "caption",
+      speaker: "source",
+      sourceLabel: "Turn error",
+      text: error,
+      streaming: false,
+    },
+    {
+      id: "last",
+      sourceItemId: "last",
+      sourceIndex: 1,
+      kind: "dialogue",
+      speaker: "assistant",
+      sourceLabel: "Assistant",
+      text: "Last",
+      streaming: false,
+    },
+  ];
+  render(<ComicPlainTranscript entries={entries} />);
+  const conversation = screen.getByRole("list", { name: "Conversation" });
+  expect(
+    within(conversation)
+      .getAllByRole("listitem")
+      .map((row) => row.textContent),
+  ).toEqual(expect.arrayContaining([expect.stringContaining("First"), expect.stringContaining("Last")]));
+  expect(within(conversation).queryByText(error)).toBeNull();
+  const errors = screen.getByRole("region", { name: /turn errors/i });
+  expect(within(errors).getByText(error)).toBeTruthy();
+  expect(within(errors).getByText(/missing/)).toBeTruthy();
+});

@@ -1,6 +1,11 @@
 import {
   buildEntityView,
+  delegateSendEarlierLabel,
+  delegateSendEarlierResponses,
+  delegateSendResponse,
+  delegateSendTarget,
   hydrateThread,
+  MEMORY_CONTEXT_EVENT_KIND,
   markItemTextOmitted,
   parseActivityTree,
   shippedConfig,
@@ -16,7 +21,7 @@ import {
   subagentWireStep,
 } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { describe, expect, test } from "vitest";
-import { projectComicConversation } from "./projection";
+import { type ComicItemEntry, projectComicConversation } from "./projection";
 
 const inputText = "  **Literal** <script>never execute</script>\nline 2 👩🏽‍🚀  ";
 const responseText = "First reply\n```ts\nconst x = 1;\n```";
@@ -119,6 +124,36 @@ describe("comic conversation projection", () => {
     ]);
   });
 
+  test("suppresses memory-context content but keeps harness and actionable notices", () => {
+    const privateIndex = "Personal memory index: private page links.";
+    const harness = "Harness paused while waiting for consent.";
+    const warning = "Permission requires attention.";
+    const model = base([
+      {
+        id: "notices",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "memory",
+            turnId: "notices",
+            type: "systemMessage",
+            eventKind: MEMORY_CONTEXT_EVENT_KIND,
+            text: privateIndex,
+          },
+          { id: "harness", turnId: "notices", type: "systemMessage", text: harness },
+          { id: "warning", turnId: "notices", type: "systemMessage", eventKind: "warning", text: warning },
+        ],
+      },
+    ]);
+    const entries = projectComicConversation(model);
+    expect(entries.map((entry) => [entry.sourceItemId, entry.text])).toEqual([
+      ["harness", harness],
+      ["warning", warning],
+    ]);
+    expect(JSON.stringify(entries)).not.toContain(privateIndex);
+  });
+
   test("interleaved turns follow document positions instead of regrouping by turn", () => {
     const model = base([
       {
@@ -151,6 +186,7 @@ describe("comic conversation projection", () => {
     const entries = projectComicConversation(model);
     expect(entries.find((e) => e.sourceItemId === humanID)?.text).toBe(inputText);
     expect(entries.find((e) => e.sourceItemId === toolID)?.images).toEqual(toolImages);
+    expect(entries.find((e) => e.sourceItemId === toolID)?.id).toBe(toolID);
     expect(entries.find((e) => e.sourceItemId === "image-only")?.images).toEqual([
       { src: "/s/root/images/u2", name: "scan.png" },
     ]);
@@ -168,7 +204,10 @@ describe("comic conversation projection", () => {
       "communicate",
       "image-only",
     ]);
-    expect(entries.map((e) => e.sourceIndex)).toEqual([...entries.map((e) => e.sourceIndex)].sort((a, b) => a - b));
+    const itemEntries = entries.filter((entry): entry is ComicItemEntry => entry.sourceTurnId === undefined);
+    expect(itemEntries.map((e) => e.sourceIndex)).toEqual(
+      [...itemEntries.map((e) => e.sourceIndex)].sort((a, b) => a - b),
+    );
     expect(entries.find((e) => e.sourceItemId === "user-steer")).toMatchObject({
       speaker: "human",
       kind: "dialogue",
@@ -231,6 +270,47 @@ describe("comic conversation projection", () => {
     expect(JSON.stringify(projected)).not.toContain("stale private content");
   });
 
+  test("failed tools show typed failure without revealing descriptions and keep attributed images", () => {
+    const description = "shell -c 'private command and arguments'";
+    const image = { src: "/s/root/images/failed", name: "failure.png", source: "read-file" };
+    const model = base([
+      {
+        id: "failed-tools",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "failed-shell",
+            turnId: "failed-tools",
+            type: "commandExecution",
+            text: "",
+            toolName: "shell",
+            status: "failed",
+            description,
+          },
+          {
+            id: "failed-read",
+            turnId: "failed-tools",
+            type: "commandExecution",
+            text: "",
+            toolName: "read_file",
+            status: "interrupted",
+            description,
+            outputImages: [{ url: image.src, name: image.name, source: image.source }],
+          },
+        ],
+      },
+    ]);
+    const entries = projectComicConversation(model);
+    const failed = entries.filter((entry) => entry.kind === "caption");
+    expect(failed.map((entry) => entry.sourceItemId)).toEqual(["failed-shell", "failed-read"]);
+    expect(failed.every((entry) => entry.text.trim().length > 0)).toBe(true);
+    expect(entries.find((entry) => entry.sourceItemId === "failed-read" && entry.kind === "images")?.images).toEqual([
+      image,
+    ]);
+    expect(JSON.stringify(entries)).not.toContain(description);
+  });
+
   test("turn-level typed failure survives when its only ordinary tool text is suppressed", () => {
     const model = fixture();
     model.turns = [
@@ -285,6 +365,68 @@ describe("comic conversation projection", () => {
     ]);
   });
 
+  test("empty failed turn retains real turn ownership without inventing item position", () => {
+    const error = "Failed before any item was recorded.";
+    const model = base([
+      {
+        id: "earlier",
+        status: "completed",
+        itemsView: "full",
+        items: [{ id: "earlier-item", turnId: "earlier", type: "userMessage", text: inputText }],
+      },
+      { id: "empty-failure", status: "failed", error: { message: error }, itemsView: "full", items: [] },
+      {
+        id: "later",
+        status: "completed",
+        itemsView: "full",
+        items: [{ id: "later-item", turnId: "later", type: "agentMessage", text: responseText }],
+      },
+    ]);
+    const entries = projectComicConversation(model);
+    expect(entries.map((entry) => entry.sourceItemId).filter(Boolean)).toEqual(["earlier-item", "later-item"]);
+    const turnErrors = entries.filter((entry) => entry.sourceTurnId === "empty-failure");
+    expect(turnErrors).toHaveLength(1);
+    expect(turnErrors[0]).toMatchObject({ kind: "caption", speaker: "source", text: error });
+    expect(turnErrors[0]).not.toHaveProperty("sourceItemId");
+    expect(turnErrors[0]).not.toHaveProperty("sourceIndex");
+  });
+
+  test("delegate send keeps separately labeled typed earlier update, failed reply and current failure", () => {
+    const recorded = subagentWireStep("call_send_2");
+    const update = "Check the drain before I finish.";
+    const previousFailure = "Earlier generation failed.";
+    const currentFailure = "Send itself failed.";
+    const raw = {
+      ...(recorded.raw as Record<string, unknown>),
+      earlier_results: [
+        { action: "update", output: update },
+        { action: "reported", status: "failed", reason: previousFailure },
+      ],
+    };
+    const item = { ...recorded, id: "recorded-send", raw, error: currentFailure, status: "failed" };
+    const model = base([{ id: "send-turn", status: "completed", itemsView: "full", items: [] }]);
+    model.turns[0]!.items.push(item);
+    const earlier = delegateSendEarlierResponses(item);
+    const entries = projectComicConversation(model);
+    expect(entries.filter((entry) => entry.sourceItemId === item.id).map((entry) => entry.text)).toEqual([
+      update,
+      previousFailure,
+      delegateSendResponse(recorded),
+      currentFailure,
+    ]);
+    for (const [index, expected] of earlier.entries()) {
+      expect(entries[index]?.sourceLabel).toContain(delegateSendEarlierLabel(expected, index, earlier.length));
+    }
+    expect(entries[0]?.delegateResult).toMatchObject({ kind: "earlierUpdate" });
+    expect(entries[1]?.delegateResult).toMatchObject({ kind: "earlierReply", status: "failed" });
+    expect(entries[2]?.id).toBe(item.id);
+    expect(entries[3]?.delegateResult).toMatchObject({ kind: "failure", status: "failed" });
+    expect(delegateSendTarget(item)).not.toBe("");
+    expect(entries.every((entry) => entry.sourceLabel.includes(delegateSendTarget(item)))).toBe(true);
+    expect(entries.map((entry) => entry.sourceIndex)).toEqual([0, 0, 0, 0]);
+    expect(entries.every((entry) => entry.speaker === "source")).toBe(true);
+  });
+
   test("attributes recorded delegate sends using actual entity evidence without borrowing a newer report", () => {
     const recorded = [
       subagentWireStep("call_delegate_1"),
@@ -311,13 +453,28 @@ describe("comic conversation projection", () => {
     // A new domain snapshot cannot turn a historical send into the current report.
     const freshEntities = buildEntityView({
       sessionRef: fresh.context.ref,
-      tree: tree!,
+      tree: (() => {
+        const resumedTree = structuredClone(tree!);
+        for (const recorded of fresh.delegates) {
+          const entry = resumedTree.root.entries.find(
+            (candidate) => candidate.kind === "delegate" && candidate.delegate.delegateId === recorded.delegateId,
+          );
+          if (entry?.kind === "delegate") Object.assign(entry.delegate, recorded);
+        }
+        return resumedTree;
+      })(),
       turns: model.turns,
       stale: false,
       ended: false,
     });
     expect(fresh.delegates.find((d) => d.delegateId === "dlg_reported")?.runGeneration).toBeGreaterThan(
       old.delegates.find((d) => d.delegateId === "dlg_reported")?.runGeneration ?? 0,
+    );
+    const resumedEntity = [...freshEntities.values()].find(
+      (entity) => entity.kind === "delegate" && entity.logicalId === "dlg_reported",
+    );
+    expect(resumedEntity?.kind === "delegate" && resumedEntity.row?.delegate.runGeneration).toBe(
+      fresh.delegates.find((delegate) => delegate.delegateId === "dlg_reported")?.runGeneration,
     );
     const reprojected = projectComicConversation(model, { entities: freshEntities });
     expect(
