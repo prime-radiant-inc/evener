@@ -127,8 +127,7 @@ What validation actually runs when evener loads a plugin (`agent/plugin/plugin.g
   See the [plugin package format](plugins.md#package-format-reference).
 - **Duplicate plugin names use the first valid manifest.** Session loading uses
   `LoadAllFailSoft`: later manifests with the same name are skipped with a warning,
-  even if an unrelated component of the first plugin fails to load. The separate
-  `LoadAll` API rejects duplicates; it is not the session-loading policy.
+  even if an unrelated component of the first plugin fails to load.
 - **Agent `name`/`description`** are required non-empty strings (`getString`).
   **`tools`** accepts string lists, comma-separated strings, single tool names,
   or scalar `all`; see [role metadata and validation](plugins.md#add-a-delegate-role)
