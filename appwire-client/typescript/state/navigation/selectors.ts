@@ -101,6 +101,38 @@ export function selectNeedsYouRows(state: NavigationStoreState): NavigationSessi
 export function selectNeedsYouCount(state: NavigationStoreState): number {
   return state.manifest?.data?.sections.needs_you.count ?? selectNeedsYouRows(state).length;
 }
+/** Whether a navigation section may ask for another page.
+ *
+ * A settled page owns completion: once a visible page has data and is neither
+ * loading, failed nor re-validating, the section's own reported `remaining`
+ * decides. The manifest count refreshes on its own schedule and can lag a
+ * queue that has drained, so it may only justify demand before any page has
+ * settled. A failed page keeps demand of its own, and so does a positive
+ * remaining count.
+ *
+ * Before any manifest has reported a count, nothing says the section is
+ * empty, so the rule answers demand. The needs-you controller's pre-manifest
+ * bootstrap relies on that; callers that wait for a count keep their own
+ * manifest-presence gate.
+ */
+export function selectSectionCanDemand(section: "live" | "needs_you", state: NavigationStoreState): boolean {
+  const pages = [...state.resources.values()].filter(
+    (resource) => resource.key.kind === "section" && resource.key.section === section,
+  );
+  if (pages.some((page) => !!page.error)) return true;
+  if (selectSectionRemaining(section, state) > 0) return true;
+  const settled = pages.some(
+    (page) =>
+      page.data !== null &&
+      !page.loading &&
+      !page.error &&
+      !page.stale &&
+      state.visibleResourceKeys.has(keyID(page.key)),
+  );
+  if (settled) return false;
+  const count = state.manifest?.data?.sections[section].count;
+  return count === undefined || count > selectSectionRows(section, state).length;
+}
 export function selectSectionRemaining(section: "live" | "needs_you", state: NavigationStoreState): number {
   const pages = [...state.resources.values()].filter(
     (resource) =>

@@ -19,6 +19,7 @@ import type {
 } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { manifest } from "@evener/appwire-client/testing/navigation";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { IDBFactory } from "fake-indexeddb";
 import { Composer } from "../../panes/session/composer/Composer";
@@ -820,6 +821,41 @@ test("the empty-query view keeps its old (empty) behavior when there are no need
   act(() => openPalette());
 
   expect(screen.queryByRole("option")).toBeNull();
+});
+
+// The manifest count refreshes on its own schedule, so a settled empty page
+// must end demand even while the manifest still reports rows (#4958's
+// zero-row path asked from the count alone).
+test("the empty-query view does not demand a page once a settled page owns completion", async () => {
+  setNeedsYouRows([]);
+  navigationStore.setState({
+    manifest: {
+      key: { kind: "manifest" },
+      data: manifest({
+        sections: { live: { count: 0 }, needs_you: { count: 3 }, pin_sections: { count: 0 } },
+      }),
+      loadedRevision: 1,
+      targetRevision: null,
+      forceToken: 0,
+      etag: "etag",
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "generation_test",
+    },
+  });
+  const loadSection = vi.fn();
+  navigationStore.setState({ loadSection });
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  await act(async () => {
+    openPalette();
+    await Promise.resolve();
+  });
+  expect(loadSection).not.toHaveBeenCalled();
 });
 
 // --- mode machine ---
