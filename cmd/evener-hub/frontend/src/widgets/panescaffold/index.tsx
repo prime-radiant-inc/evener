@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef } from "react";
 import { chromeStore } from "../../shell/chromeStore";
 import { cancelPaneFocus, consumePaneFocus } from "../../shell/workspace";
 import { requireClass } from "../internal/requireClass";
@@ -90,6 +90,21 @@ export function PaneScaffold({
 
   const paneRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // The document this pane lives in, published for shell-level observers that
+  // must watch the reader's own window (a Dockview popout is a separate one).
+  // Re-published every render because adoption changes ownerDocument without
+  // re-rendering on its own; the store no-ops when it is unchanged.
+  useLayoutEffect(() => {
+    if (paneId === undefined) return;
+    chromeStore.getState().setPaneDocumentFor(paneId, paneRef.current?.ownerDocument ?? null);
+  });
+  // Layout cleanup, not passive: a replacement under the same pane id runs
+  // this teardown too, and a passive one would land after the replacement's
+  // own publication and erase it.
+  useLayoutEffect(() => {
+    if (paneId === undefined) return;
+    return () => chromeStore.getState().setPaneDocumentFor(paneId, null);
+  }, [paneId]);
   useEffect(() => {
     if (paneId === undefined) return;
     if (!focused) {

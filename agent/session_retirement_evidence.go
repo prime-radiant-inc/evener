@@ -30,14 +30,9 @@ func (s *Session) retirementEvidence() ([]RetirementBlocker, error) {
 	// to rootAttentionWakeIDs under attentionMu, and only a single section sees
 	// that handoff atomically. The park is read first, the lock order
 	// rootAttentionRailParked documents.
-	parked := s.rootAttentionRailParked()
-	s.attentionMu.Lock()
-	deferred := s.rootAttentionPaused && !s.rootAttentionWake && !s.rootAttentionRetry.active
-	rootAttentionPending := len(s.rootAttentionWakeIDs) != 0 && !parked && !deferred
-	if rootAttentionPending || s.rootAttentionRetry.active || s.attentionCallbacks != 0 || len(s.delegateAttentionArmIDs) != 0 || s.delegateAttentionArmRetry.active {
+	if s.retirementAttentionBlocked(s.rootAttentionRailParked()) {
 		blockers = append(blockers, RetirementBlocker{Category: "notification", SessionID: s.id})
 	}
-	s.attentionMu.Unlock()
 	if state, ok := s.getOrCreateGoalStore().Snapshot(); ok && state.Status == goal.StatusActive {
 		blockers = append(blockers, RetirementBlocker{Category: "autonomous", SessionID: s.id})
 	}
@@ -51,32 +46,90 @@ func (s *Session) retirementEvidence() ([]RetirementBlocker, error) {
 	return blockers, nil
 }
 
-// retirementNonBlockingEvidenceWithNaming reads only this Session's obligations
+// retirementNonBlockingEvidenceWithNaming reads this Session's obligations
 // whose owner locks cannot be held across admitted durable I/O, so a claim
-// attempt may call it while work is admitted without ever waiting. It is the
-// subset of retirementEvidence that omits retirementDelegateBlockers (the
-// delivery and child-manager locks), the attention registry (attentionMu, which
-// a durable transcript append holds across that append's read), and the job
-// journal (jobs.jsonl filesystem I/O).
+// attempt may call it while work is admitted without ever waiting on one of
+// those locks. It may do bounded filesystem I/O: the job journal is read
+// through retirementNonBlockingJournalPending's bounded scan. It is the subset
+// of retirementEvidence that omits retirementDelegateBlockers (the delivery and
+// child-manager locks) and the shared tree's durable-member validation; the
+// attention registry and the job manager's counters are read through their own
+// non-blocking forms.
 //
 // It is deliberately partial, not a claim that the omitted work is always covered
-// by a live lease: a durable watch registration, a deferred delegate delivery, a
-// scheduled attention/job-notification retry, and a running job can each outlive
-// the lease that created them. An early return that takes this read can therefore
-// under-report those; it never over-reports, and the full read that gates the
-// actual retire/refuse decision runs only once nothing is admitted.
+// by a live lease: retirementDelegateBlockers (delegate delivery residue and the
+// child-manager locks) and the tree's durable-only member validation can each
+// outlive the lease that created them. An early return that takes this read can
+// therefore under-report those; it does not invent an obligation it did not read
+// (a busy owner lock yields silence in the pre-check), and the full read that
+// gates the actual retire/refuse decision runs only once nothing is admitted.
 //
 // includeNaming keeps this Session's namer's own naming.pending contribution
 // (#4055): the claim snapshot passes true; the manual retire's wait pre-check
 // passes false, because it waits for a namer and nothing else, and naming.pending
 // reports the same "autonomous" category as an active goal, so the namer's
 // contribution has to be dropped by identity rather than filtered by category.
+// It is also the snapshot/pre-check split for the fail-closed cautions: true
+// lets an unreadable source add a shape-honest placeholder to a diagnostic
+// snapshot, false keeps the wait pre-check silent on it.
 func (s *Session) retirementNonBlockingEvidenceWithNaming(includeNaming bool) []RetirementBlocker {
 	blockers := s.retirementLocalBlockersWithNaming(includeNaming)
+	blockers = append(blockers, s.retirementNonBlockingAttention(includeNaming)...)
 	if state, ok := s.getOrCreateGoalStore().Snapshot(); ok && state.Status == goal.StatusActive {
 		blockers = append(blockers, RetirementBlocker{Category: "autonomous", SessionID: s.id})
 	}
+	if s.jobManager != nil {
+		blockers = append(blockers, s.jobManager.retirementNonBlockingEvidence(s.id, includeNaming)...)
+	}
 	return blockers
+}
+
+// retirementAttentionBlocked reports whether the attention registry holds an
+// obligation. parked is rootAttentionRailParked's answer, read before
+// attentionMu per the lock order that function documents. It takes attentionMu.
+func (s *Session) retirementAttentionBlocked(parked bool) bool {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	return s.retirementAttentionBlockedLocked(parked)
+}
+
+// retirementAttentionBlockedLocked is the one attention predicate shared by the
+// full and non-blocking reads, so the two cannot drift. Callers hold
+// attentionMu; parked is the durable rail hold, read before the lock. It never
+// calls rootAttentionRailParked itself, so it cannot invert that lock order.
+// stableAttentionRetry is deliberately absent: the full read does not count it,
+// so counting it here would change the decision read.
+func (s *Session) retirementAttentionBlockedLocked(parked bool) bool {
+	deferred := s.rootAttentionPaused && !s.rootAttentionWake && !s.rootAttentionRetry.active
+	rootAttentionPending := len(s.rootAttentionWakeIDs) != 0 && !parked && !deferred
+	return rootAttentionPending || s.rootAttentionRetry.active || s.attentionCallbacks != 0 || len(s.delegateAttentionArmIDs) != 0 || s.delegateAttentionArmRetry.active
+}
+
+// retirementNonBlockingAttention reads the attention registry without waiting
+// on admitted transcript work. attentionMu is held across a durable transcript
+// fold (rearmRootDelegateAttentionFromTranscript), so the read uses TryLock,
+// mirroring the tree read's owner TryLock branch (#4055). A busy lock reports
+// nothing for the manual retire's wait pre-check, so the retire keeps waiting
+// rather than treating contention as clear; reportUnreadable adds the
+// shape-honest "notification" caution the diagnostic snapshot uses. parked is
+// read before the lock, the order rootAttentionRailParked documents.
+func (s *Session) retirementNonBlockingAttention(reportUnreadable bool) []RetirementBlocker {
+	if s == nil {
+		return nil
+	}
+	parked := s.rootAttentionRailParked()
+	if !s.attentionMu.TryLock() {
+		if !reportUnreadable {
+			return nil
+		}
+		return []RetirementBlocker{{Category: "notification", SessionID: s.id}}
+	}
+	blocked := s.retirementAttentionBlockedLocked(parked)
+	s.attentionMu.Unlock()
+	if !blocked {
+		return nil
+	}
+	return []RetirementBlocker{{Category: "notification", SessionID: s.id}}
 }
 
 // retirementLocalBlockers reads this Session's lease-free in-memory obligations.
@@ -118,15 +171,7 @@ func (jm *jobManager) retirementEvidence(sessionID string) ([]RetirementBlocker,
 	if len(jm.running) != 0 {
 		blockers = append(blockers, RetirementBlocker{Category: "job", SessionID: sessionID})
 	}
-	watchPending := len(jm.watches) != 0
-	for cfg := range jm.terminalFlush {
-		watchPending = watchPending || len(cfg.pending) != 0
-	}
-	// Claimed stable deliveries (receipts awaiting commit) and retained
-	// settlement retries are process-only owner state; the session pending-work
-	// inventory already treats them as outstanding, so evidence must too.
-	watchPending = watchPending || len(jm.stableWatchReceipts) != 0 || len(jm.stableWatchSettlementRetries) != 0 || jm.stableWatchSettlementRetrying
-	if watchPending {
+	if jm.watchRetirementPendingLocked() {
 		blockers = append(blockers, RetirementBlocker{Category: "watch", SessionID: sessionID})
 	}
 	jm.mu.Unlock()
@@ -142,6 +187,119 @@ func (jm *jobManager) retirementEvidence(sessionID string) ([]RetirementBlocker,
 		}
 	}
 	return blockers, nil
+}
+
+// retirementNonBlockingEvidence reads this manager's lease-free job and watch
+// obligations without waiting on admitted work. The running map and the watch
+// counters live under jm.mu, which rematerializeDurablePendings also holds
+// across jm.store.Load() (session_jobtree_drain.go), so the read takes
+// TryLock: a busy manager contributes no counter evidence to the wait
+// pre-check, which keeps the retire waiting, and reportUnreadable adds the
+// shape-honest "job" caution the diagnostic snapshot uses. No job ID is
+// invented: RetirementBlocker carries none for a run that was never read. The
+// journal read below runs independently of jm.mu.
+func (jm *jobManager) retirementNonBlockingEvidence(sessionID string, reportUnreadable bool) []RetirementBlocker {
+	if jm == nil {
+		return nil
+	}
+	var blockers []RetirementBlocker
+	if jm.mu.TryLock() {
+		if len(jm.running) != 0 {
+			blockers = append(blockers, RetirementBlocker{Category: "job", SessionID: sessionID})
+		}
+		if jm.watchRetirementPendingLocked() {
+			blockers = append(blockers, RetirementBlocker{Category: "watch", SessionID: sessionID})
+		}
+		jm.mu.Unlock()
+	} else if reportUnreadable {
+		// The unread state is job or watch counters; "job" names the manager's
+		// unread process-local work, not a specific run, because none was read.
+		blockers = append(blockers, RetirementBlocker{Category: "job", SessionID: sessionID})
+	}
+	// The pre-check needs one blocker to skip the wait, so the journal scan is
+	// skipped when the in-memory counters already supplied one. The diagnostic
+	// snapshot keeps every source.
+	if reportUnreadable || len(blockers) == 0 {
+		if jm.retirementNonBlockingJournalPending(sessionID) {
+			blockers = append(blockers, RetirementBlocker{Category: "notification", SessionID: sessionID})
+		}
+	}
+	return blockers
+}
+
+// watchRetirementPendingLocked reports whether this manager holds watch work
+// retirement must refuse over. Caller holds jm.mu.
+func (jm *jobManager) watchRetirementPendingLocked() bool {
+	watchPending := len(jm.watches) != 0
+	for cfg := range jm.terminalFlush {
+		watchPending = watchPending || len(cfg.pending) != 0
+	}
+	// Claimed stable deliveries (receipts awaiting commit) and retained
+	// settlement retries are process-only owner state; the session pending-work
+	// inventory already treats them as outstanding, so evidence must too.
+	return watchPending || len(jm.stableWatchReceipts) != 0 || len(jm.stableWatchSettlementRetries) != 0 || jm.stableWatchSettlementRetrying
+}
+
+// retirementNonBlockingJournalMaxBytes bounds the manual retire's journal
+// pre-check. jobs.jsonl is append-only and never compacted, so a long-lived
+// session can exceed this; that session keeps today's namer wait rather than
+// paying unbounded I/O on the retire path. A fold through the job manager's
+// store is not an alternative: jobstore.Store.Load takes store.mu, which an
+// append holds across durable I/O.
+const retirementNonBlockingJournalMaxBytes = 4 << 20
+
+// retirementNonBlockingJournalPending reports whether this manager's journal
+// holds an owner NotifyPending record, using a bounded, lock-free read suitable
+// for the manual retire's wait pre-check. pendingJobNotifs is not a substitute:
+// rematerializeDurablePendings exists because such a record can survive only in
+// the durable store.
+//
+// The read mirrors retirementJobJournal's coherence rule at a bounded scale:
+// stat before, scan with MaxBytes, stat after, and accept the fold only when the
+// file identity, size and modification time are unchanged and the scan reached
+// the end. An empty journal is a genuine clear read. Any error or mismatch
+// contributes no evidence, so the pre-check keeps today's wait; it never treats
+// an unreadable journal as clear. The strict reader still decides the actual
+// refusal. MaxLineBytes is set to the same bound because jobstore checks
+// MaxBytes only after a whole line decodes: an append that grows one line past
+// the cap is refused instead of buffering the default 128 MiB line limit.
+func (jm *jobManager) retirementNonBlockingJournalPending(sessionID string) bool {
+	if jm == nil || jm.dir == "" {
+		return false
+	}
+	path := filepath.Join(jm.dir, "jobs.jsonl")
+	before, err := os.Stat(path)
+	if err != nil || !before.Mode().IsRegular() || before.Size() > retirementNonBlockingJournalMaxBytes {
+		return false
+	}
+	if before.Size() == 0 {
+		return false
+	}
+	events, offset, err := jobstore.ScanEventsFrom(context.Background(), path, 0, jobstore.ScanLimits{
+		MaxBytes:     retirementNonBlockingJournalMaxBytes,
+		MaxLineBytes: retirementNonBlockingJournalMaxBytes,
+	})
+	if err != nil {
+		return false
+	}
+	after, err := os.Stat(path)
+	if err != nil || !retirementJournalCoherent(before, after, offset) {
+		return false
+	}
+	for _, record := range jobstore.Fold(events) {
+		if record.OwnerSessionID == sessionID && record.NotifyState == jobstore.NotifyPending {
+			return true
+		}
+	}
+	return false
+}
+
+// retirementJournalCoherent reports whether one journal scan observed a single
+// unchanged file from start to finish: the same identity, size and modification
+// time, and a scan that reached the file end. Both journal readers require it,
+// so a partial prefix can never be read as a complete journal.
+func retirementJournalCoherent(before, after os.FileInfo, offset int64) bool {
+	return os.SameFile(before, after) && before.Size() == after.Size() && before.ModTime().Equal(after.ModTime()) && offset == after.Size()
 }
 
 // retirementJobJournal uses the canonical read-only decoder, not Store.Load:
@@ -168,7 +326,7 @@ func retirementJobJournal(path string) ([]jobstore.Event, error) {
 	if err != nil {
 		return nil, fmt.Errorf("retirement job evidence: %w", err)
 	}
-	if !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) || offset != after.Size() {
+	if !retirementJournalCoherent(before, after, offset) {
 		return nil, errors.New("retirement job evidence is incomplete or changed during collection")
 	}
 	return events, nil

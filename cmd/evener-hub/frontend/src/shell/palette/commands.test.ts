@@ -5,7 +5,6 @@ import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import "../../panes/sessionPanels";
 import { QUEUE_EMPTY, QUEUE_UNAVAILABLE, STEER_UNAVAILABLE } from "@evener/appwire-client";
-import { keyID } from "@evener/appwire-client/state/navigation";
 import { flushPendingTurnsProjectionForTests } from "../../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
@@ -166,6 +165,7 @@ function runContext(overrides: Partial<PaletteRunContext> = {}): PaletteRunConte
     ...buildPaletteContext(),
     toasts: { push: (kind, text) => pushes.push({ kind, text }) },
     ui: { clearToSearch: vi.fn(), showHelp: vi.fn() },
+    needsYou: { next: vi.fn() },
     ...overrides,
   };
 }
@@ -799,166 +799,12 @@ test("next-needs-you is a global command", () => {
   expect(cmd("next-needs-you").scope).toBe("global");
 });
 
-test("next-needs-you opens the first needs-you session when nothing is focused", () => {
-  const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
-  navigationStore.setState({
-    mode: "v3",
-    visibleResourceKeys: new Set([keyID(key)]),
-    resources: new Map([
-      [
-        keyID(key),
-        {
-          key,
-          data: {
-            generation_id: "test",
-            revision: 1,
-            sessions: [
-              {
-                ref: "local:ny1",
-                host_id: "local",
-                session_id: "ny1",
-                title: "A",
-                project: "P",
-                state: "awaiting",
-                kind: "session",
-                live: true,
-                children: [],
-              },
-              {
-                ref: "local:ny2",
-                host_id: "local",
-                session_id: "ny2",
-                title: "B",
-                project: "P",
-                state: "awaiting",
-                kind: "session",
-                live: true,
-                children: [],
-              },
-            ],
-            remaining: 0,
-            truncated: false,
-          },
-          loadedRevision: 1,
-          targetRevision: 1,
-          forceToken: 0,
-          etag: '"test"',
-          loading: false,
-          stale: false,
-          error: null,
-          generationID: "test",
-        },
-      ],
-    ]),
-  });
+test("next-needs-you delegates to the shell's one needs-you action", () => {
+  const next = vi.fn();
 
-  cmd("next-needs-you").run?.(runContext());
+  cmd("next-needs-you").run?.(runContext({ needsYou: { next } }));
 
-  expect(window.location.pathname).toBe("/s/local%3Any1");
-});
-
-test("v1 next-needs-you ignores stale legacy tree rows", () => {
-  const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
-  navigationStore.setState({
-    mode: "v3",
-    visibleResourceKeys: new Set([keyID(key)]),
-    resources: new Map([
-      [
-        keyID(key),
-        {
-          key,
-          data: {
-            generation_id: "generation_test",
-            revision: 1,
-            sessions: [
-              {
-                ref: "local:navigation",
-                title: "Navigation",
-                host_id: "local",
-                session_id: "navigation",
-                project: "",
-                state: "awaiting",
-                kind: "session",
-                live: false,
-                children: [],
-              },
-            ],
-            remaining: 0,
-            truncated: false,
-          },
-          loadedRevision: 1,
-          targetRevision: 1,
-          forceToken: 0,
-          etag: "n",
-          loading: false,
-          stale: false,
-          error: null,
-          generationID: "generation_test",
-        },
-      ],
-    ]),
-  });
-  cmd("next-needs-you").run?.(runContext());
-  expect(window.location.pathname).toBe("/s/local%3Anavigation");
-});
-
-test("next-needs-you cycles from the focused session to the next needs-you session, wrapping", () => {
-  const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
-  navigationStore.setState({
-    mode: "v3",
-    visibleResourceKeys: new Set([keyID(key)]),
-    resources: new Map([
-      [
-        keyID(key),
-        {
-          key,
-          data: {
-            generation_id: "test",
-            revision: 1,
-            sessions: [
-              {
-                ref: "local:ny1",
-                host_id: "local",
-                session_id: "ny1",
-                title: "A",
-                project: "P",
-                state: "awaiting",
-                kind: "session",
-                live: true,
-                children: [],
-              },
-              {
-                ref: "local:ny2",
-                host_id: "local",
-                session_id: "ny2",
-                title: "B",
-                project: "P",
-                state: "awaiting",
-                kind: "session",
-                live: true,
-                children: [],
-              },
-            ],
-            remaining: 0,
-            truncated: false,
-          },
-          loadedRevision: 1,
-          targetRevision: 1,
-          forceToken: 0,
-          etag: '"test"',
-          loading: false,
-          stale: false,
-          error: null,
-          generationID: "test",
-        },
-      ],
-    ]),
-  });
-  focusSession("local:ny2");
-
-  cmd("next-needs-you").run?.(runContext());
-
-  expect(window.location.pathname).toBe("/s/local%3Any1");
+  expect(next).toHaveBeenCalledTimes(1);
 });
 
 // --- /project, /copy-id, /tasks, /status ---

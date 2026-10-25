@@ -910,7 +910,8 @@ describe("a subagent", () => {
 		);
 		expect(renderedText(tree)).toContain("running · 1m");
 		tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress();
-		expect(openSubagent).toHaveBeenCalledWith("local:child-1", "Audit the store");
+		// The row hands its run start through, even when the fixture has none.
+		expect(openSubagent).toHaveBeenCalledWith("local:child-1", "Audit the store", undefined);
 	});
 });
 
@@ -1054,12 +1055,18 @@ describe("an error", () => {
 		turnId,
 	});
 	const session = (resumeRequired = false) => ({
-		resumeRequired,
-		// The failed turn opened with the user's own input, which Retry re-sends.
-		turns: [
-			{ id: "turn_1" },
-			{ id: "turn_2", items: [{ id: "u-1", type: "userMessage", text: "my original question" }] },
-		] as never,
+		canonical: {
+			resumeRequired,
+			status: { type: "idle" },
+			// The failed turn opened with the user's own input, which Retry re-sends.
+			turns: [
+				{ id: "turn_1" },
+				{ id: "turn_2", items: [{ id: "u-1", type: "userMessage", text: "my original question" }] },
+			] as never,
+		},
+		displayedLatestTurnId: "turn_2",
+		pendingMutations: [],
+		pendingMutationsReady: true,
 	});
 	function show(row: TimelineRow, resumeRequired = false) {
 		const onErrorAction = vi.fn();
@@ -1092,14 +1099,19 @@ describe("an error", () => {
 	it("offers Sign in for an expired sign-in", () => {
 		const { buttons, onErrorAction } = show(failure("401 Unauthorized"));
 		expect(buttons.map((button) => button.props.accessibilityLabel)).toEqual(["Sign in"]);
+		expect(buttons[0].props.disabled).toBe(false);
+		expect(buttons[0].props.accessibilityState).toEqual({ disabled: false });
 		buttons[0].props.onPress();
-		expect(onErrorAction).toHaveBeenCalledWith("signIn");
+		expect(onErrorAction).toHaveBeenCalledWith({ kind: "signIn" });
 	});
 
 	it("offers Retry on a paused session: Send is its recovery action", () => {
-		expect(show(failure("go test exited 1"), true).buttons.map((button) => button.props.accessibilityLabel)).toEqual([
-			"Retry",
-		]);
+		const { buttons, onErrorAction } = show(failure("go test exited 1"), true);
+		expect(buttons.map((button) => button.props.accessibilityLabel)).toEqual(["Retry"]);
+		expect(buttons[0].props.disabled).toBe(false);
+		buttons[0].props.onPress();
+		// The source turn travels with the action into activation.
+		expect(onErrorAction).toHaveBeenCalledWith({ kind: "retry", failedTurnId: "turn_2", disabled: false });
 	});
 
 	it("offers Retry under the latest turn only", () => {
@@ -1107,6 +1119,24 @@ describe("an error", () => {
 			"Retry",
 		]);
 		expect(show(failure("go test exited 1", "turn_1")).buttons).toEqual([]);
+	});
+
+	it("sets the retry's actual disabled and accessibility state together", () => {
+		const tree = render(
+			<TimelineItem
+				item={failure("go test exited 1")}
+				hubId="hub"
+				sessionRef="error"
+				errorActionFor={() => ({ kind: "retry", failedTurnId: "turn_2", disabled: true })}
+				onErrorAction={() => {}}
+			/>,
+		);
+		const button = tree.root.findAll(
+			(node) => node.props.accessibilityRole === "button" && typeof node.props.onPress === "function",
+		)[0];
+		expect(button.props.accessibilityLabel).toBe("Retry");
+		expect(button.props.disabled).toBe(true);
+		expect(button.props.accessibilityState).toEqual({ disabled: true });
 	});
 });
 
@@ -1129,7 +1159,7 @@ describe("a warning", () => {
 				}}
 				hubId="hub"
 				sessionRef="warning"
-				errorActionFor={() => "retry"}
+				errorActionFor={() => ({ kind: "retry", failedTurnId: "turn_2", disabled: false })}
 				onErrorAction={() => {}}
 			/>,
 		);
@@ -1147,7 +1177,18 @@ describe("a warning", () => {
 				item={{ kind: "failure", id: "w1", title: "Low disk", detail: "clean up", attention: true, turnId: "turn_2" }}
 				hubId="hub"
 				sessionRef="warning"
-				errorActionFor={(failed) => errorAction(failed, { turns: [{ id: "turn_1" }, { id: "turn_2" }] as never }, true)}
+				errorActionFor={(failed) =>
+					errorAction(
+						failed,
+						{
+							canonical: { turns: [{ id: "turn_1" }, { id: "turn_2" }] as never, status: { type: "idle" } },
+							displayedLatestTurnId: "turn_2",
+							pendingMutations: [],
+							pendingMutationsReady: true,
+						} as never,
+						true,
+					)
+				}
 				onErrorAction={() => {}}
 			/>,
 		);

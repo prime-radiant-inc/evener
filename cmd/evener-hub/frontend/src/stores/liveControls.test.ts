@@ -4,7 +4,14 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { connectionStore } from "./connection";
-import { controlsFor, pressLocalRecoveryFenced, pressRefusal, recoveryFence } from "./liveControls";
+import {
+  browserSendRecovery,
+  controlsFor,
+  pressLocalRecoveryFenced,
+  pressRefusal,
+  recoveryFence,
+  sendQueueDecisionFor,
+} from "./liveControls";
 import { resetThreadsStoreForTests, threadsStore } from "./threads";
 
 const CAPABILITIES = { send: true, steer: true, interrupt: true, queue: true } as Thread["evener"]["capabilities"];
@@ -247,4 +254,135 @@ test("pressLocalRecoveryFenced keeps its fence while a Stop drains, with no obli
     return { stoppingRefs };
   });
   expect(pressLocalRecoveryFenced(ref)).toBe(false);
+});
+
+type DecisionTarget = Parameters<typeof sendQueueDecisionFor>[0];
+
+function decisionTarget(
+  status: string,
+  {
+    resumeOnlyFoldable = false,
+    send = true,
+    queue = true,
+  }: { resumeOnlyFoldable?: boolean; send?: boolean; queue?: boolean } = {},
+): DecisionTarget {
+  return {
+    status: { type: status },
+    capabilities: { ...CAPABILITIES, send, queue },
+    resumeOnlyFoldable,
+  };
+}
+
+// The browser adapter maps the ONE fence reading to the shared gate's recovery
+// input. Each reading here comes from recoveryFence itself, so the four faces
+// are pinned through the real producer rather than a hand-built shape.
+test("browserSendRecovery maps recoveryFence's four faces", () => {
+  expect(browserSendRecovery(recoveryFence({ status: { type: "notLoaded" } }, true))).toEqual({
+    kind: "send-resumes",
+  });
+  expect(browserSendRecovery(recoveryFence({ status: { type: "notLoaded" }, resumeOnlyFoldable: true }, true))).toEqual(
+    { kind: "folded-resume" },
+  );
+  expect(browserSendRecovery(recoveryFence({ status: { type: "notLoaded" } }, false, { stopInFlight: true }))).toEqual({
+    kind: "blocked",
+  });
+  expect(browserSendRecovery(recoveryFence({ status: { type: "idle" } }, false))).toEqual({ kind: "none" });
+});
+
+// availabilityFor's answers, now read from the shared decision. These are the
+// rows the composer renders from: Send-resumes keeps Send with a parked send,
+// the folded face refuses a second send, blocked refuses both, and the
+// unfenced faces stay the table's plus the browser's shut-down substitution.
+test("sendQueueDecisionFor applies the shared gate to the browser's faces", () => {
+  expect(sendQueueDecisionFor(decisionTarget("notLoaded"), true, true)).toEqual({
+    action: "send",
+    reason: "recovery-send",
+  });
+  expect(sendQueueDecisionFor(decisionTarget("notLoaded", { resumeOnlyFoldable: true }), false, true)).toEqual({
+    action: "send",
+    reason: "resume-folded",
+  });
+  expect(sendQueueDecisionFor(decisionTarget("notLoaded", { resumeOnlyFoldable: true }), true, true)).toEqual({
+    action: "none",
+    reason: "pending-send-in-flight",
+  });
+  expect(sendQueueDecisionFor(decisionTarget("notLoaded"), false, false, { stopInFlight: true })).toEqual({
+    action: "none",
+    reason: "recovery-fenced",
+  });
+  expect(sendQueueDecisionFor(decisionTarget("idle"), false, false)).toEqual({
+    action: "send",
+    reason: "plain-send",
+  });
+  expect(sendQueueDecisionFor(decisionTarget("idle"), true, false)).toEqual({ action: "queue", reason: "queue" });
+  expect(sendQueueDecisionFor(decisionTarget("active"), false, false)).toEqual({
+    action: "queue",
+    reason: "queue",
+  });
+  expect(sendQueueDecisionFor(decisionTarget("ended"), false, false)).toEqual({
+    action: "send",
+    reason: "shut-down-send",
+  });
+});
+
+// The browser policy never yields resume: its two resume routes are the
+// native explicit-resume face (which browserSendRecovery cannot produce) and
+// !connected (which this adapter never passes). Exercise every face, status,
+// capability pair and pending bit to pin the invariant, not one sample row.
+test("a browser send-queue decision is never resume", () => {
+  const statuses = [
+    "idle",
+    "awaiting",
+    "warning",
+    "systemError",
+    "active",
+    "notLoaded",
+    "ended",
+    "closed",
+    "restartRequired",
+    "futureStatus",
+  ];
+  const capabilityPairs = [
+    { send: true, queue: true },
+    { send: true, queue: false },
+    { send: false, queue: true },
+    { send: false, queue: false },
+  ];
+  const signalSets = [{}, { stopInFlight: true }, { uncertainMessages: true }, { queuedNonSend: true }];
+  for (const status of statuses) {
+    for (const capabilities of capabilityPairs) {
+      for (const resumeOnlyFoldable of [false, true]) {
+        for (const restartObligated of [false, true]) {
+          for (const pendingSend of [false, true]) {
+            for (const signals of signalSets) {
+              const target = decisionTarget(status, { ...capabilities, resumeOnlyFoldable });
+              expect(sendQueueDecisionFor(target, pendingSend, restartObligated, signals).action).not.toBe("resume");
+            }
+          }
+        }
+      }
+    }
+  }
+});
+
+// The gate checks restartRequired before every recovery face, so a
+// restartRequired snapshot answers none whatever the fence says. The folded
+// bit on this status is unreachable (the hub never stamps ResumeOnlyFoldable
+// for a restart-required daemon), but the old availabilityFor's folded-resume
+// branch would have answered { canSend: true, canQueue: false } for it; the
+// gate's first row refuses instead.
+test("sendQueueDecisionFor answers restart-required before the recovery face", () => {
+  expect(sendQueueDecisionFor(decisionTarget("restartRequired", { resumeOnlyFoldable: true }), false, false)).toEqual({
+    action: "none",
+    reason: "restart-required",
+  });
+  // The obligation's blocked face loses to the same first row.
+  expect(sendQueueDecisionFor(decisionTarget("restartRequired"), false, true)).toEqual({
+    action: "none",
+    reason: "restart-required",
+  });
+  expect(sendQueueDecisionFor(decisionTarget("restartRequired"), true, true)).toEqual({
+    action: "none",
+    reason: "restart-required",
+  });
 });

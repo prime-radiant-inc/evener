@@ -3,7 +3,9 @@ import { type FormEvent, useEffect, useId, useLayoutEffect, useRef, useState } f
 import { createPortal } from "react-dom";
 import { Button } from "../button";
 import { OverlayPanel } from "../dialog/OverlayPanel";
+import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
+import { useOwnedDocument } from "../internal/useOwnedDocument";
 import styles from "./directorypicker.module.css";
 
 export interface DirectoryPickerProps {
@@ -78,11 +80,24 @@ export function DirectoryPicker({
   const wasCreating = useRef(false);
   const pathId = useId();
   const nameId = useId();
+  // The picker's panel is its only DOM output, so it has no element of its own
+  // to read a realm from before the portal exists. A hidden host marker names
+  // the document the picker was mounted into (a Dockview popout has its own),
+  // and the shared ownership hook keeps it current across a move.
+  const hostRef = useRef<HTMLSpanElement>(null);
+  const ownerDocument = useOwnedDocument(hostRef);
+  const panelDocument = hostRef.current === null ? null : ownerDocument;
+  const [, setHostMounted] = useState(0);
+  // The marker's ref attaches after the first render; re-render once, before
+  // paint, so the panel portals straight into the owning document's body.
+  useLayoutEffect(() => {
+    if (panelDocument === null) setHostMounted((renders) => renders + 1);
+  }, [panelDocument]);
 
   async function browse(path: string, preserveFocusedInput = false) {
     // Rows disappear during navigation. Keep focus on a persistent control
     // without opening the phone keyboard when browsing by touch.
-    if (document.activeElement !== pathInput.current) goButton.current?.focus();
+    if (ownerDocumentOf(pathInput.current).activeElement !== pathInput.current) goButton.current?.focus();
     const id = ++request.current;
     setPathEdited(false);
     setValidatedInput(null);
@@ -102,7 +117,8 @@ export function DirectoryPicker({
       setCurrent(canonical);
       // Initial validation must not collapse a selection made before the first
       // input event. Explicit navigation still canonicalizes its submitted path.
-      if (!preserveFocusedInput || document.activeElement !== pathInput.current) setTyped(canonical);
+      if (!preserveFocusedInput || ownerDocumentOf(pathInput.current).activeElement !== pathInput.current)
+        setTyped(canonical);
       setValidatedInput(path);
       const children = await complete(childrenPrefix(canonical), false);
       if (mounted.current && request.current === id) setEntries(children);
@@ -181,7 +197,9 @@ export function DirectoryPicker({
     }
   }
 
-  return createPortal(
+  // Built only when the portal renders: the first render exists to attach the
+  // host marker, and constructing this tree there would throw it away.
+  const renderPanel = () => (
     <OverlayPanel
       open
       onClose={onClose}
@@ -392,7 +410,15 @@ export function DirectoryPicker({
           </section>
         </div>
       </div>
-    </OverlayPanel>,
-    document.body,
+    </OverlayPanel>
+  );
+
+  return (
+    <>
+      {/* The hidden marker is where the picker was mounted; its document is
+          the one the panel belongs to. */}
+      <span ref={hostRef} hidden />
+      {panelDocument !== null && createPortal(renderPanel(), panelDocument.body)}
+    </>
   );
 }
