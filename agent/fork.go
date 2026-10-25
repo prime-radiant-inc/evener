@@ -1,8 +1,7 @@
 package agent
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -203,55 +202,15 @@ func readForkParent(fs afero.Fs, stateDir, parentID string, maxScanToken int) (t
 	}
 	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
 
-	if maxScanToken <= 0 {
-		maxScanToken = transcript.DefaultMaxLineBytes
-	}
-	reader := bufio.NewReaderSize(f, min(64*1024, maxScanToken))
-
-	// The first non-empty complete line is the header.
-	var parentHeader transcript.Header
-	for {
-		line, complete, _, readErr := transcript.ReadLine(reader, maxScanToken)
-		if readErr != nil {
-			return transcript.Header{}, nil, fmt.Errorf("reading parent transcript header: %w", readErr)
-		}
-		if !complete {
-			return transcript.Header{}, nil, errors.New("parent transcript is empty")
-		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		parentHeader, err = transcript.DecodeHeader(line)
-		if err != nil {
-			return transcript.Header{}, nil, fmt.Errorf("parsing parent transcript header: %w", err)
-		}
-		break
-	}
-
-	// Collect all entry lines from the parent transcript.
 	var allEntries []transcript.Entry
-	for {
-		line, complete, _, readErr := transcript.ReadLine(reader, maxScanToken)
-		if readErr != nil {
-			return transcript.Header{}, nil, fmt.Errorf("reading parent transcript entries: %w", readErr)
-		}
-		if !complete {
-			break
-		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-
-		entry, err := transcript.DecodeEntry(line)
-		if err != nil {
-			return transcript.Header{}, nil, fmt.Errorf("parsing parent transcript entry: %w", err)
-		}
-
+	result, err := transcript.Scan(context.Background(), f, maxScanToken, func(_ []byte, entry transcript.Entry) error {
 		allEntries = append(allEntries, entry)
+		return nil
+	})
+	if err != nil {
+		return transcript.Header{}, nil, fmt.Errorf("reading parent transcript: %w", err)
 	}
-	return parentHeader, allEntries, nil
+	return result.Header, allEntries, nil
 }
 
 // writeForkChild writes the child transcript (prefix entries plus, when

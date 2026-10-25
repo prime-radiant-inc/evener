@@ -490,7 +490,8 @@ func TestForkSession_RejectsMalformedCompleteEntry(t *testing.T) {
 	stateDir, parentID := buildParentSession(t)
 	appendParentTranscript(t, stateDir, parentID, "{\"kind\":\"entry\",\"turn\":\"not-an-object\"}\n")
 
-	if _, err := ForkSession(stateDir, parentID, 3, "edited", ""); err == nil || !strings.Contains(err.Error(), "parsing parent transcript entry") {
+	var lineErr *transcript.LineError
+	if _, err := ForkSession(stateDir, parentID, 3, "edited", ""); !errors.As(err, &lineErr) {
 		t.Fatalf("ForkSession error = %v, want malformed-entry failure", err)
 	}
 }

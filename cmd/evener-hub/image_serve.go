@@ -82,7 +82,7 @@ func (s *WebServer) handleSessionImage(w http.ResponseWriter, r *http.Request, s
 // containing an image part with the given sha256. Returns the raw bytes and
 // media type. Image bytes can be large; we only buffer the matching one.
 func findImageInTranscript(path, wantSha string) ([]byte, string, bool, error) {
-	return scanTranscriptForImage(path, wantSha, transcriptJSONLMaxLineBytes, 0)
+	return scanTranscriptForImage(path, wantSha, transcript.DefaultMaxLineBytes, 0)
 }
 
 // sessionImageRecordOverhead is the space the largest legitimate record may

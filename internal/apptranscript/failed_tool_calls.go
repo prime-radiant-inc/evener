@@ -2,7 +2,6 @@ package apptranscript
 
 import (
 	"primeradiant.com/evener/agent/transcript"
-	"primeradiant.com/evener/llm"
 )
 
 // FailedToolCallsFromFile counts how many of a session's tool calls failed,
@@ -58,66 +57,17 @@ func (c *TurnCache) FailedToolCallsFromFile(path string, maxLineBytes int, fromE
 // rejection, unknown-field strictness, header validation) is exactly the one
 // every other reader in this package applies.
 func scanFailedToolCalls(path string, maxLineBytes int, fromEntryOrdinal int) (int, error) {
-	failures := newFailureCounter()
+	failures := transcript.NewFailureCounter(fromEntryOrdinal)
 	if err := narrowScan(path, maxLineBytes, 1,
 		decodeNarrowEntry[failedToolCallEntry]("tool calls"),
-		func(record failedToolCallEntry, ordinal int) error {
-			if record.Turn.OriginalOrdinal != nil {
-				return nil // a compaction fold copy: its original already counts
-			}
-			failures.observe(record.Turn.Message.Content, ordinal >= fromEntryOrdinal)
+		func(record failedToolCallEntry, _ int) error {
+			failures.ObserveToolParts(record.Turn.OriginalOrdinal != nil, record.Turn.Message.Content)
 			return nil
 		}); err != nil {
 		return 0, err
 	}
 	observeIndexRead(ReadStats{failureScans: 1})
-	return failures.count, nil
-}
-
-// failedToolResult applies the shared failure rule to this package's narrow
-// decode of a tool result, resolving a nameless result from the call that
-// announced it first. The rule itself lives in the transcript package — see
-// transcript.FailedToolResult — because the daemon counts the same failures
-// live as it writes them, and two copies of the rule are two rules.
-func failedToolResult(result *failedToolCallResult, toolNames map[string]string) bool {
-	name := result.Name
-	if name == "" {
-		name = toolNames[result.ToolCallID]
-	}
-	return transcript.FailedToolResult(name, result.IsError)
-}
-
-// failureCounter tallies the failing tool results across a transcript's
-// entries. It learns every call's name so a result whose own record omits one
-// can be resolved from the call that announced it, mirroring ProjectTurn's map
-// of the same name — filled from EVERY entry, including ones before the
-// divergence cut, because a fork child's own result can answer a call the
-// inherited prefix announced. Shared by scanFailedToolCalls and
-// scanDerivedTotals so both scans apply one rule over one bookkeeping.
-type failureCounter struct {
-	names map[string]string
-	count int
-}
-
-func newFailureCounter() *failureCounter {
-	return &failureCounter{names: map[string]string{}}
-}
-
-// observe applies the failure rule to one entry's narrow content decode.
-// counting reports whether the entry is inside the session's own span (at or
-// after the divergence cut); names are learned from every call regardless, for
-// the reason above.
-func (f *failureCounter) observe(parts []toolScanPart, counting bool) {
-	for _, part := range parts {
-		switch {
-		case part.ToolCall != nil && part.Kind == llm.ContentToolCall:
-			f.names[part.ToolCall.ID] = part.ToolCall.Name
-		case part.ToolResult != nil && part.Kind == llm.ContentToolResult:
-			if counting && failedToolResult(part.ToolResult, f.names) {
-				f.count++
-			}
-		}
-	}
+	return failures.Count(), nil
 }
 
 // failedToolCallEntry decodes the few fields the count needs.
@@ -140,20 +90,5 @@ type failedToolCallEntry struct {
 // failedToolCallEntry and derivedTotalsEntry so the two scans decode the same
 // field-for-field subset of schema.Turn and cannot drift apart.
 type toolScanMessage struct {
-	Content []toolScanPart `json:"content"`
-}
-
-type toolScanPart struct {
-	Kind     llm.ContentKind `json:"kind"`
-	ToolCall *struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	} `json:"tool_call"`
-	ToolResult *failedToolCallResult `json:"tool_result"`
-}
-
-type failedToolCallResult struct {
-	ToolCallID string `json:"tool_call_id"`
-	Name       string `json:"name"`
-	IsError    bool   `json:"is_error"`
+	Content []transcript.ToolPart `json:"content"`
 }

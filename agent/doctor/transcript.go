@@ -1,8 +1,7 @@
 package doctor
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,49 +27,20 @@ type transcriptDoc struct {
 }
 
 func loadTranscript(path string) (transcriptDoc, error) {
-	return loadTranscriptWithMaxLineBytes(path, transcript.DefaultMaxLineBytes)
-}
-
-func loadTranscriptWithMaxLineBytes(path string, maxLineBytes int) (transcriptDoc, error) {
 	file, err := openDoctorTranscriptFile(path)
 	if err != nil {
 		return transcriptDoc{}, fmt.Errorf("read transcript %s: %w", path, err)
 	}
 	defer file.Close() //nolint:errcheck // read-only file
-	reader := bufio.NewReaderSize(file, 64*1024)
 	var doc transcriptDoc
-	headerRead := false
-	lineNumber := 0
-	for {
-		line, complete, _, readErr := transcript.ReadLine(reader, maxLineBytes)
-		if readErr != nil {
-			return transcriptDoc{}, fmt.Errorf("read transcript line %d: %w", lineNumber+1, readErr)
-		}
-		if !complete {
-			break
-		}
-		lineNumber++
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		if !headerRead {
-			doc.Header, err = transcript.DecodeHeader(line)
-			if err != nil {
-				return transcriptDoc{}, fmt.Errorf("parse transcript header line %d: %w", lineNumber, err)
-			}
-			headerRead = true
-			continue
-		}
-		e, err := transcript.DecodeEntry(line)
-		if err != nil {
-			return transcriptDoc{}, fmt.Errorf("parse transcript entry line %d: %w", lineNumber, err)
-		}
-		doc.Entries = append(doc.Entries, e)
+	result, err := transcript.Scan(context.Background(), file, transcript.DefaultMaxLineBytes, func(_ []byte, entry transcript.Entry) error {
+		doc.Entries = append(doc.Entries, entry)
+		return nil
+	})
+	if err != nil {
+		return transcriptDoc{}, err
 	}
-	if !headerRead {
-		return transcriptDoc{}, fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
-	}
+	doc.Header = result.Header
 	return doc, nil
 }
 

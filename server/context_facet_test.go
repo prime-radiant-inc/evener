@@ -303,14 +303,14 @@ func contextFacetTranscriptCharsOver4(t testing.TB, dir, wantResult string) int 
 	defer f.Close() //nolint:errcheck // read-only
 
 	reader := bufio.NewReaderSize(f, 1<<20)
-	if _, err := transcript.ReadHeader(context.Background(), reader, appTranscriptMaxLineBytes); err != nil {
+	if _, err := transcript.ReadHeader(context.Background(), reader, transcript.DefaultMaxLineBytes); err != nil {
 		t.Fatalf("read transcript header: %v", err)
 	}
 
 	chars := 0
 	sawResult := false
 	for {
-		line, complete, _, err := transcript.ReadLine(reader, appTranscriptMaxLineBytes)
+		line, complete, _, err := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
 		if err != nil {
 			t.Fatalf("read transcript: %v", err)
 		}

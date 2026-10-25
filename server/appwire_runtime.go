@@ -25,11 +25,6 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// appTranscriptMaxLineBytes bounds a single transcript line. It is the same
-// ceiling the hub's reader uses; a line beyond it is a corrupt file, not a
-// large turn.
-const appTranscriptMaxLineBytes = 128 << 20
-
 // transcriptHeaderReadBufferBytes bounds the prefetch for an ordinary header
 // line. The parser stops at that line; keeping this buffer finite prevents a
 // large historical transcript from crossing the reader boundary merely because
@@ -113,7 +108,7 @@ func PrepareAppIdentityForRef(sourceID, threadID, ref, transcriptPath string) (P
 	}
 	path := strings.TrimSpace(transcriptPath)
 	if path != "" {
-		header, err := transcriptHeader(path, appTranscriptMaxLineBytes)
+		header, err := transcriptHeader(path, transcript.DefaultMaxLineBytes)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 			// Nothing is recorded: the thread has no history to serve.

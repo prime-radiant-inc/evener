@@ -1,8 +1,6 @@
 package apptranscript
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1341,40 +1339,11 @@ func scanSemanticTranscriptContext(ctx context.Context, path string, maxLineByte
 		return transcript.Header{}, fmt.Errorf("open transcript: %w", err)
 	}
 	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
-	if maxLineBytes <= 0 {
-		maxLineBytes = 128 << 20
-	}
-	reader := bufio.NewReaderSize(f, 64*1024)
-	if err := ctx.Err(); err != nil {
-		return transcript.Header{}, err
-	}
-	header, err := transcript.ReadHeader(ctx, reader, maxLineBytes)
-	if err != nil {
-		return transcript.Header{}, err
-	}
-	for {
-		if err := ctx.Err(); err != nil {
-			return transcript.Header{}, err
+	result, err := transcript.Scan(ctx, f, maxLineBytes, func(line []byte, _ transcript.Entry) error {
+		if visit == nil {
+			return nil
 		}
-		line, complete, _, readErr := transcript.ReadLine(reader, maxLineBytes)
-		if readErr != nil {
-			return transcript.Header{}, readErr
-		}
-		if !complete {
-			break
-		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		if _, err := transcript.DecodeEntry(line); err != nil {
-			return transcript.Header{}, fmt.Errorf("parse transcript entry: %w", err)
-		}
-		if visit != nil {
-			if err := visit(json.RawMessage(append([]byte(nil), line...))); err != nil {
-				return transcript.Header{}, err
-			}
-		}
-	}
-	return header, nil
+		return visit(json.RawMessage(line))
+	})
+	return result.Header, err
 }

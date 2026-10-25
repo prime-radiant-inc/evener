@@ -1436,7 +1436,7 @@ func stampDerivedTotals(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread a
 // index, or an index that cannot answer the totals. A package variable so a test
 // can prove a read against a current sidecar does not scan at all.
 var pastDerivedTotalsScan = func(path string, fromEntryOrdinal int) (*appwire.EvenerUsage, int, error) {
-	return pastTranscriptCache.DerivedTotalsFromFile(path, transcriptJSONLMaxLineBytes, fromEntryOrdinal)
+	return pastTranscriptCache.DerivedTotalsFromFile(path, transcript.DefaultMaxLineBytes, fromEntryOrdinal)
 }
 
 // stampDerivedTotalsWith stamps a past thread's token total and failed-tool-call
@@ -1478,7 +1478,7 @@ func stampTotals(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread appwire.
 // derived server-side, the divergence cut, error-means-absent — is stamped above
 // stampDerivedTotals.
 func stampDerivedFailureCount(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
-	count, err := pastTranscriptCache.FailedToolCallsFromFile(pastTranscriptPath(entry), transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
+	count, err := pastTranscriptCache.FailedToolCallsFromFile(pastTranscriptPath(entry), transcript.DefaultMaxLineBytes, entry.Meta.DivergenceTurn)
 	if err != nil {
 		return thread
 	}
@@ -1496,7 +1496,7 @@ func pastTranscriptPath(entry hubcore.PastEntry) string {
 func computePastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := pastTranscriptPath(entry)
 	reg := apptranscript.NewToolCallRegistry()
-	turns, err := pastTranscriptCache.ItemTurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	turns, err := pastTranscriptCache.ItemTurnsFromFile(transcriptPath, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		return appItemsFromReplayTurn(turnID, entryIndex, turn, reg)
 	})
 	if err != nil {

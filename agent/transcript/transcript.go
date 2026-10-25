@@ -1,7 +1,8 @@
 // Package transcript defines the on-disk JSONL transcript format and the
 // append-only writer that records an agent session's semantic turns.
-// Readers live with their consumers; this package owns the write side and the
-// shared line schema (Header and Entry).
+// This package owns the write side, the shared line schema (Header and Entry)
+// and Scan, the one whole-file reader; readers that track offsets or read a
+// range keep their own loop over ReadLine.
 package transcript
 
 import (

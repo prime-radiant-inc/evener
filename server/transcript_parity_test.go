@@ -364,7 +364,7 @@ func transcriptTurns(t *testing.T, path string) []schema.Turn {
 	reader := bufio.NewReaderSize(f, 1<<20)
 	var turns []schema.Turn
 	for first := true; ; first = false {
-		line, complete, _, err := transcript.ReadLine(reader, appTranscriptMaxLineBytes)
+		line, complete, _, err := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
 		if err != nil {
 			t.Fatal(err)
 		}

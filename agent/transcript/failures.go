@@ -134,20 +134,65 @@ func (c *FailureCounter) observe(turn schema.Turn, unresolved *bool) {
 		case part.Kind == llm.ContentToolCall && part.ToolCall != nil:
 			c.toolNames[part.ToolCall.ID] = part.ToolCall.Name
 		case part.Kind == llm.ContentToolResult && part.ToolResult != nil:
-			if !counting {
-				continue
-			}
-			name := part.ToolResult.Name
-			if name == "" {
-				resolved, ok := c.toolNames[part.ToolResult.ToolCallID]
-				if !ok && unresolved != nil {
-					*unresolved = true
-				}
-				name = resolved
-			}
-			if FailedToolResult(name, part.ToolResult.IsError) {
-				c.count++
-			}
+			c.settle(counting, part.ToolResult.ToolCallID, part.ToolResult.Name, part.ToolResult.IsError, unresolved)
+		}
+	}
+}
+
+// settle counts one tool result when it is inside the session's own span and
+// fails the rule, resolving a nameless result from the calls seen so far.
+func (c *FailureCounter) settle(counting bool, toolCallID, name string, isError bool, unresolved *bool) {
+	if !counting {
+		return
+	}
+	if name == "" {
+		resolved, ok := c.toolNames[toolCallID]
+		if !ok && unresolved != nil {
+			*unresolved = true
+		}
+		name = resolved
+	}
+	if FailedToolResult(name, isError) {
+		c.count++
+	}
+}
+
+// ToolPart is the narrow decode of a message content part that the failure
+// rule needs: only the tool calls and tool results. A reader that scans a
+// whole transcript decodes this instead of llm.ContentPart so it never pays
+// for inline image bytes.
+type ToolPart struct {
+	Kind     llm.ContentKind `json:"kind"`
+	ToolCall *struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"tool_call"`
+	ToolResult *struct {
+		ToolCallID string `json:"tool_call_id"`
+		Name       string `json:"name"`
+		IsError    bool   `json:"is_error"`
+	} `json:"tool_result"`
+}
+
+// ObserveToolParts is Observe for a reader that decoded only the tool parts of
+// an entry. foldCopy is whether the turn carries an original ordinal. Every
+// entry must be shown, folded or not, so the counter's ordinal stays in step
+// with the transcript's.
+func (c *FailureCounter) ObserveToolParts(foldCopy bool, parts []ToolPart) {
+	if c == nil {
+		return
+	}
+	c.ordinal++
+	if foldCopy {
+		return
+	}
+	counting := c.ordinal >= c.from
+	for _, part := range parts {
+		switch {
+		case part.ToolCall != nil && part.Kind == llm.ContentToolCall:
+			c.toolNames[part.ToolCall.ID] = part.ToolCall.Name
+		case part.ToolResult != nil && part.Kind == llm.ContentToolResult:
+			c.settle(counting, part.ToolResult.ToolCallID, part.ToolResult.Name, part.ToolResult.IsError, nil)
 		}
 	}
 }

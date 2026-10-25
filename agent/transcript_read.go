@@ -1,8 +1,7 @@
 package agent
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -85,68 +84,36 @@ func readSemanticTranscript(path string, root string, maxLineBytes int, retainEn
 	}
 	defer func() { _ = f.Close() }()
 
-	reader := bufio.NewReaderSize(f, 64*1024)
 	var data transcriptData
-	headerRead := false
-	for {
-		line, complete, bytesRead, readErr := transcript.ReadLine(reader, maxLineBytes)
-		if readErr != nil {
-			return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, "reading transcript", readErr)
-		}
-		if !complete {
-			if bytesRead > 0 {
-				data.Skipped++
-			}
-			break
-		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		if !headerRead {
-			header, err := transcript.DecodeHeader(line)
-			if err != nil {
-				if errors.Is(err, transcript.ErrUnsupportedFormat) {
-					return transcriptData{}, err
-				}
-				return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, "parsing transcript header", err)
-			}
-			data.Header = header
-			headerRead = true
-			continue
-		}
-		entry, err := transcript.DecodeEntry(line)
-		if err != nil {
-			if errors.Is(err, transcript.ErrUnsupportedFormat) {
-				return transcriptData{}, err
-			}
-			operation := "parsing transcript entry"
-			if errors.Is(err, transcript.ErrInvalidRecordBoundary) {
-				operation = "parsing transcript line"
-			}
-			return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, operation, err)
-		}
+	result, err := transcript.Scan(context.Background(), f, maxLineBytes, func(line []byte, entry transcript.Entry) error {
 		if retainEntries {
 			data.Entries = append(data.Entries, entry)
 		}
 		if retainEntryLines {
-			data.EntryLines = append(data.EntryLines, bytes.Clone(line))
+			data.EntryLines = append(data.EntryLines, line)
 		}
+		return nil
+	})
+	if err != nil {
+		// A file in another format is not corrupt: callers tell the two apart.
+		// A file with no header at all is corrupt.
+		if errors.Is(err, transcript.ErrUnsupportedFormat) && !errors.Is(err, transcript.ErrMissingHeader) {
+			return transcriptData{}, err
+		}
+		return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, err)
 	}
-	if !headerRead {
-		if corruptSentinel != nil {
-			return transcriptData{}, fmt.Errorf("%w: transcript file is empty", corruptSentinel)
-		}
-		return transcriptData{}, errors.New("transcript file is empty: no header")
+	data.Header = result.Header
+	if result.TornTail {
+		data.Skipped++
 	}
 	return data, nil
 }
 
-func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
+func wrapTranscriptCorrupt(sentinel error, err error) error {
 	if sentinel != nil {
-		return fmt.Errorf("%w: %s: %w", sentinel, operation, err)
+		return fmt.Errorf("%w: %w", sentinel, err)
 	}
-	return fmt.Errorf("%s: %w", operation, err)
+	return err
 }
 
 // retainedFrom is the index of the first entry ResumeHistory keeps: the last

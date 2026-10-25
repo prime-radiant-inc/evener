@@ -360,7 +360,7 @@ func TestTranscriptHeaderReadsOnlyLeadingHeader(t *testing.T) {
 		return path
 	}
 	large := writeNoAPICallTranscript(2000)
-	if got, err := transcriptHeader(large, appTranscriptMaxLineBytes); err != nil || got.SessionID != "th_1" {
+	if got, err := transcriptHeader(large, transcript.DefaultMaxLineBytes); err != nil || got.SessionID != "th_1" {
 		t.Fatalf("header = %+v, %v; want session th_1", got, err)
 	}
 
@@ -370,7 +370,7 @@ func TestTranscriptHeaderReadsOnlyLeadingHeader(t *testing.T) {
 	}
 	defer file.Close() //nolint:errcheck // read-only fixture
 	counted := &countingHeaderReader{Reader: file}
-	if got, err := transcriptHeaderFromReader(counted, appTranscriptMaxLineBytes); err != nil || got.SessionID != "th_1" {
+	if got, err := transcriptHeaderFromReader(counted, transcript.DefaultMaxLineBytes); err != nil || got.SessionID != "th_1" {
 		t.Fatalf("counted header = %+v, %v; want session th_1", got, err)
 	}
 	if counted.bytes > transcriptHeaderReadBufferBytes {
