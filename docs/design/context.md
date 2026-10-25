@@ -79,11 +79,15 @@ tool, rather than waiting for the automatic pressure-triggered layers.
 |-----------|----------|-------------|
 | `note_to_self` | yes | Note handed back to the agent verbatim right after the compaction, then cleared. Empty string clears a pending note. |
 | `compaction_instructions` | no | Steers what the summary keeps vs. drops. |
+| `reload_skills` | no | Optional array of strings naming skills to reload after a compaction that publishes. Absent or `null` makes no selection; an explicit empty array reloads none; any present selection requests the compaction. Order, duplicates, and unknown names: see [Reload selection at compaction](../skills.md#reload-selection-at-compaction). |
 
-When only `note_to_self` is empty and no `compaction_instructions` are given, no
-compaction is scheduled — just the note is cleared. Otherwise a force-compaction is
-queued at the tool-round tail and the tool returns a prediction (not past-tense
-confirmation, since the compaction hasn't happened yet).
+`compact_context` schedules no compaction only when `note_to_self` is empty,
+`compaction_instructions` is empty or absent, and `reload_skills` is absent or `null`;
+that call clears the note. Any other call that passes argument validation requests a
+compaction. An accepted request queues a force-compaction at the tool-round tail and
+the tool returns a prediction (not past-tense confirmation, since the compaction
+hasn't happened yet). A request rejected because a forced compaction is already
+pending or any compaction operation is still being delivered changes nothing.
 
 ### The note: a one-shot handoff across the compaction boundary
 
@@ -118,12 +122,40 @@ facts that drop out of the recent window are allowed to fade.
 
 ### Agent-force path
 
-The `compact_context` tool calls `requestForceCompact(instructions)`, which sets a pending
-flag on the session. After the tool round drains, `applyPendingForceCompact` consumes
-the request and calls `Manager.ForceCompact(ctx, history, instructions, emitFn)`.
-This is the same `Manager` seam used by the `/compact` user command; passing non-empty
-`instructions` routes through `summarizeWithLLMSteered`, which replaces the default
-mandatory-sections prompt with the agent's directive.
+The `compact_context` tool parses `note_to_self`, `compaction_instructions`, and
+`reload_skills` (into a `schema.SkillReloadSelection`) and calls
+`deps.requestSkillCompaction(ctx, note, instructions, selection)`
+(`agent/session_tools_compact.go`). `requestSkillCompaction`
+(`agent/session_skill_compaction.go`) records the intent as a generation-owned
+`SkillCompactionOperation` with origin `forced`, carrying the note, instructions,
+and reload selection; it arms the transient round-tail trigger (`forceRequested`
+and `pendingInstructions`) and persists. A pending automatic operation is
+superseded; a non-clear-only request over a forced or in-delivery operation is
+rejected without mutating note, selection, or operation. A failed metadata save
+retires the operation and its trigger and returns a typed
+`*skillCompactionSaveError`, so the caller can retry.
+
+A clear-only call clears the pinned note, cancels only the pending automatic
+operation associated with the cleared note, returns generation 0, and arms no
+compaction; a forced operation and its round trigger survive, so a compaction
+already requested by an earlier call still runs.
+
+`requestForceCompact` (`agent/session_self_compact.go`) is not on this path: it
+remains a transient round-trigger primitive that only tests call.
+
+After the tool round drains, `applyPendingForceCompact` consumes the trigger. It
+reads the instructions from the pending forced operation's owner snapshot when one
+exists — never from the transient copy — so a crash between the tool call and the
+tail cannot lose the steering. It captures that forced operation and calls
+`foldWithForceCompact`, which runs
+`Manager.ForceCompact(ctx, history, instructions, emitFn)` and publishes the
+folded history. The winning publication claims the captured operation when the
+fold staged a compaction and the captured operation still matches the live pending
+operation; a supersede or cancellation claims nothing. Losing the publication race
+on every retry retires a captured forced operation so the cycle does not wedge. A
+transcript refusal is not retried and does not cancel: the operation stays pending,
+and a restart re-arms its round trigger from the persisted record. This is the
+`Manager.ForceCompact` seam documented under *ForceCompact* below.
 
 `ForceCompact` returns a `bool` indicating whether a summary turn was actually
 produced (false when there is no LLM client or the history is too short to summarize).

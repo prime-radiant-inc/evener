@@ -1,5 +1,6 @@
 import type { SessionActivityContext, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
@@ -9,6 +10,7 @@ import { useStore } from "zustand";
 import { accessibleName } from "../../accessibleNameTestUtils";
 import { chromeStore } from "../../shell/chromeStore";
 import { ClientProvider } from "../../shell/clientContext";
+import { NeedsYouProvider } from "../../shell/NeedsYouProvider";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { installFocusedScope, summaryOf } from "../../shell/statusbar/scopeTestUtils";
 import {
@@ -20,7 +22,7 @@ import {
 } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
-import { resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import {
   activityContext,
   activityDelegate,
@@ -50,6 +52,7 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetNavigationStoreForTests();
   resetTranscriptPagingForTests();
+  resetNavigationStoreForTests();
   resetWorkspaceStoreForTests();
   resetTranscriptViewRegistryForTests();
   height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
@@ -58,6 +61,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  resetNavigationStoreForTests();
   resetWorkspaceStoreForTests();
   connectionStore.setState({ state: "idle", client: null });
   resetNavigationStoreForTests();
@@ -191,6 +195,38 @@ function mount(fake: FakeClient) {
     </ClientProvider>,
   );
 }
+
+const NEEDS_YOU_PAGE_KEY = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+
+function installNeedsYouRows(refs: string[]): void {
+  const rows = refs.map((ref) => ({
+    ref,
+    host_id: "local",
+    session_id: ref,
+    title: ref,
+    project: "Proj",
+    state: "awaiting",
+    kind: "session",
+    live: true,
+    children: [],
+  }));
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(NEEDS_YOU_PAGE_KEY), {
+    key: NEEDS_YOU_PAGE_KEY,
+    data: { generation_id: "g", revision: 1, sessions: rows, remaining: 0, truncated: false },
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: '"test"',
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "g",
+  });
+  const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
+  visibleResourceKeys.add(keyID(NEEDS_YOU_PAGE_KEY));
+  navigationStore.setState({ mode: "v3", resources, visibleResourceKeys });
+}
 function columnRefs() {
   return screen.queryAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"));
 }
@@ -302,6 +338,36 @@ test("root and child render through real conversation readers inside one scaffol
   expect(screen.getAllByRole("textbox")).toHaveLength(2);
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
+});
+
+test("only the focused leaf offers attention navigation", async () => {
+  const { fake } = fixture();
+  installNeedsYouRows(["child", "local:target"]);
+  const mounted = render(
+    <ClientProvider client={fake}>
+      <NeedsYouProvider>
+        <CommittedZoom />
+      </NeedsYouProvider>
+    </ClientProvider>,
+  );
+  await screen.findByText("child content child-id");
+
+  expect(document.querySelectorAll('[data-testid="next-needs-you"]')).toHaveLength(1);
+  const control = screen.getByTestId("next-needs-you");
+  const leaf = control.closest('[data-testid="cascade-column"]');
+  expect(leaf?.getAttribute("data-leaf")).toBe("true");
+  expect(leaf?.getAttribute("data-scope-ref")).toBe("child");
+  // The leaf seat itself reports focused=false: the control is granted by the
+  // active keyboard-scroll leaf and the exact focused ref, not the broad seat.
+  expect(leaf?.querySelector('[role="textbox"]')).toBeTruthy();
+
+  const root = screen
+    .getAllByTestId("cascade-column")
+    .find((column) => column.getAttribute("data-scope-ref") === "root");
+  expect(root).toBeTruthy();
+  expect(root?.querySelector('[role="textbox"]')).toBeTruthy();
+  expect(root?.querySelector('[data-testid="next-needs-you"]')).toBeNull();
+  mounted.unmount();
 });
 
 test("an unloaded scope uses its navigation title through column, spine and pop", async () => {

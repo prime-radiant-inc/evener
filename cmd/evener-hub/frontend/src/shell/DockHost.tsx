@@ -8,7 +8,7 @@
 
 import type { DockviewApi } from "dockview-core";
 import { DockviewReact, type DockviewReadyEvent, type IDockviewPanelProps } from "dockview-react";
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import "dockview-react/dist/styles/dockview.css";
 import "./dockview-theme.css";
 import { navigationSummaryFor, resolveThreadName } from "../panes/session/threadTitle";
@@ -16,6 +16,7 @@ import { parseZoomParams } from "../panes/zoom/intent";
 import { useNavigationStore } from "../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../stores/threads";
 import { Skeleton } from "../widgets";
+import { attentionPanelAnchor, attentionPanelApplied } from "./attentionPlacement";
 import { chromeStore, useChromeStore } from "./chromeStore";
 import styles from "./DockHost.module.css";
 import { PaneTab } from "./PaneTab";
@@ -29,6 +30,7 @@ import {
   type OpenPaneRecord,
   type PanePanelParams,
   type PaneSlot,
+  presentedPanes,
   registerDockviewApi,
   useWorkspaceStore,
   workspaceStore,
@@ -276,7 +278,8 @@ function restoredPaneSlots(api: DockviewApi): Map<string, PaneSlot> {
 
 export function DockHost() {
   const [api, setApi] = useState<DockviewApi | null>(null);
-  const panes = useWorkspaceStore((s) => s.panes);
+  const livingPanes = useWorkspaceStore((s) => s.panes);
+  const panes = useMemo(() => presentedPanes(livingPanes), [livingPanes]);
   const focusedPaneId = useWorkspaceStore((s) => s.focusedPaneId);
   const paneTitles = useChromeStore((s) => s.paneTitles);
   const threads = useThreadsStore((s) => s.threads);
@@ -298,7 +301,24 @@ export function DockHost() {
     if (!api) return;
 
     const removeSub = api.onDidRemovePanel((panel) => {
-      workspaceStore.getState().closePane(panel.id);
+      if (!syncingSlots.current) workspaceStore.getState().closePane(panel.id);
+    });
+    // Dockview moves a group's existing DOM into the popout window without
+    // re-rendering its panes, so a scaffold's per-render publication would
+    // leave the stored document on the opener until something else rendered.
+    // Publish the ownership at the move itself, and again when the group is
+    // docked back.
+    const popoutAddSub = api.onDidAddPopoutGroup((popout) => {
+      chromeStore.getState().setPaneDocumentsFor(
+        popout.group.panels.map((panel) => panel.id),
+        popout.window.document,
+      );
+    });
+    const popoutRemoveSub = api.onDidRemovePopoutGroup((popout) => {
+      chromeStore.getState().setPaneDocumentsFor(
+        popout.group.panels.map((panel) => panel.id),
+        document,
+      );
     });
     // origin distinguishes a user clicking a tab from a change THIS
     // component itself just drove via panel.api.setActive() (the focus-
@@ -345,6 +365,8 @@ export function DockHost() {
         saveLayout();
       }
       removeSub.dispose();
+      popoutAddSub.dispose();
+      popoutRemoveSub.dispose();
       activeSub.dispose();
       layoutSub.dispose();
       registerDockviewApi(null);
@@ -365,6 +387,7 @@ export function DockHost() {
   // already-open pane's title current.
   useEffect(() => {
     if (!api) return;
+    syncingSlots.current = true;
     const currentIds = new Set(api.panels.map((p) => p.id));
     const bootTitleCtx: PaneTitleCtx = {
       threadName: (ref) => resolveThreadName(threadsStore.getState().threads, navigationSummaryFor(ref), ref),
@@ -373,13 +396,23 @@ export function DockHost() {
     for (const pane of panes) {
       const panelParams: PanePanelParams = { paneType: pane.type, paneParams: pane.params };
       if (!currentIds.has(pane.id)) {
+        const anchor = attentionPanelAnchor(pane);
+        const sourcePanel = anchor ? api.getPanel(anchor.id) : undefined;
         api.addPanel({
           id: pane.id,
           component: PANE_COMPONENT_KEY,
           title: paneFor(pane.type).title(pane.params, bootTitleCtx),
           params: panelParams,
           renderer: pane.type === "doc" ? "always" : "onlyWhenVisible",
-          ...positionFor(api, pane, pushedSlotsRef.current),
+          ...(sourcePanel
+            ? {
+                position: {
+                  referencePanel: sourcePanel.id,
+                  direction: "within" as const,
+                  index: sourcePanel.group.panels.indexOf(sourcePanel),
+                },
+              }
+            : positionFor(api, pane, pushedSlotsRef.current)),
         });
         pushedParamsRef.current.set(pane.id, panelParams);
         pushedSlotsRef.current.set(pane.id, pane.slot);
@@ -400,6 +433,7 @@ export function DockHost() {
       const panel = api.getPanel(pane.id);
       const renderer = pane.type === "doc" ? "always" : "onlyWhenVisible";
       if (panel && panel.api.renderer !== renderer) panel.api.setRenderer(renderer);
+      attentionPanelApplied(pane);
     }
 
     const desiredIds = new Set(panes.map((p) => p.id));
@@ -413,7 +447,6 @@ export function DockHost() {
     // moveTo can activate a fallback group while moving its last panel, even
     // with skipSetActive. Those synchronous events are our own slot work,
     // not user selection, regardless of dockview's reported origin.
-    syncingSlots.current = true;
     syncPaneSlots(api, panes, pushedSlotsRef.current);
     syncingSlots.current = false;
     pushedSlotsRef.current = new Map(panes.map((pane) => [pane.id, pane.slot]));

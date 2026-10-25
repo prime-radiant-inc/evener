@@ -5,6 +5,7 @@ import type { ActivityScope, ActivityTab } from "../../shell/statusbar/statusSco
 import { CloseIcon, IconButton, Popover, StatusDot } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { ActivityBodyClock } from "../session/chrome/activityTime";
 import { cadenceStateForStatus } from "../session/liveness";
 import { enterAgentCascade } from "./actions";
 import styles from "./zoom.module.css";
@@ -49,13 +50,18 @@ export function ActivityPeek({
         </header>
         <div className={CLASS.peekBody}>
           <DisclosurePersistenceContext.Provider value={JSON.stringify(["cascade-peek", paneId, scope.leaf.ref, tab])}>
-            <Body
-              scope={scope}
-              onDrill={(sub) => {
-                enterAgentCascade(sub, paneId);
-                onClose();
-              }}
-            />
+            <ActivityBodyClock>
+              {(now) => (
+                <Body
+                  scope={scope}
+                  now={now}
+                  onDrill={(sub) => {
+                    enterAgentCascade(sub, paneId);
+                    onClose();
+                  }}
+                />
+              )}
+            </ActivityBodyClock>
           </DisclosurePersistenceContext.Provider>
         </div>
       </div>

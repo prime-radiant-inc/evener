@@ -6,7 +6,7 @@ import { keyID, type ResourceKey, type ResourceState } from "@evener/appwire-cli
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore } from "../../stores/navigation/store";
@@ -14,7 +14,7 @@ import { activityClient, activityThread } from "../../stores/sessionActivityTest
 import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { Toast } from "../../widgets";
-import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
+import { resetDisclosureStoreForTests, setDisclosureOpen } from "../../widgets/disclosure/disclosureStore";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import { resetFocusedActivityScopeForTests } from "../focusedSession";
 import { type PaneDescriptor, type PaneProps, registerPaneForTests } from "../paneRegistry";
@@ -177,6 +177,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   resetWorkspaceStoreForTests();
   resetFocusedActivityScopeForTests();
   resetActivitySidebarStoreForTests();
@@ -300,4 +301,59 @@ describe("TasksTab", () => {
     expect(screen.queryByText("Remaining work")).toBeNull();
     expectNoSummaries({ total: 4, done: 1 });
   });
+
+  test("compact task timestamps select completion, legacy update, and current update evidence", async () => {
+    vi.useFakeTimers({ now: Date.parse("2026-10-05T00:00:00Z"), toFake: ["Date", "setInterval", "clearInterval"] });
+    const completedAt = "2026-10-04T23:40:00Z";
+    const updatedAt = "2026-10-04T23:50:00Z";
+    const rows: Task[] = [
+      { ...TASKS[0], updated_at: "2026-10-04T23:30:00Z", completed_at: completedAt },
+      { ...TASKS[1], updated_at: updatedAt },
+      { ...TASKS[2], updated_at: "2026-10-04T23:45:00Z" },
+      { ...TASKS[3], updated_at: "2026-10-04T23:35:00Z" },
+    ];
+    connectTasks(() => rows, { total: 4, done: 1, cancelled: 1 });
+    openTasks({ total: 4, done: 1, cancelled: 1 });
+    setDisclosureOpen(`${REF}\0settled-group`, true);
+    renderSidebar();
+    await screen.findByText("Completed work");
+    expect(screen.getByTestId("task-settled-group").hasAttribute("open")).toBe(true);
+    const taskRows = screen.getAllByTestId("task-row");
+    const witness = taskRows.map((row) => ({
+      anchor: row.getAttribute("data-activity-anchor"),
+      text: row.textContent,
+      time: row.querySelector("time")?.outerHTML,
+    }));
+    expect(witness.map((row) => row.anchor).sort()).toEqual([1, 2, 3, 4].map((id) => `${REF}\0${id}`));
+    const times = new Map(
+      taskRows.map((row) => [row.getAttribute("data-activity-anchor")?.split("").at(-1), row.querySelector("time")]),
+    );
+    expect(times.get("1")?.dateTime).toBe(completedAt);
+    expect(times.get("1")?.dataset.meaning).toBe("completed");
+    expect(times.get("2")?.dateTime).toBe(updatedAt);
+    expect(times.get("2")?.dataset.meaning).toBe("updated");
+    expect(times.get("4")?.dateTime).toBe("2026-10-04T23:35:00Z");
+    expect(times.get("4")?.dataset.meaning).toBe("updated");
+    expect(screen.getByText("Completed work").getAttribute("data-struck")).toBeNull();
+    expect(screen.getByText("Cancelled work").getAttribute("data-struck")).toBe("true");
+    const beforeTime = times.get("2")?.textContent;
+    act(() => vi.advanceTimersByTime(30_000));
+    expect(times.get("2")?.textContent).not.toBe(beforeTime);
+    expect(times.get("2")?.dateTime).toBe(updatedAt);
+  });
+
+  test.each(["0", "2026-02-30T00:00:00Z"])(
+    "invalid task completion time %s falls back to its update",
+    async (invalid) => {
+      const updatedAt = "2026-10-04T23:50:00Z";
+      connectTasks(() => [{ ...TASKS[0], updated_at: updatedAt, completed_at: invalid }], { total: 1, done: 1 });
+      openTasks({ total: 1, done: 1 });
+      setDisclosureOpen(`${REF}\0settled-group`, true);
+      renderSidebar();
+      await screen.findByText("Completed work");
+      const time = screen.getByTestId("task-row").querySelector("time");
+      expect(time?.dateTime).toBe(updatedAt);
+      expect(time?.dataset.meaning).toBe("updated");
+    },
+  );
 });

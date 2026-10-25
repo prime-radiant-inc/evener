@@ -7,7 +7,9 @@ import {
   useLayoutEffect,
   useRef,
 } from "react";
+import { ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
+import { useOwnedDocument } from "../internal/useOwnedDocument";
 import styles from "./textarea.module.css";
 
 export interface TextareaProps {
@@ -102,7 +104,7 @@ const BASE_CLASS = {
 // all, so `rows` + the CSS min-height floor size the field) leaves the
 // element measurable later, which the ResizeObserver below re-measures the
 // moment the field gains a box.
-function resizeToFitContent(el: HTMLTextAreaElement): void {
+function resizeToFitContent(el: HTMLTextAreaElement, win: Window = ownerWindowOf(el)): void {
   const before = el.style.height;
   el.style.height = "auto";
   const measured = el.scrollHeight;
@@ -110,7 +112,9 @@ function resizeToFitContent(el: HTMLTextAreaElement): void {
     el.style.height = before;
     return;
   }
-  const maxHeight = window.innerHeight * MAX_HEIGHT_VIEWPORT_FRACTION;
+  // The field's OWN window (passed in, defaulting to the element's): in a
+  // Dockview popout the clamp is a fraction of that viewport, not the opener's.
+  const maxHeight = win.innerHeight * MAX_HEIGHT_VIEWPORT_FRACTION;
   el.style.height = `${Math.min(measured, maxHeight)}px`;
 }
 
@@ -142,13 +146,17 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
   forwardedRef,
 ) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // The document the field lives in, kept current across a Dockview move so
+  // the resize listener and the value measurement below rebind to the window
+  // the field is in now.
+  const ownerDocument = useOwnedDocument(textareaRef, Boolean(autoGrow));
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: value is a deliberate trigger-only dep - resizeToFitContent reads the DOM element's own (React-already-updated) value/scrollHeight, never the `value` variable directly, but the effect must still re-run on every keystroke to remeasure
+  // biome-ignore lint/correctness/useExhaustiveDependencies: value and ownerDocument are deliberate trigger-only deps - resizeToFitContent reads the DOM element's own (React-already-updated) value/scrollHeight, so the effect must re-run on every keystroke; ownerDocument is what re-measures against the new window after a Dockview move
   useLayoutEffect(() => {
     if (!autoGrow) return;
     const el = textareaRef.current;
-    if (el) resizeToFitContent(el);
-  }, [autoGrow, value]);
+    if (el) resizeToFitContent(el, ownerDocument.defaultView ?? window);
+  }, [autoGrow, value, ownerDocument]);
 
   // Re-measures on the layout changes the value-keyed effect above cannot
   // see, from two complementary sources:
@@ -167,15 +175,23 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
     if (!autoGrow) return;
     const el = textareaRef.current;
     if (!el) return;
-    const remeasure = () => resizeToFitContent(el);
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(remeasure);
+    const win = ownerDocument.defaultView ?? window;
+    const remeasure = () => resizeToFitContent(el, win);
+    // The field's own window's constructor: a popout's element cannot be
+    // observed through the opener's, and delivery follows the constructing
+    // document's rendering lifecycle.
+    // The field's own window's constructor: a popout's element cannot be
+    // observed through the opener's, and delivery follows the constructing
+    // document's rendering lifecycle.
+    const Observer = win.ResizeObserver;
+    const observer = typeof Observer === "undefined" ? null : new Observer(remeasure);
     observer?.observe(el);
-    window.addEventListener("resize", remeasure);
+    win.addEventListener("resize", remeasure);
     return () => {
       observer?.disconnect();
-      window.removeEventListener("resize", remeasure);
+      win.removeEventListener("resize", remeasure);
     };
-  }, [autoGrow]);
+  }, [autoGrow, ownerDocument]);
 
   return (
     <textarea

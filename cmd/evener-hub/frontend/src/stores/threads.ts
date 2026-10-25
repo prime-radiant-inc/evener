@@ -1,4 +1,4 @@
-import { type ComposerMention, TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
+import { type ComposerMention, isTurnError, retryEligibility, TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
 // threads.ts tracks the ThreadModel for every ref currently open in a pane,
 // refcounted across panes sharing the same ref, and routes live wire
 // notifications into the reducer for whichever tracked model(s) they target.
@@ -64,6 +64,7 @@ import {
   canEditQueuedMessage,
   canRemoveQueuedMessage,
   notificationMutationIdentities,
+  type PendingTurnEntry,
 } from "@evener/appwire-client/state/mutation";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
@@ -237,6 +238,12 @@ export interface ThreadsStoreState {
   // notification) lingers invisibly until the ref's next refusal replaces
   // it.
   transientRefusalPaces: ReadonlyMap<string, { clientMutationId: string; attempt: number }>;
+  // Refs whose durable pending/outbox projection has published a read. The
+  // pending-turns projection owns the answer; it is published here so a
+  // consumer React-renders on the loaded/unloaded transition instead of
+  // reading a plain Set it does not subscribe to. Retry fails closed for a ref
+  // outside this set.
+  pendingProjectionLoadedRefs: ReadonlySet<string>;
   // The resumed identity when a store-driven resume (resumeFencedForSend)
   // returned a different ref than it started with, keyed by the ref the pane
   // was showing. The pane reads this and follows the new identity (Session.tsx)
@@ -361,7 +368,11 @@ export interface ThreadsStoreState {
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
   ): Promise<void>;
-  continueTurn(ref: string): Promise<void>;
+  // Re-issues the failed turn's continuation. `expectedTurnId` is the failure
+  // the rendered action belonged to: activation rechecks the canonical latest
+  // turn and the live outbox projection before submitting, so a callback
+  // captured before the model advanced submits nothing.
+  continueTurn(ref: string, expectedTurnId: string): Promise<void>;
   steer(
     ref: string,
     text: string,
@@ -677,6 +688,7 @@ export function productionEntryTranscriptForTests(ref: string) {
     repository: route?.repository,
     reader: route?.reader,
     lastLocalOpenStatus: route?.lastLocalOpenStatus,
+    lastLocalOpenUsable: route?.lastLocalOpenUsable,
   };
 }
 
@@ -737,6 +749,11 @@ interface EntryTranscriptRoute extends EntryTranscriptFixtureOptionsForTests {
   // route. Read-only test evidence for why a pane open did or did not need a
   // source read; never consulted by product logic.
   lastLocalOpenStatus?: string;
+  // True while the view the last accepted local open (`openEntryTranscript`)
+  // established is still the one to serve: cleared when that open is torn
+  // down. A remount of the same route may serve this view without racing a
+  // disk recertification against the lookup deadline.
+  lastLocalOpenUsable?: boolean;
 }
 
 let entryTranscriptFixtureForTests: EntryTranscriptRoute | undefined;
@@ -827,10 +844,25 @@ function isEntryTranscriptBackgroundOnly(ref: string): boolean {
 // old opening settling cannot clear a newer hold.
 let entryTranscriptOpeningSequence = 0;
 
+// The unraced restore of an established view is bounded only by a genuine
+// storage stall, not by load: CI already showed load pushing the 250ms lookup
+// deadline around, which is exactly the race this restore must not lose.
+let sessionCacheStalledOpenMs = 5000;
+
+/** @internal Lets tests shorten the stall bound without waiting real seconds. */
+export function setSessionCacheStalledOpenForTests(ms: number): void {
+  sessionCacheStalledOpenMs = ms;
+}
+
 /** True while the entry fixture's reader is still restoring `ref` from disk. */
 export function isEntryTranscriptLocalOpening(ref: string): boolean {
   return threadsStore.getState().localOpenings.has(ref);
 }
+
+// The newest opening that ever began for a ref, kept after it settles: a
+// late restore result must not act once any newer opening exists, even after
+// that newer opening finished.
+const entryTranscriptLatestOpening = new Map<string, number>();
 
 // Mark the opening pending BEFORE its first (pruned) publication, and publish
 // the change through the store so subscribed consumers re-render. Returns the
@@ -838,6 +870,7 @@ export function isEntryTranscriptLocalOpening(ref: string): boolean {
 function beginEntryTranscriptLocalOpening(ref: string): number {
   entryTranscriptOpeningSequence += 1;
   const token = entryTranscriptOpeningSequence;
+  entryTranscriptLatestOpening.set(ref, token);
   threadsStore.setState((state) => {
     const localOpenings = new Map(state.localOpenings);
     localOpenings.set(ref, token);
@@ -899,6 +932,29 @@ function publishEntryTranscriptModel(ref: string): void {
   putThreadModel(ref, isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(displayed) : displayed);
 }
 
+// The complete-requested-window standard a local open tolerates without a
+// cache certificate: every foreground item the model expects is present with
+// at least its version and a real body.
+function holdsCompleteForegroundWindow(model: ThreadModel | undefined): boolean {
+  const displayed = new Map(
+    model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
+  );
+  // Legacy reads keep their recorded bodies in turns, without versioned
+  // history. Do not mistake that nonempty accepted window for an empty one.
+  const requested = (model?.history?.turns ?? model?.turns)?.flatMap((turn) => turn.items).slice(-200) ?? [];
+  return (
+    requested.length > 0 &&
+    requested.every((item) => {
+      const restored = displayed.get(item.transcriptKey ?? item.id);
+      return (
+        restored !== undefined &&
+        (restored.version ?? 0) >= (item.version ?? 0) &&
+        !encodeTranscriptItem(restored).identityOnly
+      );
+    })
+  );
+}
+
 async function openEntryTranscript(ref: string): Promise<boolean> {
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref || !fixture.repository) return true;
@@ -914,18 +970,97 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
     fixture.unsubscribeRepository ??= fixture.repository.subscribe(() => publishEntryTranscriptModel(ref));
     publishEntryTranscriptModel(ref);
     const reader = fixture.reader;
-    const result = await Promise.race([
-      reader.openLocal(200),
-      new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => {
-          reader.dispose();
-          if (fixture.reader === reader) fixture.reader = undefined;
-          resolve(undefined);
-        }, SESSION_CACHE_LOOKUP_DEADLINE_MS);
-      }),
-    ]);
+    // A remount over a route whose last accepted open still holds an
+    // un-invalidated view trusts the local restore instead of racing it
+    // against the lookup deadline: the repository kept that view's identities
+    // and the restore republishes its bodies from the durable rows. Under
+    // load the race can only lose — the expiry disposes this reader, the
+    // background reclaim then drops the resident bodies, and the source
+    // recovery replaces the loaded range with a latest window (#4939). The
+    // unraced restore keeps the ordinary opening hold and result handling,
+    // and only a genuinely stalled storage read settles the opening early.
+    // Only the opening that still owns the route may record its verdict: a
+    // superseded one (its pane released, its repository replaced, or a newer
+    // open already begun) must not overwrite what a newer open established.
+    const openingOwned = () =>
+      entryTranscriptRoute(ref) === fixture &&
+      fixture.repository === repository &&
+      threadsStore.getState().localOpenings.get(ref) === openingToken;
+    const established = fixture.lastLocalOpenUsable && repository.holdsEstablishedView();
+    let stalled = false;
+    const restore = established ? reader.openLocal(200) : undefined;
+    const result = established
+      ? await Promise.race([
+          restore,
+          new Promise<undefined>((resolve) => {
+            timer = setTimeout(() => {
+              stalled = true;
+              resolve(undefined);
+            }, sessionCacheStalledOpenMs);
+          }),
+        ])
+      : await Promise.race([
+          reader.openLocal(200),
+          new Promise<undefined>((resolve) => {
+            timer = setTimeout(() => {
+              reader.dispose();
+              if (fixture.reader === reader) fixture.reader = undefined;
+              resolve(undefined);
+            }, SESSION_CACHE_LOOKUP_DEADLINE_MS);
+          }),
+        ]);
     if (!result) {
+      // A stalled restore keeps the established view standing only while that
+      // view still holds its required bodies: a foreground release already
+      // disposed the reader and reclaimed them, so an empty display must not
+      // wait on storage that may never answer. The repository's own snapshot
+      // is the truth here, not the possibly-pruned display.
+      if (stalled && restore && repository.holdsResidentForegroundRange()) {
+        // A stalled restore leaves the established view standing: the opening
+        // settles so paging and placement resume, and the still-running
+        // restore publishes through the repository subscription whenever
+        // storage answers. Its late result still records the truth, but only
+        // while this opening remains its owner: the route's current reader,
+        // the newest opening generation and a live foreground pane all fence
+        // a result that outlived a newer open, a release or a replacement.
+        const stillOwnsLateResult = () =>
+          entryTranscriptRoute(ref) === fixture &&
+          fixture.repository === repository &&
+          fixture.reader === reader &&
+          entryTranscriptLatestOpening.get(ref) === openingToken &&
+          (refCounts.get(ref) ?? 0) > 0 &&
+          !threadsStore.getState().localOpenings.has(ref);
+        void restore
+          .then(async (settled) => {
+            if (!stillOwnsLateResult()) return;
+            fixture.lastLocalOpenStatus = settled.status;
+            const usable =
+              settled.retainedRangeComplete !== false &&
+              (settled.status !== "recovery-needed" || holdsCompleteForegroundWindow(settled.model));
+            if (usable) {
+              fixture.lastLocalOpenUsable = true;
+              return;
+            }
+            fixture.lastLocalOpenUsable = false;
+            repository.beginFreshBaseline();
+            publishEntryTranscriptModel(ref);
+            const client = await requireReadyClient();
+            const epoch = readyEpoch;
+            if (!stillOwnsLateResult()) return;
+            await refreshTrackedThread(client, epoch, ref, false, false, undefined, undefined, "foreground");
+            // Mirror the raced recovery's full sequence: the read that
+            // replaced the view is followed by the local re-open that
+            // promotes its restored bodies into the display.
+            if (!stillOwnsLateResult()) return;
+            await openEntryTranscript(ref);
+          })
+          .catch(() => {
+            // A failed recovery read keeps the ordinary owner-scoped retry.
+          });
+        return true;
+      }
       fixture.lastLocalOpenStatus = "recovery-needed";
+      if (openingOwned()) fixture.lastLocalOpenUsable = false;
       return false;
     }
     fixture.lastLocalOpenStatus = result.status;
@@ -940,31 +1075,17 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
       fixture.localBefore = result.before;
       publishEntryTranscriptModel(ref);
     }
-    // A previously loaded range can exceed the initial 200-body promotion.
-    // Keep its usable partial display, but do not certify it via a smaller tail.
-    if (result.retainedRangeComplete === false) return false;
-    if (result.status !== "recovery-needed") return true;
-    // Cache proof can be unavailable while the live model already carries the
-    // complete requested window. Recover missing bodies, not merely a missing
-    // certificate, which would replace usable paged history with a latest read.
-    const displayed = new Map(
-      result.model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
-    );
-    // Legacy reads keep their recorded bodies in turns, without versioned
-    // history. Do not mistake that nonempty accepted window for an empty one.
-    const requested =
-      (result.model?.history?.turns ?? result.model?.turns)?.flatMap((turn) => turn.items).slice(-200) ?? [];
-    return (
-      requested.length > 0 &&
-      requested.every((item) => {
-        const restored = displayed.get(item.transcriptKey ?? item.id);
-        return (
-          restored !== undefined &&
-          (restored.version ?? 0) >= (item.version ?? 0) &&
-          !encodeTranscriptItem(restored).identityOnly
-        );
-      })
-    );
+    // A previously loaded range can exceed the initial 200-body promotion: keep
+    // its usable partial display, but do not certify it via a smaller tail.
+    // Cache proof can also be unavailable while the live model already carries
+    // the complete requested window. Recover missing bodies, not merely a
+    // missing certificate, which would replace usable paged history with a
+    // latest read.
+    const usable =
+      result.retainedRangeComplete !== false &&
+      (result.status !== "recovery-needed" || holdsCompleteForegroundWindow(result.model));
+    if (openingOwned()) fixture.lastLocalOpenUsable = usable;
+    return usable;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     settleEntryTranscriptLocalOpening(ref, openingToken);
@@ -1396,6 +1517,7 @@ function retireEntryTranscriptRoute(fixture: EntryTranscriptRoute): void {
   fixture.reader?.dispose();
   fixture.reader = undefined;
   fixture.localBefore = undefined;
+  fixture.lastLocalOpenUsable = undefined;
   fixture.unsubscribeRepository?.();
   fixture.unsubscribeRepository = undefined;
   fixture.repository?.dispose();
@@ -3447,6 +3569,36 @@ export async function updateRecoveryMutation(
   return record;
 }
 
+// Preserve a stale pane's complete composition under a fresh recovery owner.
+// The staled row is never written: the fresh owner reuses its method and
+// target, and carries the local text, selections and attachment bytes.
+export async function preserveRecoveryMutation(
+  base: MutationRecoveryRecord,
+  targetRef: string,
+  text: string,
+  attachments: InputAttachment[],
+  skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
+  compositionOwnerId?: string,
+  localDraftRevisionId?: string,
+): Promise<MutationRecoveryRecord | undefined> {
+  const runtime = requireMutationRuntime();
+  await runtime.start;
+  const record = await runtime.storage.preserveRecoveryComposition(
+    base,
+    buildInput(text, attachments, skillNames, commandNames, mentions),
+    durableAttachments(attachments),
+    text,
+    mentions,
+    compositionOwnerId,
+    localDraftRevisionId,
+  );
+  if (!record) return undefined;
+  notifyMutationPersistence([targetRef]);
+  return record;
+}
+
 export async function discardRecoveryMutation(
   clientMutationId: string,
   targetRef: string,
@@ -4010,8 +4162,27 @@ async function sendMutationIntent(intent: MutationIntent): Promise<void> {
   // is read AFTER the write: a hydration that landed while the write was in
   // flight is the snapshot the admission saw, and re-reading here keeps the
   // drive from being skipped (or spuriously started) across that window.
-  await enqueueMutationIntent(intent);
-  if (sendResumesModel(intent.targetRef)) void resumeFencedForSend(intent.targetRef);
+  // Mark the composer's shared per-session submission guard for every ordinary
+  // send path, not only the ones wrapped by submitWithPendingTracking: the
+  // command palette's slash fallthrough and the ask dock call send() directly.
+  // The marker must exist before the durable enqueue, because Retry can look
+  // at an empty projection while that write is still in flight. A submission
+  // the composer already marked owns the marker, so this call does not end it.
+  const release = markInputSubmission(intent.targetRef);
+  try {
+    await enqueueMutationIntent(intent);
+    if (sendResumesModel(intent.targetRef)) void resumeFencedForSend(intent.targetRef);
+  } finally {
+    release();
+  }
+}
+
+// Returns the release for a submission marker this call owns, or a no-op when
+// an enclosing submission (submitWithPendingTracking, or Retry's own begin)
+// already holds the ref's shared guard.
+function markInputSubmission(ref: string): () => void {
+  if (!beginSharedSubmission(ref)) return () => {};
+  return () => endSharedSubmission(ref);
 }
 
 function composerMutationIntent(
@@ -4202,11 +4373,38 @@ interface ResumeOnlyProjection {
   // turn/start queued behind one starves at the target's FIFO, so a ref holding
   // one is not foldable.
   hasQueuedNonSend(ref: string): boolean;
+  // Retry's pending-owner input, read at activation: the reconciled entries
+  // for `ref`. The shared eligibility decision applies ownPendingTurnInput,
+  // and threads.ts cannot import the pending-turns store back without a cycle,
+  // so it registers the read here beside the fence's own. Readiness is the
+  // threads store's own reactive `pendingProjectionLoadedRefs` copy.
+  pendingTurnEntries(ref: string): readonly PendingTurnEntry[];
+  // The same per-session submission guard ordinary Send/press uses
+  // (submittingRefs through pendingTurnsStore). Retry begins and ends one
+  // submission through it, so an ordinary send whose durable enqueue is still
+  // in flight blocks Retry, and Retry's own window blocks a second send.
+  beginSubmission(ref: string): boolean;
+  endSubmission(ref: string): void;
 }
 let resumeOnlyProjection: ResumeOnlyProjection | null = null;
 
 export function installResumeOnlyProjection(projection: ResumeOnlyProjection): void {
   resumeOnlyProjection = projection;
+}
+
+// The pending-turns projection publishes a ref's durable-read readiness here
+// at the same moment it records it for the fence's own predicate: one
+// authority, a reactive copy for consumers. A transition notifies subscribers,
+// so a mounted Retry action re-renders unloaded -> loaded (or back) rather than
+// reading a stale plain Set.
+export function setPendingProjectionLoaded(ref: string, loaded: boolean): void {
+  threadsStore.setState((state) => {
+    if (state.pendingProjectionLoadedRefs.has(ref) === loaded) return {};
+    const pendingProjectionLoadedRefs = new Set(state.pendingProjectionLoadedRefs);
+    if (loaded) pendingProjectionLoadedRefs.add(ref);
+    else pendingProjectionLoadedRefs.delete(ref);
+    return { pendingProjectionLoadedRefs };
+  });
 }
 
 // Whether ref's durable outbox holds delivery-uncertain (blockedUnknown) rows,
@@ -4231,6 +4429,36 @@ export function hasQueuedNonSend(ref: string): boolean {
   return (
     resumeOnlyProjection === null || !resumeOnlyProjection.isLoaded(ref) || resumeOnlyProjection.hasQueuedNonSend(ref)
   );
+}
+
+// The pending owner's inputs for Retry's shared decision, read at activation
+// rather than trusted from the render that disabled (or enabled) the button.
+// A ref whose durable pending read has not resolved is UNKNOWN, not empty:
+// activation fails closed through the gate's not-ready reason, exactly as the
+// rendered action stays disabled. No installed projection is likewise unknown
+// (and has no entries to offer).
+function retryPendingInputNow(ref: string): {
+  pendingMutations: readonly PendingTurnEntry[] | null;
+  pendingMutationsReady: boolean;
+} {
+  const projection = resumeOnlyProjection;
+  return {
+    pendingMutations: projection?.pendingTurnEntries(ref) ?? null,
+    // No installed projection is unknown, not empty, exactly as before the
+    // shared decision.
+    pendingMutationsReady: projection !== null && threadsStore.getState().pendingProjectionLoadedRefs.has(ref),
+  };
+}
+
+// Retry's share of the composer's per-session submission guard. The pending
+// store owns `submittingRefs`; no projection installed means no shared owner
+// can certify the window, so Retry fails closed.
+function beginSharedSubmission(ref: string): boolean {
+  return resumeOnlyProjection?.beginSubmission(ref) ?? false;
+}
+
+function endSharedSubmission(ref: string): void {
+  resumeOnlyProjection?.endSubmission(ref);
 }
 
 // isResumeOnly over the store's current model for ref: the ADMISSION
@@ -6973,6 +7201,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   restartBlockingObligations: new Map(),
   mutationAuthorityRefs: new Set(),
   transientRefusalPaces: new Map(),
+  pendingProjectionLoadedRefs: new Set(),
   resumedIdentities: new Map(),
   resumeFailures: new Map(),
   stoppingRefs: new Set(),
@@ -7620,11 +7849,46 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async continueTurn(ref) {
-    await sendMutationIntent({
-      ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
-      preserveComposer: true,
+  async continueTurn(ref, expectedTurnId) {
+    // The one shared decision is re-read here, synchronously, at activation:
+    // the render's captured button state is not authority. The canonical
+    // latest turn, the clicked turn's current failure, the pending owner and
+    // its readiness all enter the same gate the end-cap renders.
+    const model = threadsStore.getState().threads.get(ref);
+    if (!model) return;
+    // Identity alone is not a failure. An authoritative refresh can keep the
+    // same latest turn id and drop its error (or replace the turn), so the
+    // activation resolves the current turn by that id and requires it to still
+    // carry the failure the captured action belonged to.
+    const currentTurn = model.turns.find((turn) => turn.id === expectedTurnId);
+    const pending = retryPendingInputNow(ref);
+    const decision = retryEligibility({
+      clickedTurnId: expectedTurnId,
+      thread: model,
+      clickedTurnFailed: currentTurn !== undefined && isTurnError(currentTurn.error),
+      pendingMutations: pending.pendingMutations,
+      pendingMutationsReady: pending.pendingMutationsReady,
+      // Browser Retry is durably routed: the enqueue funnel owns the live
+      // client requirement and surfaces its refusal to the press. Moving that
+      // check into eligibility would turn a reported failure into a silent
+      // no-op, so the browser offers the action and the funnel answers.
+      serviceReady: true,
     });
+    if (!decision.allowed) return;
+    // An ordinary Send/press marks the composer's shared submission guard
+    // before its durable row is visible in the projection. Retry must join that
+    // guard, not only its own read, or a press in that window would admit a
+    // continuation that dispatches after the new message. The same guard
+    // refuses a second Retry press while this one's enqueue is in flight.
+    if (!beginSharedSubmission(ref)) return;
+    try {
+      await sendMutationIntent({
+        ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
+        preserveComposer: true,
+      });
+    } finally {
+      endSharedSubmission(ref);
+    }
   },
 
   async steer(ref, text, attachments, skillNames, commandNames, mentions) {
@@ -7634,9 +7898,17 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async queue(ref, text, attachments, skillNames, commandNames, mentions) {
-    await enqueueMutationIntent(
-      composerMutationIntent(ref, "queue", text, attachments, skillNames, commandNames, mentions),
-    );
+    // A queue is composer input too: mark the shared guard for the enqueue's
+    // window so Retry cannot enqueue a continuation ahead of the queued row
+    // becoming visible in the projection.
+    const release = markInputSubmission(ref);
+    try {
+      await enqueueMutationIntent(
+        composerMutationIntent(ref, "queue", text, attachments, skillNames, commandNames, mentions),
+      );
+    } finally {
+      release();
+    }
   },
 
   async interrupt(ref) {
