@@ -496,13 +496,33 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 	stateDir := c.stateDir
 	c.holdAttentionRestoreLocked(id)
 	c.mu.Unlock()
-	defer c.releaseAttentionRestoreHold(id)
+	holdingRestore := true
+	defer func() {
+		if holdingRestore {
+			c.releaseAttentionRestoreHold(id)
+		}
+	}()
 	path, expectedID, err := delegateTranscriptPathFromRef(stateDir, ref)
 	if err == nil {
 		var fold delegateAttentionFold
 		fold, err = readExistingDelegateAttentionFold(path, expectedID)
 		if err == nil && len(fold.pendingIDs()) == 0 {
-			return c.clearResolvedDelegateAttention(id)
+			if err := c.clearResolvedDelegateAttention(id); err != nil {
+				return err
+			}
+			// Acceptance may have coalesced behind this empty pass's hold.
+			// Clear revalidates custody but does not dispatch pending content.
+			// Inspect retained wakes and release our hold under one lock, so an
+			// acceptance is either ours to recheck or owns its own unheld wake.
+			c.mu.Lock()
+			releaseCountedLocked(c.attentionRestoreHolds, id)
+			pending := len(c.delegateAttentionWakeIDsLocked(id)) != 0
+			c.mu.Unlock()
+			holdingRestore = false
+			if pending {
+				return c.requestSessionWake(sessionID)
+			}
+			return nil
 		}
 	}
 	var sub *subagent

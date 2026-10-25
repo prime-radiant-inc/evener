@@ -85,6 +85,9 @@ func TestDelegateAttention_LaunchClaimDoesNotObserve(t *testing.T) {
 	}
 	wakeDone := make(chan struct{}, 1)
 	runtime.SetNotifyFunc(func() { wakeDone <- struct{}{} })
+	// Registration dispatches existing pending content synchronously. Consume
+	// that distinct event before finalization is allowed to emit its own wake.
+	notificationAwait(t, wakeDone)
 	reportFinalizeTailDone(t, c, first.lease, runtime)
 	// Finalization rechecks the real pending IDs asynchronously. Wait until that
 	// wake has published them before claiming the second ID or inspecting maps.
