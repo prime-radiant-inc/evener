@@ -70,20 +70,21 @@ its facts:
   dropped; an absent session keeps the client's fallback until the next read.
 - Client facts and links: the phone's 10-second poll and 20-second freshness
   rule, fallback single newest-minute bar, Quiet/May be stuck labels, and the
-  web's once-per-open read for `lastMovedAt` (the seen-mark rule itself stays in
-  `docs/product/session-activity.md`).
+  web's read for `lastMovedAt` when a visible pane's row carries a seen mark
+  (the seen-mark rule itself stays in `docs/product/session-activity.md`).
 - The ownership boundary: this read is not the `evener/thread/*` activity
   domain. Delegates, jobs and watches stay in
-  [`session-activity.md`](../../product/session-activity.md).
+  `docs/product/session-activity.md`.
 
 Link the new page from the opening section of
-`docs/product/session-activity.md`, beside the existing description of the
-phone pulse meter and the web seen mark, and list it in
-`docs/product/README.md`.
+`docs/product/session-activity.md`, beside the existing web seen-mark
+paragraph. Also add it to the S05 owning references in
+`docs/product/subsystems.md` and list it in `docs/product/README.md`.
 
 ## Acceptance checks
 
-- `go test ./internal/appwiredoc` passes, including the widened pin.
+- `go test ./internal/appwiredoc` passes, including the new
+  `TestBuildIncludesActivityReadSessionActivity`.
 - After `make generate`, `git diff --exit-code` on `docs/appwire-protocol.md`
   and `appwire-client/typescript/types.gen.ts` is clean.
 - `make docs-check` passes, including local link and fragment validation.
