@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"encoding/json"
+	"errors"
 	"maps"
 	"os"
 	"path/filepath"
@@ -407,9 +408,9 @@ func TestResolveCommand_ExactMatch(t *testing.T) {
 	commands := map[string]Command{
 		"plugin-a:foo": {Name: "foo", PluginName: "plugin-a"},
 	}
-	cmd, ok := ResolveCommand(commands, "plugin-a:foo")
-	if !ok || cmd.Name != "foo" {
-		t.Fatalf("ResolveCommand exact match = %+v, %v", cmd, ok)
+	cmd, err := ResolveCommand(commands, "plugin-a:foo")
+	if err != nil || cmd.Name != "foo" {
+		t.Fatalf("ResolveCommand exact match = %+v, %v", cmd, err)
 	}
 }
 
@@ -417,9 +418,9 @@ func TestResolveCommand_UnqualifiedMatch(t *testing.T) {
 	commands := map[string]Command{
 		"plugin-a:foo": {Name: "foo", PluginName: "plugin-a"},
 	}
-	cmd, ok := ResolveCommand(commands, "foo")
-	if !ok || cmd.PluginName != "plugin-a" {
-		t.Fatalf("ResolveCommand unqualified match = %+v, %v", cmd, ok)
+	cmd, err := ResolveCommand(commands, "foo")
+	if err != nil || cmd.PluginName != "plugin-a" {
+		t.Fatalf("ResolveCommand unqualified match = %+v, %v", cmd, err)
 	}
 }
 
@@ -427,7 +428,23 @@ func TestResolveCommand_NotFound(t *testing.T) {
 	commands := map[string]Command{
 		"plugin-a:foo": {Name: "foo", PluginName: "plugin-a"},
 	}
-	if _, ok := ResolveCommand(commands, "bar"); ok {
-		t.Fatal("expected no match for unknown command name")
+	if _, err := ResolveCommand(commands, "bar"); !errors.Is(err, ErrCommandNotFound) {
+		t.Fatalf("unknown command name error = %v, want ErrCommandNotFound", err)
+	}
+}
+
+func TestResolveCommand_AmbiguousUnqualifiedName(t *testing.T) {
+	commands := map[string]Command{
+		"plugin-a:foo": {Name: "foo", PluginName: "plugin-a"},
+		"plugin-b:foo": {Name: "foo", PluginName: "plugin-b"},
+	}
+	// Map iteration order is random; repeat so a first-found pick would flap.
+	for range 50 {
+		if cmd, err := ResolveCommand(commands, "foo"); !errors.Is(err, ErrAmbiguousCommand) {
+			t.Fatalf("ambiguous bare name = %+v, %v; want ErrAmbiguousCommand", cmd, err)
+		}
+	}
+	if cmd, err := ResolveCommand(commands, "plugin-b:foo"); err != nil || cmd.PluginName != "plugin-b" {
+		t.Fatalf("qualified name must disambiguate: %+v, %v", cmd, err)
 	}
 }

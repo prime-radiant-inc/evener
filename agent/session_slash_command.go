@@ -56,7 +56,13 @@ func (s *Session) expandSlashCommand(ctx context.Context, input string) slashInp
 	if name == "" {
 		return slashInputResult{Text: input}
 	}
-	if cmd, ok := plugin.ResolveCommand(s.pluginCommands, name); ok {
+	cmd, cmdErr := plugin.ResolveCommand(s.pluginCommands, name)
+	if errors.Is(cmdErr, plugin.ErrAmbiguousCommand) {
+		// Two plugins define this bare name: report the candidates rather than
+		// guess, like an ambiguous skill suffix. The qualified form disambiguates.
+		return slashInputResult{Text: input, Handled: true, Err: cmdErr}
+	}
+	if cmdErr == nil {
 		if cmd.Source != "plugin" {
 			// Evener-wide commands expand inert: arguments substitute as text,
 			// nothing executes or reads (docs/skills.md).
