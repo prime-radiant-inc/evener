@@ -3518,8 +3518,16 @@ func (e *LocalExecutionEnvironment) EnsureCommandWorkingDirectory(abs string) er
 	if e.ensureUnderRoot(abs) == nil {
 		return nil
 	}
-	readable := e.Sandbox.SpawnedCanRead(abs) &&
-		(abs == resolved || e.Sandbox.SpawnedCanReadResolved(resolved))
+	var readable bool
+	if abs == resolved {
+		// Seatbelt grants a symlinked read root under both spellings; bwrap
+		// binds only the literal one, so the canonical spelling stays refused
+		// there.
+		readable = e.Sandbox.SpawnedCanRead(abs) ||
+			(e.Sandbox.Backend == sandbox.BackendSeatbelt && e.Sandbox.SpawnedCanReadResolved(abs))
+	} else {
+		readable = e.Sandbox.SpawnedCanRead(abs) && e.Sandbox.SpawnedCanReadResolved(resolved)
+	}
 	if readable && e.Wrapper.CommandCWDVisible(abs) &&
 		(abs == resolved || e.Wrapper.CommandCWDVisibleResolved(resolved)) {
 		return nil

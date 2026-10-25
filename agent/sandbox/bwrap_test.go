@@ -40,6 +40,25 @@ func TestBuildBwrapArgvReadOnlyRebindsTmpCwd(t *testing.T) {
 	}
 }
 
+func TestBuildBwrapArgvChildOfTmpRootRebindsCwd(t *testing.T) {
+	project, err := os.MkdirTemp("/tmp", "sbx-tmp-root-child-")
+	if err != nil {
+		t.Skipf("no writable /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(project) })
+	rp := ResolvedPolicy{
+		Mode:                  ModeReadOnly,
+		Git:                   GitLayout{WorktreeRoot: "/tmp"},
+		WorkspaceRoot:         "/tmp",
+		WorkspaceRootResolved: "/tmp",
+		Spawned:               AccessScope{Read: ReadAnywhere},
+	}
+	args := buildBwrapArgv(rp, "/tmp/evener-session", project)
+	if seqIndex(args, "--ro-bind", project, project) < 0 {
+		t.Fatalf("a child cwd of the /tmp root must be re-bound: %v", args)
+	}
+}
+
 func TestBuildBwrapArgvBaseHardening(t *testing.T) {
 	rp, cwd, _ := resolveFixture(t, ModeWorkspaceWrite, true)
 	args := buildBwrapArgv(rp, "/tmp/evener-session", cwd)

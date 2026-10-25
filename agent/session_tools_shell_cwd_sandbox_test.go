@@ -364,8 +364,17 @@ func TestShellToolRestrictedCwdSymlinkedReadRoot(t *testing.T) {
 
 	resolved := filepath.Join(realDir, "sub")
 	res = executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"pwd","cwd":%q}`, resolved))
-	if !res.IsError {
-		t.Fatalf("resolved spelling of a symlinked read root was accepted: %s", res.Output)
+	if env.Wrapper.Policy().Backend == sandbox.BackendSeatbelt {
+		out = decodeSandboxedShellOutput(t, res)
+		want, err := filepath.EvalSymlinks(resolved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(*out.Output); got != want {
+			t.Fatalf("Seatbelt canonical read-root cwd = %q, want %q", got, want)
+		}
+	} else if !res.IsError {
+		t.Fatalf("bubblewrap resolved spelling of a symlinked read root was accepted: %s", res.Output)
 	}
 }
 
@@ -700,5 +709,33 @@ func TestShellToolReadOnlyRepoSubdirRootVisibleFromOutside(t *testing.T) {
 	out := decodeSandboxedShellOutput(t, res)
 	if !strings.Contains(*out.Output, "SUBDIR-OK") {
 		t.Fatalf("repository-subdirectory root unreadable from an outside cwd: %q", *out.Output)
+	}
+}
+
+// TestShellToolReadOnlyCwdChildOfTmpRoot pins that the exact /tmp root does
+// not count as a surviving mount: a child cwd is still re-bound after the
+// private tmpfs.
+func TestShellToolReadOnlyCwdChildOfTmpRoot(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("bubblewrap private /tmp is Linux-only")
+	}
+	project, err := os.MkdirTemp("/tmp", "evener-4332-tmp-project-")
+	if err != nil {
+		t.Skipf("no writable /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(project) })
+	env := newSandboxedShellEnv(t, sandbox.SandboxPolicy{Mode: sandbox.ModeReadOnly}, "/tmp")
+	requireBwrapPrivateMounts(t, env)
+	s := newSandboxedShellSession(t, env)
+	want, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := executeSandboxedShell(t, s, fmt.Sprintf(`{"command":"pwd","cwd":%q}`, project))
+	out := decodeSandboxedShellOutput(t, res)
+	if got := strings.TrimSpace(*out.Output); got != want {
+		t.Fatalf("shell pwd with a child of the /tmp root = %q, want %q", got, want)
 	}
 }

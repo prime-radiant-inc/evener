@@ -220,6 +220,41 @@ func TestConfinedCommandWorkingDirectory(t *testing.T) {
 	}
 }
 
+func TestConfinedCwdCanonicalReadRootSpelling(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	link := filepath.Join(base, "link")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	for _, tc := range []struct {
+		name       string
+		backend    sandbox.Backend
+		wantAccept bool
+	}{
+		{name: "seatbelt", backend: sandbox.BackendSeatbelt, wantAccept: true},
+		{name: "bwrap", backend: sandbox.BackendBwrap, wantAccept: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := NewLocalExecutionEnvironment(t.TempDir())
+			t.Cleanup(env.Cleanup)
+			env.Sandbox = &sandbox.ResolvedPolicy{
+				Mode:    sandbox.ModeRestricted,
+				Backend: tc.backend,
+				Spawned: sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{link}},
+			}
+			err := env.EnsureCommandWorkingDirectory(realDir)
+			if accepted := err == nil; accepted != tc.wantAccept {
+				t.Fatalf("canonical read-root cwd accepted = %v (err %v), want %v", accepted, err, tc.wantAccept)
+			}
+		})
+	}
+}
+
 func TestSandboxOffDetachedWorkingDirectory(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {

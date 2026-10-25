@@ -114,10 +114,17 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		candidates = append(candidates, scratchTreeOf(sessionTmp))
 	}
 	// A cwd already covered by a root this argv binds or exposes needs no
-	// independent bind, which would alias the tree before the masks land.
-	cwdCovered := cwd != "" && (isUnderAnyRoot(cwd, []string{rp.WorkspaceRoot, rp.WorkspaceRootResolved, rp.Git.WorktreeRoot}) ||
-		isUnderAnyRoot(cwd, sp.ReadRoots) || isUnderAnyRoot(cwd, sp.WriteRoots) ||
-		isUnderAnyRoot(cwd, rp.UnmaskedRoots) ||
+	// independent bind, which would alias the tree before the masks land. The
+	// exact /tmp root never survives as a mount (the private tmpfs replaces
+	// it), so it covers nothing.
+	var covered []string
+	for _, root := range slices.Concat([]string{rp.WorkspaceRoot, rp.WorkspaceRootResolved, rp.Git.WorktreeRoot},
+		sp.ReadRoots, sp.WriteRoots, rp.UnmaskedRoots) {
+		if root != "" && root != "/tmp" {
+			covered = append(covered, root)
+		}
+	}
+	cwdCovered := cwd != "" && (isUnderAnyRoot(cwd, covered) ||
 		(sessionTmp != "" && pathUnder(cwd, sessionTmp)))
 	reboundRO := make(map[string]bool)
 	for i, r := range candidates {
