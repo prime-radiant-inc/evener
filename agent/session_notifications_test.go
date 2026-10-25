@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
@@ -27,6 +28,16 @@ import (
 
 func TestNotificationColdAcceptanceDuringEmptyWakePass(t *testing.T) {
 	// Not parallel: the barrier wraps the package-wide filesystem fold seam.
+	testNotificationColdAcceptanceDuringEmptyWakePass(t, false)
+}
+
+func TestNotificationColdAcceptanceDuringEmptyWakeClearFailure(t *testing.T) {
+	// Not parallel: the barrier wraps the package-wide filesystem fold seam.
+	testNotificationColdAcceptanceDuringEmptyWakePass(t, true)
+}
+
+func testNotificationColdAcceptanceDuringEmptyWakePass(t *testing.T, clearFails bool) {
+	t.Helper()
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
@@ -34,7 +45,11 @@ func TestNotificationColdAcceptanceDuringEmptyWakePass(t *testing.T) {
 			return finalResponse("cold-empty-response-83")
 		},
 	}
-	root := restoreSupervisionRoot(t, fixture, nil)
+	var clock *agenttest.FakeClock
+	if clearFails {
+		clock = agenttest.NewFakeClock()
+	}
+	root := restoreSupervisionRoot(t, fixture, clock)
 	c := root.delegateController
 	if _, err := c.openDelegateAttention(fixture.delegateID, "stale-empty-wake-83"); err != nil {
 		t.Fatal(err)
@@ -46,8 +61,20 @@ func TestNotificationColdAcceptanceDuringEmptyWakePass(t *testing.T) {
 	compute := readExistingDelegateAttentionFoldCompute
 	entered, release := make(chan struct{}), make(chan struct{})
 	unblock := sync.OnceFunc(func() { close(release) })
+	faultArmed, faultResult := make(chan struct{}), make(chan error, 1)
+	backup := path + ".clear-failure"
+	var faultOnce sync.Once
 	var once sync.Once
 	readExistingDelegateAttentionFoldCompute = func(readPath, sessionID string) (delegateAttentionFold, int64, error) {
+		if readPath == path {
+			select {
+			case <-faultArmed:
+				// The initial empty fold has already completed. Fault the next
+				// real filesystem read, which belongs to projection clearing.
+				faultOnce.Do(func() { faultResult <- os.Rename(path, backup) })
+			default:
+			}
+		}
 		fold, consumed, err := compute(readPath, sessionID)
 		if readPath == path && err == nil && len(fold.pendingIDs()) == 0 {
 			once.Do(func() { close(entered); <-release })
@@ -79,14 +106,51 @@ func TestNotificationColdAcceptanceDuringEmptyWakePass(t *testing.T) {
 		t.Fatalf("acceptance missed the cold held empty-read boundary: held=%t cold=%t", held, cold)
 	}
 	assertNotificationRecords(t, path, id, llm.User("cold-empty-payload-83"), 1)
-	restoreRead()
+	var recoverStorage func()
+	if clearFails {
+		close(faultArmed)
+		recoverStorage = sync.OnceFunc(func() {
+			if err := os.Rename(backup, path); err != nil {
+				t.Fatal(err)
+			}
+		})
+		defer recoverStorage()
+	} else {
+		restoreRead()
+	}
 	unblock()
 	err := <-done
 	joined = true
-	if err != nil {
+	restoreRead()
+	if clearFails {
+		select {
+		case faultErr := <-faultResult:
+			if faultErr != nil {
+				t.Fatal(faultErr)
+			}
+		default:
+			t.Fatal("clear never reached the armed filesystem fault")
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("clear error = %v, want actual missing-transcript error", err)
+		}
+		c.mu.Lock()
+		held = c.attentionRestoreHeldLocked(fixture.delegateID)
+		_, retained := c.delegateAttentionWakeIDsLocked(fixture.delegateID)[id]
+		c.mu.Unlock()
+		if held || !retained || supervisionRequestCount(fixture.adapter) != 0 {
+			t.Fatalf("clear failure lost custody or dispatched: held=%t retained=%t", held, retained)
+		}
+		recoverStorage()
+		assertNotificationRecords(t, path, id, llm.User("cold-empty-payload-83"), 1)
+		// Only the receiver's own paced recovery may dispatch the retained ID.
+		// No fresh input or explicit recheck runs after storage recovers.
+		clock.Advance(jobNotificationRetryInitialDelay)
+		clock.Drain()
+	} else if err != nil {
 		t.Fatal(err)
 	}
-	// No clock advance, fresh input or unrelated recheck may rescue this ID.
+	// The successful-clear case needs no clock advance at all.
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	root.sendersWG.Wait()
 	c.mu.Lock()
@@ -94,6 +158,7 @@ func TestNotificationColdAcceptanceDuringEmptyWakePass(t *testing.T) {
 	c.mu.Unlock()
 	assertAttentionResponseReceipts(t, runtime, id, 1)
 	assertNotificationPending(t, runtime, []string{})
+	assertNotificationRecords(t, path, id, llm.User("cold-empty-payload-83"), 1)
 	if got := supervisionRequestCount(fixture.adapter); got != 1 {
 		t.Fatalf("provider requests=%d, want one automatically observed acceptance", got)
 	}

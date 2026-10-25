@@ -513,6 +513,7 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		fold, err = readExistingDelegateAttentionFold(path, expectedID)
 		if err == nil && len(fold.pendingIDs()) == 0 {
 			if err := c.clearResolvedDelegateAttention(id); err != nil {
+				c.scheduleSessionWakeRetry(sessionID)
 				return err
 			}
 			// Acceptance may have coalesced behind this empty pass's hold.
