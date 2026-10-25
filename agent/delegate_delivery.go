@@ -1098,6 +1098,61 @@ func (s *Session) hasPendingDelegateDeliveries() bool {
 	return false
 }
 
+// pendingDrainDelegateReceivers returns this receiver, or the first cold child
+// on a recorded receiver's ownership path. Live children belong to the drain's
+// existing gated walk. This is accounting only: it never changes a destination.
+func (s *Session) pendingDrainDelegateReceivers() []string {
+	if s == nil || s.delegateController == nil {
+		return nil
+	}
+	c := s.delegateController
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var receivers []string
+	for _, aggregate := range c.durable {
+		if aggregate == nil {
+			continue
+		}
+		for _, pending := range aggregate.PendingDeliveries {
+			receiverSessionID := c.rootSessionID
+			if pending.OwnerDelegateID != "" {
+				owner := c.durable[pending.OwnerDelegateID]
+				if owner == nil {
+					continue
+				}
+				receiverSessionID = owner.Descriptor.ChildSessionID
+			}
+			if receiverSessionID == s.id {
+				receivers = append(receivers, s.id)
+				continue
+			}
+			// Cold receivers have no runtime for liveDirectSubagents to visit.
+			// Walk their canonical parents only until a live boundary or this
+			// session's direct ownership boundary, preserving cold Stop fences.
+			seen := make(map[string]struct{})
+			for ownerID := pending.OwnerDelegateID; ownerID != ""; {
+				if _, duplicate := seen[ownerID]; duplicate {
+					break
+				}
+				seen[ownerID] = struct{}{}
+				owner := c.durable[ownerID]
+				if owner == nil || delegateRowStopGated(delegateSnapshot{lastOutcome: owner.LatestOutcome, currentRunOpen: owner.CurrentRunOpen}) {
+					break
+				}
+				if live := c.live[ownerID]; live != nil && live.runtime != nil {
+					break
+				}
+				if c.stableDelegateOwnedBySessionLocked(s, owner) {
+					receivers = append(receivers, owner.Descriptor.ChildSessionID)
+					break
+				}
+				ownerID = owner.Descriptor.ParentDelegateID
+			}
+		}
+	}
+	return receivers
+}
+
 func (s *Session) acceptDelegateDeliveryPlan(plan delegateDeliveryPlan) (delegateMutationPlans, bool, error) {
 	if s == nil {
 		return delegateMutationPlans{}, false, errDelegateDeliveryReceiverUnavailable

@@ -229,7 +229,7 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 	if s.peekNotifications() > 0 {
 		return true, nil
 	}
-	if s.hasPendingDelegateDeliveries() {
+	if s.hasPendingDrainDelegateDeliveries(false) {
 		return true, nil
 	}
 	// A Stop's park defers pending attention to re-engagement, so it must
@@ -504,6 +504,22 @@ func (s *Session) subagentActive(sub *subagent) (bool, *Session) {
 	return active, child
 }
 
+func (s *Session) hasPendingDrainDelegateDeliveries(liveOnly bool) bool {
+	for _, receiverID := range s.pendingDrainDelegateReceivers() {
+		if receiverID == s.id {
+			return true
+		}
+		if s.childStopGated(receiverID) || s.childFatalRunGated(receiverID) || s.childDrainAbandoned(receiverID) {
+			continue
+		}
+		if liveOnly && s.childDrainGracePending(receiverID) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // subtreeHasLiveComponent reports whether any live or deliverable drain
 // component (see drainSubtreeIsStalled) exists in this session or any live,
 // non-gated descendant.
@@ -516,7 +532,7 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	if s.peekNotifications() > 0 {
 		return true, nil
 	}
-	if s.hasPendingDelegateDeliveries() {
+	if s.hasPendingDrainDelegateDeliveries(true) {
 		return true, nil
 	}
 	// A Stop's park defers pending attention to re-engagement, so it must
