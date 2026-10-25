@@ -22,6 +22,7 @@ import {
   selectLiveRows,
   selectLocation,
   selectNextSectionOffset,
+  selectSectionCanDemand,
   selectSectionRemaining,
 } from "../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../stores/navigation/store";
@@ -795,11 +796,11 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
         const current = focusedSessionRef();
         const atLastLoaded = current !== null && refs.length > 0 && refs[refs.length - 1] === current;
         // Empty loaded set: selectSectionRemaining reads only loaded pages,
-        // so it is 0 while the initial read is in flight or failed. The
-        // manifest's live count is the authority there (the needs-you
-        // handler's bootstrap) - the demand dedupes against an in-flight
-        // initial read and retries a failed one.
-        const unloaded = refs.length === 0 && (state.manifest?.data?.sections.live.count ?? 0) > 0;
+        // so it is 0 while the initial read is in flight or failed. The shared
+        // section rule decides instead - the manifest count only before any
+        // page settles, and a failed page keeps demand - so the demand dedupes
+        // against an in-flight initial read and retries a failed one.
+        const unloaded = refs.length === 0 && !!state.manifest?.data && selectSectionCanDemand("live", state);
         if (unloaded || (atLastLoaded && selectSectionRemaining("live", state) > 0)) {
           demandLivePage("next", new Set(refs));
           return;
@@ -817,7 +818,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
         const refs = selectLiveRows(state).map((row) => row.ref);
         const current = focusedSessionRef();
         if (refs.length === 0) {
-          if ((state.manifest?.data?.sections.live.count ?? 0) > 0) {
+          if (state.manifest?.data && selectSectionCanDemand("live", state)) {
             demandLivePage("previous", new Set(refs));
           }
           return;

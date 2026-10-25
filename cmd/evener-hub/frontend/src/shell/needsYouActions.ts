@@ -2,9 +2,9 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { keyID, NAVIGATION_SECTION_LIMIT, type ResourceKey } from "@evener/appwire-client/state/navigation";
 import { parseZoomParams } from "../panes/zoom/intent";
 import {
-  selectNeedsYouCount,
   selectNeedsYouRows,
   selectNextSectionOffset,
+  selectSectionCanDemand,
   selectSectionRemaining,
 } from "../stores/navigation/selectors";
 import { navigationStore } from "../stores/navigation/store";
@@ -104,14 +104,10 @@ export type NeedsYouControllerOptions = {
 /**
  * Whether the needs-you section may ask for another page.
  *
- * A settled page owns completion: its `remaining` is the section's own word on
- * whether anything is left. The manifest count refreshes on its own schedule
- * and can lag a queue that has drained (shrinkage, overlapping pages), so it
- * may only justify demand before any page has settled. A populated retry and a
- * failed boundary keep demand of their own.
- *
  * Both the snapshot's `canLoadMore` and `runNext`'s one demand ask this, so a
- * settled queue cannot keep offering an action that spends a read.
+ * settled queue cannot keep offering an action that spends a read. The settled
+ * page, remaining count, failed boundary and manifest fallback are the shared
+ * navigation selector's rule; the populated retry is needs-you's own.
  */
 function needsYouPages(state: ReturnType<typeof navigationStore.getState>) {
   return [...state.resources.values()].filter(
@@ -119,23 +115,11 @@ function needsYouPages(state: ReturnType<typeof navigationStore.getState>) {
   );
 }
 
-function needsYouCanDemand(
-  state: ReturnType<typeof navigationStore.getState>,
-  pages: ReturnType<typeof needsYouPages>,
-  remaining: number,
-  rowCount: number,
-): boolean {
-  const failed = pages.some((page) => !!page.error);
-  const retryingPopulatedPage = pages.some(
+function needsYouCanDemand(state: ReturnType<typeof navigationStore.getState>): boolean {
+  const retryingPopulatedPage = needsYouPages(state).some(
     (page) => page.loading && ((page.data as { sessions?: unknown[] } | null)?.sessions?.length ?? 0) > 0,
   );
-  const settled = pages.some((page) => !page.loading && !page.error && !page.stale);
-  return (
-    retryingPopulatedPage ||
-    failed ||
-    remaining > 0 ||
-    (!settled && (!state.manifest?.data || selectNeedsYouCount(state) > rowCount))
-  );
+  return retryingPopulatedPage || selectSectionCanDemand("needs_you", state);
 }
 
 export function createNeedsYouController(options: NeedsYouControllerOptions = {}): NeedsYouController {
@@ -171,7 +155,7 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     const pages = needsYouPages(state);
     const failed = pages.some((page) => !!page.error);
     const loading = pages.some((page) => page.loading);
-    const canLoadMore = needsYouCanDemand(state, pages, remaining, uniqueRows.length);
+    const canLoadMore = needsYouCanDemand(state);
     const canLoadInitialPage = !hasReadManifest && state.mode === "v3" && state.manifest?.loading === true;
     return Object.freeze({
       choices: Object.freeze(choices.map((choice) => Object.freeze(choice))),
@@ -417,11 +401,7 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
         return !!page && !page.error && !page.stale;
       })
     ) {
-      if (
-        state.mode === "unknown" ||
-        state.mode === "error" ||
-        needsYouCanDemand(state, needsYouPages(state), remaining, rows.length)
-      ) {
+      if (state.mode === "unknown" || state.mode === "error" || needsYouCanDemand(state)) {
         await demand(serial);
         state = navigationStore.getState();
         if (disposed || serial !== actionSerial) return;
