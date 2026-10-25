@@ -148,6 +148,7 @@ import { liveOrder, neighbor, nextNavigation, nextQueue, othersNeedingYou } from
 import { NextCapsule } from "./session/NextCapsule";
 import { useFleet } from "./session/useFleet";
 import { GhostRowContext, type GhostRowHost, GhostRowView } from "./session/GhostRows";
+import { TRANSCRIPT_GUTTER_PT } from "./session/transcriptLayout";
 import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
 import type { ConversationMutationSubmitter } from "../../mobile/src/state/conversationMutation";
 import type { NativeConversationAttachment } from "./session/nativeConversationSessions";
@@ -3607,7 +3608,7 @@ function ConversationScreenView({
 									// its onLayout bumps layoutRevision, which renders this again.
 									minHeight: listContentMinHeight(readerViewportHeight.current, listUnderBar),
 									justifyContent: "flex-end",
-									padding: 16,
+									paddingHorizontal: TRANSCRIPT_GUTTER_PT,
 									paddingTop: 16 + reservedTop,
 									paddingBottom: listUnderBar.endPadding + transcriptEnd,
 								}}
