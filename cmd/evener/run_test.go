@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
@@ -1569,3 +1570,16 @@ var (
 	errNoSessionToday                 = errors.New("no session today")
 	errRestoreFailedAfterProvisioning = errors.New("restore failed after the sandbox was provisioned")
 )
+
+func TestDrainEventsHumanToolArgsKeepRunesWhole(t *testing.T) {
+	evs := []events.SessionEvent{{Kind: events.EventToolCallStart, SessionID: "s", Data: events.ToolCallStartData{
+		ToolName:      "write_file",
+		CallID:        "c1",
+		ArgumentsJSON: strings.Repeat("世", 100),
+	}}}
+	var buf bytes.Buffer
+	<-drainEventsHuman(feedEvents(evs), &buf)
+	if !utf8.ValidString(buf.String()) {
+		t.Fatalf("tool args split a rune: %q", buf.String())
+	}
+}

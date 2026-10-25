@@ -4,8 +4,10 @@ import (
 	"context"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -336,5 +338,12 @@ func TestHubRPCSearchRoundTrip(t *testing.T) {
 	}
 	if len(resp.Past) != 1 || resp.Past[0].ID != "02wMz5TxvLgZ6BB3uYgqz5" {
 		t.Fatalf("past=%+v", resp.Past)
+	}
+}
+
+func TestCompactSessionPromptTitleKeepsRunesWhole(t *testing.T) {
+	got := compactSessionPromptTitle(strings.Repeat("世", 100))
+	if !utf8.ValidString(got) {
+		t.Fatalf("title split a rune: %q", got)
 	}
 }
