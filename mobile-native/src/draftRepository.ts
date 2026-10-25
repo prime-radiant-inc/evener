@@ -69,8 +69,14 @@ export class DraftRepository {
       from_session_ref TEXT NOT NULL,
       to_hub_id TEXT NOT NULL,
       to_session_ref TEXT NOT NULL,
+      settled INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (to_hub_id, to_session_ref)
     )`);
+		const handoffColumns = new Set(
+			db.getAllSync<{ name: string }>("PRAGMA table_info(pending_draft_handoffs)").map((column) => column.name),
+		);
+		if (!handoffColumns.has("settled"))
+			db.execSync("ALTER TABLE pending_draft_handoffs ADD COLUMN settled INTEGER NOT NULL DEFAULT 0");
 		const draftColumns = new Set(
 			db.getAllSync<{ name: string }>("PRAGMA table_info(drafts)").map((column) => column.name),
 		);
@@ -321,7 +327,22 @@ export class DraftRepository {
 			from_session_ref: string;
 			to_hub_id: string;
 			to_session_ref: string;
-		}>("SELECT from_hub_id, from_session_ref, to_hub_id, to_session_ref FROM pending_draft_handoffs");
+		}>("SELECT from_hub_id, from_session_ref, to_hub_id, to_session_ref FROM pending_draft_handoffs WHERE settled = 0");
+		return rows.map((row) => ({
+			from: { hubId: row.from_hub_id, sessionRef: row.from_session_ref },
+			to: { hubId: row.to_hub_id, sessionRef: row.to_session_ref },
+		}));
+	}
+
+	/** Mappings whose transfer is already settled or refused. A restart must
+	 * retry only their cleanup, never the transfer. */
+	readSettledHandoffs(): { from: DraftDestination; to: DraftDestination }[] {
+		const rows = this.db.getAllSync<{
+			from_hub_id: string;
+			from_session_ref: string;
+			to_hub_id: string;
+			to_session_ref: string;
+		}>("SELECT from_hub_id, from_session_ref, to_hub_id, to_session_ref FROM pending_draft_handoffs WHERE settled = 1");
 		return rows.map((row) => ({
 			from: { hubId: row.from_hub_id, sessionRef: row.from_session_ref },
 			to: { hubId: row.to_hub_id, sessionRef: row.to_session_ref },
@@ -330,9 +351,9 @@ export class DraftRepository {
 
 	writePendingHandoff(from: DraftDestination, to: DraftDestination): void {
 		this.db.runSync(
-			`INSERT INTO pending_draft_handoffs (from_hub_id, from_session_ref, to_hub_id, to_session_ref)
-       VALUES (?, ?, ?, ?) ON CONFLICT (to_hub_id, to_session_ref) DO UPDATE SET
-       from_hub_id = excluded.from_hub_id, from_session_ref = excluded.from_session_ref`,
+			`INSERT INTO pending_draft_handoffs (from_hub_id, from_session_ref, to_hub_id, to_session_ref, settled)
+       VALUES (?, ?, ?, ?, 0) ON CONFLICT (to_hub_id, to_session_ref) DO UPDATE SET
+       from_hub_id = excluded.from_hub_id, from_session_ref = excluded.from_session_ref, settled = 0`,
 			from.hubId,
 			from.sessionRef,
 			to.hubId,
@@ -361,6 +382,30 @@ export class DraftRepository {
 	removePendingHandoff(to: DraftDestination): void {
 		this.db.runSync(
 			"DELETE FROM pending_draft_handoffs WHERE to_hub_id = ? AND to_session_ref = ?",
+			to.hubId,
+			to.sessionRef,
+		);
+	}
+
+	/** Mark a settled transfer's mapping for cleanup. Called only when the
+	 * normal delete failed, so a restart cannot mistake it for a pending one. */
+	markPendingHandoffSettled(from: DraftDestination, to: DraftDestination): void {
+		this.db.runSync(
+			`UPDATE pending_draft_handoffs SET settled = 1
+			 WHERE from_hub_id = ? AND from_session_ref = ? AND to_hub_id = ? AND to_session_ref = ?`,
+			from.hubId,
+			from.sessionRef,
+			to.hubId,
+			to.sessionRef,
+		);
+	}
+
+	removeSettledHandoff(from: DraftDestination, to: DraftDestination): void {
+		this.db.runSync(
+			`DELETE FROM pending_draft_handoffs
+			 WHERE settled = 1 AND from_hub_id = ? AND from_session_ref = ? AND to_hub_id = ? AND to_session_ref = ?`,
+			from.hubId,
+			from.sessionRef,
 			to.hubId,
 			to.sessionRef,
 		);

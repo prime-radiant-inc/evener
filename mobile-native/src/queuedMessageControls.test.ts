@@ -1009,6 +1009,11 @@ test("a recovered ledger upgrades an existing pending edge's chain order", async
 		() => ledger,
 	);
 	expect(library.hasPendingHandoff(c)).toBe(true);
+	// A partial graph must not settle: A would take C before B is discoverable.
+	library.retryPendingHandoffs();
+	expect(f.repository.read(c).draft).toBe("");
+	expect(f.repository.read(a).draft).toBe("A draft");
+	expect(f.repository.read(b).draft).toBe("B draft");
 	ledgerFails = false;
 	library.retryPendingHandoffs();
 	expect(f.repository.read(c)).toMatchObject({
@@ -1112,6 +1117,132 @@ test("failed cleanup keeps a stale mapping redirectable by a later resume", asyn
 	expect(f.repository.read(destination)).toMatchObject({ draft: "A draft" });
 	expect(f.repository.read(cDestination)).toMatchObject({ draft: "B draft" });
 	expect(recovered.hasPendingHandoff(cDestination)).toBe(false);
+	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
+});
+
+test("a four-identity chain keeps A behind B after a transient intermediate failure", async () => {
+	const f = fixture();
+	const hub = destination.hubId;
+	const ref = (suffix: string) => ({ hubId: hub, sessionRef: `session-${suffix}` });
+	const a = ref("a");
+	const b = ref("b");
+	const c = ref("c");
+	const d = ref("d");
+	f.repository.write(a, {
+		draft: "A draft",
+		unconfirmed: null,
+		composer: { recoveryIds: ["captured-a"] },
+		completedCommandRecoveryIds: ["completed-a"],
+	});
+	f.repository.write(b, {
+		draft: "B draft",
+		unconfirmed: null,
+		composer: { recoveryIds: ["captured-b"] },
+		completedCommandRecoveryIds: ["completed-b"],
+	});
+	const seedEdge = (from: DraftDestination, to: DraftDestination) =>
+		f.mutations
+			.prepare(
+				"INSERT INTO resume_identity_edges (from_hub_id, from_ref, to_hub_id, to_ref, created_at) VALUES (?, ?, ?, ?, ?)",
+			)
+			.run(hub, from.sessionRef, hub, to.sessionRef, Date.now());
+	seedEdge(a, b);
+	seedEdge(b, c);
+
+	// C->D succeeds, redirecting both A->C and B->C onto D.
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	expect(library.handoff(c, d)).toBe(true);
+
+	// B's transfer to D fails once. A must stay behind B, not take D.
+	f.drafts.exec(
+		"CREATE TRIGGER reject_b_delete BEFORE DELETE ON drafts WHEN OLD.session_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'transfer failed'); END",
+	);
+	library.retryPendingHandoffs();
+	expect(f.repository.read(d).draft).toBe("");
+	expect(f.repository.read(a).draft).toBe("A draft");
+	expect(f.repository.read(b).draft).toBe("B draft");
+
+	f.drafts.exec("DROP TRIGGER reject_b_delete");
+	library.retryPendingHandoffs();
+	expect(f.repository.read(d)).toMatchObject({
+		draft: "B draft",
+		composer: { recoveryIds: ["captured-b"] },
+		completedCommandRecoveryIds: expect.arrayContaining(["completed-b"]),
+	});
+	expect(f.repository.read(a)).toMatchObject({ draft: "A draft" });
+	expect(f.repository.read(b)).toEqual({ draft: "", unconfirmed: null });
+});
+
+test("a settled mapping with an emptied destination is cleaned after restart, not transferred", async () => {
+	const f = fixture();
+	const completedA = await f.enqueue();
+	f.document.edit("current");
+	await editQueuedMessageIntoDraft(f.runtime, key, completedA, f.document);
+	await f.document.submitBuiltinCommand(async () => true);
+	const capturedA = await f.enqueue();
+	await editQueuedMessageIntoDraft(f.runtime, key, capturedA, f.document);
+	f.document.edit("A draft");
+	await f.enqueue();
+
+	const bRef = "session-b";
+	const bDestination = { hubId: destination.hubId, sessionRef: bRef };
+	const bKey = nativeMutationTargetKey(destination.hubId, bRef);
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: bKey,
+			wireRef: bRef,
+			threadId: "thread-b",
+			instanceId: "instance-b",
+		}),
+	).toHaveLength(1);
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	f.drafts.exec(
+		"CREATE TRIGGER reject_b_draft BEFORE INSERT ON drafts WHEN NEW.session_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+	);
+	expect(library.handoff(destination, bDestination)).toBe(false);
+	f.drafts.exec("DROP TRIGGER reject_b_draft");
+	f.repository.write(bDestination, {
+		draft: "B draft",
+		unconfirmed: null,
+		composer: { recoveryIds: ["captured-b"] },
+		completedCommandRecoveryIds: ["completed-b"],
+	});
+
+	// A fresh library sees B occupied; the refusal's cleanup fails, so the
+	// mapping must be marked settled rather than left as a transfer.
+	const resumed = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	f.drafts.exec(
+		"CREATE TRIGGER reject_pending_b_delete BEFORE DELETE ON pending_draft_handoffs WHEN OLD.to_session_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'cleanup failed'); END",
+	);
+	resumed.retryPendingHandoffs();
+	f.drafts.exec("DROP TRIGGER reject_pending_b_delete");
+	expect(f.repository.read(destination).draft).toBe("A draft");
+	expect(f.repository.read(bDestination).draft).toBe("B draft");
+
+	// B's composition is sent or cleared before the app restarts.
+	f.repository.remove(bDestination);
+	await f.reopen();
+	const recovered = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	recovered.retryPendingHandoffs();
+	expect(f.repository.read(destination).draft).toBe("A draft");
+	expect(f.repository.read(bDestination)).toEqual({ draft: "", unconfirmed: null });
+	expect(recovered.hasPendingHandoff(bDestination)).toBe(false);
 	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
 });
 

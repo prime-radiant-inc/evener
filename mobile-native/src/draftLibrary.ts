@@ -9,7 +9,13 @@ export type DraftStorage = Pick<
 	Partial<
 		Pick<
 			DraftRepository,
-			"readPendingHandoffs" | "writePendingHandoff" | "removePendingHandoff" | "redirectPendingHandoff"
+			| "readPendingHandoffs"
+			| "writePendingHandoff"
+			| "removePendingHandoff"
+			| "redirectPendingHandoff"
+			| "readSettledHandoffs"
+			| "markPendingHandoffSettled"
+			| "removeSettledHandoff"
 		>
 	>;
 
@@ -33,6 +39,9 @@ export class DraftLibrary {
 	 * database on first use. A restart finds the handoff a failed transfer left
 	 * behind before the resumed screen restores the source's recovery text. */
 	private pendingLoaded = false;
+	/** A load could not read every store. Settling on the partial graph could
+	 * put a predecessor ahead of a downstream node the missing edges order. */
+	private graphIncomplete = false;
 	/** Handoffs whose transfer settled but whose durable cleanup failed. They
 	 * are not retried as transfers; a later resume still redirects their stale
 	 * mapping away from a retired ref. */
@@ -72,6 +81,11 @@ export class DraftLibrary {
 	 * an empty destination may take the handoff; existing work is left alone. */
 	handoff(from: DraftDestination, to: DraftDestination): boolean {
 		if (from.hubId === to.hubId && from.sessionRef === to.sessionRef) return true;
+		this.loadPendingHandoffs();
+		if (this.graphIncomplete) {
+			this.deferHandoff(from, to);
+			return false;
+		}
 		const source = this.open(from);
 		// The session identity changed whether or not the composition can move:
 		// a mounted screen must follow the resumed ref even while the handoff is
@@ -160,6 +174,7 @@ export class DraftLibrary {
 	 * work in the meantime owns it, so its pending retry is dropped. */
 	retryPendingHandoffs(): void {
 		this.loadPendingHandoffs();
+		if (this.graphIncomplete) return;
 		this.retryStaleCleanup();
 		// Downstream first: a chain's intermediate must settle before its
 		// predecessor, or the predecessor's older draft occupies the destination
@@ -231,6 +246,11 @@ export class DraftLibrary {
 				this.repository().removePendingHandoff?.(to);
 			} catch {
 				cleanupFailed = true;
+				try {
+					this.repository().markPendingHandoffSettled?.(from, to);
+				} catch {
+					// The in-memory stale entry still retries this launch.
+				}
 			}
 		}
 		try {
@@ -245,12 +265,13 @@ export class DraftLibrary {
 	private retryStaleCleanup(): void {
 		for (const [key, edge] of [...this.stale]) {
 			let cleaned = true;
-			if (!this.pendingTo(edge.to)) {
-				try {
-					this.repository().removePendingHandoff?.(edge.to);
-				} catch {
-					cleaned = false;
-				}
+			try {
+				const storage = this.repository();
+				storage.markPendingHandoffSettled?.(edge.from, edge.to);
+				if (storage.removeSettledHandoff) storage.removeSettledHandoff(edge.from, edge.to);
+				else if (!this.pendingTo(edge.to)) storage.removePendingHandoff?.(edge.to);
+			} catch {
+				cleaned = false;
 			}
 			try {
 				this.resumeIdentities?.()?.settleResumeIdentity(edge.from, edge.to);
@@ -269,6 +290,10 @@ export class DraftLibrary {
 			const storage = this.repository();
 			if (storage.readPendingHandoffs !== undefined && storage.writePendingHandoff !== undefined) {
 				raw.push(...storage.readPendingHandoffs());
+				for (const edge of storage.readSettledHandoffs?.() ?? []) {
+					const key = this.handoffKey(edge.from, edge.to);
+					if (!this.stale.has(key)) this.stale.set(key, edge);
+				}
 			}
 		} catch {
 			// Storage is failing; the next open or retry looks again.
@@ -355,7 +380,10 @@ export class DraftLibrary {
 				...(dependsOn.length ? { dependsOn } : {}),
 			});
 		}
-		if (loaded) this.pendingLoaded = true;
+		if (loaded) {
+			this.pendingLoaded = true;
+			this.graphIncomplete = false;
+		} else this.graphIncomplete = true;
 	}
 
 	private releaseRefusedSources(source: DraftDocument, destination: DraftDocument): boolean {
@@ -401,46 +429,37 @@ export class DraftLibrary {
 				continue;
 			}
 			this.pending.delete(key);
-			const redirected: PendingHandoff = {
-				from: edge.from,
-				to: settlingTo,
-				rank: edge.rank + 1,
-				dependsOn: [settlingFrom],
-			};
-			const existing = this.pending.get(this.handoffKey(edge.from, settlingTo));
-			if (existing && existing.rank > redirected.rank) redirected.rank = existing.rank;
-			this.pending.set(this.handoffKey(edge.from, settlingTo), redirected);
-		}
-		for (const [key, edge] of [...this.stale]) {
-			if (!sameDestination(edge.to, settlingFrom)) continue;
-			let draftsDurable = true;
-			try {
-				const storage = this.repository();
-				if (storage.redirectPendingHandoff) storage.redirectPendingHandoff(edge.from, settlingFrom, settlingTo);
-				else if (storage.writePendingHandoff) storage.writePendingHandoff(edge.from, settlingTo);
-			} catch {
-				draftsDurable = false;
-			}
-			let identitiesDurable = true;
-			try {
-				this.resumeIdentities?.()?.redirectResumeIdentity(edge.from, settlingFrom, settlingTo);
-			} catch {
-				identitiesDurable = false;
-			}
-			if (!draftsDurable || !identitiesDurable) {
-				durable = false;
-				continue;
-			}
-			this.stale.delete(key);
 			const redirectedKey = this.handoffKey(edge.from, settlingTo);
 			const existing = this.pending.get(redirectedKey);
 			const redirected: PendingHandoff = {
 				from: edge.from,
 				to: settlingTo,
-				rank: Math.max(2, existing?.rank ?? 0),
-				dependsOn: uniqueDestinations([...(existing?.dependsOn ?? []), settlingFrom]),
+				rank: Math.max(edge.rank + 1, existing?.rank ?? 0),
+				dependsOn: uniqueDestinations([...(edge.dependsOn ?? []), ...(existing?.dependsOn ?? []), settlingFrom]),
 			};
 			this.pending.set(redirectedKey, redirected);
+		}
+		for (const [key, edge] of [...this.stale]) {
+			if (!sameDestination(edge.to, settlingFrom)) continue;
+			let cleaned = true;
+			try {
+				const storage = this.repository();
+				storage.markPendingHandoffSettled?.(edge.from, edge.to);
+				if (storage.removeSettledHandoff) storage.removeSettledHandoff(edge.from, edge.to);
+				else if (!this.pendingTo(edge.to)) storage.removePendingHandoff?.(edge.to);
+			} catch {
+				cleaned = false;
+			}
+			try {
+				this.resumeIdentities?.()?.settleResumeIdentity(edge.from, edge.to);
+			} catch {
+				cleaned = false;
+			}
+			if (!cleaned) {
+				durable = false;
+				continue;
+			}
+			this.stale.delete(key);
 		}
 		return durable;
 	}
