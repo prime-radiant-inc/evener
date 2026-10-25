@@ -138,15 +138,17 @@ func TestMemoryGardeningSkill(t *testing.T) {
 func TestMemoryGardeningSkillGatedBySaveCapability(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name     string
-		cfg      SessionConfig
-		revoke   string
-		loadable bool // use_skill activates it; the catalog lists it exactly when true
+		name               string
+		cfg                SessionConfig
+		revoke             string
+		loadable           bool // use_skill activates it; the catalog lists it exactly when true
+		initialUnavailable bool // the construction-time autosave already has the fixed verdict
 	}{
-		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "", true},
-		{"write-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_write", false},
-		{"memory-disabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project", DisableMemory: true}, "", false},
-		{"delegate", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project", spawn: spawnConfig{parentSessionID: "parent-session", depth: 1}}, "", false},
+		{"enabled", SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "", true, false},
+		{"write-revoked", SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_write", false, false},
+		{"memory-disabled", SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project", DisableMemory: true}, "", false, true},
+		{"unbound", SessionConfig{StateDir: t.TempDir(), MemoryProjectID: "fixture-project"}, "", false, true},
+		{"delegate", SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project", spawn: spawnConfig{parentSessionID: "parent-session", depth: 1}}, "", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -167,9 +169,34 @@ func TestMemoryGardeningSkillGatedBySaveCapability(t *testing.T) {
 				},
 			}
 			s := newSession(t, withConfig(tc.cfg), withSteps(steps...))
+			// The construction-time autosave must already carry the verdict the
+			// hub reads before the session's first turn.
+			initial, err := schema.LoadSessionMeta(s.stateDir, s.id)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta(initial): %v", err)
+			}
+			if initial.MemorySaveUnavailable != tc.initialUnavailable {
+				t.Errorf("initial MemorySaveUnavailable = %t, want %t", initial.MemorySaveUnavailable, tc.initialUnavailable)
+			}
 			if tc.revoke != "" {
 				s.reg.Remove(tc.revoke)
 				refreshModelFacingCaches(s)
+			}
+			// The hub reads the persisted verdict, not the live predicate.
+			// Save after the post-construction revocation and reload the meta
+			// the hub would see.
+			if err := s.saveMeta(); err != nil {
+				t.Fatalf("saveMeta: %v", err)
+			}
+			saved, err := schema.LoadSessionMeta(s.stateDir, s.id)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta: %v", err)
+			}
+			if saved.MemorySaveUnavailable != !tc.loadable {
+				t.Errorf("saved MemorySaveUnavailable = %t, want %t", saved.MemorySaveUnavailable, !tc.loadable)
+			}
+			if got := s.Meta().MemorySaveUnavailable; got != !tc.loadable {
+				t.Errorf("Meta().MemorySaveUnavailable = %t, want %t", got, !tc.loadable)
 			}
 			if got := s.skillAvailableToSession(gardeningMemorySkillName); got != tc.loadable {
 				t.Errorf("skillAvailableToSession(%s) = %t, want %t", gardeningMemorySkillName, got, tc.loadable)

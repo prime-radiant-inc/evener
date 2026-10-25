@@ -146,7 +146,7 @@ initial-read retry loop. The server can repair a projection on a later read.
 **Evidence.** Browser
 [hydrateAndSubscribe](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1818),
 native [rehydrate](../../mobile/src/state/conversation.ts#L2017) and
-[useReadRetry](../../mobile-native/src/session/useReadRetry.ts#L46), and server
+[entry read actor](../../mobile-native/src/session/nativeConversationSessions.ts#L417), and server
 [recoverForRead](../../server/thread_history.go#L355) expose the ownership gap.
 Shared `reducer.history.test.ts` specifies that a later success clears history failure.
 

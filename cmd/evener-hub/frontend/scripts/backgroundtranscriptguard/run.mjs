@@ -1822,12 +1822,13 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   await driver.waitPage(`Boolean(document.querySelector("[data-stacked-pane-type='session']"))`, {
     label: "the same session has mounted in the mobile host",
   });
+  const restoredNarrow = await waitForRestoredDomain(driver, SESSION_B, laterPageSentinel);
   const readingAfter = await settledReading(driver, SESSION_B);
   driver.milestone("responsive-reading", {
     before: readingBefore, after: readingAfter, sentinel: laterPageSentinel,
     traceBefore: narrowTraceBefore, traceAfter: traceBytes(),
     beforePayload: (narrowBefore?.items ?? []).map(recordedItemIdentity),
-    afterPayload: ((await readTargetDomain(driver, SESSION_B))?.items ?? []).map(recordedItemIdentity),
+    afterPayload: (restoredNarrow?.items ?? []).map(recordedItemIdentity),
     entry: await evaluate(driver.send, `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(SESSION_B)})`),
   });
   await driver.screenshot("older-responsive");
@@ -1852,7 +1853,7 @@ async function runEntryProductionJourney(driver, harnessUrl) {
     30000,
     "preserved content after repeat activation at a narrow viewport",
   );
-  const narrowAfter = await readTargetDomain(driver, SESSION_B);
+  const narrowAfter = await waitForRestoredDomain(driver, SESSION_B, laterPageSentinel);
   const beforeItems = (narrowBefore?.items ?? []).map((item) => item.id).sort();
   const afterItems = (narrowAfter?.items ?? []).map((item) => item.id).sort();
   const contentPreserved = narrowViewportContentPreserved(narrowBefore, narrowAfter);
@@ -2513,8 +2514,8 @@ async function settledReading(driver, ref) {
 }
 
 async function positionOlderReading(driver, ref, sentinel) {
-  const domain = await readTargetDomain(driver, ref);
-  const item = domain.items.find(item => item.text === sentinel);
+  const domain = await waitForRestoredDomain(driver, ref, sentinel);
+  const item = domain?.items.find(item => item.text === sentinel);
   if (!item) throw new Error(`older fixture item absent: ${sentinel}`);
   const result = await evaluate(driver.send, `(async () => {
     const port = ${SCROLL_PORT_EXPR(ref)};

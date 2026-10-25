@@ -13,6 +13,7 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import { useMemo, useState } from "react";
 import { useStore } from "zustand";
+import { attentionEntryOwnsReader } from "../../shell/attentionHistory";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL, refParam } from "../../shell/routing";
@@ -125,6 +126,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
           ),
       viewFallbackId: paneId,
       focused: paneFocused,
+      mountAutofocus: !attentionEntryOwnsReader(paneId, ref),
       // A resumed conversation replaces this pane's route so the workspace
       // opens the resumed session rather than leaving a stale identity.
       onResumedIdentity: (resumedRef) => {

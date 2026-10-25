@@ -1,6 +1,12 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { captureAttentionPlacement, presentAttentionTarget } from "./attentionPlacement";
 import { openNestedSessionWithOwner, openSessionByRef, openTopLevelSession } from "./sessionPlacement";
-import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+import {
+  conversationOpenParentRef,
+  recordConversationOpenParent,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "./workspace";
 
 beforeAll(async () => {
   await import("../panes/session");
@@ -21,6 +27,38 @@ function sessionRefOf(pane: { params: unknown }): string | null {
   const params = pane.params as { ref?: unknown };
   return typeof params?.ref === "string" ? params.ref : null;
 }
+
+test("ordinary nested reopening binds the fresh presented child rather than its parked match", () => {
+  openTopLevelSession("local:owner");
+  workspaceStore.getState().openPane("session", { ref: "local:child" }, { slot: "secondary" });
+  const parked = captureAttentionPlacement();
+  if (!parked) throw new Error("missing child fixture");
+  recordConversationOpenParent(parked.pane, "local:earlier-parent");
+  presentAttentionTarget("local:attention");
+  openNestedSessionWithOwner("local:child", "local:owner");
+  const state = workspaceStore.getState();
+  const child = state.panes.find((pane) => pane.id === state.focusedPaneId);
+  if (!child) throw new Error("missing presented child");
+  expect(child).not.toBe(parked.pane);
+  expect(child.slot).toBe("secondary");
+  expect(conversationOpenParentRef(child)).toBe("local:owner");
+  expect(conversationOpenParentRef(parked.pane)).toBe("local:earlier-parent");
+  expect(parked.pane.slot).toBe("parked");
+});
+
+test("ordinary session links focus a presented match after an earlier parked match", () => {
+  openTopLevelSession("local:owner");
+  workspaceStore.getState().openPane("session", { ref: "local:child" });
+  const parked = captureAttentionPlacement();
+  if (!parked) throw new Error("missing child fixture");
+  const attention = presentAttentionTarget("local:attention");
+  if (!attention) throw new Error("missing attention fixture");
+  const fresh = workspaceStore.getState().openPane("session", { ref: "local:child" });
+  workspaceStore.getState().focusPane(attention.pane.id);
+  openSessionByRef("local:child");
+  expect(workspaceStore.getState().focusedPaneId).toBe(fresh);
+  expect(parked.pane.slot).toBe("parked");
+});
 
 describe("openTopLevelSession", () => {
   // A session pane's ref is fixed for the life of its pane id: switching the

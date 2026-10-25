@@ -7,9 +7,11 @@ import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
 import { buildComposerInput, MAX_ATTACHMENTS, type Thread } from "@evener/appwire-client";
 import { ActionSheetIOS } from "react-native";
+import { launchImageLibraryAsync } from "expo-image-picker";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { Storage } from "expo-sqlite/kv-store";
 import { ConversationScreen } from "./screens";
+import { NativeConversationSessionsProvider } from "./session/NativeConversationSessionsProvider";
 import { drafts, nativeDrafts } from "./nativeDrafts";
 import {
 	NativeMutationRuntime,
@@ -30,14 +32,23 @@ import { ghosts, isQueuedGhost, type Ghost, type GhostAction } from "./session/g
 import { withGhostRows, isGhostRow } from "./session/transcriptRows";
 import { QueueSheet, queueHosts } from "./QueueSheet";
 import { sheetKey } from "./sheet/sheetHosts";
-import { render, settle, screenConnection, pressable, unmountMountedTrees } from "./renderNative.testkit";
+import {
+	alertRequests,
+	render,
+	settle,
+	screenConnection,
+	pressable,
+	unmountMountedTrees,
+} from "./renderNative.testkit";
 import { answerFleetRead } from "./session/fleetTestUtils";
+import { sessionInfoHosts } from "./session/SessionInfoSheet";
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 	uuid: 0,
 	kvFailure: "" as "" | "read" | "write",
 	rpcFailure: "" as string,
 	reopenKV: () => {},
+	manipulate: vi.fn(),
 }));
 const navigationState = vi.hoisted(() => ({ state: { index: 0, routes: [] as { key: string; name: string }[] } }));
 const sqlite = vi.hoisted(() => ({
@@ -171,9 +182,20 @@ vi.mock("expo-file-system", () => ({
 }));
 vi.mock("expo-image-manipulator", () => ({
 	ImageManipulator: {
+		manipulate: (uri: string) => harness.manipulate(uri),
 		manipulateAsync: vi.fn(async () => ({ uri: "manipulated" })),
 	},
 	SaveFormat: { JPEG: "jpeg" },
+}));
+harness.manipulate.mockImplementation(() => ({
+	resize: () => {},
+	renderAsync: async () => ({
+		width: 100,
+		height: 100,
+		saveAsync: async () => ({ base64: "AQID", uri: "encoded" }),
+		release: () => {},
+	}),
+	release: () => {},
 }));
 vi.mock("expo-image-picker", () => ({
 	launchImageLibraryAsync: vi.fn(async () => ({ canceled: true, assets: [] })),
@@ -193,6 +215,13 @@ vi.mock("./NativePreferencesProvider", () => ({
 	useNativePreferences: () => ({ hubId: null, model: null, snapshot: null, config: null, connected: false }),
 }));
 type Props = ComponentProps<typeof ConversationScreen>;
+function SessionScreen(props: Props) {
+	return (
+		<NativeConversationSessionsProvider>
+			<ConversationScreen {...props} />
+		</NativeConversationSessionsProvider>
+	);
+}
 const navigation = {
 	isFocused: () => true,
 	getState: () => navigationState.state,
@@ -220,6 +249,7 @@ async function mount(
 	command = false,
 	draftText?: string,
 	selectionKind: "skill" | "command" = "skill",
+	options: { goal?: { objective: string; status: "active"; iterations: number } } = {},
 ) {
 	const ref = `queued-${++serial}`;
 	if (selectionOnly)
@@ -252,6 +282,7 @@ async function mount(
 		evener: {
 			ref,
 			instanceId: "instance",
+			...(options.goal === undefined ? {} : { goal: options.goal }),
 			capabilities: {
 				send: true,
 				steer: true,
@@ -264,7 +295,7 @@ async function mount(
 				changeModel: false,
 				changeVisionModel: false,
 				sharedNotes: false,
-				goal: false,
+				goal: options.goal !== undefined,
 				rename: false,
 			},
 			queue: { revision: 0, depth: 0, preview: [], texts: [], ids: [] },
@@ -305,7 +336,7 @@ async function mount(
 	navigationState.state = { index: 0, routes: [route] };
 	let tree!: ReactTestRenderer;
 	await act(async () => {
-		tree = render(<ConversationScreen route={route} navigation={navigation} />);
+		tree = render(<SessionScreen route={route} navigation={navigation} />);
 	});
 	await settle();
 	const document = drafts.open({ hubId: "hub-1", sessionRef: ref });
@@ -315,7 +346,7 @@ async function mount(
 		act(() => client.emitStateChange("reconnecting"));
 		harness.connection = { ...harness.connection, state: "reconnecting" };
 		await act(async () => {
-			tree.update(<ConversationScreen route={route} navigation={navigation} />);
+			tree.update(<SessionScreen route={route} navigation={navigation} />);
 		});
 	}
 	async function recreateOffline() {
@@ -323,7 +354,7 @@ async function mount(
 		harness.reopenKV();
 		for (const reopen of sqlite.reopen) reopen();
 		await act(async () => {
-			tree = render(<ConversationScreen route={route} navigation={navigation} />);
+			tree = render(<SessionScreen route={route} navigation={navigation} />);
 		});
 		await settle();
 		return tree;
@@ -466,7 +497,7 @@ async function enqueueRecoveredSelection(
 async function reconnect(f: Awaited<ReturnType<typeof mount>>) {
 	act(() => f.client.emitStateChange("ready"));
 	harness.connection = { ...harness.connection, state: "ready" };
-	await act(async () => f.tree.update(<ConversationScreen route={f.route} navigation={navigation} />));
+	await act(async () => f.tree.update(<SessionScreen route={f.route} navigation={navigation} />));
 	await settle();
 }
 
@@ -1042,7 +1073,7 @@ async function prepareRecoveredCompact() {
 	await act(async () => input.props.onChangeText("/compact"));
 	act(() => f.client.emitStateChange("ready"));
 	harness.connection = { ...harness.connection, state: "ready" };
-	await act(async () => f.tree.update(<ConversationScreen route={f.route} navigation={navigation} />));
+	await act(async () => f.tree.update(<SessionScreen route={f.route} navigation={navigation} />));
 	await settle();
 	return { f, source };
 }
@@ -1299,7 +1330,7 @@ it.each(["offline", "online", "command"])(
 		if (mode !== "offline") {
 			act(() => f.client.emitStateChange("ready"));
 			harness.connection = { ...harness.connection, state: "ready" };
-			await act(async () => f.tree.update(<ConversationScreen route={f.route} navigation={navigation} />));
+			await act(async () => f.tree.update(<SessionScreen route={f.route} navigation={navigation} />));
 			await settle();
 		}
 		const send = pressable(
@@ -1397,7 +1428,15 @@ function journey() {
 			/>
 		) : (
 			<GhostRowContext.Provider
-				value={{ disabled: false, canEdit: false, editHint: null, onAction: actOn, onMore: () => {} }}
+				value={{
+					disabled: false,
+					canEdit: false,
+					editHint: null,
+					canEditParked: false,
+					parkedEditHint: null,
+					onAction: actOn,
+					onMore: () => {},
+				}}
 			>
 				{withGhostRows([], list)
 					.filter(isGhostRow)
@@ -1801,4 +1840,286 @@ it.each([false, true])("nativeQueuedControlsPreserveAndResendOnce held=%s", asyn
 	await f.reopen();
 	expect(await f.runtime.storage.getOutbox(removed)).toBeUndefined();
 	expect(f.document.getSnapshot().record.draft).toBe("");
+});
+
+async function editRecoveryIntoDraft(f: Awaited<ReturnType<typeof mount>>, text: string) {
+	await f.offline();
+	const source = await enqueue(f, text);
+	const host = queueHosts.get(sheetKey("hub-1", f.ref));
+	const ghost = host?.ghosts.find(
+		(item) => item.origin.kind === "pending" && item.origin.clientMutationId === source.clientMutationId,
+	);
+	if (!host || !ghost) throw new Error("no local ghost");
+	await act(async () => {
+		await host.act(ghost, "edit");
+	});
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toEqual([source.clientMutationId]);
+	await reconnect(f);
+	return source;
+}
+
+async function replaceDraftWithGoal(f: Awaited<ReturnType<typeof mount>>) {
+	vi.stubGlobal("requestAnimationFrame", (frame: (time: number) => void) => {
+		frame(0);
+		return 0;
+	});
+	alertRequests.length = 0;
+	await act(async () => {
+		sessionInfoHosts.get(sheetKey("hub-1", f.ref))?.editGoal();
+	});
+	expect(alertRequests).toHaveLength(1);
+	const replace = alertRequests[0].buttons?.find((button) => button.text === "Replace draft");
+	expect(replace).toBeDefined();
+	await act(async () => {
+		replace?.onPress?.();
+	});
+	await settle();
+	vi.unstubAllGlobals();
+}
+
+it.each([
+	["without parked images", false],
+	["with parked images", true],
+] as const)("goal edit replaces an edited recovery %s", async (_label, withImage) => {
+	const f = await mount(false, false, undefined, "skill", {
+		goal: { objective: "ship", status: "active", iterations: 1 },
+	});
+	const source = await editRecoveryIntoDraft(f, "old goal work");
+	if (withImage)
+		await act(async () => {
+			f.document.addImage({ id: "old-image", marker: 3, mediaType: "image/png", data: "AQID" }, 0);
+		});
+	const before = f.document.getSnapshot().record;
+	expect(before.draft).toContain("old goal work");
+	expect(before.images?.map((image) => image.id)).toEqual(withImage ? ["old-image"] : []);
+
+	await replaceDraftWithGoal(f);
+
+	let record = f.document.getSnapshot().record;
+	expect(record.draft).toBe("/goal ship");
+	expect(record.composer).toBeUndefined();
+	expect(record.images).toBeUndefined();
+	expect(record.unconfirmed).toBeNull();
+	expect(record.parkedCompositions?.[0]?.text).toBe(before.draft);
+	expect(record.parkedCompositions?.[0]?.composer?.recoveryIds).toEqual([source.clientMutationId]);
+	expect(record.parkedCompositions?.[0]?.images?.map((image) => image.id)).toEqual(withImage ? ["old-image"] : []);
+	if (withImage)
+		expect(f.tree.root.findAll((node) => node.props.accessibilityLabel === "Image 3: attachment")).not.toHaveLength(0);
+
+	// The screen's own reconciliation must leave the replacement alone.
+	await act(async () => {
+		await reconcileEditedResends(f.runtime, f.targetKey, f.document);
+		const retained = (await f.runtime.read(f.targetKey)).recovery.filter((row) => row.recoveryKind === "editing");
+		for (const row of retained)
+			await editQueuedMessageIntoDraft(f.runtime, f.targetKey, row.clientMutationId, f.document);
+	});
+	record = f.document.getSnapshot().record;
+	expect(record.draft).toBe("/goal ship");
+	expect(record.parkedCompositions?.[0]?.text).toBe(before.draft);
+
+	// The parked image must not route the goal through ordinary message dispatch.
+	const request = f.client.request;
+	f.client.request = async (method, params) => {
+		if (method !== "goal/set") return request(method, params);
+		f.requests.push({ method, params: params as Record<string, unknown> });
+		return { started: true } as never;
+	};
+	const send = pressable(f.tree, "Set goal");
+	expect(send?.props.disabled).toBe(false);
+	await act(async () => send?.props.onPress());
+	await settle();
+	expect(f.requests.filter((item) => item.method === "goal/set")).toHaveLength(1);
+	expect(f.requests.filter((item) => item.method.startsWith("turn/"))).toHaveLength(0);
+
+	// Sending the goal leaves the parked work recoverable as its own composition.
+	record = f.document.getSnapshot().record;
+	expect(record.parkedCompositions?.[0]?.text).toBe(before.draft);
+	expect(record.parkedCompositions?.[0]?.images?.map((image) => image.id)).toEqual(withImage ? ["old-image"] : []);
+	await act(async () => {
+		f.document.restoreParked(record.parkedCompositions?.[0]?.id ?? "");
+	});
+	record = f.document.getSnapshot().record;
+	expect(record.draft).toBe(before.draft);
+	expect(record.parkedCompositions).toBeUndefined();
+	expect(record.composer?.recoveryIds).toEqual([source.clientMutationId]);
+});
+
+it("parked ghost Discard keeps an unrelated unconfirmed send", async () => {
+	const f = await mount(false, false, undefined, "skill", {
+		goal: { objective: "ship", status: "active", iterations: 1 },
+	});
+	await editRecoveryIntoDraft(f, "old goal work");
+	await replaceDraftWithGoal(f);
+	await act(async () => {
+		await f.document.submit(async () => false);
+	});
+	await settle();
+
+	const parked = f.tree.root.findAll((node) => node.props.ghost?.origin?.kind === "parked")[0];
+	expect(parked).toBeDefined();
+	await act(async () => {
+		await parked?.props.onAction("discard");
+	});
+
+	const record = f.document.getSnapshot().record;
+	expect(record.parkedCompositions).toBeUndefined();
+	expect(record.unconfirmed).toBe("/goal ship");
+});
+
+it("text-only parked ghost never shows an unrelated send's images", async () => {
+	const f = await mount(false, false, undefined, "skill", {
+		goal: { objective: "ship", status: "active", iterations: 1 },
+	});
+	await editRecoveryIntoDraft(f, "old goal work");
+	await replaceDraftWithGoal(f);
+	await act(async () => {
+		f.document.addImage({ id: "other", marker: 5, mediaType: "image/png", data: "AQID" });
+		await f.document.submit(async () => false);
+	});
+	await settle();
+
+	const record = f.document.getSnapshot().record;
+	expect(record.parkedCompositions?.[0]?.images ?? []).toEqual([]);
+	expect(record.unconfirmedImages?.map((image) => image.id)).toEqual(["other"]);
+	const parked = f.tree.root.findAll((node) => node.props.ghost?.origin?.kind === "parked")[0];
+	expect(parked).toBeDefined();
+	expect(parked?.props.attachments?.props.images).toEqual([]);
+});
+
+it("parked Edit waits for a deferred encoder and keeps the pending image", async () => {
+	const f = await mount(false, false, undefined, "skill", {
+		goal: { objective: "ship", status: "active", iterations: 1 },
+	});
+	await editRecoveryIntoDraft(f, "old goal work");
+	await act(async () => {
+		for (let index = 0; index < 8; index++)
+			f.document.addImage({
+				id: `parked-${index}`,
+				marker: index + 1,
+				mediaType: "image/png",
+				data: "AQID",
+			});
+	});
+	await replaceDraftWithGoal(f);
+	await act(async () => {
+		f.document.edit("");
+	});
+	const parked = f.tree.root.findAll((node) => node.props.ghost?.origin?.kind === "parked")[0];
+	expect(parked).toBeDefined();
+	expect(f.document.getSnapshot().record.parkedCompositions?.[0]?.images).toHaveLength(8);
+
+	vi.mocked(launchImageLibraryAsync).mockResolvedValueOnce({
+		canceled: false,
+		assets: [
+			{
+				uri: "photo.jpg",
+				fileName: "picked.jpg",
+				mimeType: "image/jpeg",
+				fileSize: 100,
+				width: 4000,
+				height: 3000,
+			},
+		],
+	} as never);
+	let finish!: () => void;
+	harness.manipulate.mockImplementationOnce(() => ({
+		resize: () => {},
+		renderAsync: () =>
+			new Promise((resolve) => {
+				finish = () =>
+					resolve({
+						width: 100,
+						height: 100,
+						saveAsync: async () => ({ base64: "AQID", uri: "encoded" }),
+						release: () => {},
+					});
+			}),
+		release: () => {},
+	}));
+	const show = vi.mocked(ActionSheetIOS.showActionSheetWithOptions);
+	show.mockClear();
+	await act(async () => pressable(f.tree, "Add")?.props.onPress());
+	const chooseLibrary = show.mock.calls.at(-1)?.[1] as ((index: number) => void) | undefined;
+	expect(chooseLibrary).toBeDefined();
+	await act(async () => chooseLibrary?.(0));
+	await settle();
+
+	// Encoding is in flight: parked Edit is disabled and refuses a stale press.
+	const busyParked = f.tree.root.findAll((node) => node.props.ghost?.origin?.kind === "parked")[0];
+	expect(busyParked?.props.canEdit).toBe(false);
+	await act(async () => {
+		parked?.props.onAction("edit");
+	});
+	await settle();
+	expect(f.document.getSnapshot().record.draft).toBe("");
+	expect(f.document.getSnapshot().record.parkedCompositions).toHaveLength(1);
+
+	await act(async () => {
+		finish();
+	});
+	await settle();
+	await vi.waitFor(() =>
+		expect(f.document.getSnapshot().record.images?.map((image) => image.name)).toEqual(["picked.jpg"]),
+	);
+	expect(f.document.getSnapshot().record.parkedCompositions?.[0]?.images).toHaveLength(8);
+});
+
+it("actual screen keeps an occupied destination when the resume handoff is refused", async () => {
+	const f = await mount();
+	f.document.edit("existing destination work");
+	const oldRef = `${f.ref}-old`;
+	const oldDestination = { hubId: "hub-1", sessionRef: oldRef };
+	const oldKey = nativeMutationTargetKey("hub-1", oldRef);
+	async function submitOld(text: string) {
+		await f.runtime.submit({
+			kind: "send",
+			hubId: "hub-1",
+			targetRef: oldRef,
+			threadId: `thread-${oldRef}`,
+			instanceId: "instance",
+			input: buildComposerInput(text, []),
+			composer: { text, attachments: [] },
+		});
+	}
+	await act(async () => {
+		await submitOld("original recovered");
+	});
+	const source = (await f.runtime.read(oldKey)).outbox[0];
+	if (!source) throw new Error("missing recovered source");
+	await act(async () => {
+		await f.runtime.storage.transferToRecovery(source.clientMutationId, "editing");
+	});
+	nativeDrafts().write(oldDestination, {
+		draft: "edited recovered",
+		unconfirmed: null,
+		composer: { recoveryIds: [source.clientMutationId] },
+	});
+	await act(async () => {
+		await submitOld("waiting message");
+	});
+	// The resume moved the editing row and its waiting message to the new ref.
+	await act(async () => {
+		f.runtime.storage.retarget(oldKey, {
+			ref: f.targetKey,
+			wireRef: f.ref,
+			threadId: f.thread.id,
+			instanceId: "instance",
+		});
+	});
+
+	// The occupied destination refuses the handoff, so its own work stays and
+	// the migrated editing row is marked released rather than auto-appended.
+	act(() => {
+		expect(drafts.handoff(oldDestination, { hubId: "hub-1", sessionRef: f.ref })).toBe(false);
+	});
+	expect(f.document.getSnapshot().record.releasedRecoveryIds).toContain(source.clientMutationId);
+
+	await f.recreateOffline();
+	await settle();
+	expect(f.document.getSnapshot().record.draft).toBe("existing destination work");
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toBeUndefined();
+	expect((await f.runtime.read(f.targetKey)).recovery.map((row) => row.clientMutationId)).toEqual([
+		source.clientMutationId,
+	]);
+	expect(nativeDrafts().read(oldDestination).draft).toBe("edited recovered");
 });

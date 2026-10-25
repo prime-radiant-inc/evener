@@ -15,6 +15,11 @@ export type SubmitRoute = "send" | "queue" | "none";
 // three fixed outcomes never actually produce canSend===canQueue===true
 // together, but this checks both explicitly (queue first) rather than
 // assuming that exclusivity blindly.
+/**
+ * @deprecated Use `sendQueueGate` for the Send/Queue action; the shared gate
+ * owns restart, recovery, connection, capability policy, and the queue-first
+ * mapping. Kept exported for existing SDK consumers.
+ */
 export function decideSubmitRoute(opts: { hasContent: boolean; availability: SendQueueAvailability }): SubmitRoute {
   if (!opts.hasContent) return "none";
   if (opts.availability.canQueue) return "queue";
