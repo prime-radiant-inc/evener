@@ -5,6 +5,8 @@ import { describeChild, FloatingBubblePortal, useFloatingBubble } from "./floati
 import styles from "./hovercard.module.css";
 import { isHoverless, POINTER_CLICK_WINDOW_MS } from "./useFloatingLabel";
 
+export { POINTER_CLICK_WINDOW_MS };
+
 /** How long a finger must rest on a long-press-enabled trigger on a hoverless device
  * before its card opens. A shorter hold than this is a tap and activates the
  * trigger's own control. */

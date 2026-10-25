@@ -3,6 +3,13 @@ import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { parseZoomParams } from "../panes/zoom/intent";
+import { currentAttentionEntryToken, openAttentionSession } from "./attentionHistory";
+import {
+  captureAttentionPlacement,
+  presentAttentionTarget,
+  releaseUnreferencedAttentionPanes,
+  restoreAttentionPlacement,
+} from "./attentionPlacement";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneDescriptor, type PaneProps, type PaneTypeId, registerPaneForTests } from "./paneRegistry";
 import {
@@ -13,6 +20,7 @@ import {
   documentPaneState,
   isPaneOpen,
   type OpenPaneRecord,
+  presentedPanes,
   recordConversationOpenParent,
   registerDockviewApi,
   requestPaneFocus,
@@ -57,6 +65,164 @@ beforeAll(() => {
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+});
+
+test("attention reuses presented and parked targets in their proper seats", () => {
+  const state = workspaceStore.getState();
+  const a = state.openPane("session", { ref: "local:a" });
+  const x = state.openPane("session", { ref: "local:x" });
+  const origin = captureAttentionPlacement();
+  if (!origin) throw new Error("missing secondary origin");
+  const b = presentAttentionTarget("local:b");
+  if (!b) throw new Error("missing destination");
+  expect(presentedPanes(workspaceStore.getState().panes).map((pane) => pane.id)).toEqual([a, "pane_session_3"]);
+  expect(b.pane.slot).toBe("secondary");
+  expect(presentAttentionTarget("local:a")?.pane.id).toBe(a);
+  expect(b.pane.slot).toBe("secondary");
+  const moved = presentAttentionTarget("local:x");
+  expect(moved?.pane).toBe(origin.pane);
+  expect(moved?.seatId).not.toBe(origin.seatId);
+  expect(origin.pane.slot).toBe("main");
+  // Restoring a presented record focuses it without moving it back.
+  expect(restoreAttentionPlacement(origin)).toBe(true);
+  expect(origin.pane.slot).toBe("main");
+  presentAttentionTarget("local:c");
+  expect(restoreAttentionPlacement(origin)).toBe(true);
+  expect(origin.pane.slot).toBe("secondary");
+  expect(b.pane.slot).toBe("parked");
+  expect(workspaceStore.getState().focusedPaneId).toBe(x);
+  releaseUnreferencedAttentionPanes(new Set([b.pane]));
+  expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([x, "pane_session_3", "pane_session_4"]);
+  releaseUnreferencedAttentionPanes(new Set());
+  expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([x, "pane_session_4"]);
+});
+
+test("restoring a departed main reader displaces the host's welcome fallback", () => {
+  // A -> Next B leaves A parked. Closing B empties main, so the host fills it
+  // with its welcome placeholder; Back to A must restore A's own main seat
+  // rather than opening a second pane beside a screen that says nothing is
+  // open.
+  const state = workspaceStore.getState();
+  const a = state.openPane("session", { ref: "local:a" });
+  const origin = captureAttentionPlacement();
+  if (!origin) throw new Error("missing main origin");
+  const b = presentAttentionTarget("local:b");
+  if (!b) throw new Error("missing destination");
+  expect(b.pane.slot).toBe("main");
+  state.closePane(b.pane.id);
+  const welcome = state.openPane("welcome");
+  expect(workspaceStore.getState().mainPane()?.id).toBe(welcome);
+
+  expect(restoreAttentionPlacement(origin)).toBe(true);
+  const restored = workspaceStore.getState();
+  expect(restored.mainPane()?.id).toBe(a);
+  expect(restored.panes.some((pane) => pane.type === "welcome")).toBe(false);
+  expect(restored.focusedPaneId).toBe(a);
+});
+
+// A drill keeps the same pane and lifetime but reads a different leaf, so the
+// entry that owns that pane still describes the reader. If it fell invalid, its
+// route would be treated as ordinary and AppShell would reopen the pre-drill
+// reader beside the drill, taking focus off the leaf.
+test("a drill inside an attention entry's cascade keeps the entry bound to its route", async () => {
+  window.history.replaceState({}, "", "/s/local%3Aa");
+  const a = workspaceStore.getState().openPane("session", { ref: "local:a" });
+  workspaceStore.getState().focusPane(a);
+  openAttentionSession("local:b");
+  const b = presentAttentionTarget("local:b");
+  if (!b) throw new Error("missing attention destination");
+  openAttentionSession("local:c");
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  window.history.back();
+  await back;
+  const token = currentAttentionEntryToken();
+  if (!token) throw new Error("the destination entry lost its token before the drill");
+
+  workspaceStore.getState().focusPane(b.pane.id);
+  expect(
+    workspaceStore.getState().retypePane(b.pane, "sessionZoom", {
+      ref: "local:leaf",
+      source: { type: "session", params: { ref: "local:b" } },
+      edges: [],
+    }),
+  ).toBe(true);
+
+  expect(currentAttentionEntryToken()).toBe(token);
+});
+
+// Retiring a closed target must not detach the history branch: the parked
+// source is still reachable with Back, and dropping the retiring entry's
+// identity before the replacement lands reset the branch and released that
+// source with its staged work.
+test("closing an attention target keeps its parked source on the Back branch", async () => {
+  window.history.replaceState({}, "", "/s/local%3Aa");
+  const aId = workspaceStore.getState().openPane("session", { ref: "local:a" });
+  workspaceStore.getState().focusPane(aId);
+  const a = workspaceStore.getState().mainPane();
+  if (!a) throw new Error("missing source reader");
+  const lifetime = conversationPaneLifetime(a);
+  openAttentionSession("local:b");
+  const b = presentAttentionTarget("local:b");
+  if (!b) throw new Error("missing attention target");
+  openAttentionSession("local:c");
+  const backOnce = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  window.history.back();
+  await backOnce;
+
+  workspaceStore.getState().closePane(b.pane.id);
+  expect(a.slot).toBe("parked");
+
+  // Another hop after the close must not release the still-parked source.
+  openAttentionSession("local:d");
+  expect(workspaceStore.getState().panes).toContain(a);
+  expect(conversationPaneLifetime(a)).toBe(lifetime);
+  expect(lifetime.alive).toBe(true);
+});
+
+test.each(["open", "toggle", "replace"] as const)("ordinary %s does not focus a parked match", (action) => {
+  const id = workspaceStore.getState().openPane("session", { ref: "local:a" });
+  const origin = captureAttentionPlacement();
+  if (!origin) throw new Error("missing origin");
+  presentAttentionTarget("local:b");
+  const state = workspaceStore.getState();
+  const opened =
+    action === "open"
+      ? state.openPane("session", { ref: "local:a" })
+      : action === "toggle"
+        ? state.togglePane("session", { ref: "local:a" }).paneId
+        : state.replacePrimary("session", { ref: "local:a" });
+  expect(opened).not.toBe(id);
+  expect(presentedPanes(workspaceStore.getState().panes).some((pane) => pane.id === opened)).toBe(true);
+  expect(workspaceStore.getState().focusedPaneId).toBe(opened);
+  if (action === "replace") expect(restoreAttentionPlacement(origin)).toBe(false);
+});
+
+test("keyboard origins without readers and without focus use ordinary main placement", () => {
+  workspaceStore.getState().openPane("settings");
+  const settings = captureAttentionPlacement();
+  expect(settings).toMatchObject({ lifetimeSerial: null, requestedRef: null, readViewId: null });
+  presentAttentionTarget("local:b");
+  if (!settings) throw new Error("missing settings origin");
+  expect(restoreAttentionPlacement(settings)).toBe(true);
+  workspaceStore.setState({ focusedPaneId: null });
+  expect(captureAttentionPlacement()).toBeNull();
+  expect(presentAttentionTarget("local:c")?.pane.slot).toBe("main");
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:c" });
+});
+
+test("attention seat bindings publish atomically with the workspace transition", () => {
+  workspaceStore.getState().openPane("session", { ref: "local:a" });
+  const origin = captureAttentionPlacement();
+  const seats: (string | undefined)[] = [];
+  const unsubscribe = workspaceStore.subscribe(() => {
+    seats.push(captureAttentionPlacement()?.seatId);
+  });
+  try {
+    presentAttentionTarget("local:b");
+    expect(seats).toEqual([origin?.seatId]);
+  } finally {
+    unsubscribe();
+  }
 });
 
 test("a reset and same-ID restored cascade replace source ownership and fence old callbacks", () => {

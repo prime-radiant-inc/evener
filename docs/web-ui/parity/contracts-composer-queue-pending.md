@@ -18,6 +18,23 @@ except where a line says so itself.
 
 ## Composer
 
+### Attention history retention
+
+- A browser attention entry binds a runtime generation and entry token to the
+  exact retained reader placement; it stores no composer contents. Back/Forward
+  restores the same living pane lifetime, so structured selections, mentions,
+  staged image bytes and pending image work remain owned by that reader.
+- Attention Back/Forward preserves the existing draft and attachment work of
+  the exact reader being restored. Do not add live cross-view draft
+  synchronization; keep ordinary draft/cache behavior unchanged and do not
+  promise permanently independent same-session drafts.
+- Mount autofocus is suppressed only for the reader owned by the current
+  attention entry. Explicit editor focus, the composer-focus shortcut and
+  ordinary session-opening autofocus keep their existing behavior.
+- Explicit Close, destructive navigation, discarded Forward branches with no
+  surviving history reference, and page teardown release retained work. Reload
+  creates no runtime binding and does not promise binary attachment recovery.
+
 ### Stop and Send placement
 
 - At every web width, an ordinary composer with Stop available and an empty

@@ -1152,7 +1152,7 @@ test("recovery activation during a paused resend preserves the secondary image r
   }
 });
 
-test("stale recovery persistence refusal preserves the unsent draft and attachment", async () => {
+test("stale recovery persistence refusal preserves the unsent composition under a fresh owner", async () => {
   class RefusedRecoveryStorage extends MutationOutboxIndexedDB {
     readonly refused = deferred<void>();
     readonly releaseRefusal = deferred<void>();
@@ -1247,16 +1247,45 @@ test("stale recovery persistence refusal preserves the unsent draft and attachme
     await waitFor(() => expect(screen.getByRole("button", { name: "Send" }).hasAttribute("disabled")).toBe(false));
     expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe(submittedText);
     expect(screen.getByRole("button", { name: "Remove recovered.png" })).toBeDefined();
-    expect(source.getSnapshot().activeRecoveryId).toBeNull();
-    expect(readDraft("root")).toBe(submittedText);
+    const preserved = (await peer.listRecovery("root")).find(
+      (record) => record.clientMutationId !== queuedRecord.clientMutationId,
+    );
+    expect(preserved).toBeDefined();
+    expect(source.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId);
+    // The fresh recovery row owns the composition; no draft carries its markers.
+    expect(readDraft("root") ?? "").toBe("");
     // Enabled Send does not mean the recovery projection has finished publishing.
     await flushPendingTurnsProjectionForTests();
+    expect(await peer.getRecovery(preserved?.clientMutationId ?? "")).toMatchObject({
+      composerText: submittedText,
+      payload: {
+        input: [
+          { type: "text", text: submittedText },
+          { type: "image", mediaType: "image/png", data: "AQID", name: "recovered.png" },
+        ],
+      },
+      attachments: [expect.objectContaining({ marker: 1, name: "recovered.png" })],
+    });
     expect(await peer.getRecovery(queuedRecord.clientMutationId)).toMatchObject({
       composerText: "newer composition in another tab",
       payload: { input: [{ type: "text", text: "newer composition in another tab" }] },
       attachments: [expect.objectContaining({ name: "recovered.png" })],
     });
     act(() => cleanup());
+    // Reload: a fresh composer restores the preserved images from its own row.
+    source.dispose();
+    const replacement = createTestComposerSource("root");
+    try {
+      mount(fake, replacement);
+      await waitFor(() => expect(replacement.getSnapshot().freshRecoveryRef).toBe("root"));
+      await waitFor(() => expect(replacement.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId));
+      expect(replacement.getSnapshot().text).toBe(submittedText);
+      expect(replacement.attachments.getState().items).toEqual([
+        expect.objectContaining({ marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID" }),
+      ]);
+    } finally {
+      act(() => replacement.dispose());
+    }
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });

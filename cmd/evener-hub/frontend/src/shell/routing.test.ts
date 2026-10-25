@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { navigate, paneToURL, urlToPane } from "./routing";
+import { navigate, observeRouteHistory, openSessionRoute, paneToURL, routeHistoryEntryId, urlToPane } from "./routing";
 
 beforeEach(() => {
   window.history.pushState({}, "", "/");
@@ -182,6 +182,22 @@ test("navigate dispatches a popstate event so same-tab listeners can react", () 
   expect(handler).toHaveBeenCalledTimes(1);
 });
 
+test("navigate reports replacement as an in-place history change, not a push", () => {
+  const observer = vi.fn();
+  const unobserve = observeRouteHistory(observer);
+  const initialLength = history.length;
+  const previousState = history.state;
+  try {
+    navigate("/new", { replace: true });
+  } finally {
+    unobserve();
+  }
+  expect(history.length).toBe(initialLength);
+  expect(observer).toHaveBeenCalledTimes(1);
+  expect(observer).toHaveBeenCalledWith(previousState, history.state, "/", "/new", "replace");
+  expect(routeHistoryEntryId(history.state)).not.toBeNull();
+});
+
 test("navigate is a no-op when already at the target pathname", () => {
   window.history.pushState({}, "", "/new");
   const handler = vi.fn();
@@ -218,6 +234,29 @@ test("navigate is a no-op when already at the identical path and query", () => {
   window.removeEventListener("popstate", handler);
   expect(window.location.search).toBe("?dir=/tmp/project-a");
   expect(handler).not.toHaveBeenCalled();
+});
+
+test("ordinary session routes use navigation without an attention binding", () => {
+  window.history.replaceState({ unrelated: "preserved" }, "", "/");
+  const initialLength = history.length;
+  openSessionRoute("local:route-test");
+  expect(history.length).toBe(initialLength + 1);
+  expect(window.location.pathname).toBe("/s/local%3Aroute-test");
+  expect(history.state.__evenerAttention).toBeUndefined();
+  expect(routeHistoryEntryId(history.state)).not.toBeNull();
+  openSessionRoute("local:route-test");
+  expect(history.length).toBe(initialLength + 1);
+});
+
+test("separate ordinary entries at the same URL have distinct history identities", () => {
+  openSessionRoute("local:first");
+  const first = routeHistoryEntryId(history.state);
+  openSessionRoute("local:middle");
+  openSessionRoute("local:first");
+  const second = routeHistoryEntryId(history.state);
+  expect(first).not.toBeNull();
+  expect(second).not.toBe(first);
+  expect(history.state.__evenerAttention).toBeUndefined();
 });
 
 // Evidence that the finding's literal symptom does not reproduce: the argument
