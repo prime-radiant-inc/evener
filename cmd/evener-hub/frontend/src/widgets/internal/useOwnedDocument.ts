@@ -63,14 +63,24 @@ export function useOwnedDocument<T extends Node>(ref: RefObject<T | null>, enabl
   // The ref attaches during commit, after this render resolved a null node, so
   // a widget mounted directly in a popout starts on the opener: re-read the
   // attached node after every commit and correct the render it schedules.
+  // Mount correction only: the render-time read above resolves a live node on
+  // every later render, and the watch below catches a move while live. Running
+  // this on every commit put one extra effect on every consumer render (the
+  // composer's textarea re-renders per keystroke).
   useEffect(() => {
     const next = ownerDocumentOf(ref.current);
     if (next !== doc) setDoc(next);
-  });
+  }, [doc, ref]);
   useEffect(() => {
     if (!enabled) return;
     const root = ref.current;
     if (root === null) return;
+    // Subscribe to the document the node is in NOW, not the one the state
+    // still names: observation was off while a moved widget settled, so the
+    // tracked value can lag the node by one document. Reconciling here also
+    // keeps the move back to the earlier document observable.
+    const watched = ownerDocumentOf(root);
+    if (watched !== doc) setDoc(watched);
     let recheck: ReturnType<typeof setTimeout> | undefined;
     let detachedAt: number | undefined;
     let stopped = false;
@@ -85,7 +95,7 @@ export function useOwnedDocument<T extends Node>(ref: RefObject<T | null>, enabl
     };
     const check = () => {
       const next = ownerDocumentOf(root);
-      if (next !== doc) {
+      if (next !== watched) {
         setDoc(next);
         return;
       }
@@ -104,7 +114,7 @@ export function useOwnedDocument<T extends Node>(ref: RefObject<T | null>, enabl
         schedule();
       }
     };
-    const stop = watchDocument(doc, check);
+    const stop = watchDocument(watched, check);
     return () => {
       stopped = true;
       stop();

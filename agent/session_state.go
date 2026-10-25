@@ -147,8 +147,9 @@ func (s *Session) restingFailureLocked() (schema.Turn, bool) {
 // writes as it runs: user input, steering (the interrupt marker included), an
 // assistant response, tool results. Bookkeeping records (TurnSystem,
 // TurnCheckpoint, TurnSummary, TurnModelSwitch, TurnHookCompleted,
-// TurnEnvironment, TurnNotesContext, TurnAttentionResolution) are skipped, so
-// a model switch or a hook line after the failure leaves the session failed.
+// TurnEnvironment, TurnNotesContext, TurnMemoryContext,
+// TurnAttentionResolution) are skipped, so a model switch or a hook line
+// after the failure leaves the session failed.
 func historyTurnFailure(history []schema.Turn) (schema.Turn, bool) {
 	for i := range slices.Backward(history) {
 		switch history[i].Kind {

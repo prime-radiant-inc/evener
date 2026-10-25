@@ -174,7 +174,7 @@ export function sendQueueDecisionFor(
 // forceStop RPC is still in flight, and the hub holds Stopping > 0 (refusing
 // every verb this helper guards) for that whole window. It is deliberately
 // method-agnostic: none of its callers presses the send (the composer's submit
-// runs its own live read, decideSubmitRoute over availabilityFor, which is
+// runs its own live read, sendQueueDecisionFor over the recovery face, which is
 // where the resume-only carve-out belongs), and every verb it does guard -
 // steer, the queue-strip actions, the recovery-fenced built-ins - is one the
 // hub refuses for the obligation's or the drain's whole window, turn/start's

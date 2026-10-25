@@ -1586,6 +1586,56 @@ func TestShellToolConfinedCwdOutsideWorkingDirectory(t *testing.T) {
 	}
 }
 
+// TestShellToolConfinedCwdRefusalPreservesWorkViaCd pins the actionable-refusal
+// resolution for issue #4332: a confined session still refuses an outside cwd,
+// and the caller's operation succeeds through the documented `cd <path> && …`
+// form inside the command. The refusal asserts only that the call failed, not
+// the human-readable wording.
+func TestShellToolConfinedCwdRefusalPreservesWorkViaCd(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("pwd is POSIX-only")
+	}
+	s := newSession(t, withDir(t.TempDir()), withoutGitSnapshot())
+	s.env.(*execenv.LocalExecutionEnvironment).Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}
+
+	// A space and a quote in the path pin the suggested command's shell quoting;
+	// the cd form below runs it for real.
+	outside := filepath.Join(t.TempDir(), "my project's dir")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const payload = "preserved-through-cd"
+	if err := os.WriteFile(filepath.Join(outside, "marker.txt"), []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"command":"cat marker.txt","cwd":%q}`, outside)),
+	})
+	if !res.IsError {
+		t.Fatalf("shell with an outside cwd should be refused, got: %s", res.Output)
+	}
+	if strings.Contains(res.Output, payload) {
+		t.Fatalf("refused command still read the outside file: %s", res.Output)
+	}
+
+	cdArgs, err := json.Marshal(map[string]any{"command": fmt.Sprintf("cd %s && cat marker.txt", shellSingleQuote(outside))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res = s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "shell",
+		Arguments: cdArgs,
+	})
+	if res.IsError || !strings.Contains(res.Output, payload) {
+		t.Fatalf("documented cd form did not preserve the work: error=%v output=%q", res.IsError, res.Output)
+	}
+}
+
 // advertisedShellMode reads the mode property from the definition the session
 // actually advertises, resolving the provider's wire name for shell rather
 // than assuming the canonical name.

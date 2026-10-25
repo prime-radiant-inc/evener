@@ -402,7 +402,6 @@ export interface ConversationState {
 	readonly latestReadState: LatestReadState;
 
 	readonly draft: string;
-	readonly pendingSend: string | null;
 	readonly pendingMutation?: ConversationMutationState | null;
 	// Slice 7a: the durable pending rows a host's bound seam projects. Null until
 	// a seam is bound (LiveConversationState.bindPendingMutations); never a
@@ -1819,7 +1818,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			latestReadState: "unknown",
 
 			draft: "",
-			pendingSend: null,
 			pendingMutation: null,
 			pendingMutations: null,
 			pendingMutationsReady: false,
@@ -1937,7 +1935,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					hasLaterItems: false,
 					loadingOlder: false,
 					draft: "",
-					pendingSend: null,
 					pendingMutation: null,
 					pendingMutations: null,
 					pendingMutationsReady: false,
@@ -2009,7 +2006,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					trimmedAbove: false,
 					loadingOlder: false,
 					draft: "",
-					pendingSend: null,
 					pendingMutation: null,
 					pendingMutations: null,
 					pendingMutationsReady: false,
@@ -2092,7 +2088,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					error: null,
 					latestReadState: "unknown",
 					pendingMutation: null,
-					pendingSend: null,
 					loadingOlder: false,
 					conversationGeneration: conversationGen,
 				});
@@ -2126,7 +2121,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					error: null,
 					latestReadState: "reading",
 					pendingMutation: null,
-					pendingSend: null,
 					loadingOlder: false,
 					conversationGeneration: gen,
 				});
@@ -2226,7 +2220,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// Settle the old pending mutation — it belongs to A's binding.
 						// Do NOT write error (a newer error owner may own it). Just
 						// clear the pending state so it's not permanently stuck.
-						set({ pendingMutation: null, pendingSend: null });
+						set({ pendingMutation: null });
 					}
 					// I5: Settle held loadingOlder from the old binding.
 					if (get().loadingOlder) {
@@ -3086,7 +3080,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// Fix round 1 I3: atomically clear prior error with new pending mutation.
 				set({
 					draft: "",
-					pendingSend: "pending",
 					pendingMutation: mutation,
 					lastAcceptedMutation: null,
 					error: null,
@@ -3119,14 +3112,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// shortcut. A newer clear-to-null or ABA-null owns error.
 						if (entryErrorRev === errorOwnerRev) {
 							set({
-								pendingSend: null,
 								pendingMutation: null,
 								lastAcceptedMutation: { kind: "send", receipt },
 								error: null,
 							});
 						} else {
 							set({
-								pendingSend: null,
 								pendingMutation: null,
 								lastAcceptedMutation: { kind: "send", receipt },
 							});
@@ -3141,7 +3132,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// ghost. Only a still-current binding owns the store's marker.
 					if (err instanceof MutationNotSentError) {
 						if (isBindingCurrent(opBinding) && get().pendingMutation?.mutationId === mutationId)
-							set({ pendingMutation: null, pendingSend: null });
+							set({ pendingMutation: null });
 						throw err;
 					}
 					// C1: Recheck the exact operation binding after the await.
@@ -3185,11 +3176,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					generation: gen,
 					mutationId,
 				};
-				// F10: any new mutation clears legacy pendingSend.
 				// Fix round 1 I3: atomically clear prior error with new pending mutation.
 				set({
 					draft: "",
-					pendingSend: null,
 					pendingMutation: mutation,
 					lastAcceptedMutation: null,
 					error: null,
@@ -3229,7 +3218,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				} catch (err) {
 					if (err instanceof MutationNotSentError) {
 						if (isBindingCurrent(opBinding) && get().pendingMutation?.mutationId === mutationId)
-							set({ pendingMutation: null, pendingSend: null });
+							set({ pendingMutation: null });
 						throw err;
 					}
 					// C1: Recheck the exact operation binding after the await.
@@ -3274,10 +3263,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					mutationId,
 				};
 				// Interrupt does NOT clear the draft.
-				// F10: any new mutation clears legacy pendingSend.
 				// Fix round 1 I3: atomically clear prior error with new pending mutation.
 				set({
-					pendingSend: null,
 					pendingMutation: mutation,
 					lastAcceptedMutation: null,
 					error: null,
@@ -3363,7 +3350,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					conversation: null,
 					ref: null,
 					draft: "",
-					pendingSend: null,
 					pendingMutation: null,
 					pendingMutations: null,
 					pendingMutationsReady: false,
@@ -3599,7 +3585,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					error: null,
 					latestReadState: "unknown",
 					draft: "",
-					pendingSend: null,
 					pendingMutation: null,
 					pendingMutations: null,
 					pendingMutationsReady: false,
@@ -3685,7 +3670,6 @@ function handleMutationError(
 		if (entryErrorRev === getErrorOwnerRev()) {
 			set({
 				pendingMutation: { ...mutation, status: "failed" },
-				pendingSend: null,
 				...(shouldRestore ? { draft: draftSnapshot } : {}),
 				error: newError,
 			});
@@ -3695,7 +3679,6 @@ function handleMutationError(
 			// pending/draft restoration.
 			set({
 				pendingMutation: { ...mutation, status: "failed" },
-				pendingSend: null,
 				...(shouldRestore ? { draft: draftSnapshot } : {}),
 			});
 		}

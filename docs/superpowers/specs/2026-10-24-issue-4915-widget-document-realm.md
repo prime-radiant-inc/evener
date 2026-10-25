@@ -17,8 +17,12 @@ systematic pass. Three changes:
    stable instance of the class and lands first.
 2. **1b: `hovercard`** (bubble, floating label, gestures), threaded through one
    realm input with a test per subsystem.
-3. **Part 2: `sheet`, `directorypicker`, `textarea`** and the tooltip's own
-   portal target.
+3. **Part 2: `sheet`, `directorypicker`, `textarea`.** The tooltip's own portal
+   target moved into 1b, because 1b made the shared scaffold measure against the
+   trigger's window and a tooltip left in the opener was positioned for one
+   viewport and painted in another.
+
+Part 2 resolves each widget from the node it renders; the picker renders a hidden host marker because its panel is its only DOM output.
 
 ## Problem
 

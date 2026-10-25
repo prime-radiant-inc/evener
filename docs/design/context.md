@@ -79,11 +79,15 @@ tool, rather than waiting for the automatic pressure-triggered layers.
 |-----------|----------|-------------|
 | `note_to_self` | yes | Note handed back to the agent verbatim right after the compaction, then cleared. Empty string clears a pending note. |
 | `compaction_instructions` | no | Steers what the summary keeps vs. drops. |
+| `reload_skills` | no | Optional array of strings naming skills to reload after a compaction that publishes. Absent or `null` makes no selection; an explicit empty array reloads none; any present selection requests the compaction. Order, duplicates, and unknown names: see [Reload selection at compaction](../skills.md#reload-selection-at-compaction). |
 
-When only `note_to_self` is empty and no `compaction_instructions` are given, no
-compaction is scheduled — just the note is cleared. Otherwise a force-compaction is
-queued at the tool-round tail and the tool returns a prediction (not past-tense
-confirmation, since the compaction hasn't happened yet).
+`compact_context` schedules no compaction only when `note_to_self` is empty,
+`compaction_instructions` is empty or absent, and `reload_skills` is absent or `null`;
+that call clears the note. Any other call that passes argument validation requests a
+compaction. An accepted request queues a force-compaction at the tool-round tail and
+the tool returns a prediction (not past-tense confirmation, since the compaction
+hasn't happened yet). A request rejected because a forced compaction is already
+pending or any compaction operation is still being delivered changes nothing.
 
 ### The note: a one-shot handoff across the compaction boundary
 

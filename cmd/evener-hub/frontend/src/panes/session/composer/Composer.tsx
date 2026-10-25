@@ -22,7 +22,6 @@ import {
   type BuiltinMatch,
   type ComposerMention,
   decideSteerRoute,
-  decideSubmitRoute,
   filterSlashMenuItems,
   matchBuiltinInvocation,
   mergeDraftText,
@@ -766,20 +765,11 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // read like the rest of its re-derivation. It is the raw obligation, not the
   // render's fence.fencedLocal: the fence here covers every status, active
   // included, not only the stopped one.
-  function availabilityFor(
-    target: ThreadModel,
-    pendingSend: boolean,
-    restartObligated: boolean,
-    signals: ResumeOnlySignals,
-  ): { canSend: boolean; canQueue: boolean } {
-    const decision = sendQueueDecisionFor(target, pendingSend, restartObligated, signals);
-    return { canSend: decision.action === "send", canQueue: decision.action === "queue" };
-  }
-  const availability = availabilityFor(model, hasPendingSend, recoveryRequired, resumeOnlySignals);
+  const availability = sendQueueDecisionFor(model, hasPendingSend, recoveryRequired, resumeOnlySignals);
   const showStop = controls.stop;
   const showSteer = controls.steer;
   // The Steer control's own reading of the recovery fence (see
-  // availabilityFor's fence above): the hub refuses turn/steer for the
+  // the send/queue gate's fence above): the hub refuses turn/steer for the
   // obligation's whole window, so the control must not offer a press that
   // could only park durable intent. Read from the subscribed obligation here
   // for the render; the press re-reads it live.
@@ -799,8 +789,8 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     });
   }
   // The strip's queue depth is what shows the effect of a queued Send.
-  const submitTooltip = submitTooltipLabel({ canQueue: availability.canQueue, enterToSend });
-  const canCompose = availability.canSend || availability.canQueue;
+  const submitTooltip = submitTooltipLabel({ canQueue: availability.action === "queue", enterToSend });
+  const canCompose = availability.action === "send" || availability.action === "queue";
   // Whether the follow-up card renders at all is the capability's call, for the
   // same reason the substitution above is: gating it on the table renders no
   // card for exactly the sessions the hub says are resumable. When the wire
@@ -1333,34 +1323,33 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
         return;
       }
     }
-    // The same derivation the button and its tooltip rendered from
-    // (availabilityFor, substitution included), over the store's live model:
-    // the two disagree only when a status frame landed after the render, and
-    // then the frame is what the submit has to follow.
-    const route = decideSubmitRoute({
-      hasContent,
-      availability: availabilityFor(
-        liveThreadModel(ref) ?? renderedModel,
-        ownPendingSend(pendingTurnEntries(ref, "send")),
-        threadsStore.getState().restartBlockingObligations.has(ref),
-        {
-          // Read live, like stopInFlight and queuedNonSend beside it: the
-          // render-time blockedMutations snapshot cannot have caught a row
-          // published between the render and the press, while the store-wide
-          // predicate resumeOnlyModel (which enqueue and dispatch use) reads
-          // hasBlockedUnknown fresh. Routing both sides through the same live
-          // read keeps the press from folding a resume ahead of an uncertain row.
-          uncertainMessages: hasBlockedUnknown(ref),
-          stopInFlight: threadsStore.getState().stoppingRefs.has(ref),
-          queuedNonSend: hasQueuedNonSend(ref),
-          // Read live like the signals beside it: the render passes this too, so
-          // a snapshot that became authoritative between the render and the
-          // press routes to the Send-resumes face rather than reading as an
-          // owner-retained snapshot and refusing.
-          mutationStateAuthoritative: threadsStore.getState().mutationAuthorityRefs.has(ref),
-        },
-      ),
-    });
+    // The same decision the button and its tooltip rendered from
+    // (the send/queue decision, substitution included), re-derived at the press over
+    // the store's live model: the two disagree only when a status frame landed
+    // after the render, and then the frame is what the submit has to follow.
+    // The gate's send/queue action is the route; none is the refusal below.
+    const decision = sendQueueDecisionFor(
+      liveThreadModel(ref) ?? renderedModel,
+      ownPendingSend(pendingTurnEntries(ref, "send")),
+      threadsStore.getState().restartBlockingObligations.has(ref),
+      {
+        // Read live, like stopInFlight and queuedNonSend beside it: the
+        // render-time blockedMutations snapshot cannot have caught a row
+        // published between the render and the press, while the store-wide
+        // predicate resumeOnlyModel (which enqueue and dispatch use) reads
+        // hasBlockedUnknown fresh. Routing both sides through the same live
+        // read keeps the press from folding a resume ahead of an uncertain row.
+        uncertainMessages: hasBlockedUnknown(ref),
+        stopInFlight: threadsStore.getState().stoppingRefs.has(ref),
+        queuedNonSend: hasQueuedNonSend(ref),
+        // Read live like the signals beside it: the render passes this too, so
+        // a snapshot that became authoritative between the render and the
+        // press routes to the Send-resumes face rather than reading as an
+        // owner-retained snapshot and refusing.
+        mutationStateAuthoritative: threadsStore.getState().mutationAuthorityRefs.has(ref),
+      },
+    );
+    const route = decision.action;
     if (route === "none") {
       toasts.push("error", "Send is not available for this session");
       return;
@@ -1781,7 +1770,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
                           // this card renders at all - otherwise a session the hub
                           // will happily resume shows a permanently dead Send.
                           // The capability alone does not lift the recovery fence:
-                          // availabilityFor refuses every fenced status, so a
+                          // the send/queue gate refuses every fenced status, so a
                           // fenced session whose snapshot still
                           // advertises send:true (the hub stamps it on closed
                           // frames too) renders a disabled Send, not a refusal

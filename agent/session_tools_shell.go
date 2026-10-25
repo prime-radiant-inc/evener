@@ -406,13 +406,20 @@ func resolveShellWorkingDir(env execenv.ExecutionEnvironment, raw string) (strin
 	abs = filepath.Clean(abs)
 	if rb, ok := env.(execenv.CommandWorkingDirectoryBoundary); ok {
 		if err := rb.EnsureCommandWorkingDirectory(abs); err != nil {
-			return "", fmt.Errorf("cwd %q resolves to %s, which escapes the sandbox: %w", raw, abs, err)
+			return "", fmt.Errorf("cwd %q resolves to %s, which escapes the sandbox: %w; run the command with `cd %s && <command>` instead", raw, abs, err, shellSingleQuote(abs))
 		}
 	}
 	if info, err := os.Stat(abs); err != nil || !info.IsDir() {
 		return "", fmt.Errorf("cwd %q resolves to %s, which does not exist or is not a directory", raw, abs)
 	}
 	return abs, nil
+}
+
+// shellSingleQuote returns s as one literal word for a POSIX shell. The
+// suggested cwd comes from the model, so its bytes must never run as shell
+// syntax when the caller follows the suggestion.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 type detachedShellToolResult struct {
