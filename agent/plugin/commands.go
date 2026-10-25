@@ -2,8 +2,10 @@ package plugin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/frontmatter"
@@ -115,21 +117,35 @@ func discoverPluginCommands(pluginDir string, commandsOverride json.RawMessage, 
 	return commands, nil
 }
 
+// ErrCommandNotFound reports that no command matches the requested name.
+var ErrCommandNotFound = errors.New("command not found")
+
+// ErrAmbiguousCommand reports that an unqualified name matches more than one
+// plugin's command. The fully-qualified "plugin:command" form disambiguates.
+var ErrAmbiguousCommand = errors.New("ambiguous command")
+
 // ResolveCommand looks up a plugin command by name in a namespaced
 // ("plugin:command") map, such as the union of every loaded plugin's Commands.
 // It tries an exact match first (the fully-qualified "plugin:command" form the
 // map is keyed by), then falls back to matching name against the unqualified
 // suffix of each key. An unqualified name matching more than one plugin's
-// command resolves to whichever is found first in map iteration order; the
-// fully-qualified form disambiguates.
-func ResolveCommand(commands map[string]Command, name string) (Command, bool) {
+// command returns ErrAmbiguousCommand; no match returns ErrCommandNotFound.
+func ResolveCommand(commands map[string]Command, name string) (Command, error) {
 	if cmd, ok := commands[name]; ok {
-		return cmd, true
+		return cmd, nil
 	}
-	for key, cmd := range commands {
+	var candidates []string
+	for key := range commands {
 		if _, unqualified, found := strings.Cut(key, ":"); found && unqualified == name {
-			return cmd, true
+			candidates = append(candidates, key)
 		}
 	}
-	return Command{}, false
+	switch len(candidates) {
+	case 0:
+		return Command{}, ErrCommandNotFound
+	case 1:
+		return commands[candidates[0]], nil
+	}
+	slices.Sort(candidates)
+	return Command{}, fmt.Errorf("%w %q: %s", ErrAmbiguousCommand, name, strings.Join(candidates, ", "))
 }

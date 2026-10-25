@@ -170,8 +170,8 @@ func unstampedRefusal(t *testing.T, opts Options) error {
 	testRestartRecorder(t, m)
 
 	_, err := m.Ensure(context.Background(), "alpha")
-	if !errors.Is(err, errDeployUnstamped) {
-		t.Fatalf("Ensure err = %v, want errDeployUnstamped", err)
+	if !errors.Is(err, ErrDeployUnstamped) {
+		t.Fatalf("Ensure err = %v, want ErrDeployUnstamped", err)
 	}
 	return err
 }

@@ -147,14 +147,14 @@ func refusingRunner(t *testing.T) *fakeRunner {
 }
 
 // assertRunTargetRefusal pins the typed refusal, its terminality, and its
-// message: errRunTargetUnservable, the terminal type the neighbouring refusal
-// (errControllerDirty) uses, naming what the operator must fix. It is not
+// message: ErrRunTargetUnservable, the terminal type the neighbouring refusal
+// (ErrControllerDirty) uses, naming what the operator must fix. It is not
 // ErrDeploy: a supervisor that retried that retryable sentinel would re-refuse
 // the same misconfigured path forever (round thirteen's loop).
 func assertRunTargetRefusal(t *testing.T, err error, wants ...string) {
 	t.Helper()
-	if !errors.Is(err, errRunTargetUnservable) {
-		t.Fatalf("err = %v, want errRunTargetUnservable", err)
+	if !errors.Is(err, ErrRunTargetUnservable) {
+		t.Fatalf("err = %v, want ErrRunTargetUnservable", err)
 	}
 	if !isTerminal(err) {
 		t.Fatalf("err = %v, want a terminal refusal (a retryable one re-refuses forever)", err)
@@ -207,7 +207,7 @@ func TestDeployRefusesARunTargetThatCannotServeAHub(t *testing.T) {
 				// The ordering is the requirement. The first refusal is already
 				// the whole answer, so a supervisor's retry re-runs it with no
 				// install, push, or write to repeat.
-				if _, again := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil); !errors.Is(again, errRunTargetUnservable) {
+				if _, again := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil); !errors.Is(again, ErrRunTargetUnservable) {
 					t.Fatalf("retry err = %v, want the same terminal run-target refusal", again)
 				}
 				if runs := fr.recordedRuns(); len(runs) != 0 {
@@ -350,15 +350,15 @@ func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 	// (component-04 criterion 17). The refusal is the terminal run-target
 	// sentinel the installer shares with the push path (checkRunTarget), so no
 	// retry of the install can change it.
-	if bindir, share, target, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-dev"}, Preflight{Home: "/home/dev"}); !errors.Is(err, errRunTargetUnservable) || !isTerminal(err) {
-		t.Fatalf("installerDirs(evener-dev) err = %v, want a terminal errRunTargetUnservable", err)
+	if bindir, share, target, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-dev"}, Preflight{Home: "/home/dev"}); !errors.Is(err, ErrRunTargetUnservable) || !isTerminal(err) {
+		t.Fatalf("installerDirs(evener-dev) err = %v, want a terminal ErrRunTargetUnservable", err)
 	} else if bindir != "" || share != "" || target != "" {
 		t.Fatalf("installerDirs(evener-dev) = (%q,%q,%q), want all empty", bindir, share, target)
 	}
 
 	bindir, share, target, err = installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-hub"}, Preflight{Home: "/home/dev"})
-	if !errors.Is(err, errRunTargetUnservable) || !isTerminal(err) {
-		t.Fatalf("installerDirs(unshipped basename) err = %v, want a terminal errRunTargetUnservable", err)
+	if !errors.Is(err, ErrRunTargetUnservable) || !isTerminal(err) {
+		t.Fatalf("installerDirs(unshipped basename) err = %v, want a terminal ErrRunTargetUnservable", err)
 	}
 	if bindir != "" || share != "" || target != "" {
 		t.Fatalf("installerDirs(unshipped basename) = (%q,%q,%q), want all empty", bindir, share, target)
@@ -1697,8 +1697,8 @@ func TestDirtyControllerRefusalsNameTheRemedy(t *testing.T) {
 			},
 		})
 		_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
-		if !errors.Is(err, errControllerDirty) {
-			t.Fatalf("err = %v, want errControllerDirty", err)
+		if !errors.Is(err, ErrControllerDirty) {
+			t.Fatalf("err = %v, want ErrControllerDirty", err)
 		}
 		if !strings.Contains(err.Error(), "rebuild the controller from a clean checkout") {
 			t.Fatalf("push-path refusal does not name the remedy: %v", err)
@@ -1876,7 +1876,7 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 
 // TestDeployArtifactUnusableIsTerminal pins the operator-artifact sibling of the
 // run-target refusal: a -deploy-binary built for another platform (the hub's
-// copyDeployBinary wraps errDeployArtifactUnusable for exactly that) is a
+// copyDeployBinary wraps ErrDeployArtifactUnusable for exactly that) is a
 // permanent operator mistake — every retry re-reads the same file — so the
 // refusal must be terminal and must not ride the retryable ErrDeploy class. The
 // build seam fails before anything is staged or pushed, so the runner must see
@@ -1900,15 +1900,15 @@ func TestDeployArtifactUnusableIsTerminal(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 		BuildBinary: func(context.Context, string, string, string) error {
 			return fmt.Errorf("%w: -deploy-binary %q targets linux/arm64, but the host needs linux/amd64; supply an evener built for linux/amd64",
-				errDeployArtifactUnusable, "/tmp/evener")
+				ErrDeployArtifactUnusable, "/tmp/evener")
 		},
 	})
 	testDeployRecorder(t, m)
 	testRestartRecorder(t, m)
 
 	_, err := m.Ensure(context.Background(), "alpha")
-	if !errors.Is(err, errDeployArtifactUnusable) {
-		t.Fatalf("Ensure err = %v, want errDeployArtifactUnusable", err)
+	if !errors.Is(err, ErrDeployArtifactUnusable) {
+		t.Fatalf("Ensure err = %v, want ErrDeployArtifactUnusable", err)
 	}
 	if !isTerminal(err) {
 		t.Fatalf("Ensure err = %v, want a terminal refusal (retrying re-reads the same artifact)", err)
@@ -2015,8 +2015,8 @@ func TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart(t *testing.T) 
 // message naming both the build the host reports and the one it should carry.
 func requireUnstampedRefusal(t *testing.T, err error) {
 	t.Helper()
-	if !errors.Is(err, errDeployUnstamped) {
-		t.Fatalf("Ensure err = %v, want errDeployUnstamped (a deploy that did not pin the controller's build must not attach)", err)
+	if !errors.Is(err, ErrDeployUnstamped) {
+		t.Fatalf("Ensure err = %v, want ErrDeployUnstamped (a deploy that did not pin the controller's build must not attach)", err)
 	}
 	if !isTerminal(err) {
 		t.Fatalf("Ensure err = %v, want a terminal refusal (retrying re-pushes the same artifact)", err)

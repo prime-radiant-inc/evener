@@ -847,6 +847,13 @@ func SameRegistration(a, b Host) bool {
 	return a.Equal(b) && a.Generation == b.Generation && a.IncarnationID == b.IncarnationID
 }
 
+// SameRegistrationAndPresence is SameRegistration plus the presence epoch, for
+// callers that fence on the full registration identity (content, generation,
+// incarnation id, presence epoch) before acting on a captured entry.
+func SameRegistrationAndPresence(a, b Host) bool {
+	return SameRegistration(a, b) && a.PresenceEpoch == b.PresenceEpoch
+}
+
 // SameRegistration reports whether name is currently registered as the same
 // insert captured describes: present, carrying the same configured content,
 // and stamped with the same (generation, incarnation id) pair. It is the

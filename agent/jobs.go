@@ -458,47 +458,12 @@ func (jm *jobManager) stampLastActivityLocked(jobID string) {
 	run.rec.LastActivity = &now
 }
 
-//nolint:unused // retained for the tagged job-manager fault/state-machine fuzz owners.
-func (jm *jobManager) noteJobActivity(jobID, phase string) {
-	if jm == nil || strings.TrimSpace(jobID) == "" {
-		return
-	}
-	now := jm.now()
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	run := jm.running[jobID]
-	if run == nil || run.rec == nil || run.rec.Status.IsTerminal() {
-		return
-	}
-	run.rec.LastActivity = &now
-	if phase != "" {
-		run.rec.Phase = phase
-	}
-}
-
 // liveWorkHandle pairs a live job's launch-time working directory with a
 // human-readable handle identifying it, for the manage_worktree remove/prune
 // live-work guard (spec §5 remove step 4, §7 liveWorkUnder).
 type liveWorkHandle struct {
 	dir    string
 	handle string
-}
-
-// liveWorkHandles returns the launch-time working directory of every shell job
-// still in jm.running. Stable delegate lanes are enumerated by the controller.
-func (jm *jobManager) liveWorkHandles() []liveWorkHandle {
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	var out []liveWorkHandle
-	for _, run := range jm.running {
-		if run == nil || run.rec == nil {
-			continue
-		}
-		if run.rec.Type == jobstore.JobShell && run.rec.WorkingDir != "" {
-			out = append(out, liveWorkHandle{dir: run.rec.WorkingDir, handle: run.rec.JobID + " (shell, running)"})
-		}
-	}
-	return out
 }
 
 // liveShellHandles returns the launch-time working directory of every
@@ -949,38 +914,6 @@ func (jm *jobManager) abandonRunningJobs() {
 	}
 }
 
-//nolint:unused // retained for the tagged job-manager recovery fuzz owners.
-func (jm *jobManager) abandonRunningJob(jobID string) {
-	jm.mu.Lock()
-	run := jm.running[jobID]
-	var targets []watchConfigTerminalSnapshot
-	if run != nil {
-		delete(jm.running, jobID)
-		targets = jm.pruneWatchedTargetWatchesLocked(jobID, "watched target pruned", jm.now())
-	}
-	jm.mu.Unlock()
-	if run == nil {
-		return
-	}
-	dropped := terminalSnapshots(targets)
-	applied, err := jm.appendAbandonSnapshots(dropped)
-	if err != nil {
-		jm.removeWatchSendTerminalSnapshots(applied)
-		jm.rollbackWatchConfigSnapshotsRejecting(targets)
-		jm.enqueueWatchNotifications([]jobNotification{
-			watchNotification(jobID, "watch send prune cleanup failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
-		})
-	} else {
-		jm.detachWatchConfigSnapshots(targets)
-		jm.removeWatchSendTerminalSnapshots(applied)
-	}
-	if run.output != nil {
-		_ = run.output.Close()
-	}
-	run.delegateShell.finish()
-	run.closeDoneAbandoned()
-}
-
 func (jm *jobManager) beginRetirementMutation(category string) (func(), error) {
 	if jm.retirementOwner != nil {
 		return jm.retirementOwner.beginRetirementMutation(category)
@@ -1374,56 +1307,6 @@ func (jm *jobManager) recordForRead(jobID string) (run *runningJob, rec *jobstor
 	return nil, recs[jobID], nil
 }
 
-//nolint:unused // retained for tagged job-runtime output recovery fuzz owners.
-func (jm *jobManager) readOutputHead(jobID string, headBytes int) (content string, total int64, truncated bool, err error) {
-	jm.mu.Lock()
-	run := jm.running[jobID]
-	jm.mu.Unlock()
-	if run != nil {
-		return headOutput(run.output, headBytes)
-	}
-
-	recs, err := jm.store.Load()
-	if err != nil {
-		return "", 0, false, err
-	}
-	rec := recs[jobID]
-	if rec == nil {
-		return "", 0, false, errJobNotFound(jobID)
-	}
-	return readClosedJobOutput(jm.outputPathForJob(rec, jobID), rec, headBytes, true)
-}
-
-// outputDropped returns the number of bytes before the first visible byte of
-// jobID's output, which the retention cap keeps from readers (0 when nothing has
-// been pruned), for both the live store and the closed-file fallback.
-//
-//nolint:unused // retained for tagged job-runtime output recovery fuzz owners.
-func (jm *jobManager) outputDropped(jobID string) (int64, error) {
-	jm.mu.Lock()
-	run := jm.running[jobID]
-	jm.mu.Unlock()
-	if run != nil {
-		return run.output.RetainedStart(), nil
-	}
-	recs, err := jm.store.Load()
-	if err != nil {
-		return 0, err
-	}
-	rec := recs[jobID]
-	if rec == nil {
-		return 0, errJobNotFound(jobID)
-	}
-	snapshot, err := readLocalJobOutputSnapshot(jm.outputPathForJob(rec, jobID), 0, true)
-	if err != nil {
-		return 0, err
-	}
-	if err := checkOutputTotalForRecord(rec, snapshot.TotalBytes); err != nil {
-		return 0, err
-	}
-	return snapshot.RetainedStart, nil
-}
-
 func (jm *jobManager) appendJobOutput(jobID string, output *jobstore.OutputStore, b []byte) (int, error) {
 	return jm.appendJobOutputWithProvenance(jobID, output, b, nil)
 }
@@ -1774,11 +1657,6 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 
 func (jm *jobManager) finalizeWithRun(jobID string, prepare func(*runningJob) (jobstore.Status, string, *int, error)) error {
 	return jm.finalizeWithRunMode(jobID, prepare, true)
-}
-
-//nolint:unused // retained for tagged job-manager finalization fuzz owners.
-func (jm *jobManager) finalizeWithRunNoNotification(jobID string, prepare func(*runningJob) (jobstore.Status, string, *int, error)) error {
-	return jm.finalizeWithRunMode(jobID, prepare, false)
 }
 
 func (jm *jobManager) finalizeWithRunMode(jobID string, prepare func(*runningJob) (jobstore.Status, string, *int, error), armNotification bool) error {
@@ -2304,12 +2182,6 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 
 func tailOutput(output *jobstore.OutputStore, tailBytes int) (string, int64, bool, error) {
 	b, total, truncated, err := output.Tail(tailBytes)
-	return stringOutputResult(b, total, truncated, err)
-}
-
-//nolint:unused // retained with readOutputHead for tagged output recovery fuzz owners.
-func headOutput(output *jobstore.OutputStore, headBytes int) (string, int64, bool, error) {
-	b, total, truncated, err := output.Head(headBytes)
 	return stringOutputResult(b, total, truncated, err)
 }
 

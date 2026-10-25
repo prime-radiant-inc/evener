@@ -713,14 +713,11 @@ function setCurrentThreadId(ref: string, threadId: string): void {
   }
   refs.add(ref);
 }
-export interface EntryTranscriptFixtureOptionsForTests {
+interface EntryTranscriptRoute {
   ref: string;
   cache: SessionEntryCache;
   clientId: string;
   hostId: string;
-}
-
-interface EntryTranscriptRoute extends EntryTranscriptFixtureOptionsForTests {
   repository?: TranscriptRepository;
   reader?: TranscriptReader;
   unsubscribeRepository?: () => void;
@@ -756,59 +753,9 @@ interface EntryTranscriptRoute extends EntryTranscriptFixtureOptionsForTests {
   lastLocalOpenUsable?: boolean;
 }
 
-let entryTranscriptFixtureForTests: EntryTranscriptRoute | undefined;
-
-/** Installs a single selected-session route for an isolated browser fixture only. */
-export function installEntryTranscriptFixtureForTests(options: EntryTranscriptFixtureOptionsForTests): {
-  settled(): Promise<void>;
-  inspect(): {
-    ref: string;
-    historyKey?: string;
-    model?: ThreadModel;
-    baseline?: string;
-    olderPageGeneration: number;
-    readerRetention?: ReturnType<TranscriptReader["getRetentionSnapshotForTesting"]>;
-  };
-  /** @internal Test-only subscription to the fixture repository's publications. */
-  subscribeRepository(listener: (model: ThreadModel | undefined) => void): () => void;
-  dispose(): void;
-} {
-  if (entryTranscriptFixtureForTests) throw new Error("an entry transcript fixture is already installed");
-  // The lifetime counter is per-installation bookkeeping, NOT a durable
-  // connection identifier: it resets to 1 each time the fixture is installed.
-  const fixture: EntryTranscriptRoute = { ...options, lifetime: 1 };
-  entryTranscriptFixtureForTests = fixture;
-  return {
-    settled: () => fixture.repository?.settled() ?? Promise.resolve(),
-    inspect: () => ({
-      ref: fixture.ref,
-      ...(fixture.historyKey ? { historyKey: fixture.historyKey } : {}),
-      ...(fixture.repository?.getSnapshot() ? { model: fixture.repository.getSnapshot() } : {}),
-      ...(fixture.repository ? { baseline: fixture.repository.getBaselineIdentity() } : {}),
-      olderPageGeneration: olderPageGenerations.get(fixture.ref) ?? 0,
-      ...(fixture.reader ? { readerRetention: fixture.reader.getRetentionSnapshotForTesting() } : {}),
-    }),
-    subscribeRepository: (listener) =>
-      fixture.repository?.subscribe(() => listener(fixture.repository?.getSnapshot())) ?? (() => {}),
-    dispose: () => {
-      if (entryTranscriptFixtureForTests !== fixture) return;
-      clearEntryTranscriptLocalOpening(fixture.ref);
-      fixture.reader?.dispose();
-      fixture.unsubscribeRepository?.();
-      fixture.unsubscribeRepository = undefined;
-      fixture.repository?.dispose();
-      entryTranscriptFixtureForTests = undefined;
-    },
-  };
-}
-
 const productionEntryRoutes = new Map<string, EntryTranscriptRoute>();
 
 function entryTranscriptRoute(ref: string): EntryTranscriptRoute | undefined {
-  if (entryTranscriptFixtureForTests?.ref === ref) return entryTranscriptFixtureForTests;
-  // While an isolated fixture is installed, no production route is created for
-  // other refs: the fixture is the one entry-backed route under test.
-  if (entryTranscriptFixtureForTests) return undefined;
   let route = productionEntryRoutes.get(ref);
   if (!route) {
     route = {
@@ -824,10 +771,7 @@ function entryTranscriptRoute(ref: string): EntryTranscriptRoute | undefined {
 }
 
 function entryTranscriptRoutes(): EntryTranscriptRoute[] {
-  return [
-    ...productionEntryRoutes.values(),
-    ...(entryTranscriptFixtureForTests ? [entryTranscriptFixtureForTests] : []),
-  ];
+  return [...productionEntryRoutes.values()];
 }
 
 function isEntryTranscriptBackgroundOnly(ref: string): boolean {
@@ -5700,15 +5644,10 @@ async function publishAndReconcileThreadHydration(
   reopenOnlyClientMutationId?: string,
   intent: HydrationIntent = "foreground",
 ): Promise<ThreadModel | null> {
-  const productionEntry = entryTranscriptFixtureForTests?.ref !== ref;
-  let adoptedEntryRead = false;
-  if (productionEntry) {
-    if (pendingThreadHydrations.get(ref) !== pending || !canonicalThreadOwnerActive(ref)) return null;
-    adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
-  }
+  if (pendingThreadHydrations.get(ref) !== pending || !canonicalThreadOwnerActive(ref)) return null;
+  const adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
   const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
   if (!published) return null;
-  if (!productionEntry) await acceptEntryTranscriptHydration(ref, pending, hydration);
   threadsStore.setState((state) => {
     const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
     if (hydration.response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(ref);
@@ -6641,7 +6580,7 @@ async function refreshTrackedThread(
   // owner fence as refreshTrackedThreadNow before joining, so a released ref
   // cannot carry that retired read's rejection into the reconnect callback.
   if (!canonicalThreadOwnerActive(ref)) return undefined;
-  if (intent !== "background" || entryTranscriptFixtureForTests?.ref === ref)
+  if (intent !== "background")
     return refreshTrackedThreadNow(
       client,
       epoch,
@@ -8451,7 +8390,7 @@ function deleteCachedRefs(refs: string[]): void {
   // The legacy stores are gone (6d), so there is nothing left to source-heal;
   // entry histories are deleted durably through the cache's own per-history
   // fence below.
-  if (!entryTranscriptFixtureForTests && !byCache.has(currentEntryCache())) byCache.set(currentEntryCache(), new Set());
+  if (!byCache.has(currentEntryCache())) byCache.set(currentEntryCache(), new Set());
   const histories = Promise.allSettled(
     [...byCache].flatMap(([cache, captured]) => [
       ...[...captured].map((historyKey) => cache.deleteHistory(historyKey)),
@@ -8519,7 +8458,6 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   // already-installed reader, subscription or repository must not publish or
   // persist into the clear window, and a hydration that began before it must not
   // adopt the post-Clear epoch. Readable content stays in the store model.
-  const entryFixture = entryTranscriptFixtureForTests;
   const entryRoutes = entryTranscriptRoutes();
   for (const route of entryRoutes) {
     noteEntryRouteRetirement(route.ref);
@@ -8566,18 +8504,6 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
     reconcileClearInput();
     return { committed: false };
   }
-  // An isolated fixture keeps its own cache; clear it too. If its transaction
-  // aborts, its rows remain: report the incomplete clear honestly rather than
-  // claiming success from the production result alone.
-  let entryIncomplete = false;
-  if (entryFixture) {
-    const entryResult = await entryFixture.cache.clear();
-    if (!entryResult.committed) entryIncomplete = true;
-    // The committed clear retires the route: a fresh explicit acquisition
-    // rebuilds under the new epoch.
-    retireEntryTranscriptRoute(entryFixture);
-    entryFixture.clearInert = false;
-  }
   // A held production route keeps displaying live input. Its captured old
   // epoch is unchanged, so all subsequent writes are durably refused until a
   // fresh explicit acquisition after the pre-Clear holders have released.
@@ -8600,7 +8526,7 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   cacheChannel.connect();
   cacheChannel.postMessage({ kind: "clear", epoch: result.epoch });
   reconcileClearInput();
-  return { committed: !entryIncomplete };
+  return { committed: true };
 }
 
 /** The settings row's reader (spec, "The clear-cached-sessions setting"):
@@ -8970,21 +8896,4 @@ export function resetThreadsStoreForTests(): void {
     },
     true,
   );
-}
-
-// Read-only snapshot of the thread-id routing indexes for the store's own
-// tests: the differential test asserts key-set consistency with the maps
-// after every notification — every tracked model's threadId is indexed under
-// its ref, and nothing the maps dropped lingers in an index — which is what
-// makes a stale index fail immediately instead of only when a random
-// sequence happens to diverge. (The ref route needs no test-visible index:
-// it IS the map.)
-export function threadRoutingIndexesForTests(): {
-  threadsByThreadId: ReadonlyMap<string, ReadonlySet<string>>;
-  watchedByThreadId: ReadonlyMap<string, ReadonlySet<string>>;
-} {
-  return {
-    threadsByThreadId: threadsIndex,
-    watchedByThreadId: watchedThreadsIndex,
-  };
 }

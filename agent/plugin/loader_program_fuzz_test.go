@@ -169,13 +169,13 @@ func runPluginLoaderProgram(t *testing.T, mode byte, token string) pluginLoaderP
 
 	// Qualified and unique bare lookups have deterministic meaning; an absent
 	// command must not invent a zero-value hit.
-	if command, ok := ResolveCommand(alpha.Commands, "alpha:hello"); !ok || command.Name != "hello" {
-		t.Fatalf("qualified ResolveCommand = %#v, %v", command, ok)
+	if command, err := ResolveCommand(alpha.Commands, "alpha:hello"); err != nil || command.Name != "hello" {
+		t.Fatalf("qualified ResolveCommand = %#v, %v", command, err)
 	}
-	if command, ok := ResolveCommand(alpha.Commands, "review"); !ok || command.Name != "review" {
-		t.Fatalf("unique bare ResolveCommand = %#v, %v", command, ok)
+	if command, err := ResolveCommand(alpha.Commands, "review"); err != nil || command.Name != "review" {
+		t.Fatalf("unique bare ResolveCommand = %#v, %v", command, err)
 	}
-	if _, ok := ResolveCommand(alpha.Commands, "not-present"); ok {
+	if _, err := ResolveCommand(alpha.Commands, "not-present"); err == nil {
 		t.Fatal("missing command resolved unexpectedly")
 	}
 	if got := EventTier(HookPreToolUse); got != "claude-compatible-subset" {

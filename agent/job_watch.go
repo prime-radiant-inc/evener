@@ -2537,23 +2537,6 @@ func (jm *jobManager) watchListToolResult() jobWatchListToolResult {
 	return formatWatchListInspectResult(pending, history)
 }
 
-func (jm *jobManager) watchListToolResultForReceiver(receiverSessionID, receiverDelegateID string) jobWatchListToolResult {
-	receiverSessionID = strings.TrimSpace(receiverSessionID)
-	receiverDelegateID = strings.TrimSpace(receiverDelegateID)
-	if receiverSessionID == "" {
-		return jobWatchListToolResult{}
-	}
-	pending, history := jm.watchInspectSnapshots(
-		func(cfg *watchConfig) bool {
-			return watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID)
-		},
-		func(h watchHistoryEntry) bool {
-			return watchHistoryMatchesReceiver(h, receiverSessionID, receiverDelegateID)
-		},
-	)
-	return formatWatchListInspectResult(pending, history)
-}
-
 // watchListToolResultForReceiverShapes returns the receiver-keyed list rows for
 // both receiver-key shapes: the delegate-keyed
 // (receiverSessionID, receiverDelegateID) pair, and — when a delegate id is
@@ -2832,54 +2815,6 @@ func sortWatchStatuses(statuses []WatchStatusInfo) {
 	})
 }
 
-// aggregateWatchStatuses projects the watches every supplied manager holds that
-// are visible to receiverSessionID. Managers are deduped so two live sessions
-// sharing one manager do not double every row, and the result is ordered like
-// the single-manager projection. Superseded as a production entry point by the
-// page walk's per-row aggregation (appendWatchStatusesByRow, inside
-// LiveWatchRowsForSessions); it is reached only from tests, which keep the
-// receiver-rollup contract pinned through it.
-func aggregateWatchStatuses(receiverSessionID string, managers []*jobManager) []WatchStatusInfo {
-	var statuses []WatchStatusInfo
-	seen := make(map[*jobManager]struct{}, len(managers))
-	for _, jm := range managers {
-		if jm == nil {
-			continue
-		}
-		if _, ok := seen[jm]; ok {
-			continue
-		}
-		seen[jm] = struct{}{}
-		statuses = append(statuses, jm.liveWatchStatusesForSession(receiverSessionID)...)
-	}
-	sortWatchStatuses(statuses)
-	return statuses
-}
-
-// liveWatchStatuses aggregates every live manager that can hold a config whose
-// receiver is THIS session: its own manager plus the stable watch-source
-// sessions (stableWatchSourceSessions), the same set the #655 stop inventory
-// scans. A receiver watch on a descendant's job lives in that descendant's job
-// manager with this session recorded as the receiver, so reading only
-// s.jobManager made it invisible to both sessions - the exact "watch my child's
-// long-running job" case this feature exists for.
-func (s *Session) liveWatchStatuses() []WatchStatusInfo {
-	if s == nil {
-		return nil
-	}
-	// Answered from the same page walk the list path uses, so the two cannot
-	// disagree about which rows are this session's. A known session with no
-	// watches keeps the non-nil empty answer its siblings document
-	// (TestLiveWatchesForSessionEmptyRootIsNotEmptyAnswer pins it for the public
-	// seams): nil means "this session cannot be answered for", never "it has no
-	// watches now".
-	rows, ok := s.LiveWatchRowsForSessions([]string{s.ID()})[s.ID()]
-	if !ok {
-		return nil
-	}
-	return rows
-}
-
 // LiveWatchRowsForSessions resolves the supplied thread IDs to the live watch
 // rows that belong on each of their rows, in one pass over this session's live
 // tree.
@@ -2988,65 +2923,6 @@ func (jm *jobManager) appendWatchStatusesByRow(rows map[string][]WatchStatusInfo
 	for i := range pending {
 		rows[pending[i].row] = append(rows[pending[i].row], watchStatusInfoFromConfig(&pending[i].cfg))
 	}
-}
-
-// LiveWatchesForDescendant returns the live watch rows visible to the descendant
-// session sessionID, so its own thread row can carry them. Today a session's
-// watches are projected only onto its own row by the daemon's status sampler;
-// a subagent session's watches reached no row at all, because the root's status
-// is the only one the daemon projects. This resolves the descendant through the
-// manager that owns children and delegates to that child's own liveWatchStatuses,
-// so isolation matches the root's: a receiver watch the child holds for an
-// ancestor is filtered out here (it belongs on the ancestor's row), and a
-// keyless watch the child owns never surfaces on an ancestor's projection. The
-// root is not its own descendant, so a root (or unknown) session ID returns nil.
-// A KNOWN descendant with no watches is a third case: it returns a NON-nil empty
-// slice, because the list path must be able to tell "this descendant has no
-// watches now" from "this ID is not a descendant I can see". nil therefore means
-// only the root, an empty ID, or an unknown ID.
-//
-// This is sampled on read, not cached: watch state changes without a per-child
-// app event on this daemon, so the caller re-derives it on every list/read. The
-// walk itself is LiveWatchRowsForSessions', so a single-ID caller and a page
-// caller can never disagree about which sessions are answerable. The page walk is
-// the production entry point; this single-ID form and LiveWatchesForSession below
-// are reached only from tests, which pin the page's contracts through these
-// narrower seams.
-func (s *Session) LiveWatchesForDescendant(sessionID string) []WatchStatusInfo {
-	if s == nil || sessionID == "" || sessionID == s.ID() {
-		return nil
-	}
-	return s.LiveWatchRowsForSessions([]string{sessionID})[sessionID]
-}
-
-// LiveWatchesForSession resolves a row's thread ID to the live watch rows that
-// belong on it, so a thread LIST read can refresh watches that changed with no
-// per-thread app event. It is the broader sibling of LiveWatchesForDescendant:
-// that one keeps its narrower contract (the root is not its own descendant, so
-// it returns nil for the root), while this one also answers for the root's own
-// row, carrying every manager that holds a watch for that session -- including a
-// receiver watch a descendant session holds for it.
-//
-// This is NOT the set Session.DetailedStatus().Watches carries, and must not be
-// replaced by it: that facet is the session's own manager only, by the
-// envelope-sampling contract (a sampled method may take this session's mu and
-// nothing else, so it cannot reach a descendant's manager). The receiver rollup
-// therefore reaches a row from the LIST path (cmd/evener/serve.go), which samples
-// here. Dropping that sampling makes "watch my child's long-running job"
-// invisible on both sessions' rows.
-//
-// An empty answer for the root is non-nil: the caller merges only a nil answer
-// as "no fresh sample, leave the cached projection alone", so a non-nil empty
-// slice is how a watch cleared since the last diagnostics refresh leaves the
-// row. A known descendant with no watches is likewise non-nil empty, exactly as
-// the root's is, so a descendant cleared since the last refresh leaves its row
-// too. An unknown or empty ID stays nil (LiveWatchesForDescendant's own
-// behavior).
-func (s *Session) LiveWatchesForSession(sessionID string) []WatchStatusInfo {
-	if s == nil || sessionID == "" {
-		return nil
-	}
-	return s.LiveWatchRowsForSessions([]string{sessionID})[sessionID]
 }
 
 // watchStatusInfoFromConfig projects one live config into its structured
@@ -5206,17 +5082,6 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 		})
 		overflow--
 	}
-	return record
-}
-
-// recordWatchSendPending retains the pure runtime-state transition used by the
-// state-machine harnesses. Production persistence uses planWatchSendPending,
-// fsyncs its event, and calls commitWatchSendPendingRecord only afterward.
-//
-//nolint:unused // retained for the evenerfuzz watch/delegate state-machine owner.
-func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d watchSendDelivery) watchSendPendingRecord {
-	record := jm.planWatchSendPending(state, d)
-	jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)
 	return record
 }
 

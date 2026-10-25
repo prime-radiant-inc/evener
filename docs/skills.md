@@ -648,6 +648,10 @@ a plugin command of the same bare name; the plugin command stays reachable
 as `/plugin:name`. Within project commands, the directory closest to your
 cwd wins.
 
+Two plugins that define the same bare command name make `/name` ambiguous.
+Evener reports the candidates and does not run either; type `/plugin:name` to
+choose one.
+
 ### Client caveats
 
 - The browser intercepts its built-in slash controls before session input.

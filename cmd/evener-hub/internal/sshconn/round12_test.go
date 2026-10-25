@@ -101,7 +101,7 @@ func TestRound12InstallerCommandVerifiesByteCount(t *testing.T) {
 // Medium that the installer-default fallback probe ran only when m.canDeploy()
 // was true, so a controller with no build source (or an unpublishable installer
 // ref) could not discover a perfectly good installed binary that is simply off
-// the non-interactive PATH — preflight reported errExecutableMissing and the
+// the non-interactive PATH — preflight reported ErrExecutableMissing and the
 // attach failed for a host that needed no deploy at all. Only the later
 // deploy decision is gated on canDeploy.
 func TestRound12PreflightProbesInstallerDefaultWithoutADeploy(t *testing.T) {
