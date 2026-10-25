@@ -154,12 +154,16 @@ function setFocused(value: boolean): void {
   vi.spyOn(document, "hasFocus").mockReturnValue(value);
 }
 
+function resetAndBindNavigation(): void {
+  resetNavigationStoreForTests();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  unbindNavigation = bindNavigationConnection();
+}
+
 beforeEach(() => {
   resetNotificationsForTests();
-  resetNavigationStoreForTests();
-  unbindNavigation = bindNavigationConnection();
+  resetAndBindNavigation();
   resetLeaderForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   localStorage.clear();
   resetPrefsStoreForTests();
   FakeNotification.instances = [];
@@ -237,6 +241,26 @@ async function boot(baseline: {
 }
 
 describe("notifications with shared navigation connection", () => {
+  test("reset does not adopt a ready client left by the preceding test", async () => {
+    const stale = new FakeClient("ready");
+    scriptNavigationManifest(stale);
+    stale.scriptConnect(() => navigationInitialize());
+    connectionStore.getState().connect(stale);
+    await stale.connect();
+    await vi.waitFor(() => expect(navigationStore.getState().mode).toBe("v3"));
+
+    // Recreate the next test's setup in this test, rather than depending on
+    // test ordering to leave a real ready connection behind.
+    unbindNavigation?.();
+    resetNotificationsForTests();
+    resetAndBindNavigation();
+    await flushMicrotasks();
+
+    expect(connectionStore.getState().client).toBeNull();
+    expect(navigationStore.getState().mode).toBe("unknown");
+    expect(stale.calls.filter((call) => call.method === "evener/navigation/read")).toHaveLength(1);
+  });
+
   test("supported v2 boots navigation through the typed AppWire read", async () => {
     const client = new FakeClient("ready");
     scriptNavigationManifest(client);

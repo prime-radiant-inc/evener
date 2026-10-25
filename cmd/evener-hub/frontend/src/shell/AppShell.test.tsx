@@ -989,6 +989,29 @@ test("wires the injected client into connectionStore (connects on mount)", async
   }
 });
 
+test("rerender keeps the injected client's navigation wiring and unmount leaves the client open", async () => {
+  const client = navClient();
+  const view = render(<AppShell client={client} />);
+  await waitFor(() => expect(navigationStore.getState().mode).toBe("v3"));
+  const manifest = navigationStore.getState().manifest;
+  expect(manifest?.error).toBeNull();
+  const manifestReads = () =>
+    client.calls.filter(
+      (call) =>
+        call.method === "evener/navigation/read" && (call.params as NavigationReadParams).resource === "manifest",
+    );
+  expect(manifestReads()).toHaveLength(1);
+
+  view.rerender(<AppShell client={client} />);
+  expect(connectionStore.getState().client).toBe(client);
+  expect(navigationStore.getState().manifest).toBe(manifest);
+  expect(manifestReads()).toHaveLength(1);
+
+  view.unmount();
+  expect(navigationStore.getState().mode).toBe("unknown");
+  expect(client.state).toBe("ready");
+});
+
 test("shows no banner while the injected client is ready", async () => {
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText("No session open");
