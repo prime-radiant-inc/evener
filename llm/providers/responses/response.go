@@ -56,27 +56,22 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 			if itemID == "" {
 				itemID, _ = item["item_id"].(string)
 			}
-			// When the raw body is available, decode it once on the first
-			// function_call item and index that item's token. rawItems entry
-			// tokens win when present; the per-item decode stays bounded by
-			// the item. Degrade, never drop: fall back to the string-form
-			// args on failure.
-			var rawArgs json.RawMessage
-			var rawOK bool
-			if itemIdx < len(rawItems) && len(rawItems[itemIdx]) > 0 {
-				rawArgs, rawOK = captureResponsesItemArgsRaw(rawItems[itemIdx])
-			} else {
+			// Decode the raw body once; index this item's token (rawItems
+			// entries win when present).
+			var token json.RawMessage
+			if itemIdx < len(rawItems) {
+				token = rawItems[itemIdx]
+			}
+			if len(token) == 0 {
 				if !rawBodyCaptured {
 					rawBodyCaptured = true
-					if len(body) > 0 {
-						rawBodyItems = captureResponsesArgsRaw(body)
-					}
+					rawBodyItems = captureResponsesArgsRaw(body)
 				}
 				if itemIdx < len(rawBodyItems) {
-					rawArgs, rawOK = captureResponsesItemArgsRaw(rawBodyItems[itemIdx])
+					token = rawBodyItems[itemIdx]
 				}
 			}
-			if rawOK && rawArgs != nil {
+			if rawArgs, rawOK := captureResponsesItemArgsRaw(token); rawOK && rawArgs != nil {
 				if content, cerr := protocolhttp.RawStringContent(rawArgs); cerr == nil {
 					args = string(content)
 				}
@@ -243,6 +238,9 @@ var rawArgsBodyDecode = json.Unmarshal
 // capture for well-formed function calls. It returns nil if the focused decode
 // fails, so the caller falls back to the existing string-form args.
 func captureResponsesArgsRaw(body []byte) []json.RawMessage {
+	if len(body) == 0 {
+		return nil
+	}
 	var focused struct {
 		Output []json.RawMessage `json:"output"`
 	}
