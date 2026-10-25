@@ -257,6 +257,32 @@ func TestExecuteConvertDoesNotFollowSymlinkPlantedAtTempName(t *testing.T) {
 	}
 }
 
+// providers.toml can carry literal API keys, so the conversion keeps the mode
+// the user gave the file instead of widening it.
+func TestExecuteConvertKeepsProvidersConfigMode(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "evener")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "providers.toml")
+	src := []byte("default = \"kimi\"\n\n[instances.kimi]\ntype = \"kimi\"\napi_key = \"literal\"\n")
+	if err := os.WriteFile(path, src, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := execute(baseOpts(home, t.TempDir()), &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d; stderr = %q", code, stderr.String())
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("converted mode = %v, want the original 0600", info.Mode().Perm())
+	}
+}
+
 func TestExecuteDryRunLeavesOldProvidersConfig(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".config", "evener")

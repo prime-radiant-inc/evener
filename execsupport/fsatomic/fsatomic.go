@@ -24,7 +24,7 @@ var ErrPublished = errors.New("contents published but not confirmed durable")
 // outright so the process umask has no say, renames it over path, and fsyncs
 // the directory so the rename itself is durable; a failure of that last step
 // wraps ErrPublished. The parent directory must
-// exist. A failed write removes its temp file; a crash between the create and
+// exist (MkdirAll creates it durably). A failed write removes its temp file; a crash between the create and
 // the rename leaves a stray "<name>.tmp-*" file behind, which is the cost of
 // never reusing a name another process could plant.
 func Write(path string, data []byte, perm os.FileMode) error {
@@ -61,6 +61,36 @@ func Write(path string, data []byte, perm os.FileMode) error {
 	published = true
 	if err := syncDir(dir); err != nil {
 		return fmt.Errorf("%w: %w", ErrPublished, err)
+	}
+	return nil
+}
+
+// MkdirAll creates dir and any missing ancestors like os.MkdirAll, then syncs
+// the parent of every directory it created so the new directory entries are
+// durable. Write syncs only the directory that holds the file, so a caller
+// whose first save also creates the directory runs this before Write.
+func MkdirAll(dir string, perm os.FileMode) error {
+	var created []string
+	for p := dir; ; p = filepath.Dir(p) {
+		_, err := os.Stat(p)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		created = append(created, p)
+		if filepath.Dir(p) == p {
+			break
+		}
+	}
+	if err := os.MkdirAll(dir, perm); err != nil {
+		return err
+	}
+	for _, p := range created {
+		if err := syncDir(filepath.Dir(p)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

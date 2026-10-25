@@ -50,7 +50,7 @@ func saveQueues(stateDir, id string, steering []steeringMessage, input []queuedI
 		}
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := fsatomic.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create queues dir: %w", err)
 	}
 	data, err := json.Marshal(persistedQueues{Steering: steering, Input: input})
