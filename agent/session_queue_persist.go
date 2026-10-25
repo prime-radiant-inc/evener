@@ -57,7 +57,7 @@ func saveQueues(stateDir, id string, steering []steeringMessage, input []queuedI
 	if err != nil {
 		return fmt.Errorf("marshal queues: %w", err)
 	}
-	if err := fsatomic.Write(path, data, 0o644); err != nil {
+	if err := fsatomic.Write(path, data, 0o600); err != nil {
 		return fmt.Errorf("write queues file: %w", err)
 	}
 	return nil

@@ -496,6 +496,23 @@ func TestSaveQueues_DoesNotFollowSymlinkPlantedAtTempName(t *testing.T) {
 	}
 }
 
+// Queued steering is the user's pending input, so the snapshot is private to
+// them whatever the umask.
+func TestSaveQueues_SnapshotIsPrivate(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	if err := saveQueues(stateDir, "sid1", []steeringMessage{{Text: "steer"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(queuesFilePath(stateDir, "sid1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("snapshot mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
 func TestSaveQueues_RoundTripAndEmptyRemoval(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()

@@ -150,3 +150,30 @@ func TestMkdirAllFailsUnderAFile(t *testing.T) {
 		t.Fatalf("err = %v, want ENOTDIR", err)
 	}
 }
+
+// A parent sync that fails must not leave the new directories behind, or a
+// retry would find them, skip the sync, and report durability it never got.
+func TestMkdirAllRetryAfterFailedParentSyncSyncsAgain(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens any directory")
+	}
+	base := t.TempDir()
+	if err := os.Chmod(base, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(base, 0o700) }()
+	dir := filepath.Join(base, "a", "b")
+
+	if err := fsatomic.MkdirAll(dir, 0o700); err == nil {
+		t.Fatal("expected the unreadable parent to fail its sync")
+	}
+	if err := os.Chmod(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "a")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed MkdirAll left its directories behind: %v", err)
+	}
+	if err := fsatomic.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+}

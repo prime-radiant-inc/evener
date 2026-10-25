@@ -89,6 +89,12 @@ func MkdirAll(dir string, perm os.FileMode) error {
 	}
 	for _, p := range created {
 		if err := syncDir(filepath.Dir(p)); err != nil {
+			// Take the new directories back out, innermost first, so a retry
+			// creates and syncs them again instead of finding them and
+			// skipping the sync.
+			for _, q := range created {
+				_ = os.Remove(q)
+			}
 			return err
 		}
 	}
