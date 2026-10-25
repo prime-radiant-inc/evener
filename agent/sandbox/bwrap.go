@@ -159,6 +159,7 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		exposed := isUnderAnyRoot(rp.WorkspaceRoot, sp.ReadRoots) ||
 			isUnderAnyRoot(rp.WorkspaceRoot, rp.UnmaskedRoots) ||
 			isUnderAnyRoot(rp.WorkspaceRoot, []string{rp.Git.WorktreeRoot}) ||
+			isUnderAnyRoot(rp.WorkspaceRoot, slices.Collect(maps.Keys(reboundRO))) ||
 			(sessionTmp != "" && pathUnder(rp.WorkspaceRoot, sessionTmp))
 		if hidden && !exposed {
 			add("--symlink", rp.WorkspaceRootResolved, rp.WorkspaceRoot)

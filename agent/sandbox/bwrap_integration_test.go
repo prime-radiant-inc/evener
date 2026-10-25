@@ -95,6 +95,49 @@ func TestBwrapLinkedWorktreeStarts(t *testing.T) {
 	}
 }
 
+// TestBwrapWorkspaceInScratchTreeDoesNotLinkExistingPath pins that a workspace
+// already exposed by the scratch-tree bind gets no workspace link. The link
+// would land on an existing directory and abort every wrapped command.
+func TestBwrapWorkspaceInScratchTreeDoesNotLinkExistingPath(t *testing.T) {
+	facts := requireRealBwrap(t)
+	tree, err := os.MkdirTemp("/tmp", "evener-scratch-")
+	if err != nil {
+		t.Skipf("no writable /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tree) })
+	sessionTmp := filepath.Join(tree, "C")
+	if err := os.MkdirAll(sessionTmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := os.MkdirTemp("/var/tmp", "evener-scratch-workspace-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(repo) })
+	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tree, "P"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(repo, filepath.Join(tree, "P", "link")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	cwd := filepath.Join(tree, "P", "link", "sub")
+	want, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runWrapped(t, facts, ModeReadOnly, true, cwd, sessionTmp, "pwd")
+	if err != nil {
+		t.Fatalf("workspace reached through the scratch tree failed: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(out); got != cwd && got != want {
+		t.Fatalf("pwd = %q, want the literal %q or physical %q", got, cwd, want)
+	}
+}
+
 // TestBwrapReadOnlyTmpWorktreeStarts covers MED finding #5 end-to-end: a
 // read-only session whose worktree lives under /tmp must still start. Read-only
 // mode grants no write root, so without re-binding the cwd read-only after the

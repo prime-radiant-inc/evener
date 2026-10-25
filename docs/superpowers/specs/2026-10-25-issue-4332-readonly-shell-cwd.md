@@ -98,6 +98,11 @@ Revision notes:
   granted path only through a system firmlink (`/var` -> `/private/var`) is
   admitted when the resolved spelling is under a resolved read root;
   bubblewrap keeps refusing the target spelling.
+- **Amendment 9 (PR shepherd finding).** The workspace-link exposure check
+  includes the actual rebound roots. A workspace already visible through the
+  scratch-tree bind takes no link; the link would land on an existing path
+  and abort bubblewrap. The real-backend regression uses a workspace reached
+  through a symlink inside the shared scratch tree.
 
 ## Intent and scope
 
@@ -390,6 +395,8 @@ fixture.
    Seatbelt while bubblewrap keeps refusing it.
    A child cwd of a session rooted at `/dev` is re-bound after the minimal
    device tree.
+   A workspace reached through a symlink inside the shared scratch tree runs
+   a wrapped command without emitting a workspace link.
 8. `agent/sandbox/resolve_canread_test.go`: `SpawnedCanRead` accepts
    read-anywhere paths, rejects masked paths and `.git` under a carve-out,
    accepts restricted read roots and unmasked roots, rejects a restricted
