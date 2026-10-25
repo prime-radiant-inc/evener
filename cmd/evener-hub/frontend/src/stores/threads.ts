@@ -8254,6 +8254,17 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       resolvedModel !== undefined && resolvedModel !== model ? resolvedModel : undefined,
       resolvedWatched !== undefined && resolvedWatched !== watchedModel ? resolvedWatched : undefined,
     );
+    // The daemon broadcasts the resolved notification to every other client, so
+    // this one has to fold it into the transcript repository itself. The
+    // repository republishes its own model on later frames and would
+    // otherwise put the cleared card back.
+    const fixture = entryTranscriptRoute(ref);
+    if (fixture?.repository && model && resolvedModel !== model && stateBefore.clearInFlight === undefined) {
+      acceptEntryNotification(fixture, fixture.repository, {
+        method: "evener/sandbox/escalation/resolved",
+        params: { threadId: model.threadId, ref, escalationId },
+      });
+    }
   },
 }));
 
