@@ -54,12 +54,17 @@ function watchDocument(doc: Document, subscriber: () => void): () => void {
  */
 export function useOwnedDocument<T extends Node>(ref: RefObject<T | null>, enabled = true): Document {
   const [doc, setDoc] = useState<Document>(() => ownerDocumentOf(ref.current));
+  // The node itself answers during every render, so a widget moved while
+  // observation was off (a closed menu) opens in its new document on the first
+  // commit instead of being corrected after it has already focused there. The
+  // tracked state exists to schedule renders for moves that happen while the
+  // widget is live.
+  const ownerDocument = ref.current === null ? doc : ownerDocumentOf(ref.current);
   // Catch a move that happened before this effect ran (the ref attaches during
   // commit, after the initial state was computed).
   useEffect(() => {
-    const next = ownerDocumentOf(ref.current);
-    if (next !== doc) setDoc(next);
-  });
+    if (ownerDocument !== doc) setDoc(ownerDocument);
+  }, [doc, ownerDocument]);
   useEffect(() => {
     if (!enabled) return;
     const root = ref.current;
@@ -104,5 +109,5 @@ export function useOwnedDocument<T extends Node>(ref: RefObject<T | null>, enabl
       if (recheck !== undefined) clearTimeout(recheck);
     };
   }, [doc, enabled, ref]);
-  return doc;
+  return ownerDocument;
 }

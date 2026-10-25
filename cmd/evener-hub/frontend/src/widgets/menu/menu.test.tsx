@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createPortal } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
 import { Dialog } from "../dialog";
 import { appendPopout } from "../internal/popoutTestUtils";
@@ -573,5 +574,43 @@ test("places a popout menu from the popout window's own viewport", () => {
   } finally {
     view.unmount();
     frame.remove();
+  }
+});
+
+// A menu moved while closed has no observer running. Opening it must resolve
+// the new document on that first commit, not after: the panel's own focus
+// handling would otherwise run in the document it left.
+test("a menu moved while closed opens in its new document", async () => {
+  const { frame, doc } = appendPopout();
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  let openerFocus = 0;
+  const countFocus = () => {
+    openerFocus += 1;
+  };
+  document.addEventListener("focusin", countFocus, true);
+  try {
+    act(() => root.render(<Menu trigger="Actions" items={items()} />));
+    act(() => {
+      doc.body.appendChild(host);
+    });
+    await act(async () => {});
+
+    const trigger = doc.querySelector("button");
+    if (!trigger) throw new Error("popout trigger missing");
+    act(() => {
+      fireEvent.click(trigger);
+    });
+
+    const panel = doc.querySelector('[role="menu"]');
+    expect(panel).not.toBeNull();
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(openerFocus).toBe(0);
+  } finally {
+    document.removeEventListener("focusin", countFocus, true);
+    act(() => root.unmount());
+    frame.remove();
+    host.remove();
   }
 });
