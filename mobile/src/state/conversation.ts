@@ -662,7 +662,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		kind: ConversationMutationState["kind"],
 		admission: ConversationMutationAdmission | undefined,
 	): AcceptedConversationMutation {
-		return admission?.receipt === undefined ? { kind } : { kind, receipt: admission.receipt };
+		return { kind, receipt: admission?.receipt };
 	}
 
 	let conversationGen = 0;

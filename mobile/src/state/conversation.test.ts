@@ -1301,8 +1301,8 @@ describe("ConversationStore", () => {
 				);
 				// ...and settled as before, without inventing a wire receipt.
 				expect(store.getState().pendingMutation).toBeNull();
-				expect(store.getState().lastAcceptedMutation).toEqual({ kind });
-				expect(store.getState().lastAcceptedMutation).not.toHaveProperty("receipt");
+				expect(store.getState().lastAcceptedMutation).toEqual({ kind, receipt: undefined });
+				expect(store.getState().lastAcceptedMutation).toHaveProperty("receipt", undefined);
 			});
 		}
 
