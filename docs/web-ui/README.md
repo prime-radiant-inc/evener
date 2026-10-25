@@ -297,8 +297,11 @@ another blocking modal owns interaction. It returns when that state ends. Editor
 focus and a saved draft never hide it.
 
 Keyboard Next, the palette's needs-you rows and the palette's next-needs-you
-command share the shell's one needs-you controller. The floating control changes
-none of their ordering, validity or navigation decisions.
+command share the shell's one needs-you controller. The palette renders each row
+from the controller's published choice: a row whose page is refreshing or failed
+is refused, says why, and stays in the palette until the page is current again.
+The floating control changes none of their ordering, validity or navigation
+decisions.
 
 A settled `needs_you` page owns completion: when it reports no remaining rows,
 the queue is finished and neither Next nor **Load more** asks for another page,
