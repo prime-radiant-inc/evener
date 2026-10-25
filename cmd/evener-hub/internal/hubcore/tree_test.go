@@ -2325,26 +2325,26 @@ func TestNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t *testing.T) 
 	fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t)
 }
 
-func TestTopLevelSessionIDsExcludesNestedAndForkRows(t *testing.T) {
-	ids := TopLevelSessionIDs([]schema.SessionMeta{
+func TestRootIndexTopLevelExcludesNestedAndForkRows(t *testing.T) {
+	roots := NewRootIndex([]schema.SessionMeta{
 		{ID: "top"},
 		{ID: "sub", ParentSessionID: "top", IsSubagent: true},
 		{ID: "orphan-fork", ForkLabel: "before edit"},
 		{ID: "nested-fork", ForkLabel: "before another edit"},
 		{ID: "branch", ParentSessionID: "nested-fork"},
 	})
-	if _, ok := ids["top"]; !ok {
-		t.Fatalf("top-level session missing: %v", ids)
+	if !roots.TopLevel("top") {
+		t.Fatalf("top-level session missing")
 	}
 	for _, id := range []string{"sub", "nested-fork"} {
-		if _, ok := ids[id]; ok {
-			t.Fatalf("nested session %q incorrectly accepted: %v", id, ids)
+		if roots.TopLevel(id) {
+			t.Fatalf("nested session %q incorrectly accepted", id)
 		}
 	}
-	if _, ok := ids["branch"]; !ok {
-		t.Fatalf("active fork branch should remain top-level: %v", ids)
+	if !roots.TopLevel("branch") {
+		t.Fatalf("active fork branch should remain top-level")
 	}
-	if _, ok := ids["orphan-fork"]; !ok {
-		t.Fatalf("orphan fork should remain top-level: %v", ids)
+	if !roots.TopLevel("orphan-fork") {
+		t.Fatalf("orphan fork should remain top-level")
 	}
 }

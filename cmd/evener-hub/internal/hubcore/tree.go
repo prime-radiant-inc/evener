@@ -135,40 +135,9 @@ func cloneTreeNodesContext(ctx context.Context, nodes []TreeNode) ([]TreeNode, e
 	return out, nil
 }
 
-// FavoriteCandidates returns every uncapped, top-level session row that is
-// eligible for the pinned tier. It deliberately reads the retained full tier
-// slices, while excluding archived projects.
-func (t Tree) FavoriteCandidates() []TreeNode {
-	var out []TreeNode
-	seen := make(map[string]struct{})
-	appendNode := func(node TreeNode) {
-		if node.ID == "" {
-			return
-		}
-		if _, ok := seen[node.ID]; ok {
-			return
-		}
-		seen[node.ID] = struct{}{}
-		out = append(out, node)
-	}
-	for _, node := range t.favoriteLive {
-		appendNode(node)
-	}
-	for _, project := range t.Projects {
-		for _, rows := range [][]TreeNode{project.allCurrent, project.allRecent} {
-			for _, node := range rows {
-				if node.Kind == "session" || node.Kind == "fork" {
-					appendNode(node)
-				}
-			}
-		}
-	}
-	return out
-}
-
 // PinCandidates returns every uncapped, authoritative top-level session that
-// may populate a named pin section. Unlike FavoriteCandidates, named pins stay
-// reachable when their session or whole project is archived. Fork rows are
+// may populate a named pin section. Named pins stay reachable when their
+// session or whole project is archived. Fork rows are
 // excluded.
 func (t Tree) PinCandidates() []TreeNode {
 	var out []TreeNode
@@ -626,8 +595,8 @@ func nodeKind(m schema.SessionMeta) string {
 // it again to find which top-level row a fork-superseded parent attaches
 // under.
 //
-// RootIndex (and through it BuildTree's project/tier assembly, tierEligible
-// and TopLevelSessionIDs) calls this one function, so a session can never be
+// RootIndex (and through it BuildTree's project/tier assembly, tierEligible)
+// calls this one function, so a session can never be
 // top-level to one and nested (hence excluded) to another.
 func nestedSessionIDs(metas []schema.SessionMeta) (nested map[string]struct{}, forkChildren map[string]string) {
 	forkChildren = make(map[string]string)
@@ -663,21 +632,6 @@ func pruneLiveSubtree(node TreeNode, liveMap map[string]LiveEntry) TreeNode {
 	}
 	node.Children = kept
 	return node
-}
-
-// TopLevelSessionIDs returns the session IDs that the navigation tree treats
-// as independently addressable rows. It is intentionally based on the full
-// metadata snapshot so callers do not mistake a capped rail projection for
-// the complete set of valid top-level sessions.
-func TopLevelSessionIDs(metas []schema.SessionMeta) map[string]struct{} {
-	roots := NewRootIndex(metas)
-	ids := make(map[string]struct{}, len(metas))
-	for _, m := range metas {
-		if roots.TopLevel(m.ID) {
-			ids[m.ID] = struct{}{}
-		}
-	}
-	return ids
 }
 
 // BuildTree assembles the sidebar Tree from all session metas, the
