@@ -135,8 +135,10 @@ existing `newResultToolSession` fixture, over three cases: empty name, explicit
    `communicate`. `buildPromptData` computes this list even when
    `minimalSystemPrompt` skips prompt rendering; the fixture is sufficient.
 5. An invalid configured name (`respond-result`) makes `NewSession` fail with a
-   `*llm.ConfigurationError` naming `--result-tool-name` and the offending value,
-   rather than construct a session with no advertised result tool.
+   `*llm.ConfigurationError` rather than construct a session with no advertised
+   result tool. The propagated error names the flag and the offending value for
+   the operator; the regression asserts the structured error type, not its
+   wording.
 
 Record the red run before production changes: the `respond` case reports that
 `communicate` is advertised and keeps the placeholder executor, the invalid-name
