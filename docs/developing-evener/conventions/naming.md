@@ -27,8 +27,8 @@ Anthropic (`has_more`, `last_id`), Ollama, and OpenRouter. Only Google
 Gemini uses camelCase (`displayName`). Evener transcripts and audit
 logs sit right next to those provider responses; matching snake_case
 keeps the eye honest when reading raw JSON. The codebase already
-leans this way: camelCase JSON is confined to the AppWire packages and the
-Google adapter.
+leans this way: camelCase JSON is confined to the AppWire packages, the
+Google adapter, and the upstream `mcpServers` key.
 
 TOML matches JSON so the same conceptual field reads identically in a
 session save file and a launch config. Only the CLI diverges, because
@@ -99,6 +99,10 @@ Two carve-outs, each forced by an upstream we don't own:
   Anthropic, Ollama, and OpenRouter use snake_case (`finish_reason`,
   `display_name`, `has_more`). Google Gemini uses camelCase
   (`displayName`). These are wire formats owned by the provider.
+- **`mcpServers` mirrors the upstream `.mcp.json` format.** The few
+  `json:"mcpServers"` tags (for example in `agent/mcpconfig/` and
+  `agent/plugin/`) keep that spelling and opt out with a trailing
+  `//nolint:tagliatelle // upstream .mcp.json key spelling` comment.
 
 Plus the usual trivial cases: `inspo/codex/**` is skipped entirely
 (vendored reference code), and single-word keys (`model`, `name`,

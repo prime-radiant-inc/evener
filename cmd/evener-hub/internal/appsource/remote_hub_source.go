@@ -39,9 +39,8 @@ type RemoteHubClientFunc func(ctx context.Context, host string) (*appwire.Client
 //
 // This is components 05a-05d: the read path (ID, ListThreads, ReadThread,
 // ListTurns, ListModels, and the item-mode paging seam) plus registration,
-// subscription fan-out, the turn/thread lifecycle mutations (including
-// mutation-unknown mapping) that live in remote_hub_mutations.go, and the
-// capability probe in remote_hub_probe.go.
+// subscription fan-out, and the turn/thread lifecycle mutations (including
+// mutation-unknown mapping) that live in remote_hub_mutations.go.
 //
 // The client is never cached here: every request re-invokes the connector, so a
 // component-04 reconnect that swaps the underlying client is picked up
@@ -84,18 +83,6 @@ type RemoteHubSource struct {
 	// predecessor's unsubscribe for the same remote thread. subMu is always
 	// taken inside it, never the other way around.
 	remoteMu sync.Mutex
-	// facts supplies captured connection metadata and platform facts without
-	// reinitializing the channel (see HostFacts).
-	facts HostFactsFunc
-	// handshake is the optional component-04 attach-handshake seam: the
-	// InitializeResponse the live channel captured at attach, reached by host name
-	// (SetHostHandshake, backed by the remoteHostHandshakeForChannel closure over
-	// sshconn.Manager.ChannelIfAttached with the client-identity guard at the call
-	// site). The probe reads ProtocolVersion/SourceID/Features from it; HubVersion
-	// stays preflight-owned. nil leaves those to the facts seam (tests); it is
-	// never dialed for.
-	handshake HostHandshakeFunc
-
 	// online is the optional availability signal: it reports whether the
 	// remote host currently has a live channel. nil means online (the pre-06
 	// default); the setter is called once at registration.
@@ -116,12 +103,6 @@ type RemoteHubSource struct {
 	// stalled consumer cannot stall thread routing; this counter makes the
 	// tradeoff observable.
 	hostNotifyDropped atomic.Int64
-
-	// probeMu guards probe (the last successful probe, cached against the
-	// client it ran on) and the facts/handshake seams HostCapabilities reads
-	// while probing. It is never held across a wire call.
-	probeMu sync.Mutex
-	probe   *remoteHubProbe
 }
 
 var (
@@ -158,31 +139,6 @@ func (s *RemoteHubSource) ID() string { return s.id }
 // already enriched its own replies.
 func (s *RemoteHubSource) EnrichThreadFileBackedImages() bool { return false }
 
-// SetHostFacts installs the component-04 preflight facts seam used by the
-// capability probe. It is optional and expected to be called once at
-// registration before the source serves. With no facts seam a probe leaves
-// ProtocolVersion, HubVersion, OS, Arch, and Features zero-valued.
-//
-// The write is guarded by probeMu, the same lock HostCapabilities reads the
-// seam under, so a caller that installs facts while a probe is in flight does
-// not race the read.
-func (s *RemoteHubSource) SetHostFacts(fn HostFactsFunc) {
-	s.probeMu.Lock()
-	defer s.probeMu.Unlock()
-	s.facts = fn
-}
-
-// SetHostHandshake installs the component-04 attach-handshake seam the capability
-// probe reads (see HostHandshakeFunc). It is optional and expected to be called
-// once at registration before the source serves; the write is guarded by probeMu,
-// the same lock the probe reads the seam under. With no handshake seam installed
-// the preflight-owned fields come from SetHostFacts instead.
-func (s *RemoteHubSource) SetHostHandshake(fn HostHandshakeFunc) {
-	s.probeMu.Lock()
-	defer s.probeMu.Unlock()
-	s.handshake = fn
-}
-
 // SetHostClientIfAttached installs the non-dialing, attached-only client lookup
 // (backed by sshconn.Manager.ClientIfAttached) that every call this source serves
 // resolves through. It is expected to be called once at registration before the
@@ -203,7 +159,7 @@ func (s *RemoteHubSource) SetHostOnline(fn func() bool) { s.online = fn }
 // SetHostNotificationFilter installs the optional publish-time method filter
 // for host-level notification consumers: only methods it accepts are published
 // to them (nil accepts every notification). It is expected to be called once at
-// registration before the source serves, like SetHostFacts and SetHostOnline.
+// registration before the source serves, like SetHostOnline.
 func (s *RemoteHubSource) SetHostNotificationFilter(fn func(method string) bool) {
 	s.subMu.Lock()
 	s.hostFilter = fn
@@ -270,9 +226,9 @@ func (s *RemoteHubSource) resolveClient(ctx context.Context) (*appwire.Client, e
 }
 
 // callOn forwards one request on an already-resolved client and translates any
-// refs in the response. The capability probe uses it so every wire call runs on
-// the exact client its cache was keyed against, not on whatever client the
-// connector returns between calls.
+// refs in the response. Callers use it so every wire call of one operation
+// runs on the exact client they resolved, not on whatever client the connector
+// returns between calls.
 func (s *RemoteHubSource) callOn(ctx context.Context, client *appwire.Client, method string, params any, out any) error {
 	if err := ctx.Err(); err != nil {
 		return s.mapCallError(err)
@@ -2039,4 +1995,13 @@ func (s *RemoteHubSource) unregisterHostSubscription(sub *remoteHubHostSubscript
 	s.subMu.Lock()
 	delete(s.hostSubs, sub)
 	s.subMu.Unlock()
+}
+
+// HostFacts combines the connection's captured handshake metadata with host
+// platform facts. The connection manager produces it without reinitializing.
+type HostFacts struct {
+	ProtocolVersion string
+	HubVersion      string
+	OS, Arch        string
+	Features        appwire.FeatureSet
 }

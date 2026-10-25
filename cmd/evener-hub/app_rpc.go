@@ -29,14 +29,12 @@ import (
 )
 
 // remoteHostSourceSeams are the per-host seams one remote hub source resolves
-// through: the dialing client func, the attached-only client/handshake/facts
-// lookups, and the online signal. Startup reads them straight from WebConfig;
+// through: the dialing client func, the attached-only client
+// lookup, and the online signal. Startup reads them straight from WebConfig;
 // the host manager carries the same seams in its own config.
 type remoteHostSourceSeams struct {
 	client           appsource.RemoteHubClientFunc
 	clientIfAttached func(host string) (*appwire.Client, bool)
-	handshake        func(host string, client *appwire.Client) (appwire.InitializeResponse, bool)
-	facts            func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
 	online           func(host string) bool
 }
 
@@ -64,8 +62,6 @@ type remoteHostSourceSeams struct {
 func registerRemoteHubSource(registry *appsource.Registry, cache *hubcore.RemoteThreadCache, host hostreg.Host, seams remoteHostSourceSeams) {
 	source := appsource.NewRemoteHubSource(host.Name, host.Roots, seams.client)
 	source.SetHostClientIfAttached(seams.clientIfAttached)
-	source.SetHostFacts(seams.facts)
-	source.SetHostHandshake(seams.handshake)
 	source.SetHostOnline(func() bool {
 		return seams.online == nil || seams.online(host.Name)
 	})
@@ -113,8 +109,6 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 				registerRemoteHubSource(registry, cfg.RemoteThreadCache, host, remoteHostSourceSeams{
 					client:           cfg.RemoteHostClient,
 					clientIfAttached: cfg.RemoteHostClientIfAttached,
-					handshake:        cfg.RemoteHostHandshake,
-					facts:            cfg.RemoteHostFacts,
 					online:           cfg.RemoteHostOnline,
 				})
 			}

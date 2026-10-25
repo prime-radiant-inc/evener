@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -14,11 +13,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/internal/appserver"
 )
-
-// hostCapabilityProbeBudget bounds the post-attach capability probe. The probe
-// supplies only handshake facts the mask can also read from the client, so a
-// slow snapshot surface degrades to that fallback rather than delaying Connect.
-const hostCapabilityProbeBudget = 2 * time.Second
 
 // registerHostAttachHandler installs evener/host/attach, the browser-reachable
 // explicit attach trigger (component 06's Connect action, component 08's host
@@ -186,21 +180,6 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		resp.Arch = facts.Arch
 		features := facts.Features
 		resp.Features = &features
-	}
-	// Warm the capability snapshot the remote thread mask reads. Best effort: the
-	// mask falls back to the client's own initialize response, so a probe failure
-	// is not an attach failure. Probe once here, where the operator already waits
-	// for the dial and any deploy, instead of on the first session read.
-	if client != nil && client.Ready() && sources != nil {
-		if source, ok := sources.Source(name); ok {
-			if capability, ok := source.(appsource.CapabilitySource); ok {
-				probeCtx, cancel := context.WithTimeout(ctx, hostCapabilityProbeBudget)
-				if _, err := capability.HostCapabilities(probeCtx); err != nil && cfg.Logf != nil {
-					cfg.Logf("host %q capability probe after attach: %v", name, err)
-				}
-				cancel()
-			}
-		}
 	}
 	return resp, nil
 }

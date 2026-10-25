@@ -399,13 +399,10 @@ func (s stubAttachedChannel) Preflight() sshconn.Preflight {
 }
 func (s stubAttachedChannel) Handshake() appwire.InitializeResponse { return s.handshake }
 
-// The capability probe resolves its client once and runs every wire read on it.
-// If a supervisor reconnect installs a new channel before the probe asks for
-// the preflight facts, answering from the new channel would let the probe cache
-// a snapshot assembled from two generations — the hazard the pre-attached-only
-// code refused with "connection changed during capability probe". The
-// attached-only version must refuse just the same: an installed channel whose
-// client is not the probe's is a typed unavailable, never a mixed snapshot.
+// Attach resolves its client once. If a supervisor reconnect installs a new
+// channel before attach asks for the preflight facts, answering from the new
+// channel would report facts from two generations. An installed channel whose
+// client is not the dialed one is a typed unavailable, never a mixed answer.
 func TestRemoteHostFactsRefusesAReconnectedChannelGeneration(t *testing.T) {
 	probeClient := &appwire.Client{}
 	reconnected := stubAttachedChannel{
