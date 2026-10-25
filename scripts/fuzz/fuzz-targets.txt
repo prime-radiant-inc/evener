@@ -188,7 +188,6 @@ native:agent:./internal/worktree:FuzzReadSidecar
 native:agent:./internal/worktree:FuzzSidecarJSONRoundtrip
 native:agent:./internal/worktree:FuzzSidecarNameRoundtrip
 native:agent:./internal/worktree:FuzzValidateName
-native:.:./frontmatter:FuzzParse
 native:.:./hubapi:FuzzParseRef
 native:.:./internal/hubendpoint:FuzzParseOrigin
 native:.:./rendezvous:FuzzList
