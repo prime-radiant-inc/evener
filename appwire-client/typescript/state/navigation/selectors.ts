@@ -102,6 +102,14 @@ export function selectNeedsYouRows(state: NavigationStoreState): NavigationSessi
 export function selectNeedsYouCount(state: NavigationStoreState): number {
   return state.manifest?.data?.sections.needs_you.count ?? selectNeedsYouRows(state).length;
 }
+function sectionPages(section: "live" | "needs_you", state: NavigationStoreState): ResourceState[] {
+  return [...state.resources.values()].filter(
+    (resource) => resource.key.kind === "section" && resource.key.section === section,
+  );
+}
+function visibleSectionPages(section: "live" | "needs_you", state: NavigationStoreState): ResourceState[] {
+  return sectionPages(section, state).filter((resource) => state.visibleResourceKeys.has(keyID(resource.key)));
+}
 /** Whether a navigation section may ask for another page.
  *
  * A settled page owns completion: once a visible page has answered and is
@@ -118,10 +126,8 @@ export function selectNeedsYouCount(state: NavigationStoreState): number {
  * manifest-presence gate.
  */
 export function selectSectionCanDemand(section: "live" | "needs_you", state: NavigationStoreState): boolean {
-  const pages = [...state.resources.values()].filter(
-    (resource) => resource.key.kind === "section" && resource.key.section === section,
-  );
-  if (pages.some((page) => !!page.error)) return true;
+  const pages = sectionPages(section, state);
+  if (pages.some((page) => page.error !== null)) return true;
   if (selectSectionRemaining(section, state) > 0) return true;
   const settled = pages.some((page) => !page.loading && !page.stale && state.visibleResourceKeys.has(keyID(page.key)));
   if (settled) return false;
@@ -129,13 +135,7 @@ export function selectSectionCanDemand(section: "live" | "needs_you", state: Nav
   return count === undefined || count > selectSectionRows(section, state).length;
 }
 export function selectSectionRemaining(section: "live" | "needs_you", state: NavigationStoreState): number {
-  const pages = [...state.resources.values()].filter(
-    (resource) =>
-      resource.key.kind === "section" &&
-      resource.key.section === section &&
-      resource.data !== null &&
-      state.visibleResourceKeys.has(keyID(resource.key)),
-  );
+  const pages = visibleSectionPages(section, state).filter((resource) => resource.data !== null);
   const last = pages
     .sort((a, b) =>
       a.key.kind === "section" && b.key.kind === "section"
@@ -146,12 +146,7 @@ export function selectSectionRemaining(section: "live" | "needs_you", state: Nav
   return (last?.data as { remaining?: number } | null)?.remaining ?? 0;
 }
 export function selectNextSectionOffset(section: "live" | "needs_you", state: NavigationStoreState): number {
-  const pages = [...state.resources.values()].filter(
-    (resource) =>
-      resource.key.kind === "section" &&
-      resource.key.section === section &&
-      state.visibleResourceKeys.has(keyID(resource.key)),
-  );
+  const pages = visibleSectionPages(section, state);
   const last = pages
     .sort((a, b) =>
       a.key.kind === "section" && b.key.kind === "section"

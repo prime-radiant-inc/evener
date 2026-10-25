@@ -104,12 +104,6 @@ export type NeedsYouControllerOptions = {
 /**
  * Whether the needs-you section may ask for another page.
  *
- * A settled page owns completion: its `remaining` is the section's own word on
- * whether anything is left. The manifest count refreshes on its own schedule
- * and can lag a queue that has drained (shrinkage, overlapping pages), so it
- * may only justify demand before any page has settled. A populated retry and a
- * failed boundary keep demand of their own.
- *
  * Both the snapshot's `canLoadMore` and `runNext`'s one demand ask this, so a
  * settled queue cannot keep offering an action that spends a read. The settled
  * page, remaining count, failed boundary and manifest fallback are the shared

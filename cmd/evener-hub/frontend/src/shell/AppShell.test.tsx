@@ -7131,6 +7131,7 @@ test("live chord does not demand a page once a settled live page owns completion
   // without depending on whether a settled page answers from cache.
   const demands: Array<{ offset?: number }> = [];
   const loadSection = navigationStore.getState().loadSection;
+  onTestFinished(() => navigationStore.setState({ loadSection }));
   navigationStore.setState({
     loadSection: (section, offset, limit) => {
       if (section === "live") demands.push({ offset });

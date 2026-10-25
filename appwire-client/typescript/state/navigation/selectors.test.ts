@@ -232,10 +232,7 @@ function demandState(
 }
 
 function manifestWithCount(section: "live" | "needs_you", count: number): ResourceState<NavigationManifest> {
-  const sections =
-    section === "live"
-      ? { ...manifestData.sections, live: { count } }
-      : { ...manifestData.sections, needs_you: { count } };
+  const sections = { ...manifestData.sections, [section]: { count } };
   return manifestResource({ data: { ...manifestData, sections } });
 }
 
