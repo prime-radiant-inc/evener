@@ -187,7 +187,7 @@ func (m *Manager) resolveDarwinOwner(ctx context.Context, host hostreg.Host, fac
 			m.mu.Lock()
 			prior, ok := m.ownerWitnesses[host.Name]
 			m.mu.Unlock()
-			if !ok || prior.supervisor.kind != supervisorNone || !host.Equal(prior.host) || host.Generation != prior.host.Generation || host.IncarnationID != prior.host.IncarnationID || host.PresenceEpoch != prior.host.PresenceEpoch || report.ConfigPath != prior.report.ConfigPath || report.HubStateRoot != prior.report.HubStateRoot {
+			if !ok || prior.supervisor.kind != supervisorNone || !hostreg.SameRegistrationAndPresence(host, prior.host) || report.ConfigPath != prior.report.ConfigPath || report.HubStateRoot != prior.report.HubStateRoot {
 				return selectedOwner{}, fmt.Errorf("%w: no selected Darwin owner", errOwnerEvidence)
 			}
 			pid = prior.pid

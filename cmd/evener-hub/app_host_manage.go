@@ -174,7 +174,7 @@ type hostManagerConfig struct {
 	// planControllerDirty reports whether the running controller's build is
 	// unverifiable (built from a dirty tree), the §6 terminal `controller-dirty`
 	// arm's condition. Nil reads buildinfo, the same signal the deploy paths
-	// refuse on (sshconn's errControllerDirty).
+	// refuse on (sshconn's ErrControllerDirty).
 	planControllerDirty func() bool
 	// gate is THE per-host gate (deploy pipeline 08b §5): the one gate every
 	// holder of a host's work contends on. In production it is the sshconn
@@ -2278,8 +2278,6 @@ func (m *hubHostManager) registerSource(entry hostreg.Host) {
 	registerRemoteHubSource(m.cfg.sources, m.cfg.remoteCache, entry, remoteHostSourceSeams{
 		client:           client,
 		clientIfAttached: m.cfg.clientIfAttached,
-		handshake:        m.cfg.handshake,
-		facts:            m.cfg.facts,
 		online:           m.cfg.online,
 	})
 }

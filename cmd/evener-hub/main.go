@@ -502,7 +502,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	// remoteCache holds the last-refreshed remote-source thread list; the
 	// refresher goroutine below Stores into it on a ~30s ticker + poke, and
-	// the tree read path (remoteTreeThreads) reads it via WebConfig instead of
+	// the tree read path (remoteThreadFetch) reads it via WebConfig instead of
 	// performing a synchronous network walk per request.
 	remoteCache := &hubcore.RemoteThreadCache{}
 
@@ -936,11 +936,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// existing and resumable sessions. `evener plugin gc`, also run once here,
 	// cleans unused marketplace clones without reclaiming published packages.
 	startHubPluginMaintenance(ctx, cfg, web, startBackground)
-	// Remote-thread cache refresher: refreshRemoteThreads (web_api_tree.go)
+	// Remote-thread cache refresher: refreshRemoteThreadSnapshot (web_api_tree.go)
 	// walks every configured remote source's ListThreads, a synchronous
 	// network hop that used to run inline on every navigation read. Move it
 	// to a ~30s ticker + poke so a tree render never blocks on it; the navigation
-	// read path (remoteTreeThreads) reads remoteCache.Get() instead whenever
+	// read path (remoteThreadFetch) reads remoteCache.Snapshot() instead whenever
 	// RemoteThreadCache is configured.
 	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, web) })
 	// Live-model prefetch: fetch every instance's /models listing into the
@@ -1245,17 +1245,15 @@ type attachedChannelView interface {
 	Handshake() appwire.InitializeResponse
 }
 
-// remoteHostFactsForChannel returns the preflight half of the host's capability
-// snapshot for client, refusing when ch is not the channel client belongs to.
+// remoteHostFactsForChannel returns the host's preflight facts for client,
+// refusing when ch is not the channel client belongs to.
 //
-// The capability probe resolves client through the attached-only lookup and
-// runs every wire read on it, then asks for the facts. A supervisor reconnect
-// between those two steps would leave ch describing a newer connection than
-// client; answering from it would let the probe cache a snapshot assembled from
-// two generations — the hazard sshconn's channel identity check exists to
-// prevent. Refuse with the typed unavailable error the auto-resume gate already
-// understands instead; the probe is not cached on failure, so it re-probes the
-// new generation cleanly.
+// Attach resolves client through the attached-only lookup, then asks for the
+// facts. A supervisor reconnect between those two steps would leave ch
+// describing a newer connection than client; answering from it would report
+// facts assembled from two generations — the hazard sshconn's channel identity
+// check exists to prevent. Refuse with the typed unavailable error the
+// auto-resume gate already understands instead.
 func remoteHostFactsForChannel(ch attachedChannelView, host string, client *appwire.Client) (appsource.HostFacts, error) {
 	if ch == nil || ch.Client() != client {
 		return appsource.HostFacts{}, appwire.SessionUnavailable("remote hub unavailable: " + host)
@@ -1269,8 +1267,7 @@ func remoteHostFactsForChannel(ch attachedChannelView, host string, client *appw
 //
 // A caller cancellation or deadline is the caller's own context ending, not
 // host unavailability, so it is returned raw before the lookup runs — exactly
-// as the capability probe leaves a canceled context raw and resolveClient/call
-// leave it raw. Reporting it as the typed SessionUnavailable would fire the
+// as resolveClient/call leave it raw. Reporting it as the typed SessionUnavailable would fire the
 // auto-resume/refusal gates for a request the caller abandoned. A host whose
 // channel is gone or is a different generation is the typed SessionUnavailable
 // those gates act on.
@@ -1287,9 +1284,8 @@ func remoteHostFactsIfAttached(ctx context.Context, host string, client *appwire
 
 // remoteHostHandshakeForChannel returns the attach handshake ch captured, but
 // only when ch is the channel client belongs to. Reporting false otherwise
-// keeps the probe from pairing one connection's wire reads with another's
-// handshake; the preflight facts it already accepted (remoteHostFactsForChannel)
-// are then the only source, and those are pinned to the same client.
+// keeps attach from pairing one connection's dial with another's handshake;
+// the preflight facts (remoteHostFactsForChannel) are pinned to the same client.
 func remoteHostHandshakeForChannel(ch attachedChannelView, client *appwire.Client) (appwire.InitializeResponse, bool) {
 	if ch == nil || ch.Client() != client {
 		return appwire.InitializeResponse{}, false

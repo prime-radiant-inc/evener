@@ -69,10 +69,8 @@ func FuzzSessionTreePass3(f *testing.F) {
 			web := NewWebServer(hubcore.WebConfig{Roster: roster})
 			_ = web.isLive("live")
 			_ = web.isLive("missing")
-			_, _ = web.liveEntry("live")
 			p := hubcore.TreeProject{Key: "key", Current: []hubcore.TreeNode{{ID: "live", State: "active"}}, Recent: []hubcore.TreeNode{{ID: "recent", State: "ended"}}, Archived: []hubcore.TreeNode{{ID: "old", State: "closed"}}}
 			_ = p
-			_ = web.rowRenameable("live")
 			_ = hubAttentionSummaryFromCore(appwire.AttentionSummary{NeedsYou: 1})
 			_ = web.apiTreeSources()
 		case 15:

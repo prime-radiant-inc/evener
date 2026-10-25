@@ -11,12 +11,15 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/fuzz/fault"
 )
 
-// w3init_writeOversizeLine writes a transcript line beyond the fork reader's
-// 10 MiB bound, so readStrictTranscriptLine rejects it without allocating an
-// unbounded record.
+// w3oversizeScanLimit is the fork record limit the oversize tests configure;
+// w3init_writeOversizeLine writes a line beyond it, so the reader rejects the
+// line without allocating an unbounded record.
+const w3oversizeScanLimit = 1024
+
 // When headerLine is empty the oversize content is the first (header) line;
 // otherwise a small header precedes the oversize entry line.
 func w3init_writeOversizeLine(t *testing.T, stateDir, id, headerLine string) {
@@ -25,7 +28,7 @@ func w3init_writeOversizeLine(t *testing.T, stateDir, id, headerLine string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	oversize := bytes.Repeat([]byte("A"), 11*1024*1024)
+	oversize := bytes.Repeat([]byte("A"), 2*w3oversizeScanLimit)
 	var body []byte
 	if headerLine != "" {
 		body = append(body, headerLine...)
@@ -45,9 +48,11 @@ func TestW3Init_ForkSession_HeaderScanError(t *testing.T) {
 	stateDir := t.TempDir()
 	id := "01W3FORKHDRSCANERR0000001"
 	w3init_writeOversizeLine(t, stateDir, id, "")
-	_, err := ForkSession(stateDir, id, 1, "x", "")
-	if err == nil || !strings.Contains(err.Error(), "reading parent transcript header") {
-		t.Fatalf("err = %v, want header scan error", err)
+	deps := defaultForkDeps()
+	deps.maxScanToken = w3oversizeScanLimit
+	_, err := forkSessionWithDeps(afero.NewOsFs(), stateDir, id, 1, "x", "", deps)
+	if !errors.Is(err, transcript.ErrLineTooLong) {
+		t.Fatalf("err = %v, want ErrLineTooLong", err)
 	}
 }
 
@@ -58,9 +63,11 @@ func TestW3Init_ForkSession_EntryScanError(t *testing.T) {
 	stateDir := t.TempDir()
 	id := "01W3FORKENTRYSCANERR00001"
 	w3init_writeOversizeLine(t, stateDir, id, s2cov_headerLine(t, id))
-	_, err := ForkSession(stateDir, id, 1, "x", "")
-	if err == nil || !strings.Contains(err.Error(), "reading parent transcript entries") {
-		t.Fatalf("err = %v, want entry scan error", err)
+	deps := defaultForkDeps()
+	deps.maxScanToken = w3oversizeScanLimit
+	_, err := forkSessionWithDeps(afero.NewOsFs(), stateDir, id, 1, "x", "", deps)
+	if !errors.Is(err, transcript.ErrLineTooLong) {
+		t.Fatalf("err = %v, want ErrLineTooLong", err)
 	}
 }
 

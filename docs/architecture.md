@@ -138,7 +138,7 @@ lower layer imports a higher one.
 - **Foundation (Layer 0)** — `schema` (the canonical `Turn` plus the persisted types
   `SessionMeta` / `ConfigSnapshot` / `EnvironmentInfo`), `events`, `execenv`. No
   intra-`agent` dependencies.
-- **Subsystems** — `internal/tool` (tool registry + builtins), `provider` (model
+- **Subsystems** — `agent/internal/tool` (tool registry + builtins), `provider` (model
   profiles), `transcript` (JSONL writer/reader), `mcpconfig`, `skill`, `task`.
 - **Engine internals** (`agent/internal/…`, off the public surface) — `contextmgr`
   (context-pressure management: compaction + the pluggable strategies + recall),

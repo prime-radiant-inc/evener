@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/fuzz/schemagen"
 )
 
@@ -47,7 +48,7 @@ func FuzzTranscriptReadersAgree(f *testing.F) {
 		if full.Skipped != 0 {
 			return
 		}
-		strict, strictErr := readStrictChildTranscript(path, "", full.Header.SessionID, transcriptJSONLMaxLineBytes)
+		strict, strictErr := readStrictChildTranscript(path, "", full.Header.SessionID, transcript.DefaultMaxLineBytes)
 		if strictErr != nil {
 			t.Fatalf("full reader saw a clean transcript (0 skipped) but strict reader rejected it: %v\n  transcript=%s", strictErr, raw)
 		}

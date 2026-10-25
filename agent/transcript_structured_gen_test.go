@@ -735,7 +735,7 @@ func TestTranscriptReadersAgreeSanity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
-	strict, err := readStrictChildTranscript(path, "", full.Header.SessionID, transcriptJSONLMaxLineBytes)
+	strict, err := readStrictChildTranscript(path, "", full.Header.SessionID, transcript.DefaultMaxLineBytes)
 	if err != nil {
 		t.Fatalf("readStrictChildTranscript: %v", err)
 	}

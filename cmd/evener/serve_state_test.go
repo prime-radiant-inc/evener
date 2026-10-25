@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/server"
@@ -414,7 +415,7 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 		if activeTurnID == "" {
 			t.Fatal("thread/read published no active turn while processing")
 		}
-		if err := lifecycle.client.TurnSteer(lifecycle.ctx, appwire.TurnSteerParams{
+		if err := appwiretest.TurnSteer(lifecycle.ctx, lifecycle.client, appwire.TurnSteerParams{
 			ClientMutationID:   "stable-steer",
 			ExpectedInstanceID: strings.TrimPrefix(lifecycle.ref, "local:"),
 			Ref:                lifecycle.ref,
@@ -483,7 +484,7 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 		}
 		stopDone := make(chan error, 1)
 		go func() {
-			stopDone <- lifecycle.client.TurnInterrupt(lifecycle.ctx, appwire.TurnInterruptParams{
+			stopDone <- appwiretest.TurnInterrupt(lifecycle.ctx, lifecycle.client, appwire.TurnInterruptParams{
 				ClientMutationID:   "stable-stop",
 				ExpectedInstanceID: strings.TrimPrefix(lifecycle.ref, "local:"),
 				Ref:                lifecycle.ref,

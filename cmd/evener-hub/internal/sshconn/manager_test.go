@@ -1963,8 +1963,8 @@ func TestIsTerminalClassifiesManagerClosed(t *testing.T) {
 	if isTerminal(ErrSSHAuth) {
 		t.Fatal("ErrSSHAuth must not be terminal: the refusal cannot be attributed to ssh")
 	}
-	if !isTerminal(errExecutableMissing) {
-		t.Fatal("errExecutableMissing is not terminal: with no deploy configured nothing can ever install the missing binary, so retrying forever cannot succeed")
+	if !isTerminal(ErrExecutableMissing) {
+		t.Fatal("ErrExecutableMissing is not terminal: with no deploy configured nothing can ever install the missing binary, so retrying forever cannot succeed")
 	}
 }
 

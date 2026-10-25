@@ -332,7 +332,7 @@ func rawLinesForRange(path, root string, startSeq, endSeq int) (content string, 
 	// form, so retaining the subslice is safe.
 	var header []byte
 	for header == nil {
-		headerBytes, complete, _, readErr := transcript.ReadLine(reader, transcriptJSONLMaxLineBytes)
+		headerBytes, complete, _, readErr := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
 		if readErr != nil {
 			return "", 0, 0, false, fmt.Errorf("reading transcript header: %w", readErr)
 		}
@@ -378,7 +378,7 @@ func rawLinesForRange(path, root string, startSeq, endSeq int) (content string, 
 	entryPos := -1
 
 	for {
-		line, complete, bytesRead, readErr := transcript.ReadLine(reader, transcriptJSONLMaxLineBytes)
+		line, complete, bytesRead, readErr := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
 		if readErr != nil {
 			return "", 0, skipped, false, fmt.Errorf("reading transcript: %w", readErr)
 		}

@@ -47,8 +47,8 @@ import type { ActivityIdentity } from "./activity";
 import { createActivityStore } from "./activity";
 import {
 	createConversationStore,
-	type ConversationMutationState,
 	type ConversationPendingSubmission,
+	type ConversationStoreMutationKind,
 	type LiveActivitySink,
 	MAX_ITEM_BYTES,
 	olderPageKey,
@@ -1011,7 +1011,8 @@ describe("ConversationStore", () => {
 			await store.getState().send(service, textInput("idempotent retry"));
 
 			expect(service.sendCallCount).toBe(1);
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
 			expect(store.getState().error).toBeNull();
 			expect(store.getState().lastAcceptedMutation).toEqual({
 				kind: "send",
@@ -1048,7 +1049,7 @@ describe("ConversationStore", () => {
 	// --- mutation-state tests (Step 3) ------------------------------------------
 
 	describe("mutation state — parameterized send/queue/interrupt", () => {
-		type MutationKind = "send" | "queue" | "interrupt";
+		type MutationKind = ConversationStoreMutationKind;
 
 		const mutationCases: {
 			kind: MutationKind;
@@ -1118,29 +1119,28 @@ describe("ConversationStore", () => {
 				store.getState().setDraft("unsent draft");
 
 				const p = call(store, service, textInput("test"));
-				// While in-flight, mutation state should be pending.
-				const pending = store.getState().pendingMutation;
-				expect(pending).not.toBeNull();
-				expect(pending?.status).toBe("pending");
-				expect(pending?.kind).toBe(kind);
+				// While in-flight, the click-to-commit marker is open.
+				const pending = store.getState().pendingSubmission;
+				expect(pending).toEqual({ kind });
 				expect(store.getState().lastAcceptedMutation).toBeNull();
 
 				// Resolve and await
 				resolveFn?.();
 				await p;
-				// After resolution, pending should be cleared
-				expect(store.getState().pendingMutation).toBeNull();
+				// After resolution, the markers should be cleared
+				expect(store.getState().pendingSubmission).toBeNull();
+				expect(store.getState().failedSubmission).toBeNull();
 				expect(store.getState().lastAcceptedMutation).toEqual({
 					kind,
 					receipt: expect.objectContaining({ disposition: "applied" }),
 				});
 			});
 
-			it(`${kind}: records exact draft snapshot in mutation state`, async () => {
+			it(`${kind}: restores the exact draft captured at submit on failure`, async () => {
 				const service = serviceFor(kind);
-				let resolveFn: (() => void) | null = null as (() => void) | null;
-				const hangPromise = new Promise<MutationReceipt>((resolve) => {
-					resolveFn = () => resolve(makeReceipt());
+				let rejectFn: ((error: Error) => void) | null = null as ((error: Error) => void) | null;
+				const hangPromise = new Promise<MutationReceipt>((_resolve, reject) => {
+					rejectFn = reject;
 				});
 				if (kind === "send") {
 					service.send = async () => hangPromise;
@@ -1154,15 +1154,21 @@ describe("ConversationStore", () => {
 				await store.getState().open(service, "ref-1");
 				store.getState().setDraft("exact draft text");
 				const p = call(store, service, textInput("test"));
-				const pending = store.getState().pendingMutation;
-				// Interrupt snapshots null; others snapshot the exact draft text.
+				// The attempt owns the click-to-commit marker while in flight.
+				// Interrupt never snapshots or clears the draft; send/queue
+				// cleared it, holding the exact pre-submit text for the restore.
+				expect(store.getState().pendingSubmission).toEqual({ kind });
 				if (kind === "interrupt") {
-					expect(pending?.draftSnapshot).toBeNull();
+					expect(store.getState().draft).toBe("exact draft text");
 				} else {
-					expect(pending?.draftSnapshot).toBe("exact draft text");
+					expect(store.getState().draft).toBe("");
 				}
-				resolveFn?.();
-				await p;
+				rejectFn?.(new Error(`${kind} failed`));
+				await p.catch(() => {});
+				// The failure restores exactly the draft captured at submit
+				// (interrupt captured none, so the draft stays as it was).
+				expect(store.getState().draft).toBe("exact draft text");
+				expect(store.getState().error).toBe(`${kind} failed`);
 			});
 
 			it(`${kind}: clears pending and error on success`, async () => {
@@ -1170,7 +1176,8 @@ describe("ConversationStore", () => {
 				const store = createConversationStore();
 				await store.getState().open(service, "ref-1");
 				await call(store, service, textInput("test"));
-				expect(store.getState().pendingMutation).toBeNull();
+				expect(store.getState().pendingSubmission).toBeNull();
+				expect(store.getState().failedSubmission).toBeNull();
 				expect(store.getState().error).toBeNull();
 			});
 
@@ -1191,9 +1198,9 @@ describe("ConversationStore", () => {
 				await call(store, service, textInput("test"));
 				// Error should be set
 				expect(store.getState().error).not.toBeNull();
-				// Failed mutation state PERSISTS (not cleared to null)
-				expect(store.getState().pendingMutation).not.toBeNull();
-				expect(store.getState().pendingMutation?.status).toBe("failed");
+				// The retained failure PERSISTS (not cleared to null)
+				expect(store.getState().failedSubmission).not.toBeNull();
+				expect(store.getState().failedSubmission?.kind).toBe(kind);
 				expect(store.getState().lastAcceptedMutation).toBeNull();
 				// Draft should be restored for send/queue (interrupt doesn't
 				// snapshot draft, so it's not restored)
@@ -1207,7 +1214,7 @@ describe("ConversationStore", () => {
 				}
 			});
 
-			it(`${kind}: records generation in mutation state`, async () => {
+			it(`${kind}: an in-flight attempt keeps the pressing generation and its marker open`, async () => {
 				const service = serviceFor(kind);
 				let resolveFn: (() => void) | null = null as (() => void) | null;
 				const hangPromise = new Promise<MutationReceipt>((resolve) => {
@@ -1226,10 +1233,14 @@ describe("ConversationStore", () => {
 				const genBefore = store.getState().conversationGeneration;
 				store.getState().setDraft("draft");
 				const p = call(store, service, textInput("test"));
-				const pending = store.getState().pendingMutation;
-				expect(pending?.generation).toBe(genBefore);
+				// The attempt runs on the generation that pressed it, with the
+				// click-to-commit marker open for exactly that attempt.
+				expect(store.getState().conversationGeneration).toBe(genBefore);
+				expect(store.getState().pendingSubmission).toEqual({ kind });
 				resolveFn?.();
 				await p;
+				expect(store.getState().pendingSubmission).toBeNull();
+				expect(store.getState().failedSubmission).toBeNull();
 			});
 		}
 
@@ -1266,7 +1277,8 @@ describe("ConversationStore", () => {
 					input: kind === "interrupt" ? [] : textInput("durable payload"),
 				});
 				expect(requests[0]?.instanceId).toBe("thread-1");
-				expect(store.getState().pendingMutation).toBeNull();
+				expect(store.getState().pendingSubmission).toBeNull();
+				expect(store.getState().failedSubmission).toBeNull();
 				expect(store.getState().error).toBeNull();
 				expect(store.getState().lastAcceptedMutation).toEqual({
 					kind,
@@ -1276,9 +1288,9 @@ describe("ConversationStore", () => {
 		}
 
 		for (const { kind, call } of mutationCases) {
-			it(`${kind}: records the admission's durable id on the pending record`, async () => {
+			it(`${kind}: records the admission's durable id on the in-flight marker`, async () => {
 				const service = serviceFor(kind);
-				const pendingRecords: ConversationMutationState[] = [];
+				const markers: ConversationPendingSubmission[] = [];
 				const store = createConversationStore({
 					mutationHubId: "hub-1",
 					mutationSubmitter: {
@@ -1287,22 +1299,17 @@ describe("ConversationStore", () => {
 				});
 				await store.getState().open(service, "ref-1");
 				const unsubscribe = store.subscribe((state) => {
-					if (state.pendingMutation !== null && state.pendingMutation !== undefined)
-						pendingRecords.push(state.pendingMutation);
+					if (state.pendingSubmission !== null) markers.push(state.pendingSubmission);
 				});
 				await call(store, service, kind === "interrupt" ? [] : textInput("admitted"));
 				unsubscribe();
 
-				// The record carried the durable row's id while it was pending...
-				expect(pendingRecords).toContainEqual(
-					expect.objectContaining({
-						kind,
-						status: "pending",
-						admittedMutationId: `durable-${kind}`,
-					}),
-				);
+				// The marker carried the durable row's id while the attempt was
+				// in flight...
+				expect(markers).toContainEqual({ kind, admittedMutationId: `durable-${kind}` });
 				// ...and settled as before, without inventing a wire receipt.
-				expect(store.getState().pendingMutation).toBeNull();
+				expect(store.getState().pendingSubmission).toBeNull();
+				expect(store.getState().failedSubmission).toBeNull();
 				expect(store.getState().lastAcceptedMutation).toEqual({ kind, receipt: undefined });
 				expect(store.getState().lastAcceptedMutation).toHaveProperty("receipt", undefined);
 			});
@@ -1311,8 +1318,7 @@ describe("ConversationStore", () => {
 		// Stage B: pendingSubmission is the any-mutation click-to-commit marker
 		// the screens read. It is present from the press until the attempt
 		// settles (success, MutationNotSentError, or ordinary failure), and it
-		// carries the durable row's id once the submitter admits it. The legacy
-		// pendingMutation record keeps its own lifecycle beside it.
+		// carries the durable row's id once the submitter admits it.
 		for (const { kind, call } of mutationCases) {
 			it(`${kind}: holds pendingSubmission from the press until admission settles`, async () => {
 				const service = serviceFor(kind);
@@ -1331,9 +1337,9 @@ describe("ConversationStore", () => {
 				const submission = call(store, service, kind === "interrupt" ? [] : textInput("pending marker"));
 
 				// The press opened the click-to-commit window, on the any-mutation
-				// fact, while the legacy record remains in its pending window.
+				// fact, with no retained failure while the attempt is in flight.
 				expect(store.getState().pendingSubmission).toEqual({ kind });
-				expect(store.getState().pendingMutation).toMatchObject({ kind, status: "pending" });
+				expect(store.getState().failedSubmission).toBeNull();
 
 				admissions[0]!({ clientMutationId: `durable-${kind}` });
 				await submission;
@@ -1344,7 +1350,7 @@ describe("ConversationStore", () => {
 				unsubscribe();
 			});
 
-			it(`${kind}: clears pendingSubmission on an ordinary failure but keeps the failed record`, async () => {
+			it(`${kind}: clears pendingSubmission on an ordinary failure but keeps the failed marker`, async () => {
 				const service = serviceFor(kind);
 				const failure = new Error(`${kind} refused`);
 				if (kind === "send") {
@@ -1362,7 +1368,7 @@ describe("ConversationStore", () => {
 
 				// The click-to-commit window is over; failed retention is untouched.
 				expect(store.getState().pendingSubmission).toBeNull();
-				expect(store.getState().pendingMutation).toMatchObject({ kind, status: "failed" });
+				expect(store.getState().failedSubmission).toMatchObject({ kind });
 			});
 		}
 
@@ -1386,8 +1392,9 @@ describe("ConversationStore", () => {
 			await expect(submission).rejects.toBeInstanceOf(MutationNotSentError);
 
 			expect(store.getState().pendingSubmission).toBeNull();
-			// A proven local refusal made nothing durable: no pending record stays.
-			expect(store.getState().pendingMutation).toBeNull();
+			// A proven local refusal made nothing durable: no retained failure
+			// stays.
+			expect(store.getState().failedSubmission).toBeNull();
 		});
 
 		it("an older admitted completion cannot clear a newer mutation", async () => {
@@ -1404,18 +1411,18 @@ describe("ConversationStore", () => {
 			const first = store.getState().send(service, textInput("first"));
 			store.getState().setDraft("second");
 			const second = store.getState().send(service, textInput("second"));
-			const secondPending = store.getState().pendingMutation;
-			expect(secondPending).toMatchObject({ kind: "send", status: "pending" });
-			expect(secondPending?.admittedMutationId).toBeUndefined();
+			const secondMarker = store.getState().pendingSubmission;
+			expect(secondMarker).toEqual({ kind: "send" });
+			expect(secondMarker?.admittedMutationId).toBeUndefined();
 			expect(store.getState().pendingSubmission).toEqual({ kind: "send" });
 
 			// The older submission is admitted first. Its record was replaced
-			// by the newer mutation, so it must neither write to that record
-			// nor settle it.
+			// by the newer press, so it must neither write to that attempt's
+			// marker nor settle it.
 			const firstReceipt = makeReceipt({ clientMutationId: "durable-1" });
 			admissions[0]!({ clientMutationId: "durable-1", receipt: firstReceipt });
 			await first;
-			expect(store.getState().pendingMutation).toBe(secondPending);
+			expect(store.getState().pendingSubmission).toBe(secondMarker);
 			// The marker still belongs to the newer attempt, too.
 			expect(store.getState().pendingSubmission).toEqual({ kind: "send" });
 			expect(store.getState().lastAcceptedMutation).toBeNull();
@@ -1424,7 +1431,7 @@ describe("ConversationStore", () => {
 			const secondReceipt = makeReceipt({ clientMutationId: "durable-2" });
 			admissions[1]!({ clientMutationId: "durable-2", receipt: secondReceipt });
 			await second;
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
 			expect(store.getState().pendingSubmission).toBeNull();
 			expect(store.getState().lastAcceptedMutation).toEqual({
 				kind: "send",
@@ -1433,16 +1440,13 @@ describe("ConversationStore", () => {
 		});
 
 		// Stage C: failedSubmission is the retained terminal-failure marker,
-		// derived at the set chokepoint from the pending record — non-null
-		// exactly while that record is failed. The rehydrate error-retention
-		// decision reads this marker, not the legacy record's status. The
-		// error text itself stays in `error` and the draft restore in
-		// `draft`, so the marker carries only the failed attempt's identity.
+		// written directly by the failure path — non-null from the attempt's
+		// terminal failure until the next press or a lifecycle clear. The
+		// rehydrate error-retention decision reads this marker. The error text
+		// itself stays in `error` and the draft restore in `draft`, so the
+		// marker carries only the failed attempt's identity.
 		const expectFailedMarker = (store: ReturnType<typeof createConversationStore>) => {
-			expect(store.getState().failedSubmission).toEqual({
-				kind: "send",
-				mutationId: store.getState().pendingMutation?.mutationId,
-			});
+			expect(store.getState().failedSubmission).toEqual({ kind: "send" });
 		};
 		it("a failed send retains the failedSubmission marker beside the error and restored draft", async () => {
 			const service = serviceFor("send");
@@ -1453,15 +1457,14 @@ describe("ConversationStore", () => {
 
 			await store.getState().send(service, textInput("draft to restore"));
 
-			// The marker is exactly the failed attempt's identity — its kind and
-			// its own monotonic id. This refusal settled before any row was
-			// admitted, so it carries no durable admission.
+			// The marker names exactly which action failed; the attempt's own
+			// identity stays in the store's private ownership token.
 			expectFailedMarker(store);
 			// The retained failure keeps its error and restores the draft per
 			// the unchanged revision rule.
 			expect(store.getState().error).toBe("send refused");
 			expect(store.getState().draft).toBe("draft to restore");
-			expect(store.getState().pendingMutation).toMatchObject({ kind: "send", status: "failed" });
+			expect(store.getState().failedSubmission).toMatchObject({ kind: "send" });
 		});
 
 		it("a rehydrate success keeps the failed mutation's error while failedSubmission is set", async () => {
@@ -1482,7 +1485,7 @@ describe("ConversationStore", () => {
 
 			expectFailedMarker(store);
 			expect(store.getState().error).toBe("send refused");
-			expect(store.getState().pendingMutation).toMatchObject({ kind: "send", status: "failed" });
+			expect(store.getState().failedSubmission).toMatchObject({ kind: "send" });
 		});
 
 		it("admitting the next mutation clears failedSubmission at the press, not at settlement", async () => {
@@ -1494,20 +1497,19 @@ describe("ConversationStore", () => {
 			await store.getState().send(service, textInput("first"));
 			expectFailedMarker(store);
 
-			// The next press replaces the failed record, so the new attempt
-			// ends the previous failure's retention immediately, while it is
-			// still in flight.
+			// The next press ends the previous failure's retention immediately,
+			// while the new attempt is still in flight.
 			const hang = deferred<MutationReceipt>();
 			service.send = () => hang.promise;
 			const second = store.getState().send(service, textInput("second"));
 
 			expect(store.getState().failedSubmission).toBeNull();
-			expect(store.getState().pendingMutation).toMatchObject({ kind: "send", status: "pending" });
+			expect(store.getState().pendingSubmission).toEqual({ kind: "send" });
 
 			hang.resolve(makeReceipt());
 			await second;
 			expect(store.getState().failedSubmission).toBeNull();
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
 		});
 
 		it.each(["send", "queue"] as const)(
@@ -1531,10 +1533,10 @@ describe("ConversationStore", () => {
 						: store.getState().queue(service, textInput("keep me"));
 				await expect(submission).rejects.toBeInstanceOf(MutationNotSentError);
 
-				// Current behavior, pinned: the proven local refusal cleared its
-				// own record, left no error, and did not restore the draft —
-				// not-sent is not a retained terminal failure, so no marker.
-				expect(store.getState().pendingMutation).toBeNull();
+				// Current behavior, pinned: the proven local refusal settled
+				// its own attempt, left no error, and did not restore the
+				// draft — not-sent is not a retained terminal failure, so no
+				// marker.
 				expect(store.getState().pendingSubmission).toBeNull();
 				expect(store.getState().error).toBeNull();
 				expect(store.getState().draft).toBe("");
@@ -1542,7 +1544,7 @@ describe("ConversationStore", () => {
 			},
 		);
 
-		it("open clears failedSubmission alongside the failed record", async () => {
+		it("open clears failedSubmission with the conversation state", async () => {
 			const service = serviceFor("send");
 			service.sendShouldReject = new Error("send refused");
 			const store = createConversationStore();
@@ -1554,10 +1556,10 @@ describe("ConversationStore", () => {
 			await store.getState().open(service, "ref-1");
 
 			expect(store.getState().failedSubmission).toBeNull();
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
 		});
 
-		it("reset clears failedSubmission alongside the failed record", async () => {
+		it("reset clears failedSubmission with the conversation state", async () => {
 			const service = serviceFor("send");
 			service.sendShouldReject = new Error("send refused");
 			const store = createConversationStore();
@@ -1569,10 +1571,10 @@ describe("ConversationStore", () => {
 			store.getState().reset();
 
 			expect(store.getState().failedSubmission).toBeNull();
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
 		});
 
-		it("a binding rebind settles a pending attempt but retains a failed record's failedSubmission", async () => {
+		it("a binding rebind settles a pending attempt but retains a failed attempt's failedSubmission", async () => {
 			// A rebind settles the old binding's PENDING attempt...
 			const pendingService = serviceFor("send");
 			const hang = deferred<MutationReceipt>();
@@ -1583,13 +1585,13 @@ describe("ConversationStore", () => {
 
 			await pendingStore.getState().rehydrate(pendingService, createFakeSink());
 
-			expect(pendingStore.getState().pendingMutation).toBeNull();
 			expect(pendingStore.getState().failedSubmission).toBeNull();
+			expect(pendingStore.getState().pendingSubmission).toBeNull();
 			hang.resolve(makeReceipt());
 			await held;
-			expect(pendingStore.getState().pendingMutation).toBeNull();
+			expect(pendingStore.getState().pendingSubmission).toBeNull();
 
-			// ...but a terminal failure's record persists through the rebind,
+			// ...but a terminal failure's marker persists through the rebind,
 			// and the marker persists with it.
 			const service = serviceFor("send");
 			service.sendShouldReject = new Error("send refused");
@@ -1602,7 +1604,57 @@ describe("ConversationStore", () => {
 			await store.getState().rehydrate(service, createFakeSink());
 
 			expectFailedMarker(store);
-			expect(store.getState().pendingMutation).toMatchObject({ kind: "send", status: "failed" });
+			expect(store.getState().failedSubmission).toMatchObject({ kind: "send" });
+		});
+
+		it("a synchronous reset from an admission subscriber cannot receive the attempt's completion", async () => {
+			const service = serviceFor("send");
+			const store = createConversationStore({
+				mutationHubId: "hub-1",
+				mutationSubmitter: {
+					submit: async () => ({ clientMutationId: "cmid-sync-reset" }),
+				},
+			});
+			await store.getState().open(service, "ref-1");
+			store.getState().setDraft("in flight");
+			const unsubscribe = store.subscribe((state) => {
+				if (state.pendingSubmission?.admittedMutationId === "cmid-sync-reset") {
+					store.getState().reset();
+				}
+			});
+			await store.getState().send(service, textInput("in flight"));
+			unsubscribe();
+			// The reset retired the attempt inside the admission notification;
+			// its completion must not publish into the cleared state.
+			expect(store.getState().conversation).toBeNull();
+			expect(store.getState().lastAcceptedMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
+		});
+
+		it("a synchronous reset from a read-state subscriber cannot receive the failure's retained state", async () => {
+			const service = serviceFor("send");
+			service.sendShouldReject = new WireError("action unavailable", -32000, {
+				evenerErrorInfo: "actionUnavailable",
+			});
+			const store = createConversationStore();
+			// A projected open binds the live sink, so the failure handler's
+			// rehydrate request really fires the synchronous read-state
+			// notification (a plain open has no sink and no read pipeline).
+			const sink = createFakeSink();
+			await store.getState().openProjected(service, sink, "ref-1");
+			store.getState().setDraft("draft to restore");
+			const unsubscribe = store.subscribe((state) => {
+				if (state.latestReadState === "reading") store.getState().reset();
+			});
+			await store.getState().send(service, textInput("draft to restore"));
+			unsubscribe();
+			// The reset retired the attempt inside the rehydrate request's
+			// synchronous read-state notification; the stale failure must not
+			// install its retained state or restore its draft.
+			expect(store.getState().failedSubmission).toBeNull();
+			expect(store.getState().error).toBeNull();
+			expect(store.getState().draft).toBe("");
 		});
 
 		it.each(["send", "queue"] as const)(
@@ -2512,7 +2564,7 @@ describe("ConversationStore", () => {
 			const ctrl = makeControlledRead(service);
 			await store.getState().send(service, textInput("x"));
 			expect(store.getState().error).not.toBeNull();
-			expect(store.getState().pendingMutation?.status).toBe("failed");
+			expect(store.getState().failedSubmission).toMatchObject({ kind: "send" });
 			await ctrl.ready(1);
 			ctrl.release();
 			await ctrl.completed(1);
@@ -2534,7 +2586,7 @@ describe("ConversationStore", () => {
 			await yieldMicrotask();
 			await yieldMicrotask();
 			expect(store.getState().error).not.toBeNull();
-			expect(store.getState().pendingMutation?.status).toBe("failed");
+			expect(store.getState().failedSubmission).toMatchObject({ kind: "send" });
 			expect(service.readProjectionCalls.length).toBe(readsBefore);
 		});
 	});
@@ -5628,7 +5680,8 @@ describe("ConversationStore", () => {
 			// Resolve mutation 2 first (newer).
 			resolve2?.(makeReceipt());
 			await p2;
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
 
 			// Now resolve mutation 1 (older, stale). It must NOT clear the
 			// already-resolved state or set a newer mutation to null.
@@ -5636,7 +5689,8 @@ describe("ConversationStore", () => {
 			await p1;
 			// The mutation was already cleared by mutation 2; stale completion
 			// must not re-introduce pending state.
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
 		});
 
 		it("out-of-order failure cannot overwrite a newer mutation's error", async () => {
@@ -5658,13 +5712,15 @@ describe("ConversationStore", () => {
 			service.send = async () => Promise.resolve(makeReceipt());
 			const p2 = store.getState().send(service, textInput("second"));
 			await p2;
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
 			expect(store.getState().error).toBeNull();
 
-			// Now mutation 1 fails (stale). It must NOT set error or pendingMutation.
+			// Now mutation 1 fails (stale). It must NOT set error or the markers.
 			resolveFail1?.();
 			await p1.catch(() => {}); // swallow the rejection
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
 			expect(store.getState().error).toBeNull();
 		});
 
@@ -5683,7 +5739,7 @@ describe("ConversationStore", () => {
 			expect(store.getState().draft).toBe("new text typed during send");
 		});
 
-		it("interrupt snapshot is null and does not clear draft", async () => {
+		it("interrupt does not clear draft while in flight", async () => {
 			const service = new FakeConversationService();
 			service.openConv = makeConversation({ status: { type: "active" } });
 			const store = createConversationStore();
@@ -5695,8 +5751,8 @@ describe("ConversationStore", () => {
 			});
 			service.interrupt = async () => hang;
 			const p = store.getState().interrupt(service);
-			const pending = store.getState().pendingMutation;
-			expect(pending?.draftSnapshot).toBeNull();
+			const pending = store.getState().pendingSubmission;
+			expect(pending).toEqual({ kind: "interrupt" });
 			// Draft should not be cleared by interrupt.
 			expect(store.getState().draft).toBe("my draft text");
 			resolveFn?.();
@@ -12317,7 +12373,7 @@ describe("ConversationStore", () => {
 			await store.getState().send(service, textInput("x"));
 			// The send settled and the error is visible with the first read still held.
 			expect(store.getState().error).not.toBeNull();
-			expect(store.getState().pendingMutation?.status).toBe("failed");
+			expect(store.getState().failedSubmission).toMatchObject({ kind: "send" });
 			await ctrl.ready(1);
 			ctrl.release();
 			await ctrl.completed(1);
@@ -12341,13 +12397,15 @@ describe("ConversationStore", () => {
 			service.sendShouldReject = null;
 			await store.getState().send(service, textInput("second"));
 			expect(store.getState().error).toBeNull();
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
 			await ctrl.ready(1);
 			ctrl.release();
 			await ctrl.completed(1);
 			await yieldMicrotask();
 			expect(store.getState().error).toBeNull();
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
 			expect(store.getState().conversation?.threadId).toBe("thread-1");
 		});
 	});
@@ -13402,7 +13460,7 @@ describe("ConversationStore", () => {
 			service.sendShouldReject = new Error("mutation boom");
 			await store.getState().send(service, textInput("x"));
 			expect(store.getState().error).toBe("mutation boom");
-			expect(store.getState().pendingMutation?.status).toBe("failed");
+			expect(store.getState().failedSubmission).toMatchObject({ kind: "send" });
 			// Now make R fail — patch readProjection to reject.
 			service.readProjection = async () => {
 				throw new Error("rehydrate boom");
@@ -13411,7 +13469,7 @@ describe("ConversationStore", () => {
 			await ctrl.completed(1).catch(() => {});
 			// R's failure must NOT overwrite the mutation error.
 			expect(store.getState().error).toBe("mutation boom");
-			expect(store.getState().pendingMutation?.status).toBe("failed");
+			expect(store.getState().failedSubmission).toMatchObject({ kind: "send" });
 		});
 	});
 
@@ -13571,7 +13629,7 @@ describe("ConversationStore", () => {
 			store.getState().send(service, textInput("second"));
 			// Error must be cleared immediately (atomically with pending mutation).
 			expect(store.getState().error).toBeNull();
-			expect(store.getState().pendingMutation?.status).toBe("pending");
+			expect(store.getState().pendingSubmission).toEqual({ kind: "send" });
 			(resolveSend as () => void)();
 		});
 
@@ -13596,12 +13654,14 @@ describe("ConversationStore", () => {
 			service.send = async () => makeReceipt();
 			await store.getState().send(service, textInput("second"));
 			expect(store.getState().error).toBeNull();
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
 			// Now the first send fails — it must NOT republish error.
 			(rejectFirst as (e: Error) => void)(new Error("first failed"));
 			await send1P;
 			expect(store.getState().error).toBeNull();
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
 		});
 	});
 
@@ -13654,11 +13714,13 @@ describe("ConversationStore", () => {
 			service.send = async () => makeReceipt();
 			await store.getState().send(service, textInput("second"));
 			expect(store.getState().draft).toBe("");
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
 			(rejectFirst as (e: Error) => void)(new Error("first failed"));
 			await send1P;
 			expect(store.getState().draft).toBe("");
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
 		});
 	});
 
@@ -13941,9 +14003,9 @@ describe("ConversationStore", () => {
 
 		it("rehydrate success cannot publish projection after mutation ABA (same mutationId)", async () => {
 			// The mutation-owner revision must increment when a mutation is set
-			// then cleared then a new mutation set (even if mutationId wraps or
-			// the same pendingMutation shape reappears). A stale rehydrate must
-			// not publish a predating projection.
+			// then cleared then a new mutation set (even if the same marker
+			// shape reappears). A stale rehydrate must not publish a predating
+			// projection.
 			const service = new FakeConversationService();
 			const store = createConversationStore();
 			service.readProjectionResult = makeReadProjectionResult(
@@ -13966,14 +14028,15 @@ describe("ConversationStore", () => {
 			} as AnyNotification);
 			await ctrl.started(1);
 			await yieldMicrotask();
-			// While R is in-flight, start a send (sets pendingMutation, increments
-			// mutation-owner revision), then let it succeed (clears pendingMutation,
-			// increments mutation-owner revision again).
+			// While R is in-flight, start a send (opens the click-to-commit
+			// marker, incrementing the mutation-owner revision), then let it
+			// succeed (clears the marker, incrementing the revision again).
 			const sendP = store.getState().send(service, textInput("hello"));
 			await sendP;
-			// pendingMutation is null again, but the mutation-owner revision
+			// The marker is null again, but the mutation-owner revision
 			// incremented twice (set + clear). R's captured revision (0) is stale.
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
 			// Change the projection result so R would publish a stale projection
 			// (different items).
 			service.readProjectionResult = makeReadProjectionResult(
@@ -14024,7 +14087,7 @@ describe("ConversationStore", () => {
 			await yieldMicrotask();
 			await yieldMicrotask();
 			expect(store.getState().error).toBe("mutation boom");
-			expect(store.getState().pendingMutation?.status).toBe("failed");
+			expect(store.getState().failedSubmission).toMatchObject({ kind: "send" });
 			// Clean up the trailing reread if one was scheduled.
 			ctrl.release();
 			await yieldMicrotask();
@@ -14613,8 +14676,8 @@ describe("ConversationStore", () => {
 			});
 			service.send = async () => hangSend;
 			store.getState().send(service, textInput("hello"));
-			// Mutation is pending — mutation owner revision changed.
-			expect(store.getState().pendingMutation?.status).toBe("pending");
+			// Mutation is in flight — mutation owner revision changed.
+			expect(store.getState().pendingSubmission).toEqual({ kind: "send" });
 			// Release R — it detects mutation owner changed, schedules trailing
 			// reread. But the mutation is STILL PENDING, so the trailing reread
 			// must NOT start yet (not even call readProjection).
@@ -14660,8 +14723,8 @@ describe("ConversationStore", () => {
 			});
 			service.send = async () => hangSend;
 			const sendP = store.getState().send(service, textInput("hello"));
-			// Mutation is pending.
-			expect(store.getState().pendingMutation?.status).toBe("pending");
+			// Mutation is in flight.
+			expect(store.getState().pendingSubmission).toEqual({ kind: "send" });
 			// Release R — schedules trailing reread, but mutation pending.
 			ctrl.release();
 			await ctrl.completed(1);
@@ -17347,7 +17410,7 @@ describe("ConversationStore", () => {
 			});
 			service.send = async () => hangM1;
 			store.getState().send(service, textInput("m1"));
-			expect(store.getState().pendingMutation?.status).toBe("pending");
+			expect(store.getState().pendingSubmission).toEqual({ kind: "send" });
 			// Release R — detects mutation owner changed, schedules deferred
 			// trailing reread. But M1 is still pending, so it stays deferred.
 			ctrl.release();
@@ -17370,7 +17433,7 @@ describe("ConversationStore", () => {
 			});
 			service.send = async () => hangM2;
 			store.getState().send(service, textInput("m2"));
-			expect(store.getState().pendingMutation?.status).toBe("pending");
+			expect(store.getState().pendingSubmission).toEqual({ kind: "send" });
 			// Now let the trailing reread's scheduler effect fire. It must detect
 			// M2 is pending (mutationOwnerRev advanced, mutation pending) and do
 			// ZERO read — re-defer for M2's revision.
@@ -17414,7 +17477,7 @@ describe("ConversationStore", () => {
 			});
 			serviceA.send = async () => hangM1;
 			store.getState().send(serviceA, textInput("m1"));
-			expect(store.getState().pendingMutation?.status).toBe("pending");
+			expect(store.getState().pendingSubmission).toEqual({ kind: "send" });
 			// Release R — schedules deferred trailing reread, M1 pending.
 			ctrlA.release();
 			await ctrlA.completed(1);
@@ -17430,7 +17493,7 @@ describe("ConversationStore", () => {
 			});
 			serviceA.send = async () => hangM2;
 			store.getState().send(serviceA, textInput("m2"));
-			expect(store.getState().pendingMutation?.status).toBe("pending");
+			expect(store.getState().pendingSubmission).toEqual({ kind: "send" });
 			// Let the effect fire — it should re-defer (M2 pending, zero read).
 			await yieldMicrotask();
 			await yieldMicrotask();
@@ -19146,7 +19209,8 @@ describe("ConversationStore", () => {
 				serviceA.openConv = makeConversation({ status: { type: kind === "send" ? "idle" : "active" } });
 				const store = createConversationStore();
 				await store.getState().openProjected(serviceA, createFakeSink(), "ref-1");
-				const pendingBefore = store.getState().pendingMutation;
+				const pendingBefore = store.getState().pendingSubmission;
+				const failedBefore = store.getState().failedSubmission;
 				const draftBefore = store.getState().draft;
 				const errorBefore = store.getState().error;
 				const serviceB = new FakeConversationService();
@@ -19155,7 +19219,8 @@ describe("ConversationStore", () => {
 				else if (kind === "queue") await store.getState().queue(serviceB, textInput("x"));
 				else await store.getState().interrupt(serviceB);
 				// C1: zero state change — pending/draft/error unchanged.
-				expect(store.getState().pendingMutation).toBe(pendingBefore);
+				expect(store.getState().pendingSubmission).toBe(pendingBefore);
+				expect(store.getState().failedSubmission).toBe(failedBefore);
 				expect(store.getState().draft).toBe(draftBefore);
 				expect(store.getState().error).toBe(errorBefore);
 				// C1: serviceB mutation method was never called.
@@ -19230,7 +19295,7 @@ describe("ConversationStore", () => {
 			});
 			service.send = async () => hangSend;
 			const sendP = store.getState().send(service, textInput("y"));
-			expect(store.getState().pendingMutation?.status).toBe("pending");
+			expect(store.getState().pendingSubmission).toEqual({ kind: "send" });
 
 			// While send is in-flight, a rehydrate with SAME sink clears error.
 			// Error is already null — rehydrate does NOT increment errorOwnerRev
@@ -19244,7 +19309,8 @@ describe("ConversationStore", () => {
 			// genuine newer clear-to-null race.
 			resolveSendHolder.fn?.(makeReceipt());
 			await sendP;
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
 			expect(store.getState().error).toBeNull();
 		});
 
@@ -19294,7 +19360,7 @@ describe("ConversationStore", () => {
 			});
 			service.send = async () => hangSend;
 			const sendP = store.getState().send(service, textInput("y"));
-			expect(store.getState().pendingMutation?.status).toBe("pending");
+			expect(store.getState().pendingSubmission).toEqual({ kind: "send" });
 			// The send's submit cleared the old error to null (newer null owner).
 			expect(store.getState().error).toBeNull();
 
@@ -19310,14 +19376,15 @@ describe("ConversationStore", () => {
 			// the newer null owner.
 			expect(store.getState().error).toBeNull();
 			// Mutation remains pending — the page rejection did not settle it.
-			expect(store.getState().pendingMutation?.status).toBe("pending");
+			expect(store.getState().pendingSubmission).toEqual({ kind: "send" });
 
 			// Only now resolve the mutation success. The send captured
 			// entryErrorRev after its own clear, so it can clear error. But error
 			// is already null — the key assertion is that the page never wrote.
 			resolveSendHolder.fn?.(makeReceipt());
 			await sendP;
-			expect(store.getState().pendingMutation).toBeNull();
+			expect(store.getState().pendingSubmission).toBeNull();
+			expect(store.getState().failedSubmission).toBeNull();
 			// Error stays null throughout — page never wrote, send's null held.
 			expect(store.getState().error).toBeNull();
 		});
@@ -19362,7 +19429,7 @@ describe("ConversationStore", () => {
 			// error (errorOwnerRev changed — the rehydrate's clear owns it).
 			rejectSendHolder.fn?.(new Error("mutation boom"));
 			await sendP.catch(() => {});
-			expect(store.getState().pendingMutation?.status).toBe("failed");
+			expect(store.getState().failedSubmission).toMatchObject({ kind: "send" });
 			// Error stays null — the rehydrate's clear owns it.
 			expect(store.getState().error).toBeNull();
 		});
@@ -19422,7 +19489,7 @@ describe("ConversationStore", () => {
 			// Now the send fails — it must install failed pending but NOT overwrite.
 			rejectSendHolder.fn?.(new Error("mutation boom"));
 			await sendP.catch(() => {});
-			expect(store.getState().pendingMutation?.status).toBe("failed");
+			expect(store.getState().failedSubmission).toMatchObject({ kind: "send" });
 			expect(store.getState().error).toBe("page boom");
 		});
 	});
@@ -19444,7 +19511,8 @@ describe("ConversationStore", () => {
 				status: s.status,
 				error: s.error,
 				draft: s.draft,
-				pendingMutation: s.pendingMutation,
+				pendingSubmission: s.pendingSubmission,
+				failedSubmission: s.failedSubmission,
 			};
 		}
 
@@ -19669,8 +19737,9 @@ describe("ConversationStore", () => {
 				else if (kind === "queue") mutationP = store.getState().queue(serviceA, textInput("x"));
 				else mutationP = store.getState().interrupt(serviceA);
 
-				// Rebind to B — the rebind transition settles A's pending mutation
-				// (set pendingMutation: null) and increments the binding epoch.
+				// Rebind to B — the rebind transition settles A's pending attempt
+				// (clears the click-to-commit marker) and increments the binding
+				// epoch.
 				// The service/sink binding changes, but ref and conversation generation
 				// must remain exact so late-A suppression is proven by binding identity,
 				// not by ordinary ref/generation staleness.
@@ -19697,9 +19766,10 @@ describe("ConversationStore", () => {
 				expect(stateB.conversationGeneration).toBe(generationBeforeRebind);
 				expect(stateB.conversation?.threadId).toBe("thread-B");
 
-				// A's pending mutation was settled by the rebind — verify it is null.
-				expect(stateB.pendingMutation).toBeNull();
+				// A's pending attempt was settled by the rebind — verify both
+				// markers are null and no failure was retained for it.
 				expect(stateB.pendingSubmission).toBeNull();
+				expect(stateB.failedSubmission).toBeNull();
 
 				// Capture the EXACT full state object reference. Not a partial
 				// snapshot — the entire public state object must be the same

@@ -5,6 +5,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -61,7 +62,7 @@ func FuzzExactTails(f *testing.F) {
 		cfg := hubcore.WebConfig{Spawner: lister}
 		_ = hasEvenerLaunchModelLister(cfg)
 		_ = validateEvenerLaunchModel(context.Background(), cfg, cmdutil.ModelRef{Provider: "p", Model: "m"}, "/tmp")
-		_, _ = ResumeDaemon(context.Background(), "", t.TempDir(), hubcore.ResumeRequest{}, time.Nanosecond)
+		_, _ = resumeDaemon(context.Background(), "", t.TempDir(), hubcore.ResumeRequest{}, time.Nanosecond, io.Discard)
 
 		oldContract := listEvenerLaunchModelContractFn
 		listEvenerLaunchModelContractFn = func(context.Context, string, []string) (appwire.ModelListResponse, error) {
@@ -156,7 +157,8 @@ func FuzzExactTails(f *testing.F) {
 
 		// Project deletion's second liveness check can race with a resume.
 		deleteWeb := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
-		tree, _ := deleteWeb.memoTree(context.Background())
+		deleteSnapshot := deleteWeb.navigationSnapshot(context.Background())
+		tree := hubBuildNavigationTree(deleteSnapshot.metas, deleteSnapshot.live, deleteWeb.archiveDecisions(), deleteSnapshot.projects)
 		projects := append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...)
 		if len(projects) > 0 {
 			checks := 0

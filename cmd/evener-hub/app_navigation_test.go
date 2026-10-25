@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/internal/appserver"
@@ -512,7 +513,7 @@ func TestHubNavigationReadOverAppWireWebSocket(t *testing.T) {
 		t.Fatalf("initialize: %v", err)
 	}
 
-	response, err := client.NavigationRead(ctx, appwire.NavigationReadParams{Resource: "project", ProjectKey: "p1", RepresentationVersion: 3})
+	response, err := appwiretest.NavigationRead(ctx, client, appwire.NavigationReadParams{Resource: "project", ProjectKey: "p1", RepresentationVersion: 3})
 	if err != nil {
 		t.Fatalf("navigation read: %v", err)
 	}

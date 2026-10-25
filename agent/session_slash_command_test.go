@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -234,8 +235,8 @@ func TestEvenerwideCommand_LoadsWithNoPluginDirs(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(sess.Close)
-	cmd, ok := plugin.ResolveCommand(sess.pluginCommands, "review")
-	if !ok || cmd.Source != "project" {
+	cmd, err := plugin.ResolveCommand(sess.pluginCommands, "review")
+	if err != nil || cmd.Source != "project" {
 		t.Fatalf("pluginCommands = %v, want project command %q", sess.pluginCommands, "review")
 	}
 }
@@ -267,10 +268,10 @@ func TestEvenerwideCommand_HermeticHidesOperatorGlobal(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(sess.Close)
-	if _, ok := plugin.ResolveCommand(sess.pluginCommands, "operator-cmd"); ok {
+	if _, err := plugin.ResolveCommand(sess.pluginCommands, "operator-cmd"); err == nil {
 		t.Errorf("operator user-global command reached a hermetic session: %v", sess.pluginCommands)
 	}
-	if cmd, ok := plugin.ResolveCommand(sess.pluginCommands, "review"); !ok || cmd.Source != "project" {
+	if cmd, err := plugin.ResolveCommand(sess.pluginCommands, "review"); err != nil || cmd.Source != "project" {
 		t.Errorf("project command must remain; got %+v", cmd)
 	}
 }
@@ -292,12 +293,12 @@ func TestEvenerwideCommand_ShadowsPluginBareName(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(sess.Close)
-	bare, ok := plugin.ResolveCommand(sess.pluginCommands, "greet")
-	if !ok || bare.Source == "plugin" {
+	bare, err := plugin.ResolveCommand(sess.pluginCommands, "greet")
+	if err != nil || bare.Source == "plugin" {
 		t.Errorf("bare /greet resolved to %+v, want the evener-wide command", bare)
 	}
-	qualified, ok := plugin.ResolveCommand(sess.pluginCommands, "greeter:greet")
-	if !ok || qualified.Source != "plugin" {
+	qualified, err := plugin.ResolveCommand(sess.pluginCommands, "greeter:greet")
+	if err != nil || qualified.Source != "plugin" {
 		t.Errorf("/greeter:greet resolved to %+v, want the plugin command", qualified)
 	}
 }
@@ -388,6 +389,21 @@ func TestExpandSlashCommand_UnknownCommandUnchanged(t *testing.T) {
 	}
 	if got.Text != "/nonexistent some args" {
 		t.Errorf("got %q, want input unchanged", got.Text)
+	}
+}
+
+func TestExpandSlashCommand_AmbiguousPluginCommandReportsFailure(t *testing.T) {
+	t.Parallel()
+	one := writePluginCommand(t, "one", "greet", "---\nname: greet\ndescription: greet\n---\nOne $ARGUMENTS")
+	two := writePluginCommand(t, "two", "greet", "---\nname: greet\ndescription: greet\n---\nTwo $ARGUMENTS")
+	sess, _ := newTestSessionWithPlugins(t, one, two)
+	got := sess.expandSlashCommand(context.Background(), "/greet world")
+	if !got.Handled || !errors.Is(got.Err, plugin.ErrAmbiguousCommand) || got.Text != "/greet world" {
+		t.Fatalf("expanded = %+v; want a handled ambiguity failure preserving input", got)
+	}
+	qualified := sess.expandSlashCommand(context.Background(), "/one:greet world")
+	if !qualified.Handled || qualified.Err != nil || !strings.Contains(qualified.Text, "One") {
+		t.Fatalf("qualified expansion = %+v; want plugin one's expansion", qualified)
 	}
 }
 

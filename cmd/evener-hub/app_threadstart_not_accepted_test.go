@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
@@ -104,7 +105,7 @@ func TestThreadStartRefusalsBeforeTheSpawnSayNotAccepted(t *testing.T) {
 				t.Fatalf("Initialize: %v", err)
 			}
 
-			_, err := client.ThreadStart(context.Background(), tc.params(t))
+			_, err := appwiretest.ThreadStart(context.Background(), client, tc.params(t))
 			wire, data := wireErrorData(t, err)
 			if wire.Code != tc.code || data.EvenerErrorInfo != tc.info {
 				t.Fatalf("refusal code=%d info=%q, want %d %q: %v", wire.Code, data.EvenerErrorInfo, tc.code, tc.info, err)
@@ -173,7 +174,7 @@ func TestThreadStartRefusalAfterTheSpawnLeavesItsOutcomeOpen(t *testing.T) {
 	client := dialSkillInputHub(t, hub)
 	defer client.Close()
 
-	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		Model: "openai/gpt-5",
 		CWD:   "/tmp",
 		Input: skillInputHubSelection(),
@@ -375,7 +376,7 @@ func TestThreadStartFailuresFromTheSpawnOnLeaveTheOutcomeOpen(t *testing.T) {
 		client := dialSkillInputHub(t, hub)
 		defer client.Close()
 
-		_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 			Model: "openai/gpt-5", CWD: "/tmp",
 			Input: []appwire.InputItem{{Type: "text", Text: "go"}},
 		})

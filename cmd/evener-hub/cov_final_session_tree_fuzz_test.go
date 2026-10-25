@@ -28,7 +28,7 @@ func FuzzFinalSessionTree(f *testing.F) {
 		case 1:
 			web := NewWebServer(hubcore.WebConfig{})
 			web.sources = appsource.NewRegistry()
-			_ = web.refreshRemoteThreads(context.Background())
+			_ = web.refreshRemoteThreadSnapshot(context.Background()).threads
 			_ = web.apiTreeSources()
 			_, _, _ = appThreadTreeEntries(appwire.Thread{ID: "x", Source: "remote", GitInfo: &appwire.GitInfo{Branch: "b", OriginURL: "u"}})
 		}

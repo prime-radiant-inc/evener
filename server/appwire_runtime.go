@@ -207,7 +207,6 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appPendingStableTurnID = ""
 		s.appDeferredTerminalNotifications = nil
 		s.appHeldSettledEffect = nil
-		s.appReservedTurnID = ""
 		s.appPushedFailedToolCalls = nil
 		// The envelope describes the session that just stopped being this
 		// daemon's session, so it is replaced in the SAME commit as the identity
@@ -612,7 +611,7 @@ func (s *Server) finishProcessing() {
 			// ends, so a stored active (a forecast that work would follow)
 			// reads idle, stored and published alike; work that does follow
 			// publishes its own turn.
-			status := appStatus(s.status.State, false, false)
+			status := appStatus(s.status.State, false)
 			if awaitingTurnEnd || status == appwire.ThreadStatusActive {
 				s.status.State = appwire.ThreadStatusIdle
 				status = appwire.ThreadStatusIdle
@@ -632,8 +631,8 @@ func (s *Server) finishProcessing() {
 // settledStatusLocked applies a resting status that settled outside any turn
 // (EventStatusSettled) in the same lock hold that decides whether it is
 // published: applied when it can be published now; held for the end of
-// processing when an input is being taken and no turn is published or
-// reserved yet, since that input may end without a turn; dropped otherwise.
+// processing when an input is being taken and no turn is published
+// yet, since that input may end without a turn; dropped otherwise.
 // The caller holds s.mu.
 func (s *Server) settledStatusLocked(event events.SessionEvent, superseded bool) {
 	effect := sessionEventStatusEffect(event)
@@ -643,7 +642,7 @@ func (s *Server) settledStatusLocked(event events.SessionEvent, superseded bool)
 	switch {
 	case !superseded:
 		effect(s)
-	case s.processing && s.appActiveTurnID == "" && s.appReservedTurnID == "" && s.status.State != string(agent.SessionClosed):
+	case s.processing && s.appActiveTurnID == "" && s.status.State != string(agent.SessionClosed):
 		s.appHeldSettledEffect = effect
 	}
 }
@@ -2176,7 +2175,7 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 }
 
 func (s *Server) clearBlockedReasonLocked() string {
-	if s.processing || strings.TrimSpace(s.appReservedTurnID) != "" || strings.TrimSpace(s.appActiveTurnID) != "" {
+	if s.processing || strings.TrimSpace(s.appActiveTurnID) != "" {
 		return "thread has unresolved turn work"
 	}
 	if s.appEnvelope.Queue.Depth > 0 || len(s.appEnvelope.PendingMutations) > 0 {
@@ -2217,15 +2216,10 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 	}
 	s.mu.RLock()
 	processing := s.processing
-	reservedTurnID := strings.TrimSpace(s.appReservedTurnID)
 	fn := s.modelFunc
 	s.mu.RUnlock()
-	if processing || reservedTurnID != "" {
-		msg := "session is processing"
-		if reservedTurnID != "" {
-			msg = "turn " + reservedTurnID + " is active"
-		}
-		return appwire.EmptyResponse{}, appwire.Conflict(msg)
+	if processing {
+		return appwire.EmptyResponse{}, appwire.Conflict("session is processing")
 	}
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("model change not available")
@@ -2247,15 +2241,10 @@ func (s *Server) handleAppThreadVisionModelSet(_ context.Context, params appwire
 	}
 	s.mu.RLock()
 	processing := s.processing
-	reservedTurnID := strings.TrimSpace(s.appReservedTurnID)
 	fn := s.visionModelFunc
 	s.mu.RUnlock()
-	if processing || reservedTurnID != "" {
-		msg := "session is processing"
-		if reservedTurnID != "" {
-			msg = "turn " + reservedTurnID + " is active"
-		}
-		return appwire.EmptyResponse{}, appwire.Conflict(msg)
+	if processing {
+		return appwire.EmptyResponse{}, appwire.Conflict("session is processing")
 	}
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("vision model change not available")
@@ -2480,7 +2469,6 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	threadID := s.appThreadID
 	ref := s.appRef
 	processing := s.processing
-	turnReserved := strings.TrimSpace(s.appReservedTurnID) != ""
 	envelope := s.appEnvelope
 	activeTurnID := s.appActiveTurnID
 
@@ -2513,7 +2501,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	askPending := envelope.PendingQuestion != nil
 	pendingQuestion := envelope.PendingQuestion
 	pendingEscalations := envelope.PendingEscalations
-	statusType := appStatus(status.State, processing, turnReserved)
+	statusType := appStatus(status.State, processing)
 	// A failure summary describes the failed turn the session rests on, so it
 	// shows only while the status says so: the next turn moves the status
 	// before any facet re-samples the summary (S1c).
@@ -2894,7 +2882,7 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 	// its handler and state gate to report that the action is currently safe.
 	// A client reading a status and the capabilities beside it is reading one
 	// decision, so no window can open where the two describe different threads.
-	status := appStatus(state, processing, strings.TrimSpace(s.appReservedTurnID) != "")
+	status := appStatus(state, processing)
 	active := status == appwire.ThreadStatusActive
 	closed := status == appwire.ThreadStatusClosed
 	// steerAvailable reads the retry-safe callback because that is the seam
@@ -2924,7 +2912,7 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		//
 		// That field is also per-turn -- armed and cleared once per turn by the
 		// session loop, on a different goroutine and a different clock from the
-		// reservation the status reads, and cmd/evener/serve.go's drain path
+		// processing flag the status reads, and cmd/evener/serve.go's drain path
 		// published processing before arming it. Reading it here let this set
 		// say steer=true interrupt=false: a turn is running and cannot be
 		// stopped. The set is PUSHED on thread/status/changed and a client keeps
@@ -2996,79 +2984,25 @@ func (s *Server) ensureAppProjectorLocked(threadID string) {
 // status the wire publishes and the capability set published beside it are both
 // derived from it, so the two cannot disagree about whether a turn is running.
 //
-// They used to be separate expressions over overlapping state -- this one read
-// `processing` and `state`, appCapabilities read `processing` and the turn
-// reservation -- and each had a window the other did not see. The reachable
-// half of that: a session state of "active" with the daemon's processing flag
-// already cleared published status=active beside interrupt=false and
-// steer=false, which is a busy composer with nothing on it (katas vewa, 5gdv,
-// and 06t8 before them).
-//
-// turnReserved folds appCapabilities' third input in so the two expressions
-// become one. It is NOT what opens the window this fix is about, and an earlier
-// version of this comment said it was. Measured in the pre-turn window on a
-// live stack: 12 of 12 samples reported state="active" processing=true
-// turnReserved=false. The window comes from the daemon holding `processing`
-// across the whole of an input -- pre-turn work included, where a slash
-// command's inline shell span can run for seconds -- while the SESSION has not
-// entered SessionProcessing yet and so reports itself settled.
-//
-// turnReserved is in fact unreachable in the shipped daemon today:
-// reserveAppTurnIDForStart is the only writer of appReservedTurnID and has no
-// non-test callers, because turn/start is wired to
-// agent.AcceptClientMutationStart, which reserves nothing here. It is kept
-// because this function must stay correct for the reservation if it is ever
-// wired up, and dropping the input would let the two expressions diverge again
-// -- but no reader should go looking for it in a live trace.
-func appStatus(state string, processing, turnReserved bool) string {
+// The daemon holds `processing` across the whole of an input, pre-turn work
+// included (a slash command's inline shell span can run for seconds), while the
+// SESSION has not entered SessionProcessing yet and reports itself settled;
+// processing therefore wins over a resting state.
+func appStatus(state string, processing bool) string {
 	// Closed wins over everything. A thread whose session has gone is not
-	// working, whatever flag was left set behind it -- and with a reservation
-	// now able to report active, a lingering one must not mask a close.
-	if strings.TrimSpace(state) == appwire.ThreadStatusClosed {
+	// working, whatever flag was left set behind it.
+	state = strings.TrimSpace(state)
+	if state == appwire.ThreadStatusClosed {
 		return appwire.ThreadStatusClosed
 	}
-	if processing || turnReserved {
+	if processing {
 		return appwire.ThreadStatusActive
 	}
-	switch strings.TrimSpace(state) {
-	case appwire.ThreadStatusIdle:
-		return appwire.ThreadStatusIdle
-	case appwire.ThreadStatusActive:
-		return appwire.ThreadStatusActive
-	case appwire.ThreadStatusAwaiting:
-		return appwire.ThreadStatusAwaiting
-	case appwire.ThreadStatusWarning:
-		return appwire.ThreadStatusWarning
-	case appwire.ThreadStatusSystemError:
-		return appwire.ThreadStatusSystemError
-	case appwire.ThreadStatusClosed:
-		return appwire.ThreadStatusClosed
-	case appwire.ThreadStatusNotLoaded:
-		return appwire.ThreadStatusNotLoaded
+	switch state {
+	case appwire.ThreadStatusIdle, appwire.ThreadStatusActive, appwire.ThreadStatusAwaiting,
+		appwire.ThreadStatusWarning, appwire.ThreadStatusSystemError, appwire.ThreadStatusNotLoaded:
+		return state
 	default:
 		return appwire.ThreadStatusIdle
 	}
-}
-
-func inputFromItems(prompt string, items []appwire.InputItem) (string, []ImageAttachment) {
-	parts := []string{}
-	if strings.TrimSpace(prompt) != "" {
-		parts = append(parts, prompt)
-	}
-	images := make([]ImageAttachment, 0)
-	for _, item := range items {
-		switch item.Type {
-		case "text", "input_text", "":
-			if strings.TrimSpace(item.Text) != "" {
-				parts = append(parts, item.Text)
-			}
-		case "image", "input_image":
-			images = append(images, ImageAttachment{
-				MediaType: item.MediaType,
-				Data:      item.Data,
-				Name:      item.Name,
-			})
-		}
-	}
-	return strings.Join(parts, "\n"), images
 }

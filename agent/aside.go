@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/transcript"
 )
 
 // AsideSession creates a new session branched from a parent session at its
@@ -39,7 +38,8 @@ func AsideSessionWithConfig(stateDir, parentID string, config schema.ConfigSnaps
 }
 
 func asideSessionFSWithConfig(fs afero.Fs, stateDir, parentID string, config *schema.ConfigSnapshot) (string, error) {
-	parentHeader, allEntries, err := readForkParent(fs, stateDir, parentID, 10*1024*1024)
+	deps := defaultForkDeps()
+	parentHeader, allEntries, err := readForkParent(fs, stateDir, parentID, deps.maxScanToken)
 	if err != nil {
 		return "", err
 	}
@@ -50,13 +50,6 @@ func asideSessionFSWithConfig(fs afero.Fs, stateDir, parentID string, config *sc
 		return "", fmt.Errorf("load parent session meta: %w", err)
 	}
 
-	deps := forkSessionDeps{
-		newWriter: func(fs afero.Fs, path string, header transcript.Header) (forkTranscriptWriter, error) {
-			return transcript.NewWriterWithFS(fs, path, header)
-		},
-		saveMeta:     schema.SaveSessionMetaWithFS,
-		maxScanToken: 10 * 1024 * 1024,
-	}
 	// The child shares the parent's full transcript, so the first turn unique
 	// to this branch is one past the parent's tip.
 	return writeForkChildWithConfig(fs, stateDir, parentID, parentHeader, parentMeta, allEntries, len(allEntries)+1, nil, config, deps)

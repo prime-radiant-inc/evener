@@ -68,7 +68,7 @@ var daemonProcessCommand = func(binary string, args, env []string) *exec.Cmd {
 	return cmd
 }
 
-// HubSpawner fulfills the hubcore.Spawner interface using SpawnDaemon.
+// HubSpawner fulfills the hubcore.Spawner interface using spawnDaemonWithProviderConfig.
 type HubSpawner struct {
 	Cfg                 Config
 	EvenerBinary        string // path to the evener binary; "" → "evener" on PATH
@@ -426,22 +426,13 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 	return args
 }
 
-// SpawnDaemon launches a `evener serve` subprocess from the given hubcore.SpawnRequest,
-// then waits up to timeout for its rendezvous file to appear.
+// spawnDaemonWithProviderConfig launches a `evener serve` subprocess from the
+// given hubcore.SpawnRequest, then waits up to timeout for its rendezvous file
+// to appear. hubLog is the hub's own stderr in production.
 //
 // Returns the rendezvous Entry on success, or error on timeout / spawn failure.
-// Caller does NOT manage the subprocess lifecycle — the spawned daemon
+// Caller does NOT manage the subprocess lifecycle: the spawned daemon
 // runs independently and lives until killed or sent /shutdown.
-func SpawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration) (rendezvous.Entry, error) {
-	return spawnDaemon(ctx, evenerBinary, runDir, req, timeout, os.Stderr)
-}
-
-// spawnDaemon is SpawnDaemon against a caller-supplied hub log, which is the
-// hub's own stderr in production.
-func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
-	return spawnDaemonWithProviderConfig(ctx, evenerBinary, runDir, req, timeout, hubLog, nil)
-}
-
 func spawnDaemonWithProviderConfig(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer, providerConfig *childProviderConfig) (entry rendezvous.Entry, launchErr error) {
 	ctx, trace := withThreadLifecycleLog(ctx, "spawn", "", hubLog)
 	daemonStarted := time.Now()
@@ -545,18 +536,6 @@ func WithStartedAfter(t time.Time) WaitOption {
 	return func(c *waitConfig) { c.startedAfter = t }
 }
 
-// ResumeDaemon launches `evener serve --resume <sessionID>` and waits for
-// rendezvous. Returns the resumed daemon's rendezvous Entry.
-//
-// Note: resume PRESERVES the existing session_id. The daemon restores via
-// RestoreSessionFromMetaWithConfig, which keeps the persisted meta.ID
-// (immutable across restart), so the returned Entry.SessionID is the same
-// id the session had before it exited. (A fresh session_id is minted only
-// by /clear, which is a distinct operation.)
-func ResumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration) (rendezvous.Entry, error) {
-	return resumeDaemon(ctx, evenerBinary, runDir, req, timeout, os.Stderr)
-}
-
 // resumeChild is the process-launch boundary. The launcher retains the exact
 // child's kill/wait handles; cancellation never rediscovers a PID to signal.
 type resumeChild struct {
@@ -604,8 +583,15 @@ func reapResumeChild(child resumeChild, reaped <-chan struct{}, active *hubcore.
 	return nil
 }
 
-// resumeDaemon is ResumeDaemon against a caller-supplied hub log, which is the
-// hub's own stderr in production.
+// resumeDaemon launches `evener serve --resume <sessionID>` and waits for
+// rendezvous. Returns the resumed daemon's rendezvous Entry.
+//
+// Note: resume PRESERVES the existing session_id. The daemon restores via
+// RestoreSessionFromMetaWithConfig, which keeps the persisted meta.ID
+// (immutable across restart), so the returned Entry.SessionID is the same
+// id the session had before it exited. (A fresh session_id is minted only
+// by /clear, which is a distinct operation.) hubLog is the hub's own stderr
+// in production.
 func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
 	return resumeDaemonWithProviderConfig(ctx, evenerBinary, runDir, req, timeout, hubLog, nil)
 }

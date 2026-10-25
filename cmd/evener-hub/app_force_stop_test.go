@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -452,7 +453,7 @@ func TestHubForceStopUnconfirmedRootReadAndExplicitResume(t *testing.T) {
 	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: ref}); err != nil {
+	if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
 	if *resumes != 1 {
@@ -609,7 +610,7 @@ func TestHubForceStopInterruptsStalledRPCOnSameConnection(t *testing.T) {
 				t.Fatal(err)
 			}
 			ref := "local:" + sessionID
-			if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: ref}); err != nil {
+			if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: ref}); err != nil {
 				t.Fatal(err)
 			}
 			shutdown := make(chan error, 1)
@@ -722,7 +723,7 @@ func TestHubForceStopInterruptsStalledSpawnedResumeRead(t *testing.T) {
 	ref := "local:" + sessionID
 	resume := make(chan error, 1)
 	go func() {
-		_, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: ref})
+		_, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: ref})
 		resume <- err
 	}()
 	select {
@@ -814,7 +815,7 @@ func TestHubForceStopCancelsStartupWithoutReplayingInput(t *testing.T) {
 			ref := "local:" + sessionID
 			startResult := make(chan error, 1)
 			go func() {
-				_, err := client.ThreadStart(t.Context(), appwire.ThreadStartParams{Model: "openai/gpt-5", CWD: past.Meta.EnvInfo.WorkingDir, Input: []appwire.InputItem{{Type: "text", Text: "must not reach stopped daemon"}}})
+				_, err := appwiretest.ThreadStart(t.Context(), client, appwire.ThreadStartParams{Model: "openai/gpt-5", CWD: past.Meta.EnvInfo.WorkingDir, Input: []appwire.InputItem{{Type: "text", Text: "must not reach stopped daemon"}}})
 				startResult <- err
 			}()
 			select {
@@ -900,7 +901,7 @@ func TestHubForceStopRejectsWaitingMutationUntilExplicitResume(t *testing.T) {
 				t.Fatal(err)
 			}
 			ref := "local:" + sessionID
-			if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: ref}); err != nil {
+			if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: ref}); err != nil {
 				t.Fatal(err)
 			}
 			stop := make(chan error, 1)
@@ -969,7 +970,7 @@ func TestHubForceStopRejectsWaitingMutationUntilExplicitResume(t *testing.T) {
 			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: ref}); err != nil {
+			if _, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: ref}); err != nil {
 				t.Fatalf("explicit resume: %v", err)
 			}
 			staleRead, err := oldClient.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref})

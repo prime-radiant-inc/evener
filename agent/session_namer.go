@@ -399,10 +399,6 @@ func (s *Session) clearPromptNamePendingAfterAttempt(err error) {
 // always positive.
 const ungatedFoldRevision = -1
 
-func (s *Session) launchCompactionNamer(ctx context.Context, turn schema.Turn) {
-	s.launchCompactionNamerGated(ctx, turn, ungatedFoldRevision)
-}
-
 // launchCompactionNamerGated is launchCompactionNamer threading the
 // launching fold's publication revision into the async naming goroutine for
 // the completion-side staleness comparison inside applySessionNameResult's
@@ -437,10 +433,6 @@ func (s *Session) launchCompactionNamerGated(ctx context.Context, turn schema.Tu
 		defer s.finishSessionNamer(release)
 		_ = s.nameSessionFromCompactionTurnGated(ctx, turn, publishedRevision)
 	}()
-}
-
-func (s *Session) nameSessionFromCompactionTurn(ctx context.Context, turn schema.Turn) error {
-	return s.nameSessionFromCompactionTurnGated(ctx, turn, ungatedFoldRevision)
 }
 
 func (s *Session) nameSessionFromCompactionTurnGated(ctx context.Context, turn schema.Turn, publishedRevision int) error {

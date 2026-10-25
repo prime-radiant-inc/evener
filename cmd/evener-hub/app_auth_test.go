@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -51,7 +52,7 @@ func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
 		t.Fatalf("Initialize features=%+v, want auth advertised", init.Features)
 	}
 
-	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
+	status, err := appwiretest.AuthStatus(context.Background(), client, appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
+	status, err := appwiretest.AuthStatus(context.Background(), client, appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
 	}
@@ -116,7 +117,7 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 	// Positive control: the plain API-key provider is the one that does read
 	// the environment, so an env layer that never reaches the registry fails
 	// here instead of making the Codex assertion above vacuously true.
-	envStatus, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	envStatus, err := appwiretest.AuthStatus(context.Background(), client, appwire.AuthStatusParams{Provider: "openai"})
 	if err != nil {
 		t.Fatalf("AuthStatus(openai): %v", err)
 	}
@@ -140,7 +141,7 @@ func TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
+	status, err := appwiretest.AuthStatus(context.Background(), client, appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance(t *testing.T) {
 	// Positive control: the plain API-key provider is the one that does read
 	// the environment, so an env layer that never reaches the registry fails
 	// here instead of making the Codex assertion above vacuously true.
-	envStatus, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	envStatus, err := appwiretest.AuthStatus(context.Background(), client, appwire.AuthStatusParams{Provider: "openai"})
 	if err != nil {
 		t.Fatalf("AuthStatus(openai): %v", err)
 	}
@@ -379,7 +380,7 @@ func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	resp, err := client.AuthLogout(context.Background(), appwire.AuthLogoutParams{Provider: "openai-codex"})
+	resp, err := appwiretest.AuthLogout(context.Background(), client, appwire.AuthLogoutParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthLogout: %v", err)
 	}
@@ -545,14 +546,14 @@ func TestHubRPCAuthStoresOAuthWhereTheRegistryReads(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
+	status, err := appwiretest.AuthStatus(context.Background(), client, appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
 	}
 	if !status.SignedIn || status.ActiveSource != authopenai.AuthSourceOAuth {
 		t.Fatalf("status=%+v, want the record under the registry state root %s to sign the instance in", status, registryRoot)
 	}
-	logout, err := client.AuthLogout(context.Background(), appwire.AuthLogoutParams{Provider: "openai-codex"})
+	logout, err := appwiretest.AuthLogout(context.Background(), client, appwire.AuthLogoutParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthLogout: %v", err)
 	}

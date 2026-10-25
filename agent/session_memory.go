@@ -406,11 +406,6 @@ func (s *Session) closeMemoryEnvironments() {
 	}
 }
 
-func (s *Session) readMemoryIndex(scope string) memoryProjection {
-	p, _ := s.readMemoryScope(context.Background(), scope, nil)
-	return p
-}
-
 // readMemoryScope reads scope's index and, beneath the same environment
 // lease, the current record of each named page.
 // ctx is threaded to each page read.

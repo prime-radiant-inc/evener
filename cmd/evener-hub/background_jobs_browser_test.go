@@ -19,6 +19,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
@@ -61,7 +62,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 		}
 	}
 	rounds := 200
-	started, err := client.ThreadStart(ctx, appwire.ThreadStartParams{
+	started, err := appwiretest.ThreadStart(ctx, client, appwire.ThreadStartParams{
 		Harness: "evener", CWD: stack.workDir, Model: stack.model,
 		Input:           []appwire.InputItem{{Type: "text", Text: "BACKGROUND_JOBS_PRODUCER"}},
 		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off", MaxRounds: &rounds},

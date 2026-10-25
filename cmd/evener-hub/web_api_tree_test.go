@@ -468,3 +468,8 @@ func TestAppThreadTreeEntryCarriesOnlyItsOwnWatches(t *testing.T) {
 		}
 	}
 }
+
+func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry, map[string]identifier.Project) {
+	snapshot := s.navigationSnapshot(ctx)
+	return snapshot.metas, snapshot.live, snapshot.projects
+}

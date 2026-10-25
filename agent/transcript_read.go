@@ -13,8 +13,6 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 )
 
-const transcriptJSONLMaxLineBytes = 128 << 20
-
 var openTranscriptFile = func(path, root string) (io.ReadCloser, error) {
 	// When root is provided, OpenRegularBeneathRoot walks every intermediate
 	// component relative to root via openat(O_NOFOLLOW), refusing symlinks at
@@ -34,7 +32,7 @@ var openTranscriptFile = func(path, root string) (io.ReadCloser, error) {
 // final line is skipped; corrupt complete lines and unsupported record kinds
 // reject the whole file.
 func readTranscript(path, root string) (transcript.Header, []transcript.Entry, int, error) {
-	data, err := readSemanticTranscript(path, root, transcriptJSONLMaxLineBytes, true, false, nil)
+	data, err := readSemanticTranscript(path, root, transcript.DefaultMaxLineBytes, true, false, nil)
 	return data.Header, data.Entries, data.Skipped, err
 }
 
@@ -53,11 +51,11 @@ var (
 
 // readTranscriptFull reads the full semantic transcript-v2 file.
 func readTranscriptFull(path, root string) (transcriptData, error) {
-	return readSemanticTranscript(path, root, transcriptJSONLMaxLineBytes, true, false, nil)
+	return readSemanticTranscript(path, root, transcript.DefaultMaxLineBytes, true, false, nil)
 }
 
 func readTranscriptFullWithEntryLines(path, root string) (transcriptData, error) {
-	return readSemanticTranscript(path, root, transcriptJSONLMaxLineBytes, true, true, nil)
+	return readSemanticTranscript(path, root, transcript.DefaultMaxLineBytes, true, true, nil)
 }
 
 func readStrictChildTranscript(path, root, expectedSessionID string, maxLineBytes int) (transcriptData, error) {

@@ -67,8 +67,8 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 	}
 
 	_, err := m.Ensure(context.Background(), "alpha")
-	if !errors.Is(err, errControllerDirty) {
-		t.Fatalf("Ensure err = %v, want errControllerDirty", err)
+	if !errors.Is(err, ErrControllerDirty) {
+		t.Fatalf("Ensure err = %v, want ErrControllerDirty", err)
 	}
 	if !isTerminal(err) {
 		t.Fatalf("Ensure err = %v, want a terminal refusal (a retryable one loops the supervisor forever)", err)

@@ -161,7 +161,7 @@ type Session struct {
 	// all-"test" project into the "Test runs" group.
 	origin string
 	// strictTranscriptMaxLineBytes caps a child transcript line during resumability
-	// checks. Zero means the production default (transcriptJSONLMaxLineBytes); tests
+	// checks. Zero means the production default (transcript.DefaultMaxLineBytes); tests
 	// set a small value on their own session to exercise the oversized-line path
 	// without mutating a shared global.
 	strictTranscriptMaxLineBytes int

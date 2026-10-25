@@ -93,11 +93,11 @@ type WebConfig struct {
 	// sessions by title and prompt only.
 	MessageSearch *MessageSearch
 
-	Inputs *InputsVersion // shared inputs-version counter; nil in tests (memo treats as version 0)
+	Inputs *InputsVersion // shared inputs-version counter; nil in tests (revision treats as version 0)
 
 	// RemoteThreadCache holds the last-refreshed remote-source thread list so
 	// the tree read path never blocks on a network hop. Nil in tests, which
-	// fall back to the old synchronous walk (see remoteTreeThreads).
+	// fall back to the old synchronous walk (see remoteThreadFetch).
 	RemoteThreadCache *RemoteThreadCache
 
 	// RemoteHosts are the validated [[hosts]] entries (component 03) in
@@ -146,14 +146,11 @@ type WebConfig struct {
 	RemoteHostClientIfAttached func(host string) (*appwire.Client, bool)
 	// RemoteHostFacts returns the component-04 preflight facts (protocol
 	// version, hub version, OS/arch, advertised features) for the AppWire
-	// connection behind client, the exact generation the probe resolved for the
-	// capability probe. An implementation must answer from that same generation
-	// rather than racing a reconnect: it reads one
-	// sshconn.Manager.ChannelIfAttached value and refuses (a typed
-	// SessionUnavailable) when that channel's client is not client, so a probe
-	// can never cache a snapshot assembled from two connections. The capability
-	// probe combines the facts with its AppWire reads. nil leaves the
-	// preflight-owned fields zero-valued (tests).
+	// connection behind client, the exact generation attach dialed. An
+	// implementation must answer from that same generation rather than racing a
+	// reconnect: it reads one sshconn.Manager.ChannelIfAttached value and
+	// refuses (a typed SessionUnavailable) when that channel's client is not
+	// client. nil leaves the preflight-owned fields zero-valued (tests).
 	RemoteHostFacts func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
 	// RemoteHostHandshake returns the attach handshake facts (ProtocolVersion,
 	// ServerInfo, SourceID, Features) captured when a remote host's channel
@@ -161,9 +158,8 @@ type WebConfig struct {
 	// production it is a closure over component 04's Manager.ChannelIfAttached
 	// with the client-identity guard at the call site, not
 	// Manager.HandshakeIfAttached (which has no production caller). It takes
-	// client — the exact generation the probe resolved — and reports false when
-	// the installed channel is a different one, so the probe cannot pair one
-	// connection's wire reads with another's handshake. nil leaves those fields
+	// client — the exact generation attach dialed — and reports false when the
+	// installed channel is a different one. nil leaves those fields
 	// zero-valued (tests).
 	RemoteHostHandshake func(host string, client *appwire.Client) (appwire.InitializeResponse, bool)
 	// RemoteHostOnline reports whether the controller's channel to host is
