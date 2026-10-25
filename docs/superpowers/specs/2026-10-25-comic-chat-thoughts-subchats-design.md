@@ -12,6 +12,8 @@ This amendment replaces the design's exclusion of reasoning and its child-link-o
 presentation. General job/watch inspection, logs and settings remain in the regular
 UI. It adds no new transport, history store, mutation owner or automatic agent work.
 The font, mobile, original-art and no-deployment constraints remain unchanged.
+Human questions and sandbox approvals retain Evener's interactive-root-only rules.
+This client adds no child-to-human interaction mechanism or permission change.
 
 ## Approaches
 
@@ -98,8 +100,10 @@ The details below were Bot's implementation proposals, accepted with this amendm
   recurse indefinitely. A parent can show several deliberately opened strips.
 - The expanded child is a reader, without a second inline composer. Its explicit
   “Open conversation” action selects the child at `/comic/s/:ref`, where the normal
-  comic Send/Stop, questions and approval controls apply to that selected child.
-  Pending child attention stays visible and provides this route to act. Expanding
+  comic controls follow the existing selected-session admission rules. Questions
+  and sandbox approvals are exercised on interactive root conversations. Child
+  strips show authoritative activity state and an available full-page route;
+  model-facing delegate attention is not a human question or approval. Expanding
   a strip never changes the parent composer, draft, route or action target.
 - Collapse returns focus to the strip control and releases that child's owned read
   demand, without cancelling another reader. Keep lightweight expansion/anchor state
@@ -160,9 +164,11 @@ Plain/comic view switches retain those identities, positions and drafts.
    event and retain the existing strip's identity, expansion and reading position.
    Refresh/reconnect after multiple pages with a visible later-page child message.
 6. Extend the real hub/daemon browser journey with scripted-provider delegation,
-   thoughts and at least one nested child. Exercise expansion, collapse, attention
-   routing, full-page child navigation and Back. Assert durable producer data,
-   correct identities and no duplicate readers or transcript content.
+   thoughts and at least one nested child. Exercise real child status, expansion,
+   collapse, full-page child navigation and Back. Assert durable producer data,
+   correct identities and no duplicate readers or transcript content. Prove human
+   questions and sandbox approvals separately on interactive root conversations;
+   do not fabricate pending child state or loosen the runtime's root-only gates.
 7. At 1360, 760, 600, 390 and 320px, verify full-width mobile child panels, thought
    balloon geometry, no horizontal overflow, keyboard expansion/focus, plain-view
    parity, bounded DOM and stable away anchors during child streaming and reflow.
