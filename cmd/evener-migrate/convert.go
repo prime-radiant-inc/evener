@@ -12,6 +12,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -239,14 +240,7 @@ func convertProvidersFile(opts options, rep *report, stdout, stderr io.Writer) {
 		rep.failed++
 		return
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, converted, 0o644); err != nil {
-		_, _ = fmt.Fprintf(stderr, "providers.toml: write converted: %v\n", err)
-		rep.failed++
-		return
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := fsatomic.Write(path, converted, 0o644); err != nil {
 		_, _ = fmt.Fprintf(stderr, "providers.toml: replace: %v\n", err)
 		rep.failed++
 		return
