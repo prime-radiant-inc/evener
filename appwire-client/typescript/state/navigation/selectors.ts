@@ -1,8 +1,9 @@
 // The navigation selectors the web app reads a navigation store's state
 // through (native has no `createNavigationStore` and adopts none of these
 // yet, but could if it ever gains one): the manifest's launch sources,
-// section rows with their remaining count and next offset, the pin-section
-// summaries, the project catalog, and a session summary found by ref. Pure
+// section rows with their remaining count and next offset, whether a section
+// may ask for another page, the pin-section summaries, the project catalog,
+// and a session summary found by ref. Pure
 // over NavigationStoreState - no store handle, no host API - so an app
 // passes whichever instance's state it holds, and a selector that memoizes
 // for one host's render loop stays in that host.
