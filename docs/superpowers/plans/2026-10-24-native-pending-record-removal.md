@@ -44,8 +44,10 @@ already carries the admitted identity.
 
 - For Send/Queue, use the existing draft `unconfirmed`/`submitting` fact as the
   click-to-commit owner.
-- For Stop/interrupt, add a minimal local marker (kind + admitted id when
-  known), not a full mutation record.
+- The Stop guard is not Stop-specific: it refuses while ANY send, queue, or
+  interrupt is pending. The replacement must carry the same any-mutation fact
+  (kind + phase, plus the admitted id when known), not a Stop-only boolean.
+  A Stop-only marker would let Stop race an ordinary send.
 - Replace the five `pendingMutation?.status` screen reads with those facts.
 - Tests: Stop and interrupt during the click window; answer submission;
   repeated Send/Stop; draft preservation.
