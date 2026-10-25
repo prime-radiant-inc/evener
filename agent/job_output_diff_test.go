@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -295,27 +296,30 @@ func TestShellInlineDigestQuotedDiffInsideLogIsNotADiff(t *testing.T) {
 	}
 }
 
-func TestShellInlineDigestHunklessSectionNamesFile(t *testing.T) {
+func TestShellInlineDigestHunklessSectionReportsRangeWithoutFile(t *testing.T) {
 	t.Parallel()
 	var b strings.Builder
 	b.WriteString("diff --git a/small.go b/small.go\nindex 1..2 100644\n--- a/small.go\n+++ b/small.go\n@@ -1,2 +1,2 @@\n-old\n+new\n")
 	b.WriteString("diff --git a/mode.go b/mode.go\nold mode 100644\nnew mode 100755\n")
+	b.WriteString(strings.Repeat("literal 0000000 mode padding padding padding padding\n", 30))
 	b.WriteString("diff --git a/later.go b/later.go\nindex 1..2 100644\n--- a/later.go\n+++ b/later.go\n@@ -1,2 +1,2 @@\n-old\n+new\n")
 	full := b.String()
 	modeAt := offsetOf(t, full, "diff --git a/mode.go b/mode.go")
-	w, ok := unifiedDiffWindow(full, modeAt, shellDigestHalfBytes, false, false)
+	w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, false, false)
 	if !ok {
 		t.Fatal("unifiedDiffWindow did not recognize the diff")
 	}
 	if w.HeadEnd != modeAt {
 		t.Fatalf("head end = %d, want the mode-only section start %d", w.HeadEnd, modeAt)
 	}
-	if w.File != "b/mode.go" {
-		t.Fatalf("cut file = %q, want b/mode.go from the diff --git header", w.File)
+	if w.File != "" {
+		t.Fatalf("cut file = %q, want unknown for a hunkless section", w.File)
 	}
 	if w.Hunk != "" {
 		t.Fatalf("cut hunk = %q, want none in a hunkless section", w.Hunk)
 	}
+	digest := shellInlineDigest(full, int64(len(full)), 0)
+	assertOmittedRange(t, digest, w.HeadEnd, w.TailStart)
 }
 
 func TestShellInlineDigestHunkBodyPathLikeLinesStayBody(t *testing.T) {
@@ -526,7 +530,7 @@ func TestShellInlineDigestRetainedPartialDiffHeaderStillNamesFile(t *testing.T) 
 	}
 }
 
-func TestShellInlineDigestLeadingHunklessSectionNamesItsFile(t *testing.T) {
+func TestShellInlineDigestLeadingHunklessSectionKeepsFileUnknown(t *testing.T) {
 	t.Parallel()
 	var b strings.Builder
 	b.WriteString("diff --git a/bin.dat b/bin.dat\nindex 1111111..2222222 100644\nGIT binary patch\nliteral 100000\n")
@@ -546,49 +550,82 @@ func TestShellInlineDigestLeadingHunklessSectionNamesItsFile(t *testing.T) {
 	if w.HeadEnd <= 0 || w.HeadEnd >= textAt {
 		t.Fatalf("head end = %d, want a cut inside the leading hunkless section [0,%d)", w.HeadEnd, textAt)
 	}
-	if w.File != "b/bin.dat" {
-		t.Fatalf("cut file = %q, want b/bin.dat, the section containing the cut", w.File)
+	if w.File != "" {
+		t.Fatalf("cut file = %q, want unknown for a hunkless section", w.File)
 	}
 	if w.Hunk != "" {
 		t.Fatalf("cut hunk = %q, want none in the hunkless section", w.Hunk)
 	}
 	digest := shellInlineDigest(full, int64(len(full)), 0)
 	marker := markerBetween(digest, full[:w.HeadEnd], full[w.TailStart:])
-	if !strings.Contains(marker, "b/bin.dat") {
-		t.Fatalf("marker does not name the section containing the cut:\n%s", marker)
+	if strings.Contains(marker, "b/bin.dat") || strings.Contains(marker, "b/text.go") {
+		t.Fatalf("marker guesses a filename for a hunkless section:\n%s", marker)
 	}
-	if strings.Contains(marker, "b/text.go") {
-		t.Fatalf("marker attributes the omission to the next file:\n%s", marker)
-	}
+	assertOmittedRange(t, marker, w.HeadEnd, w.TailStart)
 }
 
-func TestShellInlineDigestHunklessSectionParsesQuotedPaths(t *testing.T) {
+func TestShellInlineDigestHunklessSectionKeepsFileUnknown(t *testing.T) {
 	t.Parallel()
 	small := "diff --git a/small.go b/small.go\nindex 1..2 100644\n--- a/small.go\n+++ b/small.go\n@@ -1,2 +1,2 @@\n-old\n+new\n"
 	later := "diff --git a/later.go b/later.go\nindex 1..2 100644\n--- a/later.go\n+++ b/later.go\n@@ -1,2 +1,2 @@\n-old\n+new\n"
 	cases := []struct {
 		name   string
 		header string
-		want   string
 	}{
-		{"destination contains b/", `diff --git a/foo "b/dir b/file.go"`, "b/dir b/file.go"},
-		{"quoted spaces", `diff --git "a/old name.go" "b/new name.go"`, "b/new name.go"},
+		{"destination contains b/", `diff --git a/foo "b/dir b/file.go"`},
+		{"quoted spaces", `diff --git "a/old name.go" "b/new name.go"`},
+		{"unquoted space", `diff --git a/foo b/unquoted space name`},
+		{"quoted control and octal", `diff --git "a/old\nname" "b/new\377name"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			full := small + tc.header + "\nold mode 100644\nnew mode 100755\n" + later
+			full := small + tc.header + "\nold mode 100644\nnew mode 100755\n" +
+				strings.Repeat("literal 0000000 mode padding padding padding padding\n", 30) + later
 			sectionAt := offsetOf(t, full, tc.header)
-			w, ok := unifiedDiffWindow(full, sectionAt, shellDigestHalfBytes, false, false)
+			w, ok := unifiedDiffWindow(full, shellDigestHalfBytes, shellDigestHalfBytes, false, false)
 			if !ok {
 				t.Fatal("unifiedDiffWindow did not recognize the diff")
 			}
 			if w.HeadEnd != sectionAt {
 				t.Fatalf("head end = %d, want the hunkless section start %d", w.HeadEnd, sectionAt)
 			}
-			if w.File != tc.want {
-				t.Fatalf("cut file = %q, want %q", w.File, tc.want)
+			if w.File != "" || w.Hunk != "" {
+				t.Fatalf("cut = {%q %q}, want no guessed file or hunk", w.File, w.Hunk)
 			}
+			digest := shellInlineDigest(full, int64(len(full)), 0)
+			marker := strings.TrimSpace(markerBetween(digest, full[:w.HeadEnd], full[w.TailStart:]))
+			if !utf8.ValidString(marker) {
+				t.Fatalf("marker is not valid UTF-8: %q", marker)
+			}
+			if strings.Contains(marker, "\n") {
+				t.Fatalf("marker is not single-line: %q", marker)
+			}
+			if strings.Contains(marker, "b/dir") || strings.Contains(marker, "b/new") ||
+				strings.Contains(marker, "unquoted") {
+				t.Fatalf("marker guesses a hunkless filename: %q", marker)
+			}
+			assertOmittedRange(t, marker, w.HeadEnd, w.TailStart)
 		})
+	}
+}
+
+func TestShellInlineDiffDigestEscapesControlAndInvalidPathText(t *testing.T) {
+	t.Parallel()
+	full := "head\ntail\n"
+	w := diffWindow{HeadStart: 0, HeadEnd: 5, TailStart: 5, File: "b/new\nname\xff", Hunk: "@@ -1 +1 @@\x00"}
+	digest := renderDiffDigest(full, w, int64(len(full)), 0)
+	marker := strings.TrimSpace(markerBetween(digest, "head\n", "tail\n"))
+	if !utf8.ValidString(marker) {
+		t.Fatalf("marker is not valid UTF-8: %q", marker)
+	}
+	if strings.Contains(marker, "\n") {
+		t.Fatalf("marker is not single-line: %q", marker)
+	}
+	if !strings.Contains(marker, `b/new\nname\377`) {
+		t.Fatalf("marker does not escape the path's newline and invalid byte: %q", marker)
+	}
+	if !strings.Contains(marker, `\000`) {
+		t.Fatalf("marker does not escape the hunk's NUL byte: %q", marker)
 	}
 }
 

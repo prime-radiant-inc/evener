@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
 )
@@ -429,11 +430,6 @@ func diffPathAroundCut(full string, lines []diffLine, cutIndex int) string {
 			}
 			collect(i)
 		}
-		if newPath == "" && oldPath == "" {
-			// A mode-only or binary section has no ---/+++ lines; its
-			// diff --git header still names the file.
-			newPath = diffGitHeaderPath(diffLineText(full, lines[cutIndex]))
-		}
 	} else {
 		for i := cutIndex - 1; i >= 0; i-- {
 			if lines[i].kind == diffLineFile {
@@ -448,90 +444,43 @@ func diffPathAroundCut(full string, lines []diffLine, cutIndex int) string {
 	return clipDiffText(oldPath)
 }
 
-// diffGitHeaderPath extracts the b-side path from a git file header such as
-// "diff --git a/x b/x" or "diff --git \"a/old name\" \"b/new name\"".
-func diffGitHeaderPath(text string) string {
-	rest, ok := strings.CutPrefix(text, "diff --git ")
-	if !ok {
-		return ""
-	}
-	oldPath, newPath, ok := splitGitPaths(rest)
-	if !ok || oldPath == "" || newPath == "" {
-		return ""
-	}
-	return newPath
+func clipDiffText(s string) string {
+	return runetrim.Cut(markerSafeText(strings.TrimSpace(s)), diffMarkerTextBytes)
 }
 
-// splitGitPaths splits the two paths of a diff --git header using Git's
-// quoting rules: a path containing spaces or unusual bytes is a double-quoted
-// token with C-style escapes, and an unquoted token ends at whitespace. A
-// separator heuristic cannot do this because a destination may itself contain
-// " b/" or spaces.
-func splitGitPaths(rest string) (oldPath, newPath string, ok bool) {
-	oldPath, rest, ok = nextGitPath(rest)
-	if !ok {
-		return "", "", false
-	}
-	newPath, _, ok = nextGitPath(rest)
-	return oldPath, newPath, ok
-}
-
-func nextGitPath(s string) (path, rest string, ok bool) {
-	s = strings.TrimLeft(s, " \t")
-	if s == "" {
-		return "", "", false
-	}
-	if s[0] != '"' {
-		if i := strings.IndexAny(s, " \t"); i >= 0 {
-			return s[:i], s[i:], true
-		}
-		return s, "", true
-	}
+// markerSafeText renders s as one valid UTF-8 display token: control bytes
+// become visible escapes and invalid UTF-8 bytes become Git-style octal
+// escapes, so a path can never add a line break or invalid bytes to the marker.
+func markerSafeText(s string) string {
 	var b strings.Builder
-	for i := 1; i < len(s); i++ {
-		switch s[i] {
-		case '"':
-			return b.String(), s[i+1:], true
-		case '\\':
-			if i+1 >= len(s) {
-				return "", "", false
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c < utf8.RuneSelf {
+			switch {
+			case c == '\n':
+				b.WriteString(`\n`)
+			case c == '\r':
+				b.WriteString(`\r`)
+			case c == '\t':
+				b.WriteString(`\t`)
+			case c < 0x20 || c == 0x7f:
+				fmt.Fprintf(&b, `\%03o`, c)
+			default:
+				b.WriteByte(c)
 			}
 			i++
-			switch c := s[i]; c {
-			case 'a':
-				b.WriteByte('\a')
-			case 'b':
-				b.WriteByte('\b')
-			case 'f':
-				b.WriteByte('\f')
-			case 'n':
-				b.WriteByte('\n')
-			case 'r':
-				b.WriteByte('\r')
-			case 't':
-				b.WriteByte('\t')
-			case 'v':
-				b.WriteByte('\v')
-			case '\\', '"':
-				b.WriteByte(c)
-			default:
-				if c >= '0' && c <= '7' && i+2 < len(s) &&
-					s[i+1] >= '0' && s[i+1] <= '7' && s[i+2] >= '0' && s[i+2] <= '7' {
-					b.WriteByte((c-'0')<<6 | (s[i+1]-'0')<<3 | (s[i+2] - '0'))
-					i += 2
-				} else {
-					b.WriteByte(c)
-				}
-			}
-		default:
-			b.WriteByte(s[i])
+			continue
 		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			fmt.Fprintf(&b, `\%03o`, c)
+			i++
+			continue
+		}
+		b.WriteString(s[i : i+size])
+		i += size
 	}
-	return "", "", false
-}
-
-func clipDiffText(s string) string {
-	return runetrim.Cut(strings.TrimSpace(s), diffMarkerTextBytes)
+	return b.String()
 }
 
 // renderDiffDigest renders the boundary-aligned head and optional tail around
@@ -559,15 +508,16 @@ func renderDiffDigest(full string, w diffWindow, total, dropped int64) string {
 		fmt.Fprintf(&b, "; %s dropped past the retention cap", humanBytes(dropped))
 	}
 	fmt.Fprintf(&b, "; omitted [%d,%d)", start, end)
-	if w.File != "" || w.Hunk != "" {
+	file, hunk := clipDiffText(w.File), clipDiffText(w.Hunk)
+	if file != "" || hunk != "" {
 		b.WriteString(" at")
-		if w.File != "" {
+		if file != "" {
 			b.WriteByte(' ')
-			b.WriteString(w.File)
+			b.WriteString(file)
 		}
-		if w.Hunk != "" {
+		if hunk != "" {
 			b.WriteByte(' ')
-			b.WriteString(w.Hunk)
+			b.WriteString(hunk)
 		}
 	}
 	if w.HeadStart > 0 {

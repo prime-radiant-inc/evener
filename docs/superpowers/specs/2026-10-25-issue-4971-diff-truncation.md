@@ -141,14 +141,14 @@ family and adds structural facts, not a rewritten diff:
   `prefix + HeadEnd` and `end` is `prefix + TailStart` (`prefix` is
   `total - len(full)`, equal to `dropped` in production), clamped to
   nonnegative values;
-- the file and hunk that begin the omitted range, taken from the diff's own
-  `diff --git `/`+++ `/`--- `/`@@ ` lines, rune-safe, newline-free, and capped
-  at 96 bytes each; a hunk at or after the tail start is visible in the tail and
-  is not named as omitted, and a hunkless file section is named from its
-  `diff --git ` header. That header's two paths are parsed with Git's quoting
-  rules (a quoted token with C escapes, or an unquoted token ending at
-  whitespace), never by searching for ` b/` or splitting fields, so a
-  destination path containing that substring or a quoted space stays intact;
+- the file and hunk that begin the omitted range when the section provides an
+  unambiguous `+++ `/`--- `/`@@ ` line: rune-safe, newline-free, and capped at
+  96 bytes each. Control bytes and invalid UTF-8 bytes become visible escapes
+  before the cap, so the marker stays single-line valid UTF-8. A hunk at or
+  after the tail start is visible in the tail and is not named as omitted. A
+  hunkless section (mode-only, binary, or rename-only) has no path line, so its
+  file is left unknown rather than guessed from its `diff --git ` header; the
+  exact omitted range still targets the read;
 - `head starts at byte N` when retention forced a non-prefix head;
 - a `read_transcript` continuation hint naming `offset_bytes=start` and the
   returned job `transcript_ref`.
@@ -178,6 +178,9 @@ This case is documented rather than guessed at.
   ANSI would have to rewrite bytes this change deliberately leaves alone.
 - No combined-diff handling (`diff --cc`, `@@@ `). Those are not unified diffs
   and have a different body grammar.
+- No filename inference from a `diff --git ` header for hunkless, binary or
+  mode-only sections; the marker reports their byte range and leaves the file
+  unknown.
 - No commit-preamble handling. `git show` and `git log -p` begin with a commit
   header rather than `diff --git `, so they keep the existing digest; the
   issue names `git diff`, whose output is anchored at its first line.
@@ -205,8 +208,8 @@ This case is documented rather than guessed at.
      line-aligned trailing peek;
    - ordinary output that quotes a diff after its first line keeps the existing
      head-and-tail digest;
-   - a cut at a hunkless (mode-only) file section names that file from its
-     `diff --git ` header;
+   - a cut at a hunkless (mode-only) file section reports the omitted range and
+     leaves the file unknown;
    - an evicted-prefix output that starts mid-hunk and keeps a later hunk: the
      head starts at that later boundary and the stated lifetime range is
      correct.
@@ -222,11 +225,15 @@ This case is documented rather than guessed at.
      real `diff --git ` header still lets the retained `index `/`--- `/`+++ `
      lines name the file.
    - a leading hunkless section (binary patch) larger than the head budget
-     followed by a text file: the cut inside the hunkless section names that
-     file and no hunk from the following file.
-   - a hunkless section whose `diff --git ` header has a quoted destination
-     containing ` b/`, and one with spaces in both quoted paths: the cut names
-     the full destination, not a suffix or a split field.
+     followed by a text file: the cut reports the range and names neither the
+     binary file nor the following text file.
+   - hunkless sections whose `diff --git ` headers contain a quoted destination
+     containing ` b/`, quoted paths with spaces, an unquoted path with a space,
+     and a quoted path with `\n` and `\377`: each cut reports the range and no
+     guessed filename.
+   - a rendered digest whose parsed path contains a literal newline and an
+     invalid byte: the marker is single-line, valid UTF-8, and shows visible
+     `\n` and `\377` escapes.
    - mixed diff/log output ending in an unterminated line longer than 512
      bytes: the inline digest keeps a rune-safe byte suffix containing the
      final line.
