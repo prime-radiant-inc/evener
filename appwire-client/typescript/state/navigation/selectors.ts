@@ -1,8 +1,9 @@
 // The navigation selectors the web app reads a navigation store's state
 // through (native has no `createNavigationStore` and adopts none of these
 // yet, but could if it ever gains one): the manifest's launch sources,
-// section rows with their remaining count and next offset, the pin-section
-// summaries, the project catalog, and a session summary found by ref. Pure
+// section rows with their remaining count and next offset, whether a section
+// may ask for another page, the pin-section summaries, the project catalog,
+// and a session summary found by ref. Pure
 // over NavigationStoreState - no store handle, no host API - so an app
 // passes whichever instance's state it holds, and a selector that memoizes
 // for one host's render loop stays in that host.
@@ -101,14 +102,42 @@ export function selectNeedsYouRows(state: NavigationStoreState): NavigationSessi
 export function selectNeedsYouCount(state: NavigationStoreState): number {
   return state.manifest?.data?.sections.needs_you.count ?? selectNeedsYouRows(state).length;
 }
-export function selectSectionRemaining(section: "live" | "needs_you", state: NavigationStoreState): number {
-  const pages = [...state.resources.values()].filter(
-    (resource) =>
-      resource.key.kind === "section" &&
-      resource.key.section === section &&
-      resource.data !== null &&
-      state.visibleResourceKeys.has(keyID(resource.key)),
+function sectionPages(section: "live" | "needs_you", state: NavigationStoreState): ResourceState[] {
+  return [...state.resources.values()].filter(
+    (resource) => resource.key.kind === "section" && resource.key.section === section,
   );
+}
+function visibleSectionPages(section: "live" | "needs_you", state: NavigationStoreState): ResourceState[] {
+  return sectionPages(section, state).filter((resource) => state.visibleResourceKeys.has(keyID(resource.key)));
+}
+/** Whether a navigation section may ask for another page.
+ *
+ * A settled page owns completion: once a visible page has answered and is
+ * neither loading nor re-validating, the section's own reported `remaining`
+ * decides. An answer with no data is a settled tombstone, not an absent page,
+ * so it owns completion too. Visibility scopes that answer because a hidden
+ * live page belongs to a background lease, not to the reader; a needs-you page
+ * is always the reader's. The manifest count refreshes on its own schedule and
+ * can lag a queue that has drained, so it may only justify demand before any
+ * page has settled. A failed page keeps demand of its own, even while the
+ * reader cannot see it, and so does a positive remaining count.
+ *
+ * Before any manifest has reported a count, nothing says the section is
+ * empty, so the rule answers demand. The needs-you controller's pre-manifest
+ * bootstrap relies on that; callers that wait for a count keep their own
+ * manifest-presence gate.
+ */
+export function selectSectionCanDemand(section: "live" | "needs_you", state: NavigationStoreState): boolean {
+  const pages = sectionPages(section, state);
+  if (pages.some((page) => page.error !== null)) return true;
+  if (selectSectionRemaining(section, state) > 0) return true;
+  const settled = pages.some((page) => !page.loading && !page.stale && state.visibleResourceKeys.has(keyID(page.key)));
+  if (settled) return false;
+  const count = state.manifest?.data?.sections[section].count;
+  return count === undefined || count > selectSectionRows(section, state).length;
+}
+export function selectSectionRemaining(section: "live" | "needs_you", state: NavigationStoreState): number {
+  const pages = visibleSectionPages(section, state).filter((resource) => resource.data !== null);
   const last = pages
     .sort((a, b) =>
       a.key.kind === "section" && b.key.kind === "section"
@@ -119,12 +148,7 @@ export function selectSectionRemaining(section: "live" | "needs_you", state: Nav
   return (last?.data as { remaining?: number } | null)?.remaining ?? 0;
 }
 export function selectNextSectionOffset(section: "live" | "needs_you", state: NavigationStoreState): number {
-  const pages = [...state.resources.values()].filter(
-    (resource) =>
-      resource.key.kind === "section" &&
-      resource.key.section === section &&
-      state.visibleResourceKeys.has(keyID(resource.key)),
-  );
+  const pages = visibleSectionPages(section, state);
   const last = pages
     .sort((a, b) =>
       a.key.kind === "section" && b.key.kind === "section"

@@ -3,16 +3,13 @@
 // reads, worded for a person rather than mapped to a broad Cadence family.
 // Pure functions, no imports.
 //
-// "awaiting" itself splits on askPending, as hubapi.StateWord (hubapi/
-// attention.go) does for the TUI and the older web surface: "Question
-// waiting" for a pending question, "Needs you" for a turn that ended on
-// needs_response (#4093). A plain reply rests idle and never reads awaiting.
+// "awaiting" itself splits on askPending: "Question waiting" for a pending
+// question, "Needs you" for a turn that ended on needs_response (#4093). A plain reply rests idle and never reads awaiting.
 // Return values are lowercase so each presentation surface can apply its own
 // casing.
 //
-// "warning" gets its own word for the same reason (kata 59mx): StateWord
-// already gives it a dedicated "Warning", distinct from either awaiting
-// band. Sharing Cadence's "needs-you" dot family is still correct: only the
+// "warning" gets its own word for the same reason (kata 59mx): it is a
+// dedicated "Warning", distinct from either awaiting band. Sharing Cadence's "needs-you" dot family is still correct: only the
 // dot family is shared by design, never the word.
 //
 // A pending approval (approvalWaiting below) leads over every state but a

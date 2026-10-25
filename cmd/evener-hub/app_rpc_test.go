@@ -478,6 +478,10 @@ func (s *itemPackingRPCSource) ReadItemCandidates(context.Context, appwire.Threa
 	return s.readCandidates, nil
 }
 
+func (s *itemPackingRPCSource) ItemCandidatesFromRead(context.Context, appwire.ThreadReadParams, appwire.ThreadReadResponse) (appsource.ItemCandidateResult, error) {
+	return s.readCandidates, nil
+}
+
 func (s *itemPackingRPCSource) ListItemCandidates(ctx context.Context, params appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
 	s.candidateListCalls++
 	if s.listCandidates != nil {

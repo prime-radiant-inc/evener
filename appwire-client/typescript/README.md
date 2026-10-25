@@ -505,7 +505,8 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   (`readExpansion`/`writeExpansion`) for expansion, with `projectNodeExpansionKey`
   naming a project's row, and the selectors the web app reads that state
   through (`selectors`): launch sources, section rows with their remaining
-  count and next offset, pin-section summaries, the project catalog and a
+  count and next offset, whether a section may ask for another page,
+  pin-section summaries, the project catalog and a
   session summary found by ref, each pure over `NavigationStoreState` and
   adoptable by native if it ever gains a store, and host grouping
   (`hostGrouping`): where a row, and a project whose rows live on several

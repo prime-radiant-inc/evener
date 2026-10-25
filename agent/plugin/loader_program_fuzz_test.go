@@ -75,32 +75,26 @@ func (r *pluginLoaderProgramReader) token() string {
 }
 
 type pluginLoaderProgramFixture struct {
-	root            string
-	workDir         string
-	alpha           string
-	beta            string
-	gamma           string
-	warn            string
-	duplicate       string
-	badAgent        string
-	badCommand      string
-	broken          string
-	alphaHooks      []byte
-	betaHookPath    string
-	gammaHookPath   string
-	settingsBody    string
-	settingsPlugin  string
-	invalidSettings string
-	token           string
+	root          string
+	alpha         string
+	beta          string
+	gamma         string
+	warn          string
+	duplicate     string
+	badAgent      string
+	badCommand    string
+	broken        string
+	alphaHooks    []byte
+	betaHookPath  string
+	gammaHookPath string
+	token         string
 }
 
 type pluginLoaderProgramTrace struct {
 	Instances       []pluginLoaderProgramInstance
-	LoadAllNames    []string
 	FailSoftNames   []string
 	Skipped         []string
 	ParserHookCount int
-	SettingsBody    string
 }
 
 type pluginLoaderProgramInstance struct {
@@ -163,18 +157,14 @@ func runPluginLoaderProgram(t *testing.T, mode byte, token string) pluginLoaderP
 	assertLoaderProgramFailure(t, fx.badAgent, "bad agent")
 	assertLoaderProgramFailure(t, fx.badCommand, "bad command")
 
-	// Exercise the compatibility wrappers as well as Load's diagnostic form.
-	parsedHooks, err := parsePluginHooks(fx.alphaHooks, alpha.Dir, alpha.Manifest.Name)
-	if err != nil || len(parsedHooks[HookPreToolUse]) != 2 {
-		t.Fatalf("parsePluginHooks(alpha inline): hooks=%#v err=%v", parsedHooks, err)
-	}
+	// Exercise the diagnostic hook parsers directly.
 	parsedDiag, unsupported, unknown, err := parsePluginHooksDiag(fx.alphaHooks, alpha.Dir, alpha.Manifest.Name)
 	if err != nil || len(parsedDiag[HookPreToolUse]) != 2 || !unsupported[HookEvent("WorktreeCreate")] || !unknown["FuturePluginEvent"] {
 		t.Fatalf("parsePluginHooksDiag(alpha inline): hooks=%#v unsupported=%#v unknown=%#v err=%v", parsedDiag, unsupported, unknown, err)
 	}
-	fileHooks, err := discoverPluginHooks(fx.beta, json.RawMessage(`"hooks/custom.json"`), "beta")
+	fileHooks, _, _, err := discoverPluginHooksDiag(fx.beta, json.RawMessage(`"hooks/custom.json"`), "beta")
 	if err != nil || len(fileHooks[HookPostToolUse]) != 1 {
-		t.Fatalf("discoverPluginHooks(file): hooks=%#v err=%v", fileHooks, err)
+		t.Fatalf("discoverPluginHooksDiag(file): hooks=%#v err=%v", fileHooks, err)
 	}
 
 	// Qualified and unique bare lookups have deterministic meaning; an absent
@@ -198,18 +188,6 @@ func runPluginLoaderProgram(t *testing.T, mode byte, token string) pluginLoaderP
 		t.Fatalf("EventTier(unknown) = %q", got)
 	}
 
-	loaded, err := LoadAll([]string{fx.alpha, fx.beta, fx.gamma, fx.warn})
-	if err != nil {
-		t.Fatalf("LoadAll(healthy): %v", err)
-	}
-	loadAllNames := instanceNames(loaded)
-	if want := []string{"alpha", "beta", "gamma", "warn"}; !reflect.DeepEqual(loadAllNames, want) {
-		t.Fatalf("LoadAll ordering = %v, want %v", loadAllNames, want)
-	}
-	if dup, err := LoadAll([]string{fx.alpha, fx.duplicate}); err == nil || dup != nil || !strings.Contains(err.Error(), "duplicate plugin name") {
-		t.Fatalf("LoadAll duplicate = plugins:%#v err:%v, want nil duplicate result and duplicate error", dup, err)
-	}
-
 	failSoft, skipped := LoadAllFailSoft([]string{fx.broken, fx.alpha, fx.duplicate, fx.beta})
 	failSoftNames := instanceNames(failSoft)
 	if want := []string{"alpha", "beta"}; !reflect.DeepEqual(failSoftNames, want) {
@@ -220,17 +198,6 @@ func runPluginLoaderProgram(t *testing.T, mode byte, token string) pluginLoaderP
 		t.Fatalf("LoadAllFailSoft skipped = %#v", skipped)
 	}
 
-	settings, err := LoadSettings(fx.workDir, fx.settingsPlugin)
-	if err != nil || settings == nil || settings.Body != fx.settingsBody || settings.Frontmatter["enabled"] != true {
-		t.Fatalf("LoadSettings(valid) = %#v, %v", settings, err)
-	}
-	missing, err := LoadSettings(fx.workDir, "missing")
-	if err != nil || missing != nil {
-		t.Fatalf("LoadSettings(missing) = %#v, %v", missing, err)
-	}
-	if _, err := LoadSettings(fx.workDir, fx.invalidSettings); err == nil {
-		t.Fatal("LoadSettings(malformed) unexpectedly succeeded")
-	}
 	assertPluginLoaderProgramErrorPaths(t, fx)
 
 	return pluginLoaderProgramTrace{
@@ -240,11 +207,9 @@ func runPluginLoaderProgram(t *testing.T, mode byte, token string) pluginLoaderP
 			summarizePluginLoaderProgramInstance(gamma),
 			summarizePluginLoaderProgramInstance(warn),
 		},
-		LoadAllNames:    loadAllNames,
 		FailSoftNames:   failSoftNames,
 		Skipped:         []string{"broken", "duplicate:alpha"},
-		ParserHookCount: len(parsedHooks[HookPreToolUse]),
-		SettingsBody:    settings.Body,
+		ParserHookCount: len(parsedDiag[HookPreToolUse]),
 	}
 }
 
@@ -255,22 +220,18 @@ func buildPluginLoaderProgramFixture(t *testing.T, mode byte, token string) plug
 		t.Fatalf("EvalSymlinks(temp root): %v", err)
 	}
 	fx := pluginLoaderProgramFixture{
-		root:            root,
-		workDir:         filepath.Join(root, "work"),
-		alpha:           filepath.Join(root, "alpha"),
-		beta:            filepath.Join(root, "beta"),
-		gamma:           filepath.Join(root, "gamma"),
-		warn:            filepath.Join(root, "warn"),
-		duplicate:       filepath.Join(root, "duplicate"),
-		badAgent:        filepath.Join(root, "bad-agent"),
-		badCommand:      filepath.Join(root, "bad-command"),
-		broken:          filepath.Join(root, "broken"),
-		betaHookPath:    filepath.Join(root, "beta", "hooks", "custom.json"),
-		gammaHookPath:   filepath.Join(root, "gamma", "hooks", "hooks.json"),
-		settingsBody:    "project settings " + token + "\n",
-		settingsPlugin:  "alpha",
-		invalidSettings: "invalid",
-		token:           token,
+		root:          root,
+		alpha:         filepath.Join(root, "alpha"),
+		beta:          filepath.Join(root, "beta"),
+		gamma:         filepath.Join(root, "gamma"),
+		warn:          filepath.Join(root, "warn"),
+		duplicate:     filepath.Join(root, "duplicate"),
+		badAgent:      filepath.Join(root, "bad-agent"),
+		badCommand:    filepath.Join(root, "bad-command"),
+		broken:        filepath.Join(root, "broken"),
+		betaHookPath:  filepath.Join(root, "beta", "hooks", "custom.json"),
+		gammaHookPath: filepath.Join(root, "gamma", "hooks", "hooks.json"),
+		token:         token,
 	}
 
 	var agentsOverride any = []string{"extra-agents"}
@@ -353,8 +314,6 @@ func buildPluginLoaderProgramFixture(t *testing.T, mode byte, token string) plug
 	writePluginLoaderProgramManifest(t, fx.badCommand, ".claude-plugin", map[string]any{"name": "bad-command"})
 	writePluginLoaderProgramFile(t, fx.badCommand, filepath.Join("commands", "broken.md"), "---\nnot yaml: [}\n---\n")
 
-	writePluginLoaderProgramFile(t, fx.workDir, filepath.Join(".claude", "alpha.local.md"), "---\nenabled: true\nmode: "+token+"\n---\n"+fx.settingsBody)
-	writePluginLoaderProgramFile(t, fx.workDir, filepath.Join(".claude", "invalid.local.md"), "---\nkey: \"unterminated\n---\n")
 	if err := os.MkdirAll(fx.broken, 0o700); err != nil {
 		t.Fatalf("mkdir broken plugin: %v", err)
 	}
@@ -572,16 +531,8 @@ func assertPluginLoaderProgramErrorPaths(t *testing.T, fx pluginLoaderProgramFix
 		t.Fatalf("write not-a-plugin-dir: %v", err)
 	}
 	assertLoaderProgramFailure(t, notDir, "file root")
-	if loaded, err := LoadAll([]string{fx.broken}); err == nil || loaded != nil {
-		t.Fatalf("LoadAll(broken) = %#v, %v", loaded, err)
-	}
-
-	settingsDir := filepath.Join(fx.workDir, ".claude", "directory.local.md")
-	if err := os.MkdirAll(settingsDir, 0o700); err != nil {
-		t.Fatalf("mkdir settings path: %v", err)
-	}
-	if _, err := LoadSettings(fx.workDir, "directory"); err == nil {
-		t.Fatal("LoadSettings(directory path) unexpectedly succeeded")
+	if loaded, skipped := LoadAllFailSoft([]string{fx.broken}); len(loaded) != 0 || len(skipped) != 1 {
+		t.Fatalf("LoadAllFailSoft(broken) = %#v, %#v", loaded, skipped)
 	}
 }
 

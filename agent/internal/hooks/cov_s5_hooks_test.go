@@ -29,12 +29,12 @@ func TestCov_NewRunner(t *testing.T) {
 // shell selection.
 func TestCov_ExecuteCommandHook_ShellSelection(t *testing.T) {
 	_, err := executeCommandHook(context.Background(),
-		plugin.RegisteredHook{Type: "command", Command: "echo hi", Shell: "powershell", Timeout: 5}, Input{})
+		plugin.RegisteredHook{Type: "command", Command: "echo hi", Shell: "powershell", Timeout: 5}, Input{}, newSystemCommandHookRuntime())
 	if err == nil || !strings.Contains(err.Error(), "powershell") {
 		t.Errorf("powershell shell should be rejected, got %v", err)
 	}
 	_, err = executeCommandHook(context.Background(),
-		plugin.RegisteredHook{Type: "command", Command: "echo hi", Shell: "tcsh", Timeout: 5}, Input{})
+		plugin.RegisteredHook{Type: "command", Command: "echo hi", Shell: "tcsh", Timeout: 5}, Input{}, newSystemCommandHookRuntime())
 	if err == nil || !strings.Contains(err.Error(), "unsupported shell") {
 		t.Errorf("non-bash shell should be rejected, got %v", err)
 	}

@@ -189,6 +189,31 @@ export interface ConversationMutationState {
 	admittedMutationId?: string;
 }
 
+/** The any-mutation click-to-commit window: present from a Send, Queue or Stop
+ * press until that attempt settles. Screens read this one fact so every guard
+ * — not only Stop's — refuses while any mutation is in flight. The admitted id
+ * is recorded once the durable submitter returns one. */
+export interface ConversationPendingSubmission {
+	readonly kind: ConversationMutationState["kind"];
+	/** @internal — the durable row's clientMutationId once admitted. */
+	readonly admittedMutationId?: string;
+}
+
+/** The retained terminal failure: derived from the failed pending record, so
+ * it is non-null exactly while that record is failed and survives or ends
+ * with it. Failed-retention readers — the rehydrate error guard — read this
+ * marker rather than the legacy record's status. The error text itself stays
+ * in `error` and the draft restore in `draft`; the marker carries only the
+ * failed attempt's identity, plus the durable row's id when the attempt was
+ * admitted. */
+export interface ConversationFailedSubmission {
+	readonly kind: ConversationMutationState["kind"];
+	/** @internal — the failed attempt's own monotonic id. */
+	readonly mutationId: number;
+	/** @internal — the durable row's clientMutationId once admitted. */
+	readonly admittedMutationId?: string;
+}
+
 /** Display-safe local acknowledgement of a completed production mutation. A
  * durable admission has no wire receipt to carry (the runtime settles at the
  * enqueue boundary, before the daemon answers), so the receipt is optional and
@@ -408,6 +433,14 @@ export interface ConversationState {
 
 	readonly draft: string;
 	readonly pendingMutation?: ConversationMutationState | null;
+	/** The in-flight mutation's click-to-commit marker: non-null from the
+	 * Send/Queue/Stop press until the attempt settles. */
+	readonly pendingSubmission: ConversationPendingSubmission | null;
+	/** The retained terminal-failure marker, derived at the set chokepoint
+	 * from the pending record: non-null exactly while that record is failed,
+	 * surviving a rebind with it and ending at the next admission or any
+	 * state that clears the record. */
+	readonly failedSubmission: ConversationFailedSubmission | null;
 	// Slice 7a: the durable pending rows a host's bound seam projects. Null until
 	// a seam is bound (LiveConversationState.bindPendingMutations); never a
 	// per-process memory fact, so it survives a cold reopen.
@@ -1765,6 +1798,15 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		const set = (partial: Partial<ConversationState>) => {
 			if ("pendingMutation" in partial) mutationOwnerRev += 1;
 			if ("error" in partial) errorOwnerRev += 1;
+			// Stage C: the retained-failure marker is a projection of the pending
+			// record, never a second hand-maintained fact. Deriving it at this
+			// chokepoint makes "marker non-null exactly while the record is
+			// failed" hold by construction for every writer, including the ones
+			// that only clear.
+			let out = partial;
+			if ("pendingMutation" in partial) {
+				out = { ...partial, failedSubmission: failedSubmissionFor(partial.pendingMutation ?? null) };
+			}
 			// A conversation write is the one model change the reconciliation has to
 			// see: re-project the durable rows against the model being committed, so a
 			// mutation the model now reflects drops out with no storage round-trip.
@@ -1773,19 +1815,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			// mutation, pendingMutations still holds its stale row). A partial that
 			// publishes its own pendingMutations (open/close/reset/unbind) owns that
 			// field and is written as-is.
-			if (
-				"conversation" in partial &&
-				!("pendingMutations" in partial) &&
-				pendingPort !== null &&
-				pendingSnapshot !== null
-			) {
-				const next = reconcilePendingMutations(partial.conversation);
+			if ("conversation" in out && !("pendingMutations" in out) && pendingPort !== null && pendingSnapshot !== null) {
+				const next = reconcilePendingMutations(out.conversation);
 				if (!samePendingRows(get().pendingMutations, next)) {
-					rawSet({ ...partial, pendingMutations: next });
+					rawSet({ ...out, pendingMutations: next });
 					return;
 				}
 			}
-			rawSet(partial);
+			rawSet(out);
 		};
 		// Record the durable row's identity on the attempt's pending record once
 		// the submitter admits it. Only the attempt that still owns the record
@@ -1797,7 +1834,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			mutation: ConversationMutationState,
 		) => {
 			if (admission === undefined || get().pendingMutation?.mutationId !== mutationId) return;
-			set({ pendingMutation: { ...mutation, admittedMutationId: admission.clientMutationId } });
+			set({
+				pendingMutation: { ...mutation, admittedMutationId: admission.clientMutationId },
+				pendingSubmission: { kind: mutation.kind, admittedMutationId: admission.clientMutationId },
+			});
 		};
 		storeGet = get;
 		// The one chokepoint for canonical-read validity transitions. Guarded so
@@ -1854,6 +1894,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 
 			draft: "",
 			pendingMutation: null,
+			pendingSubmission: null,
+			failedSubmission: null,
 			pendingMutations: null,
 			pendingMutationsReady: false,
 			lastAcceptedMutation: null,
@@ -1971,6 +2013,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					loadingOlder: false,
 					draft: "",
 					pendingMutation: null,
+					pendingSubmission: null,
 					pendingMutations: null,
 					pendingMutationsReady: false,
 					lastAcceptedMutation: null,
@@ -2042,6 +2085,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					loadingOlder: false,
 					draft: "",
 					pendingMutation: null,
+					pendingSubmission: null,
 					pendingMutations: null,
 					pendingMutationsReady: false,
 					lastAcceptedMutation: null,
@@ -2123,6 +2167,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					error: null,
 					latestReadState: "unknown",
 					pendingMutation: null,
+					pendingSubmission: null,
 					loadingOlder: false,
 					conversationGeneration: conversationGen,
 				});
@@ -2156,6 +2201,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					error: null,
 					latestReadState: "reading",
 					pendingMutation: null,
+					pendingSubmission: null,
 					loadingOlder: false,
 					conversationGeneration: gen,
 				});
@@ -2255,7 +2301,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// Settle the old pending mutation — it belongs to A's binding.
 						// Do NOT write error (a newer error owner may own it). Just
 						// clear the pending state so it's not permanently stuck.
-						set({ pendingMutation: null });
+						set({ pendingMutation: null, pendingSubmission: null });
 					}
 					// I5: Settle held loadingOlder from the old binding.
 					if (get().loadingOlder) {
@@ -2481,7 +2527,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// subsequent mutation or open clears it.
 					const currentState = get();
 					const errorUnchanged = entryErrorRev === errorOwnerRev;
-					const mutationOwnsError = currentState.pendingMutation?.status === "failed";
+					const mutationOwnsError = currentState.failedSubmission !== null;
 					// #1919 follow-up: bound the merged result AFTER the merge, so
 					// turns inside the keep-window keep everything the held history
 					// supplied, and only out-of-window payloads trim. The final
@@ -3116,6 +3162,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				set({
 					draft: "",
 					pendingMutation: mutation,
+					pendingSubmission: { kind: "send" },
 					lastAcceptedMutation: null,
 					error: null,
 				});
@@ -3150,12 +3197,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						if (entryErrorRev === errorOwnerRev) {
 							set({
 								pendingMutation: null,
+								pendingSubmission: null,
 								lastAcceptedMutation: accepted,
 								error: null,
 							});
 						} else {
 							set({
 								pendingMutation: null,
+								pendingSubmission: null,
 								lastAcceptedMutation: accepted,
 							});
 						}
@@ -3169,7 +3218,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// ghost. Only a still-current binding owns the store's marker.
 					if (err instanceof MutationNotSentError) {
 						if (isBindingCurrent(opBinding) && get().pendingMutation?.mutationId === mutationId)
-							set({ pendingMutation: null });
+							set({ pendingMutation: null, pendingSubmission: null });
 						throw err;
 					}
 					// C1: Recheck the exact operation binding after the await.
@@ -3217,6 +3266,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				set({
 					draft: "",
 					pendingMutation: mutation,
+					pendingSubmission: { kind: "queue" },
 					lastAcceptedMutation: null,
 					error: null,
 				});
@@ -3242,12 +3292,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						if (entryErrorRev === errorOwnerRev) {
 							set({
 								pendingMutation: null,
+								pendingSubmission: null,
 								lastAcceptedMutation: accepted,
 								error: null,
 							});
 						} else {
 							set({
 								pendingMutation: null,
+								pendingSubmission: null,
 								lastAcceptedMutation: accepted,
 							});
 						}
@@ -3257,7 +3309,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				} catch (err) {
 					if (err instanceof MutationNotSentError) {
 						if (isBindingCurrent(opBinding) && get().pendingMutation?.mutationId === mutationId)
-							set({ pendingMutation: null });
+							set({ pendingMutation: null, pendingSubmission: null });
 						throw err;
 					}
 					// C1: Recheck the exact operation binding after the await.
@@ -3305,6 +3357,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// Fix round 1 I3: atomically clear prior error with new pending mutation.
 				set({
 					pendingMutation: mutation,
+					pendingSubmission: { kind: "interrupt" },
 					lastAcceptedMutation: null,
 					error: null,
 				});
@@ -3322,12 +3375,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						if (entryErrorRev === errorOwnerRev) {
 							set({
 								pendingMutation: null,
+								pendingSubmission: null,
 								lastAcceptedMutation: accepted,
 								error: null,
 							});
 						} else {
 							set({
 								pendingMutation: null,
+								pendingSubmission: null,
 								lastAcceptedMutation: accepted,
 							});
 						}
@@ -3386,6 +3441,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					ref: null,
 					draft: "",
 					pendingMutation: null,
+					pendingSubmission: null,
 					pendingMutations: null,
 					pendingMutationsReady: false,
 					lastAcceptedMutation: null,
@@ -3621,6 +3677,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					latestReadState: "unknown",
 					draft: "",
 					pendingMutation: null,
+					pendingSubmission: null,
 					pendingMutations: null,
 					pendingMutationsReady: false,
 					lastAcceptedMutation: null,
@@ -3648,6 +3705,19 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			},
 		};
 	});
+}
+
+// Stage C: the retained-failure marker as a pure projection of the pending
+// record — non-null exactly while that record is failed. The set chokepoint
+// derives it from every record write, so no writer can leave the pair out
+// of step; the failure sites write only the record.
+function failedSubmissionFor(record: ConversationMutationState | null): ConversationFailedSubmission | null {
+	if (record === null || record.status !== "failed") return null;
+	return {
+		kind: record.kind,
+		mutationId: record.mutationId,
+		...(record.admittedMutationId !== undefined ? { admittedMutationId: record.admittedMutationId } : {}),
+	};
 }
 
 // Shared mutation error handler. On failure, the failed mutation state
@@ -3702,9 +3772,12 @@ function handleMutationError(
 		// revision during the await.
 		const shouldRestore = draftSnapshot !== null && getDraftRevision() === revisionAtSubmit;
 		const newError = err instanceof Error ? err.message : String(err);
+		// The retained-failure marker is derived from the failed record these
+		// writes install (see failedSubmissionFor at the set chokepoint).
 		if (entryErrorRev === getErrorOwnerRev()) {
 			set({
 				pendingMutation: { ...mutation, status: "failed" },
+				pendingSubmission: null,
 				...(shouldRestore ? { draft: draftSnapshot } : {}),
 				error: newError,
 			});
@@ -3714,6 +3787,7 @@ function handleMutationError(
 			// pending/draft restoration.
 			set({
 				pendingMutation: { ...mutation, status: "failed" },
+				pendingSubmission: null,
 				...(shouldRestore ? { draft: draftSnapshot } : {}),
 			});
 		}

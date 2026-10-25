@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -16,15 +15,13 @@ import (
 
 const embeddedDoctoringSkill = "doctoring-evener"
 
-func TestExtractEmbeddedSkills_CreatesDir(t *testing.T) {
+func TestEmbeddedSkillsDir_HasSkillDirectories(t *testing.T) {
 	t.Parallel()
-	dir, err := skill.ExtractEmbeddedSkills()
+	dir, err := skill.EmbeddedSkillsDir()
 	if err != nil {
-		t.Fatalf("extractEmbeddedSkills: %v", err)
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
 	}
-	defer os.RemoveAll(dir)
 
-	// Should create a temp directory with skill subdirectories.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
@@ -34,13 +31,12 @@ func TestExtractEmbeddedSkills_CreatesDir(t *testing.T) {
 	}
 }
 
-func TestExtractEmbeddedSkills_IncludesDoctoringSkill(t *testing.T) {
+func TestEmbeddedSkillsDir_IncludesDoctoringSkill(t *testing.T) {
 	t.Parallel()
-	dir, err := skill.ExtractEmbeddedSkills()
+	dir, err := skill.EmbeddedSkillsDir()
 	if err != nil {
-		t.Fatalf("extractEmbeddedSkills: %v", err)
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
 	}
-	defer os.RemoveAll(dir)
 
 	skills := make(map[string]skill.SkillMeta)
 	skill.ScanSkillsDir(dir, skills)
@@ -53,47 +49,14 @@ func TestExtractEmbeddedSkills_IncludesDoctoringSkill(t *testing.T) {
 	}
 }
 
-func TestExtractEmbeddedSkills_DiscoverableByDiscoverSkills(t *testing.T) {
+func TestDiscover_IncludesEmbeddedSkills(t *testing.T) {
 	t.Parallel()
-	dir, err := skill.ExtractEmbeddedSkills()
-	if err != nil {
-		t.Fatalf("extractEmbeddedSkills: %v", err)
-	}
-	defer os.RemoveAll(dir)
-
-	// The extracted dir should work as an extraDirs argument to DiscoverSkills.
 	root := t.TempDir()
 	markGitRoot(t, root)
 
-	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := skill.DiscoverSkills(env, dir)
-
-	if _, ok := skills[embeddedDoctoringSkill]; !ok {
-		t.Fatalf("expected embedded %q skill from extracted dir, got %v", embeddedDoctoringSkill, builtinSkillNames(skills))
-	}
-}
-
-func TestExtractEmbeddedSkills_FilesystemShadowsEmbedded(t *testing.T) {
-	t.Parallel()
-	dir, err := skill.ExtractEmbeddedSkills()
-	if err != nil {
-		t.Fatalf("extractEmbeddedSkills: %v", err)
-	}
-	defer os.RemoveAll(dir)
-
-	root := t.TempDir()
-	markGitRoot(t, root)
-	writeSkillMD(t, root, embeddedDoctoringSkill,
-		"---\nname: doctoring-evener\ndescription: \"Project doctoring override\"\n---\nCustom doctoring.\n")
-
-	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := make(map[string]skill.SkillMeta)
-	skill.ScanSkillsDir(dir, skills)
-	maps.Copy(skills, skill.DiscoverSkills(env))
-
-	doctoring := skills[embeddedDoctoringSkill]
-	if doctoring.Description != "Project doctoring override" {
-		t.Fatalf("expected project skill to shadow embedded skill, got description %q", doctoring.Description)
+	catalog := skill.Discover(execenv.NewLocalExecutionEnvironment(root), skill.DiscoverOptions{})
+	if _, ok := catalog.Entries[embeddedDoctoringSkill]; !ok {
+		t.Fatalf("expected embedded %q skill in the catalog", embeddedDoctoringSkill)
 	}
 }
 
@@ -261,11 +224,10 @@ func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 func TestEmbeddedSkills_AllSkillsLoadable(t *testing.T) {
 	t.Parallel()
 	// Verify every embedded skill can be discovered and its body loaded.
-	dir, err := skill.ExtractEmbeddedSkills()
+	dir, err := skill.EmbeddedSkillsDir()
 	if err != nil {
-		t.Fatalf("extractEmbeddedSkills: %v", err)
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
 	}
-	defer os.RemoveAll(dir)
 
 	skills := make(map[string]skill.SkillMeta)
 	skill.ScanSkillsDir(dir, skills)
@@ -274,9 +236,9 @@ func TestEmbeddedSkills_AllSkillsLoadable(t *testing.T) {
 		t.Fatal("expected at least one embedded skill")
 	}
 	for name, meta := range skills {
-		body, err := skill.LoadSkillBody(meta)
+		body, err := loadSkillBody(meta)
 		if err != nil {
-			t.Fatalf("LoadSkillBody(%s): %v", name, err)
+			t.Fatalf("Load(%s): %v", name, err)
 		}
 		if strings.TrimSpace(body) == "" {
 			t.Fatalf("embedded skill %q has empty body", name)

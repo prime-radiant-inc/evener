@@ -100,36 +100,6 @@ func TestRound11InstallerFallbackStreamsTheEmbeddedScript(t *testing.T) {
 	}
 }
 
-// TestRound11ListenerProbeTiersBeyondLsof pins the round-eleven Medium that
-// lsof was an undocumented hard dependency: the port probe answered a host
-// without it with a fatal ErrRestart, so a fresh host could never be
-// provisioned. The probe must prefer lsof, then fall back to ss and to the
-// kernel's TCP tables, and must fail closed — never report a free port — when no
-// probe can run.
-func TestRound11ListenerProbeTiersBeyondLsof(t *testing.T) {
-	got := listenerProbeRemote("9180")
-	lsofTier := strings.Index(got, "lsof -ti :9180 -sTCP:LISTEN; s=$?; if [ $s -eq 1 ]; then echo "+noListenerMarker+"; exit 0; fi; exit $s")
-	ssTier := strings.Index(got, "command -v ss")
-	procTier := strings.Index(got, "/proc/net/tcp")
-	if lsofTier < 0 || ssTier < 0 || procTier < 0 {
-		t.Fatalf("the port probe lost a tier (lsof=%d ss=%d proc=%d): %q", lsofTier, ssTier, procTier, got)
-	}
-	if lsofTier >= ssTier || ssTier >= procTier {
-		t.Fatalf("the probe tiers are out of order (lsof=%d ss=%d proc=%d): %q", lsofTier, ssTier, procTier, got)
-	}
-	if !strings.Contains(got, listenerPresentMarker) {
-		t.Fatalf("the probe cannot report a listener it could not name: %q", got)
-	}
-	// Fail closed: the no-tool exit path must come after every tier and must
-	// carry a diagnostic, so an unprobeable host is an error rather than a free
-	// port.
-	noTool := strings.Index(got, "no listener probe is available")
-	lastExit := strings.LastIndex(got, "exit 1")
-	if noTool < 0 || lastExit < 0 || noTool > lastExit || lastExit < procTier {
-		t.Fatalf("the probe does not fail closed when no tool can run (noTool=%d lastExit=%d): %q", noTool, lastExit, got)
-	}
-}
-
 // TestRound11PreflightDiscoveredTargetReachesTheAttachArgv pins the round-eleven
 // Medium that a target discovered by preflight never reached host.EvenerPath:
 // for an already-healthy host whose binary lives at the installer default (off

@@ -5,7 +5,7 @@ import { Button } from "../button";
 import { OverlayPanel } from "../dialog/OverlayPanel";
 import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
-import { useOwnedDocument } from "../internal/useOwnedDocument";
+import { usePortalDocument } from "../internal/usePortalDocument";
 import styles from "./directorypicker.module.css";
 
 export interface DirectoryPickerProps {
@@ -82,17 +82,10 @@ export function DirectoryPicker({
   const nameId = useId();
   // The picker's panel is its only DOM output, so it has no element of its own
   // to read a realm from before the portal exists. A hidden host marker names
-  // the document the picker was mounted into (a Dockview popout has its own),
-  // and the shared ownership hook keeps it current across a move.
+  // the document the picker was mounted into (a Dockview popout has its own);
+  // the shared portal seam re-renders before paint once it attaches.
   const hostRef = useRef<HTMLSpanElement>(null);
-  const ownerDocument = useOwnedDocument(hostRef);
-  const panelDocument = hostRef.current === null ? null : ownerDocument;
-  const [, setHostMounted] = useState(0);
-  // The marker's ref attaches after the first render; re-render once, before
-  // paint, so the panel portals straight into the owning document's body.
-  useLayoutEffect(() => {
-    if (panelDocument === null) setHostMounted((renders) => renders + 1);
-  }, [panelDocument]);
+  const panelDocument = usePortalDocument(hostRef);
 
   async function browse(path: string, preserveFocusedInput = false) {
     // Rows disappear during navigation. Keep focus on a persistent control

@@ -453,13 +453,13 @@ func TestOpenAIUseSkillToolExecutes(t *testing.T) {
 	}
 }
 
-func TestDiscoverSkills_PopulatedOnSession(t *testing.T) {
+func TestDiscover_NonGitDirectory(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
 
-	// Verify DiscoverSkills actually works at the filesystem level — the session
+	// Verify discovery actually works at the filesystem level — the session
 	// field test is in TestUseSkill_SystemPromptContainsSkillList above.
 	// Also verify that a non-git directory (skill dir created manually) still works.
 	nonGit := t.TempDir()
@@ -470,7 +470,7 @@ func TestDiscoverSkills_PopulatedOnSession(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: manual\ndescription: \"Manual skill\"\n---\nManual.\n"), 0o644)
 
 	env := execenv.NewLocalExecutionEnvironment(nonGit)
-	skills := skill.DiscoverSkills(env)
+	skills := discoverProjectSkills(t, env)
 	if _, ok := skills["manual"]; !ok {
 		t.Errorf("expected skill 'manual' discovered in non-git directory")
 	}

@@ -247,16 +247,4 @@ func fuzzScenarioCoverageHTTPFailures(t *testing.T) {
 		t.Fatal("invalid URL unexpectedly succeeded")
 	}
 
-	p := NewRESTProxy(fakeResolver{})
-	rr := httptest.NewRecorder()
-	p.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/bad", nil))
-	if rr.Code != http.StatusNotFound {
-		t.Fatal(rr.Code)
-	}
-	p.proxyFor("127.0.0.1:1")
-	p.proxyFor("127.0.0.1:1")
 }
-
-type fakeResolver struct{}
-
-func (fakeResolver) Find(string) (LiveEntry, bool) { return LiveEntry{}, false }

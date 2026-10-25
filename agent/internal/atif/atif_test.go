@@ -48,7 +48,7 @@ func TestConvertToATIF_SimpleConversation(t *testing.T) {
 		},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 
 	// --- Root trajectory fields ---
 	if traj.SchemaVersion != "ATIF-v1.7" {
@@ -245,7 +245,7 @@ func TestConvertToATIF_ToolUse(t *testing.T) {
 		},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 
 	// ASSISTANT + TOOL_RESULTS should merge into one step → 2 total steps (user + agent).
 	if len(traj.Steps) != 2 {
@@ -370,7 +370,7 @@ func TestConvertToATIF_AttentionResolutionIsTransparentToToolRound(t *testing.T)
 		{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "probe", "visible result", false))},
 	}
 
-	traj := Convert(transcript.Header{SessionID: "session-private-marker"}, entries)
+	traj := Convert(transcript.Header{SessionID: "session-private-marker"}, entries, Options{})
 	if len(traj.Steps) != 1 {
 		t.Fatalf("steps = %#v, want one assistant/tool-result step", traj.Steps)
 	}
@@ -471,7 +471,7 @@ func TestConvertToATIF_ToolError(t *testing.T) {
 		},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 
 	if len(traj.Steps) != 2 {
 		t.Fatalf("len(Steps) = %d, want 2", len(traj.Steps))
@@ -568,7 +568,7 @@ func TestConvertToATIF_ThinkingContent(t *testing.T) {
 		},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 
 	if len(traj.Steps) != 2 {
 		t.Fatalf("len(Steps) = %d, want 2", len(traj.Steps))
@@ -597,7 +597,7 @@ func TestConvertToATIF_ThinkingContent(t *testing.T) {
 		{Kind: llm.ContentText, Text: "Here is the answer."},
 	}
 
-	traj2 := Convert(header, entries)
+	traj2 := Convert(header, entries, Options{})
 	agentStep2 := traj2.Steps[1]
 	if agentStep2.Extra["has_redacted_thinking"] != true {
 		t.Errorf("Extra[has_redacted_thinking] = %v, want true (ContentRedThinking)", agentStep2.Extra["has_redacted_thinking"])
@@ -620,7 +620,7 @@ func TestConvertToATIF_ThinkingContent(t *testing.T) {
 		{Kind: llm.ContentText, Text: "Answer with redacted flag."},
 	}
 
-	traj3 := Convert(header, entries)
+	traj3 := Convert(header, entries, Options{})
 	agentStep3 := traj3.Steps[1]
 	if agentStep3.Extra["has_redacted_thinking"] != true {
 		t.Errorf("Extra[has_redacted_thinking] = %v, want true (Redacted flag)", agentStep3.Extra["has_redacted_thinking"])
@@ -661,7 +661,7 @@ func TestConvertToATIF_CheckpointAndSummary(t *testing.T) {
 		},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 
 	if len(traj.Steps) != 2 {
 		t.Fatalf("len(Steps) = %d, want 2", len(traj.Steps))
@@ -720,7 +720,7 @@ func TestConvertToATIF_ModelSwitch(t *testing.T) {
 		},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
@@ -749,7 +749,7 @@ func TestConvertToATIF_EmptyTranscript(t *testing.T) {
 		ProfileID:    "openai",
 	}
 
-	traj := Convert(header, nil)
+	traj := Convert(header, nil, Options{})
 
 	if traj.SchemaVersion != "ATIF-v1.7" {
 		t.Errorf("SchemaVersion = %q, want %q", traj.SchemaVersion, "ATIF-v1.7")
@@ -796,7 +796,7 @@ func TestConvertToATIF_MissingBuildVersion(t *testing.T) {
 		// BuildVersion deliberately empty
 	}
 
-	traj := Convert(header, nil)
+	traj := Convert(header, nil, Options{})
 
 	if traj.Agent.Version != "unknown" {
 		t.Errorf("Agent.Version = %q, want %q", traj.Agent.Version, "unknown")
@@ -825,7 +825,7 @@ func TestConvertToATIF_SteeringTurn(t *testing.T) {
 		},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
@@ -882,7 +882,7 @@ func TestConvertToATIF_OrphanedToolResults(t *testing.T) {
 		},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
@@ -974,7 +974,7 @@ func TestConvertToATIF_WebSearch(t *testing.T) {
 		},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 
 	if len(traj.Steps) != 2 {
 		t.Fatalf("len(Steps) = %d, want 2", len(traj.Steps))
@@ -1095,7 +1095,7 @@ func TestConvertToATIF_MultiRound(t *testing.T) {
 		},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 
 	// USER + ASSISTANT/TOOL_RESULTS (merged) + ASSISTANT = 3 steps
 	if len(traj.Steps) != 3 {
@@ -1205,7 +1205,7 @@ func TestConvertToATIF_FinalMetricsPromptWireVolume(t *testing.T) {
 		}},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 	fm := traj.FinalMetrics
 	if fm == nil {
 		t.Fatal("FinalMetrics is nil")
@@ -1289,7 +1289,7 @@ func TestConvertToATIF_FinalMetricsPromptWireVolume(t *testing.T) {
 
 	// A trajectory with no usage reports explicit zeros rather than omitting
 	// the keys, so an absent key always means an older exporter.
-	empty := Convert(header, nil)
+	empty := Convert(header, nil, Options{})
 	if empty.FinalMetrics == nil || empty.FinalMetrics.Extra == nil {
 		t.Fatal("empty trajectory FinalMetrics.Extra is nil; want explicit zero keys")
 	}
@@ -1384,7 +1384,7 @@ func TestConvertToATIF_SkipsCompactionFoldCopies(t *testing.T) {
 		}},
 	}
 
-	traj := Convert(transcript.Header{SessionID: "sess-fold", Model: "claude-sonnet"}, entries)
+	traj := Convert(transcript.Header{SessionID: "sess-fold", Model: "claude-sonnet"}, entries, Options{})
 
 	// user, the assistant/tool-result round, checkpoint, summary, the real turn
 	// after the fold. The copied assistant and tool results are not a second
@@ -1459,7 +1459,7 @@ func TestConvertToATIF_SkipsFoldCopyInSplitToolRound(t *testing.T) {
 		{Kind: "entry", Seq: 5, Turn: results},
 	}
 
-	traj := Convert(transcript.Header{SessionID: "sess-split-fold"}, entries)
+	traj := Convert(transcript.Header{SessionID: "sess-split-fold"}, entries, Options{})
 
 	// user, the original assistant, checkpoint, summary, orphaned results. The
 	// copy adds no step.
@@ -1506,7 +1506,7 @@ func TestConvertToATIF_RawUsage(t *testing.T) {
 		}},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
 	}
@@ -1545,7 +1545,7 @@ func TestConvertToATIF_WebSearchRaw(t *testing.T) {
 		}},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
 	}
@@ -1585,7 +1585,7 @@ func TestConvertToATIF_ResponsesProviderHandlesRedacted(t *testing.T) {
 		}},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
 	}
@@ -1619,7 +1619,7 @@ func TestConvertToATIF_ResponsesProviderHandlesRawLocal(t *testing.T) {
 		}},
 	}
 
-	traj := ConvertWithOptions(header, entries, Options{ProviderHandles: ProviderHandleModeRawLocal})
+	traj := Convert(header, entries, Options{ProviderHandles: ProviderHandleModeRawLocal})
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
 	}
@@ -1646,7 +1646,7 @@ func TestConvertTranscriptToATIF_SemanticAttemptAttribution(t *testing.T) {
 		}},
 	}
 
-	traj := ConvertTranscriptWithOptions(header, entries, Options{ProviderHandles: ProviderHandleModeRedacted})
+	traj := Convert(header, entries, Options{ProviderHandles: ProviderHandleModeRedacted})
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
 	}
@@ -1672,7 +1672,7 @@ func TestConvertToATIF_TurnSystem(t *testing.T) {
 		}},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
 	}
@@ -1711,7 +1711,7 @@ func TestConvertToATIF_TurnFailure(t *testing.T) {
 		}},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1 — a failed turn must not vanish from the trajectory", len(traj.Steps))
@@ -1783,7 +1783,7 @@ func TestConvertToATIF_HookCompleted(t *testing.T) {
 		}},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
@@ -1836,7 +1836,7 @@ func TestConvertToATIF_UnknownTurnKind(t *testing.T) {
 		}},
 	}
 
-	traj := Convert(header, entries)
+	traj := Convert(header, entries, Options{})
 
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1 — an unknown kind must not be dropped in silence", len(traj.Steps))

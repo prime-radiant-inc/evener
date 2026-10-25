@@ -104,15 +104,7 @@ func NormalizeProviderHandleMode(mode string) (ProviderHandleMode, error) {
 }
 
 // Convert converts a evener transcript (header + entries) into an ATIF v1.7 trajectory.
-func Convert(header transcript.Header, entries []transcript.Entry) Trajectory {
-	return ConvertWithOptions(header, entries, Options{ProviderHandles: ProviderHandleModeRedacted})
-}
-
-func ConvertWithOptions(header transcript.Header, entries []transcript.Entry, opts Options) Trajectory {
-	return ConvertTranscriptWithOptions(header, entries, opts)
-}
-
-func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript.Entry, opts Options) Trajectory {
+func Convert(header transcript.Header, entries []transcript.Entry, opts Options) Trajectory {
 	opts.ProviderHandles, _ = NormalizeProviderHandleMode(string(opts.ProviderHandles))
 	version := header.BuildVersion
 	if version == "" {

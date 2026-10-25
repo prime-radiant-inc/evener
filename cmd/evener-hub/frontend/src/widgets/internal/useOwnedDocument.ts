@@ -1,4 +1,4 @@
-import { type RefObject, useEffect, useState } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useState } from "react";
 import { ownerDocumentOf } from "./documentRealm";
 
 interface DocumentWatch {
@@ -67,7 +67,12 @@ export function useOwnedDocument<T extends Node>(ref: RefObject<T | null>, enabl
   // every later render, and the watch below catches a move while live. Running
   // this on every commit put one extra effect on every consumer render (the
   // composer's textarea re-renders per keystroke).
-  useEffect(() => {
+  //
+  // Layout, not passive, because the correction has to land before paint: a
+  // widget mounted straight into a popout must never be visible on the
+  // opener's document. A passive correction left the opener's document
+  // observable until after the frame.
+  useLayoutEffect(() => {
     const next = ownerDocumentOf(ref.current);
     if (next !== doc) setDoc(next);
   }, [doc, ref]);

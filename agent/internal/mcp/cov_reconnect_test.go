@@ -737,7 +737,7 @@ func TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry(t *testing.T)
 	fakeNow := time.Unix(0, 0)
 	clock := func() time.Time { return fakeNow }
 
-	mgr, outcomes := NewManagerWithClock(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}},
+	mgr, outcomes := newManagerWithClock(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}},
 		[]func(context.Context) (mcpsdk.Transport, error){dial}, clock)
 	if len(outcomes) != 0 {
 		t.Fatalf("NewManager: %+v", outcomes)

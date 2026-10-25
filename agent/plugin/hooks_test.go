@@ -22,7 +22,7 @@ func TestParsePluginHooks_WrapperFormat(t *testing.T) {
 		}
 	}`)
 
-	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")
+	hooks, _, _, err := parsePluginHooksDiag(data, "/plugins/test", "test-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestParsePluginHooks_DirectFormat(t *testing.T) {
 		]
 	}`)
 
-	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")
+	hooks, _, _, err := parsePluginHooksDiag(data, "/plugins/test", "test-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestParsePluginHooks_ExpandsPluginRoot(t *testing.T) {
 		]
 	}`)
 
-	hooks, err := parsePluginHooks(data, "/my/plugin", "test-plugin")
+	hooks, _, _, err := parsePluginHooksDiag(data, "/my/plugin", "test-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestParsePluginHooks_PromptType(t *testing.T) {
 		]
 	}`)
 
-	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")
+	hooks, _, _, err := parsePluginHooksDiag(data, "/plugins/test", "test-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestParsePluginHooks_DefaultTimeouts(t *testing.T) {
 		]
 	}`)
 
-	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")
+	hooks, _, _, err := parsePluginHooksDiag(data, "/plugins/test", "test-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestParsePluginHooks_AllEvents(t *testing.T) {
 	inner += innerSb186.String()
 	data := []byte(`{` + inner + `}`)
 
-	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")
+	hooks, _, _, err := parsePluginHooksDiag(data, "/plugins/test", "test-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestDiscoverPluginHooks_FromFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hooks, err := discoverPluginHooks(dir, nil, "test-plugin")
+	hooks, _, _, err := discoverPluginHooksDiag(dir, nil, "test-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestDiscoverPluginHooks_NoFile(t *testing.T) {
 	dir := t.TempDir()
 	dir, _ = filepath.EvalSymlinks(dir)
 
-	hooks, err := discoverPluginHooks(dir, nil, "test-plugin")
+	hooks, _, _, err := discoverPluginHooksDiag(dir, nil, "test-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestDiscoverPluginHooks_NoFile(t *testing.T) {
 // characterization test that asserted they were dropped).
 func TestParsePluginHooks_FieldsNowCaptured(t *testing.T) {
 	data := []byte(`{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"echo x","args":["a"],"shell":"bash"}]}]}`)
-	hooks, err := parsePluginHooks(data, "/p", "n")
+	hooks, _, _, err := parsePluginHooksDiag(data, "/p", "n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestParsePluginHooks_CapturesArgsShellAndMetadata(t *testing.T) {
 	data := []byte(`{"PreToolUse":[{"matcher":"Bash","hooks":[
 		{"type":"command","command":"x","args":["-c","y"],"shell":"bash","if":"Bash(rm *)","statusMessage":"checking","async":true,"asyncRewake":true}
 	]}]}`)
-	hooks, err := parsePluginHooks(data, "/p", "n")
+	hooks, _, _, err := parsePluginHooksDiag(data, "/p", "n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestParsePluginHooks_UnknownFieldsCapturedFromRaw(t *testing.T) {
 	data := []byte(`{"PreToolUse":[{"matcher":"*","hooks":[
 		{"type":"command","command":"x","futureField":1,"url":"http://example","headers":{"k":"v"}}
 	]}]}`)
-	hooks, err := parsePluginHooks(data, "/p", "n")
+	hooks, _, _, err := parsePluginHooksDiag(data, "/p", "n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestParsePluginHooks_NoUnknownFieldsWhenClean(t *testing.T) {
 	data := []byte(`{"PreToolUse":[{"matcher":"*","hooks":[
 		{"type":"command","command":"x","args":["-c","y"],"shell":"bash","timeout":10}
 	]}]}`)
-	hooks, err := parsePluginHooks(data, "/p", "n")
+	hooks, _, _, err := parsePluginHooksDiag(data, "/p", "n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestParsePluginHooks_UnknownFieldsCaseInsensitiveKnownKeys(t *testing.T) {
 	data := []byte(`{"PreToolUse":[{"matcher":"*","hooks":[
 		{"TYPE":"command","Command":"ls","futureField":1}
 	]}]}`)
-	hooks, err := parsePluginHooks(data, "/p", "n")
+	hooks, _, _, err := parsePluginHooksDiag(data, "/p", "n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestParsePluginHooks_UnknownFieldsWrapperFormat(t *testing.T) {
 	data := []byte(`{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[
 		{"type":"command","command":"x","futureField":1}
 	]}]}}`)
-	hooks, err := parsePluginHooks(data, "/p", "n")
+	hooks, _, _, err := parsePluginHooksDiag(data, "/p", "n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +406,7 @@ func TestParsePluginHooks_ExpandsPluginRootInArgs(t *testing.T) {
 	data := []byte(`{"PreToolUse":[{"matcher":"*","hooks":[
 		{"type":"command","command":"check","args":["--data","${CLAUDE_PLUGIN_ROOT}/d","--alt","${PLUGIN_ROOT}/e"]}
 	]}]}`)
-	hooks, err := parsePluginHooks(data, "/p", "n")
+	hooks, _, _, err := parsePluginHooksDiag(data, "/p", "n")
 	if err != nil {
 		t.Fatal(err)
 	}

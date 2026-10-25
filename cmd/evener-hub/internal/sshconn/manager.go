@@ -459,23 +459,14 @@ type hubIdentity struct {
 	startedAt time.Time
 }
 
-// sameProcessAs reports whether other is the same hub process as h, judged by
-// start time. A zero start time on either side proves nothing and is never read
-// as a match, so a health body without started_at falls back to the version
-// comparison its caller already makes.
-func (h hubIdentity) sameProcessAs(other hubIdentity) bool {
-	return !h.startedAt.IsZero() && h.startedAt.Equal(other.startedAt)
-}
-
 // differentProcessFrom reports whether h is PROVABLY a different process from
 // other: both start times must be known, and must differ. It is the strict
-// counterpart of sameProcessAs for the one caller that must decide whether a
-// recorded restart actually produced a replacement. sameProcessAs is false both
-// when the processes differ and when either identity is unknown (a health body
-// without started_at), so using it to settle a pending restart would let an old
-// hub with the expected version and no start timestamp clear the marker and be
-// attached to. An unknown identity on either side proves nothing and is treated
-// as unresolved: the restart stays pending and is retried.
+// counterpart of a plain same-process test for the caller that must decide
+// whether a recorded restart actually produced a replacement. An unknown
+// identity on either side (a health body without started_at) proves nothing and
+// is treated as unresolved: the restart stays pending and is retried, so an old
+// hub with the expected version and no start timestamp cannot clear the marker
+// and be attached to.
 func (h hubIdentity) differentProcessFrom(other hubIdentity) bool {
 	return !h.startedAt.IsZero() && !other.startedAt.IsZero() && !h.startedAt.Equal(other.startedAt)
 }
@@ -3683,24 +3674,6 @@ func (m *Manager) authorizeDeploymentRestart(name string) pendingRestartState {
 		m.pendingRestarts[name] = pending
 	}
 	return pending
-}
-
-func (m *Manager) setPendingRestart(name, remote, expectedVersion, expectedGitSHA string, replaced hubIdentity, binding *effectBinding) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.pendingRestarts[name] = pendingRestartState{command: remote, expectedVersion: expectedVersion, expectedGitSHA: expectedGitSHA, replaced: replaced, binding: binding}
-}
-
-// setPendingStart records a command that starts a hub where nothing was
-// serving. Recovery need not prove a predecessor's replacement, but a known
-// original identity remains available to the public operation's verification.
-func (m *Manager) setPendingStart(name, remote, expectedVersion, expectedGitSHA string, binding *effectBinding) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	// Starting a stopped deployment can still retain a known original
-	// predecessor for the public worker's independent verification.
-	replaced := m.pendingRestarts[name].replaced
-	m.pendingRestarts[name] = pendingRestartState{command: remote, expectedVersion: expectedVersion, expectedGitSHA: expectedGitSHA, replaced: replaced, start: true, binding: binding}
 }
 
 func (m *Manager) clearPendingRestart(name string) {

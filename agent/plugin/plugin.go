@@ -321,27 +321,6 @@ func ManifestName(dir string) (string, error) {
 	return manifest.Name, nil
 }
 
-// LoadAll loads plugins from multiple directories and checks for
-// duplicate plugin names.
-func LoadAll(dirs []string) ([]Instance, error) {
-	plugins := make([]Instance, 0, len(dirs))
-	seen := make(map[string]string) // name -> dir
-
-	for _, dir := range dirs {
-		lp, err := Load(dir)
-		if err != nil {
-			return nil, err
-		}
-		if prevDir, ok := seen[lp.Manifest.Name]; ok {
-			return nil, fmt.Errorf("duplicate plugin name %q: found in %q and %q",
-				lp.Manifest.Name, prevDir, lp.Dir)
-		}
-		seen[lp.Manifest.Name] = lp.Dir
-		plugins = append(plugins, lp)
-	}
-	return plugins, nil
-}
-
 // SkippedPlugin describes a plugin directory LoadAllFailSoft skipped instead
 // of failing the whole batch, and why.
 type SkippedPlugin struct {
@@ -350,18 +329,14 @@ type SkippedPlugin struct {
 	Reason string // human-readable reason, suitable for a user-facing warning
 }
 
-// LoadAllFailSoft loads each directory in dirs independently, the same way
-// LoadAll does, but never aborts the batch: a directory that fails to load or
-// duplicates an already-selected plugin manifest name is recorded in the
+// LoadAllFailSoft loads each directory in dirs independently and never aborts
+// the batch: a directory that fails to load or duplicates an already-selected plugin manifest name is recorded in the
 // returned skipped slice and passed over, instead of failing every other
 // directory too. Duplicate selection is first-manifest-wins, even when that
 // first plugin later fails an unrelated component load; this gives all batch
 // callers a deterministic selection policy that skill-only readers can share.
 // Use this in batch contexts — session init, the hub's command catalog —
-// where one broken or duplicate directory must not brick everything else;
-// callers that want LoadAll's fail-hard, abort-on-first-error behavior (e.g.
-// an explicit single-plugin install/validate operation) should keep using
-// LoadAll.
+// where one broken or duplicate directory must not brick everything else.
 func LoadAllFailSoft(dirs []string) ([]Instance, []SkippedPlugin) {
 	plugins := make([]Instance, 0, len(dirs))
 	seen := make(map[string]string) // plugin name -> dir already loaded

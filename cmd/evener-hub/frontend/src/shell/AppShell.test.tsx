@@ -7098,6 +7098,66 @@ test("live-next with an unloaded live section re-requests page zero when the man
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-a"));
 });
 
+// #4958: once a visible live page has settled with no remaining rows, its
+// own answer owns completion. The manifest's live count refreshes on its own
+// schedule and may still report rows; neither direction may spend a page read
+// on that stale count.
+test("live chord does not demand a page once a settled live page owns completion", async () => {
+  const liveReads: number[] = [];
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
+    if (params.resource === "manifest") {
+      return wireSnapshot(
+        params,
+        { ...EMPTY_NAV_RESPONSE, sections: { ...EMPTY_NAV_RESPONSE.sections, live: { count: 2 } } },
+        '"test"',
+      );
+    }
+    if (params.resource === "section" && params.section === "live") {
+      liveReads.push(params.offset ?? 0);
+      return wireSnapshot(params, { sessions: [], remaining: 0, truncated: false }, '"test"');
+    }
+    return navigationRead(params);
+  });
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
+  }));
+
+  // The chord reads the store's current action, so a wrapper counts demands
+  // without depending on whether a settled page answers from cache.
+  const demands: Array<{ offset?: number }> = [];
+  const loadSection = navigationStore.getState().loadSection;
+  onTestFinished(() => navigationStore.setState({ loadSection }));
+  navigationStore.setState({
+    loadSection: (section, offset, limit) => {
+      if (section === "live") demands.push({ offset });
+      return loadSection(section, offset, limit);
+    },
+  });
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("No session open");
+  await waitFor(() => {
+    const page = [...navigationStore.getState().resources.values()].find(
+      (resource) => resource.key.kind === "section" && resource.key.section === "live",
+    );
+    expect(page?.loading).toBe(false);
+    expect(page?.data).not.toBeNull();
+  });
+  expect(liveReads.length).toBeGreaterThan(0);
+  const demandedBefore = demands.length;
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  expect(demands.length).toBe(demandedBefore);
+  expect(window.location.pathname).toBe("/");
+});
+
 // Round 4: the previous direction must reach the live TAIL, not the first
 // newly loaded row (roborev PR #1044 round-4 medium 1).
 test("live-previous with an unloaded live section demand-loads to the tail", async () => {

@@ -22,7 +22,11 @@ import { requestComposerFocus } from "../../panes/session/composer/composerFocus
 import { requestQuoteInsert } from "../../panes/session/composer/quoteInsert";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { useConnectionStore } from "../../stores/connection";
-import { selectNextSectionOffset, selectSectionRemaining } from "../../stores/navigation/selectors";
+import {
+  selectNextSectionOffset,
+  selectSectionCanDemand,
+  selectSectionRemaining,
+} from "../../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore } from "../../stores/threads";
 import {
@@ -364,7 +368,8 @@ function PaletteBody({
   useEffect(() => {
     if (mode !== "search" || query.trim()) return;
     const needsYouCount = needsYouChoices.length;
-    const initialDemand = needsYouCount === 0 && (navigation.manifest?.data?.sections.needs_you.count ?? 0) > 0;
+    const initialDemand =
+      needsYouCount === 0 && !!navigation.manifest?.data && selectSectionCanDemand("needs_you", navigation);
     const overflowDemand =
       needsYouCount > 0 && activeIndex >= needsYouCount - 1 && selectSectionRemaining("needs_you", navigation) > 0;
     if (!initialDemand && !overflowDemand) return;

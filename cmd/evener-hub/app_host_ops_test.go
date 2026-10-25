@@ -594,7 +594,7 @@ func TestHostRemoveRevokesOutstandingTokens(t *testing.T) {
 	if !ok {
 		t.Fatal("the configured host vanished from the registry")
 	}
-	minted, err := store.MintToken(hostops.MintRequest{
+	minted, err := store.MintTokenIfQuiescent(hostops.MintRequest{
 		Host:               live.Name,
 		Generation:         live.Generation,
 		IncarnationID:      live.IncarnationID,
@@ -606,9 +606,9 @@ func TestHostRemoveRevokesOutstandingTokens(t *testing.T) {
 		ControllerRevision: buildinfo.Version(),
 		RunningVersion:     "v0.9.0",
 		RunningHealthy:     true,
-	})
+	}, store.Sequence())
 	if err != nil {
-		t.Fatalf("MintToken: %v", err)
+		t.Fatalf("MintTokenIfQuiescent: %v", err)
 	}
 	if _, ok := store.OutstandingToken("m4"); !ok {
 		t.Fatal("the mint stored no token")

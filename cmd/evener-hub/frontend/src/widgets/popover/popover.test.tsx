@@ -1,6 +1,7 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
+import { appendPopout } from "../internal/popoutTestUtils";
 import { Popover } from "./index";
 
 // The §3.4 guarantee: the panel is an out-of-flow overlay portaled to
@@ -200,13 +201,10 @@ function restoreOwnProperty(target: object, key: string, descriptor: PropertyDes
 // land in that window and hear that window's dismissal events; the opener's
 // document would show the list in the wrong window and never close it.
 function popoutHost(): { host: HTMLElement; document: Document; cleanup: () => void } {
-  const frame = document.createElement("iframe");
-  document.body.appendChild(frame);
-  const popout = frame.contentDocument;
-  const host = popout?.createElement("div");
-  if (!popout || !host) throw new Error("missing popout window");
-  popout.body.appendChild(host);
-  return { host, document: popout, cleanup: () => frame.remove() };
+  const { frame, doc } = appendPopout();
+  const host = doc.createElement("div");
+  doc.body.appendChild(host);
+  return { host, document: doc, cleanup: () => frame.remove() };
 }
 
 test("in a popout the panel portals into the trigger's document and dismisses there", ({ onTestFinished }) => {
@@ -240,7 +238,7 @@ test("in a popout the panel portals into the trigger's document and dismisses th
 
 // Dockview moves an existing panel into a popout window, so a trigger that
 // mounted in the opener can belong to the popout by the time the panel opens.
-test("a trigger moved into a popout before opening portals into that document", ({ onTestFinished }) => {
+test("a trigger moved into a popout before opening portals into that document", async ({ onTestFinished }) => {
   const { document: popout, cleanup } = popoutHost();
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -258,8 +256,13 @@ test("a trigger moved into a popout before opening portals into that document", 
   act(() => root.render(panel));
 
   // The move happens while the panel is closed; opening it afterwards has to
-  // resolve the document again rather than trusting the mount-time one.
-  popout.body.appendChild(container);
+  // resolve the document again rather than trusting the mount-time one. The
+  // popover now tracks the move, so the move itself is a React update.
+  // The mutation observer delivers the move on a microtask, so the flush has
+  // to be async for the tracked-document render to land inside act.
+  await act(async () => {
+    popout.body.appendChild(container);
+  });
   act(() =>
     root.render(
       <Popover open onClose={() => {}} trigger={<button type="button">open</button>} data-testid="panel">
@@ -270,4 +273,41 @@ test("a trigger moved into a popout before opening portals into that document", 
 
   expect(popout.querySelector('[data-testid="panel"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="panel"]')).toBeNull();
+});
+
+// An open panel belongs to the window its trigger is in. Dockview can move a
+// mounted trigger between windows without a render; the shared portal seam
+// turns that move into one, so the panel and its dismissal follow.
+test("an open panel follows its trigger into another document", async () => {
+  const { frame, doc } = appendPopout();
+  const onClose = vi.fn();
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    act(() =>
+      root.render(
+        <Popover open onClose={onClose} trigger={<button type="button">open</button>} data-testid="panel">
+          <div>panel body</div>
+        </Popover>,
+      ),
+    );
+    expect(document.querySelector('[data-testid="panel"]')).not.toBeNull();
+
+    act(() => {
+      doc.body.appendChild(host);
+    });
+    await act(async () => {});
+
+    const panel = doc.querySelector('[data-testid="panel"]');
+    expect(panel).not.toBeNull();
+    expect(document.querySelector('[data-testid="panel"]')).toBeNull();
+
+    fireEvent.mouseDown(doc.body);
+    expect(onClose).toHaveBeenCalled();
+  } finally {
+    act(() => root.unmount());
+    frame.remove();
+    host.remove();
+  }
 });
