@@ -228,12 +228,11 @@ func TestCommunicateInboxDrainUnionsProvenance(t *testing.T) {
 
 func TestAcceptNotificationInputAdoptsNotificationProvenance(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
-	s.events = make(chan events.SessionEvent, 4)
-	// The notification turn rebuilds the delivered notification from the durable
-	// record (filterDeliverableJobNotifications), so the adopted provenance is the
-	// record's notification provenance. Persist a terminal record whose pending
-	// event carries watch_A/wg_1 and enqueue the wake token for it.
+	a := &skillContinuationAdapter{}
+	s := observationSession(t, a, false)
+	evs, mu, done := collectEvents(s)
+	// Terminal source migration preserves lineage in canonical custody. Request
+	// selection, not the earlier turn boundary, adopts that lineage for output.
 	appendPendingJobNotificationRecordWithProvenance(t, s.jobManager, s.ID(), "job_A", testProvenance("watch_A", "wg_1"))
 	s.enqueueJobNotification(jobNotification{
 		JobID:      "job_A",
@@ -241,26 +240,51 @@ func TestAcceptNotificationInputAdoptsNotificationProvenance(t *testing.T) {
 		Status:     string(jobstore.StatusCompleted),
 		Provenance: testProvenance("watch_A", "wg_1"),
 	})
-
-	if proceed := s.acceptNotificationInput(context.Background(), ""); !proceed {
-		t.Fatal("notification input should proceed")
+	s.replaceActiveProvenance(testProvenance("watch_stale", "wg_old"))
+	var id string
+	a.steps = []func(llm.Request) (llm.Response, error){func(req llm.Request) (llm.Response, error) {
+		observationRequest(t, req, []string{"job_A"}, nil)
+		if !provenance.ContainsWatch(s.activeCausalProvenance(), "watch_A", "wg_1") || provenance.ContainsWatch(s.activeCausalProvenance(), "watch_stale", "wg_old") {
+			t.Errorf("request-selected provenance=%+v", s.activeCausalProvenance())
+		}
+		ids, err := s.pendingNotificationIDs()
+		if err != nil || len(ids) != 1 {
+			t.Fatalf("accepted pending=%v error=%v", ids, err)
+		}
+		id = ids[0]
+		for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+			if entry.Turn.AttentionID == id && !provenance.ContainsWatch(entry.Turn.NotificationProvenance, "watch_A", "wg_1") {
+				t.Error("canonical custody lost source lineage")
+			}
+			if len(entry.Turn.ObservedNotificationIDs) != 0 {
+				t.Error("acceptance granted observation before a response")
+			}
+		}
+		return toolCallResponse(communicateCallArgs("causal-output", map[string]any{"message": "provenance-output-5", "end_turn": true})), nil
+	}}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
 	}
-	if !provenance.ContainsWatch(s.activeCausalProvenance(), "watch_A", "wg_1") {
-		t.Fatalf("active provenance = %+v, want notification provenance", s.activeCausalProvenance())
+	assertNotificationObservedOnce(t, s.TranscriptPath(), id)
+	assertNotificationPending(t, s, []string{})
+	if len(a.Requests()) != 1 || producerRecordCount(t, s) != 1 {
+		t.Fatal("provenance delivery duplicated its record or provider request")
 	}
-	boundary := <-s.events
-	if boundary.Kind != events.EventTurnStarted {
-		t.Fatalf("first event = %s, want TURN_STARTED", boundary.Kind)
+	s.Close()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	counts := map[events.EventKind]int{}
+	for _, ev := range *evs {
+		if ev.Kind == events.EventToolCallStart || ev.Kind == events.EventCommunicate {
+			counts[ev.Kind]++
+			if !provenance.ContainsWatch(ev.Provenance, "watch_A", "wg_1") || provenance.ContainsWatch(ev.Provenance, "watch_stale", "wg_old") {
+				t.Errorf("model output %s provenance=%+v", ev.Kind, ev.Provenance)
+			}
+		}
 	}
-	if !provenance.ContainsWatch(boundary.Provenance, "watch_A", "wg_1") {
-		t.Fatalf("boundary event provenance = %+v, want watch_A/wg_1", boundary.Provenance)
-	}
-	ev := <-s.events
-	if ev.Kind != events.EventSteeringInjected {
-		t.Fatalf("second event = %s, want STEERING_INJECTED", ev.Kind)
-	}
-	if !provenance.ContainsWatch(ev.Provenance, "watch_A", "wg_1") {
-		t.Fatalf("steering event provenance = %+v, want watch_A/wg_1", ev.Provenance)
+	if counts[events.EventToolCallStart] != 1 || counts[events.EventCommunicate] != 1 {
+		t.Fatalf("real output event counts=%v, want one tool call and one communicate", counts)
 	}
 }
 

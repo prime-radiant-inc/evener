@@ -340,41 +340,60 @@ func TestNotificationProducers(t *testing.T) {
 		t.Log("during provider request receiver=1, pending=1; after safe next request provider requests=2, pending=0")
 	})
 	t.Run("cold receiver without resident runtime", func(t *testing.T) {
-		s, _ := notificationReceiverForTest(t, nil)
+		fixture := newColdStableDelegateFixture(t, "")
+		entered, gate := make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(gate) })
+		defer release()
+		fixture.adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+			observationRequest(t, req, []string{"cold-payload-5"}, nil)
+			close(entered)
+			<-gate
+			return finalResponse("cold-response-5")
+		}}
+		s := restoreSupervisionRoot(t, fixture, agenttest.NewFakeClock())
 		c := s.delegateController
-		seedDelegateControllerIdle(t, c, "dlg_cold", "")
 		c.mu.Lock()
-		receiverID := c.durable["dlg_cold"].Descriptor.ChildSessionID
+		live := c.live[fixture.delegateID]
+		cold := live == nil || live.runtime == nil
 		c.mu.Unlock()
-		path := transcriptPath(c.stateDir, receiverID)
-		writer, err := transcript.NewWriter(path, transcript.Header{SessionID: receiverID})
+		if !cold || s.subagents == nil {
+			t.Fatal("receiver must start cold under an initialized holder")
+		}
+		jm := s.jobManager
+		_, err := jm.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}, Note: "cold-payload-5", ReceiverSessionID: fixture.childID, ReceiverDelegateID: fixture.delegateID})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := writer.Close(); err != nil {
-			t.Fatal(err)
-		}
-		jm, err := newJobManager(s.stateDir, s.ID(), s.enqueueJobNotificationAndNotify)
-		if err != nil {
-			t.Fatal(err)
-		}
-		s.jobManager, jm.retirementOwner, jm.delegateController = jm, s, c
-		t.Cleanup(func() { jm.close() })
-		jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
-		result, err := jm.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}, ReceiverSessionID: receiverID, ReceiverDelegateID: "dlg_cold"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = result
 		jm.onSessionEvent(events.SessionEvent{SessionID: s.ID(), Kind: events.EventCommunicate, Data: events.CommunicateData{Message: "cold payload"}})
-		entries := notificationRawEntries(t, path)
-		if len(entries) != 1 || entries[0].Turn.AttentionID == "" {
-			t.Fatalf("cold receiver entries=%#v", entries)
+		awaitSignal(t, entered, "cold receiver provider request")
+		path := transcriptPath(s.stateDir, fixture.childID)
+		var id string
+		for _, entry := range notificationRawEntries(t, path) {
+			if entry.Turn.AttentionID != "" {
+				if id != "" {
+					t.Fatal("cold delivery duplicated canonical custody")
+				}
+				id = entry.Turn.AttentionID
+			}
+			if len(entry.Turn.ObservedNotificationIDs) != 0 {
+				t.Fatal("acceptance granted observation before the provider responded")
+			}
 		}
-		if producerRecordCount(t, s) != 0 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 1 {
+		if id == "" || producerRecordCount(t, s) != 0 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 1 {
 			t.Fatal("cold delivery lost receiver identity or failed custody ack")
 		}
-		t.Log("cold receiver records=1, source delivered=1, holder records=0, resident receiver absent")
+		c.mu.Lock()
+		receiver := c.live[fixture.delegateID].runtime
+		c.mu.Unlock()
+		assertNotificationPending(t, receiver, []string{id})
+		release()
+		waitForStableSupervisionRun(t, s, fixture.childID)
+		s.sendersWG.Wait()
+		assertNotificationObservedOnce(t, path, id)
+		assertNotificationPending(t, receiver, []string{})
+		if got := supervisionRequestCount(fixture.adapter); got != 1 {
+			t.Fatalf("provider requests=%d, want one addressed child request", got)
+		}
 	})
 	t.Run("retry after custody before source ack", func(t *testing.T) {
 		s, _ := notificationReceiverForTest(t, nil)
@@ -1516,6 +1535,14 @@ func TestWatchSourceFailureRetainsAllMatchedFirings(t *testing.T) {
 	for _, kind := range []string{"event send", "output send", "budget boundary", "two callbacks"} {
 		t.Run(kind, func(t *testing.T) {
 			s := newMessagingRoot(t, newMessagingAdapter(), nil)
+			var cold coldStableDelegateFixture
+			if kind == "two callbacks" {
+				cold = newColdStableDelegateFixture(t, "")
+				cold.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+					return finalResponse("recovered second callback")
+				}}
+				s = restoreSupervisionRoot(t, cold, agenttest.NewFakeClock())
+			}
 			jm := s.jobManager
 			var configs []*watchConfig
 			var jobID string
@@ -1538,15 +1565,7 @@ func TestWatchSourceFailureRetainsAllMatchedFirings(t *testing.T) {
 				if kind == "two callbacks" {
 					a.Send = nil
 					if i == 1 {
-						seedDelegateControllerIdle(t, s.delegateController, "dlg_second", "")
-						a.ReceiverSessionID, a.ReceiverDelegateID = "child-dlg_second", "dlg_second"
-						w, err := transcript.NewWriter(transcriptPath(s.stateDir, a.ReceiverSessionID), transcript.Header{SessionID: a.ReceiverSessionID})
-						if err != nil {
-							t.Fatal(err)
-						}
-						if err := w.Close(); err != nil {
-							t.Fatal(err)
-						}
+						a.ReceiverSessionID, a.ReceiverDelegateID = cold.childID, cold.delegateID
 					}
 				}
 				r, err := jm.configureWatch(a)
@@ -1599,8 +1618,20 @@ func TestWatchSourceFailureRetainsAllMatchedFirings(t *testing.T) {
 					t.Fatalf("after recovery %s condition=%d total=%d, want %d/%d", eventKind, conditionRows, len(rows), before+count, wantTotal)
 				}
 			}
-			if kind == "two callbacks" && len(notificationRawEntries(t, transcriptPath(s.stateDir, "child-dlg_second"))) != 1 {
-				t.Fatal("later callback recipient lost its source event")
+			if kind == "two callbacks" {
+				waitForStableSupervisionRun(t, s, cold.childID)
+				s.sendersWG.Wait()
+				path := transcriptPath(s.stateDir, cold.childID)
+				var ids []string
+				for _, entry := range notificationRawEntries(t, path) {
+					if entry.Turn.AttentionID != "" {
+						ids = append(ids, entry.Turn.AttentionID)
+					}
+				}
+				if len(ids) != 1 {
+					t.Fatalf("later callback recipient custody=%v, want one source event", ids)
+				}
+				assertNotificationObservedOnce(t, path, ids[0])
 			}
 		})
 	}
