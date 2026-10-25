@@ -3330,6 +3330,7 @@ export interface SessionActivityAncestor {
   ref: string;
   sessionId: string;
   delegateId?: string;
+  delegateName?: string;
   title: string;
 }
 
@@ -3346,6 +3347,7 @@ export interface SessionActivityContext {
   rootRef: string;
   parentRef?: string;
   delegateId?: string;
+  delegateName?: string;
   ancestors: SessionActivityAncestor[];
   /**
    * AncestryKnown distinguishes proven root/lineage from bounded retained index progress.

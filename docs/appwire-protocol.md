@@ -3345,6 +3345,7 @@ Underlying Go kind: `string` (no struct fields).
 | `ref` | string |  |  |
 | `sessionId` | string |  |  |
 | `delegateId` | string | yes |  |
+| `delegateName` | string | yes |  |
 | `title` | string |  |  |
 
 
@@ -3367,6 +3368,7 @@ Underlying Go kind: `string` (no struct fields).
 | `rootRef` | string |  |  |
 | `parentRef` | string | yes |  |
 | `delegateId` | string | yes |  |
+| `delegateName` | string | yes |  |
 | `ancestors` | [][appwire.SessionActivityAncestor](#sessionactivityancestor) |  |  |
 | `ancestryKnown` | bool |  |  |
 | `epoch` | string |  |  |
