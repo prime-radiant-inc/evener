@@ -9,7 +9,6 @@ import {
   collectAdvancedOverrides,
   effortLabel,
   errorText,
-  filterSlashMenuItems,
   findBuiltinArgument,
   friendlyLaunchErrorMessage,
   harnessSupportsPluginSelection,
@@ -23,12 +22,9 @@ import {
   pluginSelectionIssues,
   reconcilePluginSelection,
   resolveScalars,
-  type SlashMenuItem,
-  type SlashToken,
   schemaPathKind,
   selectedPluginNames,
   slashCommandInvocation,
-  spliceSlashCommand,
   withPluginSelection,
 } from "@evener/appwire-client";
 import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -77,8 +73,9 @@ import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
 import { SkillEditor, type SkillEditorHandle, type SkillEditorValue } from "../session/composer/SkillEditor";
-import { SlashCompletionMenu, optionId as slashOptionId } from "../session/composer/SlashCompletionMenu";
+import { SlashCompletionMenu } from "../session/composer/SlashCompletionMenu";
 import { maskSkillAtoms, patchSelectionText } from "../session/composer/skillDocument";
+import { useSlashCompletion } from "../session/composer/useSlashCompletion";
 import {
   ConnectProviderDialogBoundary,
   useConnectProviderDialogChunk,
@@ -772,32 +769,6 @@ function SpawnForm({
     ? withPluginSelection(advancedOverrides, pluginSelection)
     : withPluginSelection(advancedOverrides, { mode: "default" });
 
-  // Inline slash-command completion (slashCompletion.ts's own header
-  // comment - ported from Beautiful UI's prompt-bar). slashToken is the
-  // trailing-token match recomputed on every keystroke (below); null means
-  // no menu, regardless of what the prompt's text actually contains -
-  // Escape closes the menu by setting this to null directly, and typing
-  // further reopens it because the very next keystroke recomputes the
-  // match fresh. slashHighlighted is the ArrowUp/Down cursor over whatever
-  // the CURRENT filtered list is; reset to 0 whenever the token itself
-  // changes (new match, or the query narrowed/widened) rather than
-  // persisted across it - an index into a list that just changed shape is
-  // not a meaningful position to keep.
-  const [slashToken, setSlashToken] = useState<SlashToken | null>(() => parseSlashToken(prompt, prompt.length));
-  const [slashHighlighted, setSlashHighlighted] = useState(0);
-  // URL writes bypass the keystroke path, including a prefill for the current
-  // project. A restored draft should offer the same completion as typed text.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: prefillRevision triggers URL-only writes independently of keystrokes
-  useEffect(() => {
-    const text = draft.fields.getState().prompt;
-    setSlashToken(parseSlashToken(text, text.length));
-    cursorRef.current = null;
-  }, [draft, prefillRevision]);
-  // Completion can clear this draft through an older, unmounted form. Retire
-  // the token from the current prompt, not from that form's stale continuation.
-  useEffect(() => {
-    if (prompt === "") setSlashToken(null);
-  }, [prompt]);
   // The backend already resolved the selection for this cwd plus overrides
   // (evener/spawn/slashCatalog), so no plugin filtering applies here the
   // way Composer's visibleCatalogCommands filters its global catalog by
@@ -831,35 +802,10 @@ function SpawnForm({
     slashCatalogResponse.commands.filter((command) => !builtinInvocations.has(slashCommandInvocation(command))),
     (slashCatalogResponse.skills ?? []).filter((skill) => !builtinInvocations.has(`/${skill.name}`)),
   );
-  // The menu is only ever open when a token matched AND the merged catalog
-  // has at least one fuzzy label hit for it - a matched-but-empty token
-  // (e.g. "/zzz" against a real catalog) shows no menu at all, same as no
-  // token matching. The pluginSelectionSupported gate is load-bearing: the
-  // hook reports ready-empty for non-evener harnesses, but
-  // spawnBuiltinCommands() merges unconditionally, so without it typing
-  // "/goal" on an external harness would still open a one-row builtin menu
-  // for a session that loads no plugins.
-  const slashItems = slashToken ? filterSlashMenuItems(slashMenuCatalog, slashToken.query) : [];
-  const slashOpen = pluginSelectionSupported && slashToken !== null && slashItems.length > 0;
   // Singleton pane - no ref scoping needed, unlike Composer's per-ref id.
   const slashListboxId = "spawn-slash-listbox";
-  const slashActiveIndex = slashOpen ? Math.min(slashHighlighted, slashItems.length - 1) : -1;
-  const slashActiveId = slashActiveIndex >= 0 ? slashOptionId(slashListboxId, slashActiveIndex) : null;
 
   const textareaRef = useRef<SkillEditorHandle>(null);
-
-  // A freshly (re)matched token always starts highlighted at its first
-  // option - an index carried over from the PREVIOUS token's list is not a
-  // meaningful position once the list itself has changed shape. The presence
-  // flip covers Escape-dismiss→retype of the identical token (same start and
-  // query, so those deps alone would keep a stale index): reopening always
-  // restarts at the first option. Deliberately stricter than the composer's
-  // twin effect, which keeps the index across an identical-token reopen.
-  const slashTokenPresent = slashToken !== null;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: slashToken's start/query/presence are deliberate trigger-only deps - the effect body only calls setSlashHighlighted(0), but must still re-run whenever the token identity actually changes (a new match, the same match with a different query, or a dismiss→reopen flip), same idiom as the cursor-restore layout effect below
-  useEffect(() => {
-    setSlashHighlighted(0);
-  }, [slashToken?.start, slashToken?.query, slashTokenPresent]);
 
   // Attachments reuse the composer's staged-image pipeline via a TextEditor
   // bridge over the prompt textarea (see Composer.tsx's own bridge for the
@@ -996,39 +942,46 @@ function SpawnForm({
       if (isCurrentDraft()) cursorRef.current = cursor;
     },
   };
+  // The menu is only ever open when a token matched AND the merged catalog
+  // has at least one fuzzy label hit for it - a matched-but-empty token
+  // (e.g. "/zzz" against a real catalog) shows no menu at all, same as no
+  // token matching. The pluginSelectionSupported gate is load-bearing: the
+  // hook reports ready-empty for non-evener harnesses, but
+  // spawnBuiltinCommands() merges unconditionally, so without it typing
+  // "/goal" on an external harness would still open a one-row builtin menu
+  // for a session that loads no plugins.
+  const {
+    setToken: setSlashToken,
+    items: slashItems,
+    open: slashOpen,
+    activeIndex: slashActiveIndex,
+    activeId: slashActiveId,
+    commit: commitSlashCompletion,
+    handleKeyDown: handleSlashKeyDown,
+  } = useSlashCompletion({
+    catalog: slashMenuCatalog,
+    enabled: pluginSelectionSupported,
+    listboxId: slashListboxId,
+    initialToken: () => parseSlashToken(prompt, prompt.length),
+    editorRef: textareaRef,
+    textRef,
+    textEditor,
+    plainKeysOnly: true,
+  });
+  // URL writes bypass the keystroke path, including a prefill for the current
+  // project. A restored draft should offer the same completion as typed text.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: prefillRevision triggers URL-only writes independently of keystrokes
+  useEffect(() => {
+    const text = draft.fields.getState().prompt;
+    setSlashToken(parseSlashToken(text, text.length));
+    cursorRef.current = null;
+  }, [draft, prefillRevision]);
+  // Completion can clear this draft through an older, unmounted form. Retire
+  // the token from the current prompt, not from that form's stale continuation.
+  useEffect(() => {
+    if (prompt === "") setSlashToken(null);
+  }, [prompt, setSlashToken]);
   const attachments = useAttachments(textEditor, draft.attachments);
-
-  // commitSlashCompletion is Tab/plain-Enter's (handlePromptKeyDown below)
-  // and a mouse click's (SlashCompletionMenu's own onSelect) shared "the
-  // user chose this command" path: splices the item's own invocation
-  // (slashCompletion.ts's mergeSlashCommands - "/plugin:name" for a plugin
-  // command via shell/palette/commands.ts's slashCommandInvocation, bare
-  // "/id" for a built-in) in at the token's own start (never the caret,
-  // when the caret was left mid-token by an earlier Escape-then-retype -
-  // spliceSlashCommand's own doc comment), through the SAME
-  // textEditor.write() seam every other programmatic edit in this file
-  // uses, then closes the menu and returns focus to the field - mirrors
-  // Composer.tsx's own commit shape. This only ever INSERTS the invocation
-  // text - whether it goes on to execute as a built-in is Task 6's own
-  // submit interception, below.
-  function commitSlashCompletion(item: SlashMenuItem): void {
-    if (!slashToken) return;
-    if (item.kind !== "builtin" && item.canonicalName !== undefined) {
-      const editor = textareaRef.current;
-      if (
-        !(item.kind === "skill"
-          ? editor?.insertSkill(slashToken.start, slashToken.end, item.canonicalName)
-          : editor?.insertCommand(slashToken.start, slashToken.end, item.canonicalName))
-      )
-        return;
-      setSlashToken(null);
-      return;
-    }
-    const spliced = spliceSlashCommand(textRef.current, slashToken, item.invocation);
-    textEditor.write(spliced.text, spliced.caret);
-    setSlashToken(null);
-    textareaRef.current?.focus();
-  }
 
   // Every catalog and readiness signal this form reads - provider instances,
   // the resolved default model, the harness list, plugin previews, the slash
@@ -2183,38 +2136,7 @@ function SpawnForm({
     // Mod/Ctrl+Enter always falls through to the submit branch below even
     // with the menu open. Shift+Enter, Alt+Enter, and composing Enter keep
     // their existing behavior (newline/composition).
-    if (slashOpen) {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setSlashHighlighted((i) => (i + 1) % slashItems.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setSlashHighlighted((i) => (i - 1 + slashItems.length) % slashItems.length);
-        return;
-      }
-      if (
-        (event.key === "Tab" && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) ||
-        (event.key === "Enter" &&
-          !event.metaKey &&
-          !event.ctrlKey &&
-          !event.shiftKey &&
-          !event.altKey &&
-          !event.nativeEvent.isComposing)
-      ) {
-        event.preventDefault();
-        event.stopPropagation();
-        const chosen = slashItems[slashActiveIndex] ?? slashItems[0];
-        if (chosen) commitSlashCompletion(chosen);
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setSlashToken(null);
-        return;
-      }
-    }
+    if (handleSlashKeyDown(event)) return;
     // ⌘/Ctrl+Enter submits (floor §1.12, spawn.js:1204-1211).
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();

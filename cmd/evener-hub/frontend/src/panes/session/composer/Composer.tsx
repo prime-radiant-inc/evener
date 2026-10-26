@@ -22,18 +22,14 @@ import {
   type BuiltinMatch,
   type ComposerMention,
   decideSteerRoute,
-  filterSlashMenuItems,
   matchBuiltinInvocation,
   mergeDraftText,
   mergeSlashCommands,
   NO_ACTIVE_TURN,
   parseSlashToken,
   SHUT_DOWN_STATUSES,
-  type SlashMenuItem,
-  type SlashToken,
   sessionActionError,
   slashCommandInvocation,
-  spliceSlashCommand,
   type ThreadModel,
 } from "@evener/appwire-client";
 import { ownPendingSend } from "@evener/appwire-client/state/mutation";
@@ -111,7 +107,7 @@ import {
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
-import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
+import { SlashCompletionMenu } from "./SlashCompletionMenu";
 import {
   maskSkillAtoms,
   materializeSelectionReferences,
@@ -130,6 +126,7 @@ import {
 } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
 import { useInlineStopReady } from "./useInlineStopReady";
+import { useSlashCompletion } from "./useSlashCompletion";
 
 export interface ComposerProps {
   ref: string;
@@ -348,19 +345,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     return items;
   }, [narrow, model, actionPending]);
 
-  // Inline slash-command completion (slashCompletion.ts's own header
-  // comment - ported from Beautiful UI's prompt-bar). slashToken is the
-  // trailing-token match recomputed on every keystroke (handleTextChange
-  // below); null means no menu, regardless of what the draft's text
-  // actually contains - Escape closes the menu by setting this to null
-  // directly, and typing further reopens it because the very next keystroke
-  // recomputes the match fresh. slashHighlighted is the ArrowUp/Down cursor
-  // over whatever the CURRENT filtered list is; reset to 0 whenever the
-  // token itself changes (new match, or the query narrowed/widened) rather
-  // than persisted across it - an index into a list that just changed shape
-  // is not a meaningful position to keep.
-  const [slashToken, setSlashToken] = useState<SlashToken | null>(null);
-  const [slashHighlighted, setSlashHighlighted] = useState(0);
   // The composer's own single command line (2026-08-14: "the composer is
   // where you act on this session"): the session-scoped BUILT-IN registry
   // (shell/palette/commands.ts's sessionBuiltinCommands, unavailableReason-
@@ -371,26 +355,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   const visibleSlashCatalog = model?.diagnostics?.commands ?? [];
   const sessionBuiltins = sessionBuiltinCommands({ sessionRef: ref, onPage: "session", sessionPaneId: paneId ?? null });
   const slashMenuCatalog = mergeSlashCommands(sessionBuiltins, visibleSlashCatalog, model?.skills ?? []);
-  // The menu is only ever open when a token matched AND the merged catalog
-  // has at least one fuzzy label hit for it - a matched-but-empty token (e.g.
-  // "/zzz" against a real catalog) shows no menu at all, same as no token
-  // matching.
-  const slashItems = slashToken ? filterSlashMenuItems(slashMenuCatalog, slashToken.query) : [];
-  const slashOpen = slashToken !== null && slashItems.length > 0;
-  // Scoped by `ref`: dockview can have several session panes - and so
-  // several mounted Composers - open at once, and a bare literal id would
-  // collide across them.
-  const slashListboxId = `composer-slash-listbox-${ref}`;
-  const slashActiveIndex = slashOpen ? Math.min(slashHighlighted, slashItems.length - 1) : -1;
-  const slashActiveId = slashActiveIndex >= 0 ? slashOptionId(slashListboxId, slashActiveIndex) : null;
-
-  // A freshly (re)matched token always starts highlighted at its first
-  // option - an index carried over from the PREVIOUS token's list is not a
-  // meaningful position once the list itself has changed shape.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: slashToken's start/query are deliberate trigger-only deps - the effect body only calls setSlashHighlighted(0), but must still re-run whenever the token identity actually changes (a new match, or the same match with a different query), same idiom as the cursor-restore layout effect below
-  useEffect(() => {
-    setSlashHighlighted(0);
-  }, [slashToken?.start, slashToken?.query]);
 
   // Attachment marker edits update controlled text, selected references and
   // the persisted draft together. Prefer a pending cursor restoration over
@@ -417,6 +381,25 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     }),
     [ref, textRef, ownedDraftRevisionRef, writeDraft, scheduleCursorRestore],
   );
+  // Scoped by `ref`: dockview can have several session panes - and so several
+  // mounted Composers - open at once, and a bare literal id would collide.
+  const slashListboxId = `composer-slash-listbox-${ref}`;
+  const {
+    setToken: setSlashToken,
+    items: slashItems,
+    open: slashOpen,
+    activeIndex: slashActiveIndex,
+    activeId: slashActiveId,
+    commit: commitSlashCompletion,
+    handleKeyDown: handleSlashKeyDown,
+    reset: resetSlashCompletion,
+  } = useSlashCompletion({
+    catalog: slashMenuCatalog,
+    listboxId: slashListboxId,
+    editorRef,
+    textRef,
+    textEditor,
+  });
   useLayoutEffect(() => {
     mountedRef.current = true;
     const unbind = source.bindEditor(textEditor);
@@ -441,8 +424,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     attachments.reset();
     updateSkillNames([]);
     updateSelectionMeta({ text: "", skillNames: [] });
-    setSlashToken(null);
-    setSlashHighlighted(0);
+    resetSlashCompletion();
     lastDrainSnapshotRef.current = null;
     const command = `/goal ${objective}`;
     textEditor.write(command, command.length);
@@ -811,49 +793,9 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     editText(value.text);
     if (recoveryOwnerLeaseRef.current === null) persistDraft(value.text);
     // Every keystroke re-evaluates the trailing-token match fresh - a token
-    // Escape just closed (slashToken's own doc comment above) reopens on the
+    // Escape just closed (useSlashCompletion's token) reopens on the
     // very next text change rather than staying closed indefinitely.
     setSlashToken(parseSlashToken(maskSkillAtoms(value), caret));
-  }
-
-  // commitSlashCompletion is Tab/Enter's (handleKeyDown below) and a mouse
-  // click's (SlashCompletionMenu's own onSelect) shared "the user chose
-  // this command" path: splices the item's own invocation (slashCompletion.ts's
-  // mergeSlashCommands - "/plugin:name" for a plugin command via
-  // shell/palette/commands.ts's slashCommandInvocation, bare "/id" for a
-  // built-in) in at the token's own start (never the caret, when the caret
-  // was left mid-token by an earlier Escape-then-retype - spliceSlashCommand's
-  // own doc comment), through the SAME textEditor.write() seam every other
-  // programmatic edit in this file uses (draft persistence, cursor restore),
-  // then closes the menu and returns focus to the field - mirrors
-  // restoreTextToComposer's own "write, then focus" shape. This only ever
-  // INSERTS the invocation text - whether it goes on to execute as a
-  // built-in RPC or simply sends as a message is handleFormSubmit's own
-  // interception, below.
-  function commitSlashCompletion(item: SlashMenuItem): void {
-    if (!slashToken) return;
-    // The editor replaces this range with one atomic mention and records the
-    // text and activation metadata together in its undo history.
-    if (item.kind !== "builtin" && item.canonicalName !== undefined) {
-      // The editor refuses the insertion while an IME composition is live, so
-      // only dismiss the menu for a skill that actually landed: closing it over
-      // a token left as prose would tell the user something was staged that is
-      // not in the request at all.
-      const editor = editorRef.current;
-      if (
-        !(item.kind === "skill"
-          ? editor?.insertSkill(slashToken.start, slashToken.end, item.canonicalName)
-          : editor?.insertCommand(slashToken.start, slashToken.end, item.canonicalName))
-      )
-        return;
-      setSlashToken(null);
-      editorRef.current?.focus();
-      return;
-    }
-    const spliced = spliceSlashCommand(textRef.current, slashToken, item.invocation);
-    textEditor.write(spliced.text, spliced.caret);
-    setSlashToken(null);
-    editorRef.current?.focus();
   }
 
   // QueueStrip captures this mount's payload and edit revision through
@@ -1434,40 +1376,8 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // legacy gate defended against doesn't exist here, so there is no
   // isInPane()-equivalent check to port.
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
-    // Inline slash-completion's own keyboard mechanics, ported from
-    // Beautiful UI's prompt-bar (slashCompletion.ts's own header comment):
-    // ArrowUp/Down move the highlighted option (wrapping at both ends) OVER
-    // the caret rather than moving the caret itself, Tab OR Enter commits
-    // the highlighted option, Escape dismisses without touching the draft.
-    // Every branch here returns before falling through to the rest of this
-    // function - in particular, the committing Enter never reaches the
-    // Enter-to-send routing below it, which is the whole point of checking
-    // this FIRST: with the menu open, this function's own routing must not
-    // fire at all for that keystroke.
-    if (slashOpen) {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setSlashHighlighted((i) => (i + 1) % slashItems.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setSlashHighlighted((i) => (i - 1 + slashItems.length) % slashItems.length);
-        return;
-      }
-      if (event.key === "Tab" || (event.key === "Enter" && !event.nativeEvent.isComposing)) {
-        event.preventDefault();
-        event.stopPropagation();
-        const chosen = slashItems[slashActiveIndex] ?? slashItems[0];
-        if (chosen) commitSlashCompletion(chosen);
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setSlashToken(null);
-        return;
-      }
-    }
+    // The slash menu's keys come first: with it open, a committing Enter must not reach the Enter-to-send routing below.
+    if (handleSlashKeyDown(event)) return;
     // SHOULD-FIX (product decision): "/" as the first character of an EMPTY
     // composer used to preventDefault and open the MODAL command palette
     // instead of typing (floor §2.1, legacy renderer.js:6914) - which made
