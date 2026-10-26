@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -441,7 +440,7 @@ func TestSkillCompaction_CancellationReceiptsAreRetired(t *testing.T) {
 // and returns the repair that restores writability.
 func breakSessionMetaPath(t *testing.T, s *Session) func() {
 	t.Helper()
-	metaPath := filepath.Join(s.stateDir, sessionsSubdir, s.Meta().ID+".meta.json")
+	metaPath := schema.SessionMetaPath(s.stateDir, s.Meta().ID)
 	if err := os.Remove(metaPath); err != nil {
 		t.Fatalf("remove meta file: %v", err)
 	}

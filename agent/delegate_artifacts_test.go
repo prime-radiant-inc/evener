@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/agent/schema"
 )
 
 func TestDelegateArtifactsDir_LivesUnderDelegationState(t *testing.T) {
@@ -17,7 +19,7 @@ func TestDelegateArtifactsDir_LivesUnderDelegationState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delegateArtifactsDir: %v", err)
 	}
-	want := filepath.Join(stateDir, sessionsSubdir, "sess_child", delegateArtifactsSubdir)
+	want := filepath.Join(stateDir, schema.SessionsSubdir, "sess_child", delegateArtifactsSubdir)
 	if got != want {
 		t.Fatalf("delegateArtifactsDir = %q, want %q", got, want)
 	}
@@ -57,7 +59,7 @@ func TestAdvertiseArtifactsDir_OnlyWhenPresent(t *testing.T) {
 func TestEnsureDelegateArtifactsDir_RefusesNonDirectoryCollisions(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	sessions := filepath.Join(stateDir, sessionsSubdir)
+	sessions := schema.SessionsDir(stateDir)
 	if err := os.MkdirAll(sessions, 0o700); err != nil {
 		t.Fatalf("mkdir sessions: %v", err)
 	}
@@ -155,7 +157,7 @@ func TestCreateDelegate_CreationResultNamesArtifactsDir(t *testing.T) {
 		t.Fatalf("creation result artifacts_dir = %q, want %q", result.ArtifactsDir, want)
 	}
 	// It must sit under the delegation's own state, not a shared scratch base.
-	if !strings.HasPrefix(result.ArtifactsDir, filepath.Join(root.stateDir, sessionsSubdir, result.ChildSessionID)+string(filepath.Separator)) {
+	if !strings.HasPrefix(result.ArtifactsDir, filepath.Join(root.stateDir, schema.SessionsSubdir, result.ChildSessionID)+string(filepath.Separator)) {
 		t.Fatalf("artifacts dir %q is not under the delegation's session state", result.ArtifactsDir)
 	}
 	if info, err := os.Stat(result.ArtifactsDir); err != nil || !info.IsDir() {
@@ -186,7 +188,7 @@ func TestCreateDelegate_CreationResultNamesArtifactsDir(t *testing.T) {
 func TestRemoveDelegateArtifacts_SymlinkedSessionDirRemovesLinkNotTarget(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	sessions := filepath.Join(stateDir, sessionsSubdir)
+	sessions := schema.SessionsDir(stateDir)
 	if err := os.MkdirAll(sessions, 0o700); err != nil {
 		t.Fatalf("mkdir sessions: %v", err)
 	}
@@ -229,7 +231,7 @@ func TestRemoveDelegateArtifacts_SymlinkedSessionsDirRefused(t *testing.T) {
 	if err := os.WriteFile(keep, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write target artifact: %v", err)
 	}
-	sessions := filepath.Join(stateDir, sessionsSubdir)
+	sessions := schema.SessionsDir(stateDir)
 	if err := os.Symlink(target, sessions); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
@@ -274,7 +276,7 @@ func TestEnsureDelegateArtifactsDir_RefusesSymlinkedSessionsDir(t *testing.T) {
 	if err := os.WriteFile(keep, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write target artifact: %v", err)
 	}
-	sessions := filepath.Join(stateDir, sessionsSubdir)
+	sessions := schema.SessionsDir(stateDir)
 	if err := os.Symlink(target, sessions); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
