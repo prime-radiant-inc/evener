@@ -3,13 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -148,7 +148,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	// The child's durable transcript must preserve the model's raw argument
 	// bytes verbatim — the post-mortem sees what the child actually sent,
 	// not just the replay-safe empty object.
-	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
+	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
 	childLines := readTranscriptLines(t, childTranscriptPath)
 	requireTranscriptRawArguments(t, childLines, truncatedArgs)
 	_, childEntries, _, err := readTranscript(childTranscriptPath, "")
@@ -301,7 +301,7 @@ func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 	}
 
 	// The child's durable transcript preserves the raw unquoted text verbatim.
-	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
+	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
 	childLines := readTranscriptLines(t, childTranscriptPath)
 	requireTranscriptRawArguments(t, childLines, unquotedArgs)
 	_, childEntries, _, err := readTranscript(childTranscriptPath, "")

@@ -115,7 +115,7 @@ func FuzzLoadStore(f *testing.F) {
 		if err := fs.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatalf("MkdirAll: %v", err)
 		}
-		if err := afero.WriteFile(fs, path, []byte(body), 0o600); err != nil {
+		if err := afero.WriteFile(fs, path, []byte(currentFixtureDates(body)), 0o600); err != nil {
 			t.Fatalf("write the fuzzed store file: %v", err)
 		}
 		// Force the mode: the loader's owner-only rule must see the store's own
@@ -252,7 +252,7 @@ func TestRepairedFuzzSeedsReachTheirIntendedArms(t *testing.T) {
 
 	// The boot-pass seed loads and moves only the pending record.
 	path := StorePath(t.TempDir())
-	writeRawStore(t, path, 0o600, pendingComplete)
+	writeRawStore(t, path, 0o600, currentFixtureDates(pendingComplete))
 	store, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open(pending/complete): %v", err)

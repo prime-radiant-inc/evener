@@ -1389,13 +1389,13 @@ func unavailableFinding(probe probeFile, available map[string]bool) *finding {
 // transcript through this enumeration; the phase metrics read the root
 // session's transcript directly.
 func walkTranscripts(stateDir string, opts doctor.TranscriptOpts, fn func(doctor.TranscriptResult) error) error {
-	matches, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.transcript.jsonl"))
+	matches, err := filepath.Glob(filepath.Join(schema.SessionsDir(stateDir), "*"+schema.SessionTranscriptSuffix))
 	if err != nil {
 		return err
 	}
 	sort.Strings(matches)
 	for _, path := range matches {
-		id, ok := strings.CutSuffix(filepath.Base(path), ".transcript.jsonl")
+		id, ok := strings.CutSuffix(filepath.Base(path), schema.SessionTranscriptSuffix)
 		if !ok || id == "" {
 			continue
 		}
@@ -1558,7 +1558,7 @@ func allTranscriptToolCounts(stateDir string) (map[string]int, error) {
 var runnerReadTranscript = doctor.Transcript
 
 func rootSessionID(stateDir string) (string, error) {
-	matches, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.meta.json"))
+	matches, err := filepath.Glob(filepath.Join(schema.SessionsDir(stateDir), "*"+schema.SessionMetaSuffix))
 	if err != nil {
 		return "", err
 	}

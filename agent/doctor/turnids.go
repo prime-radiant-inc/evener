@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -138,12 +139,12 @@ func allSessions(stateBase string) ([]Paths, string, error) {
 	}
 	var all []Paths
 	for _, b := range buckets {
-		matches, err := filepath.Glob(filepath.Join(b.dir, "sessions", "*"+transcriptFileSuffix))
+		matches, err := filepath.Glob(filepath.Join(schema.SessionsDir(b.dir), "*"+schema.SessionTranscriptSuffix))
 		if err != nil {
 			return nil, "", fmt.Errorf("glob sessions in %s: %w", b.dir, err)
 		}
 		for _, match := range matches {
-			sid := strings.TrimSuffix(filepath.Base(match), transcriptFileSuffix)
+			sid := strings.TrimSuffix(filepath.Base(match), schema.SessionTranscriptSuffix)
 			// A file whose name is not a session id is not a session's
 			// transcript, whatever else it may be.
 			if identifier.ValidateSessionID(sid) != nil {
@@ -160,8 +161,6 @@ func allSessions(stateBase string) ([]Paths, string, error) {
 	})
 	return all, stateRoot, nil
 }
-
-const transcriptFileSuffix = ".transcript.jsonl"
 
 // RenderTurnIDScan renders a TurnIDScan as a human-readable summary (the
 // default, non-JSON output) — the list a human reads before deleting sessions.

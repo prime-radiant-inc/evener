@@ -49,14 +49,14 @@ func TestNextBootGenerationSurvivesACrashedWrite(t *testing.T) {
 	if generation != 2 {
 		t.Fatalf("generation after a crashed write = %d, want 2", generation)
 	}
-	if filepath.Dir(path) != filepath.Join(dir, sessionsSubdir) {
+	if filepath.Dir(path) != filepath.Join(dir, SessionsSubdir) {
 		t.Fatalf("counter %s is not beside the session's meta", path)
 	}
 }
 
 func TestNextBootGenerationRefusesACorruptCounter(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, sessionsSubdir), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, SessionsSubdir), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(BootGenerationPath(dir, "S1"), []byte("not a number"), 0o644); err != nil {
