@@ -351,8 +351,7 @@ func TestCompleteViaStreamAccumulates(t *testing.T) {
 // carrying user:pass@ is credential material like any key: the password
 // must never reach the api-log request metadata, and Prepare must name it
 // so every consumer of Prepared.material (endpoint stamps, error
-// sanitizing) can scrub it too. llm.BuildAPILogCredentialMaterial does the
-// same for the old adapters.
+// sanitizing) can scrub it too.
 func TestCredentialMaterialCoversURLUserinfo(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
