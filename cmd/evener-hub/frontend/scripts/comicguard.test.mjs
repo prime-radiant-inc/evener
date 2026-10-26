@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { verifyComposerReceipts } from './comicguard/run.mjs';
+import { verifyApprovalRecovery, verifyComposerReceipts } from './comicguard/run.mjs';
 
 function trace() {
   return ['turn/start', 'turn/queue', 'turn/interrupt'].flatMap((method, index) => {
@@ -28,4 +28,32 @@ for (const [name, mutate] of [
   const rows = trace();
   mutate(rows);
   assert.throws(() => verifyComposerReceipts(rows, 'local:root'));
+});
+
+const failedApproval = {id:19, method:'evener/sandbox/escalation/resolve', params:{ref:'local:root', escalationId:'approval-1', approve:true}};
+function recovery() {
+  return {
+    busy:{ref:'local:root', disabled:[true,true]},
+    retry:{ref:'local:root', disabled:[false,false]},
+    wireTrace:[{event:'Network.webSocketClosed', connection:'socket'}],
+  };
+}
+
+test('approval guard accepts observed busy then retry recovery without copy', () => {
+  verifyApprovalRecovery(recovery(), failedApproval);
+});
+for (const [name, mutate] of [
+  ['missing busy observation', value => { delete value.busy; }],
+  ['never busy', value => { value.busy.disabled = [false,false]; }],
+  ['missing retry observation', value => { delete value.retry; }],
+  ['retry remains disabled', value => { value.retry.disabled = [true,true]; }],
+  ['partially enabled retry', value => { value.retry.disabled = [false,true]; }],
+  ['disappeared controls', value => { value.retry.disabled = []; }],
+  ['another root recovery', value => { value.retry.ref = 'local:other'; }],
+  ['missing native close', value => { value.wireTrace = []; }],
+  ['approval sent before retry', value => { value.wireTrace.push({event:'Network.webSocketFrameSent',connection:'socket',frame:JSON.stringify(failedApproval)}); }],
+]) test(`approval guard rejects ${name}`, () => {
+  const value = recovery();
+  mutate(value);
+  assert.throws(() => verifyApprovalRecovery(value, failedApproval));
 });

@@ -186,7 +186,9 @@ async function journey(page, fixture) {
           if (window.__comicFailApproval) {
             window.__comicFailApproval = false;
             window.__comicFailedApproval = request;
-            this.close(4000, 'comic approval transport failure');
+            // Drop the actual send, then let the driver observe busy controls
+            // before closing the native socket. No response is fabricated.
+            window.__comicCloseApproval = () => this.close(4000, 'comic approval transport failure');
             return;
           }
           if (window.__comicHoldApproval) {
@@ -511,6 +513,15 @@ async function composerJourney(page, fixture, { command, wireTrace, screenshot }
   console.log('Comic composer: literal Send, live partial reply, Queue consumed by provider, Stop receipt and provider cancellation');
 }
 
+export function verifyApprovalRecovery(recovery, failed) {
+  for (const [phase, disabled] of [['busy', true], ['retry', false]]) {
+    const state = recovery[phase];
+    if (state?.ref !== failed.params.ref || state?.disabled?.length !== 2 || !state.disabled.every(value => value === disabled)) throw Error('approval recovery missing ' + phase);
+  }
+  if (!recovery.wireTrace.some(row => row.event === 'Network.webSocketClosed')) throw Error('approval failure did not close native socket');
+  if (recovery.wireTrace.some(row => row.event === 'Network.webSocketFrameSent' && JSON.parse(row.frame).method === failed.method)) throw Error('dropped approval reached the wire before explicit retry');
+}
+
 async function interactionJourney(page, fixture, { command, wireTrace, screenshot }) {
   const start = wireTrace.length;
   const evaluateHere = expression => evaluate(page.send, expression);
@@ -547,6 +558,7 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
   await until('answer restores composer focus', snapshot, value => value.focused);
   await screenshot('interactions-answered');
   const decisions = [];
+  let recovery;
   for (const [marker, approve] of [['APPROVE',true],['DENY',false],['LATE',true]]) {
     await send('COMIC_INTERACTION_' + marker);
     const pending = await until('runtime sandbox request ' + marker, () => frames().find(frame => frame.method === 'evener/sandbox/escalation/requested' && frame.params?.deniedPath?.endsWith('COMIC_INTERACTION_' + marker)));
@@ -556,9 +568,17 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
     if (pairs().some(pair => pair.request.params.escalationId === params.escalationId)) throw Error('approval submitted before explicit choice');
     if (marker === 'APPROVE') {
       await screenshot('interactions-approval');
+      const failureStart = wireTrace.length;
+      const controls = () => evaluateHere(`({ref:document.querySelector('main')?.dataset.sessionRef,disabled:[...document.querySelectorAll(${JSON.stringify(group + ' button')})].map(button=>button.disabled)})`);
       await evaluateHere('window.__comicFailApproval = true');
       await button(`${group} [data-sandbox-escalation-allow]`);
-      await until('approval transport error and retry enabled', () => evaluateHere(`(() => {const group=document.querySelector(${JSON.stringify(group)});return !!group?.textContent.includes('Failed')&&!group.querySelector('button').disabled;})()`));
+      const busy = await until('failed approval attempt busy', controls, state => state.disabled.length === 2 && state.disabled.every(value => value === true));
+      await until('actual approval send intercepted', () => evaluateHere('typeof window.__comicCloseApproval === "function"'));
+      await evaluateHere('window.__comicCloseApproval(); window.__comicCloseApproval = undefined');
+      await until('failed approval native socket closed', () => wireTrace.slice(failureStart).some(row => row.event === 'Network.webSocketClosed'));
+      const retry = await until('approval retry re-enabled', controls, state => state.disabled.length === 2 && state.disabled.every(value => value === false));
+      recovery = {busy, retry, wireTrace:wireTrace.slice(failureStart)};
+      verifyApprovalRecovery(recovery, await evaluateHere('window.__comicFailedApproval'));
       await until('native transport reconnected', () => evaluateHere('window.__comicSockets.some(socket=>socket.readyState===WebSocket.OPEN)'));
     }
     if (marker === 'LATE') await evaluateHere('window.__comicHoldApproval = true');
@@ -592,7 +612,7 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
   if (actual.length !== 3 || new Set(actual.map(frame=>frame.params.escalationId)).size !== 3 || actual.some(frame=>frame.params.ref!==fixture.refs.live)) throw Error('approval replay or wrong root ' + JSON.stringify(actual));
   const failed = await evaluateHere('window.__comicFailedApproval');
   if (failed.params.escalationId !== decisions[0].pending.params.escalationId || failed.params.ref !== fixture.refs.live || failed.params.approve !== true) throw Error('retry changed original request identity');
-  writeFileSync(`${fixture.evidenceDir}/interactions.json`, JSON.stringify({answered,decisions,failed,wireTrace:wireTrace.slice(start)},null,2));
+  writeFileSync(`${fixture.evidenceDir}/interactions.json`, JSON.stringify({answered,decisions,failed,recovery,wireTrace:wireTrace.slice(start)},null,2));
   console.log('Comic root interactions: real batch answered, explicit approve after transport failure, explicit decline, original-ref late approval leaves second root unchanged, no replay');
 }
 
