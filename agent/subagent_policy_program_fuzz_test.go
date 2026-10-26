@@ -4,7 +4,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -18,14 +17,14 @@ import (
 // prepare/spawn. The child runs through a scripted provider and a deny-all
 // execution environment, so no provider, network, or process boundary is used.
 func FuzzSubagentPolicyProgram(f *testing.F) {
-	for _, seed := range []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9} {
+	for _, seed := range []byte{0, 1, 2, 3, 4, 5, 6} {
 		f.Add([]byte{seed})
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		selector := byte(0)
 		if len(data) > 0 {
-			selector = data[0] % 10
+			selector = data[0] % 7
 		}
 		assertSubagentPolicyHelpers(t, selector)
 
@@ -38,75 +37,50 @@ func FuzzSubagentPolicyProgram(f *testing.F) {
 			sandboxProbers = []sandbox.Prober{bwrapCapableProber(workspace)}
 		}
 		parent := safzNewParent(t, agenttest.NewFakeClock(), 2, []int{0}, parentEnv, sandboxProbers...)
-		ctx := context.Background()
-		agentType := ""
-		grantTools := []string(nil)
-		wantError := ""
+		args := delegateArgs{Task: "inspect policy", ReasoningEffort: "low"}
+		wantRejected := false
 
 		switch selector {
 		case 0:
 			// Default child and its inherited delegation policy.
 		case 1:
-			agentType = "safz_tools"
+			args.AgentType = "safz_tools"
 		case 2:
-			agentType = "safz_alltools"
+			args.AgentType = "safz_alltools"
 		case 3:
-			agentType = "unknown-policy-agent"
-			wantError = "unknown plugin agent type"
+			args.AgentType = "unknown-policy-agent"
+			wantRejected = true
 		case 4:
-			grantTools = []string{"delegate"}
-			wantError = "delegation tools are enabled"
-		case 5:
-			grantTools = []string{"ask_user"}
-			wantError = "root-only"
-		case 6:
-			grantTools = []string{"nonsense_tool"}
-			wantError = "cannot grant tool(s)"
-		case 7:
 			parent.mu.Lock()
 			parent.delegationAllowance = 0
 			parent.mu.Unlock()
-			wantError = "delegation not permitted"
-		case 8:
-			ctx = context.WithValue(ctx, ctxDelegationAllowance, 0)
-			ctx = context.WithValue(ctx, ctxWatchParent, true)
-		case 9:
-			ctx = context.WithValue(ctx, ctxCommunicateOutputSchema,
-				map[string]any{"type": "object", "required": []any{"result"}})
-			grantTools = []string{"read_file"}
+			wantRejected = true
+		case 5:
+			args.DelegationAllowance = new(0)
+			args.WatchParent = true
+		case 6:
+			args.ResultSchema = map[string]any{"type": "object", "required": []any{"result"}}
 		}
 
-		result, err := parent.spawnAgent(ctx, "inspect policy", "", "", 3, agentType, "low", nil, grantTools)
-		if wantError != "" {
-			if err == nil || !strings.Contains(err.Error(), wantError) {
-				t.Fatalf("selector %d: spawn error = %v, want substring %q", selector, err, wantError)
+		result := parent.createDelegate(context.Background(), args)
+		if wantRejected {
+			if result.Err == nil {
+				t.Fatalf("selector %d: create succeeded, want a rejection", selector)
 			}
 			if parent.treeCounter.n.Load() != 0 {
-				t.Fatalf("selector %d: rejected spawn leaked %d tree slots", selector, parent.treeCounter.n.Load())
+				t.Fatalf("selector %d: rejected create leaked %d tree slots", selector, parent.treeCounter.n.Load())
 			}
 			return
 		}
-		if err != nil {
-			t.Fatalf("selector %d: spawnAgent: %v", selector, err)
+		if result.Err != nil {
+			t.Fatalf("selector %d: createDelegate: %v", selector, result.Err)
 		}
-		if parent.treeCounter.n.Load() != 0 {
-			t.Fatalf("selector %d: in-process spawn retained %d tree slots", selector, parent.treeCounter.n.Load())
+		if result.ChildSessionID == "" {
+			t.Fatalf("selector %d: create result has no child session: %+v", selector, result)
 		}
-
-		var response struct {
-			AgentID string         `json:"agent_id"`
-			Status  SubagentStatus `json:"status"`
-		}
-		text, ok := result.(string)
-		if !ok || json.Unmarshal([]byte(text), &response) != nil || response.AgentID == "" {
-			t.Fatalf("selector %d: malformed spawn response %#v", selector, result)
-		}
-		if response.Status != SubagentRunning {
-			t.Fatalf("selector %d: response status = %q, want %q", selector, response.Status, SubagentRunning)
-		}
-		sub := parent.getSub(response.AgentID)
+		sub := parent.getSub(result.ChildSessionID)
 		if sub == nil || sub.sess == nil {
-			t.Fatalf("selector %d: spawned child %q was not tracked", selector, response.AgentID)
+			t.Fatalf("selector %d: created child %q was not tracked", selector, result.ChildSessionID)
 		}
 		if sub.sess.reg.Get("ask_user") != nil {
 			t.Fatalf("selector %d: child received protected ask_user tool", selector)

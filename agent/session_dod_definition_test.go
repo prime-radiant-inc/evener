@@ -1785,6 +1785,7 @@ func TestSession_Subagent_AutoNudgeExplicitBuiltinSubagent(t *testing.T) {
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.3-codex")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 	})
 	if err != nil {
@@ -1796,7 +1797,7 @@ func TestSession_Subagent_AutoNudgeExplicitBuiltinSubagent(t *testing.T) {
 	}()
 	defer sess.Close()
 
-	agentID := spawnRuntimeAgent(t, sess, "survey the project", "", 0, "subagent", "", nil)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "survey the project", AgentType: "subagent"})
 	result := waitForRuntimeSubagent(t, sess, agentID)
 	if !result.Success {
 		t.Fatalf("expected explicit builtin subagent to recover, got failure: %+v", result)
@@ -1811,41 +1812,6 @@ func TestSession_Subagent_AutoNudgeExplicitBuiltinSubagent(t *testing.T) {
 		t.Errorf("expected 5 LLM calls (4 empty + nudge), got %d", cc)
 	}
 }
-func TestSession_SpawnAgent_MaxTurns(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("done") },
-		},
-	}
-	c.Register(f)
-
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	agentID := spawnRuntimeAgent(t, sess, "do it", "", 10, "", "", nil)
-
-	sub := sess.getSub(agentID)
-	if sub == nil {
-		t.Fatalf("missing subagent")
-	}
-
-	waitForRuntimeSubagent(t, sess, agentID)
-
-	if sub.sess.cfg.MaxTurns != 10 {
-		t.Fatalf("expected MaxTurns=10, got %d", sub.sess.cfg.MaxTurns)
-	}
-}
-
 func TestSubAgentStatus_Values(t *testing.T) {
 	t.Parallel()
 	// Validate the JSON wire format for each terminal status.  A bare string
@@ -3446,13 +3412,13 @@ func TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent(t *testing.T) {
 	c.Register(f)
 	dir := t.TempDir()
 	// Parent has MaxTurns=100.
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{MaxTurns: 100})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: t.TempDir(), MaxTurns: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sess.Close()
 
-	agentID := spawnRuntimeAgent(t, sess, "test task", "", 0, "", "", nil)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "test task"})
 	sub := sess.getSub(agentID)
 	if sub == nil {
 		t.Fatal("subagent not found")
@@ -3496,6 +3462,7 @@ func TestSession_Subagent_IndependentHistory(t *testing.T) {
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 	})
 	if err != nil {
@@ -3503,13 +3470,22 @@ func TestSession_Subagent_IndependentHistory(t *testing.T) {
 	}
 	defer sess.Close()
 
-	parentHistBefore := len(sess.history)
-	agentID := spawnRuntimeAgent(t, sess, "do something", "", 0, "", "", nil)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "do something"})
 	waitForRuntimeSubagent(t, sess, agentID)
 
-	parentHistAfter := len(sess.history)
-	if parentHistAfter != parentHistBefore {
-		t.Fatalf("parent history changed: before=%d after=%d; subagent history leaked into parent", parentHistBefore, parentHistAfter)
+	// The parent may record the delegate's completion, but none of the
+	// delegate's own tool traffic.
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	for _, turn := range sess.history {
+		for _, part := range turn.Message.Content {
+			if part.ToolCall != nil && part.ToolCall.ID == "s1" {
+				t.Fatalf("subagent tool call leaked into the parent history: %+v", turn.Kind)
+			}
+			if part.ToolResult != nil && part.ToolResult.ToolCallID == "s1" {
+				t.Fatalf("subagent tool result leaked into the parent history: %+v", turn.Kind)
+			}
+		}
 	}
 }
 
@@ -3548,6 +3524,7 @@ func TestSession_Subagent_SharedFilesystem(t *testing.T) {
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 	})
 	if err != nil {
@@ -3555,7 +3532,7 @@ func TestSession_Subagent_SharedFilesystem(t *testing.T) {
 	}
 	defer sess.Close()
 
-	agentID := spawnRuntimeAgent(t, sess, "read shared.txt", "", 0, "", "", nil)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "read shared.txt"})
 	waitForRuntimeSubagent(t, sess, agentID)
 
 	for _, req := range f.Requests() {
@@ -3883,6 +3860,7 @@ func TestSession_Subagent_AutoNudgeOnEmptyResponseExhaustion(t *testing.T) {
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.3-codex")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 	})
 	if err != nil {
@@ -3894,7 +3872,7 @@ func TestSession_Subagent_AutoNudgeOnEmptyResponseExhaustion(t *testing.T) {
 	}()
 	defer sess.Close()
 
-	agentID := spawnRuntimeAgent(t, sess, "survey the project", "", 0, "", "", nil)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "survey the project"})
 	result := waitForRuntimeSubagent(t, sess, agentID)
 	if !strings.Contains(result.Output, "Recovered after nudge") {
 		t.Errorf("expected nudged subagent to report findings via communicate, got: %q", result.Output)

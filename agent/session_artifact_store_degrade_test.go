@@ -87,7 +87,7 @@ func TestDelegateInheritsADegradedRootsMissingStore(t *testing.T) {
 		return newFakeArtifactStore(), nil
 	})
 
-	childID := spawnRuntimeAgent(t, root, "child task", "", 1, "", "", nil)
+	childID := spawnRuntimeAgent(t, root, delegateArgs{Task: "child task"})
 	child := root.getSub(childID)
 	if child == nil || child.sess == nil {
 		t.Fatal("production child was not tracked")

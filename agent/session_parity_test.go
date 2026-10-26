@@ -816,13 +816,13 @@ func TestParity_SubagentNoMCPInheritance(t *testing.T) {
 			return finalResponse("subagent done")
 		},
 	}
-	sess, _ := newParitySession(t, pc, steps)
+	sess, _ := newParitySessionWithConfig(t, pc, steps, SessionConfig{StateDir: t.TempDir()})
 	defer sess.Close()
 
 	sess.cfg.MCPConfigFiles = []string{"/fake/mcp.json"}
 	sess.cfg.MCPInline = []string{"test:echo hello"}
 
-	agentID := spawnRuntimeAgent(t, sess, "check mcp", "", 0, "", "", nil)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "check mcp"})
 	sub := sess.getSub(agentID)
 	if sub == nil {
 		t.Fatal("subagent not found")

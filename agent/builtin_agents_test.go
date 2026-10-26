@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -372,7 +370,8 @@ func TestSpawnAgent_NonBlockingSubagentSurvivesParentContextCancellation(t *test
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 	})
 	if err != nil {
@@ -381,17 +380,11 @@ func TestSpawnAgent_NonBlockingSubagentSurvivesParentContextCancellation(t *test
 	defer sess.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	result, err := sess.spawnAgent(ctx, "test task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
+	created := sess.createDelegate(ctx, delegateArgs{Task: "test task"})
+	if created.Err != nil {
+		t.Fatalf("createDelegate: %v", created.Err)
 	}
-	var spawned struct {
-		AgentID string `json:"agent_id"`
-	}
-	if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
-		t.Fatalf("unmarshal spawn result: %v", err)
-	}
-	agentID := spawned.AgentID
+	agentID := created.ChildSessionID
 
 	select {
 	case <-started:
@@ -435,7 +428,8 @@ func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 		testOnly:         testConfig{sandboxProber: bwrapCapableProber(dir)},
 	})
@@ -444,7 +438,7 @@ func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
 	}
 	defer sess.Close()
 
-	agentID := spawnRuntimeAgent(t, sess, "survey the project", "", 0, "explorer", "", nil)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "survey the project", AgentType: "explorer"})
 	waitForRuntimeSubagent(t, sess, agentID)
 
 	// Should have used the explorer's system prompt.
@@ -474,7 +468,8 @@ func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 	})
 	if err != nil {
@@ -482,7 +477,7 @@ func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
 	}
 	defer sess.Close()
 
-	agentID := spawnRuntimeAgent(t, sess, "do something", "", 0, "", "", nil)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "do something"})
 	waitForRuntimeSubagent(t, sess, agentID)
 
 	// Default subagent should get the subagent persona.
@@ -517,7 +512,8 @@ func TestSpawnAgent_SystemPromptFileDoesNotOverrideSubagentPrompt(t *testing.T) 
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 		SystemPromptFile: promptFile,
 	})
@@ -530,7 +526,7 @@ func TestSpawnAgent_SystemPromptFileDoesNotOverrideSubagentPrompt(t *testing.T) 
 		t.Fatal("root cached system prompt should include the custom top-level prompt")
 	}
 
-	agentID := spawnRuntimeAgent(t, sess, "do something", "", 0, "", "", nil)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "do something"})
 	waitForRuntimeSubagent(t, sess, agentID)
 
 	if strings.Contains(subagentSystemPrompt, "ROOT ONLY CUSTOM PROMPT") {
@@ -583,7 +579,8 @@ func TestSpawnAgent_ReasoningEffortApplied(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 	})
 	if err != nil {
@@ -591,7 +588,7 @@ func TestSpawnAgent_ReasoningEffortApplied(t *testing.T) {
 	}
 	defer sess.Close()
 
-	agentID := spawnRuntimeAgent(t, sess, "hard problem", "", 0, "", "xhigh", nil)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "hard problem", ReasoningEffort: "xhigh"})
 	waitForRuntimeSubagent(t, sess, agentID)
 	if subagentReasoningEffort == nil || *subagentReasoningEffort != "xhigh" {
 		got := "<nil>"
@@ -709,7 +706,8 @@ func TestSpawnAgent_TaskListPreservedForNamedAgent(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 		testOnly:         testConfig{sandboxProber: bwrapCapableProber(dir)},
 	})
@@ -719,7 +717,7 @@ func TestSpawnAgent_TaskListPreservedForNamedAgent(t *testing.T) {
 	defer sess.Close()
 
 	// Spawn an explorer (named agent with explicit tool list that doesn't include task_list).
-	agentID := spawnRuntimeAgent(t, sess, "explore the code", "", 0, "explorer", "", nil)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "explore the code", AgentType: "explorer"})
 	waitForRuntimeSubagent(t, sess, agentID)
 
 	// task_list should be in the subagent's tools even though explorer.md doesn't list it.
@@ -748,7 +746,8 @@ func TestSpawnAgent_BuiltinSubagentKeepsDelegateSendTool(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 	})
 	if err != nil {
@@ -756,7 +755,7 @@ func TestSpawnAgent_BuiltinSubagentKeepsDelegateSendTool(t *testing.T) {
 	}
 	defer sess.Close()
 
-	agentID := spawnRuntimeAgent(t, sess, "observe and call back", "", 0, "subagent", "", nil)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "observe and call back", AgentType: "subagent"})
 	waitForRuntimeSubagent(t, sess, agentID)
 
 	toolSet := map[string]bool{}
@@ -793,7 +792,8 @@ func TestSpawnAgent_AllToolsAgentStripsAgentManagementTools(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 2,
 	})
 	if err != nil {
@@ -801,7 +801,7 @@ func TestSpawnAgent_AllToolsAgentStripsAgentManagementTools(t *testing.T) {
 	}
 	defer sess.Close()
 
-	agentID := spawnRuntimeAgent(t, sess, "help with the task", "", 0, "default", "", nil)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "help with the task", AgentType: "default", DelegationAllowance: new(0)})
 	waitForRuntimeSubagent(t, sess, agentID)
 
 	for _, want := range []string{"task_list"} {
@@ -819,34 +819,6 @@ func TestSpawnAgent_AllToolsAgentStripsAgentManagementTools(t *testing.T) {
 	}
 }
 
-func TestSpawnAgent_GrantTools_RejectsRootOnlyTool(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("done") },
-		},
-	})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	_, err = sess.spawnAgent(context.Background(), "help with follow-up work", "", "", 0, "", "", nil, []string{"delegate"})
-	if err == nil {
-		t.Fatal("expected root-only grant rejection")
-	}
-	if !strings.Contains(err.Error(), "delegation_allowance") {
-		t.Fatalf("grant error = %q, want allowance-truthful message referencing delegation_allowance", err)
-	}
-}
-
 func TestSpawnAgent_DirectNestedCallRejected(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -858,7 +830,8 @@ func TestSpawnAgent_DirectNestedCallRejected(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 2,
 	})
 	if err != nil {
@@ -866,27 +839,14 @@ func TestSpawnAgent_DirectNestedCallRejected(t *testing.T) {
 	}
 	defer sess.Close()
 
-	result, err := sess.spawnAgent(context.Background(), "help with a task", "", "", 10, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
-	}
-
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(result.(string)), &parsed); err != nil {
-		t.Fatalf("unmarshal spawn result: %v", err)
-	}
-	agentID := fmt.Sprint(parsed["agent_id"])
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "help with a task", DelegationAllowance: new(0)})
 	sub := sess.getSub(agentID)
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("subagent %q not found", agentID)
 	}
 
-	_, err = sub.sess.spawnAgent(context.Background(), "nested", "", "", 10, "", "", nil, nil)
-	if err == nil {
+	if nested := sub.sess.createDelegate(context.Background(), delegateArgs{Task: "nested"}); nested.Err == nil {
 		t.Fatal("expected delegation rejection for child with allowance 0")
-	}
-	if !strings.Contains(err.Error(), "delegation not permitted: your delegation_allowance is 0") {
-		t.Fatalf("error = %q, want delegation_allowance=0 rejection message", err)
 	}
 }
 

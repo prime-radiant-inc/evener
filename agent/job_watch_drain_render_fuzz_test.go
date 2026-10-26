@@ -4,7 +4,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -50,17 +49,11 @@ func jdrExerciseSuccessfulChildDrive(t *testing.T) {
 	t.Helper()
 	clk := agenttest.NewFakeClock()
 	parent := safzNewParent(t, clk, 1, []int{1}, &agenttest.DenyEnv{WorkDir: t.TempDir()})
-	res, err := parent.spawnAgent(context.Background(), "drain queued notification", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatal(err)
+	res := parent.createDelegate(context.Background(), delegateArgs{Task: "drain queued notification"})
+	if res.Err != nil {
+		t.Fatal(res.Err)
 	}
-	var spawned struct {
-		AgentID string `json:"agent_id"`
-	}
-	if err := json.Unmarshal([]byte(res.(string)), &spawned); err != nil || spawned.AgentID == "" {
-		t.Fatalf("spawn result malformed: %v (%q)", err, res)
-	}
-	sub := parent.getSub(spawned.AgentID)
+	sub := parent.getSub(res.ChildSessionID)
 	if sub == nil || sub.sess == nil {
 		t.Fatal("spawned child is not tracked")
 	}

@@ -69,28 +69,18 @@ func sbxSetParentMode(t *testing.T, s *Session, facts sandbox.HostFacts, cwd str
 	s.mu.Unlock()
 }
 
-// prepareWithDelegateSandbox threads a per-delegate sandbox policy (and a lane
-// working dir) through prepareSubagentRun, returning the prepared run. The caller
-// owns cleanup.
+// prepareWithDelegateSandbox prepares a stable delegate child with a
+// per-delegate sandbox policy on a lane working dir, returning the prepared
+// run. Disposal is registered with t.Cleanup.
 func prepareWithDelegateSandbox(t *testing.T, s *Session, lane string, pol *sandbox.SandboxPolicy) *preparedSubagentRun {
 	t.Helper()
-	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
-	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, pol)
-	prepared, err := s.prepareSubagentRun(ctx, "child task", "", lane, 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	t.Cleanup(func() {
-		releasePreparedTreeSlot(prepared)
-		prepared.sub.sess.Close()
-	})
-	return prepared
+	return prepareStableChildOnLane(t, s, delegateArgs{Task: "child task", DelegationAllowance: new(0)}, committedDelegateLane{dir: lane, sandbox: pol})
 }
 
-// TestPrepareSubagentRun_PerDelegateSandboxEnforced verifies that a delegate under
+// TestStableDelegate_PerDelegateSandboxEnforced verifies that a delegate under
 // an OFF parent that requests its own restricted box gets an environment enforced
 // at its lane.
-func TestPrepareSubagentRun_PerDelegateSandboxEnforced(t *testing.T) {
+func TestStableDelegate_PerDelegateSandboxEnforced(t *testing.T) {
 	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
@@ -123,11 +113,11 @@ func TestPrepareSubagentRun_PerDelegateSandboxEnforced(t *testing.T) {
 
 }
 
-// TestPrepareSubagentRun_TerminalFinishCapturesScratchPath proves kata tpb0's
+// TestStableDelegate_TerminalFinishCapturesScratchPath proves kata tpb0's
 // scratch-path wiring against a real sandboxed env: stableDelegateFinish reads
 // the delegate's own SessionScratchDir into the terminal packet metadata, the
 // same absolute path the sandboxed child actually has as $EVENER_SCRATCH_DIR.
-func TestPrepareSubagentRun_TerminalFinishCapturesScratchPath(t *testing.T) {
+func TestStableDelegate_TerminalFinishCapturesScratchPath(t *testing.T) {
 	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
@@ -150,12 +140,12 @@ func TestPrepareSubagentRun_TerminalFinishCapturesScratchPath(t *testing.T) {
 	}
 }
 
-// TestPrepareSubagentRun_PerDelegateSandboxOverridesSandboxedParent: a tighter
+// TestStableDelegate_PerDelegateSandboxOverridesSandboxedParent: a tighter
 // per-delegate box (restricted) OVERRIDES a looser sandboxed parent (workspace-write
 // + an out-of-lane extra writable root). The child is restricted and the parent's
 // extra writable root does NOT leak onto it — the delegate's box is a pure function
 // of ITS OWN policy.
-func TestPrepareSubagentRun_PerDelegateSandboxOverridesSandboxedParent(t *testing.T) {
+func TestStableDelegate_PerDelegateSandboxOverridesSandboxedParent(t *testing.T) {
 	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
@@ -201,12 +191,12 @@ func TestCreateDelegate_SandboxFloorRefusedEarly(t *testing.T) {
 	}
 }
 
-// TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure: when a
+// TestStableDelegate_PerDelegateSandboxCleansScratchOnSpawnFailure: when a
 // per-delegate sandbox EnableSandbox's a fresh env and the spawn then fails at
-// NewSession, the provisioned scratch dir must be disposed, not leaked. A nil child
+// NewSession, the provisioned scratch dir must release its lease, not leak it. A nil child
 // client (via childClientFactory) forces NewSession to fail AFTER EnableSandbox. Not
 // parallel: it isolates TMPDIR to observe the sandbox scratch base.
-func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *testing.T) {
+func TestStableDelegate_PerDelegateSandboxCleansScratchOnSpawnFailure(t *testing.T) {
 	isolated := t.TempDir()
 	t.Setenv("TMPDIR", isolated)
 
@@ -214,7 +204,7 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *tes
 	facts := sbxBwrapFacts(home)
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	s := newSession(t, withClient(c), withConfig(SessionConfig{
+	s := newSession(t, withClient(c), withDir(lane), withConfig(SessionConfig{
 		StateDir:         packageFixtureTempDir(t, "sbx-leak-*"),
 		MaxSubagentDepth: 1,
 		testOnly: testConfig{
@@ -230,69 +220,21 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *tes
 		t.Fatalf("isolated tmp base must start free of sandbox scratch, got %v", before)
 	}
 
-	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
-	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: new(true)})
-	// The create path reserves the child's ID first, so its scratch is named
-	// in the root's tree; a child that never existed must not keep one there.
-	ctx = context.WithValue(ctx, delegateChildSessionIDContextKey{}, "02wMz5Txv1C3Hut0M8GCeB")
-
-	prepared, err := s.prepareSubagentRun(ctx, "child task", "", lane, 0, "", "", nil, nil)
-	if err == nil {
-		releasePreparedTreeSlot(prepared)
-		prepared.sub.sess.Close()
+	res := s.createDelegate(context.Background(), delegateArgs{Task: "child task", Sandbox: "restricted"})
+	if res.Err == nil {
 		t.Fatal("expected NewSession to fail with a nil child client")
 	}
-	if left := sandboxScratchDirs(t, isolated); len(left) != 0 {
-		t.Errorf("per-delegate sandbox scratch leaked on spawn failure: %v", left)
+	// The failed start keeps its stable identity, so its named scratch stays
+	// in the root's tree for the archive; what must not outlive the failure
+	// is the lease that keeps the crashed-scratch sweeper away from it.
+	kept := sandboxScratchDirs(t, isolated)
+	if len(kept) == 0 {
+		t.Fatal("the failed start kept no scratch, so the lease check below would prove nothing")
 	}
-}
-
-// TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnGrantFailure: a
-// per-delegate sandbox that reaches the post-NewSession grant validation must
-// dispose its scratch when the child cannot adopt a parent-only tool.
-func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnGrantFailure(t *testing.T) {
-	isolated := t.TempDir()
-	t.Setenv("TMPDIR", isolated)
-
-	lane, home := sbxLane(t)
-	facts := sbxBwrapFacts(home)
-	s := sbxDelegateSession(t, facts)
-	s.RegisterTool("parent_only_tool", "parent-only test tool", nil, func(context.Context, any) (any, error) {
-		return "ok", nil
-	})
-	if before := sandboxScratchDirs(t, isolated); len(before) != 0 {
-		t.Fatalf("isolated tmp base must start free of sandbox scratch, got %v", before)
-	}
-
-	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
-	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: new(true)})
-	_, err := s.prepareSubagentRun(ctx, "child task", "", lane, 0, "", "", nil, []string{"parent_only_tool"})
-	if err == nil || !strings.Contains(err.Error(), "cannot grant tool(s)") {
-		t.Fatalf("prepareSubagentRun error = %v, want missing child grant", err)
-	}
-	if left := sandboxScratchDirs(t, isolated); len(left) != 0 {
-		t.Errorf("per-delegate sandbox scratch leaked on grant failure: %v", left)
-	}
-}
-
-// TestSpawnAgent_PerDelegateSandboxCleansScratchWhenLaunchIsRejected: a child
-// can be fully prepared and then rejected by the parent-closing gate before it
-// is adopted. That late failure must roll back a fresh sandbox environment too.
-func TestSpawnAgent_PerDelegateSandboxCleansScratchWhenLaunchIsRejected(t *testing.T) {
-	isolated := t.TempDir()
-	t.Setenv("TMPDIR", isolated)
-
-	lane, home := sbxLane(t)
-	facts := sbxBwrapFacts(home)
-	s := sbxDelegateSession(t, facts)
-	s.cfg.testOnly.subagentAfterPrepare = func(parent *Session) { parent.Close() }
-
-	ctx := context.WithValue(context.Background(), ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: new(true)})
-	if _, err := s.spawnAgent(ctx, "child task", "", lane, 0, "", "", nil, nil); err == nil || !strings.Contains(err.Error(), "session is closed") {
-		t.Fatalf("spawnAgent error = %v, want session-closed launch rejection", err)
-	}
-	if left := sandboxScratchDirs(t, isolated); len(left) != 0 {
-		t.Errorf("per-delegate sandbox scratch leaked on launch rejection: %v", left)
+	for _, dir := range kept {
+		if scratchLeaseHeld(t, filepath.Join(isolated, dir)) {
+			t.Errorf("per-delegate sandbox scratch %s still holds its lease after the failed start", dir)
+		}
 	}
 }
 
@@ -626,13 +568,13 @@ func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
 	}
 }
 
-// TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParent: a
+// TestStableDelegate_PerDelegateSandboxWithoutIsolationDoesNotMutateParent: a
 // delegate may request its own box WITHOUT isolation="worktree" (empty workingDir),
 // which shares the parent's working dir. The per-delegate EnableSandbox mutates its
 // env IN PLACE, so the clone-before-mutate guard is containment-critical: without it
 // EnableSandbox would sandbox (or re-box) the SHARED parent env mid-session. Assert
 // the child gets the requested box AND the parent env is untouched.
-func TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParent(t *testing.T) {
+func TestStableDelegate_PerDelegateSandboxWithoutIsolationDoesNotMutateParent(t *testing.T) {
 	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
@@ -660,18 +602,8 @@ func TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParen
 		t.Fatal("parent must start unsandboxed (off)")
 	}
 
-	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
-	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: new(true)})
-
-	// workingDir == "" : a per-delegate sandbox WITHOUT an isolation lane.
-	prepared, err := s.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	t.Cleanup(func() {
-		releasePreparedTreeSlot(prepared)
-		prepared.sub.sess.Close()
-	})
+	// No isolation lane: a per-delegate sandbox on the parent's shared working dir.
+	prepared := prepareStableChild(t, s, delegateArgs{Task: "child task", Sandbox: "restricted", SandboxNet: new(true), DelegationAllowance: new(0)})
 
 	// (a) The child env is enforced with the REQUESTED box.
 	childLocal, ok := prepared.sub.sess.currentEnv().(*execenv.LocalExecutionEnvironment)

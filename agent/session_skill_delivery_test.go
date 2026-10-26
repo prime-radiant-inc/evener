@@ -1228,25 +1228,16 @@ func TestSkillDelivery_FrozenPlusOrdinary(t *testing.T) {
 		}
 		return toolCallResponse(communicateCall("done-1", "ok"))
 	}}
-	s := newSession(t, withAdapter(adapter), withDir(root),
+	s := newSession(t, withAdapter(adapter), withDir(root), withStateDir(t.TempDir()),
 		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
 	s.pluginAgents["preload-role"] = plugin.Agent{
 		Name: "preload-role", PluginName: "test", AllTools: true,
 		SystemPrompt: "preload role", Skills: []string{"opaque"},
 	}
-	result, err := s.spawnAgent(context.Background(), "child task", "", "", 0, "preload-role", "", nil, nil)
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
-	}
-	var spawned struct {
-		AgentID string `json:"agent_id"`
-	}
-	if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
-		t.Fatalf("unmarshal spawn result: %v", err)
-	}
-	sub := s.getSub(spawned.AgentID)
+	spawned := spawnRuntimeAgent(t, s, delegateArgs{Task: "child task", AgentType: "preload-role"})
+	sub := s.getSub(spawned)
 	if sub == nil {
-		t.Fatalf("subagent %q not tracked", spawned.AgentID)
+		t.Fatalf("subagent %q not tracked", spawned)
 	}
 	select {
 	case <-sub.done:

@@ -41,6 +41,7 @@ type sessionOpts struct {
 	dir             string
 	cfg             SessionConfig
 	cfgSet          bool
+	stateDir        string
 	skipGitSnapshot bool
 	immediateRest   bool
 	clock           clock.Clock
@@ -100,7 +101,11 @@ func withDir(dir string) sessionOpt { return func(o *sessionOpts) { o.dir = dir 
 func withConfig(cfg SessionConfig) sessionOpt {
 	return func(o *sessionOpts) { o.cfg = cfg; o.cfgSet = true }
 }
-func withoutGitSnapshot() sessionOpt { return func(o *sessionOpts) { o.skipGitSnapshot = true } }
+
+// withStateDir gives the session a durable state directory on top of whatever
+// config it otherwise has, as delegate creation requires.
+func withStateDir(dir string) sessionOpt { return func(o *sessionOpts) { o.stateDir = dir } }
+func withoutGitSnapshot() sessionOpt     { return func(o *sessionOpts) { o.skipGitSnapshot = true } }
 
 // newSession builds a *Session for tests. The zero-option form yields the
 // canonical default: scripted "openai" and dedicated session-namer adapters, a
@@ -150,6 +155,9 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 		// file as absent, so the path itself never needs creating. An
 		// explicit cfg is the caller's own answer and is left untouched.
 		cfg.AgentsDocPath = filepath.Join(t.TempDir(), "no-personal-AGENTS.md")
+	}
+	if o.stateDir != "" {
+		cfg.StateDir = o.stateDir
 	}
 	if o.skipGitSnapshot {
 		cfg.testOnly.skipGitSnapshot = true

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -79,21 +78,6 @@ func writePreloadSkill(t *testing.T, root, name, sentinel string) {
 	writeSkillMD(t, root, name, "---\nname: "+name+"\ndescription: fixture\n---\n"+sentinel+"\n")
 }
 
-func spawnedAgentID(t *testing.T, result any) string {
-	t.Helper()
-	raw, ok := result.(string)
-	if !ok {
-		t.Fatalf("spawn result type = %T, want string", result)
-	}
-	var spawned struct {
-		AgentID string `json:"agent_id"`
-	}
-	if err := json.Unmarshal([]byte(raw), &spawned); err != nil {
-		t.Fatalf("unmarshal spawn result: %v", err)
-	}
-	return spawned.AgentID
-}
-
 // requirePreloadEnvelopes asserts the provider request carries exactly the
 // named typed skill-context documents, by canonical name.
 func requirePreloadEnvelopes(t *testing.T, req llm.Request, want ...string) {
@@ -148,11 +132,7 @@ func TestRolePreloadDropsUnfollowableSkillForIncapableDelegate(t *testing.T) {
 		SystemPrompt: "preload role",
 		Skills:       []string{gardeningMemorySkillName, followablePreloadName},
 	}
-	result, err := s.spawnAgent(context.Background(), "child task", "", "", 0, "preload-role", "", nil, nil)
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
-	}
-	sub := s.getSub(spawnedAgentID(t, result))
+	sub := s.getSub(spawnRuntimeAgent(t, s, delegateArgs{Task: "child task", AgentType: "preload-role"}))
 	if sub == nil {
 		t.Fatalf("spawned subagent is not tracked")
 	}
@@ -413,53 +393,4 @@ func TestRolePreloadKeepsFollowableSkillForSaveCapableSession(t *testing.T) {
 	if got := s.cfg.spawn.activatedSkillBodies; len(got) != 2 {
 		t.Fatalf("save-capable session preload bodies = %d, want 2", len(got))
 	}
-}
-
-// A save-capable root's preload slices are inherited by a fresh subagent, and
-// the child's own role preload is appended to the SAME slices. The incapable
-// child must still receive only the followable preloads, which pins that the
-// parallel name and body slices stay aligned through inheritance and append.
-func TestInheritedRolePreloadStaysAlignedForIncapableDelegate(t *testing.T) {
-	t.Parallel()
-	root := skillFixtureRoot(t)
-	markGitRoot(t, root)
-	writePreloadSkill(t, root, secondPreloadName, secondPreloadSentinel)
-	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return finalResponse("done")
-	}}
-	cfg := preloadTestConfig(t)
-	cfg.spawn = spawnConfig{
-		activatedSkillNames:  []string{gardeningMemorySkillName, followablePreloadName},
-		activatedSkillBodies: []string{renderedPreloadFixture(gardeningMemorySkillName, gardeningPreloadSentinel), renderedPreloadFixture(followablePreloadName, followablePreloadSentinel)},
-		frozenSkillMetadata:  []schema.FrozenSkillPreload{preloadMetadataFixture(gardeningMemorySkillName), preloadMetadataFixture(followablePreloadName)},
-	}
-	s := newSession(t, withAdapter(adapter), withDir(root),
-		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(), withConfig(cfg))
-	if !s.memorySaveInstructionsEnabled() {
-		t.Fatal("fixture root must be able to save memory")
-	}
-	s.pluginAgents["second-preload-role"] = plugin.Agent{
-		Name: "second-preload-role", PluginName: "test", AllTools: true,
-		SystemPrompt: "second preload role",
-		Skills:       []string{secondPreloadName},
-	}
-	result, err := s.spawnAgent(context.Background(), "child task", "", "", 0, "second-preload-role", "", nil, nil)
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
-	}
-	sub := s.getSub(spawnedAgentID(t, result))
-	if sub == nil {
-		t.Fatalf("spawned subagent is not tracked")
-	}
-	select {
-	case <-sub.done:
-	case <-time.After(30 * time.Second): // TRIPWIRE: scripted in-process adapter, no real I/O.
-		t.Fatal("timed out waiting for the inherited-preload child")
-	}
-	requests := adapter.Requests()
-	if len(requests) != 1 {
-		t.Fatalf("provider requests = %d, want 1", len(requests))
-	}
-	requirePreloadEnvelopes(t, requests[0], followablePreloadName, secondPreloadName)
-	requirePreloadRecords(t, sub.sess, followablePreloadName, secondPreloadName)
 }

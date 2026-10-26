@@ -24,7 +24,7 @@ func (s *Session) testSwapEnv(env execenv.ExecutionEnvironment) {
 
 // TestSession_CurrentEnv_NoRaceWithConcurrentSwap hammers currentEnv()'s known
 // read sites — tool dispatch (execTool -> reg.ExecuteCall, hookInput), and
-// subagent env inheritance (prepareSubagentRun) — against a goroutine
+// delegate env inheritance (the stable create path) — against a goroutine
 // concurrently swapping s.env via testSwapEnv. Before the currentEnv()
 // conversion, every one of these was an unguarded `s.env` field read racing
 // the swap under `-race`.
@@ -82,18 +82,23 @@ func TestSession_CurrentEnv_NoRaceWithConcurrentSwap(t *testing.T) {
 		}
 	})
 
-	// Child creation: exercises prepareSubagentRun's subEnv resolution. Each
-	// prepared run is discarded immediately (mirrors spawnAgent's own error
-	// path) rather than launched, since we only care about the env read here.
+	// Child creation: exercises the delegate create path's env resolution. Each
+	// prepared run is discarded immediately rather than launched, since we only
+	// care about the env read here.
+	var prepareErr error
 	wg.Go(func() {
 		for range spawnIterations {
-			prepared, err := sess.prepareSubagentRun(context.Background(), "noop", "", "", 1, "", "", nil, nil)
+			_, _, _, prepared, err := buildCommittedDelegate(sess, delegateArgs{Task: "noop"}, committedDelegateLane{})
 			if err != nil {
-				continue
+				prepareErr = err
+				return
 			}
-			prepared.sub.sess.Close()
+			prepared.disposeUnadopted()
 		}
 	})
 
 	wg.Wait()
+	if prepareErr != nil {
+		t.Fatalf("delegate create path: %v", prepareErr)
+	}
 }

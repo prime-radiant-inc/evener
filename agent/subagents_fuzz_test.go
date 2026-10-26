@@ -102,6 +102,7 @@ func safzNewParent(t *testing.T, clk *agenttest.FakeClock, maxDepth int, childSc
 	})
 	cfg := SessionConfig{
 		MaxSubagentDepth:      maxDepth,
+		StateDir:              t.TempDir(),
 		clock:                 clk,
 		MaxToolRoundsPerInput: 6,
 		LLMSleep:              func(context.Context, time.Duration) error { return nil },
