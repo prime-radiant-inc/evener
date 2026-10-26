@@ -25,7 +25,6 @@ import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { registerPaneForTests } from "../paneRegistry";
-import { cadenceStateFor } from "../sessionStatus";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import {
   watchGloss as domainWatchGloss,
@@ -407,22 +406,6 @@ test.each([
     else expect(acts.onUnpinRequest).toHaveBeenCalledWith(parent);
   },
 );
-
-describe("cadenceStateFor", () => {
-  test.each([
-    ["errored", "failed"],
-    ["awaiting", "needs-you"],
-    ["active", "working"],
-    ["warning", "needs-you"],
-    ["idle", "idle"],
-    ["ended", "ended"],
-    ["notLoaded", "idle"],
-    ["", "idle"],
-    ["some-unknown-future-state", "idle"],
-  ] as const)("maps wire state %s to Cadence state %s", (wireState, expected) => {
-    expect(cadenceStateFor(wireState)).toBe(expected);
-  });
-});
 
 // A row only spends its signal gutter on running, needs-you, or broken.
 describe("signal gutter", () => {

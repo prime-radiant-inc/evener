@@ -9,20 +9,17 @@
 // fallback left when it's given. A subagent failure never puts a Board row in
 // Needs you; the row's subagent chip (subagentChip) counts it, and the
 // session's Agents list holds the detail.
-import type { DelegateTiming, NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
-import { compactDuration, DELEGATE_QUIET_AFTER_MS, quietState, taskSettledCount } from "@evener/appwire-client";
+import type { AttentionClass, DelegateTiming, NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
+import {
+	attentionState,
+	compactDuration,
+	DELEGATE_QUIET_AFTER_MS,
+	quietState,
+	taskSettledCount,
+} from "@evener/appwire-client";
 import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 
-export type BoardState =
-	| "failed"
-	| "question"
-	| "needsYou"
-	| "approval"
-	| "warning"
-	| "restartNeeded"
-	| "working"
-	| "idle"
-	| "shutDown";
+export type BoardState = AttentionClass;
 
 export type Band = "needsYou" | "working" | "idle";
 
@@ -75,45 +72,13 @@ export function approvalRefs(needsYouSection: readonly NavigationSessionSummary[
 	return refs;
 }
 
-/** The Board state a hub state decides on its own, whatever flags ride
- * along, or null for one that leaves it to the row's other facts. A Board
- * row and a search result both start here. */
-export function decisiveState(state: string): BoardState | null {
-	switch (state) {
-		case "errored":
-			return "failed";
-		case "restartRequired":
-			return "restartNeeded";
-		case "warning":
-			return "warning";
-		case "ended":
-		case "notLoaded":
-			return "shutDown";
-	}
-	return null;
-}
-
 export function boardState(row: NavigationSessionSummary, approval: boolean): BoardState {
-	// A row from an offline source can't be reached, whatever state it last
-	// reported: it is never Working or Needs you.
-	if (row.offline) return "shutDown";
-	const decisive = decisiveState(row.state);
-	// Only a nonblocking warning yields to live child work. Search keeps its
-	// existing decisiveState rule, and failed children never decide this mark.
-	if (decisive && (decisive !== "warning" || row.ask_pending || approval || row.approval_pending)) return decisive;
-	if (row.state === "awaiting" && row.ask_pending) return "question";
-	if (approval || row.approval_pending === true) return "approval";
-	// Awaiting without a question is a turn that ended on needs_response: it
-	// waits on a person like a question does, ahead of any running work
-	// (#4093).
-	if (row.state === "awaiting") return "needsYou";
-	if (row.state === "active") return "working";
-	const runningSubagents = row.kind === "session" && (subagentTallyToShow(row)?.running ?? 0) > 0;
-	if (runningSubagents) return "working";
-	if (decisive) return decisive;
-	// A turn that ended rests Idle whether or not you've seen it: the row's
-	// blue dot (rowUnseen) says whether anything is new (#4093).
-	return "idle";
+	return attentionState(row.state, {
+		askPending: row.ask_pending,
+		approvalPending: approval || row.approval_pending === true,
+		runningChildren: row.kind === "session" && (subagentTallyToShow(row)?.running ?? 0) > 0,
+		offline: row.offline,
+	});
 }
 
 /** Classifies any of the Board's rows, Live's or a category's: the needs_you
