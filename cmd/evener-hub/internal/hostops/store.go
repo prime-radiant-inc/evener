@@ -19,7 +19,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/evener/cmd/evener-hub/internal/fsdurability"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 const (
@@ -1102,7 +1102,7 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 			return false, fmt.Errorf("hostops: preserve store mode: %w", err)
 		}
 	}
-	if err := temp.Sync(); err != nil && !fsdurability.SyncUnsupported(err) {
+	if err := temp.Sync(); err != nil && !fsatomic.SyncUnsupported(err) {
 		return false, fmt.Errorf("hostops: sync temp store: %w", err)
 	}
 	if err := temp.Close(); err != nil {
@@ -1230,7 +1230,7 @@ func syncDirFS(fs afero.Fs, dir string) error {
 	if err != nil {
 		return fmt.Errorf("hostops: open store directory: %w", err)
 	}
-	if err := directory.Sync(); err != nil && !fsdurability.SyncUnsupported(err) {
+	if err := directory.Sync(); err != nil && !fsatomic.SyncUnsupported(err) {
 		_ = directory.Close()
 		return fmt.Errorf("hostops: sync store directory: %w", err)
 	}

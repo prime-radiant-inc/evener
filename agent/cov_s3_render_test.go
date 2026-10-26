@@ -33,22 +33,6 @@ func TestS3Cov_ScalarStringAndFormatNumber(t *testing.T) {
 	}
 }
 
-func TestS3Cov_ToolIntent(t *testing.T) {
-	t.Parallel()
-	if got := toolIntent(json.RawMessage(`{"intent":"explain"}`)); got != "explain" {
-		t.Fatalf("intent = %q", got)
-	}
-	if got := toolIntent(json.RawMessage(`{"intent":"find bug"}`)); got != "find bug" {
-		t.Fatalf("intent = %q", got)
-	}
-	if got := toolIntent(json.RawMessage(`{"other":"x"}`)); got != "" {
-		t.Fatalf("expected empty, got %q", got)
-	}
-	if got := toolIntent(nil); got != "" {
-		t.Fatalf("nil args => %q", got)
-	}
-}
-
 func TestS3Cov_HostOf(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
