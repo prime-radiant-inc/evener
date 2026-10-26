@@ -97,8 +97,20 @@ Fresh client input is human. Parent delegate instructions retain their actual
 sender, including active steering and input sent after the child completes.
 Internal harness nudges are not human input. Assistant text, reasoning and
 communicate previews use the same author snapshot as their durable records.
-Deferred legacy communicate messages take authorship from the original call,
-not the later tool result or the page on which it appears.
+Deferred communicate messages take authorship from the original call, not the
+later tool result or the page on which it appears. This includes inherited
+format-1 ASSISTANT calls: forks copy the call/result exchange but exclude the
+transcript-only COMMUNICATE record. The shared projector reconstructs the message
+at its result, or at the existing unpaired flush when no result was recorded.
+Fresh format-1 calls still render only through their dedicated COMMUNICATE record.
+Both paths preserve result/error behavior, call identity and echo suppression.
+
+The index retains the copied call's position and any later assistant-text context
+needed for echo suppression. A bounded page replays those entries with their
+original format, preserving identity text runs and the call's recorded author,
+without scanning earlier history. Pending context survives index close/reopen
+and result append. Projection-version invalidation rebuilds older sidecars that
+omitted inherited messages; it does not rewrite the authoritative transcript.
 
 Ordinary forks and opt-in delegate context forks preserve original authors and
 mark copied entries `inherited: true`, without mutating their sources. Fresh

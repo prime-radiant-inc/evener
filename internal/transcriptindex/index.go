@@ -28,11 +28,10 @@ const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
 	formatVersion = 6
-	// v8: a settled tool result's nonzero exit no longer counts as a failure
-	// (Jesse, 2026-10-16), so a sidecar built under v7 carries per-turn
-	// FailedToolCalls counts from the OLD rule. The JSON field shapes did not
-	// change, so schemaID cannot tell the two apart; the projection name must.
-	projectionID = "transcript-read-model-v8"
+	// v9: inherited identity-format communicate calls reconstruct their message
+	// at the result or unpaired flush. Older sidecars omitted those items even
+	// though their transcript/schema shapes were unchanged.
+	projectionID = "transcript-read-model-v9"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
 	// the check the attention fold cursor uses (agent/session_attention.go).

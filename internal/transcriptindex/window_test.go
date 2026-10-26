@@ -233,3 +233,26 @@ func TestAuthorshipCommunicateWindow(t *testing.T) {
 		}
 	}
 }
+
+func TestInheritedCommunicateIndexedWindow(t *testing.T) {
+	source := inRound(inTurn("copied", assistant(call("call_child", "communicate", `{"message":"copied child update"}`))), "round_child")
+	source.Authorship = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "child", OwnerSessionID: "parent", DelegateID: "dlg_child", DelegateName: "Child"}, Inherited: true}
+	settled := inRound(inTurn("copied", results(result("call_child", "communicate", "ok"))), "round_child")
+	settled.Authorship = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorUnknown}, Inherited: true}
+	path := writeFixture(t, fixture{name: "inherited-communicate", header: transcript.Header{SessionID: "leaf"}, lines: []fixtureLine{
+		entryLine(opens("copied", schema.TurnSpanExecution, user("before call"))), entryLine(source), entryLine(settled),
+	}})
+	x := openIndex(t, path, t.TempDir())
+	w, err := x.Latest(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.Candidates) != 1 || w.Candidates[0].Item.Text != "copied child update" {
+		t.Fatalf("missing inherited communicate at result boundary: window=%+v", w)
+	}
+	c := w.Candidates[0]
+	wantAuthor := &appwire.TranscriptAuthorship{Author: appwire.TranscriptAuthor{Kind: appwire.TranscriptAuthorAgent, SessionRef: "local:child", OwnerRef: "local:parent", DelegateID: "dlg_child", DelegateName: "Child"}, Inherited: true}
+	if !w.HasOlder || c.Position != (appwire.ThreadItemPosition{Entry: 3, Item: 0}) || c.Item.ID != "item_assistant_3_0" || c.Item.CallID != "call_child" || c.TurnID != "copied" || !reflect.DeepEqual(c.Item.Authorship, wantAuthor) {
+		t.Fatalf("result identity/author: candidate=%+v item=%+v", c, c.Item)
+	}
+}

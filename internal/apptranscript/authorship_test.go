@@ -2,6 +2,7 @@ package apptranscript
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -87,6 +88,124 @@ func TestAuthorshipCommunicateWindow(t *testing.T) {
 			t.Fatalf("items=%+v", items)
 		}
 		assertAuthorJSON(t, items[0], `{"author":{"kind":"agent","sessionRef":"local:parent"},"inherited":true}`)
+	}
+}
+
+func TestInheritedCommunicateEntryParts(t *testing.T) {
+	reg := NewToolCallRegistry()
+	call := schema.Turn{Format: schema.TurnFormatIdentity, Kind: schema.TurnAssistant, TurnID: "copied", RoundID: "round_child",
+		Authorship: &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "child", OwnerSessionID: "parent", DelegateID: "dlg_child", DelegateName: "Child"}, Inherited: true},
+		Message:    llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_child", Name: "communicate", Arguments: json.RawMessage(`{"message":"copied child update"}`)}}}}}
+	items, parts := ProjectEntryParts("copied", 4, call, reg, nil, nil)
+	if len(items) != 0 || len(parts) != 0 {
+		t.Fatalf("call should defer: items=%+v parts=%v", items, parts)
+	}
+	result := schema.Turn{Format: schema.TurnFormatIdentity, Kind: schema.TurnToolResults, TurnID: "copied", RoundID: "round_child",
+		Authorship: &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorUnknown}, Inherited: true},
+		Message:    llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_child", Name: "communicate", Content: "ok"}}}}}
+	items, parts = ProjectEntryParts("copied", 5, result, reg, nil, nil)
+	if len(items) != 1 {
+		t.Fatalf("missing inherited communicate: items=%+v parts=%v", items, parts)
+	}
+	item := items[0]
+	if item.Type != "agentMessage" || item.Text != "copied child update" || item.CallID != "call_child" || item.ID != "item_assistant_5_0" || item.TurnID != "copied" || item.RoundID != "round_child" || !reflect.DeepEqual(parts, []int{0}) {
+		t.Fatalf("result identity/content: item=%+v parts=%v", item, parts)
+	}
+	assertAuthorJSON(t, item, `{"author":{"kind":"agent","sessionRef":"local:child","ownerRef":"local:parent","delegateId":"dlg_child","delegateName":"Child"},"inherited":true}`)
+}
+
+func TestInheritedCommunicateOutcomes(t *testing.T) {
+	for _, format := range []int{0, schema.TurnFormatIdentity} {
+		for _, outcome := range []string{"named", "nameless", "unpaired", "rejected", "runtime-error", "echo", "cross-turn"} {
+			t.Run(fmt.Sprintf("format-%d/%s", format, outcome), func(t *testing.T) {
+				reg := NewToolCallRegistry()
+				call := schema.Turn{Format: format, Kind: schema.TurnAssistant,
+					Authorship: &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "origin"}, Inherited: true},
+					Message:    llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c", Name: "communicate", Arguments: json.RawMessage(`{"message":"payload sentinel"}`)}}}}}
+				if outcome == "echo" || outcome == "cross-turn" {
+					// Identity text is a maximal run, not the final content part.
+					text := []llm.ContentPart{{Kind: llm.ContentText, Text: "payload sentinel"}}
+					if format == schema.TurnFormatIdentity {
+						text = []llm.ContentPart{{Kind: llm.ContentText, Text: "payload "}, {Kind: llm.ContentText, Text: "sentinel"}}
+					}
+					prior := schema.Turn{Format: format, Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: text}}
+					ProjectEntryParts("turn", 1, prior, reg, nil, nil)
+				}
+				ProjectEntryParts("turn", 2, call, reg, nil, nil)
+				// Pending attribution is a snapshot, not an alias of the source.
+				call.Authorship.Author.SessionID = "mutated"
+				var items []appwire.ThreadItem
+				if outcome == "unpaired" {
+					items = flushUnpairedCommunicateItems(reg, "turn")
+				} else {
+					name := "communicate"
+					if outcome == "nameless" {
+						name = ""
+					}
+					result := schema.Turn{Format: format, Kind: schema.TurnToolResults,
+						Authorship: &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorUnknown}, Inherited: true},
+						Message:    llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c", Name: name, Content: "result sentinel", IsError: outcome == "rejected" || outcome == "runtime-error", PrevalOnly: outcome == "rejected"}}}}}
+					turnID := "turn"
+					if outcome == "cross-turn" {
+						turnID = "next"
+					}
+					items, _ = ProjectEntryParts(turnID, 3, result, reg, nil, nil)
+					if len(reg.CommRawArgs) != 0 || len(reg.CommAuthorship) != 0 || len(flushUnpairedCommunicateItems(reg, turnID)) != 0 {
+						t.Fatal("paired result left a pending duplicate")
+					}
+				}
+				if outcome == "echo" || outcome == "runtime-error" {
+					if len(items) != 0 {
+						t.Fatalf("suppressed result projected %+v", items)
+					}
+					return
+				}
+				if len(items) != 1 || items[0].CallID != "c" {
+					t.Fatalf("items=%+v", items)
+				}
+				item := items[0]
+				assertAuthorJSON(t, item, `{"author":{"kind":"agent","sessionRef":"local:origin"},"inherited":true}`)
+				if outcome == "rejected" {
+					if item.Type != "commandExecution" || item.Status != appwire.TurnStatusFailed || !item.PrevalOnly || item.Error != "result sentinel" || item.ArgumentsJSON != `{"message":"payload sentinel"}` {
+						t.Fatalf("rejected item=%+v", item)
+					}
+				} else if item.Type != "agentMessage" || item.Text != "payload sentinel" || item.Status != appwire.TurnStatusCompleted {
+					t.Fatalf("message=%+v", item)
+				}
+			})
+		}
+	}
+}
+
+func TestInheritedCommunicateFreshAndFoldExclusion(t *testing.T) {
+	for _, kind := range []string{"fresh", "absent-author", "fold"} {
+		t.Run(kind, func(t *testing.T) {
+			reg := NewToolCallRegistry()
+			call := schema.Turn{Format: schema.TurnFormatIdentity, Kind: schema.TurnAssistant,
+				Authorship: &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "origin"}},
+				Message:    llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c", Name: "communicate", Arguments: json.RawMessage(`{"message":"fresh sentinel"}`)}}}}}
+			if kind == "absent-author" {
+				call.Authorship = nil
+			} else if kind == "fold" {
+				original := uint64(0)
+				call.OriginalOrdinal = &original
+				call.Authorship.Inherited = true
+			}
+			items, _ := ProjectEntryParts("turn", 1, call, reg, nil, nil)
+			if len(items) != 0 || len(reg.CommRawArgs) != 0 || len(flushUnpairedCommunicateItems(reg, "turn")) != 0 {
+				t.Fatalf("non-reconstructable call projected/deferred: items=%+v registry=%+v", items, reg)
+			}
+			result := schema.Turn{Format: schema.TurnFormatIdentity, Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c", Name: "communicate"}}}}}
+			items, _ = ProjectEntryParts("turn", 2, result, reg, nil, nil)
+			if len(items) != 0 {
+				t.Fatalf("result duplicated dedicated message: %+v", items)
+			}
+			dedicated := schema.Turn{Format: schema.TurnFormatIdentity, Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: "c", Message: "fresh sentinel"}}
+			items, _ = ProjectEntryParts("turn", 3, dedicated, reg, nil, nil)
+			if len(items) != 1 || items[0].Text != "fresh sentinel" || items[0].CallID != "c" {
+				t.Fatalf("dedicated message=%+v", items)
+			}
+		})
 	}
 }
 

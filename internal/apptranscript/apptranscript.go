@@ -428,7 +428,7 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 		if reg.Names == nil {
 			reg.Names = map[string]string{}
 		}
-		items = projectIdentityAssistant(turnID, entryIndex, turn, reg.Names, &parts)
+		items = projectIdentityAssistant(turnID, entryIndex, turn, reg, &parts)
 		for i := range items {
 			items[i].Authorship = ProjectAuthorship(turn.Authorship)
 		}
@@ -778,6 +778,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 							Type:          "commandExecution",
 							ID:            fmt.Sprintf("item_tool_result_%d_%d", turnIndex, i),
 							TurnID:        turnID,
+							RoundID:       turn.RoundID,
 							ToolName:      "communicate",
 							CallID:        part.ToolResult.ToolCallID,
 							ArgumentsJSON: rawArgs,
@@ -813,12 +814,13 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 						msg := CommunicateMessageFromArguments(normalized)
 						if msg != "" && (turnID != reg.LastAssistantTurnID || !EchoesAssistantText(reg.LastAssistantText, msg)) {
 							items = append(items, appwire.ThreadItem{
-								Type:   "agentMessage",
-								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
-								TurnID: turnID,
-								CallID: part.ToolResult.ToolCallID,
-								Text:   msg,
-								Status: appwire.TurnStatusCompleted,
+								Type:    "agentMessage",
+								ID:      fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
+								TurnID:  turnID,
+								RoundID: turn.RoundID,
+								CallID:  part.ToolResult.ToolCallID,
+								Text:    msg,
+								Status:  appwire.TurnStatusCompleted,
 							})
 							recordPart(parts, i)
 						} else if msg == "" && strings.TrimSpace(rawArgs) != "" {
@@ -831,12 +833,13 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 							// bytes the model sent instead of dropping the call
 							// silently.
 							items = append(items, appwire.ThreadItem{
-								Type:   "agentMessage",
-								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
-								TurnID: turnID,
-								CallID: part.ToolResult.ToolCallID,
-								Text:   communicateRawFallbackText(rawArgs),
-								Status: appwire.TurnStatusCompleted,
+								Type:    "agentMessage",
+								ID:      fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
+								TurnID:  turnID,
+								RoundID: turn.RoundID,
+								CallID:  part.ToolResult.ToolCallID,
+								Text:    communicateRawFallbackText(rawArgs),
+								Status:  appwire.TurnStatusCompleted,
 							})
 							recordPart(parts, i)
 						}
@@ -890,10 +893,12 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 // displays it: one agentMessage per maximal run of consecutive text parts,
 // keyed by the run's first part, and one reasoning item for the whole entry,
 // keyed by its first thinking part. A communicate call projects nothing: its
-// COMMUNICATE entry carries the delivered message. Every item names the
-// entry's round.
-func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, parts *[]int) []appwire.ThreadItem {
+// COMMUNICATE entry carries the delivered message. Inherited calls instead
+// defer to their result, because forks exclude transcript-only COMMUNICATE
+// entries. Every item names the entry's round.
+func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRegistry, parts *[]int) []appwire.ThreadItem {
 	var items []appwire.ThreadItem
+	var lastAssistantText string
 	reasoningPart, reasoningText := identityReasoning(turn.Message.Content)
 	var run strings.Builder
 	runStart := -1
@@ -913,6 +918,7 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, to
 			}
 			items = append(items, item)
 			recordPart(parts, runStart)
+			lastAssistantText = strings.TrimSpace(run.String())
 		}
 		run.Reset()
 		runStart = -1
@@ -948,8 +954,18 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, to
 			if part.ToolCall == nil {
 				continue
 			}
-			toolNames[part.ToolCall.ID] = part.ToolCall.Name
+			reg.Names[part.ToolCall.ID] = part.ToolCall.Name
 			if part.ToolCall.Name == "communicate" {
+				if turn.Authorship != nil && turn.Authorship.Inherited {
+					if reg.CommRawArgs == nil {
+						reg.CommRawArgs = map[string]string{}
+					}
+					if reg.CommAuthorship == nil {
+						reg.CommAuthorship = map[string]*schema.TranscriptAuthorship{}
+					}
+					reg.CommRawArgs[part.ToolCall.ID] = part.ToolCall.SentArguments()
+					reg.CommAuthorship[part.ToolCall.ID] = turn.Authorship.Clone()
+				}
 				continue
 			}
 			items = append(items, toolCallItem(turnID, turnIndex, i, turn))
@@ -957,6 +973,9 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, to
 		}
 	}
 	flushRun()
+	if lastAssistantText != "" {
+		reg.LastAssistantText, reg.LastAssistantTurnID = lastAssistantText, turnID
+	}
 	for i := range items {
 		items[i].RoundID = turn.RoundID
 	}
