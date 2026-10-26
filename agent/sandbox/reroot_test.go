@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
 
 // twoLinkedLanes materializes a main checkout with two linked worktrees and
@@ -15,14 +17,14 @@ import (
 func twoLinkedLanes(t *testing.T) (string, string, string) {
 	t.Helper()
 	requireGitHarness(t)
-	main := resolveCleanPath(t.TempDir())
+	main := identifier.ResolveClean(t.TempDir())
 	gitHarness(t, main, "init", "-q")
 	gitHarness(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 	laneA := main + "-a"
 	laneB := main + "-b"
 	gitHarness(t, main, "worktree", "add", "-q", laneA)
 	gitHarness(t, main, "worktree", "add", "-q", laneB)
-	return main, resolveCleanPath(laneA), resolveCleanPath(laneB)
+	return main, identifier.ResolveClean(laneA), identifier.ResolveClean(laneB)
 }
 
 func TestReRootToLinkedWorktree(t *testing.T) {
@@ -103,7 +105,7 @@ func TestReRootRefusesUnsatisfiable(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bad, ".git"), []byte("gitdir: /nonexistent/not-a-worktree\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, rerootErr := rp.ReRoot(resolveCleanPath(bad))
+	_, rerootErr := rp.ReRoot(identifier.ResolveClean(bad))
 	if rerootErr == nil {
 		t.Fatalf("re-root onto an unclassifiable target must refuse, got nil")
 	}
@@ -223,7 +225,7 @@ type fuzzReRootFixture struct {
 // linked-worktree layout, not a real repository or subprocess.
 func newFuzzReRootFixture(t TestingT) fuzzReRootFixture {
 	t.Helper()
-	root := resolveCleanPath(t.TempDir())
+	root := identifier.ResolveClean(t.TempDir())
 	fixture := fuzzReRootFixture{
 		root:      root,
 		main:      filepath.Join(root, "main"),

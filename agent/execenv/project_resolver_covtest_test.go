@@ -149,64 +149,6 @@ func TestProjectResolver_EvalSymlinks_NonLocal_BlankOutput(t *testing.T) {
 	}
 }
 
-// TestValidateLinkedPointer_Malformed covers the malformed pointer path
-// in validateLinkedPointer (line 155-156).
-func TestValidateLinkedPointer_Malformed(t *testing.T) {
-	err := validateLinkedPointer("not a pointer", "/ancestor", "/root")
-	if err == nil || !strings.Contains(err.Error(), "malformed") {
-		t.Fatalf("error = %v, want malformed", err)
-	}
-}
-
-// TestValidateLinkedPointer_TargetNotDir covers the non-directory target
-// path in validateLinkedPointer (line 162-163).
-func TestValidateLinkedPointer_TargetNotDir(t *testing.T) {
-	dir := t.TempDir()
-	// Create a file, not a directory, as the target.
-	target := filepath.Join(dir, "file")
-	os.WriteFile(target, []byte("x"), 0o644)
-	content := "gitdir: " + target
-	err := validateLinkedPointer(content, dir, dir)
-	if err == nil || !strings.Contains(err.Error(), "not a directory") {
-		t.Fatalf("error = %v, want not a directory", err)
-	}
-}
-
-// TestValidateSubmodulePointer_Malformed covers the malformed pointer path
-// in validateSubmodulePointer (line 179-180).
-func TestValidateSubmodulePointer_Malformed(t *testing.T) {
-	err := validateSubmodulePointer("not a pointer", "/ancestor")
-	if err == nil || !strings.Contains(err.Error(), "malformed") {
-		t.Fatalf("error = %v, want malformed", err)
-	}
-}
-
-// TestValidateSubmodulePointer_NotDir covers the non-directory target path
-// in validateSubmodulePointer (line 186-187).
-func TestValidateSubmodulePointer_NotDir(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "file")
-	os.WriteFile(target, []byte("x"), 0o644)
-	content := "gitdir: " + target
-	err := validateSubmodulePointer(content, dir)
-	if err == nil || !strings.Contains(err.Error(), "not a directory") {
-		t.Fatalf("error = %v, want not a directory", err)
-	}
-}
-
-// TestValidateSubmodulePointer_NotSubmoduleShape covers the not-submodule
-// shape path in validateSubmodulePointer (line 189-190).
-func TestValidateSubmodulePointer_NotSubmoduleShape(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "gitdir")
-	os.MkdirAll(target, 0o755)
-	content := "gitdir: " + target
-	err := validateSubmodulePointer(content, dir)
-	if err == nil || !strings.Contains(err.Error(), "not a submodule") {
-		t.Fatalf("error = %v, want not a submodule", err)
-	}
-}
-
 // TestResolveMainRepoRoot_NonGitDir covers the non-Git directory path
 // in resolveMainRepoRoot (line 96-97, 100).
 func TestResolveMainRepoRoot_NonGitDir(t *testing.T) {

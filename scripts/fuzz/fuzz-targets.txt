@@ -162,7 +162,6 @@ native:agent:./internal/tool/repair:FuzzRepairDiagnostics
 native:agent:./internal/tool/repair:FuzzRepairSuggestions
 native:agent:./internal/toolname:FuzzToolNameTranslations
 native:agent:./mcpprobe:FuzzProbe
-native:agent:./execenv:FuzzMainRootFromGitdirPointer
 native:agent:./execenv:FuzzSecurePathResolve
 native:agent:./execenv:FuzzSecureFilesystemOperationProgram
 native:agent:./execenv:FuzzLocalFilesystemOperationProgram

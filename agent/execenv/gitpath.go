@@ -196,12 +196,12 @@ func structuralWorktreeRoot(cwd string) (string, bool) {
 		info, err := os.Stat(gitPath)
 		if err == nil {
 			if info.IsDir() {
-				return resolveClean(dir), true
+				return identifier.ResolveClean(dir), true
 			}
 			content, err := os.ReadFile(gitPath)
 			if err == nil {
 				if _, ok := identifier.ParseGitdirPointer(string(content)); ok {
-					return resolveClean(dir), true
+					return identifier.ResolveClean(dir), true
 				}
 			}
 			return "", false
@@ -237,25 +237,6 @@ func hasGitEntryAncestor(cwd string) (present, known bool) {
 	}
 }
 
-// mainRootFromGitdirPointer parses a linked worktree's ".git" pointer file
-// content ("gitdir: <path>") and returns the main repository root iff the
-// pointer resolves to the ".git/worktrees/<id>" shape. Relative pointer paths
-// are resolved against ancestorDir (the directory holding the .git file). It is
-// a pure function (no filesystem access), so it is trivially fuzzable.
-//
-// Compatibility wrapper around the shared identifier helper.
-func mainRootFromGitdirPointer(pointerContent, ancestorDir string) (string, bool) {
-	return identifier.MainRootFromGitdirPointer(pointerContent, ancestorDir)
-}
-
-// parseGitdirPointer extracts the path from the first "gitdir: <path>" line of a
-// git pointer file. Returns ok=false when no non-empty gitdir line is present.
-//
-// Compatibility wrapper around the shared identifier helper.
-func parseGitdirPointer(content string) (string, bool) {
-	return identifier.ParseGitdirPointer(content)
-}
-
 // mainRootCandidateFromCommonDir turns a `git rev-parse --git-common-dir` result
 // into a candidate main repo root: the parent of the common .git dir. The output
 // is relative from a main checkout but absolute from a linked worktree, so cwd
@@ -266,17 +247,6 @@ func parseGitdirPointer(content string) (string, bool) {
 // Compatibility wrapper around the shared identifier helper.
 func mainRootCandidateFromCommonDir(cwd, common string) string {
 	return identifier.MainRootCandidateFromCommonDir(cwd, common)
-}
-
-// resolveClean returns the symlink-resolved, cleaned form of p, falling back to
-// a plain Clean when the path cannot be resolved (e.g. it does not exist).
-//
-// Compatibility wrapper retaining the old local normalization seam.
-func resolveClean(p string) string {
-	if resolved, err := filepath.EvalSymlinks(p); err == nil {
-		return filepath.Clean(resolved)
-	}
-	return filepath.Clean(p)
 }
 
 // DirsFromRootToCwd returns the chain of directories from root down to cwd

@@ -127,21 +127,12 @@ var gitWritableLeaves = []string{
 // rewritten by a commit, so protecting them cannot regress the commit path.
 var gitProtectedLeaves = []string{"config", "config.worktree", "hooks", "commondir", "gitdir"}
 
-// resolveCleanPath is the package's symlink-resolving path normalizer, shared by
-// the classifier and its tests so expected and actual paths normalize identically.
-func resolveCleanPath(p string) string {
-	if resolved, err := filepath.EvalSymlinks(p); err == nil {
-		return filepath.Clean(resolved)
-	}
-	return filepath.Clean(p)
-}
-
 // ClassifyWorkspace resolves cwd's git layout structurally (reading .git entries
 // directly; it never forks the git binary) into a GitLayout. It returns an error
 // only on an unreadable or unrecognized .git pointer shape — a fail-closed signal
 // the resolver turns into a refusal rather than guessing a grant set.
 func ClassifyWorkspace(cwd string) (GitLayout, error) {
-	cwd = resolveCleanPath(cwd)
+	cwd = identifier.ResolveClean(cwd)
 
 	holder, isDir, ok := findGitEntry(cwd)
 	if !ok {
@@ -153,7 +144,7 @@ func ClassifyWorkspace(cwd string) (GitLayout, error) {
 		// Resolve a symlinked .git to its real target so protected surfaces point
 		// at the real config/hooks (not the symlink) — otherwise a subtractive
 		// backend would deny the symlink while the real config sits writable.
-		gitDir := resolveCleanPath(entry)
+		gitDir := identifier.ResolveClean(entry)
 		layout := newLayout(MainCheckout, holder, gitDir, gitDir)
 		// A symlinked .git entry is itself a redirection surface: repointing it
 		// swaps in an attacker-controlled git dir. Protect the symlink from writes.
@@ -176,7 +167,7 @@ func ClassifyWorkspace(cwd string) (GitLayout, error) {
 	if !filepath.IsAbs(pointer) {
 		pointer = filepath.Join(holder, pointer)
 	}
-	gitDir := resolveCleanPath(pointer)
+	gitDir := identifier.ResolveClean(pointer)
 
 	var layout GitLayout
 	switch {
@@ -252,7 +243,7 @@ func findGitEntry(cwd string) (holder string, isDir, ok bool) {
 func newLayout(kind WorkspaceKind, worktreeRoot, gitDir, commonDir string) GitLayout {
 	l := GitLayout{
 		Kind:         kind,
-		WorktreeRoot: resolveCleanPath(worktreeRoot),
+		WorktreeRoot: identifier.ResolveClean(worktreeRoot),
 		GitDir:       gitDir,
 		CommonDir:    commonDir,
 	}

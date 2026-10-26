@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
 
 // runGit runs a git command in dir and fails the test on error. Fixtures are
@@ -37,7 +39,7 @@ func requireGit(t *testing.T) {
 
 // clean resolves symlinks + cleans, matching ClassifyWorkspace's own path
 // normalization so temp-dir symlinks (e.g. /tmp) don't cause spurious mismatches.
-func clean(p string) string { return resolveCleanPath(p) }
+func clean(p string) string { return identifier.ResolveClean(p) }
 
 func mustContain(t *testing.T, set []string, want, label string) {
 	t.Helper()

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/identifier"
 )
 
 // requireRealBwrap gates a test on a bwrap-capable host and skips under -short so
@@ -81,7 +83,7 @@ func TestBwrapLinkedWorktreeStarts(t *testing.T) {
 	gitHarness(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 	wt := filepath.Join(base, "wt")
 	gitHarness(t, main, "worktree", "add", "-q", wt)
-	cwd := resolveCleanPath(wt)
+	cwd := identifier.ResolveClean(wt)
 
 	facts.Home = t.TempDir()
 	// If the sandbox aborts (EROFS on a dead pin), the command fails to start.
@@ -358,7 +360,7 @@ func TestBwrapShellSeesTheScratchTreeTheFileToolsRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
-	base = resolveCleanPath(base)
+	base = identifier.ResolveClean(base)
 	if !pathUnder(base, "/tmp") {
 		t.Skipf("/tmp resolves to %q on this host; the private /tmp shadows nothing", base)
 	}

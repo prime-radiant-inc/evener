@@ -133,7 +133,7 @@ func localStructuralMainRoot(cwd string) (root string, isGit bool, handled bool,
 		}
 		if statErr == nil {
 			if info.IsDir() {
-				return resolveClean(dir), true, true, nil
+				return identifier.ResolveClean(dir), true, true, nil
 			}
 			content, readErr := os.ReadFile(gitPath)
 			if readErr != nil {
@@ -141,15 +141,15 @@ func localStructuralMainRoot(cwd string) (root string, isGit bool, handled bool,
 			}
 			contentString := string(content)
 			if root, ok := identifier.MainRootFromGitdirPointer(contentString, dir); ok {
-				if err := validateLinkedPointer(contentString, dir, root); err != nil {
+				if err := identifier.ValidateLinkedWorktreePointer(contentString, dir, root); err != nil {
 					return "", true, true, err
 				}
-				return resolveClean(root), true, true, nil
+				return identifier.ResolveClean(root), true, true, nil
 			}
 			if _, ok := identifier.ParseGitdirPointer(contentString); !ok {
 				return "", true, true, errors.New("malformed Git worktree pointer")
 			}
-			if err := validateSubmodulePointer(contentString, dir); err != nil {
+			if err := identifier.ValidateSubmodulePointer(contentString, dir); err != nil {
 				return "", true, true, err
 			}
 			return "", true, false, nil
@@ -159,71 +159,6 @@ func localStructuralMainRoot(cwd string) (root string, isGit bool, handled bool,
 			return "", false, true, nil
 		}
 		dir = parent
-	}
-}
-
-func validateLinkedPointer(content, ancestor, root string) error {
-	target, ok := pointerTarget(content, ancestor)
-	if !ok {
-		return errors.New("malformed Git worktree pointer")
-	}
-	info, err := os.Stat(target)
-	if err != nil {
-		return fmt.Errorf("linked worktree Git directory %q: %w", target, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("linked worktree Git directory %q is not a directory", target)
-	}
-	mainGit := filepath.Join(root, ".git")
-	mainInfo, err := os.Stat(mainGit)
-	if err != nil {
-		return fmt.Errorf("main checkout Git directory %q: %w", mainGit, err)
-	}
-	common := filepath.Dir(filepath.Dir(target))
-	if !mainInfo.IsDir() || resolveClean(mainGit) != resolveClean(common) {
-		return fmt.Errorf("linked worktree Git directory %q does not match main checkout %q", target, mainGit)
-	}
-	return nil
-}
-
-func validateSubmodulePointer(content, ancestor string) error {
-	target, ok := pointerTarget(content, ancestor)
-	if !ok {
-		return errors.New("malformed Git pointer")
-	}
-	info, err := os.Stat(target)
-	if err != nil {
-		return fmt.Errorf("git pointer target %q: %w", target, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("git pointer target %q is not a directory", target)
-	}
-	if !isSubmoduleGitDirShape(target) {
-		return fmt.Errorf("git pointer target %q is not a submodule Git directory", target)
-	}
-	return nil
-}
-
-func pointerTarget(content, ancestor string) (string, bool) {
-	gitdir, ok := identifier.ParseGitdirPointer(content)
-	if !ok {
-		return "", false
-	}
-	if !filepath.IsAbs(gitdir) {
-		gitdir = filepath.Join(ancestor, gitdir)
-	}
-	return filepath.Clean(gitdir), true
-}
-
-func isSubmoduleGitDirShape(target string) bool {
-	for current := filepath.Clean(target); ; current = filepath.Dir(current) {
-		parent := filepath.Dir(current)
-		if filepath.Base(parent) == "modules" && filepath.Base(filepath.Dir(parent)) == ".git" {
-			return true
-		}
-		if parent == current {
-			return false
-		}
 	}
 }
 
@@ -252,7 +187,7 @@ func gitBinaryMainRootStrict(env ExecutionEnvironment, cwd string) (string, bool
 	if !pathContains(top, cwd, isLocalEnv(env)) {
 		return "", true, fmt.Errorf("git checkout root %q does not contain %q", top, cwd)
 	}
-	if isSubmoduleGitDirShape(commonPath) {
+	if identifier.IsSubmoduleGitDirShape(commonPath) {
 		if !isLocalEnv(env) && !env.FileExists(commonPath) {
 			return "", true, fmt.Errorf("git submodule common directory %q does not exist", commonPath)
 		}
@@ -301,8 +236,8 @@ func isLocalEnv(env ExecutionEnvironment) bool {
 
 func pathContains(root, path string, resolveSymlinks bool) bool {
 	if resolveSymlinks {
-		root = resolveClean(root)
-		path = resolveClean(path)
+		root = identifier.ResolveClean(root)
+		path = identifier.ResolveClean(path)
 	}
 	root, path = filepath.Clean(root), filepath.Clean(path)
 	return root == path || strings.HasPrefix(path, root+string(filepath.Separator))
@@ -310,7 +245,7 @@ func pathContains(root, path string, resolveSymlinks bool) bool {
 
 func resolveCleanForEnv(env ExecutionEnvironment, path string) string {
 	if isLocalEnv(env) {
-		return resolveClean(path)
+		return identifier.ResolveClean(path)
 	}
 	return filepath.Clean(path)
 }
