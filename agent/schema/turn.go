@@ -410,8 +410,11 @@ type GoalContinuationInfo struct {
 // projected, so turns carrying them are not byte-identical by design;
 // they stay sorted here too so a future key lands in one obvious place.
 type Turn struct {
-	Actor          SessionActor `json:"actor,omitzero"`
-	AttemptGroupID string       `json:"attempt_group_id,omitempty"`
+	Actor SessionActor `json:"actor,omitzero"`
+	// AnswerToTurnIDs names the pending question executions resolved by this
+	// accepted input. Missing evidence never establishes continuation.
+	AnswerToTurnIDs []string `json:"answer_to_turn_ids,omitempty"`
+	AttemptGroupID  string   `json:"attempt_group_id,omitempty"`
 	// AttentionID identifies steering that requires durable terminal cleanup.
 	// It is empty for ordinary steering and all non-steering turns.
 	AttentionID string `json:"attention_id,omitempty"`

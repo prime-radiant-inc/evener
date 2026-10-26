@@ -416,6 +416,7 @@ type SessionObservationMetadata struct {
 	InstanceID       string             `json:"instanceId,omitempty"`
 	GenerationID     string             `json:"generationId,omitempty"`
 	TurnID           string             `json:"turnId,omitempty"`
+	AnswerToTurnIDs  []string           `json:"answerToTurnIds,omitempty"`
 	EntryID          string             `json:"entryId,omitempty"`
 	EndTurn          bool               `json:"endTurn,omitempty"`
 	EndReason        string             `json:"endReason,omitempty"`

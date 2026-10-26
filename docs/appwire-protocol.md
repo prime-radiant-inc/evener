@@ -3697,6 +3697,7 @@ Underlying Go kind: `string` (no struct fields).
 | `instanceId` | string | yes |  |
 | `generationId` | string | yes |  |
 | `turnId` | string | yes |  |
+| `answerToTurnIds` | []string | yes |  |
 | `entryId` | string | yes |  |
 | `endTurn` | bool | yes |  |
 | `endReason` | string | yes |  |

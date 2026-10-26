@@ -7,9 +7,36 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
+
+func TestManagerWatchAnswerIsNotCommunicate(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(c *SessionConfig) { c.Manager = true })
+	jm := root.jobManager
+	const ref, instance, generation = "local:worker", "instance", "7@worker"
+	watch, err := jm.configureHubWatch(ref, instance, generation, "local:manager", []string{"communicate"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, _ := apptranscript.ProjectEntryParts("answer", 1, schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "answer", Kind: schema.TurnUserInput, Message: llm.User("answer"), AnswerToTurnIDs: []string{"question"}}, nil, nil, nil)
+	if len(items) != 1 || items[0].Observation == nil {
+		t.Fatal("missing actual input observation")
+	}
+	if err := jm.onHubObservation(watch.WatchID, appwire.SessionWatchUpdate{Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance, ActiveTurnID: "question"}, Turns: []appwire.Turn{{ID: "answer", Items: items}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID {
+			t.Fatal("accepted input created a communicate watch send")
+		}
+	}
+	if !managerWatchActive(jm, watch.WatchID) {
+		t.Fatal("accepted input completed watch")
+	}
+}
 
 func TestManagerWatchResyncProjectedCompletion(t *testing.T) {
 	t.Parallel()

@@ -1248,6 +1248,13 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 	t.ClientMutationID = msg.ClientMutationID
 	t.Actor = msg.Actor
 	t.StableTurnID = msg.StableTurnID
+	if steeringAnswersAsk(msg.Source, steeringOrigin{kind: msg.Kind}, "") {
+		t.AnswerToTurnIDs = s.pendingAskTurnIDs()
+		if s.clientMutations != nil && msg.ClientMutationID != "" {
+			record := s.clientMutations.snapshot().Journal[msg.ClientMutationID]
+			t.AnswerToTurnIDs = appendAnswerTurnIDs(t.AnswerToTurnIDs, record.AnswerToTurnIDs...)
+		}
+	}
 	if len(msg.SkillNames) > 0 {
 		t.SkillState = &schema.SkillTurnState{Input: selectionRecord}
 	}

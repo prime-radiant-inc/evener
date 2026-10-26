@@ -3621,6 +3621,7 @@ export interface SessionObservationMetadata {
   instanceId?: string;
   generationId?: string;
   turnId?: string;
+  answerToTurnIds?: string[];
   entryId?: string;
   endTurn?: boolean;
   endReason?: string;

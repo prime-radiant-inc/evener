@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -78,7 +79,7 @@ func TestManagerWatchSharedDaemonReconnect(t *testing.T) {
 						interrupted = true
 					}
 					if u.Snapshot != nil {
-						if !interrupted || u.Metadata != initial.Metadata {
+						if !interrupted || !reflect.DeepEqual(u.Metadata, initial.Metadata) {
 							t.Fatalf("recovery cut=%+v initial=%+v interrupted=%t", u.Metadata, initial.Metadata, interrupted)
 						}
 						goto recovered

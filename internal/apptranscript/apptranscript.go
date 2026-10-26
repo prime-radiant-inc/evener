@@ -652,6 +652,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			Images:               images,
 			Status:               appwire.TurnStatusCompleted,
 			ClientMutationID:     turn.ClientMutationID,
+			Observation:          answerObservation(turnID, turn),
 		}}
 	case schema.TurnSteering:
 		if turn.GoalContinuation != nil {
@@ -684,6 +685,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			Source:           turn.SteeringSource,
 			SteeringKind:     turn.SteeringKind,
 			ClientMutationID: turn.ClientMutationID,
+			Observation:      answerObservation(turnID, turn),
 		}}
 	case schema.TurnAssistant:
 		var items []appwire.ThreadItem
@@ -896,6 +898,18 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 		return items
 	default:
 		return nil
+	}
+}
+
+// answerObservation exposes only admission's recorded relationship. Older
+// inputs have no link, even if their surrounding history looks like an answer.
+func answerObservation(turnID string, turn schema.Turn) *appwire.SessionObservationMetadata {
+	if len(turn.AnswerToTurnIDs) == 0 {
+		return nil
+	}
+	return &appwire.SessionObservationMetadata{
+		TurnID: turnID, AnswerToTurnIDs: append([]string(nil), turn.AnswerToTurnIDs...),
+		CausalKnown: turn.CausalKnown, Causal: turn.Causal,
 	}
 }
 

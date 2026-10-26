@@ -57,6 +57,9 @@ func recordedObservationUpdates(items []appwire.ThreadItem, request appwire.Sess
 			continue
 		}
 		m := observationMetadata(item, ref, instance, generation)
+		if len(m.AnswerToTurnIDs) != 0 {
+			continue // Recorded input evidence is not a communicate event.
+		}
 		if sessionWatchSelected(request, "communicate") || request.Completion || !m.CausalKnown {
 			out = append(out, appwire.SessionWatchUpdate{Event: "communicate", Metadata: m})
 		}

@@ -428,6 +428,7 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 	// clientMutations.mu; the claim reads only the writer's own lock inside, so
 	// the serializer never waits on s.mu.
 	writer := s.attachedTranscript()
+	answerToTurnIDs := s.pendingAskTurnIDs()
 	var carrier queuedInput
 	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		if !steeringCarrierRailOpen(snapshot) {
@@ -440,6 +441,11 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 			// save the generation the claim then declined to change.
 			if refusal := s.refuseOnUnhealthyTranscript(writer); refusal != nil {
 				return refusal
+			}
+			if steeringAnswersAsk(events.SteeringSourceUser, steeringOriginFromJournal(snapshot.Journal, id), "") {
+				record := snapshot.Journal[id]
+				record.AnswerToTurnIDs = appendAnswerTurnIDs(record.AnswerToTurnIDs, answerToTurnIDs...)
+				snapshot.Journal[id] = record
 			}
 			snapshot.ActiveTurnID = turnID
 			carrier = queuedInput{ClientMutationID: id, StableTurnID: turnID, SteeringCarrier: true}

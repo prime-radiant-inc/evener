@@ -179,6 +179,10 @@ func (jm *jobManager) onHubObservationEvidence(watchID string, update appwire.Se
 		return nil
 	}
 	m := update.Metadata
+	if len(m.AnswerToTurnIDs) != 0 {
+		jm.mu.Unlock()
+		return nil // Answer input is history evidence, not a communicate event.
+	}
 	if !recorded && (m.Ref != cfg.hubRef || m.InstanceID != cfg.hubInstance || m.GenerationID != cfg.hubGeneration) {
 		jm.mu.Unlock()
 		return nil

@@ -179,6 +179,7 @@ type clientMutationStoreRecord struct {
 	Preconditions       json.RawMessage                         `json:"preconditions"`
 	StableTurnID        string                                  `json:"stable_turn_id"`
 	StableQueueEntryIDs []string                                `json:"stable_queue_entry_ids"`
+	AnswerToTurnIDs     []string                                `json:"answer_to_turn_ids"`
 	PayloadHash         string                                  `json:"payload_hash"`
 	OperationState      string                                  `json:"operation_state"`
 	ExecutionState      string                                  `json:"execution_state"`

@@ -140,6 +140,9 @@ type clientMutationRecord struct {
 	// SteeringKind is accepted atomically with a typed pending notification.
 	// Reconstruction restores it onto the delivered steering entry.
 	SteeringKind string `json:"steering_kind,omitempty"`
+	// AnswerToTurnIDs is private retry intent captured at carrier claim. Only
+	// a successful steering append publishes it as answer evidence.
+	AnswerToTurnIDs []string `json:"answer_to_turn_ids,omitempty"`
 }
 
 type clientMutationFailure struct {
@@ -2058,6 +2061,7 @@ func cloneClientMutationSnapshot(src clientMutationSnapshot) clientMutationSnaps
 
 func cloneClientMutationRecord(src clientMutationRecord) clientMutationRecord {
 	dst := src
+	dst.AnswerToTurnIDs = slices.Clone(src.AnswerToTurnIDs)
 	dst.Payload = append(json.RawMessage(nil), src.Payload...)
 	dst.Preconditions = cloneClientMutationPreconditions(src.Preconditions)
 	dst.StableQueueEntryIDs = append([]string(nil), src.StableQueueEntryIDs...)
