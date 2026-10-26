@@ -36,20 +36,20 @@ func FuzzLoadStore(f *testing.F) {
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[]}`,
 		// A pending record and a complete one: the pass must move only the first.
 		`{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
-			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"restart","state":"complete","generation":7,"incarnationId":"inc-2","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:01Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1}]}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false},` +
+			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"restart","state":"complete","generation":7,"incarnationId":"inc-2","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:01Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1}]}`,
 		// A running record carrying its fencing epoch and a prior-build
 		// orphan-unverified record: the pass moves the first and must leave the
 		// second alone (spec §7's one exception).
 		`{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"running","generation":7,"incarnationId":"inc-1","fencingEpoch":{"bootId":"boot-1","opSeq":3},"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
-			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"restart","state":"orphan-unverified","generation":7,"incarnationId":"inc-2","orphanBoundary":[{"host":"h2","kind":"local-linux"}],"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:01Z","hostRemoved":false}]}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"running","generation":7,"incarnationId":"inc-1","fencingEpoch":{"bootId":"boot-1","opSeq":3},"createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false},` +
+			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"restart","state":"orphan-unverified","generation":7,"incarnationId":"inc-2","orphanBoundary":[{"host":"h2","kind":"local-linux"}],"createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:01Z","hostRemoved":false}]}`,
 		// A record whose pinned pair is missing and one whose stamp is ahead of
 		// the store's sequence: both must be refused, never served.
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":0,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":0,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false}]}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":9}]}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":9}]}`,
 		// A file missing a required top-level field, a file with a null record
 		// list, and a file whose record set is not in the allocator's canonical
 		// ascending id order: all schema-invalid, never an empty or reordered
@@ -57,47 +57,47 @@ func FuzzLoadStore(f *testing.F) {
 		`{"version":1,"records":[]}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":null}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":2,"records":[` +
-			`{"id":"00000000000000000002","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`,
+			`{"id":"00000000000000000002","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false},` +
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false}]}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
-			`{"id":"1","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`,
+			`{"id":"1","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false}]}`,
 		// A prior-build orphan-unverified record whose retired boundary reads as
 		// null — a shape this build must still load — and a store whose two
 		// terminal records share one sequence stamp, the race-scan corruption.
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":null}]}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false,"orphanBoundary":null}]}`,
 		// A record that arrived with offset timestamps (§8 converts them at write
 		// time) and a prior-build orphan whose retired boundary is empty: both are
 		// accepted shapes.
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T02:00:00+02:00","updatedAt":"2026-09-26T03:00:00+02:00","hostRemoved":false}]}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":[]}]}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false,"orphanBoundary":[]}]}`,
 		// Prior-build fencing-quarantine markers and boundaries in three shapes
 		// (the marker naming the orphan its host carries, one naming a running
 		// record, and one carrying an extra key): all decoded for tolerance, none
 		// re-emitted.
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":[{"kind":"remote-fencing","fencingEpoch":{"bootId":"boot-1","opSeq":2},"guardEpoch":3,"leaseEntries":[]}]}],"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2026-09-26T00:00:00Z"}}}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false,"orphanBoundary":[{"kind":"remote-fencing","fencingEpoch":{"bootId":"boot-1","opSeq":2},"guardEpoch":3,"leaseEntries":[]}]}],"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2099-01-01T00:00:00Z"}}}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"running","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}],"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2026-09-26T00:00:00Z"}}}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"running","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false}],"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2099-01-01T00:00:00Z"}}}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":[]}],"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2026-09-26T00:00:00Z","host":"h1"}}}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false,"orphanBoundary":[]}],"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2099-01-01T00:00:00Z","host":"h1"}}}`,
 		// A file naming a key twice and one whose raw field carries invalid
 		// UTF-8: the decoder would collapse the first and the encoder would
 		// replace the second, so neither is a file this store wrote.
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"records":[]}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"running","generation":7,"incarnationId":"inc-1","fencingEpoch":{"bootId":"` + "\xff\xfe" + `","opSeq":3},"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"running","generation":7,"incarnationId":"inc-1","fencingEpoch":{"bootId":"` + "\xff\xfe" + `","opSeq":3},"createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false}]}`,
 		// A record whose host-removed mark is missing, and a present result
 		// without its outcome: neither is a record this store wrote.
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z"}]}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z"}]}`,
 		`{"version":1,"sequence":1,"allocatorHighWaterMark":1,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"message":"failed"},"sequence":1}]}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false,"result":{"message":"failed"},"sequence":1}]}`,
 		`{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1},` +
-			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":1}]}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1},` +
+			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":1}]}`,
 	}
 	for _, seed := range seeds {
 		f.Add(seed)
@@ -242,13 +242,13 @@ func marshalRecords(t *testing.T, records []Record) []byte {
 // instead of short-circuiting on the missing-result rule.
 func TestRepairedFuzzSeedsReachTheirIntendedArms(t *testing.T) {
 	pendingComplete := `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
-		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
-		`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"restart","state":"complete","generation":7,"incarnationId":"inc-2","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:01Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1}]}`
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false},` +
+		`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"restart","state":"complete","generation":7,"incarnationId":"inc-2","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:01Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1}]}`
 	stampAhead := `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
-		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":9}]}`
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":9}]}`
 	sharedStamp := `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
-		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1},` +
-		`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":1}]}`
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1},` +
+		`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":1}]}`
 
 	// The boot-pass seed loads and moves only the pending record.
 	path := StorePath(t.TempDir())
