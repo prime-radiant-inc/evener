@@ -51,13 +51,8 @@ agent/hook_warnings_test.go	2
 agent/internal/atif/atif_test.go	3
 agent/internal/cheapmodel/caller_test.go	2
 agent/internal/contextmgr/compaction_kind_test.go	1
-agent/internal/contextmgr/cov_s5_strategies_test.go	2
 agent/internal/contextmgr/manager_lifecycle_program_fuzz_test.go	5
-agent/internal/contextmgr/strategy_checkpoint_pred_test.go	1
-agent/internal/contextmgr/strategy_memory_crystals_test.go	1
-agent/internal/contextmgr/strategy_obs_mask_test.go	1
 agent/internal/contextmgr/strategy_ooda_test.go	1
-agent/internal/contextmgr/strategy_recursive_distill_test.go	1
 agent/internal/contextmgr/strategy_session_log_test.go	5
 agent/internal/contextmgr/task8_strategy_fuzz_test.go	1
 agent/internal/delegatestore/delegatestore_covtest_test.go	3
