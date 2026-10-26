@@ -6,7 +6,6 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/rendezvous"
 )
 
 func findNode(nodes []TreeNode, id string) (TreeNode, bool) {
@@ -36,7 +35,7 @@ func TestBuildTreeLiveOverlayPaths(t *testing.T) {
 	}}
 	live := []LiveEntry{
 		{SessionID: "01WITHMETA", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, CurrentModel: "model-a", LastMessage: "hello"},
-		{SessionID: "01NOMETA", Status: appwire.ThreadStatusSystemError, CurrentModel: "model-b", Entry: rendezvous.Entry{StartedAt: started}},
+		{SessionID: "01NOMETA", Status: appwire.ThreadStatusSystemError, CurrentModel: "model-b", StartedAt: started},
 	}
 	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
 
