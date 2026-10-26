@@ -589,6 +589,18 @@ func (a *skillBrowserAdapter) scriptBackgroundStream(ctx context.Context, st *ll
 	defer st.CloseSend()
 	role := a.backgroundRole()
 	st.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
+	if role == "comic-roster" {
+		a.scriptComicRoster(st, req)
+		return
+	}
+	if role == "comic-subchats" {
+		a.scriptComicSubchats(ctx, st, req)
+		return
+	}
+	if role == "comic-authorship" {
+		a.scriptComicAuthorship(st, req)
+		return
+	}
 	if role == "history" {
 		// History turns exist to build volume and carry their own user sentinel
 		// (BACKGROUND_HISTORY_NN); their assistant text is neutral so the
@@ -626,6 +638,213 @@ func (a *skillBrowserAdapter) scriptBackgroundStream(ctx context.Context, st *ll
 		Name:      "shell",
 		Arguments: json.RawMessage(`{"command":"` + backgroundToolCommand + `","mode":"foreground"}`),
 		Type:      "function",
+	}
+	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &call})
+	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+	st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})
+}
+
+// This opt-in script asks production tools to create actual descendants. Child
+// refs, activity generations and transcript records are all runtime output.
+// scriptComicRoster produces actual delegates, not activity rows. The normal
+// session-scoped activity endpoint supplies its own 50-row continuation pages.
+func (a *skillBrowserAdapter) scriptComicRoster(st *llm.ChanStream, req llm.Request) {
+	created := 0
+	for _, message := range req.Messages {
+		for _, part := range message.Content {
+			if message.Role == llm.RoleUser && strings.TrimSpace(part.Text) == "COMIC_ROSTER_LEAF" {
+				st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: "COMIC_ROSTER_LEAF literal answer"})
+				sendScriptedCommunicate(st)
+				return
+			}
+			if message.Role == llm.RoleAssistant && part.ToolCall != nil && strings.HasPrefix(part.ToolCall.ID, "comic_roster_") {
+				created++
+			}
+		}
+	}
+	if created >= 101 {
+		sendScriptedCommunicate(st)
+		return
+	}
+	for index := created; index < min(created+10, 101); index++ {
+		args := map[string]any{"prompt": "COMIC_ROSTER_LEAF", "intent": "Producing real bounded activity pages", "delegation_allowance": 0}
+		if index < 2 {
+			args["name"] = "comic-same-name"
+		}
+		encoded, _ := json.Marshal(args)
+		call := llm.ToolCallData{ID: fmt.Sprintf("comic_roster_%03d", index), Name: "delegate", Arguments: encoded, Type: "function"}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &call})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+	}
+	st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})
+}
+
+func (a *skillBrowserAdapter) scriptComicSubchats(ctx context.Context, st *llm.ChanStream, req llm.Request) {
+	level := "ROOT"
+	for _, message := range req.Messages {
+		if message.Role != llm.RoleUser {
+			continue
+		}
+		for _, part := range message.Content {
+			if strings.TrimSpace(part.Text) == "COMIC_SUBCHAT_GRANDCHILD" {
+				level = "GRANDCHILD"
+			} else if strings.TrimSpace(part.Text) == "COMIC_SUBCHAT_CHILD" {
+				level = "CHILD"
+			}
+		}
+	}
+	launched, answered, instructed := false, false, false
+	grandchildID := ""
+	historyCalls := 0
+	for _, message := range req.Messages {
+		for _, part := range message.Content {
+			if part.ToolResult != nil && part.ToolResult.ToolCallID == "comic_delegate_GRANDCHILD" {
+				var receipt struct {
+					DelegateID string `json:"delegate_id"`
+				}
+				text, _ := part.ToolResult.Content.(string)
+				if json.Unmarshal([]byte(text), &receipt) == nil {
+					grandchildID = receipt.DelegateID
+				}
+			}
+		}
+		if message.Role != llm.RoleAssistant {
+			continue
+		}
+		for _, part := range message.Content {
+			if part.ToolCall != nil && strings.HasPrefix(part.ToolCall.ID, "comic_delegate_") {
+				launched = true
+			}
+			if part.ToolCall != nil && strings.HasPrefix(part.ToolCall.ID, "comic_history_") {
+				historyCalls++
+			}
+			if part.ToolCall != nil && part.ToolCall.ID == "comic_parent_instruction" {
+				instructed = true
+			}
+			if strings.Contains(part.Text, "COMIC_ANSWER_"+level) {
+				answered = true
+			}
+		}
+	}
+	if answered {
+		sendScriptedCommunicate(st)
+		return
+	}
+	if level == "CHILD" && launched && historyCalls < 45 {
+		text := fmt.Sprintf("COMIC_CHILD_SOURCE_%02d literal child history with *source* characters.", historyCalls)
+		if historyCalls == 5 {
+			text += strings.Repeat(" Later-page child text preserves its literal reading offset. ", 30)
+		}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: text})
+		call := llm.ToolCallData{ID: fmt.Sprintf("comic_history_%02d", historyCalls), Name: "shell", Arguments: json.RawMessage(`{"command":"printf child-page","mode":"foreground"}`), Type: "function"}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &call})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})
+		return
+	}
+	if level == "CHILD" && grandchildID != "" && !instructed {
+		args, _ := json.Marshal(map[string]any{"to": grandchildID, "message": "COMIC_PARENT_INSTRUCTION literal parent steering", "intent": "Proving canonical named parent attribution", "max_wait_ms": 1000})
+		call := llm.ToolCallData{ID: "comic_parent_instruction", Name: "delegate_send", Arguments: args, Type: "function"}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &call})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})
+		return
+	}
+	if launched || level == "GRANDCHILD" {
+		st.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: "COMIC_THOUGHT_" + level + " available literal reasoning"})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
+		if level == "CHILD" {
+			_ = a.writeEvent("comic-child-produced")
+			if !a.waitBackgroundPhase(ctx, "comic-child-grow") {
+				_ = a.writeEvent("comic-child-cancelled-before-growth")
+				return
+			}
+			_ = a.writeEvent("comic-child-growth-released")
+		}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: "COMIC_ANSWER_" + level + " literal attributed answer"})
+		if level == "CHILD" && !a.waitBackgroundPhase(ctx, "comic-child-finish") {
+			return
+		}
+		sendScriptedCommunicate(st)
+		return
+	}
+	next := "CHILD"
+	allowance := 1
+	if level == "CHILD" {
+		next = "GRANDCHILD"
+		allowance = 0
+	}
+	arguments := map[string]any{"prompt": "COMIC_SUBCHAT_" + next, "intent": "Producing a real nested comic fixture", "delegation_allowance": allowance}
+	if next == "CHILD" {
+		arguments["name"] = "comic-named-parent"
+	}
+	args, _ := json.Marshal(arguments)
+	call := llm.ToolCallData{ID: "comic_delegate_" + next, Name: "delegate", Arguments: args, Type: "function"}
+	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &call})
+	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+	st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})
+}
+
+// scriptComicAuthorship forks twice through the real delegate tool. Each fork
+// receives completed ancestor turns, including the child's published update.
+func (a *skillBrowserAdapter) scriptComicAuthorship(st *llm.ChanStream, req llm.Request) {
+	level := "ROOT"
+	for _, message := range req.Messages {
+		if message.Role != llm.RoleUser {
+			continue
+		}
+		for _, part := range message.Content {
+			if strings.TrimSpace(part.Text) == "COMIC_AUTH_CHILD" {
+				level = "CHILD"
+			} else if strings.TrimSpace(part.Text) == "COMIC_AUTH_LEAF" {
+				level = "LEAF"
+			}
+		}
+	}
+	seeded, launched := false, false
+	history := 0
+	for _, message := range req.Messages {
+		for _, part := range message.Content {
+			if message.Role == llm.RoleAssistant && part.ToolCall != nil {
+				seeded = seeded || part.ToolCall.ID == "comic_auth_seed_"+level
+				launched = launched || part.ToolCall.ID == "comic_auth_spawn_"+level
+				if strings.HasPrefix(part.ToolCall.ID, "comic_auth_history_"+level+"_") {
+					history++
+				}
+			}
+		}
+	}
+	if level == "LEAF" || launched {
+		sendScriptedCommunicate(st)
+		return
+	}
+	call := llm.ToolCallData{Type: "function"}
+	if !seeded {
+		st.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: "COMIC_AUTH_THOUGHT_" + level + " literal original thought"})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: "COMIC_AUTH_ANSWER_" + level + " literal original answer"})
+		call.ID = "comic_auth_seed_" + level
+		call.Name = "shell"
+		call.Arguments = json.RawMessage(`{"command":"printf authored-root","mode":"foreground"}`)
+		if level == "CHILD" {
+			call.Name = "communicate"
+			call.Arguments = json.RawMessage(`{"message":"COMIC_AUTH_UPDATE_CHILD literal original update","end_turn":false,"output":{"message":"","data":{},"artifacts":[]}}`)
+		}
+	} else if level == "CHILD" && history < 35 {
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: fmt.Sprintf("COMIC_AUTH_PAGE_%02d", history)})
+		call.ID = fmt.Sprintf("comic_auth_history_CHILD_%02d", history)
+		call.Name = "shell"
+		call.Arguments = json.RawMessage(`{"command":"printf authored-page","mode":"foreground"}`)
+	} else {
+		next, allowance := "CHILD", 1
+		if level == "CHILD" {
+			next, allowance = "LEAF", 0
+		}
+		call.ID = "comic_auth_spawn_" + level
+		call.Name = "delegate"
+		call.Arguments, _ = json.Marshal(map[string]any{"prompt": "COMIC_AUTH_" + next, "name": "comic-auth-" + strings.ToLower(next), "intent": "Proving original authors through nested opt-in forks", "fork_context": true, "delegation_allowance": allowance})
 	}
 	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &call})
 	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})

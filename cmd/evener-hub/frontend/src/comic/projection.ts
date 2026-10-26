@@ -12,7 +12,6 @@ import {
   type ItemModel,
   isDelegateSendResult,
   isInformationalWarning,
-  isParentSteer,
   isTurnError,
   isUserAuthoredSteer,
   itemTextPresence,
@@ -27,7 +26,7 @@ import {
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type { ImageGalleryProps } from "../panes/session/transcript/flow/ImageGallery";
-import { type ComicPersona, comicDelegatePersona } from "./cast";
+import { type ComicPersona, comicAuthorPersona, comicDelegatePersona } from "./cast";
 
 type ComicEntryFields = {
   id: string;
@@ -36,6 +35,7 @@ type ComicEntryFields = {
   sourceLabel: string;
   text: string;
   streaming: boolean;
+  inherited?: boolean;
   persona?: ComicPersona;
   images?: ImageGalleryProps["images"];
   delegateResult?: { kind: "earlierUpdate" | "earlierReply" | "reply" | "failure"; status?: string };
@@ -65,7 +65,6 @@ export type ComicProjectionContext = {
 };
 
 const ANNA: ComicPersona = { key: "human", character: "anna", name: "Anna", badge: "human" };
-const XENO: ComicPersona = { key: "assistant", character: "xeno", name: "Xeno", badge: "assistant" };
 
 // Tool calls must remain available to the source pass for recorded outputImages;
 // the comic filters out routine tool text and intents itself, rather than
@@ -112,30 +111,34 @@ export function projectComicConversation(
     for (const projected of turn.entries) {
       if (projected.kind !== "item" && projected.kind !== "critical") continue;
       const item = projected.item;
+      const author = item.authorship?.author;
+      const persona = comicAuthorPersona(author);
+      const neutralAuthor = author?.kind === "system" ? "System" : "unknown author";
       const base = {
         id: entryDisplayKey(projected),
         sourceItemId: item.id,
         sourceIndex: projected.sourceIndex,
         streaming: item.status === "inProgress" || item.status === "running",
+        inherited: item.authorship?.inherited === true,
       };
       if (item.type === "userMessage") {
         entries.push({
           ...base,
-          kind: "dialogue",
-          speaker: "human",
-          sourceLabel: "Human",
+          kind: author?.kind === "human" ? "dialogue" : "caption",
+          speaker: author?.kind === "human" ? "human" : "source",
+          sourceLabel: author?.kind === "human" ? "Human" : persona ? "Agent instruction" : `Input · ${neutralAuthor}`,
           text: textOf(item),
-          persona: ANNA,
+          persona,
           images: item.images,
         });
       } else if (item.type === "agentMessage") {
         entries.push({
           ...base,
-          kind: "dialogue",
-          speaker: "assistant",
-          sourceLabel: "Assistant",
+          kind: persona ? "dialogue" : "caption",
+          speaker: author?.kind === "human" ? "human" : persona ? "assistant" : "source",
+          sourceLabel: author?.kind === "human" ? "Human" : persona ? "Assistant" : `Message · ${neutralAuthor}`,
           text: textOf(item),
-          persona: context.assistant ?? XENO,
+          persona,
         });
       } else if (item.type === "reasoning") {
         // A redacted critical row must never expose summaries, text or a preview.
@@ -147,11 +150,11 @@ export function projectComicConversation(
               : joinedReasoningParagraphs(item.reasoningSummaries).join("\n\n");
         entries.push({
           ...base,
-          kind: "thought",
-          speaker: "assistant",
-          sourceLabel: "Thought",
+          kind: persona ? "thought" : "caption",
+          speaker: author?.kind === "human" ? "human" : persona ? "assistant" : "source",
+          sourceLabel: persona ? "Thought" : `Thought · ${neutralAuthor}`,
           text,
-          persona: context.assistant ?? XENO,
+          persona,
         });
       } else if (item.type === "commandExecution") {
         if (item.toolName === "delegate_send" || item.toolName === "job_send_message") {
@@ -225,7 +228,7 @@ export function projectComicConversation(
           }
         }
       } else if (item.type === "steering") {
-        if (isUserAuthoredSteer(item)) {
+        if (author?.kind === "human" || ((!author || author.kind === "unknown") && isUserAuthoredSteer(item))) {
           entries.push({
             ...base,
             kind: "dialogue",
@@ -234,7 +237,7 @@ export function projectComicConversation(
             text: textOf(item),
             persona: ANNA,
           });
-        } else if (item.steeringKind === "notification") {
+        } else if (item.steeringKind === "notification" && author?.kind !== "agent") {
           // Parsing runs only for the typed notification kind, not arbitrary text
           // containing XML-looking strings supplied by a human or parent.
           const fragments = parseSteeringNotifications(textOf(item));
@@ -274,9 +277,14 @@ export function projectComicConversation(
             ...base,
             kind: "caption",
             speaker: "source",
-            sourceLabel: steeringLabel(item.steeringKind, item.source),
+            sourceLabel:
+              author?.kind === "agent"
+                ? "Agent instruction"
+                : author?.kind === "system"
+                  ? "System"
+                  : steeringLabel(item.steeringKind, item.source),
             text: textOf(item),
-            persona: isParentSteer(item.source) ? context.parent : undefined,
+            persona,
           });
         }
       } else if (item.type === "systemMessage") {

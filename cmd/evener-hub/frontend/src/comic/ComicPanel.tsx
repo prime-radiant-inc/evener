@@ -34,7 +34,8 @@ export function ComicPanel({
   const spoken = entry.kind === "dialogue" || entry.kind === "thought";
   const source = entry.kind === "caption" || entry.kind === "images";
   const text = entry.text.slice(slice.start, slice.end);
-  const identity = entry.persona ? `${entry.persona.name} · ${entry.persona.badge}` : entry.sourceLabel;
+  const author = entry.persona ? `${entry.persona.name} · ${entry.persona.badge}` : entry.sourceLabel;
+  const identity = `${author}${entry.inherited ? " · inherited" : ""}`;
   const label = entry.kind === "thought" ? `${identity} thought` : identity;
   return (
     <article

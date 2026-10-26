@@ -21,6 +21,7 @@ import {
   subagentWireStep,
 } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { describe, expect, test } from "vitest";
+import { comicDelegatePersona } from "./cast";
 import { type ComicItemEntry, projectComicConversation } from "./projection";
 
 const inputText = "  **Literal** <script>never execute</script>\nline 2 👩🏽‍🚀  ";
@@ -43,11 +44,18 @@ const fixture = () =>
         {
           type: "userMessage",
           id: humanID,
+          authorship: { author: { kind: "human" }, inherited: false },
           turnId: "turn-one",
           text: inputText,
           images: [{ type: "image", url: inputImages[0]!.src, name: inputImages[0]!.name }],
         },
-        { type: "reasoning", id: "thought-one", turnId: "turn-one", text: "Thought A  🧭" },
+        {
+          type: "reasoning",
+          id: "thought-one",
+          turnId: "turn-one",
+          text: "Thought A  🧭",
+          authorship: { author: { kind: "agent", sessionRef: "local:root" }, inherited: false },
+        },
         {
           type: "commandExecution",
           id: toolID,
@@ -58,7 +66,14 @@ const fixture = () =>
           outputImages: [{ url: toolImages[0]!.src, name: toolImages[0]!.name, source: toolImages[0]!.source }],
           status: "completed",
         },
-        { type: "agentMessage", id: "reply-one", turnId: "turn-one", text: responseText, roundId: "r1" },
+        {
+          type: "agentMessage",
+          id: "reply-one",
+          turnId: "turn-one",
+          text: responseText,
+          roundId: "r1",
+          authorship: { author: { kind: "agent", sessionRef: "local:root" }, inherited: false },
+        },
       ],
     },
     {
@@ -87,6 +102,7 @@ const fixture = () =>
           type: "agentMessage",
           id: "communicate",
           turnId: "turn-two",
+          authorship: { author: { kind: "agent", sessionRef: "local:root" }, inherited: false },
           callId: "call-communicate",
           text: "Update: ready.",
         },
@@ -94,6 +110,7 @@ const fixture = () =>
           type: "userMessage",
           id: "image-only",
           turnId: "turn-two",
+          authorship: { author: { kind: "human" }, inherited: false },
           images: [{ type: "image", url: "/s/root/images/u2", name: "scan.png" }],
         },
       ],
@@ -101,6 +118,123 @@ const fixture = () =>
   ]);
 
 describe("comic conversation projection", () => {
+  test("recorded original authors beat the containing child and immediate parent, including inherited input", () => {
+    const author = {
+      kind: "agent" as const,
+      sessionRef: "remoteA:original",
+      ownerRef: "remoteA:root",
+      delegateId: "dlg_original",
+      delegateName: "ORIGINAL_AUTHOR",
+    };
+    const types = ["userMessage", "agentMessage", "reasoning", "steering"] as const;
+    const model = base([
+      {
+        id: "authored",
+        status: "completed",
+        itemsView: "full",
+        items: types.map((type) => ({
+          id: type,
+          type,
+          text: `  ${type} 👩🏽‍🚀\nunchanged  `,
+          source: "user",
+          authorship: { author, inherited: true },
+        })),
+      },
+    ]);
+    const original = JSON.stringify(model);
+    const entries = projectComicConversation(model, {
+      assistant: comicDelegatePersona("local:other", "dlg_child", "WRONG_CHILD"),
+      parent: comicDelegatePersona("local:other", "dlg_parent", "WRONG_PARENT"),
+    });
+    expect(entries).toHaveLength(4);
+    entries.forEach((entry, index) => {
+      expect(entry).toMatchObject({
+        sourceItemId: types[index],
+        sourceIndex: index,
+        kind: index === 1 ? "dialogue" : index === 2 ? "thought" : "caption",
+        speaker: index === 1 || index === 2 ? "assistant" : "source",
+        persona: comicDelegatePersona("remoteA:root", "dlg_original", "ORIGINAL_AUTHOR"),
+        inherited: true,
+        text: `  ${types[index]} 👩🏽‍🚀\nunchanged  `,
+      });
+    });
+    expect(JSON.stringify(model)).toBe(original);
+  });
+
+  test("inherited humans stay human, root agents retain qualified identity, and unproven authors stay neutral", () => {
+    const model = base([
+      {
+        id: "mixed",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "human",
+            type: "userMessage",
+            text: "HUMAN",
+            authorship: { author: { kind: "human" }, inherited: true },
+          },
+          {
+            id: "root-a",
+            type: "agentMessage",
+            text: "A",
+            authorship: { author: { kind: "agent", sessionRef: "remoteA:root" }, inherited: true },
+          },
+          {
+            id: "root-b",
+            type: "agentMessage",
+            text: "B",
+            authorship: { author: { kind: "agent", sessionRef: "remoteB:root" }, inherited: false },
+          },
+          { id: "absent-input", type: "userMessage", text: "UNPROVEN" },
+          { id: "absent-answer", type: "agentMessage", text: "UNPROVEN" },
+          {
+            id: "unknown-thought",
+            type: "reasoning",
+            text: "UNPROVEN",
+            authorship: { author: { kind: "unknown" }, inherited: false },
+          },
+          {
+            id: "invalid",
+            type: "agentMessage",
+            text: "UNPROVEN",
+            authorship: { author: { kind: "agent", sessionRef: "unqualified" }, inherited: false },
+          },
+          { id: "parent", type: "steering", source: "parent", text: "UNPROVEN" },
+          { id: "explicit-user", type: "steering", source: "user", text: "EXPLICIT" },
+          {
+            id: "system-user-source",
+            type: "steering",
+            source: "user",
+            text: "SYSTEM",
+            authorship: { author: { kind: "system" }, inherited: false },
+          },
+        ],
+      },
+    ]);
+    const entries = projectComicConversation(model, {
+      assistant: comicDelegatePersona("local:other", "dlg_child"),
+      parent: comicDelegatePersona("local:other", "dlg_parent"),
+    });
+    expect(entries[0]).toMatchObject({
+      kind: "dialogue",
+      speaker: "human",
+      persona: { character: "anna" },
+      inherited: true,
+    });
+    expect(entries[1]?.persona).toMatchObject({ character: "xeno", key: "remoteA:root" });
+    expect(entries[2]?.persona).toMatchObject({ character: "xeno", key: "remoteB:root" });
+    for (const entry of entries.slice(3, 8)) {
+      expect(entry).toMatchObject({ kind: "caption", speaker: "source" });
+      expect(entry.persona).toBeUndefined();
+      expect(entry.inherited).not.toBe(true);
+    }
+    expect(entries[5]?.sourceLabel).toContain("Thought");
+    expect(entries[8]).toMatchObject({ kind: "dialogue", speaker: "human", persona: { character: "anna" } });
+    expect(entries[9]).toMatchObject({ kind: "caption", speaker: "source" });
+    expect(entries[9]?.persona).toBeUndefined();
+  });
+
   test("keeps unknown system notices as source captions instead of dropping forward-compatible evidence", () => {
     const unknown = "Unrecognized harness notice.";
     const model = base([
@@ -399,7 +533,13 @@ describe("comic conversation projection", () => {
         status: "failed",
         error: { message: "Runtime interrupted after request." },
         items: [
-          { id: "request", turnId: "failed-after-dialogue", type: "userMessage", text: inputText },
+          {
+            id: "request",
+            turnId: "failed-after-dialogue",
+            type: "userMessage",
+            text: inputText,
+            authorship: { author: { kind: "human" }, inherited: false },
+          },
           {
             id: "suppressed-tool",
             turnId: "failed-after-dialogue",

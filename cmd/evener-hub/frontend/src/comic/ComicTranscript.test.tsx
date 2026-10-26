@@ -1,12 +1,17 @@
+import { buildEntityView, hydrateThread, parseActivityTree } from "@evener/appwire-client";
+import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { subagentOutcomesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useImperativeHandle, useRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { UseTranscriptResult } from "../panes/session/transcript/useTranscript";
 import * as widgets from "../widgets";
 import { ComicTranscript } from "./ComicTranscript";
+import { type ComicDelegateStrip, projectComicDelegates } from "./delegates";
 import type { ComicEntry } from "./projection";
 import { readComicPosition, writeComicPosition } from "./readerPosition";
 import { useComicReader } from "./useComicReader";
+import type { ComicSubchatState } from "./useComicSubchats";
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -52,13 +57,31 @@ function Reader({
   entries = [entry],
   mode = "comic",
   older,
+  strips = [],
+  subchats = { readers: new Map(), expandedPaths: [], expand() {}, collapse() {} },
 }: {
   entries?: readonly ComicEntry[];
   mode?: "comic" | "plain";
   older: UseTranscriptResult;
+  strips?: readonly ComicDelegateStrip[];
+  subchats?: ComicSubchatState;
 }) {
   const reader = useComicReader("local:test");
-  return <ComicTranscript entries={entries} history={older} reader={reader} mode={mode} />;
+  return (
+    <ComicTranscript
+      root={{
+        ref: "local:test",
+        path: [],
+        entries,
+        history: older,
+        activity: { snapshot: null, strips, entities: new Map(), context: {}, loadMore: async () => {} },
+      }}
+      subchats={subchats}
+      reader={reader}
+      mode={mode}
+      onOpen={() => {}}
+    />
+  );
 }
 test("uses one scroll port through view changes and cancels restoration at latest", async () => {
   const older = history();
@@ -689,5 +712,95 @@ test("selection cancels missing-source demand before another page can be request
   mounted.rerender(<Reader older={older} entries={[{ ...entry, id: "page-two" }, entry]} />);
   expect(older.loadOlderReportingError).toHaveBeenCalledTimes(1);
   document.getSelection()?.removeAllRanges();
+  mounted.unmount();
+});
+
+test("does not attach parent end to trailing child output", async () => {
+  const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+  const entities = buildEntityView({
+    sessionRef: model.ref,
+    tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  const original = projectComicDelegates(model, entities)[0]!;
+  const strip = { ...original, ownerRef: "local:test" };
+  let follow: boolean | undefined;
+  const real = widgets.VirtualList;
+  vi.spyOn(widgets, "VirtualList").mockImplementation((props) => {
+    follow = props.anchorToEnd;
+    return real(props);
+  });
+  const child = {
+    ref: strip.childRef,
+    path: [strip.key],
+    entries: [{ ...entry, id: "child" }],
+    history: history(),
+    activity: { snapshot: null, entities: new Map(), strips: [], context: {}, loadMore: async () => {} },
+  };
+  const subchats = {
+    readers: new Map([[JSON.stringify(child.path), child]]),
+    expandedPaths: [child.path],
+    expand() {},
+    collapse() {},
+  };
+  const mounted = render(<Reader older={history()} strips={[strip]} subchats={subchats} />);
+  await waitFor(() => expect(follow).toBe(false));
+  mounted.unmount();
+});
+
+test("restores only the saved child path and pages its absent source, not the parent", async () => {
+  const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+  const entities = buildEntityView({
+    sessionRef: model.ref,
+    tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  const strips = projectComicDelegates(model, entities).map((strip) => ({ ...strip, ownerRef: "local:test" }));
+  const target = strips[0]!;
+  const position = {
+    mode: "away" as const,
+    sessionRef: target.childRef,
+    path: [target.key],
+    entryId: entry.id,
+    offset: 7,
+    viewportOffset: 24,
+  };
+  writeComicPosition("local:test", position);
+  const parentHistory = { ...history(), hasOlder: true };
+  const childHistory = { ...history(), hasOlder: true };
+  const expand = vi.fn();
+  const subchats: ComicSubchatState = { readers: new Map(), expandedPaths: [], expand, collapse: vi.fn() };
+  const mounted = render(<Reader older={parentHistory} strips={strips} subchats={subchats} />);
+  await waitFor(() => expect(expand).toHaveBeenCalledWith([], target));
+  expect(expand.mock.calls.every(([, strip]) => strip.key === target.key)).toBe(true);
+  const child = {
+    ref: target.childRef,
+    path: [target.key],
+    entries: [],
+    history: childHistory,
+    activity: { snapshot: null, strips: [], entities: new Map(), context: {}, loadMore: async () => {} },
+  };
+  mounted.rerender(
+    <Reader
+      older={parentHistory}
+      strips={strips}
+      subchats={{ ...subchats, expandedPaths: [child.path], readers: new Map([[JSON.stringify(child.path), child]]) }}
+    />,
+  );
+  await waitFor(() => expect(childHistory.loadOlderReportingError).toHaveBeenCalledTimes(1));
+  expect(parentHistory.loadOlderReportingError).not.toHaveBeenCalled();
+  const loaded = { ...child, entries: [entry], history: { ...childHistory, hasOlder: false } };
+  mounted.rerender(
+    <Reader
+      older={parentHistory}
+      strips={strips}
+      subchats={{ ...subchats, expandedPaths: [child.path], readers: new Map([[JSON.stringify(child.path), loaded]]) }}
+    />,
+  );
+  expect(readComicPosition("local:test")).toEqual(position);
   mounted.unmount();
 });

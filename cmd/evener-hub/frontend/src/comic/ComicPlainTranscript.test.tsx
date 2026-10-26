@@ -28,6 +28,7 @@ test("plain transcript keeps literal text, thought/source semantics and complete
       sourceLabel: "Thought",
       text: "  Consider 🧭\n\ncontinue  ",
       streaming: true,
+      inherited: true,
       persona: { key: "delegate", character: "tiki", name: "Same", badge: "dlg_7", ownerRef: "remote:root" },
     },
     {
@@ -71,6 +72,8 @@ test("plain transcript keeps literal text, thought/source semantics and complete
   expect(rows[1]?.textContent).toContain("  Consider 🧭\n\ncontinue  ");
   expect(rows[1]?.textContent).toContain("remote:root");
   expect(rows[1]?.textContent).toContain("dlg_7");
+  expect(rows[1]?.textContent).toContain(" · inherited");
+  expect(rows[0]?.textContent).not.toContain(" · inherited");
   expect(rows[3]?.textContent).toContain("  Do this  ");
   expect(rows[2]?.getAttribute("title")).toBeNull();
   expect(rows[2]?.textContent).not.toContain("Consider");

@@ -19,6 +19,7 @@ export function ComicPlainTranscript({ entries }: { entries: readonly ComicEntry
           </span>
         )}
         {entry.kind === "thought" && <span> · Thought</span>}
+        {entry.inherited && <span> · inherited</span>}
       </div>
       {entry.text && <div data-comic-text="">{entry.text}</div>}
       {entry.images && <ImageGallery images={entry.images} />}

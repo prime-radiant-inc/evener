@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { isAtBottom } from "../panes/session/transcript/flow/scrollMetrics";
-import type { UseTranscriptResult } from "../panes/session/transcript/useTranscript";
 import { olderTranscriptPageKey } from "../stores/threads";
 import { Button, type CommittedVirtualListLayout, Select, VirtualList, type VirtualListHandle } from "../widgets";
 import { type ComicExpression, ComicPanel, type ComicScene } from "./ComicPanel";
 import { ComicPlainTranscript } from "./ComicPlainTranscript";
+import { ComicSubchatHeader } from "./ComicSubchatHeader";
 import styles from "./comic.module.css";
-import { type ComicRow, composeComicRows } from "./layout";
+import { type ComicFlowRow, composeComicFlow, findComicFlowAnchorRow } from "./comicRows";
 import { createComicMeasurer, loadComicFonts } from "./measure";
-import type { ComicEntry } from "./projection";
-import { type ComicReadingPosition, findComicAnchorRow } from "./readerPosition";
+import type { ComicReadingPosition } from "./readerPosition";
 import type { useComicReader } from "./useComicReader";
+import { type ComicReaderSnapshot, type ComicSubchatState, comicPathContains, comicPathKey } from "./useComicSubchats";
 
 // Source ranges belong to this bespoke transcript surface, not the virtual-list widget.
 function textPoint(source: HTMLElement, offset: number): DOMRect | undefined {
@@ -27,7 +27,15 @@ function textPoint(source: HTMLElement, offset: number): DOMRect | undefined {
 }
 
 function capturePoint(port: HTMLElement, sessionRef: string): ComicReadingPosition | undefined {
-  if (isAtBottom(port)) return { mode: "end", sessionRef, path: [] };
+  if (isAtBottom(port)) {
+    const sources = port.querySelectorAll<HTMLElement>("[data-comic-entry]");
+    const last = sources.item(sources.length - 1);
+    return {
+      mode: "end",
+      sessionRef: last?.dataset.comicSession ?? sessionRef,
+      path: JSON.parse(last?.dataset.comicPath ?? "[]"),
+    };
+  }
   const top = port.getBoundingClientRect().top;
   for (const source of port.querySelectorAll<HTMLElement>("[data-comic-entry]")) {
     if (source.getBoundingClientRect().bottom <= top) continue;
@@ -44,8 +52,8 @@ function capturePoint(port: HTMLElement, sessionRef: string): ComicReadingPositi
     if (point && point.bottom > top)
       return {
         mode: "away",
-        sessionRef,
-        path: [],
+        sessionRef: source.dataset.comicSession ?? sessionRef,
+        path: JSON.parse(source.dataset.comicPath ?? "[]"),
         entryId: source.dataset.comicEntry ?? "",
         offset: low,
         viewportOffset: point.top - top,
@@ -54,21 +62,24 @@ function capturePoint(port: HTMLElement, sessionRef: string): ComicReadingPositi
 }
 
 export function ComicTranscript({
-  entries,
-  history,
+  root,
+  subchats,
   reader,
   mode,
+  onOpen,
 }: {
-  entries: readonly ComicEntry[];
-  history: UseTranscriptResult;
+  root: ComicReaderSnapshot;
+  subchats: ComicSubchatState;
+  onOpen(ref: string): void;
   reader: ReturnType<typeof useComicReader>;
   mode: "comic" | "plain";
 }): React.ReactElement {
+  const { entries, history } = root;
   const host = useRef<HTMLDivElement>(null);
   const controlsId = useId();
   const list = useRef<VirtualListHandle>(null);
   const committed = useRef<CommittedVirtualListLayout | undefined>(undefined);
-  const sessionRef = history.model?.ref ?? reader.position?.sessionRef ?? "";
+  const sessionRef = root.ref;
   const anchor = useRef<ComicReadingPosition>(reader.position ?? { mode: "end", sessionRef, path: [] });
   const restoring = useRef(!!reader.position);
   const commanded = useRef<number | undefined>(undefined);
@@ -79,17 +90,17 @@ export function ComicTranscript({
   const [font, setFont] = useState<"loading" | "ready" | "unavailable">("loading");
   const [geometry, setGeometry] = useState({ width: 0, epoch: 0 });
   const [tailSpace, setTailSpace] = useState(0);
-  const [rows, setRows] = useState<readonly ComicRow[]>([]);
+  const [rows, setRows] = useState<readonly ComicFlowRow[]>([]);
   const probe = useRef<ReturnType<typeof createComicMeasurer> | undefined>(undefined);
   const fitsCache = useRef(new Map<string, boolean>());
-  const layoutCache = useRef(new Map<string, { rows: readonly ComicRow[]; fitsKeys: readonly string[] }>());
   const lastPage = useRef<string | undefined>(undefined);
-  const byId = useMemo(() => new Map(entries.map((entry) => [entry.id, entry])), [entries]);
+  const snapshots = useMemo(() => new Map([[comicPathKey([]), root], ...subchats.readers]), [root, subchats.readers]);
+  const retainedAnchors = useRef(new Map<string, ComicReadingPosition>());
   const revision = useRef(0);
-  const priorEntries = useRef(entries);
+  const priorSnapshots = useRef(snapshots);
   const nearest = useRef<string | undefined>(undefined);
-  const latest = useRef({ entries, history, reader, sessionRef, rows });
-  latest.current = { entries, history, reader, sessionRef, rows };
+  const latest = useRef({ entries, history, reader, sessionRef, rows, snapshots, subchats });
+  latest.current = { entries, history, reader, sessionRef, rows, snapshots, subchats };
 
   const save = useCallback((position: ComicReadingPosition) => {
     anchor.current = position;
@@ -167,7 +178,6 @@ export function ComicTranscript({
       probe.current = undefined;
       measuring.remove();
       fitsCache.current.clear();
-      layoutCache.current.clear();
     };
   }, []);
 
@@ -175,8 +185,7 @@ export function ComicTranscript({
     const measurer = probe.current;
     if (!measurer) return;
     const used = new Set<string>();
-    const usedLayouts = new Set<string>();
-    const fits: Parameters<typeof composeComicRows>[2] = (text, composition, kind) => {
+    const fits: Parameters<typeof composeComicFlow>[3] = (text, composition, kind) => {
       const key = JSON.stringify([kind, composition, text]);
       used.add(key);
       const cached = fitsCache.current.get(key);
@@ -185,46 +194,21 @@ export function ComicTranscript({
       fitsCache.current.set(key, result);
       return result;
     };
-    // Itemless errors remain a separate group, never assigned a fabricated sourceIndex.
-    const items = entries.filter((entry) => entry.sourceTurnId === undefined);
-    const errors = entries.filter((entry) => entry.sourceTurnId !== undefined);
-    const compose = (group: readonly ComicEntry[]): ComicRow[] => {
-      const result: ComicRow[] = [];
-      for (let index = 0; index < group.length; ) {
-        const candidates = group.slice(index, index + 2);
-        const key = JSON.stringify([
-          geometry,
-          candidates.map((entry) => [entry.id, entry.text, entry.kind, entry.streaming, entry.images?.length ?? 0]),
-        ]);
-        usedLayouts.add(key);
-        let cached = layoutCache.current.get(key);
-        if (!cached) {
-          const fitsKeys = new Set<string>();
-          const composed = composeComicRows(candidates, geometry.width, (text, composition, kind) => {
-            fitsKeys.add(JSON.stringify([kind, composition, text]));
-            return fits(text, composition, kind);
-          });
-          // Let the accepted composer decide whether this entry takes a partner.
-          const selected = composed.filter((row) =>
-            row.panels.some((panel) => panel.slice.entryId === candidates[0]?.id),
-          );
-          cached = { rows: selected, fitsKeys: [...fitsKeys] };
-          layoutCache.current.set(key, cached);
-        }
-        for (const fitKey of cached.fitsKeys) used.add(fitKey);
-        result.push(...cached.rows);
-        index += cached.rows.some((row) => row.panels.length === 2) ? 2 : 1;
-      }
-      return result;
-    };
-    const next = [...compose(items), ...compose(errors)];
+    const next = composeComicFlow(root, subchats, geometry.width, fits);
     const position = anchor.current;
-    if (!moving.current && position.mode === "away" && !entries.some((entry) => entry.id === position.entryId)) {
-      const previous = priorEntries.current;
+    const target = snapshots.get(comicPathKey(position.path));
+    if (
+      !moving.current &&
+      position.mode === "away" &&
+      target?.ref === position.sessionRef &&
+      !target.entries.some((entry) => entry.id === position.entryId)
+    ) {
+      const previous = priorSnapshots.current.get(comicPathKey(position.path))?.entries ?? [];
       const index = previous.findIndex((entry) => entry.id === position.entryId);
       if (index >= 0) {
         restoring.current = true;
-        const available = new Set(entries.map((entry) => entry.id));
+        lastPage.current = undefined;
+        const available = new Set(target.entries.map((entry) => entry.id));
         nearest.current = undefined;
         for (let distance = 1; distance < previous.length; distance += 1) {
           const candidate = [previous[index - distance], previous[index + distance]].find(
@@ -237,11 +221,10 @@ export function ComicTranscript({
         }
       }
     }
-    priorEntries.current = entries;
+    priorSnapshots.current = snapshots;
     for (const key of fitsCache.current.keys()) if (!used.has(key)) fitsCache.current.delete(key);
-    for (const key of layoutCache.current.keys()) if (!usedLayouts.has(key)) layoutCache.current.delete(key);
     setRows(next);
-  }, [entries, geometry]);
+  }, [geometry, root, subchats, snapshots]);
 
   const restore = useCallback(
     (layout: CommittedVirtualListLayout) => {
@@ -263,17 +246,31 @@ export function ComicTranscript({
         return;
       }
       const position = anchor.current;
-      const rowIndex = findComicAnchorRow(current.rows, position);
+      const rowIndex = findComicFlowAnchorRow(current.rows, position);
       if (rowIndex === undefined) return;
       if (position.mode === "end") {
+        const lastPanel = current.rows.reduce((last, row, index) => (row.kind === "panels" ? index : last), -1);
+        if (rowIndex < lastPanel) {
+          list.current?.scrollToIndex(rowIndex, { align: "end" });
+          commanded.current = port.scrollTop;
+          return;
+        }
         const bottom = Math.max(0, port.scrollHeight - port.clientHeight);
         if (Math.abs(port.scrollTop - bottom) > 1) layout.scrollToOffset(bottom);
         commanded.current = port.scrollTop;
         return;
       }
-      const slice = current.rows[rowIndex]?.panels.find((panel) => panel.slice.entryId === position.entryId)?.slice;
+      const flow = current.rows[rowIndex];
+      const slice =
+        flow?.kind === "panels"
+          ? flow.row.panels.find((panel) => panel.slice.entryId === position.entryId)?.slice
+          : undefined;
       const source = [...port.querySelectorAll<HTMLElement>("[data-comic-entry]")].find(
-        (node) => node.dataset.comicEntry === position.entryId && Number(node.dataset.comicStart) === slice?.start,
+        (node) =>
+          node.dataset.comicEntry === position.entryId &&
+          node.dataset.comicSession === position.sessionRef &&
+          node.dataset.comicPath === comicPathKey(position.path) &&
+          (flow?.kind === "strip" || Number(node.dataset.comicStart) === slice?.start),
       );
       if (!source) {
         list.current?.scrollToIndex(rowIndex, { align: "start" });
@@ -312,7 +309,7 @@ export function ComicTranscript({
       setTailSpace(0);
       commanded.current = undefined;
       committed.current?.cancelPendingScroll();
-      latest.current.history.cancelOlder();
+      for (const snapshot of latest.current.snapshots.values()) snapshot.history.cancelOlder();
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         if (revision.current !== requestedRevision || latest.current.reader !== reader) return;
@@ -407,28 +404,89 @@ export function ComicTranscript({
   }, [captureMovement, reader]);
 
   useEffect(() => {
+    if (!restoring.current || moving.current || !rows.length) return;
+    const position = anchor.current;
+    let target = root;
+    for (let depth = 0; depth < position.path.length; depth += 1) {
+      const key = position.path[depth];
+      const path = position.path.slice(0, depth + 1);
+      const strip = target.activity.strips.find((s) => s.key === key);
+      if (!strip) {
+        const activity = target.activity.snapshot?.delegates;
+        if (!activity || activity.loading || activity.error || activity.unavailable) return;
+        if (activity.hasMore) {
+          void target.activity.loadMore();
+          return;
+        }
+        if (target.history.hasOlder) {
+          const page = olderTranscriptPageKey(target.ref) ?? undefined;
+          if (!target.history.loadingOlder && !target.history.olderError && lastPage.current !== page) {
+            lastPage.current = page;
+            target.history.loadOlderReportingError();
+          }
+          return;
+        }
+        save({ mode: "end", sessionRef: target.ref, path: target.path });
+        restoring.current = false;
+        return;
+      }
+      if (!subchats.expandedPaths.some((p) => comicPathKey(p) === comicPathKey(path))) {
+        subchats.expand(target.path, strip);
+        return;
+      }
+      const child = subchats.readers.get(comicPathKey(path));
+      if (!child) return;
+      target = child;
+    }
+    // Child history can publish before the composed rows commit. Loaded source
+    // is not missing merely because its new layout has not reached this effect.
     if (
-      !restoring.current ||
-      anchor.current.mode !== "away" ||
-      !rows.length ||
-      findComicAnchorRow(rows, anchor.current) !== undefined
+      position.mode !== "away" ||
+      target.entries.some((entry) => entry.id === position.entryId) ||
+      findComicFlowAnchorRow(rows, position) !== undefined
     )
       return;
+    const history = target.history;
     if (history.hasOlder) {
-      const page = olderTranscriptPageKey(sessionRef) ?? entries.map((entry) => entry.id).join("\n");
+      const page = olderTranscriptPageKey(target.ref) ?? target.entries.map((entry) => entry.id).join("\n");
       if (!history.loadingOlder && !history.olderError && lastPage.current !== page) {
         lastPage.current = page;
         history.loadOlderReportingError();
       }
     } else {
-      const first =
-        rows.flatMap((row) => row.panels).find((panel) => panel.slice.entryId === nearest.current)?.slice ??
-        rows[0]?.panels[0]?.slice;
-      if (first) save({ ...anchor.current, entryId: first.entryId, offset: first.start });
+      const first = target.entries.find((entry) => entry.id === nearest.current) ?? target.entries[0];
+      if (first) save({ ...position, sessionRef: target.ref, path: target.path, entryId: first.id, offset: 0 });
       restoring.current = false;
       if (committed.current) restore(committed.current);
     }
-  }, [entries, rows, history, save, restore, sessionRef]);
+  }, [root, subchats, rows, save, restore]);
+
+  const toggle = (flow: Extract<ComicFlowRow, { kind: "strip" }>) => {
+    const path = [...flow.path, flow.strip.key];
+    const key = comicPathKey(path);
+    const expanded = subchats.expandedPaths.some((p) => comicPathKey(p) === key);
+    if (expanded) {
+      if (comicPathContains(path, anchor.current.path)) {
+        retainedAnchors.current.set(key, anchor.current);
+        save({
+          mode: "away",
+          sessionRef: flow.sessionRef,
+          path: flow.path,
+          entryId: flow.strip.key,
+          offset: 0,
+          viewportOffset: 0,
+        });
+      }
+      subchats.collapse(path);
+    } else {
+      subchats.expand(flow.path, flow.strip);
+      const retained = retainedAnchors.current.get(key);
+      if (retained) {
+        save(retained);
+        restoring.current = true;
+      }
+    }
+  };
 
   const jump = () => {
     revision.current += 1;
@@ -472,42 +530,122 @@ export function ComicTranscript({
             </label>
           </>
         )}
+        <Button variant="link" onClick={jump}>
+          Jump to latest
+        </Button>
         {history.hasOlder && (
           <Button variant="link" disabled={history.loadingOlder} onClick={history.loadOlderReportingError}>
             Older messages
           </Button>
         )}
-        <Button variant="link" onClick={jump}>
-          Jump to latest
-        </Button>
+        {history.olderError && (
+          <div role="alert">
+            {history.olderError}{" "}
+            <Button variant="link" onClick={history.loadOlderReportingError}>
+              Retry
+            </Button>
+          </div>
+        )}
       </div>
-      {history.olderError && (
-        <div role="alert">
-          {history.olderError}{" "}
-          <Button variant="link" onClick={history.loadOlderReportingError}>
-            Retry
-          </Button>
-        </div>
-      )}
       <div ref={host} className={styles.scroll} data-comic-scroll="">
         <VirtualList
           ref={list}
           count={rows.length}
           dynamic
           getItemKey={(index) => rows[index]?.id ?? index}
-          anchorToEnd={anchor.current.mode === "end"}
+          anchorToEnd={
+            anchor.current.mode === "end" &&
+            !rows.some(
+              (row, index) => row.kind === "panels" && index > (findComicFlowAnchorRow(rows, anchor.current) ?? -1),
+            )
+          }
           estimateSize={() => (mode === "comic" ? 380 : 180)}
           onLayout={restore}
           renderRow={(index) => {
-            const row = rows[index];
-            if (!row) return null;
+            const flow = rows[index];
+            if (!flow) return null;
+            const snapshot = snapshots.get(comicPathKey(flow.path));
+            const byId = new Map(snapshot?.entries.map((entry) => [entry.id, entry]));
+            if (flow.kind !== "panels")
+              return (
+                <div
+                  data-comic-flow={flow.kind}
+                  data-comic-session={flow.sessionRef}
+                  data-comic-path={comicPathKey(flow.path)}
+                  style={index === rows.length - 1 ? { paddingBottom: tailSpace } : undefined}
+                >
+                  {flow.kind === "strip" && (
+                    <div
+                      data-comic-entry={flow.strip.key}
+                      data-comic-start={0}
+                      data-comic-end={0}
+                      data-comic-session={flow.sessionRef}
+                      data-comic-path={comicPathKey(flow.path)}
+                    >
+                      <ComicSubchatHeader
+                        strip={flow.strip}
+                        expanded={subchats.expandedPaths.some(
+                          (p) => comicPathKey(p) === comicPathKey([...flow.path, flow.strip.key]),
+                        )}
+                        onToggle={() => toggle(flow)}
+                        onOpen={onOpen}
+                      />
+                    </div>
+                  )}
+                  {flow.kind === "turn-errors-group" && <h2>Turn errors</h2>}
+                  {flow.kind === "unplaced-group" && <h2>Meanwhile… outside loaded history</h2>}
+                  {flow.kind === "history" && flow.path.length > 0 && (
+                    <>
+                      {flow.history.hasOlder && (
+                        <Button
+                          variant="link"
+                          disabled={flow.history.loadingOlder}
+                          onClick={flow.history.loadOlderReportingError}
+                        >
+                          Older messages
+                        </Button>
+                      )}
+                      {flow.history.olderError && (
+                        <div role="alert">
+                          {flow.history.olderError}{" "}
+                          <Button variant="link" onClick={flow.history.loadOlderReportingError}>
+                            Retry
+                          </Button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {flow.kind === "activity" && (
+                    <>
+                      {(flow.activity.snapshot?.delegates.error || flow.activity.snapshot?.delegates.unavailable) && (
+                        <div role="alert">Delegate activity unavailable</div>
+                      )}
+                      {flow.activity.snapshot?.delegates.issues.length ? (
+                        <div role="status">Some delegate activity is unavailable</div>
+                      ) : null}
+                      {flow.activity.snapshot?.delegates.hasMore && (
+                        <Button
+                          variant="link"
+                          disabled={flow.activity.snapshot.delegates.loading}
+                          onClick={() => void flow.activity.loadMore()}
+                        >
+                          More delegates
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            const row = flow.row;
             const error = row.panels.some(({ slice }) => byId.get(slice.entryId)?.sourceTurnId !== undefined);
             return (
               <section
                 className={styles.row}
                 style={index === rows.length - 1 ? { paddingBottom: tailSpace } : undefined}
                 aria-label={error ? "Turn errors" : undefined}
-                data-comic-row={row.id}
+                data-comic-row={flow.id}
+                data-comic-session={flow.sessionRef}
+                data-comic-path={comicPathKey(flow.path)}
               >
                 {row.panels.map(({ slice, composition }) => {
                   const entry = byId.get(slice.entryId);
@@ -517,6 +655,8 @@ export function ComicTranscript({
                       className={styles.sourcePanel}
                       key={`${slice.entryId}:${slice.start}`}
                       data-comic-entry={slice.entryId}
+                      data-comic-session={flow.sessionRef}
+                      data-comic-path={comicPathKey(flow.path)}
                       data-comic-start={slice.start}
                       data-comic-end={slice.end}
                     >

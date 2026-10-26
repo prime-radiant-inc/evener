@@ -65,6 +65,57 @@ test("thought clouds have a distinct trail and an accessible thought identity", 
   expect(speech.container.querySelector("[data-comic-thought-trail]")).toBeNull();
 });
 
+test("proven inheritance labels the original author without changing thought or continuation text", () => {
+  const value = entry({
+    kind: "thought",
+    speaker: "assistant",
+    inherited: true,
+    text: "Before ORIGINAL_THOUGHT after",
+    persona: { key: "original", character: "tiki", name: "Original", badge: "dlg_original" },
+  });
+  const rendered = render(panel(value, 7, 23));
+  const labels = () => ({
+    accessible: screen.getByRole("article").getAttribute("aria-label"),
+    visible: rendered.container.querySelector("[data-comic-identity]")?.textContent,
+  });
+  const inheritedLabels = labels();
+  for (const label of Object.values(inheritedLabels)) {
+    expect(label).toContain(value.persona?.name);
+    expect(label).toContain(value.persona?.badge);
+  }
+  expect(rendered.container.querySelector("[data-comic-text]")?.textContent).toBe("ORIGINAL_THOUGHT");
+  expect(rendered.container.querySelector("[data-comic-balloon]")?.getAttribute("data-comic-balloon")).toBe("thought");
+  expect(rendered.container.querySelectorAll("[data-comic-thought-trail] > span")).toHaveLength(2);
+  let freshLabels: ReturnType<typeof labels> | undefined;
+  for (const inherited of [false, undefined]) {
+    rendered.rerender(panel({ ...value, inherited }, 7, 23));
+    const current = labels();
+    for (const key of ["accessible", "visible"] as const) {
+      expect(current[key]).not.toBe(inheritedLabels[key]);
+      expect(current[key]).toContain(value.persona?.name);
+      expect(current[key]).toContain(value.persona?.badge);
+    }
+    if (freshLabels) expect(current).toEqual(freshLabels);
+    freshLabels = current;
+    expect(rendered.container.querySelector("[data-comic-text]")?.textContent).toBe("ORIGINAL_THOUGHT");
+  }
+  rendered.rerender(panel(value, 0, 23));
+  expect(labels().accessible).not.toBe(inheritedLabels.accessible);
+  expect(labels().visible).not.toBe(inheritedLabels.visible);
+  expect(rendered.container.querySelector("[data-comic-text]")?.textContent).toBe(value.text.slice(0, 23));
+  rendered.rerender(
+    panel(
+      entry({ kind: "dialogue", speaker: value.speaker, inherited: true, text: value.text, persona: value.persona }),
+      7,
+      23,
+    ),
+  );
+  expect(labels().accessible).not.toBe(inheritedLabels.accessible);
+  expect(labels().visible).toBe(inheritedLabels.visible);
+  expect(rendered.container.querySelector("[data-comic-thought-trail]")).toBeNull();
+  expect(rendered.container.querySelector("[data-comic-text]")?.textContent).toBe("ORIGINAL_THOUGHT");
+});
+
 test("complete delegate identity stays available on narrow panels", () => {
   const value = entry({
     kind: "caption",

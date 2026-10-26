@@ -1,3 +1,5 @@
+import type { TranscriptAuthor } from "@evener/appwire-client";
+
 export type ComicCharacter = "anna" | "xeno" | "armando" | "bolo" | "denise" | "tiki";
 
 export type ComicPersona = {
@@ -9,6 +11,16 @@ export type ComicPersona = {
 };
 
 const SUPPORTING_CAST = ["armando", "bolo", "denise", "tiki"] as const;
+
+/** The SDK validates authorship. Never substitute the containing session's identity. */
+export function comicAuthorPersona(author: TranscriptAuthor | undefined): ComicPersona | undefined {
+  if (author?.kind === "human") return { key: "human", character: "anna", name: "Anna", badge: "human" };
+  if (author?.kind !== "agent" || !author.sessionRef) return undefined;
+  if (author.ownerRef && author.delegateId) {
+    return comicDelegatePersona(author.ownerRef, author.delegateId, author.delegateName);
+  }
+  return { key: author.sessionRef, character: "xeno", name: "Xeno", badge: author.sessionRef };
+}
 
 /** JSON's array encoding preserves both complete strings, including embedded separators. */
 export function comicDelegateKey(ownerRef: string, delegateId: string): string {
