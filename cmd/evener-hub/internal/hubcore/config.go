@@ -196,34 +196,9 @@ type WebConfig struct {
 	// against (deploy pipeline 08b §10): below it the hub reports unhealthy
 	// without running the write probe. Zero takes DefaultHostMinFreeSpaceBytes.
 	HostMinFreeSpaceBytes int64
-	// The host-record retention knobs (registry spec 08 §6/§11/§15): the
-	// tombstone retention period, the per-tombstone and global tombstone
-	// bounds, and the superseded-receipt, pruned-marker, and keyless-audit
-	// bounds. Each non-positive value takes the hub package's documented
-	// default, so a zero WebConfig (tests, embedders) uses the shipped
-	// defaults.
-	HostTombstoneRetention        time.Duration
-	HostTombstoneMaxRows          int
-	HostTombstoneMaxRowBytes      int64
-	HostTombstoneMaxCount         int
-	HostTombstoneMaxBytes         int64
-	HostSupersededReceiptMaxCount int
-	HostSupersededReceiptTTL      time.Duration
-	HostPrunedReceiptMaxCount     int
-	HostPrunedReceiptTTL          time.Duration
-	HostKeylessAuditMaxCount      int
-	HostKeylessAuditTTL           time.Duration
-	// The teardown-repair bounds (registry spec 08 §6): the cleared-remnant
-	// marker bounds, the recovery-marker bounds, the attempt-history bound per
-	// remnant, and the retry's bounded execution deadline. Each non-positive
-	// value takes the hub package's documented default.
-	HostRemnantClearedMaxCount  int
-	HostRemnantClearedTTL       time.Duration
-	HostRemnantRecoveryMaxCount int
-	HostRemnantRecoveryTTL      time.Duration
-	HostRemnantAttemptMaxCount  int
-	HostRemnantTeardownTimeout  time.Duration
-	HostRemnantEscalationAge    time.Duration
+	// HostTombstoneRetention is the host-record tombstone retention period; a
+	// non-positive value takes the hub package's documented default.
+	HostTombstoneRetention time.Duration
 	// HostRemnantFence reports the open teardown remnant fencing a host name, if
 	// one does (registry spec 08 §6). It is installed by the host-management
 	// manager at construction (the manager owns the durable remnant records) and
