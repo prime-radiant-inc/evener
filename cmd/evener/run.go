@@ -112,6 +112,18 @@ func resolveMemoryProjectID(env execenv.ExecutionEnvironment, warnings io.Writer
 	return project.ID
 }
 
+// memoryStateRootForLaunch is the host state root native memory lives under.
+// With no state home the session runs without memory (an empty root means
+// unavailable) and the reason goes to warnings, unless the user opted out of
+// memory anyway.
+func memoryStateRootForLaunch(disabled bool, warnings io.Writer) string {
+	root, err := userdirs.DefaultStateRoot()
+	if err != nil && !disabled {
+		fmt.Fprintf(warnings, "warning: memory unavailable: %v\n", err) //nolint:errcheck
+	}
+	return root
+}
+
 func run(ctx context.Context, cfg runConfig) error {
 	if err := rejectPluginSelectionWithResume(cfg.enabledPlugins, cfg.resume, cfg.resumeLast); err != nil {
 		return err
@@ -351,10 +363,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		memoryProjectID = resolveMemoryProjectID(env, cfg.stderr)
 	}
 
-	memoryStateRoot, err := userdirs.DefaultStateRoot()
-	if err != nil {
-		return err
-	}
+	memoryStateRoot := memoryStateRootForLaunch(cfg.disableMemory, cfg.stderr)
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
 		MemoryStateRoot:             memoryStateRoot,

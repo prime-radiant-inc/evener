@@ -33,7 +33,6 @@ import (
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
-	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
@@ -684,10 +683,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if !resuming {
 		memoryProjectID = resolveMemoryProjectID(env, os.Stderr)
 	}
-	memoryStateRoot, err := userdirs.DefaultStateRoot()
-	if err != nil {
-		return err
-	}
+	memoryStateRoot := memoryStateRootForLaunch(*disableMemory, os.Stderr)
 	sessionCfg := agent.SessionConfig{
 		MemoryStateRoot: memoryStateRoot,
 		MemoryProjectID: memoryProjectID,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -230,4 +231,37 @@ func mustStateRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+// With no state home a launch still starts: memory is unavailable (an empty
+// root) and the user is told why, unless memory was opted out anyway.
+func TestMemoryLaunchWithoutStateHome(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "enabled", true: "disabled"}[disabled], func(t *testing.T) {
+			dir := memoryLaunchFixture(t)
+			t.Setenv("HOME", "")
+			t.Setenv("XDG_STATE_HOME", "")
+			stop := errors.New("fixture constructor reached")
+			captured := false
+			old := runNewSession
+			t.Cleanup(func() { runNewSession = old })
+			runNewSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+				defer env.Cleanup()
+				captured = true
+				if cfg.MemoryStateRoot != "" {
+					t.Errorf("MemoryStateRoot = %q, want empty", cfg.MemoryStateRoot)
+				}
+				return nil, stop
+			}
+			installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+			var stderr bytes.Buffer
+			err := run(context.Background(), runConfig{workDir: dir, stateDir: t.TempDir(), model: "openai/gpt-test", prompt: "fixture", disableMemory: disabled, stdout: io.Discard, stderr: &stderr})
+			if !errors.Is(err, stop) || !captured {
+				t.Fatalf("run = %v captured=%t, want the constructor reached", err, captured)
+			}
+			if told := stderr.Len() > 0; told == disabled {
+				t.Fatalf("warned=%t with memory disabled=%t; stderr: %s", told, disabled, stderr.String())
+			}
+		})
+	}
 }

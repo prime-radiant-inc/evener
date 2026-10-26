@@ -21,8 +21,9 @@ roots:
 
 The state root is `$XDG_STATE_HOME/evener`, normally
 `~/.local/state/evener`. With neither a state home nor a home directory there is
-no root: launch reports that instead of rooting memory in a temporary or
-relative directory, and the next launch with a home works. Personal pages sit
+no root: the session starts without memory and says so (unless memory was opted
+out anyway) instead of rooting it in a temporary or relative directory, and the
+next launch with a home has memory again. Personal pages sit
 directly in `memory/`, and any subdirectory there is part of personal memory, so
 nothing else is kept in it.
 Project memory sits in the project's default state directory, beside its
