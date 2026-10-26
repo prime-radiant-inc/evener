@@ -1296,9 +1296,7 @@ test("a ledger-cleanup failure keeps settlement across a cleared destination and
 		"CREATE TRIGGER reject_ledger_settle BEFORE DELETE ON resume_identity_edges WHEN OLD.from_ref = 'session' AND OLD.to_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'ledger cleanup failed'); END",
 	);
 	resumed.retryPendingHandoffs();
-	expect(
-		f.drafts.prepare("SELECT settled FROM pending_draft_handoffs WHERE to_session_ref = 'session-b'").get(),
-	).toMatchObject({ settled: 1 });
+	expect(f.repository.readSettledHandoffs()).toContainEqual({ from: destination, to: bDestination });
 	expect(f.repository.read(destination).draft).toBe("A draft");
 	expect(f.repository.read(bDestination).draft).toBe("B draft");
 
@@ -1350,9 +1348,7 @@ test("an immediate refusal persists settlement without a drafts mapping", async 
 		"CREATE TRIGGER reject_ledger_settle BEFORE DELETE ON resume_identity_edges WHEN OLD.from_ref = 'session' AND OLD.to_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'ledger cleanup failed'); END",
 	);
 	expect(library.handoff(destination, bDestination)).toBe(false);
-	expect(
-		f.drafts.prepare("SELECT settled FROM pending_draft_handoffs WHERE to_session_ref = 'session-b'").get(),
-	).toMatchObject({ settled: 1 });
+	expect(f.repository.readSettledHandoffs()).toContainEqual({ from: destination, to: bDestination });
 	f.mutations.exec("DROP TRIGGER reject_ledger_settle");
 	f.repository.remove(bDestination);
 
@@ -1366,6 +1362,55 @@ test("an immediate refusal persists settlement without a drafts mapping", async 
 	expect(f.repository.read(destination).draft).toBe("A draft");
 	expect(f.repository.read(bDestination)).toEqual({ draft: "", unconfirmed: null });
 	expect(recovered.hasPendingHandoff(bDestination)).toBe(false);
+	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
+});
+
+test("settlement is persisted per edge while another handoff targets the same destination", async () => {
+	const f = fixture();
+	const hub = destination.hubId;
+	const a = { hubId: hub, sessionRef: "session-a" };
+	const b = { hubId: hub, sessionRef: "session-b" };
+	const c = { hubId: hub, sessionRef: "session-c" };
+	f.repository.write(a, { draft: "A draft", unconfirmed: null });
+	f.repository.write(b, { draft: "B draft", unconfirmed: null });
+	f.repository.write(c, { draft: "C occupied", unconfirmed: null });
+	f.drafts
+		.prepare(
+			"INSERT INTO pending_draft_handoffs (from_hub_id, from_session_ref, to_hub_id, to_session_ref) VALUES (?, ?, ?, ?)",
+		)
+		.run(hub, a.sessionRef, hub, c.sessionRef);
+	f.mutations
+		.prepare(
+			"INSERT INTO resume_identity_edges (from_hub_id, from_ref, to_hub_id, to_ref, created_at) VALUES (?, ?, ?, ?, ?)",
+		)
+		.run(hub, b.sessionRef, hub, c.sessionRef, Date.now());
+
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	f.mutations.exec(
+		"CREATE TRIGGER reject_bc_settle BEFORE DELETE ON resume_identity_edges WHEN OLD.from_ref = 'session-b' AND OLD.to_ref = 'session-c' BEGIN SELECT RAISE(ABORT, 'ledger cleanup failed'); END",
+	);
+	expect(library.handoff(b, c)).toBe(false);
+	expect(f.repository.readSettledHandoffs()).toContainEqual({ from: b, to: c });
+	// A->C is still pending, then settles too.
+	expect(library.handoff(a, c)).toBe(false);
+
+	f.mutations.exec("DROP TRIGGER reject_bc_settle");
+	f.repository.remove(c);
+	await f.reopen();
+	const recovered = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	recovered.retryPendingHandoffs();
+	expect(f.repository.read(b).draft).toBe("B draft");
+	expect(f.repository.read(a).draft).toBe("A draft");
+	expect(f.repository.read(c)).toEqual({ draft: "", unconfirmed: null });
+	expect(recovered.hasPendingHandoff(c)).toBe(false);
 	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
 });
 

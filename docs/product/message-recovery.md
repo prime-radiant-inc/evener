@@ -146,19 +146,21 @@ that must settle first. Reloading upgrades an existing pending entry's rank and
 dependencies when the mutations store recovers, and replaces an obsolete
 destination with the recovered terminal. A settled transfer whose ledger
 cleanup fails keeps a durable settled marker until that cleanup succeeds, even
-when no drafts mapping existed before the refusal; a later resume retries
-cleanup without transferring it, and settled edges are excluded from transfer
-reconstruction. Redirection merges the predecessor's existing dependencies
-with the intermediate, an incomplete read defers the composition transfer but
-still publishes the resolved identity so the mounted screen follows it, and a
-settled/refused mapping is marked durably so a restart retries only its
-cleanup, never the transfer. The destination stays pending until the whole
-chain settles. A restarted app retries that handoff before reconciling the
-resumed screen and does not restore the source's original recovery text while
-the transfer is still owed. A refused handoff still moves a completed built-in
-command's completion markers to the destination, so reconciliation discards
-those moved rows instead of appending and re-running the command on a later
-Send.
+when no drafts mapping existed before the refusal. Settlement is stored per
+edge, so another transfer still pending to the same destination cannot hide
+it; a later resume retries cleanup without transferring it, and settled edges
+are excluded from transfer reconstruction. A load that reveals a settlement
+drops any pending copy loaded during an earlier partial read. Redirection
+merges the predecessor's existing dependencies with the intermediate, an
+incomplete read defers the composition transfer but still publishes the
+resolved identity so the mounted screen follows it, and a settled/refused
+mapping is marked durably so a restart retries only its cleanup, never the
+transfer. The destination stays pending until the whole chain settles. A
+restarted app retries that handoff before reconciling the resumed screen and
+does not restore the source's original recovery text while the transfer is
+still owed. A refused handoff still moves a completed built-in command's
+completion markers to the destination, so reconciliation discards those moved
+rows instead of appending and re-running the command on a later Send.
 
 Browser and native outboxes share one receipt-settlement rule from the AppWire
 package (`retainsAcceptedCopy`, `settlementRetiresRecovery`): a `pending` receipt
