@@ -23,7 +23,7 @@ func w3init_restoreClient() *llm.Client {
 // job-manager construction reads them.
 func w3init_writeJobsJSONL(t *testing.T, stateDir, sessionID string, body []byte) {
 	t.Helper()
-	dir := filepath.Join(stateDir, sessionsSubdir, sessionID)
+	dir := filepath.Join(stateDir, schema.SessionsSubdir, sessionID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

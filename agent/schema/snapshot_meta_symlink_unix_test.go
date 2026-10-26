@@ -38,7 +38,7 @@ func TestLoadSessionMetaFS_SymlinkedIntermediateDirRefused(t *testing.T) {
 	// Replace sessions/ with a symlink to the real sessions directory. Both
 	// the symlink and its target stay inside dir (the bucket root), so nothing
 	// traverses above it.
-	if err := os.Symlink(realSessions, filepath.Join(dir, sessionsSubdir)); err != nil {
+	if err := os.Symlink(realSessions, filepath.Join(dir, SessionsSubdir)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,7 +67,7 @@ func TestLoadSessionMetaFS_SymlinkedLeafRefusedByNoFollow(t *testing.T) {
 	const id = "02wMz5Txv1C3Hut0M8GCeB"
 
 	// Create a real sessions dir and a real meta file outside the leaf path.
-	sessDir := filepath.Join(dir, sessionsSubdir)
+	sessDir := filepath.Join(dir, SessionsSubdir)
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestLoadSessionMetaFS_ReadOnlyFs_SymlinkedLeafRefused(t *testing.T) {
 	const id = "02wMz5Txv1C3Hut0M8GCeB"
 
 	// Create a real sessions dir and a real meta file outside the leaf path.
-	sessDir := filepath.Join(dir, sessionsSubdir)
+	sessDir := filepath.Join(dir, SessionsSubdir)
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -156,7 +156,7 @@ func reconstructSession(ctx context.Context, sid, dbPath, metaPath, mutationsPat
 	if err != nil {
 		return report, err
 	}
-	report.TranscriptPath = filepath.Join(output, "sessions", sid+".transcript.jsonl")
+	report.TranscriptPath = schema.SessionTranscriptPath(output, sid)
 	if err := os.Mkdir(output, 0o700); err != nil {
 		return report, fmt.Errorf("create new staging directory: %w", err)
 	}
@@ -166,10 +166,10 @@ func reconstructSession(ctx context.Context, sid, dbPath, metaPath, mutationsPat
 			_ = os.RemoveAll(output)
 		}
 	}()
-	if err := os.Mkdir(filepath.Join(output, "sessions"), 0o700); err != nil {
+	if err := os.Mkdir(schema.SessionsDir(output), 0o700); err != nil {
 		return report, err
 	}
-	files := map[string][]byte{report.TranscriptPath: transcriptBytes.Bytes(), filepath.Join(output, "sessions", sid+".meta.json"): metaBytes, filepath.Join(output, "source-snapshot.json"): sourceBytes}
+	files := map[string][]byte{report.TranscriptPath: transcriptBytes.Bytes(), schema.SessionMetaPath(output, sid): metaBytes, filepath.Join(output, "source-snapshot.json"): sourceBytes}
 	if mutationBytes != nil {
 		files[filepath.Join(output, "source-mutations.json")] = mutationBytes
 	}
