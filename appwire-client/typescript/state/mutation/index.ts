@@ -79,7 +79,13 @@ export type {
   MutationRecoveryKind,
   MutationRecoveryRecord,
 } from "./records";
-export { acceptedRecord, carriesOptimisticInput, createClientIdentity } from "./records";
+export {
+  acceptedRecord,
+  carriesOptimisticInput,
+  createClientIdentity,
+  retainsAcceptedCopy,
+  settlementRetiresRecovery,
+} from "./records";
 export type { SecureRandomSource } from "./secureUUID";
 export { createSecureUUID } from "./secureUUID";
 export { appliedMutationIdentities, notificationMutationIdentities } from "./settledIdentities";

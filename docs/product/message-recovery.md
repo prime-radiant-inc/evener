@@ -115,6 +115,12 @@ sources. An already-open resumed draft adopts the transferred record
 immediately. The retired ref keeps no draft or recovery ownership. A resumed
 destination that already holds work is left untouched.
 
+Browser and native outboxes share one receipt-settlement rule from the AppWire
+package (`retainsAcceptedCopy`, `settlementRetiresRecovery`): a `pending` receipt
+keeps an accepted copy of an input-bearing turn and of a note save until
+authoritative state describes it, a receipt-only control keeps none, and a
+recovery row a composer has edited outlives settlement.
+
 An ordinary native submit stores its full `unconfirmed` composition with a local
 capture token. If enqueue commits but draft confirmation fails, that token also
 remains on the local mutation row, tying the row to that uncertainty copy. Before

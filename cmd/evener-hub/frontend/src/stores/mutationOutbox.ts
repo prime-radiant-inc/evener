@@ -34,4 +34,9 @@ export type {
   MutationOutboxOptions,
   MutationStopBarrier,
 } from "@evener/appwire-client/state/mutation";
-export { acceptedRecord, carriesOptimisticInput, MutationOutbox } from "@evener/appwire-client/state/mutation";
+export {
+  acceptedRecord,
+  MutationOutbox,
+  retainsAcceptedCopy,
+  settlementRetiresRecovery,
+} from "@evener/appwire-client/state/mutation";

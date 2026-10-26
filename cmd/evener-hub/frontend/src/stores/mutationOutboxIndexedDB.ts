@@ -17,7 +17,7 @@ import type {
   MutationRecoveryRecord,
   MutationStopBarrier,
 } from "./mutationOutbox";
-import { acceptedRecord, carriesOptimisticInput } from "./mutationOutbox";
+import { acceptedRecord, retainsAcceptedCopy, settlementRetiresRecovery } from "./mutationOutbox";
 import { trackProjectionWork } from "./projectionWork";
 import { createSecureUUID } from "./secureUUID";
 
@@ -658,23 +658,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         await this.#discardSupersededNoteRecovery(transaction, source);
         settledSource = source;
 
-        // A "pending" receipt means accepted but not yet described by
-        // authoritative state. The daemon reports pending for exactly the
-        // mutations whose acceptance a read cannot yet prove - every
-        // input-bearing turn verb AND notes/human/set
-        // (acceptedClientMutationProjection) - and this store owes each of them
-        // a kept copy until reconcileIdentities settles it from a later read's
-        // authoritative ids. For the turn verbs the kept copy is the optimistic
-        // display itself (an input array renders the pending row); a note
-        // carries no display (production enqueues notes with null), but its kept
-        // copy is what tells humanNoteDrafts' post-retry lookup an accepted save
-        // is pending rather than settled-elsewhere. A receipt-only control (a
-        // Stop) settles terminal at acceptance and keeps no copy: its effect is
-        // already readable in the session's own state, so its pending receipts
-        // drop the row exactly as before.
-        const retainsAcceptedCopy =
-          projectionState === "pending" && (carriesOptimisticInput(source) || source.method === "notes/human/set");
-        if (retainsAcceptedCopy) {
+        if (retainsAcceptedCopy(source, projectionState)) {
           // The accepted whitelist lives in the package's acceptedRecord so
           // this adapter and native's build the same row.
           await requestResult(optimistic.put(acceptedRecord(source)));
@@ -682,7 +666,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
           await requestResult(optimistic.delete(clientMutationId));
         }
         if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-        if (recoveryRecord && (recoveryRecord.compositionRevision ?? 0) === 0)
+        if (recoveryRecord && settlementRetiresRecovery(recoveryRecord))
           await requestResult(recovery.delete(clientMutationId));
         return true;
       },
@@ -712,7 +696,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         await this.#discardSupersededNoteRecovery(transaction, source);
         if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
         if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
-        if (recoveryRecord && (recoveryRecord.compositionRevision ?? 0) === 0)
+        if (recoveryRecord && settlementRetiresRecovery(recoveryRecord))
           await requestResult(recovery.delete(clientMutationId));
         settledSource = source;
         return true;
@@ -735,7 +719,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         record.method === "notes/human/set" &&
         record.targetRef === source.targetRef &&
         record.intentSequence < source.intentSequence &&
-        (record.compositionRevision ?? 0) === 0
+        settlementRetiresRecovery(record)
       ) {
         await requestResult(store.delete(record.clientMutationId));
       }

@@ -34,10 +34,11 @@ import {
 	acceptedRecord,
 	canEditQueuedMessage,
 	canRemoveQueuedMessage,
-	carriesOptimisticInput,
 	createSecureUUID,
 	matchesQueuedMessageSnapshot,
 	PENDING_TURN_METHODS,
+	retainsAcceptedCopy,
+	settlementRetiresRecovery,
 } from "@evener/appwire-client/state/mutation";
 import { type SqliteSync, type SqliteSyncRunResult, withSavepoint } from "./sqliteSync";
 
@@ -538,10 +539,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// Moves a receipt-settled record out of whichever table currently holds it
 	// (outbox, or - a receipt for an already-transferred record - recovery or
 	// optimistic): a pending receipt whose optimisticDisplay still carries
-	// composer input becomes (or stays) an accepted optimistic record (the
-	// daemon has not reflected it into the thread yet); any other pending
-	// receipt (a receipt-only control) or projection state has nothing worth
-	// carrying forward, so the record is simply retired everywhere it lives.
+	// composer input, or a note save, becomes (or stays) an accepted optimistic
+	// record (the daemon has not reflected it yet); any other pending receipt
+	// (a receipt-only control) or projection state has nothing worth carrying
+	// forward, so the record is simply retired everywhere it lives.
 	async settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean> {
 		return this.transaction("mutation_outbox_settle_receipt", () => {
 			const outboxRecord = this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
@@ -550,8 +551,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			const source = outboxRecord ?? recoveryRecord ?? optimisticRecord;
 			if (!source) return false;
 			this.discardSupersededNoteRecovery(source);
-			const retainsOptimisticDisplay = projectionState === "pending" && carriesOptimisticInput(source);
-			if (retainsOptimisticDisplay) {
+			if (retainsAcceptedCopy(source, projectionState)) {
 				// The package's acceptedRecord is the one whitelist both adapters
 				// build: it never spreads, so a recovery-sourced receipt
 				// (source.recoveryKind/recoveryReason) and attempted evidence do
@@ -569,7 +569,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				this.delete(TABLES.optimistic, clientMutationId);
 			}
 			if (outboxRecord) this.delete(TABLES.outbox, clientMutationId);
-			if (recoveryRecord) this.delete(TABLES.recovery, clientMutationId);
+			if (recoveryRecord && settlementRetiresRecovery(recoveryRecord)) this.delete(TABLES.recovery, clientMutationId);
 			return true;
 		});
 	}

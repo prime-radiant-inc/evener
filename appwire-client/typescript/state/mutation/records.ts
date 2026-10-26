@@ -184,15 +184,38 @@ export function acceptedRecord<A extends MutationAttachmentRef = MutationAttachm
   };
 }
 
-// The "receipt carries input display" half of the rule both adapters use to
-// decide whether a "pending" receipt keeps (or creates) the optimistic copy:
-// the source record's display holds an input array the pending row renders.
-// The receipt's own state (whether it is "pending" at all) is the caller's to
-// check; a host may keep a copy for a reason beyond a display (the web keeps
-// a notes/human/set copy so a retry lookup sees the accepted save as pending).
+// The "receipt carries input display" half of the rule `retainsAcceptedCopy`
+// builds on: the source record's display holds an input array the pending row
+// renders.
 export function carriesOptimisticInput(record: { optimisticDisplay: unknown }): boolean {
   const display = record.optimisticDisplay;
   return display !== null && typeof display === "object" && "input" in display && Array.isArray(display.input);
+}
+
+// Whether a receipt settles a record into an accepted optimistic copy instead
+// of retiring it. A "pending" receipt means accepted but not yet described by
+// authoritative state. The daemon reports pending for exactly the mutations
+// whose acceptance a read cannot yet prove (every input-bearing turn verb and
+// notes/human/set), and the host owes each of them a kept copy until a later
+// read's authoritative ids settle it. For the turn verbs the kept copy is the
+// optimistic display itself; a note carries no display, but its kept copy is
+// what tells humanNoteDrafts' post-retry lookup an accepted save is pending
+// rather than settled elsewhere. A receipt-only control (a Stop) settles
+// terminal at acceptance and keeps no copy. Both adapters call this, so the
+// retention rule cannot drift between them.
+export function retainsAcceptedCopy(
+  source: { optimisticDisplay: unknown; method: string },
+  projectionState: string,
+): boolean {
+  return projectionState === "pending" && (carriesOptimisticInput(source) || source.method === "notes/human/set");
+}
+
+// Whether settling a record also retires its recovery row. A recovery row a
+// composer has edited (compositionRevision above zero) holds the user's
+// unsent text and outlives the settlement; hosts with no composer never write
+// a revision, so every row of theirs settles.
+export function settlementRetiresRecovery(recovery: { compositionRevision?: number }): boolean {
+  return (recovery.compositionRevision ?? 0) === 0;
 }
 
 // --- client provenance -------------------------------------------------------
