@@ -3881,8 +3881,14 @@ async function hydrateAndSubscribe(
   // can be enriched under recorded coverage, never replacing response-owned
   // overlay slots or replaying their already-represented deltas.
   const fixtureNotifications = pending.notifications.slice();
-  applyHydrationResponseCut(pending, ref, model);
-  return { model, response, fixtureNotifications, ...(discardHeldHistory ? { discardHeldHistory: true } : {}) };
+  const cutModel = withBufferedEscalationResolutions(pending, model);
+  applyHydrationResponseCut(pending, ref, cutModel);
+  return {
+    model: cutModel,
+    response,
+    fixtureNotifications,
+    ...(discardHeldHistory ? { discardHeldHistory: true } : {}),
+  };
 }
 
 // The one place a rejection is checked for the hub's durable deletion fence
@@ -4027,8 +4033,9 @@ async function hydrateAndSubscribeWatch(
     !discardHeldHistory && pending.baseModel?.history !== undefined
       ? applyReadResponse(pending.baseModel, resp, now)
       : hydrateThread(resp, ref, now);
-  applyHydrationResponseCut(pending, ref, model);
-  return model;
+  const cutModel = withBufferedEscalationResolutions(pending, model);
+  applyHydrationResponseCut(pending, ref, cutModel);
+  return cutModel;
 }
 
 function olderItemsParams(ref: string, cursor: string) {
@@ -5125,10 +5132,25 @@ function notificationThreadId(n: AnyNotification): string | undefined {
   return typeof params.threadId === "string" ? params.threadId : undefined;
 }
 
+// A resolved escalation never returns, but the resolving client learns of it by
+// its own acknowledgment, which the daemon's snapshot cut does not order. A
+// read issued before the resolve can therefore still carry the escalation, so
+// buffered resolutions are replayed over the response model.
+function withBufferedEscalationResolutions(pending: PendingThreadHydration, model: ThreadModel): ThreadModel {
+  let resolved = model;
+  for (const { notification } of pending.notifications) {
+    if (notification.method === "evener/sandbox/escalation/resolved") {
+      resolved = resolvePendingEscalation(resolved, notification.params.escalationId);
+    }
+  }
+  return resolved;
+}
+
 function applyHydrationResponseCut(pending: PendingThreadHydration, ref: string, model: ThreadModel): void {
   // AppWire orders the matching response at the authoritative snapshot cut.
   // Every notification already buffered is at or before that cut and is
-  // already represented by this model. Notifications delivered after the
+  // already represented by this model, except a resolved escalation (see
+  // withBufferedEscalationResolutions). Notifications delivered after the
   // response enter the buffer later and remain ordered for replay.
   releasePendingHydrationBytes(ref, pending);
   pending.notifications = [];

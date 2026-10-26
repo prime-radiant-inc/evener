@@ -880,11 +880,14 @@ export class TranscriptRepository {
    * cannot replace or append to a response-owned slot. Capture that authority
    * once for the whole cut, so a missing upsert and its deltas stay together.
    * The shared reducer prunes any overlay the versioned recorded history covers.
+   * A resolved escalation never returns, so it is replayed over a read that
+   * captured the escalation before the resolution: the resolving client's own
+   * acknowledgment is not ordered against the daemon's snapshot cut.
    */
   acceptBeforeReadCut(notifications: readonly AnyNotification[], context: { lifetime: number }): void {
     const responseOverlayKeys = new Set(Object.keys(this.#model?.overlay ?? {}));
     for (const notification of notifications) {
-      if (notification.method === "history/updated") {
+      if (notification.method === "history/updated" || notification.method === "evener/sandbox/escalation/resolved") {
         this.accept(notification, context);
       } else if (
         notification.method === "thread/queueChanged" &&

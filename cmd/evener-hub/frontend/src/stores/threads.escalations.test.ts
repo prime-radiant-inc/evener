@@ -217,6 +217,57 @@ describe("useThreadsStore.resolveEscalation", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
   });
 
+  // A refresh read issued before the resolve can return after it, carrying the
+  // escalation in its snapshot. The resolve is local, so the daemon's cut does
+  // not order it against that snapshot.
+  test("a read issued before the resolve and answered after it does not bring the escalation back", async () => {
+    const fake = connectFakeClient();
+    let answerRead: (response: ThreadReadResponse) => void = () => {};
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        answerRead = (response) => resolve({ ...response, requestGeneration });
+      });
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const refresh = threadsStore.getState().refreshThread("ref_a");
+    await vi.waitFor(() => expect(reads).toBe(2));
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    answerRead(threadWithEscalation("ref_a", "esc_1"));
+    await refresh;
+
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
+  test("a watch read issued before the resolve and answered after it does not bring the escalation back", async () => {
+    const fake = connectFakeClient();
+    let answerWatchRead: (response: ThreadReadResponse) => void = () => {};
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        answerWatchRead = (response) => resolve({ ...response, requestGeneration });
+      });
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const watch = threadsStore.getState().watchThread("ref_a");
+    await vi.waitFor(() => expect(reads).toBe(2));
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    answerWatchRead(threadWithEscalation("ref_a", "esc_1"));
+    await watch;
+
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
   test("updates BOTH threads and watchedThreads when the same ref is tracked in each", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
