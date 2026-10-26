@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -52,7 +53,7 @@ func TestSessionActivityListEntryPointsShareRequestContract(t *testing.T) {
 		for refusal, params := range refusals {
 			t.Run(name+"/"+refusal, func(t *testing.T) {
 				_, err := call(t.Context(), params)
-				wire, ok := err.(appwire.WireError)
+				wire, ok := errors.AsType[appwire.WireError](err)
 				if !ok || wire.Code != appwire.CodeInvalidParams {
 					t.Fatalf("error = %v, want InvalidParams", err)
 				}
@@ -70,7 +71,7 @@ func TestSessionActivityListEntryPointsShareRequestContract(t *testing.T) {
 	for _, name := range []string{"retained jobs", "retained watches", "retained delegates"} {
 		t.Run(name+"/other session", func(t *testing.T) {
 			_, err := entries[name](t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", "ses_other")})
-			wire, ok := err.(appwire.WireError)
+			wire, ok := errors.AsType[appwire.WireError](err)
 			if !ok || wire.Code != appwire.CodeInvalidParams {
 				t.Fatalf("error = %v, want InvalidParams", err)
 			}
