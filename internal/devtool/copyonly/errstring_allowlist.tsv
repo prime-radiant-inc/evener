@@ -163,7 +163,6 @@ agent/steering_tool_gate_test.go	1
 agent/subagent_model_selection_test.go	1
 agent/subagents_cov_test.go	1
 agent/subagents_covtest_test.go	3
-agent/subagents_test.go	1
 agent/task_reminders_test.go	1
 agent/transcript/cov_s4_transcript_fault_test.go	18
 agent/transcript/open_unix_covtest_test.go	1
