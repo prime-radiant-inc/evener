@@ -411,10 +411,8 @@ func FuzzExactAppRPC(f *testing.F) {
 			_ = relay.startRelayForThread(context.Background(), appwire.Thread{SessionID: "session"})
 		case 5:
 			oldResolve, oldResume := resolveTurnStartSource, resumeTurnStartThread
-			oldLogin, oldPoll, oldTrust := authLoginComplete, authDevicePoll, launchTrustRepo
 			t.Cleanup(func() {
 				resolveTurnStartSource, resumeTurnStartThread = oldResolve, oldResume
-				authLoginComplete, authDevicePoll, launchTrustRepo = oldLogin, oldPoll, oldTrust
 			})
 			resumeTurnStartThread = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
 				return appwire.ThreadResumeResponse{}, nil
@@ -451,18 +449,6 @@ func FuzzExactAppRPC(f *testing.F) {
 			source.startTurnErrors = []error{appwire.SessionUnavailable("resume"), nil}
 			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation"})
 
-			authLoginComplete = func(*hubAuthController, context.Context, appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
-				return appwire.AuthLoginCompleteResponse{Status: appwire.AuthStatusResponse{Provider: "openai"}}, nil
-			}
-			authDevicePoll = func(*hubAuthController, context.Context, appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
-				return appwire.AuthDevicePollResponse{State: "authorized", Status: &appwire.AuthStatusResponse{Provider: "openai"}}, nil
-			}
-			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodEvenerAuthLoginComplete, appwire.AuthLoginCompleteParams{})
-			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodEvenerAuthDevicePoll, appwire.AuthDevicePollParams{})
-			launchTrustRepo = func(*hubLaunchController, context.Context, appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
-				return appwire.LaunchConfigResolved{}, nil
-			}
-			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodEvenerLaunchTrustRepo, appwire.LaunchConfigTrustRepoParams{})
 			_, _ = exactDispatch(context.Background(), t, instServerForExactSetDefaultError(t), appwire.MethodEvenerInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: "missing"})
 		}
 	})
