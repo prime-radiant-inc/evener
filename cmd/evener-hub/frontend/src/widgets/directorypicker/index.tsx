@@ -65,7 +65,7 @@ export function DirectoryPicker({
   const [typed, setTyped] = useState(initialPath);
   const [pathEdited, setPathEdited] = useState(false);
   const [entries, setEntries] = useState<string[] | null>(null);
-  const [initialCanonical, setInitialCanonical] = useState<string | null>(null);
+  const [initialCanonical, setInitialCanonical] = useState<{ id: number; path: string } | null>(null);
   const [validatedInput, setValidatedInput] = useState<string | null>(null);
   const [recents, setRecents] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -111,7 +111,7 @@ export function DirectoryPicker({
       setCurrent(canonical);
       // Initial validation must not collapse a selection made before the first
       // input event. Explicit navigation still canonicalizes its submitted path.
-      if (preserveFocusedInput) setInitialCanonical(canonical);
+      if (preserveFocusedInput) setInitialCanonical({ id, path: canonical });
       else setTyped(canonical);
       setValidatedInput(path);
       const children = await complete(childrenPrefix(canonical), false);
@@ -158,8 +158,12 @@ export function DirectoryPicker({
   // the validation result arrives misses a field focused and selected before
   // that result renders, and the replacement then lands under the selection.
   useLayoutEffect(() => {
-    if (initialCanonical !== null && ownerDocumentOf(pathInput.current).activeElement !== pathInput.current)
-      setTyped(initialCanonical);
+    if (
+      initialCanonical !== null &&
+      request.current === initialCanonical.id &&
+      ownerDocumentOf(pathInput.current).activeElement !== pathInput.current
+    )
+      setTyped(initialCanonical.path);
   }, [initialCanonical]);
 
   const ready = validatedInput !== null && !pathEdited && (typed === current || typed === validatedInput) && !busy;

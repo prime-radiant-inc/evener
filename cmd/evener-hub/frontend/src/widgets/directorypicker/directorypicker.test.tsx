@@ -294,23 +294,37 @@ test.each(["Enter", "Go"])(
   },
 );
 
-test("focus taken while the initial validation result is waiting to render keeps its selection", async () => {
-  const { resolveInitial } = setupPendingInitialValidation();
-  const input = screen.getByRole<HTMLInputElement>("textbox", { name: "Path" });
-  // React flushes the validation result on a later task. A user (or a browser
-  // driver) can focus and select the field after the result was received and
-  // before it renders; the render must not replace the text under that selection.
-  const actEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+// React flushes a validation result on a later task. These tests receive the
+// result outside act so that window is observable.
+async function receiveInitialResultWithoutRendering(
+  resolveInitial: () => void,
+  whileUnrendered: () => void,
+  renderedRow: string,
+) {
+  const env = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+  const actEnvironment = env.IS_REACT_ACT_ENVIRONMENT;
+  env.IS_REACT_ACT_ENVIRONMENT = false;
   try {
     resolveInitial();
     for (let tick = 0; tick < 10; tick++) await Promise.resolve();
-    input.focus();
-    input.select();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    whileUnrendered();
+    await screen.findByRole("button", { name: renderedRow });
   } finally {
-    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = actEnvironment;
+    env.IS_REACT_ACT_ENVIRONMENT = actEnvironment;
   }
+}
+
+test("focus taken while the initial validation result is waiting to render keeps its selection", async () => {
+  const { resolveInitial } = setupPendingInitialValidation();
+  const input = screen.getByRole<HTMLInputElement>("textbox", { name: "Path" });
+  await receiveInitialResultWithoutRendering(
+    resolveInitial,
+    () => {
+      input.focus();
+      input.select();
+    },
+    "Open /home/test/child",
+  );
   expect(input.value).toBe("~");
   expect([input.selectionStart, input.selectionEnd]).toEqual([0, 1]);
 });
