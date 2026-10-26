@@ -824,7 +824,7 @@ type Session struct {
 	notifyWakeHolds    int
 	notifyWakeDeferred bool
 	notifyFunc         func()
-	jobNotifyRetry     notificationRetry
+	jobNotifyRetry     backoffTimer
 	// jobNotifyCallbacks counts in-flight scheduled notification retry
 	// callbacks, including callbacks begun before retirement controller
 	// attachment. Guarded by pendingJobNotifsMu.
@@ -1045,7 +1045,7 @@ type Session struct {
 	// sole durable authority; restart rebuilds this map from that fold.
 	rootAttentionWakeIDs map[string]struct{}
 	rootAttentionWake    bool
-	rootAttentionRetry   notificationRetry
+	rootAttentionRetry   backoffTimer
 	// rootAttentionPaused records that a permanent provider failure deferred
 	// the pending root attention and the session has said so (see
 	// finishRootDelegateAttentionTurn); a delivery or a model switch ends
@@ -1075,7 +1075,7 @@ type Session struct {
 	turnNameRetryMu sync.Mutex
 	// turnNameRetry paces the re-wake for a notification that stood down
 	// unnamed. See scheduleRunningTurnNameRetry (session_active_turn.go).
-	turnNameRetry notificationRetry
+	turnNameRetry backoffTimer
 	// turnNameStoreUnhealthy latches the client-mutation-store failure warning
 	// to once per unhealthy episode. See warnStoreUnhealthyOnce.
 	turnNameStoreUnhealthy bool
@@ -1102,11 +1102,11 @@ type Session struct {
 	delegateAttentionWarnMu   sync.Mutex
 	delegateAttentionWarned   map[delegateAttentionWarning]string
 	delegateAttentionArmIDs   map[string]struct{}
-	delegateAttentionArmRetry notificationRetry
-	stableAttentionRetry      notificationRetry
+	delegateAttentionArmRetry backoffTimer
+	stableAttentionRetry      backoffTimer
 	delegateDeliveryWake      bool
 	delegateDeliveryPumping   bool
-	delegateDeliveryRetry     notificationRetry
+	delegateDeliveryRetry     backoffTimer
 	// transcriptReady records that attachTranscript has run, i.e. that the
 	// session has finished deciding whether it has a transcript at all. Until
 	// then a turn has nowhere to go and is held in pendingTranscriptTurns; a
@@ -1128,14 +1128,8 @@ type sessionDetachedProcess struct {
 	done <-chan struct{}
 }
 
-type notificationRetry struct {
-	active     bool
-	delay      time.Duration
-	generation int
-}
-
 // runningTurnReleaseRetryState paces the re-attempts of a release write the
-// client mutation store refused. It counts attempts where notificationRetry
+// client mutation store refused. It counts attempts where backoffTimer
 // does not, because this loop is finite: see runningTurnReleaseRetryLimit. It
 // needs no `active` flag for the same reason -- every re-attempt is armed by
 // the failure of the one before it, so there is never a second arrival to
@@ -1380,18 +1374,12 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 	if s.jobNotifyRetry.active {
 		return
 	}
-	delay := s.jobNotifyRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
-	s.jobNotifyRetry.active = true
-	s.jobNotifyRetry.generation++
-	generation := s.jobNotifyRetry.generation
+	delay, generation := s.jobNotifyRetry.arm()
 	s.sclock().AfterFunc(delay, func() {
 		// A reset cannot cancel this one-shot. Reject an already superseded
 		// firing before admission would create a lease and reset idle eligibility.
 		s.pendingJobNotifsMu.Lock()
-		stale := s.jobNotifyRetry.generation != generation
+		stale := s.jobNotifyRetry.superseded(generation)
 		s.pendingJobNotifsMu.Unlock()
 		if stale {
 			return
@@ -1407,7 +1395,7 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 			// resetJobNotificationRetry or a newer schedule, and re-arming it
 			// would resurrect a stale wake the owner already settled.
 			s.pendingJobNotifsMu.Lock()
-			if s.jobNotifyRetry.generation == generation {
+			if !s.jobNotifyRetry.superseded(generation) {
 				s.jobNotifyRetry.active = false
 				s.scheduleJobNotificationRetryLocked()
 			}
@@ -1417,18 +1405,12 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 		defer release()
 		s.pendingJobNotifsMu.Lock()
 		// A reset may have landed between the precheck and admission.
-		if s.jobNotifyRetry.generation != generation {
+		if !s.jobNotifyRetry.fire(generation) {
 			s.pendingJobNotifsMu.Unlock()
 			return
 		}
-		s.jobNotifyRetry.active = false
 		pending := len(s.pendingJobNotifs) > 0
-		nextDelay := min(delay*2, jobNotificationRetryMaxDelay)
-		if pending {
-			s.jobNotifyRetry.delay = nextDelay
-		} else {
-			s.jobNotifyRetry.delay = jobNotificationRetryInitialDelay
-		}
+		s.jobNotifyRetry.settle(pending, delay, jobNotificationRetryMaxDelay)
 		s.pendingJobNotifsMu.Unlock()
 		if pending {
 			s.notify()
@@ -1442,9 +1424,7 @@ func (s *Session) resetJobNotificationRetry() {
 		s.pendingJobNotifsMu.Unlock()
 		return
 	}
-	s.jobNotifyRetry.generation++
-	s.jobNotifyRetry.active = false
-	s.jobNotifyRetry.delay = jobNotificationRetryInitialDelay
+	s.jobNotifyRetry.reset()
 	s.pendingJobNotifsMu.Unlock()
 }
 
