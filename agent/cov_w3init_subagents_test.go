@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/hooks"
@@ -10,27 +9,28 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestW3Init_PrepareSubagentRun_ChildSessionError covers the arm where building
+// TestW3Init_DelegateCreate_ChildSessionError covers the arm where building
 // the child Session fails: the injected child-client factory yields a nil client,
 // so NewSession rejects it.
-func TestW3Init_PrepareSubagentRun_ChildSessionError(t *testing.T) {
+func TestW3Init_DelegateCreate_ChildSessionError(t *testing.T) {
 	t.Parallel()
 	cfg := SessionConfig{
 		MaxSubagentDepth: 1,
+		StateDir:         t.TempDir(),
 		testOnly:         testConfig{childClientFactory: func() *llm.Client { return nil }},
 	}
 	s := newSession(t, withConfig(cfg))
 
-	_, err := s.prepareSubagentRun(context.Background(), "task", "", "", 0, "", "", nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "llm client is nil") {
-		t.Fatalf("err = %v, want nil-client child session error", err)
+	result := s.createDelegate(context.Background(), delegateArgs{Task: "task", DelegationAllowance: new(0)})
+	if result.Err == nil {
+		t.Fatalf("createDelegate succeeded with a nil child client: %+v", result)
 	}
 }
 
-// TestW3Init_PrepareSubagentRun_SkillResolveSkipped covers the arm where a named
+// TestW3Init_DelegateCreate_SkillResolveSkipped covers the arm where a named
 // agent references a skill that cannot be resolved: the unresolved skill is
 // skipped and the spawn still prepares.
-func TestW3Init_PrepareSubagentRun_SkillResolveSkipped(t *testing.T) {
+func TestW3Init_DelegateCreate_SkillResolveSkipped(t *testing.T) {
 	t.Parallel()
 	s := newSession(t)
 	s.pluginAgents["w3agent"] = plugin.Agent{

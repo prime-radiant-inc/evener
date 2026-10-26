@@ -104,10 +104,10 @@ func TestSession_ProcessInputStreaming_NoRaceWithSetters(t *testing.T) {
 	hammerSetters(t, sess)
 }
 
-// TestSpawnAgent_NoRaceWithSetReasoningEffort covers the s.cfg read in spawnAgent
-// (PRI-1958): spawnAgent copies s.cfg during a turn while SetReasoningEffort writes
-// s.cfg.ReasoningEffort under s.mu. RED before snapshotting the copy under s.mu.
-func TestSpawnAgent_NoRaceWithSetReasoningEffort(t *testing.T) {
+// TestCreateDelegate_NoRaceWithSetReasoningEffort covers the s.cfg read in
+// delegate creation (PRI-1958): create copies s.cfg during a turn while
+// SetReasoningEffort writes s.cfg.ReasoningEffort under s.mu.
+func TestCreateDelegate_NoRaceWithSetReasoningEffort(t *testing.T) {
 	if !raceDetectorEnabled {
 		t.Skip("race-detector stress test; run with -race")
 	}
@@ -115,7 +115,7 @@ func TestSpawnAgent_NoRaceWithSetReasoningEffort(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{MaxSubagentDepth: 1})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestSpawnAgent_NoRaceWithSetReasoningEffort(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for range 30 {
-			_, _ = sess.spawnAgent(context.Background(), "task", "", "", 0, "", "", nil, nil)
+			_ = sess.createDelegate(context.Background(), delegateArgs{Task: "task"})
 		}
 	}()
 	go func() {

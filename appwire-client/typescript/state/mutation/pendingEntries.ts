@@ -1,9 +1,10 @@
 import { canonicalSkillNames } from "../../composerInput";
 import type { ThreadModel } from "../../model";
 import type { InputItem, PendingMutation } from "../../types.gen";
+import { type ComposerVerb, composerVerb } from "./composerMethods";
 import type { MutationOptimisticRecord, MutationOutboxRecord } from "./records";
 
-export type PendingMethod = "send" | "steer" | "queue" | "drain" | "promote";
+export type PendingMethod = ComposerVerb;
 // "canceled" is the durable Stop cancellation state surfaced as-is: the entry
 // stays visible (with its Retry affordance) until the user retries it or the
 // thread goes away.
@@ -38,28 +39,6 @@ export interface PendingTurnEntry {
   // The queue revision a drain steers with, likewise: the queue it takes.
   queueRevision?: number;
 }
-
-// The wire-method → PendingMethod mapping that names the entry method family:
-// promote is its own method so labels and tests stay honest (spec §3), never
-// folded into `steer`.
-const PENDING_METHOD_BY_WIRE_METHOD: ReadonlyMap<string, PendingMethod> = new Map([
-  ["turn/start", "send"],
-  ["turn/steer", "steer"],
-  ["turn/queue", "queue"],
-  ["turn/drainAsSteer", "drain"],
-  ["turn/promoteQueuedAsSteer", "promote"],
-]);
-
-function pendingMethod(method: string): PendingMethod | undefined {
-  return PENDING_METHOD_BY_WIRE_METHOD.get(method);
-}
-
-// The wire methods that name pending composer input - the family whose rows the
-// daemon's pending projection lists, and therefore the only family whose absence
-// from an authoritative projection proves delivery. Exported so a storage
-// adapter pruning by absence reads the family from here rather than restating
-// the method names: adding a pending verb must change this mapping alone.
-export const PENDING_TURN_METHODS: readonly string[] = Object.freeze([...PENDING_METHOD_BY_WIRE_METHOD.keys()]);
 
 // Collapses any whitespace run to a single space and trims both ends.
 export function normalizeText(s: string): string {
@@ -234,7 +213,7 @@ function outboxEntry(
   record: PendingRecord,
   isOwnMutationRecord: (record: { originClientId?: string }) => boolean,
 ): PendingTurnEntry | undefined {
-  const method = pendingMethod(record.method);
+  const method = composerVerb(record.method);
   if (!method) return undefined;
   const preview = inputPreview(outboxInput(record));
   const queueEntryId = method === "promote" ? record.payload.expectedEntryId : undefined;
@@ -264,7 +243,7 @@ function authoritativeEntry(
   submittedHere: ReadonlyMap<string, number>,
   durableCreatedAt: number | undefined,
 ): PendingTurnEntry | undefined {
-  const method = pendingMethod(mutation.method);
+  const method = composerVerb(mutation.method);
   if (!method) return undefined;
   return {
     id: mutation.clientMutationId,

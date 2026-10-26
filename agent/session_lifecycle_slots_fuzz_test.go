@@ -311,7 +311,7 @@ func FuzzLcyc_DiscardRestoredCandidate(f *testing.F) {
 		parent := safzNewParent(t, clk, 2, nil, &agenttest.DenyEnv{WorkDir: t.TempDir()})
 
 		for i := 0; i < nChildren; i++ {
-			if _, err := parent.spawnAgent(context.Background(), "child task", "", "", 0, "", "", nil, nil); err != nil {
+			if res := parent.createDelegate(context.Background(), delegateArgs{Task: "child task"}); res.Err != nil {
 				break // allowance exhausted; the teardown oracle still runs
 			}
 		}

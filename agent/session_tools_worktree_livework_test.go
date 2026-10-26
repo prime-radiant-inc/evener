@@ -26,31 +26,6 @@ import (
 // (scriptedLaneRepo, driven through wtRepo's shared operation helpers). See
 // docs/developing-evener/testing.md for the rule.
 
-func TestPathEqualOrUnder(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name      string
-		candidate string
-		target    string
-		want      bool
-	}{
-		{"equal", "/repo/wt/lane", "/repo/wt/lane", true},
-		{"nested one level", "/repo/wt/lane/sub", "/repo/wt/lane", true},
-		{"nested deep", "/repo/wt/lane/a/b/c", "/repo/wt/lane", true},
-		{"sibling", "/repo/wt/lane2", "/repo/wt/lane", false},
-		{"prefix-collision sibling", "/repo/wt/lane-other", "/repo/wt/lane", false},
-		{"parent", "/repo/wt", "/repo/wt/lane", false},
-		{"unrelated", "/other/place", "/repo/wt/lane", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := pathEqualOrUnder(tt.candidate, tt.target); got != tt.want {
-				t.Errorf("pathEqualOrUnder(%q, %q) = %v, want %v", tt.candidate, tt.target, got, tt.want)
-			}
-		})
-	}
-}
-
 // --- real background shell job ---
 
 // TestWorktreeRemove_LiveWorkGuardRefusesRealBackgroundShellJob covers the
@@ -217,7 +192,7 @@ func TestWorktreeRemove_LiveWorkGuardIgnoresUnrelatedWork(t *testing.T) {
 // empty WorkingDirectory() — a state a real LocalExecutionEnvironment never
 // produces (RootDir is always non-empty), but reachable via any other
 // ExecutionEnvironment implementation, so the scan must not treat "" as a
-// (false) match against every target path via pathEqualOrUnder's "under root"
+// (false) match against every target path via identifier.PathUnder's "under root"
 // arithmetic. A SECOND, genuinely live subagent rooted under the target lane
 // is tracked alongside it to prove the skip doesn't swallow real live work.
 //

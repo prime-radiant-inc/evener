@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/identifier"
 )
 
 // FuzzSandboxPolicyAssembly exercises the pure policy and backend assembly
@@ -195,7 +197,7 @@ func fuzzEnvironmentFloor(t *testing.T, fixture structuralFixture, home, raw str
 	}
 	if policy.CacheStrategy == CacheSessionPrivate {
 		for _, name := range []string{"GOCACHE", "npm_config_cache", "CARGO_HOME"} {
-			if value, ok := fuzzEnvValue(got, name); !ok || !pathUnder(value, sessionTmp) {
+			if value, ok := fuzzEnvValue(got, name); !ok || !identifier.PathUnder(value, sessionTmp) {
 				t.Fatalf("env floor did not redirect %s into %q: %v", name, sessionTmp, got)
 			}
 		}
@@ -429,17 +431,8 @@ func fuzzGitMetadataHelpers(t *testing.T, fixture structuralFixture) {
 	if got := removeProtectedFromWritable([]string{fixture.main, filepath.Join(fixture.main, "nested"), filepath.Join(fixture.root, "other")}, []string{fixture.main}); !slices.Equal(got, []string{filepath.Join(fixture.root, "other")}) {
 		t.Fatalf("removeProtectedFromWritable = %v", got)
 	}
-	if !pathUnder(filepath.Join(fixture.main, "nested"), fixture.main) || pathUnder(fixture.root, fixture.main) {
-		t.Fatal("pathUnder lost containment direction")
-	}
-	if !pathUnder(fixture.main, fixture.main) {
-		t.Fatal("pathUnder rejected an equal path")
-	}
-	if !hasParentPrefix("../outside") || hasParentPrefix("inside") {
-		t.Fatal("hasParentPrefix returned an invalid result")
-	}
-	if !underAnyRoot(filepath.Join(fixture.main, "nested"), []string{fixture.main}) || underAnyRoot(fixture.root, []string{fixture.main}) {
-		t.Fatal("underAnyRoot lost containment direction")
+	if !isUnderAnyRoot(filepath.Join(fixture.main, "nested"), []string{fixture.main}) || isUnderAnyRoot(fixture.root, []string{fixture.main}) {
+		t.Fatal("isUnderAnyRoot lost containment direction")
 	}
 	if _, _, ok := findGitEntry(filepath.Join(fixture.nonGit, "child")); ok {
 		t.Fatal("findGitEntry found metadata outside a repository")

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/identifier"
 )
 
 func TestSessionScratchLifecycle(t *testing.T) {
@@ -236,10 +238,10 @@ func TestSessionScratchFallsBackOutsideWorkspace(t *testing.T) {
 		t.Fatalf("NewSessionScratch: %v", err)
 	}
 	t.Cleanup(func() { _ = scratch.Cleanup() })
-	if !pathWithin(scratch.Dir, canonicalCacheBase) {
+	if !identifier.PathUnder(scratch.Dir, canonicalCacheBase) {
 		t.Fatalf("scratch %q is not under cache fallback %q", scratch.Dir, cacheBase)
 	}
-	if pathWithin(scratch.Dir, workspace) {
+	if identifier.PathUnder(scratch.Dir, workspace) {
 		t.Fatalf("scratch %q is inside workspace %q", scratch.Dir, workspace)
 	}
 }

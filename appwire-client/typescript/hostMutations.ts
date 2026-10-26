@@ -17,6 +17,10 @@ import type { HostEntry, HostRow, MethodTypes, RemovedRow } from "./types.gen";
 // for a whole reconnect/ensure cycle, beyond the client's ordinary deadline.
 export const HOST_GATE_TIMEOUT_MS = 35 * 60_000;
 
+// How often a screen showing the hosts re-reads them while it is open: no host
+// lifecycle notification exists, so both apps poll at this cadence.
+export const HOST_POLL_MS = 2000;
+
 /** ErrorStaleEntry is the hub's discriminator for a guarded-mutation refusal
  * whose expected pair no longer matches the live entry (appwire.ErrorStaleEntry,
  * appwire/errors.go, spec 08 §12). The retry path matches this string, never

@@ -727,7 +727,7 @@ func TestLoadPlugin_WithInlineMCPServers(t *testing.T) {
 // TestLoadPlugin_MCPConfigWarn_InlineParseServerMapFails covers the one fatal
 // plugin MCP path: a well-formed inline mcpServers object whose entry fails
 // mcpconfig.ParseServerMap validation (here, an empty server name) used to
-// abort Load entirely (plugin.go:131-134). It must now degrade to a
+// abort Load entirely. It must now degrade to a
 // plugin-level warning: MCPConfigs stays empty for this plugin, but its
 // skills, agents, and hooks still load normally.
 func TestLoadPlugin_MCPConfigWarn_InlineParseServerMapFails(t *testing.T) {
@@ -812,7 +812,7 @@ func TestLoadPlugin_MCPConfig_CommandExpressionRefused(t *testing.T) {
 }
 
 // TestLoadPlugin_MCPConfigWarn_FileParseError covers the previously-swallowed
-// .mcp.json file parse error (plugin.go:121): a malformed .mcp.json file must
+// .mcp.json file parse error: a malformed .mcp.json file must
 // now surface as a warning instead of being silently treated the same as a
 // missing file.
 func TestLoadPlugin_MCPConfigWarn_FileParseError(t *testing.T) {
@@ -837,7 +837,7 @@ func TestLoadPlugin_MCPConfigWarn_FileParseError(t *testing.T) {
 }
 
 // TestLoadPlugin_MCPConfigWarn_MalformedInlineJSON covers the previously-
-// swallowed malformed-inline-JSON case (plugin.go:130): the manifest's
+// swallowed malformed-inline-JSON case: the manifest's
 // mcpServers value is syntactically valid JSON but not an object (a string,
 // here), so unmarshaling it into the server map fails. That must now surface
 // as a warning instead of being silently ignored.

@@ -15,7 +15,7 @@ import (
 
 // ---- subagents.go pure functions ----
 
-// TestCovHasString covers hasString (subagents.go lines 185-187).
+// TestCovHasString covers hasString.
 func TestCovHasString2(t *testing.T) {
 	t.Parallel()
 	if !hasString([]string{"a", "b", "c"}, "b") {
@@ -29,8 +29,7 @@ func TestCovHasString2(t *testing.T) {
 	}
 }
 
-// TestCovAppendUniqueStrings covers appendUniqueStrings
-// (subagents.go lines 189-197).
+// TestCovAppendUniqueStrings covers appendUniqueStrings.
 func TestCovAppendUniqueStrings2(t *testing.T) {
 	t.Parallel()
 	// Add new strings.
@@ -50,7 +49,7 @@ func TestCovAppendUniqueStrings2(t *testing.T) {
 	}
 }
 
-// TestCovRemoveStrings covers removeStrings (subagents.go lines 206-218).
+// TestCovRemoveStrings covers removeStrings.
 func TestCovRemoveStrings2(t *testing.T) {
 	t.Parallel()
 	// No removals — copy of input.
@@ -75,8 +74,7 @@ func TestCovRemoveStrings2(t *testing.T) {
 	}
 }
 
-// TestCovRootOnlySubagentTools covers rootOnlySubagentTools
-// (subagents.go lines 220-223).
+// TestCovRootOnlySubagentTools covers rootOnlySubagentTools.
 func TestCovRootOnlySubagentTools(t *testing.T) {
 	t.Parallel()
 	tools := rootOnlySubagentTools()
@@ -85,8 +83,7 @@ func TestCovRootOnlySubagentTools(t *testing.T) {
 	}
 }
 
-// TestCovIsRootOnlyJobPresenceTool covers isRootOnlyJobPresenceTool
-// (subagents.go lines 225-227).
+// TestCovIsRootOnlyJobPresenceTool covers isRootOnlyJobPresenceTool.
 func TestCovIsRootOnlyJobPresenceTool(t *testing.T) {
 	t.Parallel()
 	if !isRootOnlyJobPresenceTool("delegate") {
@@ -97,8 +94,7 @@ func TestCovIsRootOnlyJobPresenceTool(t *testing.T) {
 	}
 }
 
-// TestCovIsRootOnlySubagentTool covers isRootOnlySubagentTool
-// (subagents.go lines 229-231).
+// TestCovIsRootOnlySubagentTool covers isRootOnlySubagentTool.
 func TestCovIsRootOnlySubagentTool(t *testing.T) {
 	t.Parallel()
 	if !isRootOnlySubagentTool("delegate") {
@@ -112,8 +108,7 @@ func TestCovIsRootOnlySubagentTool(t *testing.T) {
 	}
 }
 
-// TestCovProtectedGrantTools covers protectedGrantTools and isProtectedGrantTool
-// (subagents.go lines 240-246).
+// TestCovProtectedGrantTools covers protectedGrantTools and isProtectedGrantTool.
 func TestCovProtectedGrantTools(t *testing.T) {
 	t.Parallel()
 	tools := protectedGrantTools()
@@ -128,8 +123,7 @@ func TestCovProtectedGrantTools(t *testing.T) {
 	}
 }
 
-// TestCovRemoveRootOnlySubagentTools covers removeRootOnlySubagentTools
-// (subagents.go lines 248-250).
+// TestCovRemoveRootOnlySubagentTools covers removeRootOnlySubagentTools.
 func TestCovRemoveRootOnlySubagentTools(t *testing.T) {
 	t.Parallel()
 	got := removeRootOnlySubagentTools([]string{"read_file", "delegate", "exec_command"})
@@ -138,8 +132,7 @@ func TestCovRemoveRootOnlySubagentTools(t *testing.T) {
 	}
 }
 
-// TestCovFrozenSubagentToolNames covers frozenSubagentToolNames
-// (subagents.go lines 273-284).
+// TestCovFrozenSubagentToolNames covers frozenSubagentToolNames.
 func TestCovFrozenSubagentToolNames(t *testing.T) {
 	t.Parallel()
 	// allTools=true.
@@ -169,8 +162,7 @@ func TestCovFrozenSubagentToolNames(t *testing.T) {
 	}
 }
 
-// TestCovSubagentNeedsCommunicateNudge covers subagentNeedsCommunicateNudge
-// (subagents.go lines 406-411).
+// TestCovSubagentNeedsCommunicateNudge covers subagentNeedsCommunicateNudge.
 func TestCovSubagentNeedsCommunicateNudge(t *testing.T) {
 	t.Parallel()
 	// nil agent — true (default subagent).
@@ -179,8 +171,7 @@ func TestCovSubagentNeedsCommunicateNudge(t *testing.T) {
 	}
 }
 
-// TestCovRestoreFrozenSkillBodies covers restoreFrozenSkillBodies
-// (subagents.go lines 413-434).
+// TestCovRestoreFrozenSkillBodies covers restoreFrozenSkillBodies.
 func TestCovRestoreFrozenSkillBodies(t *testing.T) {
 	t.Parallel()
 	// Both empty — nil, no error.
@@ -220,8 +211,7 @@ func TestCovRestoreFrozenSkillBodies(t *testing.T) {
 	}
 }
 
-// TestCovFollowUpProvenance covers followUpProvenance
-// (subagents.go lines 2007-2012): nil subagent and nil session.
+// TestCovFollowUpProvenance covers followUpProvenance: nil subagent and nil session.
 func TestCovFollowUpProvenance(t *testing.T) {
 	t.Parallel()
 	// nil subagent — returns clone of input.
@@ -267,8 +257,7 @@ func TestCovFollowUpProvenance(t *testing.T) {
 	}
 }
 
-// TestCovDelegateSettlementModeForRun covers delegateSettlementModeForRun
-// (subagents.go lines 1716-1727).
+// TestCovDelegateSettlementModeForRun covers delegateSettlementModeForRun.
 func TestCovDelegateSettlementModeForRun(t *testing.T) {
 	t.Parallel()
 	// cancelRequested — terminal.
@@ -298,8 +287,7 @@ func TestCovDelegateSettlementModeForRun(t *testing.T) {
 	}
 }
 
-// TestCovStableDelegateFatalRun covers stableDelegateFatalRun
-// (subagents.go lines 1729-1735).
+// TestCovStableDelegateFatalRun covers stableDelegateFatalRun.
 func TestCovStableDelegateFatalRun2(t *testing.T) {
 	t.Parallel()
 	// nil error — not fatal.
@@ -327,7 +315,7 @@ func TestCovStableDelegateFatalRun2(t *testing.T) {
 // ---- session_attention.go ----
 
 // TestCovHasPendingDelegateAttentionArmRetry covers
-// hasPendingDelegateAttentionArmRetry (session_attention.go lines 485-493).
+// hasPendingDelegateAttentionArmRetry.
 func TestCovHasPendingDelegateAttentionArmRetry_NilSession(t *testing.T) {
 	t.Parallel()
 	var s *Session
@@ -346,7 +334,7 @@ func TestCovHasPendingDelegateAttentionArmRetry_NoArms(t *testing.T) {
 }
 
 // TestCovPendingDelegateAttentionIDs_NilSession covers
-// pendingDelegateAttentionIDs (session_attention.go lines 495+).
+// pendingDelegateAttentionIDs.
 func TestCovPendingDelegateAttentionIDs_NilSession(t *testing.T) {
 	t.Parallel()
 	var s *Session
@@ -360,7 +348,7 @@ func TestCovPendingDelegateAttentionIDs_NilSession(t *testing.T) {
 }
 
 // TestCovStableDelegateRowsForSession_NilSession covers
-// stableDelegateRowsForSession (session_tools_jobs.go lines 614-635).
+// stableDelegateRowsForSession.
 func TestCovStableDelegateRowsForSession_NilSession(t *testing.T) {
 	t.Parallel()
 	if got := stableDelegateRowsForSession(nil, false); got != nil {
@@ -373,8 +361,7 @@ func TestCovStableDelegateRowsForSession_NilSession(t *testing.T) {
 	}
 }
 
-// TestCovEnsureRecoveryReader covers ensureRecoveryReader
-// (subagents.go lines 199-204).
+// TestCovEnsureRecoveryReader covers ensureRecoveryReader.
 func TestCovEnsureRecoveryReader(t *testing.T) {
 	t.Parallel()
 	// nil registry — returns names unchanged.
@@ -391,8 +378,7 @@ func TestCovEnsureRecoveryReader(t *testing.T) {
 	}
 }
 
-// TestCovLocalEnvPolicyName covers localEnvPolicyName
-// (subagents.go lines 350-365).
+// TestCovLocalEnvPolicyName covers localEnvPolicyName.
 func TestCovLocalEnvPolicyName2(t *testing.T) {
 	t.Parallel()
 	// nil env (not a LocalExecutionEnvironment) — empty string.
@@ -401,8 +387,7 @@ func TestCovLocalEnvPolicyName2(t *testing.T) {
 	}
 }
 
-// TestCovLocalEnvPolicyFromName covers localEnvPolicyFromName
-// (subagents.go lines 367-380).
+// TestCovLocalEnvPolicyFromName covers localEnvPolicyFromName.
 func TestCovLocalEnvPolicyFromName2(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -431,7 +416,7 @@ func TestCovLocalEnvPolicyFromName2(t *testing.T) {
 	}
 }
 
-// TestCovCloneMap covers cloneMap (subagents.go lines 382-395).
+// TestCovCloneMap covers cloneMap.
 func TestCovCloneMap2(t *testing.T) {
 	t.Parallel()
 	// Empty/nil — nil.
@@ -464,7 +449,7 @@ func TestCovCloneMap2(t *testing.T) {
 	}
 }
 
-// TestCovCloneShallowMap covers cloneShallowMap (subagents.go lines 397-404).
+// TestCovCloneShallowMap covers cloneShallowMap.
 func TestCovCloneShallowMap(t *testing.T) {
 	t.Parallel()
 	// Empty/nil — nil.
@@ -488,7 +473,7 @@ func TestCovCloneShallowMap(t *testing.T) {
 }
 
 // TestCovSharedWorkspaceDelegateWarning covers
-// sharedWorkspaceDelegateWarning (subagents.go lines 480-513).
+// sharedWorkspaceDelegateWarning.
 func TestCovSharedWorkspaceDelegateWarning_NilSession(t *testing.T) {
 	t.Parallel()
 	var s *Session

@@ -13,7 +13,7 @@ import (
 )
 
 // TestCovDeclaredKindResponseHeaderTimeout covers the declaredKind method
-// on responseHeaderTimeoutError (errorkind.go line 132), which is otherwise
+// on responseHeaderTimeoutError, which is otherwise
 // never called via DeclaredKind.
 func TestCovDeclaredKindResponseHeaderTimeout(t *testing.T) {
 	err := newResponseHeaderTimeoutError("", "test timeout", nil)
@@ -59,8 +59,7 @@ func TestCovDeclaredKindOnNonBearer(t *testing.T) {
 	}
 }
 
-// TestCovDeclaredKindOnQuotaExceeded covers the quotaExceededError declaredKind
-// (errorkind.go line 135).
+// TestCovDeclaredKindOnQuotaExceeded covers the quotaExceededError declaredKind.
 func TestCovDeclaredKindOnQuotaExceeded(t *testing.T) {
 	err := ErrorFromHTTPStatus("p", 400, "billing quota exceeded", nil, nil)
 	got := DeclaredKind(err)
@@ -70,7 +69,7 @@ func TestCovDeclaredKindOnQuotaExceeded(t *testing.T) {
 }
 
 // TestCovTruncateForMessageInvalidUTF8 covers the invalid-UTF-8 loop in
-// truncateForMessage (failuremessage.go lines 78-79). We craft a string
+// truncateForMessage. We craft a string
 // that starts with valid UTF-8 then has an invalid byte boundary at the
 // cut point.
 func TestCovTruncateForMessageInvalidUTF8(t *testing.T) {
@@ -95,7 +94,7 @@ func TestCovTruncateForMessageInvalidUTF8(t *testing.T) {
 }
 
 // TestCovRasterMediaTypeGIFFullDecodeError covers the gif.DecodeAll error
-// path in RasterMediaType (media_utils.go lines 84-85).
+// path in RasterMediaType.
 func TestCovRasterMediaTypeGIFFullDecodeError(t *testing.T) {
 	// Create a GIF that image.Decode accepts but gif.DecodeAll rejects.
 	// A truncated multi-frame GIF can achieve this: the first frame decodes
@@ -113,8 +112,7 @@ func TestCovRasterMediaTypeGIFFullDecodeError(t *testing.T) {
 	}
 }
 
-// TestCovRasterMediaTypeJPEG covers the jpeg format case in RasterMediaType
-// (media_utils.go line 91).
+// TestCovRasterMediaTypeJPEG covers the jpeg format case in RasterMediaType.
 func TestCovRasterMediaTypeJPEG(t *testing.T) {
 	jpegData := createMinimalJPEG(t)
 	got, err := RasterMediaType(jpegData)
@@ -127,7 +125,7 @@ func TestCovRasterMediaTypeJPEG(t *testing.T) {
 }
 
 // TestCovAPITimeoutSourceForSSENonTimeout covers the non-sseReadTimeoutError
-// return path in APITimeoutSourceForSSE (sse.go line 33-34).
+// return path in APITimeoutSourceForSSE.
 func TestCovAPITimeoutSourceForSSENonTimeout(t *testing.T) {
 	got := APITimeoutSourceForSSE(errors.New("some other error"))
 	if got != APITimeoutNone {
@@ -143,8 +141,7 @@ func TestCovAPITimeoutSourceForSSETimeout(t *testing.T) {
 	}
 }
 
-// TestCovJSONInt64Float64 covers the float64 case in jsonInt64
-// (usagelimit.go line 118).
+// TestCovJSONInt64Float64 covers the float64 case in jsonInt64.
 func TestCovJSONInt64Float64(t *testing.T) {
 	v, ok := jsonInt64(float64(42.0))
 	if !ok || v != 42 {
@@ -152,8 +149,7 @@ func TestCovJSONInt64Float64(t *testing.T) {
 	}
 }
 
-// TestCovJSONInt64Int64 covers the int64 case in jsonInt64
-// (usagelimit.go line 123).
+// TestCovJSONInt64Int64 covers the int64 case in jsonInt64.
 func TestCovJSONInt64Int64(t *testing.T) {
 	v, ok := jsonInt64(int64(99))
 	if !ok || v != 99 {

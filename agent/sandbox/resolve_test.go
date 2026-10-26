@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
 
 const testHome = "/home/tester"
@@ -379,7 +381,7 @@ func assertNoRootIsMasked(t *testing.T, rp ResolvedPolicy) {
 	roots := slices.Concat(rp.FileTool.ReadRoots, rp.FileTool.WriteRoots, rp.Spawned.ReadRoots, rp.Spawned.WriteRoots)
 	for _, r := range roots {
 		for _, m := range rp.MaskedPaths {
-			if r == m || pathUnder(r, m) {
+			if r == m || identifier.PathUnder(r, m) {
 				t.Errorf("granted root %q is at/under masked path %q", r, m)
 			}
 		}
@@ -477,7 +479,7 @@ func TestCacheRootsNeverCoverTheWorktree(t *testing.T) {
 		{Home: "/home/tester", GoPath: worktree + "/gopath"},
 	} {
 		for _, r := range cacheRootsFor(ModeWorkspaceWrite, host, worktree) {
-			if pathUnder(worktree, r) || pathUnder(r, worktree) || r == host.Home {
+			if identifier.PathUnder(worktree, r) || identifier.PathUnder(r, worktree) || r == host.Home {
 				t.Errorf("cache root %q covers the worktree %q or home (host %+v)", r, worktree, host)
 			}
 		}

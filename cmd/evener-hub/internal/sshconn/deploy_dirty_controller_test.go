@@ -16,7 +16,7 @@ import (
 // A required protocol upgrade cannot compile an unrepeatable dirty controller
 // tree. That source refusal is terminal, so reconnect does not retry forever.
 // The own-executable exception is covered by TestDirtyControllerDeploysItsOwnExecutable.
-func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
+func TestDirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 	const dirty = "abc1234-dirty"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	builds := 0
@@ -125,13 +125,13 @@ func TestDeployTargetUsesSelectedExecutable(t *testing.T) {
 	}
 }
 
-// TestRound13BootstrapStartStillVerifiesAnUnverifiableBuild pins the deliberate
+// TestBootstrapStartStillVerifiesAnUnverifiableBuild pins the deliberate
 // exception the strict rule needs: a first-ever start has no predecessor process
 // to exclude (bootstrapHub refuses to start while a listener holds the address),
 // so an unstamped "dev" hub that answers with the expected version verifies even
 // when its health body carries no started_at. Without the exception no headless
 // host could ever be bootstrapped by an unstamped controller.
-func TestRound13BootstrapStartStillVerifiesAnUnverifiableBuild(t *testing.T) {
+func TestBootstrapStartStillVerifiesAnUnverifiableBuild(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	launched := false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {

@@ -102,6 +102,7 @@ func safzNewParent(t *testing.T, clk *agenttest.FakeClock, maxDepth int, childSc
 	})
 	cfg := SessionConfig{
 		MaxSubagentDepth:      maxDepth,
+		StateDir:              t.TempDir(),
 		clock:                 clk,
 		MaxToolRoundsPerInput: 6,
 		LLMSleep:              func(context.Context, time.Duration) error { return nil },
@@ -116,9 +117,10 @@ func safzNewParent(t *testing.T, clk *agenttest.FakeClock, maxDepth int, childSc
 			ScriptedAdapter: &agenttest.ScriptedAdapter{Provider: "openai", Responder: newChildResponder(childScript)},
 			models:          []registry.Model{{ID: "gpt-5"}, {ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
 		})
+		registerTestSessionNamer(cc)
 		return cc
 	}
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, cfg)
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, cfg)
 	if err != nil {
 		t.Fatalf("safzNewParent: NewSession: %v", err)
 	}

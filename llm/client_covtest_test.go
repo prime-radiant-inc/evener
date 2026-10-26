@@ -9,7 +9,7 @@ import (
 )
 
 // TestCovBeginProviderOperationNilContext covers the nil-ctx path in
-// beginProviderOperation (client.go line 274-275).
+// beginProviderOperation.
 func TestCovBeginProviderOperationNilContext(t *testing.T) {
 	c := NewClient()
 	// Register a sink middleware so the function does not return early.
@@ -34,7 +34,7 @@ func TestCovBeginProviderOperationNilContext(t *testing.T) {
 }
 
 // TestCovBeginProviderOperationNoSink covers the sink == nil early return
-// in beginProviderOperation (client.go line 286-287).
+// in beginProviderOperation.
 func TestCovBeginProviderOperationNoSink(t *testing.T) {
 	c := NewClient()
 	// No middleware or sink in context.

@@ -252,7 +252,7 @@ func TestRefusedDurableAppendAnnouncesNoBoundary(t *testing.T) {
 
 // TestWakeStandsDownWhileAUserTurnIsClaimed is the ordinary-usage race, not an
 // exotic one: inputCh holds one slot, and a job-completion wake that finds it
-// full parks a goroutine blocked on the send (server.go:768). Finish a turn
+// full parks a goroutine blocked on the send. Finish a turn
 // while a job wake is parked, then send a message, and the two race for the
 // freed slot. When the parked wake wins, the serve loop runs it while
 // ActiveTurnID is already claimed by the user's turn/start -- so the wake
@@ -314,7 +314,7 @@ func TestWakeStandsDownWhileAUserTurnIsClaimed(t *testing.T) {
 // stand-down check goes. beginRootDelegateAttentionTurn (session_lifecycle.go,
 // in processOneInput) runs ahead of acceptNotificationInput and consumes the
 // process-local wake: it clears rootAttentionWake AND cancels any scheduled
-// retry (session_attention.go:518-521). Only finishRootDelegateAttentionTurn
+// retry. Only finishRootDelegateAttentionTurn
 // re-arms it, and that is skipped unless the wake was accepted.
 //
 // So a stand-down decided after that call strands the very attention it was
@@ -392,11 +392,10 @@ func TestStandDownSettlesTheProcessingTransition(t *testing.T) {
 // TestStandDownReArmsTheWake is the delivery guarantee, and it is the assertion
 // that matters: preserving rootAttentionWake is NOT the same as the wake still
 // being deliverable, because the flag being set is exactly what suppresses a
-// new one. armRootDelegateAttention only notifies when !rootAttentionWake
-// (session_attention.go:485), scheduleRootAttentionRetryLocked returns early
+// new one. armRootDelegateAttention only notifies when !rootAttentionWake, scheduleRootAttentionRetryLocked returns early
 // while it is set (:559), and the drain loop's tail gate counts job
 // notifications alone -- peekNotifications reads s.pendingJobNotifs and nothing
-// else (session.go:700-704).
+// else.
 //
 // So a stood-down wake whose EntryNotification the serve loop already consumed
 // has nothing left to raise it. It must ask for another one on its way out.

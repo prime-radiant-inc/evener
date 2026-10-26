@@ -7,10 +7,11 @@
 // names no source), so a client reads each project's pages once and places
 // every row under the host its own `host_id` names: a session shows once,
 // however many hosts own its project.
+import { LOCAL_HOST } from "../../hostRouting";
 import type { NavigationSessionSummary, Source } from "../../types.gen";
 
 /** The source id the hub gives its own sessions; the wire spells it "local". */
-export const CONTROLLER_SOURCE_ID = "local";
+export const CONTROLLER_SOURCE_ID = LOCAL_HOST;
 
 /** A host as a group heading: the manifest's label and online flag. */
 export interface HostFacts {

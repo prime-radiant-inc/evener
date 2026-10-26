@@ -634,7 +634,7 @@ func TestCovWatchEventFilterMatches(t *testing.T) {
 
 // ---- jobs.go pure functions ----
 
-// TestCovCloneJobRecord covers cloneJobRecord (jobs.go lines 2355-2361).
+// TestCovCloneJobRecord covers cloneJobRecord.
 func TestCovCloneJobRecord(t *testing.T) {
 	t.Parallel()
 	// Nil → nil.
@@ -653,7 +653,7 @@ func TestCovCloneJobRecord(t *testing.T) {
 	}
 }
 
-// TestCovStringOutputResult covers stringOutputResult (jobs.go lines 2168-2173).
+// TestCovStringOutputResult covers stringOutputResult.
 func TestCovStringOutputResult(t *testing.T) {
 	t.Parallel()
 	// With error.
@@ -670,7 +670,7 @@ func TestCovStringOutputResult(t *testing.T) {
 	}
 }
 
-// TestCovAppendJobEvents covers appendJobEvents (jobs.go lines 265-278).
+// TestCovAppendJobEvents covers appendJobEvents.
 func TestCovAppendJobEvents(t *testing.T) {
 	t.Parallel()
 	jm := &jobManager{}
@@ -680,7 +680,7 @@ func TestCovAppendJobEvents(t *testing.T) {
 	}
 }
 
-// TestCovCurrentCausalProvenance covers currentCausalProvenance (jobs.go lines 283-288).
+// TestCovCurrentCausalProvenance covers currentCausalProvenance.
 func TestCovCurrentCausalProvenance(t *testing.T) {
 	t.Parallel()
 	// Nil manager.
@@ -712,7 +712,7 @@ func TestCovCurrentCausalProvenance(t *testing.T) {
 	}
 }
 
-// TestCovRunningJobIDs covers runningJobIDs (jobs.go lines 1444-1454).
+// TestCovRunningJobIDs covers runningJobIDs.
 func TestCovRunningJobIDs(t *testing.T) {
 	t.Parallel()
 	jm := &jobManager{running: map[string]*runningJob{}}
@@ -730,7 +730,7 @@ func TestCovRunningJobIDs(t *testing.T) {
 	}
 }
 
-// TestCovLiveWorkHandles covers liveWorkHandles (jobs.go lines 407+).
+// TestCovLiveWorkHandles covers liveWorkHandles.
 func TestCovLiveWorkHandles(t *testing.T) {
 	t.Parallel()
 	jm := &jobManager{running: map[string]*runningJob{}}
@@ -753,7 +753,7 @@ func TestCovLiveWorkHandles(t *testing.T) {
 	}
 }
 
-// TestCovLiveShellHandles covers liveShellHandles (jobs.go lines 429+).
+// TestCovLiveShellHandles covers liveShellHandles.
 func TestCovLiveShellHandles(t *testing.T) {
 	t.Parallel()
 	jm := &jobManager{running: map[string]*runningJob{}}
@@ -793,7 +793,7 @@ func TestCovLiveShellHandles(t *testing.T) {
 // ---- delegate_runtime.go pure functions ----
 
 // TestCovDelegateQuietAttentionID covers delegateQuietAttentionID and
-// delegateQuietAttentionIDForStretch (delegate_runtime.go lines 160-166).
+// delegateQuietAttentionIDForStretch.
 func TestCovDelegateQuietAttentionID(t *testing.T) {
 	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 2}
@@ -808,8 +808,7 @@ func TestCovDelegateQuietAttentionID(t *testing.T) {
 	}
 }
 
-// TestCovDelegateQuietAttentionContent covers delegateQuietAttentionContent
-// (delegate_runtime.go lines 168-174).
+// TestCovDelegateQuietAttentionContent covers delegateQuietAttentionContent.
 func TestCovDelegateQuietAttentionContent(t *testing.T) {
 	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
@@ -822,7 +821,7 @@ func TestCovDelegateQuietAttentionContent(t *testing.T) {
 
 // ---- subagents.go pure functions ----
 
-// TestCovFatalRunGatedSnapshot covers fatalRunGatedSnapshot (subagents.go lines 1456-1463).
+// TestCovFatalRunGatedSnapshot covers fatalRunGatedSnapshot.
 func TestCovFatalRunGatedSnapshot(t *testing.T) {
 	t.Parallel()
 	// Nil subagent.
@@ -844,7 +843,7 @@ func TestCovFatalRunGatedSnapshot(t *testing.T) {
 	}
 }
 
-// TestCovChildFatalRunGated covers childFatalRunGated (subagents.go lines 1465-1471).
+// TestCovChildFatalRunGated covers childFatalRunGated.
 func TestCovChildFatalRunGated(t *testing.T) {
 	t.Parallel()
 	// Nil session.
@@ -872,8 +871,7 @@ func TestCovChildFatalRunGated(t *testing.T) {
 
 // ---- session_attention.go pure functions ----
 
-// TestCovDelegateTranscriptPathFromRef covers delegateTranscriptPathFromRef
-// (session_attention.go lines 22-31).
+// TestCovDelegateTranscriptPathFromRef covers delegateTranscriptPathFromRef.
 func TestCovDelegateTranscriptPathFromRef(t *testing.T) {
 	t.Parallel()
 	// Valid ref with empty projectID.
@@ -905,8 +903,7 @@ func TestCovDelegateTranscriptPathFromRef(t *testing.T) {
 
 // ---- jobs_nested.go pure functions ----
 
-// TestCovKeepIncomingDescendantRow covers keepIncomingDescendantRow
-// (jobs_nested.go lines 122-127).
+// TestCovKeepIncomingDescendantRow covers keepIncomingDescendantRow.
 func TestCovKeepIncomingDescendantRow(t *testing.T) {
 	t.Parallel()
 	// Not seen → always keep.

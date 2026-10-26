@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
 
 // These tests drive the BWRAP argv builder and its git-surface preparation from
@@ -16,7 +18,7 @@ import (
 
 func gitSurfaceFixture(t *testing.T, kind WorkspaceKind, mode Mode) (ResolvedPolicy, string) {
 	t.Helper()
-	home := resolveCleanPath(t.TempDir())
+	home := identifier.ResolveClean(t.TempDir())
 	cwd := MaterializeWorkspace(t, kind)
 	net := true
 	rp, err := Resolve(SandboxPolicy{Mode: mode, Network: &net}, bwrapFacts(home), cwd)
@@ -166,7 +168,7 @@ func TestPrepareGitSurfacesSkipsReadOnlyMode(t *testing.T) {
 // preparation and must not write into the user's repo.
 func TestPrepareGitSurfacesNotRunForSeatbelt(t *testing.T) {
 	requireGitHarness(t)
-	home := resolveCleanPath(t.TempDir())
+	home := identifier.ResolveClean(t.TempDir())
 	cwd := MaterializeWorkspace(t, MainCheckout)
 	net := true
 	facts := HostFacts{OS: "darwin", Home: home, SandboxExecPath: "/usr/bin/sandbox-exec"}
@@ -271,7 +273,7 @@ func governingMount(mounts []bwrapMount, path string) (bwrapMount, bool) {
 	var found bwrapMount
 	ok := false
 	for _, m := range mounts {
-		if m.target == path || pathUnder(path, m.target) {
+		if m.target == path || identifier.PathUnder(path, m.target) {
 			found, ok = m, true
 		}
 	}
@@ -333,7 +335,7 @@ func TestBwrapProtectedRebindsFollowCommonDirGrant(t *testing.T) {
 	}
 	protectedInCommon := 0
 	for _, p := range rp.Git.ProtectedPaths {
-		if !pathUnder(p, cd) || p == cd {
+		if !identifier.PathUnder(p, cd) || p == cd {
 			continue
 		}
 		protectedInCommon++

@@ -54,6 +54,17 @@ export {
   watchName,
   watchRowID,
 } from "./activityRows";
+export type {
+  AnsiByteRow,
+  AnsiByteRows,
+  AnsiByteState,
+  AnsiColor,
+  AnsiLine,
+  AnsiNamedColor,
+  AnsiRun,
+  AnsiTailSnapshot,
+} from "./ansi";
+export { ANSI_BYTE_FRAGMENT_BYTES, AnsiTailBuffer, parseAnsiByteRows, parseAnsiLines } from "./ansi";
 export {
   APPROVAL_DECISION_EVENT_KIND,
   type ApprovalDecision,
@@ -159,11 +170,13 @@ export {
   endpointUncheckable,
   FINGERPRINT_UNAVAILABLE_ERROR,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+  filterModels,
   fingerprintUnavailable,
   fromEnvironment,
   groupByProvider,
   isEndpointConflict,
   keylessByDesign,
+  MODEL_LIST_CAP,
   renameLeavesEnvironmentRow,
   safeCredentialTestMessage,
   safeCredentialTestResult,
@@ -293,6 +306,7 @@ export {
   HOST_ENTRY_FIELD_TEXT,
   HOST_ENTRY_FIELD_WHEN_EMPTY,
   HOST_GATE_TIMEOUT_MS,
+  HOST_POLL_MS,
   hostChangedSinceOpened,
   rootsFromText,
   rootsToText,
@@ -472,6 +486,7 @@ export {
   memoryWritePage,
   memoryWriteSummary,
 } from "./memorySteps";
+export { MERMAID_FORBID_TAGS } from "./mermaidForbidTags";
 export type {
   CapabilitySource,
   HistoryState,

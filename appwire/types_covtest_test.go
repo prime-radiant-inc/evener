@@ -14,7 +14,7 @@ type covWSTransportPingError struct{}
 
 func (*covWSTransportPingError) Error() string { return "ping failed" }
 
-// TestClientMutationTurnID covers ClientMutationTurnID (types.go:696), a pure
+// TestClientMutationTurnID covers ClientMutationTurnID, a pure
 // format function with no existing test in the default build.
 func TestCovClientMutationTurnID(t *testing.T) {
 	cases := []struct {

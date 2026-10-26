@@ -17,7 +17,7 @@ import (
 // Unreachable statements (per coverage-floors.txt comment):
 //
 //   project.go:146 — ValidateProjectID's base62 suffix loop error return:
-//     The preceding character loop (project.go:136) rejects any byte that is
+//     The preceding character loop rejects any byte that is
 //     not an ASCII alphanumeric or '-'. When that loop passes, every byte in
 //     value is alphanumeric or '-'. The suffix is the substring after the last
 //     '-', so it contains only alphanumerics. isBase62 is identical to
@@ -64,8 +64,8 @@ func TestCovGitBinaryMainRootLocal_WorktreeCandidateHit(t *testing.T) {
 	runGit(t, root, "config", "user.name", "t")
 
 	// Create a submodule-shaped gitdir: a bare repo at root/.git/modules/sub.
-	// isSubmoduleGitDirShape recognizes the .git/modules/<name> path, so
-	// validateSubmodulePointer passes and mainCheckoutLocal dispatches to
+	// IsSubmoduleGitDirShape recognizes the .git/modules/<name> path, so
+	// ValidateSubmodulePointer passes and mainCheckoutLocal dispatches to
 	// gitBinaryMainRootLocal instead of erroring.
 	modulesDir := filepath.Join(root, ".git", "modules", "sub")
 	mustDir(t, modulesDir)
@@ -84,7 +84,7 @@ func TestCovGitBinaryMainRootLocal_WorktreeCandidateHit(t *testing.T) {
 
 	// mainCheckoutLocal(work): .git is a file (not a dir), the pointer is not a
 	// worktrees-shape pointer (MainRootFromGitdirPointer returns false), but it
-	// is a submodule shape (validateSubmodulePointer passes), so control reaches
+	// is a submodule shape (ValidateSubmodulePointer passes), so control reaches
 	// gitBinaryMainRootLocal. There git rev-parse --git-common-dir returns
 	// root/.git, MainRootCandidateFromCommonDir gives root, and root/.git is a
 	// directory resolving to common — so line 201 returns candidate=root.

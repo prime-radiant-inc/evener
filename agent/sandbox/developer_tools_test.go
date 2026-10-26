@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
 
 // darwinHostWithDeveloperTools is a Seatbelt-capable Mac whose probe found the
@@ -140,7 +142,7 @@ func TestDeveloperToolRootsRefuseSharedTrees(t *testing.T) {
 	// as a developer root — so its presence here is not a guard failure. What must
 	// not happen is any root ABOVE it appearing.
 	for _, root := range rp.Spawned.ReadRoots {
-		if root != cwd && pathUnder(cwd, root) {
+		if root != cwd && identifier.PathUnder(cwd, root) {
 			t.Errorf("a granted root %q is an ancestor of the worktree %q", root, cwd)
 		}
 	}

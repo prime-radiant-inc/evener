@@ -28,6 +28,7 @@ import (
 	"primeradiant.com/evener/execsupport/orphanpipe"
 	"primeradiant.com/evener/execsupport/procgroup"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/identifier"
 )
 
 // EnvVarPolicy controls which environment variables are inherited by child processes.
@@ -3489,12 +3490,7 @@ func (e *LocalExecutionEnvironment) ensureUnderRoot(abs string) error {
 // outside. The fd-anchored Unix path performs the final race-safe decision when
 // a scratch target is actually opened.
 func pathWithinRoot(abs, root string) bool {
-	abs = resolveSymlinksBestEffort(abs)
-	root = resolveSymlinksBestEffort(root)
-	if abs == root {
-		return true
-	}
-	return strings.HasPrefix(abs, root+string(filepath.Separator))
+	return identifier.PathUnder(resolveSymlinksBestEffort(abs), resolveSymlinksBestEffort(root))
 }
 
 // EnsureCommandWorkingDirectory applies workspace containment to command cwd

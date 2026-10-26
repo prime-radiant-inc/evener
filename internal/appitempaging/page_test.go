@@ -291,14 +291,14 @@ func makeCandidates(n int, turnID string) []TranscriptItemCandidate {
 func TestComparePositionOrdersBySub(t *testing.T) {
 	older := appwire.ThreadItemPosition{Entry: 3, Item: appwire.NoticeAnchorItem, Sub: 1}
 	newer := appwire.ThreadItemPosition{Entry: 3, Item: appwire.NoticeAnchorItem, Sub: 2}
-	if got := comparePosition(older, newer); got != -1 {
-		t.Errorf("comparePosition(older, newer) = %d, want -1", got)
+	if got := ComparePosition(older, newer); got != -1 {
+		t.Errorf("ComparePosition(older, newer) = %d, want -1", got)
 	}
-	if got := comparePosition(newer, older); got != 1 {
-		t.Errorf("comparePosition(newer, older) = %d, want 1", got)
+	if got := ComparePosition(newer, older); got != 1 {
+		t.Errorf("ComparePosition(newer, older) = %d, want 1", got)
 	}
-	if got := comparePosition(older, older); got != 0 {
-		t.Errorf("comparePosition(equal) = %d, want 0", got)
+	if got := ComparePosition(older, older); got != 0 {
+		t.Errorf("ComparePosition(equal) = %d, want 0", got)
 	}
 }
 
@@ -326,5 +326,25 @@ func TestRegroupTurnFragmentsSharesNoPointersWithCandidates(t *testing.T) {
 	}
 	if turns[0].StartedAt == candidates[0].Turn.StartedAt {
 		t.Fatal("regrouped turn aliases the candidate turn's pointers")
+	}
+}
+
+func TestCandidatesBeforeKeepsNewestOlderCandidates(t *testing.T) {
+	at := func(entry uint64, sub uint32) TranscriptItemCandidate {
+		return TranscriptItemCandidate{Position: appwire.ThreadItemPosition{Entry: entry, Item: appwire.NoticeAnchorItem, Sub: sub}}
+	}
+	window := []TranscriptItemCandidate{at(3, 0), at(3, 1), at(3, 2), at(4, 0)}
+	boundary := at(3, 2).Position
+
+	older := CandidatesBefore(window, boundary, len(window))
+	if len(older) != 2 || older[0].Position.Sub != 0 || older[1].Position.Sub != 1 {
+		t.Fatalf("candidates before sub 2 = %+v, want subs 0 and 1", older)
+	}
+	if trimmed := CandidatesBefore(window, boundary, 1); len(trimmed) != 1 || trimmed[0].Position.Sub != 1 {
+		t.Fatalf("limit 1 = %+v, want the newest older candidate", trimmed)
+	}
+	older[0] = at(9, 9)
+	if window[0].Position.Entry != 3 {
+		t.Fatal("result aliases the input window")
 	}
 }

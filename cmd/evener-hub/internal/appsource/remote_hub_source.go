@@ -1,7 +1,6 @@
 package appsource
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -977,7 +976,7 @@ func validateRemotePageCursor(next string, candidates []appitempaging.Transcript
 //     rotate or re-cache the retained window under a live controller cursor;
 //   - the page must make strict backward progress past the boundary the remote was
 //     asked to continue from. Items the remote re-reports at or above that boundary
-//     are dropped rather than re-served, exactly as localDaemonCandidatesBefore
+//     are dropped rather than re-served, exactly as the local engine
 //     drops them, and a page with nothing older is stale: a repeated page would
 //     otherwise be cached and mint a controller cursor that never advances.
 func validateRemoteContinuationPage(
@@ -1004,7 +1003,7 @@ func validateRemoteContinuationPage(
 	}
 	older := make([]appitempaging.TranscriptItemCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		if remotePositionCompare(candidate.Position, before) >= 0 {
+		if appitempaging.ComparePosition(candidate.Position, before) >= 0 {
 			continue
 		}
 		older = append(older, candidate)
@@ -1065,7 +1064,7 @@ func remoteContiguousPrefix(state remoteItemPagingState) []appitempaging.Transcr
 	upper := state.spans[index].upper
 	prefix := len(state.candidates)
 	for position, candidate := range state.candidates {
-		if remotePositionCompare(candidate.Position, upper) > 0 {
+		if appitempaging.ComparePosition(candidate.Position, upper) > 0 {
 			prefix = position
 			break
 		}
@@ -1077,7 +1076,7 @@ func remoteContiguousPrefix(state remoteItemPagingState) []appitempaging.Transcr
 // -1 when no recorded run does.
 func remoteSpanContaining(spans []remoteItemSpan, position appwire.ThreadItemPosition) int {
 	for index, span := range spans {
-		if remotePositionCompare(span.lower, position) <= 0 && remotePositionCompare(position, span.upper) <= 0 {
+		if appitempaging.ComparePosition(span.lower, position) <= 0 && appitempaging.ComparePosition(position, span.upper) <= 0 {
 			return index
 		}
 	}
@@ -1086,7 +1085,7 @@ func remoteSpanContaining(spans []remoteItemSpan, position appwire.ThreadItemPos
 
 // remoteSpanContains reports whether an observed run covers position.
 func remoteSpanContains(span remoteItemSpan, position appwire.ThreadItemPosition) bool {
-	return remotePositionCompare(span.lower, position) <= 0 && remotePositionCompare(position, span.upper) <= 0
+	return appitempaging.ComparePosition(span.lower, position) <= 0 && appitempaging.ComparePosition(position, span.upper) <= 0
 }
 
 // remoteCandidateAt returns the window's candidate at position, if it holds one.
@@ -1109,27 +1108,6 @@ func remoteItemPageHead(candidates []appitempaging.TranscriptItemCandidate) (app
 	return candidates[len(candidates)-1].Position, true
 }
 
-// remotePositionCompare orders two positions the way the paging package does:
-// negative when a is older, zero when equal, positive when newer.
-func remotePositionCompare(a, b appwire.ThreadItemPosition) int {
-	return cmp.Or(cmp.Compare(a.Entry, b.Entry), cmp.Compare(a.Item, b.Item), cmp.Compare(a.Sub, b.Sub))
-}
-
-// remoteCandidatesBefore keeps only the candidates strictly older than before,
-// for clipping a remote before page to the boundary it was fetched with.
-func remoteCandidatesBefore(candidates []appitempaging.TranscriptItemCandidate, before appwire.ThreadItemPosition) []appitempaging.TranscriptItemCandidate {
-	// Allocate rather than reuse the backing array: the caller still reads the
-	// original page for the contradiction check, and aliasing the two would let
-	// the clip overwrite it.
-	older := make([]appitempaging.TranscriptItemCandidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		if remotePositionCompare(candidate.Position, before) < 0 {
-			older = append(older, candidate)
-		}
-	}
-	return older
-}
-
 // remoteItemPageIdentity chooses the controller-owned identity for a fresh
 // remote page. The incarnation is reused while the page's newest position is
 // not older than the retained one AND the page does not contradict the retained
@@ -1149,7 +1127,7 @@ func (s *RemoteHubSource) remoteItemPageIdentity(key string, candidates []appite
 	if !hasHead {
 		return s.mintRemoteItemIdentity(key), appwire.ThreadItemPosition{}, false
 	}
-	if state, ok := s.itemPaging.peek(key); ok && state.hasHead && remotePositionCompare(head, state.head) >= 0 {
+	if state, ok := s.itemPaging.peek(key); ok && state.hasHead && appitempaging.ComparePosition(head, state.head) >= 0 {
 		if _, compatible := remoteMergeCandidates(state.candidates, candidates); compatible {
 			return state.identity, head, true
 		}
@@ -1203,7 +1181,7 @@ func remoteMergeCandidates(retained, observed []appitempaging.TranscriptItemCand
 	if !overlap {
 		retainedNewest := retained[len(retained)-1]
 		observedOldest := observed[0]
-		if remotePositionCompare(retainedNewest.Position, observedOldest.Position) < 0 &&
+		if appitempaging.ComparePosition(retainedNewest.Position, observedOldest.Position) < 0 &&
 			remoteForwardMergeCutsItems(retainedNewest, observedOldest) {
 			// Either fragment is cut mid-turn: items between the two pages exist and
 			// were never returned, so the union cannot be served soundly.
@@ -1211,7 +1189,7 @@ func remoteMergeCandidates(retained, observed []appitempaging.TranscriptItemCand
 		}
 	}
 	slices.SortFunc(merged, func(a, b appitempaging.TranscriptItemCandidate) int {
-		return remotePositionCompare(a.Position, b.Position)
+		return appitempaging.ComparePosition(a.Position, b.Position)
 	})
 	return merged, true
 }
@@ -1294,7 +1272,7 @@ func remoteItemSpansAfterObserving(
 	merged := make([]remoteItemSpan, 0, len(remaining)+1)
 	inserted := false
 	for _, span := range remaining {
-		if !inserted && remotePositionCompare(frontier.upper, span.lower) < 0 {
+		if !inserted && appitempaging.ComparePosition(frontier.upper, span.lower) < 0 {
 			merged = append(merged, frontier)
 			inserted = true
 		}
@@ -1318,10 +1296,10 @@ func remoteItemSpanJoins(
 		return true
 	}
 	older, newer := run, span
-	if remotePositionCompare(span.upper, run.lower) < 0 {
+	if appitempaging.ComparePosition(span.upper, run.lower) < 0 {
 		older, newer = span, run
 	}
-	if remotePositionCompare(older.upper, newer.lower) >= 0 {
+	if appitempaging.ComparePosition(older.upper, newer.lower) >= 0 {
 		return true
 	}
 	if !remotePositionsAdjacent(older.upper, newer.lower) {
@@ -1334,10 +1312,10 @@ func remoteItemSpanJoins(
 // remoteItemSpanUnion returns the smallest run covering both.
 func remoteItemSpanUnion(left, right remoteItemSpan) remoteItemSpan {
 	lower, upper := left.lower, left.upper
-	if remotePositionCompare(right.lower, lower) < 0 {
+	if appitempaging.ComparePosition(right.lower, lower) < 0 {
 		lower = right.lower
 	}
-	if remotePositionCompare(right.upper, upper) > 0 {
+	if appitempaging.ComparePosition(right.upper, upper) > 0 {
 		upper = right.upper
 	}
 	return remoteItemSpan{lower: lower, upper: upper}
@@ -1595,7 +1573,7 @@ func (s *RemoteHubSource) recordRemoteBeforePage(
 		}
 		return ItemCandidateResult{Identity: s.mintRemoteItemIdentity(key), Exhausted: true, History: history}, nil
 	}
-	older := remoteCandidatesBefore(page, before)
+	older := appitempaging.CandidatesBefore(page, before, len(page))
 	if len(older) == 0 {
 		// Only the boundary item came back. Nothing is served, but a contradiction
 		// on that item is still a rewrite under the retained identity: rotate so

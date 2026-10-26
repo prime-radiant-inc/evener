@@ -317,24 +317,14 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 			// The reply carrying this held result was abandoned.
 			c.restoreHeldClaimLocked(receipt.heldClaim)
 		}
-		if c.stop != nil {
-			if _, tracked := c.stop.deliveries[token]; tracked {
-				delete(c.stop.deliveries, token)
-				c.signalStopProgressLocked()
-			}
-		}
+		untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
 		c.evidenceVersion++
 		return delegateMutationPlans{}, nil
 	}
 	aggregate := c.durable[receipt.delegateID]
 	if aggregate == nil || len(aggregate.PendingDeliveries) == 0 || aggregate.PendingDeliveries[0].DeliveryID != token.deliveryID {
 		delete(c.deliveries, token.processID)
-		if c.stop != nil {
-			if _, tracked := c.stop.deliveries[token]; tracked {
-				delete(c.stop.deliveries, token)
-				c.signalStopProgressLocked()
-			}
-		}
+		untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
 		c.evidenceVersion++
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
@@ -367,12 +357,7 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 		c.noteDelegateAttentionLocked(receipt.ownerID, attentionID)
 	}
 	delete(c.deliveries, token.processID)
-	if c.stop != nil {
-		if _, tracked := c.stop.deliveries[token]; tracked {
-			delete(c.stop.deliveries, token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
 	c.evidenceVersion++
 	plans := delegateMutationPlans{}
 	if ownerChanged {

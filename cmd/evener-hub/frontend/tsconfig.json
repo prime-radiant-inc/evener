@@ -42,7 +42,8 @@
       "vitest": ["./node_modules/vitest"],
       "@testing-library/react": ["./node_modules/@testing-library/react"],
       "tinykeys": ["./node_modules/tinykeys"],
-      "tweetnacl": ["./node_modules/tweetnacl"]
+      "tweetnacl": ["./node_modules/tweetnacl"],
+      "anser": ["./node_modules/anser"]
     }
   },
   // The package is in this program in its own right, not only through the app

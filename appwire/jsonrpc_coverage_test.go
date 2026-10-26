@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestMessageKind covers every Kind() branch (jsonrpc.go:123-136).
+// TestMessageKind covers every Kind() branch.
 func TestMessageKind(t *testing.T) {
 	id := NewIntID(1)
 	cases := []struct {
@@ -26,7 +26,7 @@ func TestMessageKind(t *testing.T) {
 	}
 }
 
-// TestMessageIDString covers every IDString() branch (jsonrpc.go:138-149):
+// TestMessageIDString covers every IDString() branch:
 // request, response, and error frames return their id; a notification (and an
 // empty message) returns "".
 func TestMessageIDString(t *testing.T) {
@@ -50,7 +50,7 @@ func TestMessageIDString(t *testing.T) {
 }
 
 // TestMessageUnmarshalDispatch covers each decode branch in
-// Message.UnmarshalJSON (jsonrpc.go:165-192): error, result, request
+// Message.UnmarshalJSON: error, result, request
 // (method+id), notification (method only), and the invalid default.
 func TestMessageUnmarshalDispatch(t *testing.T) {
 	cases := []struct {
@@ -102,8 +102,7 @@ func TestMessageUnmarshalDispatch(t *testing.T) {
 	})
 }
 
-// TestMessageMarshalDispatch covers each branch of Message.MarshalJSON
-// (jsonrpc.go:215-227): the four populated frame kinds round-trip and an empty
+// TestMessageMarshalDispatch covers each branch of Message.MarshalJSON: the four populated frame kinds round-trip and an empty
 // Message is a marshal error.
 func TestMessageMarshalDispatch(t *testing.T) {
 	id := NewIntID(7)

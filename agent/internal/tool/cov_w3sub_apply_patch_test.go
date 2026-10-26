@@ -12,7 +12,7 @@ import (
 // a rename onto a non-empty directory) inside an isolated t.TempDir.
 
 // addFileOp.apply returns the MkdirAll error when a path component is an
-// existing regular file (apply_patch.go:48).
+// existing regular file.
 func TestW3Sub_ApplyPatch_AddFile_MkdirAllError(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "blocker"), []byte("x"), 0o644); err != nil {
@@ -25,7 +25,7 @@ func TestW3Sub_ApplyPatch_AddFile_MkdirAllError(t *testing.T) {
 }
 
 // addFileOp.apply returns the WriteFile error when the target path is an
-// existing directory (apply_patch.go:55).
+// existing directory.
 func TestW3Sub_ApplyPatch_AddFile_WriteFileError(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "adir"), 0o755); err != nil {
@@ -47,7 +47,7 @@ func TestW3Sub_ApplyPatch_UpdateTraversalRejected(t *testing.T) {
 }
 
 // updateFileOp.apply falls back to searching from pos when the @@ hint
-// narrows the search past the actual sequence location (apply_patch.go:113).
+// narrows the search past the actual sequence location.
 func TestW3Sub_ApplyPatch_UpdateHintFallback(t *testing.T) {
 	dir := t.TempDir()
 	// "apple" sits before the "HINT" line, so the hint narrows searchStart to
@@ -69,7 +69,7 @@ func TestW3Sub_ApplyPatch_UpdateHintFallback(t *testing.T) {
 }
 
 // updateFileOp.apply returns the WriteFile error when the target file is
-// readable (ReadFile succeeds) but not writable (apply_patch.go:139).
+// readable (ReadFile succeeds) but not writable.
 func TestW3Sub_ApplyPatch_UpdateWriteFileError(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root ignores file permission bits")
@@ -98,7 +98,7 @@ func TestW3Sub_ApplyPatch_MoveToTraversalRejected(t *testing.T) {
 }
 
 // updateFileOp.apply returns the destination MkdirAll error when a Move-to
-// path component is an existing regular file (apply_patch.go:148).
+// path component is an existing regular file.
 func TestW3Sub_ApplyPatch_MoveToMkdirAllError(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "src.txt"), []byte("apple\n"), 0o644); err != nil {
@@ -114,7 +114,7 @@ func TestW3Sub_ApplyPatch_MoveToMkdirAllError(t *testing.T) {
 }
 
 // updateFileOp.apply returns the Rename error when the Move-to destination is
-// an existing non-empty directory (apply_patch.go:151).
+// an existing non-empty directory.
 func TestW3Sub_ApplyPatch_MoveToRenameError(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "src.txt"), []byte("apple\n"), 0o644); err != nil {

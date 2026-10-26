@@ -1449,7 +1449,7 @@ func TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering(t *testing.T) {
 }
 
 // TestAskUser_SteeringCarrierClaimAnswersAskFailsClosedForUnknownProvenance
-// covers RoboRev #1905 round 1's Low (session_tools_ask.go:117):
+// covers RoboRev #1905 round 1's Low:
 // steeringCarrierClaimAnswersAsk read a MISSING client-mutation journal
 // record the same as a present-but-kindless one and answered true either
 // way, so a carrier claim whose journal entry was lost (or not yet visible)
@@ -2684,7 +2684,7 @@ func TestAskUser_HumanNoteDuringPendingAskDoesNotResolveIt(t *testing.T) {
 }
 
 // TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn
-// covers RoboRev #1806 round 4's Medium (session_tools_ask.go:323): a
+// covers RoboRev #1806 round 4's Medium: a
 // steering turn persisted before SteeringKind was stamped carries no kind of
 // its own, so a legacy human-note turn looks like an ordinary (kindless)
 // answering steer and wrongly resolves a pending ask on restore. The
@@ -2827,7 +2827,7 @@ func TestAskUser_RestoreClassifiesAKindlessProvenancelessHumanNoteByItsTextShape
 }
 
 // TestAcceptSteeringCarrierInput_PanicMidDrainStillClearsTheClaim covers
-// RoboRev #1806 round 4's Low (session_lifecycle.go:2733-2735):
+// RoboRev #1806 round 4's Low:
 // setSteeringCarrierClaimDrain(id) / injectDrainedSteering() /
 // setSteeringCarrierClaimDrain("") cleared without defer, so a panic between
 // the two calls leaked the claim id — a later unrelated
@@ -3168,8 +3168,7 @@ func TestAskUser_RecordFailedSteeringSelectionDoesNotTagAHumanNoteClaim(t *testi
 }
 
 // TestAskUser_RestoreDoesNotResolveAcrossASuccessfulHumanNoteCarrierCompletion
-// covers the open Medium from RoboRev #1806's round-6 panel
-// (session_tools_ask.go:539-542): a successful human-note carrier does not
+// covers the open Medium from RoboRev #1806's round-6 panel: a successful human-note carrier does not
 // clear askPending live (steeringCarrierClaimAnswersAsk skips the entry
 // clear, and the note itself is not an answering steer per
 // steeringAnswersAsk), but its round still runs a real model
@@ -3666,7 +3665,7 @@ func TestAskUser_SteeringInjectedNeverObservesAskPendingStillTrue(t *testing.T) 
 }
 
 // TestAskUser_ConsumeSteeringMessageEmitsInjectedBeforeAdmissionWarning covers
-// RoboRev #1905 round 1's Medium (session_queue.go:1257): round 3's original
+// RoboRev #1905 round 1's Medium: round 3's original
 // intent was only to move clearAskPendingForResolvingSteer ahead of
 // EventSteeringInjected, but the change also moved admitPreparedSkillSelection
 // and unparkSteering ahead of the emit, flipping the observable event order
@@ -3937,9 +3936,8 @@ func TestAskUser_RestoreRederivesIdleAfterInterruptedAsk(t *testing.T) {
 // The restore tests above prove deriveRestoredState re-derives SessionAwaiting
 // after a restart with an unanswered ask_user question. That alone is not
 // enough: every hold keyed on the pending SET rather than raw state — the
-// entry gate (session_lifecycle.go:453), the goal engine's arm-don't-kick
-// paths (session_goal.go:61,:246), and Compact's guard
-// (session_compaction.go:30) — reads len(s.askPending), which stayed empty
+// entry gate, the goal engine's arm-don't-kick
+// paths (session_goal.go:61,:246), and Compact's guard — reads len(s.askPending), which stayed empty
 // across every restore before this fix (askPending was written only by the
 // live ask_user Exec path and cleared at turn entry, session_lifecycle.go:783).
 // A restored session with a genuinely pending question therefore had every
@@ -4261,7 +4259,7 @@ func TestAskUser_RestoreNeedsResponseRestKeepsPendingEmptyAndGoalKicks(t *testin
 }
 
 // TestAskUser_RestoreRebuildsPendingThenReplyClears covers the turn-entry
-// clear (session_lifecycle.go:783): once a restored session with a rebuilt
+// clear: once a restored session with a rebuilt
 // pending set receives the user's reply, the pending set must clear exactly
 // as it does live (spec §5.2) — proving the rebuilt set is a real, live
 // askPending and not some restore-only shadow the ordinary clear path

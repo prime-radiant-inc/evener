@@ -6,7 +6,7 @@ import (
 )
 
 // TestWithQueuedClientMutationAndExtraction covers withQueuedClientMutation
-// and queuedClientMutationFromContext (session_queue.go:29-40).
+// and queuedClientMutationFromContext.
 func TestWithQueuedClientMutationAndExtraction(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -28,7 +28,7 @@ func TestWithQueuedClientMutationAndExtraction(t *testing.T) {
 }
 
 // TestWithQueuedInputDrainOnInterrupt covers WithQueuedInputDrainOnInterrupt
-// and WithQueuedInputDrainOnInterruptHandler (session_queue.go:49-72).
+// and WithQueuedInputDrainOnInterruptHandler.
 func TestWithQueuedInputDrainOnInterrupt(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -70,8 +70,7 @@ func TestWithQueuedInputDrainOnInterrupt(t *testing.T) {
 	}
 }
 
-// TestSteeringInjectedDataFromMessage covers steeringInjectedDataFromMessage
-// (session_queue.go:98-107).
+// TestSteeringInjectedDataFromMessage covers steeringInjectedDataFromMessage.
 func TestSteeringInjectedDataFromMessage(t *testing.T) {
 	t.Parallel()
 	msg := steeringMessage{

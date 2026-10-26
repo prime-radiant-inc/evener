@@ -17,8 +17,7 @@ import (
 
 // ---- session_tools_worktree.go ----
 
-// TestCovWriteWorktreeSidecar covers writeWorktreeSidecar
-// (session_tools_worktree.go lines 55-60): the hook-seam path and the
+// TestCovWriteWorktreeSidecar covers writeWorktreeSidecar: the hook-seam path and the
 // production path.
 func TestCovWriteWorktreeSidecar(t *testing.T) {
 	t.Parallel()
@@ -37,8 +36,7 @@ func TestCovWriteWorktreeSidecar(t *testing.T) {
 	}
 }
 
-// TestCovDeleteWorktreeSidecar covers deleteWorktreeSidecar
-// (session_tools_worktree.go lines 62-67).
+// TestCovDeleteWorktreeSidecar covers deleteWorktreeSidecar.
 func TestCovDeleteWorktreeSidecar(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -56,8 +54,7 @@ func TestCovDeleteWorktreeSidecar(t *testing.T) {
 	}
 }
 
-// TestCovUpdateWorktreeSidecar covers updateWorktreeSidecar
-// (session_tools_worktree.go lines 69-74): the hook-seam path and the
+// TestCovUpdateWorktreeSidecar covers updateWorktreeSidecar: the hook-seam path and the
 // production path.
 func TestCovUpdateWorktreeSidecar(t *testing.T) {
 	t.Parallel()
@@ -84,8 +81,7 @@ func TestCovUpdateWorktreeSidecar(t *testing.T) {
 	}
 }
 
-// TestCovProjectIsGitCheckout covers projectIsGitCheckout
-// (session_tools_worktree.go lines 701-707).
+// TestCovProjectIsGitCheckout covers projectIsGitCheckout.
 func TestCovProjectIsGitCheckout(t *testing.T) {
 	t.Parallel()
 	// Empty canonical path — false.
@@ -108,8 +104,7 @@ func TestCovProjectIsGitCheckout(t *testing.T) {
 	}
 }
 
-// TestCovWorktreeRootForProject covers worktreeRootForProject
-// (session_tools_worktree.go lines 683-691).
+// TestCovWorktreeRootForProject covers worktreeRootForProject.
 func TestCovWorktreeRootForProject(t *testing.T) {
 	s := &Session{}
 	// Empty project — error.
@@ -146,8 +141,7 @@ func TestCovWorktreeRootForProject(t *testing.T) {
 	}
 }
 
-// TestCovManagedWorktreeExists covers managedWorktreeExists
-// (session_tools_worktree.go lines 2983-2986).
+// TestCovManagedWorktreeExists covers managedWorktreeExists.
 func TestCovManagedWorktreeExists(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -164,8 +158,7 @@ func TestCovManagedWorktreeExists(t *testing.T) {
 	}
 }
 
-// TestCovBranchExists covers branchExists
-// (session_tools_worktree.go lines 2975-2978): using a scripted git runner.
+// TestCovBranchExists covers branchExists: using a scripted git runner.
 func TestCovBranchExists(t *testing.T) {
 	t.Parallel()
 	// Scripted runner that simulates branch not found (error).
@@ -193,8 +186,7 @@ func TestCovBranchExists(t *testing.T) {
 	}
 }
 
-// TestCovBranchAtRoot covers branchAtRoot
-// (session_tools_worktree.go lines 2990-2996).
+// TestCovBranchAtRoot covers branchAtRoot.
 func TestCovBranchAtRoot(t *testing.T) {
 	t.Parallel()
 	// Error case — returns empty string.
@@ -237,7 +229,7 @@ func TestCovBranchAtRoot(t *testing.T) {
 // ---- jobs_nested.go ----
 
 // TestCovShouldRecoverForwardedTerminalRecord covers
-// shouldRecoverForwardedTerminalRecord (jobs_nested.go lines 615-624).
+// shouldRecoverForwardedTerminalRecord.
 func TestCovShouldRecoverForwardedTerminalRecord(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -299,8 +291,7 @@ func TestCovShouldRecoverForwardedTerminalRecord(t *testing.T) {
 	}
 }
 
-// TestCovRecoveredEventTime covers recoveredEventTime
-// (jobs_nested.go lines 626-631).
+// TestCovRecoveredEventTime covers recoveredEventTime.
 func TestCovRecoveredEventTime(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -320,8 +311,7 @@ func TestCovRecoveredEventTime(t *testing.T) {
 	}
 }
 
-// TestCovLiveSubagentSession covers liveSubagentSession
-// (jobs_nested.go lines 256-271).
+// TestCovLiveSubagentSession covers liveSubagentSession.
 func TestCovLiveSubagentSession(t *testing.T) {
 	t.Parallel()
 	// nil manager — nil.
@@ -336,7 +326,7 @@ func TestCovLiveSubagentSession(t *testing.T) {
 	}
 }
 
-// TestCovForwardEvent covers forwardEvent (jobs_nested.go lines 635-662).
+// TestCovForwardEvent covers forwardEvent.
 func TestCovForwardEvent(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -446,8 +436,7 @@ func TestCovForwardEvent(t *testing.T) {
 
 // ---- session_queue.go ----
 
-// TestCovTrySteerEnqueue_Closed covers trySteerEnqueue
-// (session_queue.go lines 252-274): closed session returns false.
+// TestCovTrySteerEnqueue_Closed covers trySteerEnqueue: closed session returns false.
 func TestCovTrySteerEnqueue_Closed(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -501,7 +490,7 @@ func TestCovTrySteerEnqueue_UserSource(t *testing.T) {
 }
 
 // TestCovTrySteerWithProvenanceAndNotify covers
-// trySteerWithProvenanceAndNotify (session_queue.go lines 202-208).
+// trySteerWithProvenanceAndNotify.
 func TestCovTrySteerWithProvenanceAndNotify(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -511,8 +500,7 @@ func TestCovTrySteerWithProvenanceAndNotify(t *testing.T) {
 	}
 }
 
-// TestCovDrainAsSteerWithInput_Closed covers DrainAsSteerWithInput
-// (session_queue.go lines 393-424): closed session.
+// TestCovDrainAsSteerWithInput_Closed covers DrainAsSteerWithInput: closed session.
 func TestCovDrainAsSteerWithInput_Closed(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -563,8 +551,7 @@ func TestCovPopSteeringHead_Success(t *testing.T) {
 	s.mu.Unlock()
 }
 
-// TestCovPushQueueHead_Empty covers pushQueueHead
-// (session_queue.go lines 635-683): empty text + no images — no-op.
+// TestCovPushQueueHead_Empty covers pushQueueHead: empty text + no images — no-op.
 func TestCovPushQueueHead_Empty(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -596,7 +583,7 @@ func TestCovPushQueueHead_NoClientMutation(t *testing.T) {
 // ---- session_attention.go ----
 
 // TestCovHasPendingDelegateAttentionArmRetry_WithArms covers
-// hasPendingDelegateAttentionArmRetry (session_attention.go lines 485-493)
+// hasPendingDelegateAttentionArmRetry
 // with arms set.
 func TestCovHasPendingDelegateAttentionArmRetry_WithArms(t *testing.T) {
 	t.Parallel()
@@ -610,7 +597,7 @@ func TestCovHasPendingDelegateAttentionArmRetry_WithArms(t *testing.T) {
 }
 
 // TestCovResetDelegateAttentionArmRetryLocked covers
-// resetDelegateAttentionArmRetryLocked (session_attention.go lines 734-738).
+// resetDelegateAttentionArmRetryLocked.
 func TestCovResetDelegateAttentionArmRetryLocked(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -630,7 +617,7 @@ func TestCovResetDelegateAttentionArmRetryLocked(t *testing.T) {
 }
 
 // TestCovIsRootDelegateAttentionReceiver_NoController covers
-// isRootDelegateAttentionReceiver (session_attention.go lines 552-559).
+// isRootDelegateAttentionReceiver.
 func TestCovIsRootDelegateAttentionReceiver_NoController2(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -650,7 +637,7 @@ func TestCovIsRootDelegateAttentionReceiver_RootRuntime(t *testing.T) {
 }
 
 // TestCovResetStableDelegateAttentionRetry covers
-// resetStableDelegateAttentionRetry (session_attention.go lines 784+).
+// resetStableDelegateAttentionRetry.
 func TestCovResetStableDelegateAttentionRetry(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -670,7 +657,7 @@ func TestCovResetStableDelegateAttentionRetry(t *testing.T) {
 }
 
 // TestCovAcceptDelegateAttention_NilReservation covers
-// acceptDelegateAttention (session_attention.go lines 527+).
+// acceptDelegateAttention.
 func TestCovAcceptDelegateAttention_NilReservation2(t *testing.T) {
 	t.Parallel()
 	s := &Session{}

@@ -1657,20 +1657,6 @@ func TestRemoteHubSourceRejectsNonAdjacentRemoteContinuationPage(t *testing.T) {
 	}
 }
 
-func TestRemotePositionCompareOrdersBySub(t *testing.T) {
-	older := appwire.ThreadItemPosition{Entry: 3, Item: appwire.NoticeAnchorItem, Sub: 1}
-	newer := appwire.ThreadItemPosition{Entry: 3, Item: appwire.NoticeAnchorItem, Sub: 2}
-	if got := remotePositionCompare(older, newer); got != -1 {
-		t.Errorf("remotePositionCompare(older, newer) = %d, want -1", got)
-	}
-	if got := remotePositionCompare(newer, older); got != 1 {
-		t.Errorf("remotePositionCompare(newer, older) = %d, want 1", got)
-	}
-	if got := remotePositionCompare(older, older); got != 0 {
-		t.Errorf("remotePositionCompare(equal) = %d, want 0", got)
-	}
-}
-
 // itemEntryPositions reports the entry of every candidate, for asserting a
 // served page or the remote page a test scripted.
 func itemEntryPositions(candidates []appitempaging.TranscriptItemCandidate) []uint64 {

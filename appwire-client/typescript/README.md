@@ -17,7 +17,7 @@ it again, the translation that turns those markers into prose at send and
 the composer input assembly that applies that translation and stages the
 attached images beside the text, the thread view model and
 its notification reducer, the activity tree parser, merge and disclosure
-rules, the lossless job-output page codec, the send/queue availability table, the
+rules, the lossless job-output page codec, the ANSI escape parser both apps colour shell and job output with (`parseAnsiLines`, the byte-row parser and `AnsiTailBuffer`) and the mermaid forbid-tag list both sanitizers apply, the send/queue availability table, the
 send/steer/queue/drain routing decisions a composer makes off it, the stable
 delegate status rule, the delegate timing and model derivations both apps'
 delegate details render from, and the continuation message a failed turn's
@@ -601,7 +601,9 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   nobody can vouch for left `blockedUnknown` rather than replayed - the rule a
   client must not break after a lost connection. Every reaction to an outcome (a
   blocked mutation, a clear's response, a shared note's authority) is a callback
-  the app supplies. Its pure reconciliation (`reconcilePendingEntries`) turns
+  the app supplies. `COMPOSER_METHODS` states the composer verbs and their wire
+  methods once (with `PENDING_TURN_METHODS`, `DIRECT_FALLBACK_METHODS` and
+  `composerVerb` derived from it). Its pure reconciliation (`reconcilePendingEntries`) turns
   those durable records plus a live `ThreadModel` into the `PendingTurnEntry`
   rows a composer's queue renders - identity-based, so an authoritative
   projection replaces the same outbox entry rather than duplicating it - and

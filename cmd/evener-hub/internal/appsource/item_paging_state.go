@@ -185,8 +185,7 @@ func itemSnapshotStateAdvance(previous itemSnapshotState, candidates []appitempa
 	}
 
 	first := candidates[0].Position
-	if first.Entry > previous.LastPosition.Entry ||
-		(first.Entry == previous.LastPosition.Entry && first.Item > previous.LastPosition.Item) {
+	if appitempaging.ComparePosition(first, previous.LastPosition) > 0 {
 		// A disjoint native window can retain identity through its native token,
 		// but cannot extend an anchored digest across unobserved positions.
 		return current, true
@@ -212,7 +211,7 @@ func itemSnapshotStateAdvance(previous itemSnapshotState, candidates []appitempa
 		return previous, true
 	}
 	last := fingerprints[len(fingerprints)-1].Position
-	if last.Entry < previous.LastPosition.Entry || (last.Entry == previous.LastPosition.Entry && last.Item <= previous.LastPosition.Item) {
+	if appitempaging.ComparePosition(last, previous.LastPosition) <= 0 {
 		return current, false
 	}
 

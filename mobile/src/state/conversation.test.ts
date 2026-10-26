@@ -813,7 +813,7 @@ describe("ConversationStore", () => {
 		});
 	});
 
-	describe("D23d: the model owns the older page", () => {
+	describe("the model owns the older page", () => {
 		// D23d: loadOlder merges the page into the model with the package's
 		// mergeOlderItemPage and the rows re-project from that model; the
 		// service no longer projects display rows from the page
@@ -3545,7 +3545,7 @@ describe("ConversationStore", () => {
 		});
 	});
 
-	describe("loadOlder retained cap and ordering (I7)", () => {
+	describe("loadOlder retained cap and ordering", () => {
 		// A long live session trims its oldest rows at the cap. Scrolling up
 		// must still bring older history into view.
 		it("shows an older page past the cap while you read above the live end", async () => {
@@ -5446,7 +5446,7 @@ describe("ConversationStore", () => {
 		});
 	});
 
-	describe("resync coalesces to one rehydrate via internal coalescer (F5)", () => {
+	describe("resync coalesces to one rehydrate via internal coalescer", () => {
 		it("coalesces evener/thread/resync into one rehydrate call", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
@@ -5640,7 +5640,7 @@ describe("ConversationStore", () => {
 
 	// --- Task 2A reslice: F3-F11 tests -------------------------------------------
 
-	describe("F3: LiveConversationState is a required interface", () => {
+	describe("LiveConversationState is a required interface", () => {
 		it("createConversationStore returns state with required live methods", () => {
 			const store = createConversationStore();
 			const s = store.getState();
@@ -5653,7 +5653,7 @@ describe("ConversationStore", () => {
 		});
 	});
 
-	describe("F4: mutation object identity / private mutation ID", () => {
+	describe("mutation object identity / private mutation ID", () => {
 		it("out-of-order completion cannot clear a newer mutation (send)", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
@@ -5760,7 +5760,7 @@ describe("ConversationStore", () => {
 		});
 	});
 
-	describe("F5: AuthoritativeRereadScheduler.request(key, effect)", () => {
+	describe("AuthoritativeRereadScheduler.request(key, effect)", () => {
 		it("coalesces multiple signals to one readProjection", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
@@ -5809,7 +5809,7 @@ describe("ConversationStore", () => {
 		});
 	});
 
-	describe("F6: LiveActivitySink accepted by openProjected/rehydrate", () => {
+	describe("LiveActivitySink accepted by openProjected/rehydrate", () => {
 		it("openProjected accepts a LiveActivitySink and routes notifications to both", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
@@ -7580,7 +7580,7 @@ describe("ConversationStore", () => {
 		});
 	});
 
-	describe("F9: stale safety — generation and operation identity", () => {
+	describe("stale safety — generation and operation identity", () => {
 		it("close increments generation so stale completion cannot clear new error", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
@@ -7669,7 +7669,7 @@ describe("ConversationStore", () => {
 		});
 	});
 
-	describe("F10: paging — only thread/turns/list receives cursor, dedupe by source identity", () => {
+	describe("paging — only thread/turns/list receives cursor, dedupe by source identity", () => {
 		it("loadOlder prepends older items and dedupes by item id", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
@@ -8044,7 +8044,7 @@ describe("ConversationStore", () => {
 	// supersession, RETAINED_ITEM_CAP eviction and restoration stay correct —
 	// is exactly what the surviving tests in this block (and
 	// reducer.history.test.ts's merge-by-version suite) already cover.
-	describe("#1919 follow-up: retained page-turn payloads are bounded to the display keep-window", () => {
+	describe("retained page-turn payloads are bounded to the display keep-window", () => {
 		it("repeated loadOlder + rehydrate with display-row eviction keeps retained turn payloads bounded while every loaded turn's usage still counts", async () => {
 			const service = new FakeConversationService();
 			const sink = createFakeSink();
@@ -10777,7 +10777,7 @@ describe("ConversationStore", () => {
 		// The page response must not clear the active turn's live items.
 	});
 
-	describe("D18 B3 round 5: conversation's wire cursor and turn ownership never derive from the store's capped cursor or item eviction", () => {
+	describe("conversation's wire cursor and turn ownership never derive from the store's capped cursor or item eviction", () => {
 		it("initial: conversation.olderCursor and turns come straight from the hydrated model", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
@@ -11034,7 +11034,7 @@ describe("ConversationStore", () => {
 	// or resurrecting paging at a cursor exhausted history had stopped. What
 	// separates the racing outcomes is not the token (a FAILED page bumps it
 	// too) but whether the store's own cursor actually MOVED during the await.
-	describe("D18 B3 round 6: turn merges reuse the package's own identity-aware merge, never an id-only filter", () => {
+	describe("turn merges reuse the package's own identity-aware merge, never an id-only filter", () => {
 		// Failing-first (a): thread/turns/list is itself item-paginated, so a
 		// turn can be split into fragments across the page boundary. An id-only
 		// filter treats a same-id fragment as a pure duplicate and drops it,
@@ -11247,7 +11247,7 @@ describe("ConversationStore", () => {
 	// identity that reissued, never a sibling item the fresh read never
 	// mentioned.
 
-	describe("D18 B3 round 8: a racing loadOlder's cursor movement survives a held rehydrate", () => {
+	describe("a racing loadOlder's cursor movement survives a held rehydrate", () => {
 		it("a successful racing page that retains no rows keeps its cursor advancement through the rehydrate", async () => {
 			const service = new FakeConversationService();
 			const sink = createFakeSink();
@@ -12066,7 +12066,7 @@ describe("ConversationStore", () => {
 	// covered above by "merges the older page's turns..." and "keeps
 	// conversation.olderCursor at the wire's cursor...". The remaining rows,
 	// plus the two regressions the panel found, are below.
-	describe("F11: no presentation disclosure state in conversation store", () => {
+	describe("no presentation disclosure state in conversation store", () => {
 		it("conversation store does not carry expandedToolKeys or setExpandedToolKeys", () => {
 			const store = createConversationStore();
 			const s = store.getState();
@@ -12179,7 +12179,7 @@ describe("ConversationStore", () => {
 		await Promise.resolve();
 	}
 
-	describe("I1: projected binding epoch — stale work suppressed before effect", () => {
+	describe("projected binding epoch — stale work suppressed before effect", () => {
 		it("queued rehydrate for A is suppressed after switch to B (zero serviceA reads/sinkA writes)", async () => {
 			const serviceA = new FakeConversationService();
 			serviceA.readProjectionResult = {
@@ -12410,7 +12410,7 @@ describe("ConversationStore", () => {
 		});
 	});
 
-	describe("M1: setLiveView before conversation state commit (directly observed)", () => {
+	describe("setLiveView before conversation state commit (directly observed)", () => {
 		it("directly observes setLiveView fires before the store state changes", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
@@ -12447,7 +12447,7 @@ describe("ConversationStore", () => {
 		});
 	});
 
-	describe("DrainScheduler: store-level invariants (M2 — tested through store)", () => {
+	describe("DrainScheduler: store-level invariants", () => {
 		it("coalesces a synchronous pre-effect burst to one rehydrate", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
@@ -13346,7 +13346,7 @@ describe("ConversationStore", () => {
 		};
 	}
 
-	describe("I1: rehydrate commit-time ownership — page/mutation/error owner capture", () => {
+	describe("rehydrate commit-time ownership — page/mutation/error owner capture", () => {
 		it("R pending→L success: R cannot delete page items or regress cursor after L owns page", async () => {
 			// Rehydrate (R) is pending. A loadOlder (L) succeeds during the await,
 			// prepending older items and advancing the cursor. When R completes, it
@@ -13473,7 +13473,7 @@ describe("ConversationStore", () => {
 		});
 	});
 
-	describe("I2: generation/identity-stale loadOlder performs ZERO set calls", () => {
+	describe("generation/identity-stale loadOlder performs ZERO set calls", () => {
 		it("does not rehydrate a stale cursor through the replacement binding", async () => {
 			const serviceA = new FakeConversationService();
 			const serviceB = new FakeConversationService();
@@ -13607,7 +13607,7 @@ describe("ConversationStore", () => {
 		});
 	});
 
-	describe("I3: mutation starts atomically clear prior error", () => {
+	describe("mutation starts atomically clear prior error", () => {
 		it("send clears prior error atomically with new pending mutation", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
@@ -13961,7 +13961,7 @@ describe("ConversationStore", () => {
 
 	// --- Residual: R1 — monotonic mutation-owner and error-owner revisions ---
 
-	describe("R1: monotonic mutation-owner revision — ABA safe", () => {
+	describe("monotonic mutation-owner revision — ABA safe", () => {
 		it("rehydrate success cannot clear error after mutation cleared+re-set same error (ABA)", async () => {
 			// The error owner revision must increment even when the error string
 			// is cleared then re-set to the same value. A stale rehydrate that
@@ -14151,7 +14151,7 @@ describe("ConversationStore", () => {
 
 	// --- Residual: R2 — page-race must not drop authoritative outcome ---
 
-	describe("R2: page-race preserves authoritative outcome", () => {
+	describe("page-race preserves authoritative outcome", () => {
 		it("ask reread racing page success: authoritative question appears, page items/cursor preserved", async () => {
 			// A rehydrate (R) is triggered by an ask_user notification. While R
 			// is in-flight, a loadOlder (L) succeeds, prepending page items and
@@ -14501,7 +14501,7 @@ describe("ConversationStore", () => {
 
 	// --- Residual: R3 — real malformed/incomplete Thread fixtures through projectConversation ---
 
-	describe("R3: real malformed/incomplete Thread fixtures through projectConversation", () => {
+	describe("real malformed/incomplete Thread fixtures through projectConversation", () => {
 		it("malformed completed ask_user in raw Thread: conservative activity rows, no question rows, askPending false", async () => {
 			// A real raw Thread with a completed ask_user whose argumentsJson is
 			// malformed must produce conservative activity rows (not question
@@ -14655,7 +14655,7 @@ describe("ConversationStore", () => {
 	// or failed terminal). Additional mutation revisions create at most one
 	// later need. A switch to serviceB while the trailing reread is deferred
 	// drops the deferred request entirely.
-	describe("I1: trailing reread deferred until mutation settles", () => {
+	describe("trailing reread deferred until mutation settles", () => {
 		it("zero trailing reads while mutation pending, exactly one after settlement", async () => {
 			const service = new FakeConversationService();
 			service.readProjectionResult = makeReadProjectionResult(makeThread());
@@ -19231,7 +19231,7 @@ describe("ConversationStore", () => {
 
 	// --- I1: Error ownership — revision equality ONLY --------------------------------
 
-	describe("I1: newer clear-to-null and ABA-null own error", () => {
+	describe("newer clear-to-null and ABA-null own error", () => {
 		it("page failure after newer clear-to-null: page settles loading, preserves null (no write)", async () => {
 			const service = new FakeConversationService();
 			const sink = createFakeSink();
@@ -19494,7 +19494,7 @@ describe("ConversationStore", () => {
 
 	// --- I5: Binding safety — full state snapshot comparison -------------------------
 
-	describe("I5: rebind A->B then late A completion => zero state change (full snapshot)", () => {
+	describe("rebind A->B then late A completion => zero state change (full snapshot)", () => {
 		// Helper: snapshot the entire public state for comparison.
 		function snapshotState(store: ReturnType<typeof createConversationStore>) {
 			const s = store.getState();
@@ -19817,7 +19817,7 @@ describe("ConversationStore", () => {
 
 	// --- I3: a page's settled ask renders through the projection's own gate ----------
 
-	describe("I3: a page ask renders as its tool row while askPending is false", () => {
+	describe("a page ask renders as its tool row while askPending is false", () => {
 		it("a page ask_user item renders as its tool row, other items/order/cursor retained, askPending unchanged", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();

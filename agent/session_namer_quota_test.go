@@ -132,8 +132,7 @@ func (h *namerQuotaHarness) namerIdle() bool {
 //
 // Both conditions are load-bearing, and waiting on the advisory alone is a race.
 // nameSessionFromText writes the advisory and returns; only then does the
-// launcher goroutine call clearPromptNamePendingAfterAttempt
-// (session_namer.go:232-233). Between those two steps the advisory is already
+// launcher goroutine call clearPromptNamePendingAfterAttempt. Between those two steps the advisory is already
 // visible on disk while promptPending is still set, so an advisory-only wait can
 // resume inside that window -- and the next launch would then be suppressed by
 // the in-flight pending guard rather than by the quota state.

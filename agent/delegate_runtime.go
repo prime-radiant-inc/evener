@@ -652,12 +652,7 @@ func (c *delegateTreeController) CompleteQuietAttention(claim *delegateQuietAtte
 	if live != nil && live.quietClaim == claim {
 		live.quietClaim = nil
 	}
-	if c.stop != nil {
-		if _, tracked := c.stop.quietClaims[claim.token]; tracked {
-			delete(c.stop.quietClaims, claim.token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[uint64]struct{} { return s.quietClaims }, claim.token)
 	var result error
 	if committed {
 		aggregate := c.durable[claim.lease.delegateID]

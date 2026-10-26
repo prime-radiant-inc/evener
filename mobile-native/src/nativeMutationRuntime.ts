@@ -3,6 +3,8 @@ import * as Crypto from "expo-crypto";
 import type { AppwireClientLike, ThreadReadResponse } from "@evener/appwire-client";
 import { collectAuthoritativeMutationIds } from "@evener/appwire-client";
 import {
+	COMPOSER_METHODS,
+	DIRECT_FALLBACK_METHODS,
 	createClientIdentity,
 	createSecureUUID,
 	canEditQueuedMessage,
@@ -91,22 +93,12 @@ function nativeRandomSource(): SecureRandomSource {
 }
 
 function methodFor(kind: ConversationMutationKind, expectedQueueRevision: number | undefined): string {
-	if (kind === "send") return "turn/start";
-	if (kind === "queue") return "turn/queue";
+	if (kind === "send") return COMPOSER_METHODS.send;
+	if (kind === "queue") return COMPOSER_METHODS.queue;
 	if (kind === "interrupt") return "turn/interrupt";
-	if (kind === "promote") return "turn/promoteQueuedAsSteer";
-	return expectedQueueRevision === undefined ? "turn/steer" : "turn/drainAsSteer";
+	if (kind === "promote") return COMPOSER_METHODS.promote;
+	return expectedQueueRevision === undefined ? COMPOSER_METHODS.steer : COMPOSER_METHODS.drain;
 }
-
-// The composer's four send verbs: the only mutations that go out as a plain
-// request when storage refuses their durable write. Stop and promote keep
-// their durable contract and fail instead.
-const DIRECT_FALLBACK_METHODS: ReadonlySet<string> = new Set([
-	"turn/start",
-	"turn/queue",
-	"turn/steer",
-	"turn/drainAsSteer",
-]);
 
 function intentFor(request: NativeMutationRequest): MutationIntent {
 	const method = methodFor(request.kind, request.expectedQueueRevision);
@@ -115,7 +107,7 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 		expectedInstanceId: request.instanceId,
 	};
 	if (request.kind !== "interrupt" && request.kind !== "promote") payload.input = request.input;
-	if (method === "turn/drainAsSteer") payload.expectedQueueRevision = request.expectedQueueRevision;
+	if (method === COMPOSER_METHODS.drain) payload.expectedQueueRevision = request.expectedQueueRevision;
 	if (request.kind === "promote") {
 		payload.index = request.queueEntry.index;
 		payload.expectedEntryId = request.queueEntry.id;
@@ -883,7 +875,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		// The send is this phone's, so a read that lists it as pending must
 		// not classify it as another client's.
 		this.#rememberSubmitted(intent.targetRef, clientMutationId, this.#now());
-		if (intent.method === "turn/drainAsSteer") await this.#settleConsumedByDrain(result);
+		if (intent.method === COMPOSER_METHODS.drain) await this.#settleConsumedByDrain(result);
 		return { clientMutationId };
 	}
 

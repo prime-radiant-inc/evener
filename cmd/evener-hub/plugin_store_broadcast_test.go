@@ -217,8 +217,7 @@ func TestRegisterPluginHandlers_MarketplaceEditBroadcastsExactlyOnce(t *testing.
 }
 
 // TestNewHubAppServer_NilPluginManagerFallbackBroadcasts proves the
-// nil-cfg.PluginManager fallback in newHubAppServerWithNavigationAndTrace
-// (app_rpc.go:519-523) wires wirePluginStoreBroadcast just like newWebServer's
+// nil-cfg.PluginManager fallback in newHubAppServerWithNavigationAndTrace wires wirePluginStoreBroadcast just like newWebServer's
 // own cfg.PluginManager path does. Every other test in this file either
 // injects its own Manager or drives NewWebServer, which pre-sets
 // cfg.PluginManager before this constructor ever runs
