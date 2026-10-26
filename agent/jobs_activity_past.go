@@ -322,7 +322,7 @@ func (c *historicalActivityCache) rootDelegates(stateDir, rootSessionID string) 
 // omits the field and the UI hides the token cluster rather than rendering
 // ↑0 ↓0.
 func historicalActivityUsage(stateDir, sessionID string, meta schema.SessionMeta) *appwire.EvenerUsage {
-	path := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
+	path := schema.SessionTranscriptPath(stateDir, sessionID)
 	total, err := activityUsageCache.UsageTotalFromFile(path, transcript.DefaultMaxLineBytes, meta.DivergenceTurn)
 	if err != nil {
 		return nil

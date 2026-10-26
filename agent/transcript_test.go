@@ -956,7 +956,7 @@ func TestSession_TranscriptCreatedOnNewSession(t *testing.T) {
 	defer sess.Close()
 
 	// Verify the transcript file exists at the expected path.
-	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(stateDir, sess.ID())
 	if _, err := os.Stat(tpath); os.IsNotExist(err) {
 		t.Fatalf("transcript file not created at %s", tpath)
 	}
@@ -1042,7 +1042,7 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 	sess.Close()
 
 	// Read the transcript and verify entries were recorded.
-	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(stateDir, sess.ID())
 	header, entries, _, err := readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
@@ -1116,7 +1116,7 @@ func TestSession_TranscriptClosedOnSessionClose(t *testing.T) {
 	sess.Close()
 
 	// After Close, the transcript file should be readable (properly flushed).
-	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(stateDir, sess.ID())
 	_, _, _, err = readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("transcript not readable after Close: %v", err)
@@ -1151,7 +1151,7 @@ func TestSubagent_TranscriptHasParentLinkage(t *testing.T) {
 	}()
 
 	// Read the transcript and verify parent linkage fields.
-	files, _ := filepath.Glob(filepath.Join(stateDir, sessionsSubdir, "*.transcript.jsonl"))
+	files, _ := filepath.Glob(filepath.Join(stateDir, schema.SessionsSubdir, "*.transcript.jsonl"))
 	if len(files) != 1 {
 		t.Fatalf("expected 1 transcript, got %d", len(files))
 	}
@@ -1191,7 +1191,7 @@ func TestRootSession_TranscriptHasEmptyParentFields(t *testing.T) {
 		}
 	}()
 
-	files, _ := filepath.Glob(filepath.Join(stateDir, sessionsSubdir, "*.transcript.jsonl"))
+	files, _ := filepath.Glob(filepath.Join(stateDir, schema.SessionsSubdir, "*.transcript.jsonl"))
 	if len(files) != 1 {
 		t.Fatalf("expected 1 transcript, got %d", len(files))
 	}
@@ -1366,7 +1366,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	}
 
 	// --- Read the transcript ---
-	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(stateDir, sess.ID())
 	hdr, entries, _, err := readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
@@ -1465,7 +1465,7 @@ func TestSession_StateDirSessionsPathConflictFailsClosedAtDelegateBootstrap(t *t
 	t.Parallel()
 	stateDir := t.TempDir()
 
-	if err := os.WriteFile(filepath.Join(stateDir, sessionsSubdir), []byte("not a directory"), 0o644); err != nil {
+	if err := os.WriteFile(schema.SessionsDir(stateDir), []byte("not a directory"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1643,7 +1643,7 @@ func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
 	}
 	defer sess.Close()
 
-	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(stateDir, sess.ID())
 	header, _, _, err := readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
