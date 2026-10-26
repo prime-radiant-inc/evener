@@ -22,6 +22,7 @@ import {
   THREAD_ITEM_EVENT_KINDS,
   type ThreadItem,
   type ThreadTurnsListResponse,
+  type Turn,
 } from "./types.gen";
 
 function readWithItems(ref: string, items: ThreadItem[]) {
@@ -1043,6 +1044,82 @@ describe("current transcript checkpoints", () => {
     if (!decoded) throw new Error("a delegate with every generated field was rejected");
 
     expect(threadModelFromCurrentState(decoded).delegates?.[0]).toEqual(everyField);
+  });
+
+  it("round-trips a deferred turn carrying every generated field", () => {
+    // Required<> makes tsc fail these literals when the wire types gain a
+    // field, so the deferred-page validators cannot drift without a red build.
+    const everyItemField: Required<ThreadItem> = {
+      type: "toolCall",
+      id: "item_full",
+      transcriptKey: "key_full",
+      position: { entry: 1, item: 2, sub: 3 },
+      turnId: "turn_full",
+      transcriptEntryIndex: 4,
+      text: "text",
+      delta: "delta",
+      images: [
+        {
+          type: "image",
+          text: "alt",
+          mentions: [{ kind: "file", name: "a.go", offset: 1 }],
+          url: "https://example.test/i.png",
+          mediaType: "image/png",
+          data: "AAAA",
+          name: "i.png",
+          path: "/tmp/i.png",
+          metadata: { k: "v" },
+        },
+      ],
+      toolName: "Read",
+      callId: "call_full",
+      argumentsJson: "{}",
+      description: "description",
+      output: "output",
+      error: "error",
+      outputImages: [
+        { source: "tool", name: "o.png", mediaType: "image/png", size: 5, url: "u", sha: "abc", path: "/tmp/o.png" },
+      ],
+      status: "completed",
+      prevalOnly: true,
+      startedAt: 1,
+      completedAt: 2,
+      durationMs: 3,
+      exitCode: 0,
+      raw: { any: "thing" },
+      eventKind: THREAD_ITEM_EVENT_KINDS[0],
+      source: "source",
+      steeringKind: "interrupt",
+      clientMutationId: "mutation",
+      version: 5,
+      roundId: "round",
+      completedAtEntry: 6,
+    };
+    const everyTurnField: Required<Turn> = {
+      id: "turn_full",
+      items: [everyItemField],
+      itemsView: "full",
+      status: "completed",
+      error: { message: "failed" },
+      version: 7,
+      hasEarlierItems: true,
+      hasLaterItems: false,
+      startedAt: 1,
+      completedAt: 2,
+      durationMs: 3,
+      usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, totalTokens: 6 },
+      cost: "0.01",
+    };
+    const original = hydrateThread(currentRead("local:every-turn-field"), "local:every-turn-field", 10);
+    if (!original.history) throw new Error("fixture history did not hydrate");
+    original.history = { ...original.history, deferredPages: [{ data: [everyTurnField] }] };
+
+    const encoded = currentTranscriptState(original);
+    if (!encoded) throw new Error("populated checkpoint did not encode");
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+    if (!decoded) throw new Error("a turn with every generated field was rejected");
+
+    expect(threadModelFromCurrentState(decoded).history?.deferredPages[0]?.data[0]).toEqual(everyTurnField);
   });
 
   it("keeps omitted text distinct from explicit empty text", () => {

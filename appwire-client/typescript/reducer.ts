@@ -33,7 +33,7 @@ import type {
   Turn,
   WarningParams,
 } from "./types.gen";
-import { THREAD_ITEM_EVENT_KINDS } from "./types.gen";
+import { THREAD_ITEM_EVENT_KINDS, WIRE_FIELD_KEYS } from "./types.gen";
 import { hasWarningText } from "./warningText";
 
 function cloneStableDelegate(delegate: EvenerDelegateInfo): EvenerDelegateInfo {
@@ -1385,7 +1385,7 @@ function isNonNegativeInteger(value: unknown): value is number {
 function validPosition(value: unknown): value is ThreadItemPosition {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ["entry", "item", "sub"]) &&
+    hasOnlyKeys(value, WIRE_FIELD_KEYS.ThreadItemPosition) &&
     isNonNegativeInteger(value.entry) &&
     isNonNegativeInteger(value.item) &&
     (value.sub === undefined || isNonNegativeInteger(value.sub))
@@ -1540,11 +1540,7 @@ function validTurn(value: unknown): value is CachedSessionTurn {
 
 function validTurnError(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  if (
-    !hasOnlyKeys(value, ["message", "additionalDetails", "codexErrorInfo", "source", "title", "hint", "cause"]) ||
-    typeof value.message !== "string"
-  )
-    return false;
+  if (!hasOnlyKeys(value, WIRE_FIELD_KEYS.TurnError) || typeof value.message !== "string") return false;
   return (
     ["additionalDetails", "source", "title", "hint"].every(
       (key) => value[key] === undefined || typeof value[key] === "string",
@@ -1556,7 +1552,7 @@ function validTurnError(value: unknown): boolean {
 function validDiagnosticCause(value: unknown): boolean {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ["kind", "provider", "model", "status"]) &&
+    hasOnlyKeys(value, WIRE_FIELD_KEYS.DiagnosticCause) &&
     typeof value.kind === "string" &&
     ["provider", "model"].every((key) => value[key] === undefined || typeof value[key] === "string") &&
     (value.status === undefined || isFiniteNumber(value.status))
@@ -1568,39 +1564,12 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[])
 }
 
 function validWireItem(value: unknown): value is ThreadItem {
-  const keys = [
-    "type",
-    "id",
-    "transcriptKey",
-    "position",
-    "turnId",
-    "transcriptEntryIndex",
-    "text",
-    "delta",
-    "images",
-    "toolName",
-    "callId",
-    "argumentsJson",
-    "description",
-    "output",
-    "error",
-    "outputImages",
-    "status",
-    "prevalOnly",
-    "startedAt",
-    "completedAt",
-    "durationMs",
-    "exitCode",
-    "raw",
-    "eventKind",
-    "source",
-    "steeringKind",
-    "clientMutationId",
-    "version",
-    "roundId",
-    "completedAtEntry",
-  ];
-  if (!isRecord(value) || !hasOnlyKeys(value, keys) || typeof value.type !== "string" || typeof value.id !== "string")
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, WIRE_FIELD_KEYS.ThreadItem) ||
+    typeof value.type !== "string" ||
+    typeof value.id !== "string"
+  )
     return false;
   for (const key of [
     "transcriptKey",
@@ -1640,11 +1609,7 @@ function validWireItem(value: unknown): value is ThreadItem {
   }
   if (value.prevalOnly !== undefined && typeof value.prevalOnly !== "boolean") return false;
   const validInputImage = (image: unknown): boolean => {
-    if (
-      !isRecord(image) ||
-      !hasOnlyKeys(image, ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata"])
-    )
-      return false;
+    if (!isRecord(image) || !hasOnlyKeys(image, WIRE_FIELD_KEYS.InputItem)) return false;
     if (typeof image.type !== "string") return false;
     for (const key of ["text", "url", "mediaType", "data", "name", "path"]) {
       if (image[key] !== undefined && typeof image[key] !== "string") return false;
@@ -1660,7 +1625,7 @@ function validWireItem(value: unknown): value is ThreadItem {
         image.mentions.every(
           (mention) =>
             isRecord(mention) &&
-            hasOnlyKeys(mention, ["kind", "name", "offset"]) &&
+            hasOnlyKeys(mention, WIRE_FIELD_KEYS.InputMention) &&
             typeof mention.kind === "string" &&
             typeof mention.name === "string" &&
             isNonNegativeInteger(mention.offset),
@@ -1669,7 +1634,7 @@ function validWireItem(value: unknown): value is ThreadItem {
   };
   const validOutputImage = (image: unknown): boolean =>
     isRecord(image) &&
-    hasOnlyKeys(image, ["source", "name", "mediaType", "size", "url", "sha", "path"]) &&
+    hasOnlyKeys(image, WIRE_FIELD_KEYS.OutputImage) &&
     typeof image.source === "string" &&
     ["name", "mediaType", "url", "sha", "path"].every(
       (key) => image[key] === undefined || typeof image[key] === "string",
@@ -1686,21 +1651,7 @@ function validWireItem(value: unknown): value is ThreadItem {
 }
 
 function validQueue(value: unknown): boolean {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, [
-      "depth",
-      "revision",
-      "preview",
-      "ids",
-      "clientMutationIds",
-      "texts",
-      "skillNames",
-      "commandNames",
-      "mentions",
-    ])
-  )
-    return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, WIRE_FIELD_KEYS.QueueState)) return false;
   if (!isNonNegativeInteger(value.revision)) return false;
   if (value.depth !== undefined && !isNonNegativeInteger(value.depth)) return false;
   for (const key of ["preview", "ids", "clientMutationIds", "texts"]) {
@@ -1727,7 +1678,7 @@ function validQueue(value: unknown): boolean {
           list.some(
             (mention) =>
               !isRecord(mention) ||
-              !hasOnlyKeys(mention, ["kind", "name", "offset"]) ||
+              !hasOnlyKeys(mention, WIRE_FIELD_KEYS.InputMention) ||
               typeof mention.kind !== "string" ||
               typeof mention.name !== "string" ||
               !isNonNegativeInteger(mention.offset),
@@ -1740,69 +1691,11 @@ function validQueue(value: unknown): boolean {
 
 function validUsage(value: unknown): boolean {
   return (
-    isRecord(value) &&
-    hasOnlyKeys(value, ["inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"]) &&
-    Object.values(value).every(isFiniteNumber)
+    isRecord(value) && hasOnlyKeys(value, WIRE_FIELD_KEYS.EvenerUsage) && Object.values(value).every(isFiniteNumber)
   );
 }
 
 function validStableDelegate(value: unknown): boolean {
-  const keys = [
-    "runGeneration",
-    "delegateId",
-    "ownerSessionId",
-    "logicalOwnerSessionId",
-    "rootSessionId",
-    "childSessionId",
-    "transcriptRef",
-    "parentDelegateId",
-    "type",
-    "lifecycle",
-    "phase",
-    "status",
-    "outcome",
-    "reason",
-    "error",
-    "terminal",
-    "resumable",
-    "needsAttention",
-    "notResumableReason",
-    "projectionRevision",
-    "reportPreview",
-    "reportPreviewTruncated",
-    "task",
-    "description",
-    "agentType",
-    "requestedModel",
-    "resolvedProfileId",
-    "resolvedModel",
-    "model",
-    "reasoningEffort",
-    "originTurnId",
-    "originToolCallId",
-    "originItemId",
-    "runStartedAt",
-    "runEndedAt",
-    "latestActivityAt",
-    "latestIntent",
-    "runningForMs",
-    "quietForMs",
-    "durationMs",
-    "packetKind",
-    "message",
-    "structuredResult",
-    "structuredResultValid",
-    "structuredResultReason",
-    "warnings",
-    "diagnostics",
-    "exhaustionBudget",
-    "exhaustionLimit",
-    "exhaustionResumable",
-    "delegationAllowance",
-    "parentWatchGranted",
-    "usage",
-    "worktree",
-  ];
   const stringFields = [
     "logicalOwnerSessionId",
     "parentDelegateId",
@@ -1840,7 +1733,7 @@ function validStableDelegate(value: unknown): boolean {
   const numberFields = ["runningForMs", "quietForMs", "durationMs", "exhaustionLimit", "delegationAllowance"];
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, keys) &&
+    hasOnlyKeys(value, WIRE_FIELD_KEYS.EvenerDelegateInfo) &&
     isNonNegativeInteger(value.runGeneration) &&
     isNonNegativeInteger(value.projectionRevision) &&
     [
@@ -1872,7 +1765,7 @@ function validStringArray(value: unknown): boolean {
 function validWorktree(value: unknown): boolean {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ["path", "branch", "headSha", "ahead", "dirty"]) &&
+    hasOnlyKeys(value, WIRE_FIELD_KEYS.JobActivityWorktree) &&
     typeof value.path === "string" &&
     typeof value.branch === "string" &&
     typeof value.headSha === "string" &&
@@ -1890,7 +1783,7 @@ function validDiagnostics(value: unknown): boolean {
         value.commands.every(
           (command) =>
             isRecord(command) &&
-            hasOnlyKeys(command, ["name", "pluginName", "description", "argumentHint", "source"]) &&
+            hasOnlyKeys(command, WIRE_FIELD_KEYS.CommandDescriptor) &&
             typeof command.name === "string" &&
             ["pluginName", "description", "argumentHint", "source"].every(
               (key) => command[key] === undefined || typeof command[key] === "string",
@@ -1907,14 +1800,7 @@ function validDiagnostics(value: unknown): boolean {
 function validSkill(value: unknown): boolean {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, [
-      "name",
-      "description",
-      "disableModelInvocation",
-      "userInvocable",
-      "available",
-      "allowedTools",
-    ]) &&
+    hasOnlyKeys(value, WIRE_FIELD_KEYS.EvenerSkillInfo) &&
     typeof value.name === "string" &&
     ["disableModelInvocation", "userInvocable", "available"].every((key) => typeof value[key] === "boolean") &&
     (value.description === undefined || typeof value.description === "string") &&
@@ -1925,18 +1811,7 @@ function validSkill(value: unknown): boolean {
 function validEscalation(value: unknown): boolean {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, [
-      "threadId",
-      "ref",
-      "escalationId",
-      "mode",
-      "tool",
-      "kind",
-      "deniedPath",
-      "command",
-      "outputSoFar",
-      "partiallyRan",
-    ]) &&
+    hasOnlyKeys(value, WIRE_FIELD_KEYS.SandboxEscalationRequested) &&
     ["threadId", "ref", "escalationId", "mode", "tool", "kind", "deniedPath"].every(
       (key) => typeof value[key] === "string",
     ) &&
@@ -1948,7 +1823,7 @@ function validEscalation(value: unknown): boolean {
 function validSessionURL(value: unknown): boolean {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ["id", "url", "label", "addedBy", "addedAt"]) &&
+    hasOnlyKeys(value, WIRE_FIELD_KEYS.SessionURL) &&
     typeof value.id === "string" &&
     typeof value.url === "string" &&
     ["label", "addedBy"].every((key) => value[key] === undefined || typeof value[key] === "string") &&
@@ -1981,7 +1856,7 @@ function validModelRetry(value: unknown): boolean {
 
 function validCurrentFieldShapes(value: Record<string, unknown>): boolean {
   const status = value.status as Record<string, unknown>;
-  if (!hasOnlyKeys(status, ["type", "activeFlags"])) return false;
+  if (!hasOnlyKeys(status, WIRE_FIELD_KEYS.ThreadStatus)) return false;
   if (
     status.activeFlags !== undefined &&
     (!Array.isArray(status.activeFlags) || status.activeFlags.some((flag: unknown) => typeof flag !== "string"))
@@ -1990,7 +1865,7 @@ function validCurrentFieldShapes(value: Record<string, unknown>): boolean {
   if (
     value.tasks !== null &&
     (!isRecord(value.tasks) ||
-      !hasOnlyKeys(value.tasks, ["total", "done", "cancelled", "remaining", "current"]) ||
+      !hasOnlyKeys(value.tasks, WIRE_FIELD_KEYS.TaskAggregate) ||
       !isNonNegativeInteger(value.tasks.total) ||
       !isNonNegativeInteger(value.tasks.done) ||
       ["cancelled", "remaining"].some(
@@ -2001,7 +1876,7 @@ function validCurrentFieldShapes(value: Record<string, unknown>): boolean {
       ) ||
       (value.tasks.current !== undefined &&
         (!isRecord(value.tasks.current) ||
-          !hasOnlyKeys(value.tasks.current, ["id", "description"]) ||
+          !hasOnlyKeys(value.tasks.current, WIRE_FIELD_KEYS.TaskSummary) ||
           !isNonNegativeInteger(value.tasks.current.id) ||
           typeof value.tasks.current.description !== "string")))
   )
@@ -2010,7 +1885,7 @@ function validCurrentFieldShapes(value: Record<string, unknown>): boolean {
   if (
     value.access !== undefined &&
     (!isRecord(value.access) ||
-      !hasOnlyKeys(value.access, ["sandbox", "network"]) ||
+      !hasOnlyKeys(value.access, WIRE_FIELD_KEYS.ThreadAccess) ||
       typeof value.access.sandbox !== "string" ||
       typeof value.access.network !== "boolean")
   )
@@ -2018,7 +1893,7 @@ function validCurrentFieldShapes(value: Record<string, unknown>): boolean {
   if (
     value.goal !== null &&
     (!isRecord(value.goal) ||
-      !hasOnlyKeys(value.goal, ["objective", "status", "iterations"]) ||
+      !hasOnlyKeys(value.goal, WIRE_FIELD_KEYS.GoalState) ||
       (value.goal.objective !== undefined && typeof value.goal.objective !== "string") ||
       typeof value.goal.status !== "string" ||
       !isNonNegativeInteger(value.goal.iterations))
@@ -2035,7 +1910,7 @@ function validCurrentFieldShapes(value: Record<string, unknown>): boolean {
     value.turnSlots !== undefined &&
     value.turnSlots !== null &&
     (!isRecord(value.turnSlots) ||
-      !hasOnlyKeys(value.turnSlots, ["inUse", "cap", "jobs", "driveTurns"]) ||
+      !hasOnlyKeys(value.turnSlots, WIRE_FIELD_KEYS.EvenerTurnSlots) ||
       ["inUse", "cap", "jobs", "driveTurns"].some(
         (key) => !isNonNegativeInteger((value.turnSlots as Record<string, unknown>)[key]),
       ))
@@ -2045,8 +1920,12 @@ function validCurrentFieldShapes(value: Record<string, unknown>): boolean {
 }
 
 function validDeferredPage(value: unknown): boolean {
-  const keys = ["data", "nextCursor", "bootGeneration", "epoch", "snapshot", "authoritative"];
-  if (!isRecord(value) || !hasOnlyKeys(value, keys) || !Array.isArray(value.data) || !value.data.every(validWireTurn))
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, WIRE_FIELD_KEYS.ThreadTurnsListResponse) ||
+    !Array.isArray(value.data) ||
+    !value.data.every(validWireTurn)
+  )
     return false;
   if (value.nextCursor !== undefined && typeof value.nextCursor !== "string") return false;
   if (value.bootGeneration !== undefined && typeof value.bootGeneration !== "string") return false;
@@ -2055,32 +1934,14 @@ function validDeferredPage(value: unknown): boolean {
   return (
     value.snapshot === undefined ||
     (isRecord(value.snapshot) &&
-      hasOnlyKeys(value.snapshot, ["incarnation", "length"]) &&
+      hasOnlyKeys(value.snapshot, WIRE_FIELD_KEYS.SnapshotIdentity) &&
       typeof value.snapshot.incarnation === "string" &&
       isNonNegativeInteger(value.snapshot.length))
   );
 }
 
 function validWireTurn(value: unknown): boolean {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, [
-      "id",
-      "items",
-      "itemsView",
-      "status",
-      "error",
-      "version",
-      "hasEarlierItems",
-      "hasLaterItems",
-      "startedAt",
-      "completedAt",
-      "durationMs",
-      "usage",
-      "cost",
-    ])
-  )
-    return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, WIRE_FIELD_KEYS.Turn)) return false;
   if (typeof value.id !== "string" || typeof value.itemsView !== "string" || typeof value.status !== "string")
     return false;
   if (value.items !== undefined && (!Array.isArray(value.items) || !value.items.every(validWireItem))) return false;
@@ -2095,7 +1956,7 @@ function validWireTurn(value: unknown): boolean {
   return (
     value.usage === undefined ||
     (isRecord(value.usage) &&
-      hasOnlyKeys(value.usage, ["inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"]) &&
+      hasOnlyKeys(value.usage, WIRE_FIELD_KEYS.EvenerUsage) &&
       Object.values(value.usage).every(isFiniteNumber))
   );
 }
