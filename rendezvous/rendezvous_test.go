@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 func TestWrite_CreatesFileWithExpectedShape(t *testing.T) {
@@ -184,19 +186,28 @@ func TestList_SkipsCorruptFiles(t *testing.T) {
 func TestDefaultDir_RespectsHome(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
 	t.Setenv("XDG_STATE_HOME", "")
-	got := DefaultDir()
+	got, err := DefaultDir()
 	want := "/tmp/fakehome/.local/state/evener/run"
-	if got != want {
-		t.Fatalf("DefaultDir: got %q, want %q", got, want)
+	if err != nil || got != want {
+		t.Fatalf("DefaultDir: got %q, %v, want %q", got, err, want)
 	}
 }
 
 func TestDefaultDir_RespectsXDGStateHome(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "/srv/evener-state")
-	got := DefaultDir()
+	got, err := DefaultDir()
 	want := "/srv/evener-state/evener/run"
-	if got != want {
-		t.Fatalf("DefaultDir: got %q, want %q", got, want)
+	if err != nil || got != want {
+		t.Fatalf("DefaultDir: got %q, %v, want %q", got, err, want)
+	}
+}
+
+func TestDefaultDir_NoHomeNoXDGIsAnError(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	got, err := DefaultDir()
+	if !errors.Is(err, userdirs.ErrNoStateHome) || got != "" {
+		t.Fatalf("DefaultDir: got %q, %v, want ErrNoStateHome", got, err)
 	}
 }
 

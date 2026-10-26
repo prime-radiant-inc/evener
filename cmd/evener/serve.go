@@ -1916,7 +1916,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		runDir = envvars.EVENERRunDir.Getenv()
 	}
 	if runDir == "" {
-		runDir = rendezvous.DefaultDir()
+		var err error
+		if runDir, err = rendezvous.DefaultDir(); err != nil {
+			return fmt.Errorf("resolve runtime directory: %w", err)
+		}
 	}
 	rvEntry := rendezvous.Entry{
 		PID:          os.Getpid(),

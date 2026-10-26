@@ -375,8 +375,8 @@ func fuzzScenarioRoster_DefaultRunDir(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
 	t.Setenv("XDG_STATE_HOME", "")
 	want := filepath.Join("/tmp/fakehome", ".local", "state", "evener", "run") //nolint:gocritic // filepathJoin: base is a full home path; mirrors rendezvous.DefaultDir
-	if got := rendezvous.DefaultDir(); got != want {
-		t.Fatalf("DefaultDir: got %q want %q", got, want)
+	if got, err := rendezvous.DefaultDir(); err != nil || got != want {
+		t.Fatalf("DefaultDir: got %q, %v want %q", got, err, want)
 	}
 }
 

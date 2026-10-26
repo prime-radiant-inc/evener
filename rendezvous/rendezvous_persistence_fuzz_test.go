@@ -83,14 +83,11 @@ func exerciseRendezvousBranches(t testing.TB) {
 	t.Helper()
 
 	t.Setenv("XDG_STATE_HOME", "")
-	if got := defaultDir(func() (string, error) { return "", os.ErrNotExist }); got != filepath.Join(".", ".local", "state", "evener", "run") {
-		t.Fatalf("DefaultDir fallback = %q", got)
-	}
 	home := filepath.Join(string(filepath.Separator), "home", "test")
-	if got := defaultDir(func() (string, error) { return home, nil }); got != filepath.Join(home, ".local", "state", "evener", "run") {
-		t.Fatalf("DefaultDir home = %q", got)
+	t.Setenv("HOME", home)
+	if got, err := DefaultDir(); err != nil || got != filepath.Join(home, ".local", "state", "evener", "run") {
+		t.Fatalf("DefaultDir home = %q, %v", got, err)
 	}
-	_ = DefaultDir()
 
 	dir := t.TempDir()
 	entry := Entry{PID: 42, Address: "local"}

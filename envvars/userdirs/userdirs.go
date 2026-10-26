@@ -98,7 +98,16 @@ func DefaultStateHome() (string, error) {
 }
 
 // DefaultStateRoot resolves the Evener state root from the process
-// environment.
+// environment: $XDG_STATE_HOME/evener, or ~/.local/state/evener.
+//
+// It holds machine-generated, non-config state: the auth token, the past-
+// session index, the hub lock, and the daemon rendezvous/log directory. It is
+// the evener-wide counterpart to DefaultConfigRoot (user-editable config, e.g.
+// providers.toml) and to agent.RuntimeDir (per-project session state, also
+// under $XDG_STATE_HOME/evener). EVENER_STATE_DIR does NOT override this root:
+// that variable is a per-invocation project/session state override, a
+// different concept from this evener-wide root, and XDG_STATE_HOME is already
+// the standard override for it.
 func DefaultStateRoot() (string, error) {
 	return StateRoot(envvars.XDGStateHome.Getenv(), os.UserHomeDir)
 }

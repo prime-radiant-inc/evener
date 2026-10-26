@@ -17,7 +17,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
@@ -42,26 +42,15 @@ type Entry struct {
 	SpawnedBy    string    `json:"spawned_by,omitempty"`
 }
 
-// DefaultDir returns the canonical rendezvous directory:
-// $XDG_STATE_HOME/evener/run, or ~/.local/state/evener/run when
-// XDG_STATE_HOME is unset. This mirrors cmdutil.DefaultStateRoot's
-// resolution; it is duplicated here (rather than imported) to keep this
-// low-level package free of a dependency on the cmd helper layer — see
-// appwire/frame_recorder.go for the same tradeoff.
-func DefaultDir() string {
-	return defaultDir(os.UserHomeDir)
-}
-
-func defaultDir(userHomeDir func() (string, error)) string {
-	base := envvars.XDGStateHome.Getenv()
-	if base == "" {
-		home, err := userHomeDir()
-		if err != nil || home == "" {
-			home = "."
-		}
-		base = filepath.Join(home, ".local", "state")
+// DefaultDir returns the canonical rendezvous directory,
+// <state root>/run (see userdirs.StateRoot). It returns
+// userdirs.ErrNoStateHome when no state root can be resolved.
+func DefaultDir() (string, error) {
+	root, err := userdirs.DefaultStateRoot()
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(base, "evener", "run")
+	return filepath.Join(root, "run"), nil
 }
 
 // Write creates dir if necessary and writes <dir>/<pid>.json atomically.

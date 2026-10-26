@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // fixtureLoad loads the 40-provider fixture with the real curated overlay,
@@ -1054,5 +1056,31 @@ func TestLoad_WithInstances(t *testing.T) {
 	tiny := r.explicit["tiny"]
 	if tiny == nil || tiny.providerID != "openai" || tiny.head.Protocol != ProtocolOpenAIChat || !tiny.injected {
 		t.Fatalf("tiny: %+v", tiny)
+	}
+}
+
+func TestLoadWithoutStateRootOrHomeReportsNoStateHome(t *testing.T) {
+	data, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer())
+	if !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("Load error = %v, want ErrNoStateHome", err)
+	}
+}
+
+func TestLoadDefaultsStateRootFromInjectedEnv(t *testing.T) {
+	data, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	r, err := Load(WithSnapshot(data), WithEnv(mapEnv(map[string]string{"HOME": home})), WithNoUserLayer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := r.StateRoot(), filepath.Join(home, ".local", "state", "evener"); got != want {
+		t.Fatalf("StateRoot = %q, want %q", got, want)
 	}
 }

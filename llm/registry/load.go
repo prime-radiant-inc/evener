@@ -199,17 +199,15 @@ func defaultConfigRoot(env func(string) (string, bool)) string {
 	return userdirs.ConfigRoot(xdg, func() (string, error) { return home, nil })
 }
 
-// defaultStateRoot mirrors cmdutil.DefaultStateRoot: $XDG_STATE_HOME/evener,
-// else ~/.local/state/evener.
-func defaultStateRoot(env func(string) (string, bool)) string {
-	if base, ok := env("XDG_STATE_HOME"); ok && base != "" {
-		return filepath.Join(base, "evener")
-	}
-	home, _ := env("HOME")
-	if home == "" {
-		home = "."
-	}
-	return filepath.Join(home, ".local", "state", "evener")
+// defaultStateRoot resolves the registry's state root from its injected
+// environment function (userdirs.StateRoot), so tests do not depend on the
+// process environment.
+func defaultStateRoot(env func(string) (string, bool)) (string, error) {
+	xdg, _ := env("XDG_STATE_HOME")
+	return userdirs.StateRoot(xdg, func() (string, error) {
+		home, _ := env("HOME")
+		return home, nil
+	})
 }
 
 // Load assembles the registry from the embedded snapshot, the curated
@@ -222,7 +220,11 @@ func Load(opts ...Option) (*Registry, error) {
 		opt(o)
 	}
 	if o.stateRoot == "" {
-		o.stateRoot = defaultStateRoot(o.env)
+		root, err := defaultStateRoot(o.env)
+		if err != nil {
+			return nil, fmt.Errorf("registry state root: %w", err)
+		}
+		o.stateRoot = root
 	}
 	r := &Registry{
 		presets: map[string]Transport{}, topGlobs: map[string]map[string]Model{},

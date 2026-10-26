@@ -368,7 +368,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// Resolve runtime paths.
 	runDir := cfg.RunDir
 	if runDir == "" {
-		runDir = rendezvous.DefaultDir()
+		var err error
+		if runDir, err = rendezvous.DefaultDir(); err != nil {
+			return fmt.Errorf("resolve runtime directory: %w", err)
+		}
 	}
 	// Initial ownership discovery must be ready before any request can resume
 	// a saved session; the background watcher is not a startup barrier.
