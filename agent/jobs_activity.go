@@ -1426,13 +1426,14 @@ func appendActivityBranchError(branch *appwire.JobActivityBranchState, message s
 // Branch.Error grow with the journal — an unbounded envelope input, and
 // unreadable besides — while the count and the first offender are what a
 // reader needs. A single offender keeps the original per-record wording so
-// the common case reads exactly as it always did.
+// the common case reads exactly as it always did. Retired delegate rows are
+// ignored state kept in the journal, not offenders.
 func unsupportedActivityJobTypesError(records []*jobstore.JobRecord) string {
 	count := 0
 	var firstID string
 	var firstType jobstore.JobType
 	for _, rec := range records {
-		if rec == nil || rec.Type == jobstore.JobShell {
+		if rec == nil || rec.Type == jobstore.JobShell || string(rec.Type) == delegateResourceType {
 			continue
 		}
 		count++

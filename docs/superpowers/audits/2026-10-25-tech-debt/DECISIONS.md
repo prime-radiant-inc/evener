@@ -110,7 +110,58 @@ Phase it out. New code and the shared durable writer use the real `os` package, 
 - W1-64 and W1-59 classify each fallback by version direction, as in Q1.
 - GAPS.md G3 names the real producers of the fuzz corpus.
 
+## Q12, second tier. Error strings in the copy-oracle ratchet
+
+Yes. The ratchet also counts tests that assert on error-message text, with an allowlist of today's sites so the count only goes down. W1-50 burns the allowlist down area by area. Unblocks W1-49.
+
+## Merge rule for Wave 1
+
+Final merges are serialized through a shared lock. The lock holder merges `origin/main`, pushes, waits for green CI on that head, then admin squash merges. No admin merge of a branch that is behind main.
+
+## Q20. `hub.toml` as machine database, and the host retention knobs
+
+- End state: `hub.toml` holds only `[[hosts]]` and scalar operator config. Every machine-managed record (`host_records`, `generations`, `mutation_receipts`, `tombstones`, staged and pruned receipts, teardown remnants and attempts) moves into the `hostops` store. `pending_store_sync` and `mirror_commits` and the two-file commit protocol go away. Existing files that carry these sections are migrated once on startup, and per Q1 that migration stays. A design record comes first, then several PRs with recovery tests (W2-13).
+- Retention knobs: nobody tunes the undocumented ones. Keep `host_probe_timeout`, `host_min_free_space_bytes` and `host_tombstone_retention`. Fold the rest into one internal defaults value that the pruning code reads. A `hub.toml` that still sets a removed key starts normally with a warning naming the key (recovery, per AGENTS.md).
+
+## `preDispatchRefusalError` not-accepted branch (hub-app-rest-5)
+
+Delete it, along with its stated invariant, its wrap sites and the parity test that reaches it only with a synthetic error. Nothing produces that error today. Routed to W1-32.
+
+## Wave 2 (2026-10-26)
+
+Design records for every Wave 2 entry are in [designs/](designs/), one file per entry.
+
+Jesse's rules for Wave 2:
+- Autonomy: the orchestrator does the design and implementation, behavior changes included. It follows the roadmap, this file and the product docs, and asks Jesse only about true product calls.
+- `agent` is internal. Move and rename exported symbols freely, update every caller, and add no forwarding aliases. `llm` stays public (Q3).
+- `@evener/appwire-client` is consumed only in this repo. Its exports can change when the web and native apps change in the same PR.
+- W2-18: fold `mobile/src` into `mobile-native/src`.
+- W2-13: when the `hostops` store cannot open, keep serving the `[[hosts]]` in `hub.toml` so healthy hosts keep working. Quarantine the bad store, rebuild what can be rebuilt, and refuse only host add, remove and edit until it reopens. Retry automatically.
+- W2-08: keep the ripgrep arm. Replace the gitignore cost estimator with one simple, very high cap. A hostile `.gitignore` is not a real threat model.
+- W2-17: the Live next/previous shortcut follows the needs-you rule, so a dialog in another window does not block it.
+
+Orchestrator defaults for the other questions in the design records (Jesse can overrule any of them):
+- Each record's stated recommendation applies, unless listed below.
+- W2-13: warn about a removed `host_*` key on every boot while it is present. Keep a one-time copy of the original `hub.toml` before the migration rewrites it. A host mutation writes the store intent first, then `hub.toml`. In `WebConfig`, delete only the knob fields.
+- W2-12: the local resolver returns Invalid for an undecodable `thread/read` body, matching the hub. `urls/remove` becomes retry-safe if it is idempotent, proved red-first.
+- W2-18: `ConversationScreenView` becomes one screen composed from hooks, with no navigation change. The two `confirmShutDown` prompts become one with an optional title.
+- W2-17: the palette help lists rebound chords for the app-global rows. `ResourceState.normalized` becomes required once the compat path is gone.
+- W2-10: no split of the hub `main` package for now. Revisit after W2-13. `serve --help` may take the unified wording.
+- W2-03: `agent/memorypages` is a new package, with no alias for the old name; `tools/prompt-eval/memory-lab` is updated in the same PR. Skip the envsnapshot extraction.
+- W2-14: internal revision and lifecycle helpers leave the public subpaths.
+- W2-16: split into independent PRs (Spawn, transcript scroll, small cleanups). Defer ProviderConnection and Composer.
+- W2-19: test-file splits go first as pure moves. Split the named files plus the agent test files over 2,000 lines. The testing guide gets a soft 2,500-line cap, with no lint gate.
+- W2-05: the quiet-watch registry becomes a field on the owner Session, matching today's per-session behavior.
+- Behavior changes these records surfaced but don't need get filed separately and are not done here: `job_watch clear` on descendant watches (W2-02), checkpointed carry for the session-log strategy (W2-04), and the lenient shell/model_list clamps (W2-06).
+
+## G1. `tools/prompt-eval/memory-lab`
+
+It was a one-off experiment. Delete it from the tree (history keeps it), about -9,000 lines. W2-03 then has no memory-lab caller to update.
+
+## Wave 3
+
+The engineering items in [GAPS.md](GAPS.md) run after Wave 2, with the same autonomy: fuzz corpus (G3), the committed bundle (G4), npm version skew (G5), `go.mod` (G6), logging (M1), concurrency and cancellation hygiene (M2), config sprawl (M3), dependencies (M4), and the test-orchestration overlap (M5).
+
 ## Still open
 
-- Q20 (`hub.toml` as machine database, and the 23 undocumented retention knobs). It is a Wave 2 design discussion (W2-13).
-- Q12, second tier only: whether the copy-oracle ratchet should also cover error-string assertions (W1-49). The AGENTS.md wording half is answered above.
+Nothing.

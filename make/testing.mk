@@ -230,7 +230,7 @@ test-short:
 ## fails-when: The first failing phase stops the gate and returns nonzero;
 ##   do not infer a verdict from partial logs.
 merge-approval-gate:
-	@tsv="$$(mktemp)"; trap 'rm -f "$$tsv"' EXIT INT TERM; \
+	@tsv="$$(mktemp "$${TMPDIR:-/tmp}/evener-gate-timing.XXXXXX")"; trap 'rm -f "$$tsv"' EXIT INT TERM; \
 		$(MAKE) lint && \
 		$(MAKE) build && \
 		$(MAKE) docs-check && \
@@ -296,15 +296,10 @@ vet:
 ##   strictly against that class's ceiling (a breach is nonzero under CHECK=1 in
 ##   a CI-shaped environment), while a test in no class keeps the flat
 ##   perTestCeilingSeconds and is warn-only in every mode, CHECK=1 included, so
-##   the unclassified backlog cannot red the gate (#4601). While the budget
-##   file's metric marker is absent (the checked-in pre-#172 baseline, until a
-##   rebaseline rewrites it under package wall time), the Go-package ratio check
-##   is suspended to a warning; the
-##   frontend ("web") row warns with them: its metric did not change, but the
-##   checked-in number was blessed on a quiet workstation and a four-core CI
-##   runner measures the same suite 2.6x-3.9x higher, so it is not comparable to
-##   a CI run either. While the file carries no wall-time marker every ratio
-##   warns with its numbers.
+##   the unclassified backlog cannot red the gate (#4601). The checked-in
+##   budget carries the package-wall-seconds metric marker, so per-package ratios
+##   (frontend "web" included) are enforced; a budget file without the marker
+##   downgrades every ratio failure to a warning.
 ## trigger: Local/on-demand. merge-approval-gate runs the check through
 ##   --measured over the rows its own ROOT_FULL=1 make test run captured, so
 ##   enforcing the budget no longer needs a second full test run (issue #144);

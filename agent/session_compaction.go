@@ -618,7 +618,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			artifactProduced = true
 		}
 	})
-	// A non-default Strategy (memory-crystals, recursive-distill, ooda) can
+	// A non-default Strategy (ooda) can
 	// append its own steering turn AFTER its fold layers run, inside its own
 	// ManageContext — not through runPreCompactHook below, so it needs its own
 	// reporting channel into the same injected-turn correction (issue #634).
@@ -763,8 +763,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// during this call from either source: runPreCompactHook (pinned-note
 	// handoff, PreCompact plugin hook output, goal-objective steering —
 	// appendSteeringMessagesToHistory above) or a Strategy's own post-fold
-	// injection reported via WithPostFoldInjectionCallback (memory-crystals,
-	// recursive-distill, ooda). Both land strictly after whatever the fold
+	// injection reported via WithPostFoldInjectionCallback (ooda). Both land strictly after whatever the fold
 	// preserved, so a caller that nets them against the fold's own removal (a
 	// plain before/after turn-count delta) under-shrinks the N4 in-flight-turn
 	// boundary by exactly this many turns (issue #634 Finding 1) — adding this

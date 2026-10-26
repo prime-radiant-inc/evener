@@ -274,14 +274,6 @@ func selectStrategy(cfg SessionConfig, cm *contextmgr.Manager, sess *Session) (c
 		return contextmgr.NewSessionLogStrategy(cm, host)
 	case "ooda":
 		return contextmgr.NewOODAStrategy(cm, host)
-	case "obs-mask":
-		return contextmgr.NewObsMaskStrategy(cm), nil
-	case "checkpoint-pred":
-		return contextmgr.NewCheckpointPredStrategy(cm), nil
-	case "memory-crystals":
-		return contextmgr.NewMemoryCrystalsStrategy(cm), nil
-	case "recursive-distill":
-		return contextmgr.NewRecursiveDistillStrategy(cm), nil
 	default:
 		return nil, fmt.Errorf("unknown context strategy: %q", cfg.ContextStrategy)
 	}
@@ -1991,6 +1983,14 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 			allAgents[exposedAgentCatalogKey(p, rawKey, agent)] = agent
 		}
 		s.pendingHookWarnings = append(s.pendingHookWarnings, commandUnenforcedFieldWarnings(p)...)
+		for _, skipped := range p.SkippedComponents {
+			s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
+				Source:     "plugin",
+				Title:      "plugin " + skipped.Kind + " skipped",
+				Message:    skipped.File + ": " + skipped.Reason,
+				PluginName: p.Manifest.Name,
+			})
+		}
 		for event, eventHooks := range p.Hooks {
 			runner.Add(event, eventHooks...)
 		}

@@ -13,7 +13,7 @@ import (
 // the unknown-strategy error path.
 func TestS2Cov_SelectStrategy_AllNamedStrategies(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"", "compact", "recall", "session-log", "ooda", "obs-mask", "checkpoint-pred", "memory-crystals", "recursive-distill"} {
+	for _, name := range []string{"", "compact", "recall", "session-log", "ooda"} {
 		t.Run("strategy="+name, func(t *testing.T) {
 			t.Parallel()
 			sess := newSession(t, withConfig(SessionConfig{

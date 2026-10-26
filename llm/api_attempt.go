@@ -220,7 +220,7 @@ func (a *APIAttempt) CredentialMaterial() APILogCredentialMaterial {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return mergeAPILogCredentialMaterial(APILogCredentialMaterial{}, a.meta.CredentialMaterial)
+	return APILogCredentialMaterial{}.Merge(a.meta.CredentialMaterial)
 }
 
 // SetRequestBody supplies bytes observed at an HTTP transport boundary. It is
@@ -242,12 +242,12 @@ func (a *APIAttempt) MergeCredentialMaterial(material APILogCredentialMaterial) 
 		return
 	}
 	a.mu.Lock()
-	material = mergeAPILogCredentialMaterial(a.meta.CredentialMaterial, material)
+	material = a.meta.CredentialMaterial.Merge(material)
 	a.meta.CredentialMaterial = material
 	a.mu.Unlock()
 
 	a.group.mu.Lock()
-	a.group.credentialMaterial = mergeAPILogCredentialMaterial(a.group.credentialMaterial, material)
+	a.group.credentialMaterial = a.group.credentialMaterial.Merge(material)
 	a.group.mu.Unlock()
 }
 
@@ -266,7 +266,7 @@ func (a *APIAttempt) SetWireRequestMetadata(method, endpoint string, headers htt
 	a.mu.Unlock()
 
 	a.group.mu.Lock()
-	a.group.credentialMaterial = mergeAPILogCredentialMaterial(a.group.credentialMaterial, material)
+	a.group.credentialMaterial = a.group.credentialMaterial.Merge(material)
 	a.group.mu.Unlock()
 }
 
@@ -289,7 +289,7 @@ func BeginAPIAttempt(ctx context.Context, meta APIAttemptMeta) *APIAttempt {
 	// carries the protocol the agent reads back to stamp the turn.
 	group.finalProtocol = meta.Protocol
 	group.bindSinkLocked(state)
-	group.credentialMaterial = mergeAPILogCredentialMaterial(group.credentialMaterial, meta.CredentialMaterial)
+	group.credentialMaterial = group.credentialMaterial.Merge(meta.CredentialMaterial)
 	meta.CredentialMaterial = group.credentialMaterial
 	if !sinkPersistsRecords(group.sink) {
 		group.mu.Unlock()
@@ -444,26 +444,6 @@ func apiLogCredentialMaterialFromContext(ctx context.Context) (APILogCredentialM
 	}
 	state, ok := ctx.Value(apiLogCredentialMaterialContextKey{}).(apiLogCredentialMaterialContext)
 	return state.material, ok
-}
-
-func mergeAPILogCredentialMaterial(left, right APILogCredentialMaterial) APILogCredentialMaterial {
-	headerNames := make([]string, 0, len(left.HeaderNames)+len(right.HeaderNames))
-	for name := range left.HeaderNames {
-		headerNames = append(headerNames, name)
-	}
-	for name := range right.HeaderNames {
-		headerNames = append(headerNames, name)
-	}
-	queryNames := make([]string, 0, len(left.QueryNames)+len(right.QueryNames))
-	for name := range left.QueryNames {
-		queryNames = append(queryNames, name)
-	}
-	for name := range right.QueryNames {
-		queryNames = append(queryNames, name)
-	}
-	values := append([]string(nil), left.Values...)
-	values = append(values, right.Values...)
-	return NewAPILogCredentialMaterial(headerNames, queryNames, values...)
 }
 
 // Settle finalizes the attempt group with the given outcome class.

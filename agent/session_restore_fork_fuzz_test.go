@@ -44,7 +44,6 @@ var rfzTexts = []string{"", "hello", "edited message", "  ", "line1\nline2", "\x
 // the "unknown context strategy" clean-error return.
 var rfzStrategies = []string{
 	"", "compact", "recall", "session-log", "ooda",
-	"obs-mask", "checkpoint-pred", "memory-crystals", "recursive-distill",
 	"rfz-bogus-strategy",
 }
 

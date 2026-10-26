@@ -43,7 +43,7 @@ func TestDiscoverPluginCommands_SetsSourceAndFile(t *testing.T) {
 	if err := os.WriteFile(file, []byte("body"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	commands, err := discoverPluginCommands(dir, nil, "p")
+	commands, _, err := discoverPluginCommands(dir, nil, "p")
 	if err != nil {
 		t.Fatalf("discoverPluginCommands: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestDiscoverPluginCommands_RelativePluginDirSetsAbsoluteFile(t *testing.T) 
 	if err := os.WriteFile(file, []byte("body"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	commands, err := discoverPluginCommands(dir, nil, "p")
+	commands, _, err := discoverPluginCommands(dir, nil, "p")
 	if err != nil {
 		t.Fatalf("discoverPluginCommands: %v", err)
 	}
@@ -274,7 +274,7 @@ model: opus
 # B
 `)
 
-	commands, err := discoverPluginCommands(dir, nil, "my-plugin")
+	commands, _, err := discoverPluginCommands(dir, nil, "my-plugin")
 	if err != nil {
 		t.Fatalf("discoverPluginCommands error: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestDiscoverPluginCommands_NoFrontmatterFile(t *testing.T) {
 		[]byte("Assign two subagents to review adversarially.\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	commands, err := discoverPluginCommands(dir, nil, "p")
+	commands, _, err := discoverPluginCommands(dir, nil, "p")
 	if err != nil {
 		t.Fatalf("discoverPluginCommands error: %v", err)
 	}
@@ -330,7 +330,7 @@ func TestDiscoverPluginCommands_NoFrontmatterFile(t *testing.T) {
 
 func TestDiscoverPluginCommands_NoDir(t *testing.T) {
 	dir := t.TempDir()
-	commands, err := discoverPluginCommands(dir, nil, "p")
+	commands, _, err := discoverPluginCommands(dir, nil, "p")
 	if err != nil {
 		t.Fatalf("discoverPluginCommands error: %v", err)
 	}
@@ -351,8 +351,12 @@ not yaml: [}
 `), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := discoverPluginCommands(dir, nil, "p"); err == nil {
-		t.Fatal("expected error for bad command file")
+	commands, skipped, err := discoverPluginCommands(dir, nil, "p")
+	if err != nil {
+		t.Fatalf("a bad command file must be skipped, not fail discovery: %v", err)
+	}
+	if len(commands) != 0 || len(skipped) != 1 || skipped[0].Kind != "command" {
+		t.Fatalf("commands = %v, skipped = %v, want the bad file skipped", commands, skipped)
 	}
 }
 
@@ -365,7 +369,7 @@ func TestDiscoverPluginCommands_IgnoresNonMarkdownAndDirs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(commandsDir, "notes.txt"), []byte("not a command"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	commands, err := discoverPluginCommands(dir, nil, "p")
+	commands, _, err := discoverPluginCommands(dir, nil, "p")
 	if err != nil {
 		t.Fatalf("discoverPluginCommands error: %v", err)
 	}
@@ -395,7 +399,7 @@ Body.
 	if err != nil {
 		t.Fatal(err)
 	}
-	commands, err := discoverPluginCommands(dir, override, "p")
+	commands, _, err := discoverPluginCommands(dir, override, "p")
 	if err != nil {
 		t.Fatalf("discoverPluginCommands error: %v", err)
 	}

@@ -297,7 +297,7 @@ func TestPastThreadSkillLoaderIgnoresMalformedPluginComponents(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeThreadSkillPlugin(t, t.TempDir(), "malformed-plugin", "valid-skill", "valid value")
 			tc.setup(t, dir)
-			if _, err := plugin.Load(dir); err == nil {
+			if instance, err := plugin.Load(dir); err == nil && len(instance.SkippedComponents) == 0 {
 				t.Fatal("full plugin loader unexpectedly accepted malformed component")
 			}
 			got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{Config: schema.ConfigSnapshot{PluginDirs: []string{dir}}}})

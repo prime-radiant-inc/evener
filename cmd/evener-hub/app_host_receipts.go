@@ -19,13 +19,10 @@ package hub
 // compaction or a tombstone purge dropped (spec §6: "a replay naming a marked
 // key refuses as `stale-entry` (pruned-generation)").
 //
-// DEFERRED (S12): §5's two-write staged-marker protocol
-// (pending_mutation/finalizing_mutation, swapStarted/teardownStarted, the
-// runtime phase, attempt tokens, foreign-marker finalization, boot recovery)
-// is the later slice's seam. The single-write receipt is safe for this slice
-// because no post-commit failure path exists yet: teardowns are best-effort
-// and un-commit on failure, exactly as today, and the rollback drops the
-// receipt with the entry.
+// §5's two-write staged-marker protocol (the staged receipt, swapStarted and
+// teardownStarted, the runtime phase, attempt tokens, foreign-marker
+// finalization, boot recovery) lives in app_host_commit.go and
+// app_host_remnants.go.
 
 import (
 	"fmt"

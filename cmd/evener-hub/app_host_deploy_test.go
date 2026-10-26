@@ -159,12 +159,10 @@ type deploySeams struct {
 	restart        func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight) error
 	// restartVersion names the scripted restart's target; empty uses facts.Version.
 	restartVersion string
-	remnant        func(name string) (string, bool)
 	// attachUnderGate is the operation-owned attach/reattach seam (§6 seam (d)).
 	// Nil takes a handoff-only stub: no manager owns channels in these tests, so
 	// the worker's reattach is a no-op unless a test scripts it.
 	attachUnderGate func(ctx context.Context, entry hostreg.Host, holder hostops.Holder, explicit bool) (func() bool, error)
-	lastKnown       func(entry hostreg.Host, probe hubcore.HostRuntimeProbe, facts hubcore.HostPlanFacts) error
 	counters        *deployCounters
 }
 
@@ -252,9 +250,7 @@ func deployTestHub(t *testing.T, configPath string, entries []hostreg.Host, seam
 		return target, restart(ctx, host, facts)
 	}
 	m.cfg.attachedFacts = attached
-	m.cfg.remnantFence = seams.remnant
 	m.cfg.attachUnderGate = attachUnderGate
-	m.cfg.lastKnownPublish = seams.lastKnown
 	return m, store, registry
 }
 
@@ -442,48 +438,64 @@ func TestHostDeployRefusesRemnantOpenPastDedup(t *testing.T) {
 	entry := deployTestHost()
 	configPath := deployTestConfigPath(t, entry)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
-		probe:   deployProbeScript(t),
-		remnant: func(string) (string, bool) { return "remnant-7", true },
+		probe: deployProbeScript(t),
 	})
 	token := mintDeployToken(t, store, m, entry, "v0.9.0", true, "v1.2.3")
-	_, err := m.Deploy(context.Background(), appwire.HostDeployParams{
+	created, err := m.Deploy(context.Background(), appwire.HostDeployParams{
 		Name: entry.Name, Token: token.Value, OperationID: "op-1",
+	})
+	if err != nil {
+		t.Fatalf("Deploy before the fence: %v", err)
+	}
+	waitOperationState(t, store, created.ID, hostops.StateComplete)
+
+	remnantID := seedOpenRemnant(t, m, entry.Name)
+	recordsBefore := len(store.Records())
+	fresh := mintDeployToken(t, store, m, entry, "v0.9.0", true, "v1.2.3")
+	_, err = m.Deploy(context.Background(), appwire.HostDeployParams{
+		Name: entry.Name, Token: fresh.Value, OperationID: "op-2",
 	})
 	info, data, code := deployWireInfo(t, err)
 	if info != appwire.ErrorRemnantOpen || code != appwire.CodeConflict {
 		t.Fatalf("remnant refusal = (%q, code %d), want (%q, %d)", info, code, appwire.ErrorRemnantOpen, appwire.CodeConflict)
 	}
-	var remnantID string
-	if uerr := json.Unmarshal(data["remnantId"], &remnantID); uerr != nil || remnantID != "remnant-7" {
-		t.Fatalf("remnantId = %q (%v), want remnant-7", remnantID, uerr)
+	var gotRemnantID string
+	if uerr := json.Unmarshal(data["remnantId"], &gotRemnantID); uerr != nil || gotRemnantID != remnantID {
+		t.Fatalf("remnantId = %q (%v), want %q", gotRemnantID, uerr, remnantID)
 	}
 	if _, ok := store.OutstandingToken(entry.Name); !ok {
 		t.Fatal("the remnant refusal consumed the token")
 	}
-	if got := len(store.Records()); got != 0 {
-		t.Fatalf("the remnant refusal created records: %d", got)
+	if got := len(store.Records()); got != recordsBefore {
+		t.Fatalf("the remnant refusal created records: %d, want %d", got, recordsBefore)
 	}
 
-	// A dedup hit beats the fence: create the record with the fence lifted.
-	m.cfg.remnantFence = nil
-	created, err := m.Deploy(context.Background(), appwire.HostDeployParams{
-		Name: entry.Name, Token: token.Value, OperationID: "op-1",
-	})
-	if err != nil {
-		t.Fatalf("Deploy with the fence lifted: %v", err)
-	}
-	waitOperationState(t, store, created.ID, hostops.StateComplete)
-	m.cfg.remnantFence = func(string) (string, bool) { return "remnant-7", true }
+	// A dedup hit beats the fence.
 	replay, err := m.Deploy(context.Background(), appwire.HostDeployParams{
 		Name: entry.Name, Token: strings.Repeat("C", 32), OperationID: "op-1",
 	})
 	if err != nil {
 		t.Fatalf("dedup hit with an open remnant refused: %v", err)
 	}
-	if replay.State != appwire.OperationStatePending && replay.State != appwire.OperationStateRunning &&
-		replay.State != appwire.OperationStateComplete {
-		t.Fatalf("replay state = %q", replay.State)
+	if replay.ID != created.ID {
+		t.Fatalf("replay id = %q, want the original record %q", replay.ID, created.ID)
 	}
+}
+
+// seedOpenRemnant stages an open teardown remnant fencing name and returns its id.
+func seedOpenRemnant(t *testing.T, m *hubHostManager, name string) string {
+	t.Helper()
+	host, ok := m.cfg.hosts.Get(name)
+	if !ok {
+		t.Fatalf("no live host %q", name)
+	}
+	remnantID := mintRemnantID()
+	remnant := newTeardownRemnant(hostRemnantKindRemove, "remove-host", host, "", m.nowTime())
+	entries := m.cfg.store.snapshot()
+	if err := m.persistHosts(entries, entries, hostPersistChange{remnant: &pendingHostRemnant{RemnantID: remnantID, Remnant: remnant}}); err != nil {
+		t.Fatalf("stage remnant: %v", err)
+	}
+	return remnantID
 }
 
 // TestHostDeployRefusesABusyGate pins §5's busy classes as deploy renders them

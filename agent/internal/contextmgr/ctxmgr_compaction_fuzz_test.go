@@ -17,8 +17,8 @@ import (
 
 // This file fuzzes the compaction / context-management core of the contextmgr
 // package: the deterministic checkpoint distiller (collectCheckpointData +
-// formatCheckpoint), the LLM summarizer (summarizeWithLLMSteered), and the two
-// pluggable ManageContext strategies (CheckpointPredStrategy, SessionLogStrategy).
+// formatCheckpoint), the LLM summarizer (summarizeWithLLMSteered), and the
+// pluggable ManageContext strategy (SessionLogStrategy).
 //
 // All new top-level identifiers are prefixed with the lane token "ctxmgr_" so
 // this file never collides with a sibling fuzz lane editing the same package. It
@@ -419,55 +419,6 @@ func ctxmgr_manageThresholds(cm *Manager, sel uint8, preserveSel uint8) {
 		cm.SummarizeThreshold = 2.0
 	}
 	cm.PreserveRecentTurns = 1 + int(preserveSel)%8
-}
-
-// FuzzCtxmgrCheckpointPredManageContext drives CheckpointPredStrategy.ManageContext
-// end to end: observation masking, thinking clearing, predictive checkpoint (LLM,
-// falling back to the deterministic checkpoint on the fault-injected error), and
-// LLM summarization. The scripted adapter never hits the network.
-//
-// Oracles:
-//   - never panic; ManageContext returns nil.
-//   - compaction never grows history: len(after) <= len(before).
-//   - determinism: same input + same fault plan → same resulting history
-//     (compared by turn kind + message content).
-func FuzzCtxmgrCheckpointPredManageContext(f *testing.F) {
-	f.Add([]byte("\x00\x05hello\x02\x04work\x03\x06/a/b.go\x00\x03end\x02\x03more"), uint8(0x80), uint8(2), []byte(nil))
-	f.Add([]byte("\x05\x03hey\x06\x02ls\x040\x0a\x02t\x04tk"), uint8(0x03), uint8(3), []byte{0x00, 0x08})
-	f.Add([]byte{}, uint8(0), uint8(1), []byte(nil))
-	// Rich history + summarize-on + LLM success (nil fault plan): drives the
-	// predictive-checkpoint success path plus every prior masking layer.
-	f.Add(ctxmgr_richHistorySeed, uint8(0x80), uint8(2), []byte(nil))
-	// Same, but with an injected LLM fault so the deterministic-checkpoint
-	// fallback branch runs.
-	f.Add(ctxmgr_richHistorySeed, uint8(0x80), uint8(2), []byte{0x00, 0x00, 0x00})
-
-	f.Fuzz(func(t *testing.T, data []byte, thrSel uint8, preserveSel uint8, faultPlan []byte) {
-		run := func() []schema.Turn {
-			r := &ctxmgr_reader{b: data}
-			history := ctxmgr_buildHistory(r)
-
-			profile := testOpenAIProfileWithContextWindow(minSummarizingWindow)
-			client := ctxmgr_scriptedClient(profile.ID(), "## Progress\npredicted checkpoint body", faultPlan)
-			cm := NewManager(profile, client, cheapmodel.New(client))
-			ctxmgr_manageThresholds(cm, thrSel, preserveSel)
-
-			s := NewCheckpointPredStrategy(cm)
-			before := len(history)
-			if err := s.ManageContext(context.Background(), &history, int(thrSel), ctxmgr_noopEmit); err != nil {
-				t.Fatalf("ManageContext returned error: %v", err)
-			}
-			if len(history) > before {
-				t.Fatalf("compaction grew history: %d -> %d", before, len(history))
-			}
-			return history
-		}
-		a := run()
-		b := run()
-		if !reflect.DeepEqual(ctxmgr_fingerprints(a), ctxmgr_fingerprints(b)) {
-			t.Fatalf("CheckpointPredStrategy.ManageContext not deterministic")
-		}
-	})
 }
 
 // FuzzCtxmgrSessionLogManageContext drives SessionLogStrategy.ManageContext:
