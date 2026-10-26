@@ -84,7 +84,6 @@ var rootOnlyWorktreeTools = []string{"manage_worktree"}
 type subagent struct {
 	id   string
 	sess *Session
-	emit func(events.EventKind, events.EventData)
 
 	mu                    sync.Mutex
 	running               bool
@@ -335,7 +334,7 @@ func disposeUnadoptedSubagentSession(sess *Session) {
 	// stream, so a cleanup failure can still be surfaced as a warning.
 	if sess != nil {
 		if err := removeDelegateArtifacts(sess.stateDir, sess.id); err != nil {
-			sess.emit(events.EventWarning, events.WarningData{Message: "delegate artifacts directory cleanup failed: " + err.Error()})
+			sess.emit(events.WarningData{Message: "delegate artifacts directory cleanup failed: " + err.Error()})
 		}
 		// The child never became a delegate, so the scratch it was given — named
 		// or not — holds nothing anyone will come back for: remove it rather than
@@ -1181,13 +1180,13 @@ func (s *Session) prepareSubagentRunFromSelection(
 				return err
 			}
 			summary := taskpkg.Summarize(subStore.View())
-			subSess.emit(events.EventTaskUpdated, taskUpdatedData(summary, subSess.taskStoreOwnerSessionID(), epoch, revision))
+			subSess.emit(taskUpdatedData(summary, subSess.taskStoreOwnerSessionID(), epoch, revision))
 			return nil
 		})
 		if err := populateErr; err != nil {
 			// Non-fatal: surface as a warning so the spawn still proceeds but the
 			// failure is observable instead of silently swallowed.
-			s.emit(events.EventWarning, warningDataFromError("failed to populate subagent tasks from templates", err))
+			s.emit(warningDataFromError("failed to populate subagent tasks from templates", err))
 		}
 		// A shared store is the parent's list, not this child's plan. Announcing
 		// it would push every parent step and prompt into a leaf delegate's
@@ -1253,7 +1252,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 	sub := &subagent{
 		id:           subSess.id,
 		sess:         subSess,
-		emit:         s.emit,
 		running:      true,
 		status:       SubagentRunning,
 		done:         make(chan struct{}),
@@ -1600,7 +1598,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		_, err := childSess.ProcessInputKind(driveCtx, "", nil, EntryNotification)
 		if err != nil {
 			if cleanupErr := sub.gateFatalRun(err); cleanupErr != nil {
-				childSess.emit(events.EventWarning, warningDataFromError("delegate owned-work cleanup incomplete", cleanupErr))
+				childSess.emit(warningDataFromError("delegate owned-work cleanup incomplete", cleanupErr))
 			}
 		}
 	}()
@@ -2018,7 +2016,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			finishErr = executeErr
 		}
 		if finishErr != nil {
-			a.sess.emit(events.EventWarning, warningDataFromError("delegate generation settlement incomplete", finishErr))
+			a.sess.emit(warningDataFromError("delegate generation settlement incomplete", finishErr))
 		}
 	}
 	if restoreParentDriveNotify != nil {
@@ -2045,13 +2043,13 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	// drive that may never come.
 	if stableRun {
 		if pending, pendingErr := a.sess.pendingDelegateAttentionIDs(); pendingErr != nil {
-			a.sess.emit(events.EventWarning, warningDataFromError("inspect remaining delegate attention", pendingErr))
+			a.sess.emit(warningDataFromError("inspect remaining delegate attention", pendingErr))
 		} else if len(pending) != 0 {
 			if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
-				a.sess.emit(events.EventWarning, warningDataFromError("rearm remaining delegate attention", armErr))
+				a.sess.emit(warningDataFromError("rearm remaining delegate attention", armErr))
 			}
 		} else if clearErr := a.sess.delegateController.clearResolvedDelegateAttention(a.sess.owningDelegateID); clearErr != nil {
-			a.sess.emit(events.EventWarning, warningDataFromError("clear resolved delegate attention", clearErr))
+			a.sess.emit(warningDataFromError("clear resolved delegate attention", clearErr))
 		}
 	}
 	if done != nil {
@@ -2083,7 +2081,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 // ahead of the result.
 func (a *subagent) announceFinishedGeneration(lease delegateLease, announcements delegateMutationPlans) {
 	if err := a.sess.executeDelegateMutationPlans(announcements); err != nil {
-		a.sess.emit(events.EventWarning, warningDataFromError("delegate result delivery incomplete", err))
+		a.sess.emit(warningDataFromError("delegate result delivery incomplete", err))
 	}
 	if hook := a.sess.cfg.testOnly.subagentBeforeGenerationReleased; hook != nil {
 		hook(a, lease)

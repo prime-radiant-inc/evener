@@ -581,19 +581,6 @@ func TestCovWatchFrameJob(t *testing.T) {
 		t.Fatalf("value: jobID=%q delegateID=%q ok=%v", jobID, delegateID, ok)
 	}
 
-	// Pointer JobFinishedData.
-	d := &events.JobFinishedData{JobID: "job_2", DelegateID: "dlg_2"}
-	jobID, delegateID, ok = watchFrameJob(d)
-	if !ok || jobID != "job_2" || delegateID != "dlg_2" {
-		t.Fatalf("pointer: jobID=%q delegateID=%q ok=%v", jobID, delegateID, ok)
-	}
-
-	// Nil pointer.
-	_, _, ok = watchFrameJob((*events.JobFinishedData)(nil))
-	if ok {
-		t.Fatal("nil pointer should be false")
-	}
-
 	// Empty JobID → ok=false.
 	_, _, ok = watchFrameJob(events.JobFinishedData{JobID: ""})
 	if ok {
@@ -614,19 +601,6 @@ func TestCovJobFinishedEventData(t *testing.T) {
 	data, ok := jobFinishedEventData(events.JobFinishedData{JobID: "job_1"})
 	if !ok || data.JobID != "job_1" {
 		t.Fatalf("value: data=%+v ok=%v", data, ok)
-	}
-
-	// Pointer.
-	d := &events.JobFinishedData{JobID: "job_2"}
-	data, ok = jobFinishedEventData(d)
-	if !ok || data.JobID != "job_2" {
-		t.Fatalf("pointer: data=%+v ok=%v", data, ok)
-	}
-
-	// Nil pointer.
-	_, ok = jobFinishedEventData((*events.JobFinishedData)(nil))
-	if ok {
-		t.Fatal("nil pointer should be false")
 	}
 
 	// Other type.
@@ -894,7 +868,7 @@ func TestCovChildFatalRunGated(t *testing.T) {
 		t.Fatal("empty child should return false")
 	}
 
-	s.subagents = newSubagentManager(nil, 1)
+	s.subagents = newSubagentManager(1)
 	child := &subagent{id: "child1", fatalRunGated: true}
 	s.subagents.track(child)
 	if !s.childFatalRunGated("child1") {

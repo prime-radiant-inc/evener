@@ -87,35 +87,25 @@ func (r *wobs_reader) str() string {
 // ==========================================================================
 
 // wobs_drawEvent synthesizes a SessionEvent whose Data is one of the payload
-// shapes writeWatchFrameEvent switches on (value and pointer variants, plus a
-// nil-data case), with fuzzed string fields so truncation and line-ending
-// normalization inside the frame renderer are exercised.
+// shapes writeWatchFrameEvent switches on (plus a nil-data case), with fuzzed
+// string fields so truncation and line-ending normalization inside the frame
+// renderer are exercised.
 func wobs_drawEvent(r *wobs_reader) events.SessionEvent {
 	ev := events.SessionEvent{SessionID: "S1"}
-	switch r.intn(9) {
+	switch r.intn(5) {
 	case 0:
 		// nil data: writeWatchFrameEvent falls through with no event block.
 	case 1:
 		ev.Kind = events.EventCommunicate
 		ev.Data = events.CommunicateData{EndTurn: r.boolean(), Message: r.str()}
 	case 2:
-		ev.Kind = events.EventCommunicate
-		ev.Data = &events.CommunicateData{EndTurn: r.boolean(), Message: r.str()}
-	case 3:
 		ev.Data = events.AssistantTextEndData{Text: r.str(), Model: r.str(), FinishReason: r.str()}
-	case 4:
-		ev.Data = (*events.AssistantTextEndData)(nil)
-	case 5:
+	case 3:
 		ev.Kind = events.EventToolCallEnd
 		ev.Data = events.ToolCallEndData{ToolName: r.str(), CallID: r.str(), ArgumentsJSON: r.str(), Output: r.str(), Error: r.str()}
-	case 6:
-		ev.Kind = events.EventToolCallEnd
-		ev.Data = &events.ToolCallEndData{ToolName: r.str(), Output: r.str()}
-	case 7:
+	case 4:
 		code := r.intn(256)
 		ev.Data = events.JobFinishedData{JobID: r.str(), Status: r.str(), Reason: r.str(), ExitCode: &code, OutputBytes: int64(r.intn(1 << 20))}
-	case 8:
-		ev.Data = &events.JobFinishedData{JobID: r.str()}
 	}
 	return ev
 }

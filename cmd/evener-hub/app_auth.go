@@ -399,9 +399,9 @@ func (c *hubAuthController) LoginStart(params appwire.AuthLoginStartParams) (app
 	// with, or a destination whose fingerprint the hub could not key right now:
 	// the last is one the completion would have no comparison for, so it is
 	// refused here, before a flow is recorded (verifyFlowEndpoint).
-	endpoint := c.endpointFingerprintFor(provider)
-	if endpoint == "" && c.endpointHasDestination(provider) && c.hasEndpointStateRoot() {
-		return appwire.AuthLoginStartResponse{}, endpointConflict("%s cannot be checked against its endpoint: %w, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again", provider, errEndpointUnkeyable)
+	endpoint, err := c.captureFlowEndpoint(provider)
+	if err != nil {
+		return appwire.AuthLoginStartResponse{}, err
 	}
 	c.mu.Lock()
 	if c.flows == nil {
@@ -499,7 +499,7 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 		if err := c.requiresCodex(provider); err != nil {
 			return err
 		}
-		if err := c.verifyFlowEndpointWithKey(provider, flow.EndpointFingerprint, key); err != nil {
+		if err := c.verifyFlowEndpoint(provider, flow.EndpointFingerprint, key); err != nil {
 			return err
 		}
 		return c.saveAuth(c.stateDir, provider, record)
@@ -537,7 +537,7 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	codex := false
 	removed := false
 	applied, err := c.credentialWriteExclusive(name, func() error {
-		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+		if err := c.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 			return err
 		}
 		codex = c.instanceIsCodex(name)
@@ -835,7 +835,7 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 		if !c.nameIsConnectable(name) {
 			return appwire.InvalidParams(fmt.Sprintf("%q is not a configured provider or instance: nothing reads a key stored under it", name))
 		}
-		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+		if err := c.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 			return err
 		}
 		return c.setCredential(name, params.Value)
@@ -1016,7 +1016,7 @@ func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (a
 	// client has re-pointed since must not have its replacement instance's key
 	// removed.
 	applied, err := c.credentialWrite(name, func() error {
-		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+		if err := c.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 			return err
 		}
 		return c.clearCredential(name)
@@ -1089,9 +1089,9 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 	// empty capture with a destination to name and a state root that cannot key
 	// it is refused before a device code is requested at all: the poll would
 	// have nothing to compare (verifyFlowEndpoint).
-	endpoint := c.endpointFingerprintFor(provider)
-	if endpoint == "" && c.endpointHasDestination(provider) && c.hasEndpointStateRoot() {
-		return appwire.AuthDeviceStartResponse{}, endpointConflict("%s cannot be checked against its endpoint: %w, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again", provider, errEndpointUnkeyable)
+	endpoint, err := c.captureFlowEndpoint(provider)
+	if err != nil {
+		return appwire.AuthDeviceStartResponse{}, err
 	}
 	dc, err := c.requestDeviceCode(ctx, c.client, c.config())
 	if err != nil {
@@ -1186,7 +1186,7 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 		if err := c.requiresCodex(provider); err != nil {
 			return err
 		}
-		if err := c.verifyFlowEndpointWithKey(provider, flow.EndpointFingerprint, key); err != nil {
+		if err := c.verifyFlowEndpoint(provider, flow.EndpointFingerprint, key); err != nil {
 			return err
 		}
 		return c.saveAuth(c.stateDir, provider, record)
@@ -1374,11 +1374,12 @@ func (c *hubAuthController) hasEndpointStateRoot() bool { return strings.TrimSpa
 // so between its check and this RPC the name can move to an endpoint the user
 // never reviewed - and then the secret would land there.
 //
-// This form resolves the fingerprint key through the same seam List resolves
-// its key with (resolveEndpointFingerprintKey) and delegates to
-// verifyEndpointFingerprintWithKey; the credential writes resolve the key
-// before taking credMu and call that form, so no resolution - and no repair of
-// the key file it can make - runs while that lock is held.
+// The key is resolved by the caller before it takes credMu, with keyErr the
+// reason it has none, because a resolution could repair the key file (an
+// inter-process lock and a write) while every listing and credential op waited
+// on credMu. keyErr is the failed resolution the empty assertion is refused
+// for, and a key the hub could not resolve is the empty current value an
+// assertion is refused against.
 //
 // An empty assertion is a client that was shown no endpoint. That is nothing to
 // check only while the hub itself has nothing to key with - no state root at
@@ -1387,39 +1388,57 @@ func (c *hubAuthController) hasEndpointStateRoot() bool { return strings.TrimSpa
 // fingerprints to every client, and accepting the assertions that follow would
 // let a concurrent endpoint change receive the credential with no verification
 // at all. There the write fails closed, with a refusal the user can act on.
-func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) error {
-	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
-	return c.verifyEndpointFingerprintWithKey(name, asserted, key, keyErr)
+func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string, key []byte, keyErr error) error {
+	return checkAssertion(asserted, keyErr != nil,
+		func() string { return c.endpointFingerprintForKey(name, key) },
+		assertionRefusals{
+			unverifiable: func() error {
+				return endpointConflict("%s cannot be checked against the endpoint this form was opened on: %w; this destination cannot be verified, so review its destination and enter the credential again", name, errEndpointUnkeyable)
+			},
+			// A fingerprint the hub cannot match is a refusal, not a bypass: the
+			// client was shown an endpoint, and a hub that can no longer describe
+			// where the name points cannot say the credential would land there.
+			// Landing it anyway would let a deleted key file or an unreachable
+			// state root switch the guard off without a word.
+			unresolvable: func() error {
+				return endpointConflict("%s cannot be checked against the endpoint this form was opened on: %w, so review its destination and enter the credential again", name, errEndpointUnresolvable)
+			},
+			changed: func() error {
+				return endpointConflict("%s %w this form was opened on: review its destination and enter the credential again", name, errEndpointMoved)
+			},
+		})
 }
 
-// verifyEndpointFingerprintWithKey is verifyEndpointFingerprint over a key the
-// caller resolved before taking its credential lock, with keyErr the reason it
-// has none. The credential writes resolve the key before that lock and call
-// this form, because a resolution here could repair the key file (an
-// inter-process lock and a write) while every listing and credential op waited
-// on credMu. Threading the result in keeps the answer for every case: keyErr is
-// the failed resolution the empty assertion is refused for, and a key the hub
-// could not resolve is the empty current value an assertion is refused against.
-func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted string, key []byte, keyErr error) error {
+// assertionRefusals are the three refusals a guarded assertion can end in. Each
+// guard words them for what the client was shown.
+type assertionRefusals struct {
+	// unverifiable refuses an empty assertion the hub cannot excuse.
+	unverifiable func() error
+	// unresolvable refuses an assertion against a hub that no longer has a
+	// current value to compare it with.
+	unresolvable func() error
+	// changed refuses an assertion that no longer matches the current value.
+	changed func() error
+}
+
+// checkAssertion is the comparison every endpoint and revision guard shares. An
+// empty assertion is a client that was shown nothing: it passes unless
+// refuseEmpty says the hub cannot excuse it. A non-empty assertion must equal
+// the current value, and a current value the hub cannot produce is a refusal
+// rather than a bypass. current is read only for a non-empty assertion.
+func checkAssertion(asserted string, refuseEmpty bool, current func() string, refusals assertionRefusals) error {
 	if asserted == "" {
-		if keyErr != nil {
-			return endpointConflict("%s cannot be checked against the endpoint this form was opened on: %w; this destination cannot be verified, so review its destination and enter the credential again", name, errEndpointUnkeyable)
+		if refuseEmpty {
+			return refusals.unverifiable()
 		}
 		return nil
 	}
-	current := c.endpointFingerprintForKey(name, key)
-	// A fingerprint the hub cannot match is a refusal, not a bypass: the client
-	// was shown an endpoint, and a hub that can no longer describe where the
-	// name points cannot say the credential would land there. Landing it anyway
-	// would let a deleted key file or an unreachable state root switch the guard
-	// off without a word. A client that asserted nothing is handled above: that
-	// is nothing to check only while the hub can key a fingerprint or has no
-	// state root at all.
-	if current == "" {
-		return endpointConflict("%s cannot be checked against the endpoint this form was opened on: %w, so review its destination and enter the credential again", name, errEndpointUnresolvable)
+	now := current()
+	if now == "" {
+		return refusals.unresolvable()
 	}
-	if current != asserted {
-		return endpointConflict("%s %w this form was opened on: review its destination and enter the credential again", name, errEndpointMoved)
+	if now != asserted {
+		return refusals.changed()
 	}
 	return nil
 }
@@ -1434,25 +1453,23 @@ func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted stri
 // that exists but cannot be read or written is the state that serves empty
 // revisions to every client, and accepting the assertions that follow would let
 // the conditional set write with no fence at all: there the write fails closed
-// with a refusal the user can act on, exactly as verifyEndpointFingerprintWithKey
+// with a refusal the user can act on, exactly as verifyEndpointFingerprint
 // fails an empty endpoint assertion closed. current is the keyed revision
 // (credentialConfigRevisionForKey), empty when the hub has no key or the name
 // does not resolve; a non-empty assertion against either is refused too. keyErr
 // is the failed key resolution that the empty assertion is refused for.
 func (c *hubAuthController) verifyConfigRevision(name, asserted, current string, keyErr error) error {
-	if asserted == "" {
-		if keyErr != nil {
+	return checkAssertion(asserted, keyErr != nil, func() string { return current }, assertionRefusals{
+		unverifiable: func() error {
 			return appwire.Conflict(name + " cannot be checked against the configuration this credential was prepared for: the hub cannot key its credential-configuration revision right now, so its configuration cannot be verified; re-read the instance and start the push again")
-		}
-		return nil
-	}
-	if current == "" {
-		return appwire.Conflict(name + " cannot be checked against the configuration this credential was prepared for: the hub cannot resolve it now; re-read the instance and start the push again")
-	}
-	if current != asserted {
-		return appwire.Conflict(name + " changed on the host after this credential was prepared: its configuration revision no longer matches the one this request observed; re-read the instance and start the push again")
-	}
-	return nil
+		},
+		unresolvable: func() error {
+			return appwire.Conflict(name + " cannot be checked against the configuration this credential was prepared for: the hub cannot resolve it now; re-read the instance and start the push again")
+		},
+		changed: func() error {
+			return appwire.Conflict(name + " changed on the host after this credential was prepared: its configuration revision no longer matches the one this request observed; re-read the instance and start the push again")
+		},
+	})
 }
 
 // verifyFlowEndpoint refuses a sign-in flow whose instance no longer resolves
@@ -1473,36 +1490,42 @@ func (c *hubAuthController) verifyConfigRevision(name, asserted, current string,
 // to name, is accepted in either state. An empty current value (the hub has no
 // key now) is refused as before: the hub cannot say the record would land
 // where the flow was started.
-func (c *hubAuthController) verifyFlowEndpoint(name, started string) error {
-	key, _ := resolveEndpointFingerprintKey(c.stateDir)
-	return c.verifyFlowEndpointWithKey(name, started, key)
+//
+// The key is resolved by the caller before it takes its credential lock
+// (verifyEndpointFingerprint states why the resolution must not happen there).
+// The empty capture's refusal reads the destination and the state root rather
+// than the key; a key the hub could not resolve leaves the empty current value
+// the comparison refuses.
+func (c *hubAuthController) verifyFlowEndpoint(name, started string, key []byte) error {
+	return checkAssertion(started, c.endpointHasDestination(name) && c.hasEndpointStateRoot(),
+		func() string { return c.endpointFingerprintForKey(name, key) },
+		assertionRefusals{
+			unverifiable: func() error {
+				return endpointConflict("%s cannot be checked against the endpoint this sign-in was started on: %w, so review its destination and start the sign-in again", name, errEndpointUnkeyable)
+			},
+			// A flow bound to an endpoint the hub can no longer describe is one
+			// whose record nobody can place, so it is refused rather than filed
+			// somewhere the user never signed in for.
+			unresolvable: func() error {
+				return endpointConflict("%s cannot be checked against the endpoint this sign-in was started on: %w, so review its destination and start the sign-in again", name, errEndpointUnresolvable)
+			},
+			changed: func() error {
+				return endpointConflict("%s %w this sign-in was started on: review its destination and start the sign-in again", name, errEndpointMoved)
+			},
+		})
 }
 
-// verifyFlowEndpointWithKey is verifyFlowEndpoint over a key the caller
-// resolved before taking its credential lock (verifyEndpointFingerprintWithKey
-// states why the resolution must not happen there). The empty capture's refusal
-// reads the destination and the state root rather than the key, so it is
-// untouched; a key the hub could not resolve leaves the empty current value the
-// comparison below refuses, exactly as the resolving wrapper's own resolution
-// produced it.
-func (c *hubAuthController) verifyFlowEndpointWithKey(name, started string, key []byte) error {
-	if started == "" {
-		if c.endpointHasDestination(name) && c.hasEndpointStateRoot() {
-			return endpointConflict("%s cannot be checked against the endpoint this sign-in was started on: %w, so review its destination and start the sign-in again", name, errEndpointUnkeyable)
-		}
-		return nil
+// captureFlowEndpoint is the endpoint fingerprint a sign-in flow is recorded
+// with at its start. An empty capture for a destination the hub could name, on
+// a hub that keeps fingerprints, is a destination it could not key right now:
+// the completion would have nothing to compare, so the flow is refused before
+// it is recorded (verifyFlowEndpoint states the rule it completes under).
+func (c *hubAuthController) captureFlowEndpoint(provider string) (string, error) {
+	endpoint := c.endpointFingerprintFor(provider)
+	if endpoint == "" && c.endpointHasDestination(provider) && c.hasEndpointStateRoot() {
+		return "", endpointConflict("%s cannot be checked against its endpoint: %w, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again", provider, errEndpointUnkeyable)
 	}
-	current := c.endpointFingerprintForKey(name, key)
-	// As verifyEndpointFingerprint reads it: a flow bound to an endpoint the hub
-	// can no longer describe is one whose record nobody can place, so it is
-	// refused rather than filed somewhere the user never signed in for.
-	if current == "" {
-		return endpointConflict("%s cannot be checked against the endpoint this sign-in was started on: %w, so review its destination and start the sign-in again", name, errEndpointUnresolvable)
-	}
-	if current != started {
-		return endpointConflict("%s %w this sign-in was started on: review its destination and start the sign-in again", name, errEndpointMoved)
-	}
-	return nil
+	return endpoint, nil
 }
 
 // instanceIsCodex reports whether name authenticates through the Codex
@@ -1552,7 +1575,7 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 		if err := c.requiresGCPADC(name); err != nil {
 			return err
 		}
-		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+		if err := c.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 			return err
 		}
 		return c.setCredential(name, value)
