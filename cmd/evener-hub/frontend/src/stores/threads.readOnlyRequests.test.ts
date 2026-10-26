@@ -4,6 +4,7 @@ import {
   type ConnectionState,
   errorKind,
   type ModelListResponse,
+  type Task,
   WireError,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -45,7 +46,7 @@ const settleCallerContinuations = nextMacrotask;
 
 describe("useThreadsStore.listTasks", () => {
   // Fixtures use the task row's persisted snake_case wire fields.
-  const TASKS_DATA = [
+  const TASKS_DATA: Task[] = [
     { id: 1, type: "implement", description: "Wire up listModels/listTasks", prompt: "…", status: "done" },
     {
       id: 2,

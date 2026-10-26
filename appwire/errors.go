@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 )
 
 const (
@@ -911,32 +912,31 @@ func BackpressureRefusal(clientMutationID, message string) WireError {
 	}
 }
 
-// retrySafeMutationMethods is the wire contract the hub and the shared
+// RetrySafeMutationMethods is the wire contract the hub and the shared
 // TypeScript dispatcher both hold for which mutation requests are safe to
 // resend unchanged: each carries a clientMutationId, and the ClientMutationID
 // dedup on admission makes a raced resend a replay no-op. The hub refuses
-// only these in band for backpressure; the dispatcher holds the same set
-// (RETRY_SAFE_MUTATION_METHODS, appwire-client/typescript/state/mutation/
-// dispatcher.ts), and TestRetrySafeMutationMethodsMatchSharedDispatcher pins
-// the two equal. thread/start is deliberately absent: it can refuse after
-// the session has spawned (#3184), so a resend is not always safe.
-var retrySafeMutationMethods = map[string]bool{
-	MethodTurnStart:                true,
-	MethodTurnSteer:                true,
-	MethodTurnInterrupt:            true,
-	MethodTurnQueue:                true,
-	MethodTurnDrainAsSteer:         true,
-	MethodTurnPromoteQueuedAsSteer: true,
-	MethodTurnCancelQueued:         true,
-	MethodThreadClear:              true,
-	MethodNotesHumanSet:            true,
+// only these in band for backpressure; the TypeScript generator emits the
+// same list as RETRY_SAFE_MUTATION_METHODS for the dispatcher. thread/start
+// is deliberately absent: it can refuse after the session has spawned
+// (#3184), so a resend is not always safe.
+var RetrySafeMutationMethods = []string{
+	MethodTurnStart,
+	MethodTurnSteer,
+	MethodTurnInterrupt,
+	MethodTurnQueue,
+	MethodTurnDrainAsSteer,
+	MethodTurnPromoteQueuedAsSteer,
+	MethodTurnCancelQueued,
+	MethodThreadClear,
+	MethodNotesHumanSet,
 }
 
 // RetrySafeMutationMethod reports whether name is a retry-safe mutation
 // method: one whose request the hub may refuse in band for backpressure, and
 // one a client may resend unchanged.
 func RetrySafeMutationMethod(name string) bool {
-	return retrySafeMutationMethods[name]
+	return slices.Contains(RetrySafeMutationMethods, name)
 }
 
 func Unavailable(message string) WireError {

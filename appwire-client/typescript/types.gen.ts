@@ -3752,7 +3752,7 @@ export interface Task {
   type: string;
   description: string;
   prompt: string;
-  status: string;
+  status: TaskStatus;
   /**
    * DependsOn lists IDs of tasks that must complete before this one is ready.
    */
@@ -4574,7 +4574,7 @@ export interface TranscriptDisplayAdvanced {
   estimatedCost: boolean;
   systemEvents: boolean;
   promptEvents: boolean;
-  hookExits: string;
+  hookExits: TranscriptHookExitDetail;
 }
 
 export interface TranscriptDisplayChangedParams {
@@ -4591,7 +4591,7 @@ export interface TranscriptDisplayConfig {
 
 export interface TranscriptDisplayContent {
   kind: string;
-  level?: string;
+  level?: TranscriptLevel;
   custom?: TranscriptDisplayCustomContent;
 }
 
@@ -5100,30 +5100,6 @@ export const SESSION_WATCH_STATES = [
 
 export type SessionWatchState = (typeof SESSION_WATCH_STATES)[number];
 
-export const STEERING_KINDS = [
-  "interrupted",
-  "interrupted-salvage",
-  "agent-message",
-  "hook-context",
-  "precompact-hook",
-  "compact-nudge",
-  "image-description",
-  "no-tool-calls",
-  "loop-detected",
-  "tasks-done",
-  "task-inactive",
-  "note-handoff",
-  "goal-objective",
-  "transcript-pointer",
-  "current-task",
-  "task-list",
-  "notification",
-  "provider-failure",
-  "human-note",
-] as const;
-
-export type SteeringKind = (typeof STEERING_KINDS)[number];
-
 export const THREAD_ITEM_EVENT_KINDS = [
   "system_prompt",
   "plugin_loaded",
@@ -5149,6 +5125,110 @@ export const THREAD_ITEM_EVENT_KINDS = [
 ] as const;
 
 export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];
+
+export const TASK_STATUSES = [
+  "open",
+  "in_progress",
+  "done",
+  "cancelled",
+] as const;
+
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
+export const TRANSCRIPT_LEVELS = [
+  "chat",
+  "intent",
+  "tools",
+  "activity",
+  "full",
+] as const;
+
+export type TranscriptLevel = (typeof TRANSCRIPT_LEVELS)[number];
+
+export const TRANSCRIPT_HOOK_EXIT_DETAILS = [
+  "none",
+  "successful",
+  "all",
+] as const;
+
+export type TranscriptHookExitDetail = (typeof TRANSCRIPT_HOOK_EXIT_DETAILS)[number];
+
+export const STEERING_KINDS = [
+  "interrupted",
+  "interrupted-salvage",
+  "agent-message",
+  "hook-context",
+  "precompact-hook",
+  "compact-nudge",
+  "image-description",
+  "no-tool-calls",
+  "loop-detected",
+  "tasks-done",
+  "task-inactive",
+  "note-handoff",
+  "goal-objective",
+  "transcript-pointer",
+  "current-task",
+  "task-list",
+  "notification",
+  "provider-failure",
+  "human-note",
+] as const;
+
+export type SteeringKind = (typeof STEERING_KINDS)[number];
+
+export const RETRY_SAFE_MUTATION_METHODS = [
+  "turn/start",
+  "turn/steer",
+  "turn/interrupt",
+  "turn/queue",
+  "turn/drainAsSteer",
+  "turn/promoteQueuedAsSteer",
+  "turn/cancelQueued",
+  "thread/clear",
+  "notes/human/set",
+] as const;
+
+export type RetrySafeMutationMethod = (typeof RETRY_SAFE_MUTATION_METHODS)[number];
+
+export const SHIPPED_TRANSCRIPT_DISPLAY_DEFAULTS: TranscriptDisplayDefaults = {
+  "desktop": {
+    "revision": 0,
+    "config": {
+      "version": 1,
+      "content": {
+        "kind": "preset",
+        "level": "tools"
+      },
+      "advanced": {
+        "roundTimings": false,
+        "tokenCounts": false,
+        "estimatedCost": false,
+        "systemEvents": false,
+        "promptEvents": false,
+        "hookExits": "none"
+      }
+    }
+  },
+  "mobile": {
+    "revision": 0,
+    "config": {
+      "version": 1,
+      "content": {
+        "kind": "preset",
+        "level": "intent"
+      },
+      "advanced": {
+        "roundTimings": false,
+        "tokenCounts": false,
+        "estimatedCost": false,
+        "systemEvents": false,
+        "promptEvents": false,
+        "hookExits": "none"
+      }
+    }
+  }
+};
 
 export interface MethodTypes {
   "initialize": { params: InitializeParams; result: InitializeResponse };

@@ -36,7 +36,7 @@ import {
   WireError,
   wireRejectionPayload,
 } from "./errors";
-import { goConstantValue } from "./testing/goConstants";
+import { goConstantValue, goIntConstantValue } from "./testing/goConstants";
 
 function decodeUpper(value: unknown): string | undefined {
   return typeof value === "string" ? value.toUpperCase() : undefined;
@@ -509,11 +509,8 @@ test("friendlyLaunchErrorMessage gives an unknown rejection the same generic sen
   expect(friendlyLaunchErrorMessage(unknown)).toBe(friendlyErrorMessage(unknown));
 });
 
-// The codes are Go ints, which goConstantValue (strings only) doesn't read.
 function code(name: string): number {
-  const value = appwireErrorsGo.match(new RegExp(`\\n\\s*${name}\\s*=\\s*(-?\\d+)`))?.[1];
-  if (value === undefined) throw new Error(`appwire/errors.go has no ${name} constant`);
-  return Number(value);
+  return goIntConstantValue(appwireErrorsGo, name, "appwire/errors.go");
 }
 
 describe("the exported wire codes are bound to appwire/errors.go", () => {

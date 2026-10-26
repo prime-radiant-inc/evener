@@ -19,7 +19,13 @@
 // app supplies. No clock, no timer, no DOM.
 import type { AppwireClientLike } from "../../clientLike";
 import { mutationErrorData, refusedBeforeRunning, WireError } from "../../errors";
-import type { MethodName, MutationReceipt, NotesHumanSetResponse, ThreadClearResponse } from "../../types.gen";
+import {
+  RETRY_SAFE_MUTATION_METHODS as GENERATED_RETRY_SAFE_MUTATION_METHODS,
+  type MethodName,
+  type MutationReceipt,
+  type NotesHumanSetResponse,
+  type ThreadClearResponse,
+} from "../../types.gen";
 import { isClientReady, type MutationOutboxStorage } from "./outbox";
 import type { MutationAttachmentRef, MutationOutboxRecord, MutationRecord } from "./records";
 
@@ -310,17 +316,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   }
 }
 
-export const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
-  "turn/start",
-  "turn/steer",
-  "turn/interrupt",
-  "turn/queue",
-  "turn/drainAsSteer",
-  "turn/promoteQueuedAsSteer",
-  "turn/cancelQueued",
-  "thread/clear",
-  "notes/human/set",
-]);
+export const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set(GENERATED_RETRY_SAFE_MUTATION_METHODS);
 
 // rejectionReason extracts what to show a user whose control was refused.
 // Preference order: the daemon's own structured explanation, then the wire

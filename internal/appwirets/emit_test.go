@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -739,6 +740,48 @@ func TestEmitCatalogEmitsRuntimeNotificationNames(t *testing.T) {
 
 	if !strings.Contains(out, "export type NotificationName = (typeof NOTIFICATION_NAMES)[number];\n") {
 		t.Error("NotificationName is not derived from NOTIFICATION_NAMES")
+	}
+}
+
+// Every closed string enum carries a runtime catalog of its Go values and a
+// type derived from it, and a field of that Go type references the type by
+// name instead of widening to string.
+func TestEmitCatalogEmitsStringEnums(t *testing.T) {
+	out := EmitCatalog()
+	for _, e := range stringEnums {
+		if got := runtimeNameList(t, out, e.constName); !slices.Equal(got, e.values) {
+			t.Errorf("%s = %v, want %v", e.constName, got, e.values)
+		}
+		if got := typeExpr(e.goType); got != e.typeName {
+			t.Errorf("typeExpr(%s) = %q, want %q", e.goType, got, e.typeName)
+		}
+	}
+	if !strings.Contains(out, "  status: TaskStatus;\n") {
+		t.Error("Task.status is not typed by the TaskStatus enum")
+	}
+}
+
+func TestEmitCatalogEmitsRetrySafeMutationMethods(t *testing.T) {
+	got := runtimeNameList(t, EmitCatalog(), "RETRY_SAFE_MUTATION_METHODS")
+	if !slices.Equal(got, appwire.RetrySafeMutationMethods) {
+		t.Fatalf("RETRY_SAFE_MUTATION_METHODS = %v, want %v", got, appwire.RetrySafeMutationMethods)
+	}
+}
+
+func TestEmitCatalogEmitsShippedTranscriptDisplayDefaults(t *testing.T) {
+	out := EmitCatalog()
+	const open = "export const SHIPPED_TRANSCRIPT_DISPLAY_DEFAULTS: TranscriptDisplayDefaults = "
+	_, rest, ok := strings.Cut(out, open)
+	if !ok {
+		t.Fatal("missing SHIPPED_TRANSCRIPT_DISPLAY_DEFAULTS")
+	}
+	literal, _, _ := strings.Cut(rest, ";\n")
+	var got appwire.TranscriptDisplayDefaults
+	if err := json.Unmarshal([]byte(literal), &got); err != nil {
+		t.Fatalf("decode emitted defaults: %v", err)
+	}
+	if want := appwire.TranscriptDisplayShippedDefaults(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("emitted defaults = %+v, want %+v", got, want)
 	}
 }
 

@@ -114,6 +114,13 @@ own diff and run focused checks for the files you changed; [Testing](testing.md)
 explains which checks apply. CI owns the full lint, test, browser, and build
 gates. Open a review with the commands you ran and any checks you could not run.
 
+A Go string enum that clients must share joins the generated TypeScript by
+adding a row to `stringEnums` in `internal/appwirets/emit.go`: the generator
+emits its values as a runtime catalog and types every field of that Go type by
+the derived union. Client limits that mirror a Go constant are pinned by a test
+that reads the Go source (`appwire-client/typescript/wireLimits.test.ts`)
+instead of being generated.
+
 ## Git hooks
 
 `make hooks` sets `core.hooksPath=scripts/hooks` in the clone's shared git

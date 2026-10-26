@@ -471,7 +471,7 @@ test("the body header is absent while no aggregate has arrived", async () => {
 
 // --- row disclosure: expand a task row to see its dense detail body ---------
 
-const RICH_TASK = {
+const RICH_TASK: Task = {
   id: 5,
   type: "implement",
   description: "Wire up expand/collapse",

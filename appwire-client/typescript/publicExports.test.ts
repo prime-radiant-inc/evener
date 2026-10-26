@@ -56,20 +56,6 @@ import {
 } from "./index";
 import * as transcriptDisplayConfigModule from "./transcriptDisplayConfig";
 
-// #1431 also retired two transcriptDisplayConfig type aliases from the root.
-// A type export is erased at runtime, so the value `in` checks below cannot see
-// one, and the root's type surface needs its own compile-time lock. Only these
-// two are asserted: TranscriptDisplayConfig is deliberately excluded because
-// the generated wire type of that name owns the root spelling, so it is no
-// longer this module's alias. The union keeps both references live for biome's
-// noUnusedVariables; each directive is reported unused if an alias returns.
-// @ts-expect-error -- deleted zero-consumer alias (#1431)
-type RootRetiredTranscriptHookExitDetail = import("./index").TranscriptHookExitDetail;
-// @ts-expect-error -- deleted zero-consumer alias (#1431)
-type RootRetiredTranscriptLevel = import("./index").TranscriptLevel;
-type RootRetiredTranscriptAliases = RootRetiredTranscriptHookExitDetail | RootRetiredTranscriptLevel;
-void (undefined as RootRetiredTranscriptAliases | undefined);
-
 type EntityLinkPublicTypes =
   | ConditionSpec
   | DelegateEntityView

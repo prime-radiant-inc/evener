@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 )
 
 const (
@@ -35,6 +36,16 @@ const (
 	TranscriptLevelFull     TranscriptLevel = "full"
 )
 
+// AllTranscriptLevels is every TranscriptLevel value, least to most detailed.
+// The TypeScript generator emits it as TRANSCRIPT_LEVELS.
+var AllTranscriptLevels = []string{
+	string(TranscriptLevelChat),
+	string(TranscriptLevelIntent),
+	string(TranscriptLevelTools),
+	string(TranscriptLevelActivity),
+	string(TranscriptLevelFull),
+}
+
 type TranscriptHookExitDetail string
 
 const (
@@ -46,6 +57,14 @@ const (
 	TranscriptHookExitSuccessful = TranscriptHookExitDetailSuccessful
 	TranscriptHookExitAll        = TranscriptHookExitDetailAll
 )
+
+// AllTranscriptHookExitDetails is every TranscriptHookExitDetail value. The
+// TypeScript generator emits it as TRANSCRIPT_HOOK_EXIT_DETAILS.
+var AllTranscriptHookExitDetails = []string{
+	string(TranscriptHookExitDetailNone),
+	string(TranscriptHookExitDetailSuccessful),
+	string(TranscriptHookExitDetailAll),
+}
 
 type TranscriptContentKind string
 
@@ -198,21 +217,11 @@ func ValidateTranscriptDisplayConfig(config TranscriptDisplayConfig) error {
 }
 
 func validTranscriptLevel(level TranscriptLevel) bool {
-	switch level {
-	case TranscriptLevelChat, TranscriptLevelIntent, TranscriptLevelTools, TranscriptLevelActivity, TranscriptLevelFull:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(AllTranscriptLevels, string(level))
 }
 
 func validTranscriptHookExitDetail(detail TranscriptHookExitDetail) bool {
-	switch detail {
-	case TranscriptHookExitDetailNone, TranscriptHookExitDetailSuccessful, TranscriptHookExitDetailAll:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(AllTranscriptHookExitDetails, string(detail))
 }
 
 func validTranscriptViewportClass(layout TranscriptViewportClass) bool {

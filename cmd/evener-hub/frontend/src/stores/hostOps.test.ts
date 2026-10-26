@@ -7,6 +7,9 @@
 // Pattern mirrors hosts.test.ts: each test resets the stores and connection in
 // beforeEach, and a FakeClient answers the wire methods.
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   type HostOperationsResponse,
   type HostPlan,
@@ -17,6 +20,7 @@ import {
   WireError,
 } from "@evener/appwire-client";
 import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
+import { goConstantValue } from "@evener/appwire-client/testing/goConstants";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import {
@@ -2096,5 +2100,43 @@ describe("operations polling (S15)", () => {
       expect(teardownRecoverRefusalAction("host-busy-transient")).toBe("retry");
       expect(teardownRecoverRefusalAction("invalid-params")).toBe("none");
     });
+  });
+});
+
+describe("the refusal vocabulary is bound to appwire/errors.go", () => {
+  // Read with fs: the dev server's file allow-list excludes the repo's Go
+  // sources, so a ?raw import is denied from this tree.
+  const appwireErrorsGo = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../../../../../appwire/errors.go"),
+    "utf8",
+  );
+
+  // Each HostOpRefusalKind the UI classifies, keyed by the Go ErrorInfo
+  // constant that mints its discriminator. A Go-side rename leaves the client
+  // reading the discriminator as "unknown" and fails here instead.
+  const GO_CONSTANT_TO_KIND = {
+    ErrorTokenMissing: "token-missing",
+    ErrorTokenMismatched: "token-mismatched",
+    ErrorTokenSuperseded: "token-superseded",
+    ErrorTokenExpired: "token-expired",
+    ErrorStaleEntry: "stale-entry",
+    ErrorConflictingOperationID: "conflicting-operation-id",
+    ErrorHostDetached: "host-detached",
+    ErrorProbeFailed: "probe-failed",
+    ErrorRemnantOpen: "remnant-open",
+    ErrorHostBusyOperation: "host-busy-operation",
+    ErrorHostBusyTransient: "host-busy-transient",
+    ErrorTeardownUnknownKey: "teardown-unknown-key",
+    ErrorInvalidParams: "invalid-params",
+    ErrorCursorInvalidated: "cursor-invalidated",
+    ErrorCursorTooLarge: "cursor-too-large",
+  } as const;
+
+  test("each Go discriminator classifies as the kind that names it", () => {
+    for (const [constant, kind] of Object.entries(GO_CONSTANT_TO_KIND)) {
+      const info = goConstantValue(appwireErrorsGo, constant, "appwire/errors.go");
+      const refusal = hostOpRefusal(new WireError("refused", -32013, { evenerErrorInfo: info }));
+      expect(refusal.kind).toBe(kind);
+    }
   });
 });

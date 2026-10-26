@@ -15,7 +15,7 @@ import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 // and the boxes (if any) whose bottoms escape the viewport - which is the
 // answer the fix has to be aimed at.
 
-import type { NavigationReadBase, NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
+import type { NavigationReadBase, NavigationReadParams, NavigationReadResponse, Task } from "@evener/appwire-client";
 import { buildWatchRows, hydrateThread } from "@evener/appwire-client";
 import {
   navigationOwnedContainerKey,
@@ -456,13 +456,16 @@ async function boot(): Promise<void> {
   // too): the guard's page-height contract must hold with the tab body's own
   // scroll container owning a list this tall, not the document. The padding
   // fixture keeps its one-row list - it measures a single row's box.
-  const tallTasksFixture = Array.from({ length: 40 }, (_, i) => ({
-    id: i + 1,
-    type: "verify",
-    description: `Overview task ${i + 1}: keep the page frame from scrolling when the task list is taller than the viewport`,
-    prompt: "",
-    status: i % 4 === 3 ? "done" : "open",
-  }));
+  const tallTasksFixture = Array.from(
+    { length: 40 },
+    (_, i): Task => ({
+      id: i + 1,
+      type: "verify",
+      description: `Overview task ${i + 1}: keep the page frame from scrolling when the task list is taller than the viewport`,
+      prompt: "",
+      status: i % 4 === 3 ? "done" : "open",
+    }),
+  );
   fake.on("evener/tasks/list", ({ ref }) => ({
     data:
       ref === ROW_PADDING_REF

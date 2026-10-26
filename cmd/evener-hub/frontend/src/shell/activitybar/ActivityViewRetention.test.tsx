@@ -105,7 +105,7 @@ test("reload retains task disclosures while the existing task owner refetches co
           type: "implement",
           description: `Remaining ${id}`,
           prompt: "",
-          status: "open",
+          status: "open" as const,
         })),
       ],
     }));
