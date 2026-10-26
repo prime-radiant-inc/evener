@@ -9,7 +9,7 @@ import (
 )
 
 // TestTerminalCatchupWithSendCoversSendPath covers the send branch of
-// runTerminalCatchup (job_watch.go:2682-2695): a terminal output_match-only
+// runTerminalCatchup: a terminal output_match-only
 // watch with a Send field carries the match through the durable watch-send rail
 // as a one-shot detached delivery rather than just enqueuing a notification.
 func TestTerminalCatchupWithSendCoversSendPath(t *testing.T) {
@@ -58,7 +58,7 @@ func TestTerminalCatchupWithSendCoversSendPath(t *testing.T) {
 }
 
 // TestWriteAssistantToolWatchEventErrorField covers the error-branch of
-// writeAssistantToolWatchEvent (job_watch.go:4825-4829) which renders the
+// writeAssistantToolWatchEvent which renders the
 // "error" and "error_truncated" fields when a tool call ends with an error.
 func TestWriteAssistantToolWatchEventErrorField(t *testing.T) {
 	t.Parallel()
@@ -105,7 +105,7 @@ func TestWriteAssistantToolWatchEventErrorTruncation(t *testing.T) {
 }
 
 // TestLiveWatchSummariesForReceiver covers liveWatchSummariesForReceiver
-// (job_watch.go:2067-2095) including the empty-arg guard and the
+// including the empty-arg guard and the
 // receiver-matching loop.
 func TestLiveWatchSummariesForReceiver(t *testing.T) {
 	t.Parallel()
@@ -148,7 +148,7 @@ func TestLiveWatchSummariesForReceiver(t *testing.T) {
 }
 
 // TestClearReceiverWatchByIDTerminalFlushLookup covers the terminalFlush
-// lookup branch in clearReceiverWatchByID (job_watch.go:1442-1448) which
+// lookup branch in clearReceiverWatchByID which
 // finds a watch config in the terminalFlush set when it's not in jm.watches.
 func TestClearReceiverWatchByIDTerminalFlushLookup(t *testing.T) {
 	t.Parallel()

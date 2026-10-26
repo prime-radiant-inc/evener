@@ -798,7 +798,7 @@ watch ended: job_x is terminal (status=completed reason=done output_bytes=10); c
 
 test("a budget auto-clear notice titles Watch auto-cleared, not a trigger", () => {
   // Backend truth: autoClearWatchOverBudgetNotification passes "" as the
-  // job id (agent/job_watch.go) — the cleared target rides the reason, never
+  // job id — the cleared target rides the reason, never
   // a job_id attr. (An earlier revision of this fixture used job_id="self";
   // no producer emits that — the NotificationCard "self" guard test pins the
   // defensive rendering instead.)
@@ -974,7 +974,7 @@ Job job_a1b2 watch. Output is available through read_transcript if needed.
 // --- RoboRev combined review (6e38dea): delivery-failure classification ----
 // Send-rail diagnostics ("watch send failed:", "watch send dropped state
 // failed:", "watch send pending state failed:", "watch send evicted:",
-// "output dropped:" — agent/job_watch.go) are failed deliveries, not
+// "output dropped:") are failed deliveries, not
 // successful triggers. They must title as failures with a warning tone, not
 // "Watch fired on <job>" with forced neutral.
 

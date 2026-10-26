@@ -569,7 +569,7 @@ function delegatePacketNotification(
   };
 }
 
-// The quiet watchdog's one sentence, agent/job_watch.go's quietWatchdogMessage
+// The quiet watchdog's one sentence, agent's quietWatchdogMessage
 // ("quiet for 10m; last activity: <RFC 3339>"), HTML-escaped into the body.
 function parseQuietWatchdog(body: string): ParsedNotification["quiet"] | null {
   const match = /^quiet for (\S+); last activity: (\S+)$/.exec(decodeNotificationEntities(body));
@@ -685,7 +685,7 @@ function notificationTone(attrs: Record<string, string>, communicate: Communicat
 // isWatchDeliveryFailure reports whether a (decoded) watch reason names a
 // failed delivery rather than a trigger: the send-rail diagnostics
 // ("watch send failed:", "watch send dropped/pending/stable-enqueue state
-// failed:", "watch send evicted:" — agent/job_watch.go's
+// failed:", "watch send evicted:" — agent's
 // watchSendDiagnosticNotification sites), the feed guard
 // ("output dropped:"), the attach-scan skip ("output_match attach scan
 // skipped:" — completeAttachScan: the watch installs live but its
@@ -722,7 +722,7 @@ function jobNotificationTone(
   }
   // Same §E rule as notificationTone above: watch and watch-send deliveries
   // are expected outcomes. The budget auto-clear notice carries the same
-  // watch event as a fire (agent/job_watch.go's watchNotification), so this
+  // watch event as a fire (agent's watchNotification), so this
   // covers it too — its "matched 50 times" words carry the signal. The check
   // mirrors the parser's type detection (event OR status "watch"): a
   // status-only watch frame is still a watch delivery, never a chip
@@ -976,7 +976,7 @@ function parseJobNotification(block: string): ParsedNotification | null {
   const bodyText = (m[2] ?? "").trim();
   let type: ParsedNotification["type"] = "job";
   // A watch fire names its watched job (watchNotificationFromWatch always
-  // sets JobID — agent/job_watch.go), so event/status "watch" wins over the
+  // sets JobID), so event/status "watch" wins over the
   // job_id presence check: a job-targeted condition fire is still a watch
   // delivery, with prose worth keeping and no echo metadata worth showing.
   if (attrs.event === "watch" || attrs.status === "watch") type = "watch";

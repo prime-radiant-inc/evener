@@ -3706,7 +3706,7 @@ func stableSupervisionState(root *Session, sub *subagent) string {
 
 // stableSupervisionDirectRowLocked captures the direct stable delegate row for
 // childSessionID while c.mu is held. It mirrors directStableDelegateForChildSession
-// (job_watch.go) — snapshotsForChildSession's filter over c.durable
+// — snapshotsForChildSession's filter over c.durable
 // (delegate_tree_controller.go) plus delegateRowVisibleTo's pick — which the
 // report cannot call because that accessor would re-take c.mu.
 func stableSupervisionDirectRowLocked(c *delegateTreeController, root *Session, childSessionID string) (delegateSnapshot, bool) {

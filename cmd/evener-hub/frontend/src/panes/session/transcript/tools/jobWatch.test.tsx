@@ -1793,7 +1793,7 @@ test("a pending inspect body renders the trigger and details (8a56741 finding 3)
 // --- RoboRev combined review (8a56741): end-reason wording (finding 4) -------
 // List rows and inspect bodies share one formatter over the backend's real
 // end-reason ids (agent/session_tools_jobs.go recentWatchEntry comment,
-// agent/job_watch.go, agent/jobs.go); unknown ids fall back to the raw id.
+// agent/jobs.go); unknown ids fall back to the raw id.
 
 test("ended rows and inspect bodies name end reasons in words (8a56741 finding 4)", () => {
   const d = toolRendererFor("job_watch");
@@ -1839,7 +1839,7 @@ test("ended rows and inspect bodies name end reasons in words (8a56741 finding 4
 // --- RoboRev combined review of 5c202de (LOW): ended inspect details --------
 // The ended inspect branch returned after rendering only the end reason,
 // hiding the structured condition/details + note the backend now carries
-// (inspectResultFromWatchHistory, agent/job_watch.go:2363 — condition, note,
+// (inspectResultFromWatchHistory — condition, note,
 // deliveries beside end_reason). The ended body must mirror the
 // pending/active branches: end sentence first, then the trigger clauses and
 // the note section.

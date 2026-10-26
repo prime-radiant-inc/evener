@@ -114,7 +114,7 @@ export function conditionSpec(raw: JsonObject, args?: JsonObject): ConditionSpec
   return { outputMatch, progressIntervalMS, events, every, filterToolName, filterStatus, note };
 }
 
-// createConditionText mirrors watchConditionSummary (agent/job_watch.go): it
+// createConditionText mirrors watchConditionSummary (package agent): it
 // converges a create-shaped result on the same "; "-joined Condition string
 // that list/inspect rows carry. Keep its clause order and event-filter grammar
 // pinned to that producer function; parseConditionText below is the one reader
@@ -183,8 +183,7 @@ export function normalizeRow(value: unknown): WatchRow | undefined {
 
 // A parsed inspect/list Condition string. The producer renders a watch
 // config's trigger as one "; "-joined line (watchConditionSummary,
-// agent/job_watch.go:2460-2494, filter grammar watchEventFilterSummary
-// :2497-2508): `output_match: …`; `after_seconds: N` / `repeat_seconds: N`
+// filter grammar watchEventFilterSummary): `output_match: …`; `after_seconds: N` / `repeat_seconds: N`
 // / `progress_interval_ms: N`; `note: …`; `events: [*]` or
 // `events: [a, b]` with optional `every N` and `where tool_name=X,
 // status=Y`. The reader parses that embedded grammar back — inventing
@@ -217,14 +216,14 @@ function numAfter(value: string | undefined): number | undefined {
 // output_match is caller-supplied and unbounded, so a pattern may itself
 // contain ";" — splitting on every one truncates the pattern (RoboRev PR
 // #954 review 3). The heads below are the producer's exact grammar
-// (watchConditionSummary, agent/job_watch.go:2460-2494): "output_match: ",
+// (watchConditionSummary): "output_match: ",
 // "after_seconds: N" / "repeat_seconds: N" / "progress_interval_ms: N",
 // "note: ", "events: ...", joined with "; ". (A pattern literally containing
 // "; events: " stays ambiguous even to the producer's own join — the split
 // takes the field reading, matching what list/inspect show.)
 const CONDITION_PART_SPLIT = /;\s*(?=(?:output_match|after_seconds|repeat_seconds|progress_interval_ms|note|events):)/;
 
-// These bounds and the indicator mirror the producer (agent/job_watch.go).
+// These bounds and the indicator mirror the producer (package agent).
 // The Condition string embeds output_match with watchTriggerMaxChars and note
 // with watchMessageMaxChars. limitWatchText truncates by rune, includes the
 // indicator inside the bound, and otherwise preserves the value verbatim.

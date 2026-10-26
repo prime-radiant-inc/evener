@@ -16,8 +16,7 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 )
 
-// TestCovWatchConfigHasPendingMatchingKey covers watchConfigHasPendingMatchingKey
-// (job_watch.go lines 1617-1630): nil cfg, empty pending, receiver mismatch,
+// TestCovWatchConfigHasPendingMatchingKey covers watchConfigHasPendingMatchingKey: nil cfg, empty pending, receiver mismatch,
 // and a matching pending key.
 func TestCovWatchConfigHasPendingMatchingKey(t *testing.T) {
 	t.Parallel()
@@ -74,7 +73,7 @@ func TestCovWatchConfigHasPendingMatchingKey(t *testing.T) {
 }
 
 // TestCovRememberUnpersistedTerminalPendingWatchSend covers
-// rememberUnpersistedTerminalPendingWatchSend (job_watch.go lines 3432-3452).
+// rememberUnpersistedTerminalPendingWatchSend.
 func TestCovRememberUnpersistedTerminalPendingWatchSend(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -132,7 +131,7 @@ func TestCovRememberUnpersistedTerminalPendingWatchSend(t *testing.T) {
 }
 
 // TestCovFinishStableWatchSettlementRetry covers
-// finishStableWatchSettlementRetry (job_watch.go lines 3649-3653).
+// finishStableWatchSettlementRetry.
 func TestCovFinishStableWatchSettlementRetry(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -143,8 +142,7 @@ func TestCovFinishStableWatchSettlementRetry(t *testing.T) {
 	}
 }
 
-// TestCovRecordWatchSendPending covers recordWatchSendPending
-// (job_watch.go lines 3814-3818): the retained runtime-state transition.
+// TestCovRecordWatchSendPending covers recordWatchSendPending: the retained runtime-state transition.
 func TestCovRecordWatchSendPending(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -195,8 +193,7 @@ func TestCovRecordWatchSendPending(t *testing.T) {
 	}
 }
 
-// TestCovRemoveRuntimePendingWatchSend covers removeRuntimePendingWatchSend
-// (job_watch.go lines 3851-3860).
+// TestCovRemoveRuntimePendingWatchSend covers removeRuntimePendingWatchSend.
 func TestCovRemoveRuntimePendingWatchSend(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -228,7 +225,7 @@ func TestCovRemoveRuntimePendingWatchSend(t *testing.T) {
 	}
 }
 
-// TestCovChildResumable covers childResumable (job_watch.go lines 4406-4409)
+// TestCovChildResumable covers childResumable
 // and directStableDelegateForChildSession (lines 4411-4421).
 func TestCovChildResumable(t *testing.T) {
 	t.Parallel()
@@ -256,7 +253,7 @@ func TestCovChildResumable(t *testing.T) {
 }
 
 // TestCovWatchKeyMatchesClearRequest covers all branches of
-// watchKeyMatchesClearRequest (job_watch.go lines 1473-1487).
+// watchKeyMatchesClearRequest.
 func TestCovWatchKeyMatchesClearRequest(t *testing.T) {
 	t.Parallel()
 	candidate := watchKey{VisibleSessionID: "s1", Target: "job_1", SendTo: "caller", ReceiverSessionID: "r1", ReceiverDelegateID: "d1"}
@@ -359,8 +356,7 @@ func TestCovRecordWatchDeliveryLocked(t *testing.T) {
 	}
 }
 
-// TestCovWatchKeyForConfigLocked covers watchKeyForConfigLocked
-// (job_watch.go lines 1528-1535).
+// TestCovWatchKeyForConfigLocked covers watchKeyForConfigLocked.
 func TestCovWatchKeyForConfigLocked(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -400,8 +396,7 @@ func TestCovWatchKeyForConfigLocked(t *testing.T) {
 	}
 }
 
-// TestCovPruneWatchedTargetWatchesLocked covers pruneWatchedTargetWatchesLocked
-// (job_watch.go lines 1641-1655).
+// TestCovPruneWatchedTargetWatchesLocked covers pruneWatchedTargetWatchesLocked.
 func TestCovPruneWatchedTargetWatchesLocked(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -446,7 +441,7 @@ func TestCovPruneWatchedTargetWatchesLocked(t *testing.T) {
 	}
 }
 
-// TestCovInspectWatchByID covers inspectWatchByID (job_watch.go lines 1960-1979).
+// TestCovInspectWatchByID covers inspectWatchByID.
 func TestCovInspectWatchByID(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -496,7 +491,7 @@ func TestCovInspectWatchByID(t *testing.T) {
 	}
 }
 
-// TestCovLiveWatchSummaries covers liveWatchSummaries (job_watch.go lines 2040-2064).
+// TestCovLiveWatchSummaries covers liveWatchSummaries.
 func TestCovLiveWatchSummaries(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -550,8 +545,7 @@ func TestCovLiveWatchSummaries(t *testing.T) {
 	}
 }
 
-// TestCovSettleWatchSendLocked covers settleWatchSendLocked
-// (job_watch.go lines 3892-3908): settling a key, settling with higher seq,
+// TestCovSettleWatchSendLocked covers settleWatchSendLocked: settling a key, settling with higher seq,
 // and the settled-order cap eviction.
 func TestCovSettleWatchSendLocked(t *testing.T) {
 	t.Parallel()
@@ -607,8 +601,7 @@ func TestCovSettleWatchSendLocked(t *testing.T) {
 	}
 }
 
-// TestCovResolveWatchSendTarget covers resolveWatchSendTarget
-// (job_watch.go lines 4633-4643).
+// TestCovResolveWatchSendTarget covers resolveWatchSendTarget.
 func TestCovResolveWatchSendTarget(t *testing.T) {
 	t.Parallel()
 	// Non-watched alias — returned as-is.
@@ -636,8 +629,7 @@ func TestCovResolveWatchSendTarget(t *testing.T) {
 	}
 }
 
-// TestCovHasPendingWatchSends covers hasPendingWatchSends
-// (job_watch.go lines 4614-4631).
+// TestCovHasPendingWatchSends covers hasPendingWatchSends.
 func TestCovHasPendingWatchSends(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -664,8 +656,7 @@ func TestCovHasPendingWatchSends(t *testing.T) {
 	}
 }
 
-// TestCovWatchSendTokenNotification covers watchSendTokenNotification
-// (job_watch.go lines 375-389).
+// TestCovWatchSendTokenNotification covers watchSendTokenNotification.
 func TestCovWatchSendTokenNotification(t *testing.T) {
 	t.Parallel()
 	state := jobstore.WatchSendState{
@@ -704,7 +695,7 @@ func TestCovWatchSendTokenNotification(t *testing.T) {
 	}
 }
 
-// TestCovJobManagerForToken covers jobManagerForToken (job_watch.go lines 392-406).
+// TestCovJobManagerForToken covers jobManagerForToken.
 func TestCovJobManagerForToken(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -735,8 +726,7 @@ func TestCovJobManagerForToken(t *testing.T) {
 	}
 }
 
-// TestCovResolveWatchSendToken covers resolveWatchSendToken
-// (job_watch.go lines 410-426).
+// TestCovResolveWatchSendToken covers resolveWatchSendToken.
 func TestCovResolveWatchSendToken(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -760,7 +750,7 @@ func TestCovResolveWatchSendToken(t *testing.T) {
 	}
 }
 
-// TestCovWithSelfInfluence covers withSelfInfluence (job_watch.go lines 347-350).
+// TestCovWithSelfInfluence covers withSelfInfluence.
 func TestCovWithSelfInfluence(t *testing.T) {
 	t.Parallel()
 	d := watchSendDelivery{}
@@ -771,8 +761,7 @@ func TestCovWithSelfInfluence(t *testing.T) {
 	}
 }
 
-// TestCovAppendWatchFrameJobRead covers appendWatchFrameJobRead
-// (job_watch.go lines 4693-4701).
+// TestCovAppendWatchFrameJobRead covers appendWatchFrameJobRead.
 func TestCovAppendWatchFrameJobRead(t *testing.T) {
 	t.Parallel()
 	// Empty frame — returned as-is.

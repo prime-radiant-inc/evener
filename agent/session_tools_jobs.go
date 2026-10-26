@@ -57,7 +57,7 @@ func clampJobBlockTimeout(ms int) time.Duration {
 // deliberately not here. The accesses the old job_watch strip was protecting
 // are each enforced at their own source: `parent` requires
 // delegate(watch_parent=true) (delegate_tree_watch.go), and a concrete job id
-// must be owned by the watching session (job_watch.go's target_not_watchable).
+// must be owned by the watching session (validateWatchTarget's target_not_watchable).
 var rootOnlyJobControlTools = []string{"delegate"}
 
 func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {

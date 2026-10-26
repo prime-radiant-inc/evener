@@ -748,7 +748,7 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 			return
 		}
 		// Held across the emit so a turn start can't slip in between.
-		// STATUS_SETTLED must stay out of job_watch.go's modelEventKinds: a
+		// STATUS_SETTLED must stay out of modelEventKinds: a
 		// watch fired from this emit could start a turn, which waits on restMu.
 		s.restMu.Lock()
 		defer s.restMu.Unlock()

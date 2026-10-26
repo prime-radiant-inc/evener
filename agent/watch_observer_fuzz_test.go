@@ -15,7 +15,7 @@ import (
 	"primeradiant.com/evener/fuzz/oracle"
 )
 
-// This file fuzzes the watch/observer machinery in job_watch.go that the
+// This file fuzzes the watch/observer machinery that the
 // existing job_watch_delegate lane leaves partly dark: the model-facing frame
 // renderer (buildWatchFrame), the durable pending-watch-send reconstructor
 // (restoreWatchSendPending), the session-target/receiver remainder of

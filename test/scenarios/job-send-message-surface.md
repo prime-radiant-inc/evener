@@ -39,7 +39,7 @@ returns `errDelegateNotControllable`
 returns that bare error with no result JSON at all. The string
 `job_id is a job/turn handle` is real, but it lives only on the internal
 WATCH delivery validator
-(`agent/job_watch.go#validateWatchSendDeliveryTarget`), a different code
+(`agent/watch_config.go#validateWatchSendDeliveryTarget`), a different code
 path `delegate_send` never calls — do not expect it here. A stable
 delegate's `transcript_ref` is a session ref and reads its whole
 conversation; delegates never use `job:` refs

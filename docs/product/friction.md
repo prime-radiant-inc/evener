@@ -571,8 +571,8 @@ notice. Saved pending deliveries and future registrations have different lifetim
 
 **Evidence.** [newJobManagerWithStoreOpen](../../agent/jobs.go) and
 [clearUnrestoredActiveWatches](../../agent/jobs.go) clear all active records;
-[watchConfigSnapshot](../../agent/job_watch.go) retains filters, identities
-and intervals. [noticeUnrestoredWatchEnds](../../agent/job_watch.go) handles
+[watchConfigSnapshot](../../agent/watch_registry.go) retains filters, identities
+and intervals. [noticeUnrestoredWatchEnds](../../agent/watch_expiry.go) handles
 the end notices. The [job-control contract](../job-control.md) distinguishes
 durable registration and delivery records from process-local observation,
 timers and callbacks.

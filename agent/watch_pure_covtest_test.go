@@ -13,9 +13,9 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 )
 
-// ---- job_watch.go pure functions ----
+// ---- watch pure functions ----
 
-// TestCovAvailableEventKindNames covers availableEventKindNames (job_watch.go line 29).
+// TestCovAvailableEventKindNames covers availableEventKindNames.
 func TestCovAvailableEventKindNames(t *testing.T) {
 	t.Parallel()
 	names := availableEventKindNames()
@@ -31,8 +31,7 @@ func TestCovAvailableEventKindNames(t *testing.T) {
 	}
 }
 
-// TestCovQuietWatchdogMessage covers quietWatchdogMessage and formatQuietWindow
-// (job_watch.go lines 76-89).
+// TestCovQuietWatchdogMessage covers quietWatchdogMessage and formatQuietWindow.
 func TestCovQuietWatchdogMessage(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
@@ -54,7 +53,7 @@ func TestCovQuietWatchdogMessage(t *testing.T) {
 	}
 }
 
-// TestCovFormatQuietWindow covers formatQuietWindow (job_watch.go lines 84-89).
+// TestCovFormatQuietWindow covers formatQuietWindow.
 func TestCovFormatQuietWindow(t *testing.T) {
 	t.Parallel()
 	if got := formatQuietWindow(10 * time.Minute); got != "10m" {
@@ -71,8 +70,7 @@ func TestCovFormatQuietWindow(t *testing.T) {
 	}
 }
 
-// TestCovWatchEndedUnfiredMessage covers watchEndedUnfiredMessage
-// (job_watch.go lines 95-100).
+// TestCovWatchEndedUnfiredMessage covers watchEndedUnfiredMessage.
 func TestCovWatchEndedUnfiredMessage(t *testing.T) {
 	t.Parallel()
 	got := watchEndedUnfiredMessage("job_1", jobstore.StatusCompleted, "done", 4096)
@@ -81,7 +79,7 @@ func TestCovWatchEndedUnfiredMessage(t *testing.T) {
 	}
 }
 
-// TestCovWatchArgsHasCondition covers watchArgsHasCondition (job_watch.go lines 731-736).
+// TestCovWatchArgsHasCondition covers watchArgsHasCondition.
 func TestCovWatchArgsHasCondition(t *testing.T) {
 	t.Parallel()
 	// No condition → false.
@@ -110,7 +108,7 @@ func TestCovWatchArgsHasCondition(t *testing.T) {
 	}
 }
 
-// TestCovWatchArgsIsOutputMatchOnly covers watchArgsIsOutputMatchOnly (job_watch.go lines 743-749).
+// TestCovWatchArgsIsOutputMatchOnly covers watchArgsIsOutputMatchOnly.
 func TestCovWatchArgsIsOutputMatchOnly(t *testing.T) {
 	t.Parallel()
 	if !watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY"}) {
@@ -133,7 +131,7 @@ func TestCovWatchArgsIsOutputMatchOnly(t *testing.T) {
 	}
 }
 
-// TestCovValidateWatchEventArgs covers validateWatchEventArgs (job_watch.go lines 751+).
+// TestCovValidateWatchEventArgs covers validateWatchEventArgs.
 func TestCovValidateWatchEventArgs(t *testing.T) {
 	t.Parallel()
 	// Wildcard event → ok.
@@ -183,7 +181,7 @@ func TestCovValidateWatchEventArgs(t *testing.T) {
 	}
 }
 
-// TestCovNormalizeWatchArgs covers normalizeWatchArgs (job_watch.go lines 505-529).
+// TestCovNormalizeWatchArgs covers normalizeWatchArgs.
 func TestCovNormalizeWatchArgs(t *testing.T) {
 	t.Parallel()
 	// Negative progress → error.
@@ -247,7 +245,7 @@ func TestCovNormalizeWatchArgs(t *testing.T) {
 	}
 }
 
-// TestCovCloneWatchEventFilter covers cloneWatchEventFilter (job_watch.go lines 1100-1106).
+// TestCovCloneWatchEventFilter covers cloneWatchEventFilter.
 func TestCovCloneWatchEventFilter(t *testing.T) {
 	t.Parallel()
 	// Nil → nil.
@@ -267,7 +265,7 @@ func TestCovCloneWatchEventFilter(t *testing.T) {
 	}
 }
 
-// TestCovCloneWatchSendArgs covers cloneWatchSendArgs (job_watch.go lines 1118-1124).
+// TestCovCloneWatchSendArgs covers cloneWatchSendArgs.
 func TestCovCloneWatchSendArgs(t *testing.T) {
 	t.Parallel()
 	// Nil → nil.
@@ -286,7 +284,7 @@ func TestCovCloneWatchSendArgs(t *testing.T) {
 	}
 }
 
-// TestCovWatchEventFilterSummary covers watchEventFilterSummary (job_watch.go lines 2152-2163).
+// TestCovWatchEventFilterSummary covers watchEventFilterSummary.
 func TestCovWatchEventFilterSummary(t *testing.T) {
 	t.Parallel()
 	// Nil → "".
@@ -318,7 +316,7 @@ func TestCovWatchEventFilterSummary(t *testing.T) {
 	}
 }
 
-// TestCovWatchConditionSummary covers watchConditionSummary (job_watch.go lines 2126-2150).
+// TestCovWatchConditionSummary covers watchConditionSummary.
 func TestCovWatchConditionSummary(t *testing.T) {
 	t.Parallel()
 	// Empty → "".
@@ -372,8 +370,7 @@ func TestCovWatchConditionSummary(t *testing.T) {
 	}
 }
 
-// TestCovWatchConfigMatchesReceiver covers watchConfigMatchesReceiver
-// (job_watch.go lines 2098-2104).
+// TestCovWatchConfigMatchesReceiver covers watchConfigMatchesReceiver.
 func TestCovWatchConfigMatchesReceiver(t *testing.T) {
 	t.Parallel()
 	// Nil → false.
@@ -393,8 +390,7 @@ func TestCovWatchConfigMatchesReceiver(t *testing.T) {
 	}
 }
 
-// TestCovWatchConfigVisibleToSession covers watchConfigVisibleToSession
-// (job_watch.go lines 2106-2111).
+// TestCovWatchConfigVisibleToSession covers watchConfigVisibleToSession.
 func TestCovWatchConfigVisibleToSession(t *testing.T) {
 	t.Parallel()
 	// Nil → false.
@@ -420,8 +416,7 @@ func TestCovWatchConfigVisibleToSession(t *testing.T) {
 	}
 }
 
-// TestCovWatchHistoryMatchesReceiver covers watchHistoryMatchesReceiver
-// (job_watch.go lines 2113-2116).
+// TestCovWatchHistoryMatchesReceiver covers watchHistoryMatchesReceiver.
 func TestCovWatchHistoryMatchesReceiver(t *testing.T) {
 	t.Parallel()
 	h := watchHistoryEntry{receiverSessionID: "sess1", receiverDelegateID: "dlg_1"}
@@ -433,8 +428,7 @@ func TestCovWatchHistoryMatchesReceiver(t *testing.T) {
 	}
 }
 
-// TestCovWatchHistoryVisibleToSession covers watchHistoryVisibleToSession
-// (job_watch.go lines 2118-2120).
+// TestCovWatchHistoryVisibleToSession covers watchHistoryVisibleToSession.
 func TestCovWatchHistoryVisibleToSession(t *testing.T) {
 	t.Parallel()
 	// Empty receiver → visible to all.
@@ -455,8 +449,7 @@ func TestCovWatchHistoryVisibleToSession(t *testing.T) {
 	}
 }
 
-// TestCovWatchSendKeyMatchesWatchKey covers watchSendKeyMatchesWatchKey
-// (job_watch.go lines 4084-4094).
+// TestCovWatchSendKeyMatchesWatchKey covers watchSendKeyMatchesWatchKey.
 func TestCovWatchSendKeyMatchesWatchKey(t *testing.T) {
 	t.Parallel()
 	pending := jobstore.WatchSendKey{
@@ -510,8 +503,7 @@ func TestCovWatchSendKeyMatchesWatchKey(t *testing.T) {
 	}
 }
 
-// TestCovWatchConfigReceiverMatchesWatchKey covers watchConfigReceiverMatchesWatchKey
-// (job_watch.go lines 4122+).
+// TestCovWatchConfigReceiverMatchesWatchKey covers watchConfigReceiverMatchesWatchKey.
 func TestCovWatchConfigReceiverMatchesWatchKey(t *testing.T) {
 	t.Parallel()
 	// Nil → false.
@@ -539,7 +531,7 @@ func TestCovWatchConfigReceiverMatchesWatchKey(t *testing.T) {
 	}
 }
 
-// TestCovLimitWatchText covers limitWatchText (job_watch.go lines 4881-4891).
+// TestCovLimitWatchText covers limitWatchText.
 func TestCovLimitWatchText(t *testing.T) {
 	t.Parallel()
 	// No limit → unchanged.
@@ -572,7 +564,7 @@ func TestCovLimitWatchText(t *testing.T) {
 	}
 }
 
-// TestCovWatchFrameJob covers watchFrameJob (job_watch.go lines 3247-3259).
+// TestCovWatchFrameJob covers watchFrameJob.
 func TestCovWatchFrameJob(t *testing.T) {
 	t.Parallel()
 	// JobFinishedData value.
@@ -594,7 +586,7 @@ func TestCovWatchFrameJob(t *testing.T) {
 	}
 }
 
-// TestCovJobFinishedEventData covers jobFinishedEventData (job_watch.go lines 3263-3273).
+// TestCovJobFinishedEventData covers jobFinishedEventData.
 func TestCovJobFinishedEventData(t *testing.T) {
 	t.Parallel()
 	// Value.
@@ -610,8 +602,7 @@ func TestCovJobFinishedEventData(t *testing.T) {
 	}
 }
 
-// TestCovWatchEventFilterMatches covers watchEventFilterMatches
-// (job_watch.go lines 2415+).
+// TestCovWatchEventFilterMatches covers watchEventFilterMatches.
 func TestCovWatchEventFilterMatches(t *testing.T) {
 	t.Parallel()
 	// Nil filter → matches everything.

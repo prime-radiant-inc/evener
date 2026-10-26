@@ -225,9 +225,9 @@ var watchCreateValidators = []string{"validateWatchTarget", "validateWatchEventA
 func TestConfigureWatch_TimerIDIsMintedAfterValidation(t *testing.T) {
 	t.Parallel()
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "job_watch.go", nil, 0)
+	file, err := parser.ParseFile(fset, "watch_config.go", nil, 0)
 	if err != nil {
-		t.Fatalf("parse job_watch.go: %v", err)
+		t.Fatalf("parse watch_config.go: %v", err)
 	}
 	var body *ast.FuncDecl
 	for _, decl := range file.Decls {
@@ -236,7 +236,7 @@ func TestConfigureWatch_TimerIDIsMintedAfterValidation(t *testing.T) {
 		}
 	}
 	if body == nil {
-		t.Fatal("configureWatchWithHooks is gone from job_watch.go: this guard now checks nothing")
+		t.Fatal("configureWatchWithHooks is gone from watch_config.go: this guard now checks nothing")
 	}
 	firstCall := map[string]token.Pos{}
 	var mints []token.Pos
