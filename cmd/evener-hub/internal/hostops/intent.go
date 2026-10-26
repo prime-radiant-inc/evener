@@ -148,9 +148,7 @@ const (
 	// write: the preimage is durable and the purge has not landed.
 	CompensationArmed CompensationPhase = "compensating-armed"
 	// CompensationHubTOML is the phase the purge write advances the record to
-	// (`armed` → the hub.toml restore comes next). `compensating-sidecar` is
-	// the pre-storage-decision spelling of the same phase and reads as this
-	// value (NormalizeCompensationPhase).
+	// (`armed` → the hub.toml restore comes next).
 	CompensationHubTOML CompensationPhase = "compensating-hubtoml"
 	// CompensationRows is the phase after the hub.toml restore landed: the row
 	// re-insert is next.
@@ -162,25 +160,11 @@ const (
 	// record clear is next. A record in this phase clears without resurrecting
 	// rows — the rows are already converged.
 	CompensationClear CompensationPhase = "compensating-clear"
-	// compensationSidecarLegacy is the retired spelling §9 names.
-	compensationSidecarLegacy CompensationPhase = "compensating-sidecar"
 )
 
-// NormalizeCompensationPhase maps a persisted phase to its live spelling: the
-// retired `compensating-sidecar` literal is an alias for `compensating-hubtoml`
-// (same arm, same restore), never an unknown phase. Every other value reads as
-// itself.
-func NormalizeCompensationPhase(phase CompensationPhase) CompensationPhase {
-	if phase == compensationSidecarLegacy {
-		return CompensationHubTOML
-	}
-	return phase
-}
-
-// valid reports whether phase is one of the machine's literal values, the
-// legacy alias included.
+// valid reports whether phase is one of the machine's literal values.
 func (phase CompensationPhase) valid() bool {
-	switch NormalizeCompensationPhase(phase) {
+	switch phase {
 	case CompensationArmed, CompensationHubTOML, CompensationRows, CompensationRuntime, CompensationClear:
 		return true
 	}
@@ -190,7 +174,7 @@ func (phase CompensationPhase) valid() bool {
 // next reports the phase one step forward, and whether a step exists. The
 // machine is strictly forward.
 func (phase CompensationPhase) next() (CompensationPhase, bool) {
-	switch NormalizeCompensationPhase(phase) {
+	switch phase {
 	case CompensationArmed:
 		return CompensationHubTOML, true
 	case CompensationHubTOML:
@@ -223,11 +207,9 @@ type Compensation struct {
 	Generation uint64 `json:"generation"`
 }
 
-// normalized returns the record with its phase mapped to the live spelling and
-// its row slice non-nil.
+// normalized returns the record with its row slice non-nil.
 func (c Compensation) normalized() Compensation {
 	out := c
-	out.Phase = NormalizeCompensationPhase(c.Phase)
 	out.Rows = cloneTokens(c.Rows)
 	if out.Rows == nil {
 		out.Rows = []Token{}
@@ -342,7 +324,7 @@ func (s *Store) AdvanceCompensation(host string, to CompensationPhase) error {
 	if !ok {
 		return fmt.Errorf("%w: record for %q is in terminal phase %q", ErrInvalidCompensation, host, record.Phase)
 	}
-	if NormalizeCompensationPhase(to) != next {
+	if to != next {
 		return fmt.Errorf("%w: record for %q in phase %q cannot advance to %q", ErrInvalidCompensation, host, record.Phase, to)
 	}
 	nextState := cloneSnapshot(s.cell.state)
@@ -391,7 +373,7 @@ func (s *Store) PurgeCompensated(host string, values []string) (int, error) {
 	if !ok {
 		return 0, fmt.Errorf("%w: no compensation for %q to advance", ErrInvalidCompensation, host)
 	}
-	if NormalizeCompensationPhase(record.Phase) != CompensationArmed {
+	if record.Phase != CompensationArmed {
 		return 0, fmt.Errorf("%w: record for %q is in phase %q, not %s", ErrInvalidCompensation, host, record.Phase, CompensationArmed)
 	}
 	next := cloneSnapshot(s.cell.state)
@@ -434,7 +416,7 @@ func (s *Store) ReinsertCompensationRows(host string, keep func(Token) bool) (in
 	if !ok {
 		return 0, fmt.Errorf("%w: no compensation for %q", ErrInvalidCompensation, host)
 	}
-	if NormalizeCompensationPhase(record.Phase) != CompensationRows {
+	if record.Phase != CompensationRows {
 		return 0, fmt.Errorf("%w: record for %q is in phase %q, not %s", ErrInvalidCompensation, host, record.Phase, CompensationRows)
 	}
 	next := cloneSnapshot(s.cell.state)

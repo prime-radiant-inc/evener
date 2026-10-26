@@ -2713,12 +2713,6 @@ func hubTOMLMirrorCommitTables(cfg Config, entries, known []hostreg.Host, genera
 // compensation still names, so the next boot would restore the wrong bytes as
 // that record's pre-mutation state. The compensation record carries the exact
 // path; only a record naming it keeps it from the boot prune.
-//
-// Compatibility: the pre-rename shared name (`<hub.toml>.stash`) never shipped
-// — this branch introduced it — so there is no persisted record to migrate. A
-// record that names it anyway (a file written by an earlier build of this
-// branch) keeps it and restores it unchanged; the boot prune removes it only
-// when no open record names it.
 func hubTOMLStashPath(configPath, receiptKey string) string {
 	sum := sha256.Sum256([]byte(receiptKey))
 	return fmt.Sprintf("%s.stash.%x", configPath, sum[:8])
@@ -2742,8 +2736,7 @@ func isStashKeyHex(suffix string) bool {
 }
 
 // ownsStashPath reports whether stash names this hub's own stash family beside
-// its hub.toml: the canonical legacy name or a per-commit
-// `<hub.toml>.stash.<16 hex>` name. Anything else is not this hub's to read,
+// its hub.toml: a per-commit `<hub.toml>.stash.<16 hex>` name. Anything else is not this hub's to read,
 // restore, or remove — a tampered or foreign record names a path, never bytes
 // this hub wrote.
 func (m *hubHostManager) ownsStashPath(stash string) bool {
@@ -2756,11 +2749,6 @@ func stashPathOwnedBy(configPath, stash string) bool {
 	path := strings.TrimSpace(configPath)
 	if path == "" || strings.TrimSpace(stash) == "" {
 		return false
-	}
-	if stash == path+".stash" {
-		// The legacy spelling an earlier build of this branch wrote; a record
-		// naming it keeps its restore source.
-		return true
 	}
 	suffix, ok := strings.CutPrefix(stash, path+".stash.")
 	return ok && isStashKeyHex(suffix)
@@ -3267,7 +3255,7 @@ func (m *hubHostManager) reconcileCompensations() {
 		if !ok {
 			continue
 		}
-		if hostops.NormalizeCompensationPhase(record.Phase) == hostops.CompensationArmed {
+		if record.Phase == hostops.CompensationArmed {
 			m.resumeArmedCompensation(record)
 			continue
 		}
@@ -3355,7 +3343,7 @@ func (m *hubHostManager) resumeArmedCompensation(record hostops.Compensation) {
 // the phase the failing step belongs to (a runtime-revert failure leaves the
 // record in `compensating-runtime` with the stash intact).
 func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
-	switch hostops.NormalizeCompensationPhase(record.Phase) {
+	switch record.Phase {
 	case hostops.CompensationHubTOML:
 		// §9's commit-point check, the same one the armed arm makes.
 		fileCfg, hasFile := m.hostFileRecords()

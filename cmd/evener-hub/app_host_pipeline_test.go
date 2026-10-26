@@ -361,7 +361,7 @@ func TestBootCompensationResumesTheOwedRowsAfterAFailedAdvance(t *testing.T) {
 	}
 	m.reconcileCompensations()
 	record, open := m.cfg.ops.Compensation("keep")
-	if !open || hostops.NormalizeCompensationPhase(record.Phase) != hostops.CompensationHubTOML {
+	if !open || record.Phase != hostops.CompensationHubTOML {
 		t.Fatalf("record after the failed advance = %+v/%v, want it left in %s", record, open, hostops.CompensationHubTOML)
 	}
 	restoredCfg, _ := readPipelineConfig(t, fixture.configPath)
@@ -419,7 +419,7 @@ func TestBootCompensationArmedWithRowsPresentLeavesTheRecordWhenTheRegistryLacks
 	}
 	m := fixture.manager(t)
 	record, open := m.cfg.ops.Compensation("m4")
-	if !open || hostops.NormalizeCompensationPhase(record.Phase) != hostops.CompensationRuntime {
+	if !open || record.Phase != hostops.CompensationRuntime {
 		t.Fatalf("record = %+v/%v, want it left in %s (the restored host is not served)", record, open, hostops.CompensationRuntime)
 	}
 	if _, carried := m.cfg.store.storeSyncSnapshot()["m4"]; carried {
@@ -713,7 +713,7 @@ func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredFileIsMissing(t *t
 	m.testOnlyFailRuntimeRevert = func(string) error { return errors.New("injected runtime-revert failure") }
 	m.reconcileCompensations()
 	record, ok := m.cfg.ops.Compensation("m4")
-	if !ok || hostops.NormalizeCompensationPhase(record.Phase) != hostops.CompensationRuntime {
+	if !ok || record.Phase != hostops.CompensationRuntime {
 		t.Fatalf("record after a failed runtime revert = %+v/%v, want it left in %s", record, ok, hostops.CompensationRuntime)
 	}
 	if _, err := os.Stat(stash); err != nil {
@@ -879,7 +879,7 @@ func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredHostIsNotRegistere
 	// The registry is empty: the boot loaded the committed (host-less) file.
 	m := fixture.manager(t)
 	record, open := m.cfg.ops.Compensation("m4")
-	if !open || hostops.NormalizeCompensationPhase(record.Phase) != hostops.CompensationRuntime {
+	if !open || record.Phase != hostops.CompensationRuntime {
 		t.Fatalf("record after the unserved runtime revert = %+v/%v, want it left in %s", record, open, hostops.CompensationRuntime)
 	}
 	if _, err := os.Stat(stash); err != nil {
@@ -1157,7 +1157,7 @@ func TestBootRestoreReversesTheHostRemovedMarks(t *testing.T) {
 	if _, staged := crashed.cfg.store.stagedSnapshot()["keep"]; staged {
 		t.Fatal("the crash boot left the marker staged in the model")
 	}
-	if record, open := fixture.store.Compensation("keep"); !open || hostops.NormalizeCompensationPhase(record.Phase) != hostops.CompensationRuntime {
+	if record, open := fixture.store.Compensation("keep"); !open || record.Phase != hostops.CompensationRuntime {
 		t.Fatalf("record after the crash boot = %+v/%v, want it left in %s", record, open, hostops.CompensationRuntime)
 	}
 	// Boot 2 loads the restored file's live set: the runtime arm converges and
@@ -1522,9 +1522,6 @@ func TestValidateHostOpsStashReferencesRefusesAForeignPath(t *testing.T) {
 	if !m.ownsStashPath(hubTOMLStashPath(fixture.configPath, "key")) {
 		t.Fatal("ownsStashPath refused this hub's own per-commit stash path")
 	}
-	if !m.ownsStashPath(fixture.configPath + ".stash") {
-		t.Fatal("ownsStashPath refused the legacy canonical stash path")
-	}
 	if m.ownsStashPath(foreign) || m.ownsStashPath("/elsewhere/hub.toml.stash."+"zz") {
 		t.Fatal("ownsStashPath accepted a path outside this hub's family")
 	}
@@ -1715,7 +1712,7 @@ func TestCompensateStagedCrossFileLeavesTheRecordWhenAStepFails(t *testing.T) {
 				wantPhase = hostops.CompensationClear
 			}
 			record, open := m.cfg.ops.Compensation("keep")
-			if !open || hostops.NormalizeCompensationPhase(record.Phase) != wantPhase {
+			if !open || record.Phase != wantPhase {
 				t.Fatalf("record after the failed step = %+v/%v, want it left in %s", record, open, wantPhase)
 			}
 			if _, err := os.Stat(stash); err != nil {

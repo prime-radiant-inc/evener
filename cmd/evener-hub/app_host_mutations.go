@@ -435,7 +435,7 @@ func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previou
 		m.logf("remove %q compensation: step %s failed; the record and its stash are left for the next boot: %v", plan.Name, step, stepErr)
 	}
 	seam := func(step string) error { return m.compensationStepFailure(plan.Name, step) }
-	switch hostops.NormalizeCompensationPhase(record.Phase) {
+	switch record.Phase {
 	case hostops.CompensationArmed:
 		// The purge never landed: the rows are untouched.
 	case hostops.CompensationHubTOML, hostops.CompensationRows:
@@ -443,7 +443,7 @@ func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previou
 		// restore is back, so the rows the restored generation revalidates are
 		// re-inserted, then the runtime step advances and the record clears. A
 		// record left in `rows` by an earlier crash resumes the same way.
-		if hostops.NormalizeCompensationPhase(record.Phase) == hostops.CompensationHubTOML {
+		if record.Phase == hostops.CompensationHubTOML {
 			if stepErr := seam("advance-rows"); stepErr != nil {
 				failStep("advance-rows", stepErr)
 				return appwire.HostMutationResult{}, err

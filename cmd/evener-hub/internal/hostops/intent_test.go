@@ -162,28 +162,6 @@ func TestArmCompensationRefusesAMalformedRecord(t *testing.T) {
 	}
 }
 
-// TestCompensationSidecarSpellingIsAnAlias pins §9's legacy literal: a
-// persisted `compensating-sidecar` record reads as `compensating-hubtoml`, so
-// the arm is the same restore, never an unknown phase.
-func TestCompensationSidecarSpellingIsAnAlias(t *testing.T) {
-	if got := NormalizeCompensationPhase("compensating-sidecar"); got != CompensationHubTOML {
-		t.Fatalf("NormalizeCompensationPhase(compensating-sidecar) = %q, want %q", got, CompensationHubTOML)
-	}
-	if got := NormalizeCompensationPhase(CompensationArmed); got != CompensationArmed {
-		t.Fatalf("NormalizeCompensationPhase(armed) = %q, want armed", got)
-	}
-	// A record that carries the legacy spelling arms as the aliased phase.
-	store, _, _ := openClockStore(t)
-	row := mintTokenAt(t, store, "m4", 7)
-	if err := store.ArmCompensation(Compensation{Host: "m4", Phase: "compensating-sidecar", Rows: []Token{row}, Stash: "stash", Generation: 7}); err != nil {
-		t.Fatalf("ArmCompensation(sidecar alias): %v", err)
-	}
-	read, ok := store.Compensation("m4")
-	if !ok || read.Phase != CompensationHubTOML {
-		t.Fatalf("aliased record = %+v, want %s", read, CompensationHubTOML)
-	}
-}
-
 // TestReinsertCompensationRowsFiltersAndAdvances pins §9's rows arm: exactly
 // the rows `keep` revalidates come back, the phase advances to
 // `compensating-runtime` in the same write, and a row already present is not
