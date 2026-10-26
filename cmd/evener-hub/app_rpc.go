@@ -729,6 +729,28 @@ func adoptFailureClientMutationID(err error, clientMutationID string) error {
 	return adoptCallerMutationID(err, clientMutationID)
 }
 
+// requireClientMutationID refuses a mutation request that carries no
+// clientMutationId, which every receipt-bearing mutation correlates on.
+func requireClientMutationID(clientMutationID string) error {
+	if strings.TrimSpace(clientMutationID) == "" {
+		return appwire.InvalidParams("clientMutationId is required")
+	}
+	return nil
+}
+
+// relayOwnedMutation resolves the source owning ref and runs call against it
+// under the deletion-target ownership of the caller's mutation.
+func relayOwnedMutation[R any](ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref, threadID, clientMutationID string, call func(appsource.Source) (R, error)) (R, error) {
+	return withDeletionTargetOwnership(ctx, cfg, ref, threadID, clientMutationID, func() (R, error) {
+		source, err := sourceForThread(sources, ref, threadID)
+		if err != nil {
+			var zero R
+			return zero, err
+		}
+		return call(source)
+	})
+}
+
 // adoptCallerMutationResult adopts the caller's ID onto a successful receipt
 // or a failed result. receipt points to the handler's local response field.
 // Failed results leave that field unchanged. The daemon's durable ID and the
@@ -1638,8 +1660,8 @@ func registerThreadHandlers(
 		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 		}
-		if strings.TrimSpace(params.ClientMutationID) == "" {
-			return appwire.TurnStartResponse{}, appwire.InvalidParams("clientMutationId is required")
+		if err := requireClientMutationID(params.ClientMutationID); err != nil {
+			return appwire.TurnStartResponse{}, err
 		}
 		resolved := false
 		// initialPreDispatch records whether the ORIGINAL attempt is proven to
@@ -1758,14 +1780,10 @@ func registerThreadHandlers(
 		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
 		}
-		if strings.TrimSpace(params.ClientMutationID) == "" {
-			return appwire.TurnSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
+		if err := requireClientMutationID(params.ClientMutationID); err != nil {
+			return appwire.TurnSteerResponse{}, err
 		}
-		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnSteerResponse, error) {
-			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
-			if err != nil {
-				return appwire.TurnSteerResponse{}, err
-			}
+		resp, err := relayOwnedMutation(ctx, cfg, sources, params.Ref, params.ThreadID, params.ClientMutationID, func(source appsource.Source) (appwire.TurnSteerResponse, error) {
 			if err := ensureSkillInputSupported(ctx, source, params.Ref, params.ThreadID, params.Input); err != nil {
 				return appwire.TurnSteerResponse{}, err
 			}
@@ -1775,14 +1793,10 @@ func registerThreadHandlers(
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnInterrupt, func(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
-		if strings.TrimSpace(params.ClientMutationID) == "" {
-			return appwire.TurnInterruptResponse{}, appwire.InvalidParams("clientMutationId is required")
+		if err := requireClientMutationID(params.ClientMutationID); err != nil {
+			return appwire.TurnInterruptResponse{}, err
 		}
-		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnInterruptResponse, error) {
-			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
-			if err != nil {
-				return appwire.TurnInterruptResponse{}, err
-			}
+		resp, err := relayOwnedMutation(ctx, cfg, sources, params.Ref, params.ThreadID, params.ClientMutationID, func(source appsource.Source) (appwire.TurnInterruptResponse, error) {
 			return source.InterruptTurn(ctx, params)
 		})
 		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
@@ -1820,8 +1834,8 @@ func registerThreadHandlers(
 		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
 		}
-		if strings.TrimSpace(params.ClientMutationID) == "" {
-			return appwire.TurnQueueResponse{}, appwire.InvalidParams("clientMutationId is required")
+		if err := requireClientMutationID(params.ClientMutationID); err != nil {
+			return appwire.TurnQueueResponse{}, err
 		}
 		// A queued message is a session mutation a past thread advertises, so it
 		// carries the same exited == never-exited contract as turn/start: the hub
@@ -1851,14 +1865,10 @@ func registerThreadHandlers(
 		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
 		}
-		if strings.TrimSpace(params.ClientMutationID) == "" {
-			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
+		if err := requireClientMutationID(params.ClientMutationID); err != nil {
+			return appwire.TurnDrainAsSteerResponse{}, err
 		}
-		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnDrainAsSteerResponse, error) {
-			source, err := sourceForThread(sources, params.Ref, "")
-			if err != nil {
-				return appwire.TurnDrainAsSteerResponse{}, err
-			}
+		resp, err := relayOwnedMutation(ctx, cfg, sources, params.Ref, "", params.ClientMutationID, func(source appsource.Source) (appwire.TurnDrainAsSteerResponse, error) {
 			if err := ensureSkillInputSupported(ctx, source, params.Ref, "", params.Input); err != nil {
 				return appwire.TurnDrainAsSteerResponse{}, err
 			}
@@ -1871,17 +1881,13 @@ func registerThreadHandlers(
 		if params.Index < 0 {
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("index must be >= 0")
 		}
-		if strings.TrimSpace(params.ClientMutationID) == "" {
-			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
+		if err := requireClientMutationID(params.ClientMutationID); err != nil {
+			return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 		}
 		if strings.TrimSpace(params.ExpectedEntryID) == "" {
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedEntryId is required")
 		}
-		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-			source, err := sourceForThread(sources, params.Ref, "")
-			if err != nil {
-				return appwire.TurnPromoteQueuedAsSteerResponse{}, err
-			}
+		resp, err := relayOwnedMutation(ctx, cfg, sources, params.Ref, "", params.ClientMutationID, func(source appsource.Source) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 			return source.PromoteQueuedAsSteer(ctx, params)
 		})
 		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
@@ -1891,25 +1897,21 @@ func registerThreadHandlers(
 		if params.Index < 0 {
 			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("index must be >= 0")
 		}
-		if strings.TrimSpace(params.ClientMutationID) == "" {
-			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("clientMutationId is required")
+		if err := requireClientMutationID(params.ClientMutationID); err != nil {
+			return appwire.TurnCancelQueuedResponse{}, err
 		}
 		if strings.TrimSpace(params.ExpectedEntryID) == "" {
 			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("expectedEntryId is required")
 		}
-		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnCancelQueuedResponse, error) {
-			source, err := sourceForThread(sources, params.Ref, "")
-			if err != nil {
-				return appwire.TurnCancelQueuedResponse{}, err
-			}
+		resp, err := relayOwnedMutation(ctx, cfg, sources, params.Ref, "", params.ClientMutationID, func(source appsource.Source) (appwire.TurnCancelQueuedResponse, error) {
 			return source.CancelQueued(ctx, params)
 		})
 		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-		if strings.TrimSpace(params.ClientMutationID) == "" {
-			return appwire.ThreadClearResponse{}, appwire.InvalidParams("clientMutationId is required")
+		if err := requireClientMutationID(params.ClientMutationID); err != nil {
+			return appwire.ThreadClearResponse{}, err
 		}
 		if strings.TrimSpace(params.ExpectedInstanceID) == "" {
 			return appwire.ThreadClearResponse{}, appwire.InvalidParams("expectedInstanceId is required")
