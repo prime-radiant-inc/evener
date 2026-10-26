@@ -10,9 +10,8 @@
 // Needs you; the row's subagent chip (subagentChip) counts it, and the
 // session's Agents list holds the detail.
 import type { DelegateTiming, NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
-import { DELEGATE_QUIET_AFTER_MS, quietState, taskSettledCount } from "@evener/appwire-client";
-import { relativeAge, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
-import { compactDuration } from "../session/format";
+import { compactDuration, DELEGATE_QUIET_AFTER_MS, quietState, taskSettledCount } from "@evener/appwire-client";
+import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 
 export type BoardState =
 	| "failed"
@@ -316,14 +315,6 @@ const REASONS: Partial<Record<BoardState, { hue: Hue; text: string }>> = {
 	restartNeeded: { hue: "attention", text: "restart this session to pick up the hub's update" },
 };
 
-// relativeAge buckets m/h/d purely from the gap between two instants (now
-// minus a timestamp); anchoring both ends of that gap to the epoch reuses its
-// buckets for a duration quietState reports directly, instead of copying its
-// thresholds here.
-function durationLabel(forMs: number): string {
-	return relativeAge(new Date(0).toISOString(), forMs) ?? "0m";
-}
-
 /** The why line of a session or subagent waiting on its subagents: on the
  * Board, in the tray, in the Agents and Jobs lists and on a subagent's row (spec
  * 13.1). */
@@ -364,8 +355,8 @@ function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity
 	if (activity.runningSubagents > 0) return { kind: "subagents", text: waitingOnSubagents(activity.runningSubagents) };
 	const quiet = quietState(activity, msSinceReadMs);
 	if (quiet?.state === "stuck")
-		return { kind: "stuck", text: `May be stuck · no updates for ${durationLabel(quiet.forMs)}`, stuck: true };
-	if (quiet?.state === "quiet") return { kind: "quiet", text: `Quiet ${durationLabel(quiet.forMs)}` };
+		return { kind: "stuck", text: `May be stuck · no updates for ${compactDuration(quiet.forMs)}`, stuck: true };
+	if (quiet?.state === "quiet") return { kind: "quiet", text: `Quiet ${compactDuration(quiet.forMs)}` };
 	return commandOrWorking(row, activity.latestIntent);
 }
 

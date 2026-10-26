@@ -572,7 +572,7 @@ func wcvpAssertTokenAndSnapshotContracts(t *testing.T, r *wcvpReader) {
 	t.Helper()
 	root := wcvpNewManager(t)
 	child := wcvpNewManager(t)
-	parent := &Session{jobManager: root, subagents: newSubagentManager(nil, 0)}
+	parent := &Session{jobManager: root, subagents: newSubagentManager(0)}
 	if got := (&Session{jobManager: root}).jobManagerForToken(&watchSendToken{ChildSessionID: "child-live"}); got != nil {
 		t.Fatalf("child token without subagent manager = %p", got)
 	}

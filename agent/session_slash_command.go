@@ -76,7 +76,7 @@ func (s *Session) expandSlashCommand(ctx context.Context, input string) slashInp
 			// indication their command never expanded. Still fall back to that
 			// literal-text submission (unhandled) — surfacing the failure doesn't
 			// mean blocking the input — but now with a visible warning.
-			s.emit(events.EventWarning, events.WarningData{
+			s.emit(events.WarningData{
 				Message: fmt.Sprintf("expanding slash command /%s failed: %v", name, err),
 			})
 			return slashInputResult{Text: input}

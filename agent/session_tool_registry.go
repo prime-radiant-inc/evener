@@ -29,7 +29,7 @@ import (
 // ordering; toolDeps adds no behavior of its own.
 type toolDeps struct {
 	// emit publishes a session event (best-effort, same as Session.emit).
-	emit func(kind events.EventKind, data events.EventData)
+	emit func(data events.EventData)
 
 	// deliverCommunicate records a communicate message in the transcript and
 	// then announces it, or reports why it did not (Session.deliverCommunicate).

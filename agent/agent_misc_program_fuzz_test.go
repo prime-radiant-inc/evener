@@ -116,20 +116,11 @@ func miscCatalogAndReminderProgram(t *testing.T, token string) {
 
 func miscDiagnosticProgram(t *testing.T, token string) {
 	t.Helper()
-	for _, data := range []events.EventData{events.WarningData{Message: token}, &events.WarningData{Message: token}, events.ErrorData{Error: token}, &events.ErrorData{Error: token}} {
-		kind := events.EventWarning
-		switch data.(type) {
-		case events.ErrorData, *events.ErrorData:
-			kind = events.EventError
-		}
-		if enrichDiagnosticData(kind, data) == nil {
+	for _, data := range []events.EventData{events.WarningData{Message: token}, events.ErrorData{Error: token}} {
+		if enrichDiagnosticData(data) == nil {
 			t.Fatal("diagnostic enrichment returned nil")
 		}
 	}
-	var nilWarning *events.WarningData
-	var nilError *events.ErrorData
-	_ = enrichDiagnosticData(events.EventWarning, nilWarning)
-	_ = enrichDiagnosticData(events.EventError, nilError)
 	if providerCauseFromError(nil, token) != nil || providerCauseFromError(errors.New(token), token) != nil {
 		t.Fatal("non-provider error acquired a cause")
 	}

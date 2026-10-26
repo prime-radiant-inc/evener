@@ -7,8 +7,6 @@ import (
 	"reflect"
 	"testing"
 	"time"
-
-	"primeradiant.com/evener/llm"
 )
 
 // FuzzEventDataProgram runs every member of the sealed event payload set
@@ -38,34 +36,7 @@ func FuzzEventDataProgram(f *testing.F) {
 				t.Fatalf("json.Marshal(SessionEvent{%T}): %v", tc.data, err)
 			}
 		}
-		assertEventDataProgramStreamCases(t, text)
 	})
-}
-
-func assertEventDataProgramStreamCases(t *testing.T, text string) {
-	t.Helper()
-	cases := []struct {
-		event SessionEvent
-		want  *llm.StreamEvent
-	}{
-		{SessionEvent{Kind: EventSessionStart, Data: SessionStartData{}}, &llm.StreamEvent{Type: llm.StreamEventStreamStart}},
-		{SessionEvent{Kind: EventSessionEnd, Data: SessionEndData{}}, &llm.StreamEvent{Type: llm.StreamEventFinish}},
-		{SessionEvent{Kind: EventAssistantTextStart, Data: AssistantTextStartData{}}, &llm.StreamEvent{Type: llm.StreamEventTextStart}},
-		{SessionEvent{Kind: EventAssistantTextDelta, Data: AssistantTextDeltaData{Delta: text}}, &llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: text}},
-		{SessionEvent{Kind: EventAssistantTextEnd, Data: AssistantTextEndData{}}, &llm.StreamEvent{Type: llm.StreamEventTextEnd}},
-		{SessionEvent{Kind: EventToolCallStart, Data: ToolCallStartData{CallID: text, ToolName: text}}, &llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &llm.ToolCallData{ID: text, Name: text}}},
-		{SessionEvent{Kind: EventToolCallEnd, Data: ToolCallEndData{CallID: text, ToolName: text}}, &llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &llm.ToolCallData{ID: text, Name: text}}},
-		{SessionEvent{Kind: EventAssistantTextDelta, Data: ToolCallStartData{}}, nil},
-		{SessionEvent{Kind: EventToolCallStart, Data: AssistantTextDeltaData{}}, nil},
-		{SessionEvent{Kind: EventToolCallEnd, Data: AssistantTextDeltaData{}}, nil},
-		{SessionEvent{Kind: EventWarning, Data: WarningData{}}, nil},
-	}
-	for _, tc := range cases {
-		got := tc.event.ToStreamEvent()
-		if !reflect.DeepEqual(got, tc.want) {
-			t.Fatalf("ToStreamEvent(%q, %T) = %#v, want %#v", tc.event.Kind, tc.event.Data, got, tc.want)
-		}
-	}
 }
 
 type eventDataProgramCase struct {
