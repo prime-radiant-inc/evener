@@ -1,17 +1,5 @@
-import { MERMAID_FORBID_TAGS } from "@evener/appwire-client";
+import { MERMAID_FORBID_TAGS, MERMAID_SANITIZE_CONFIG } from "@evener/appwire-client";
 import DOMPurify from "dompurify";
-
-// Mermaid emits flowchart/class/state/ER labels as XHTML inside
-// <foreignObject>; an svg-only profile strips every label (round-1 review
-// finding). The html profile plus the integration point keeps them;
-// "role" keeps role="graphics-document document" for screen readers.
-export const MERMAID_SANITIZE_CONFIG = {
-  USE_PROFILES: { html: true, svg: true, svgFilters: true },
-  ADD_TAGS: ["foreignObject"],
-  HTML_INTEGRATION_POINTS: { foreignobject: true },
-  ADD_ATTR: ["role"],
-  FORBID_TAGS: [...MERMAID_FORBID_TAGS],
-};
 
 export function sanitizeMermaidSvg(svg: string): string {
   return DOMPurify.sanitize(svg, MERMAID_SANITIZE_CONFIG);

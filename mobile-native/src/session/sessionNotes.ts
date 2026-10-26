@@ -54,16 +54,6 @@ export function notesBarPreview(
 	return null;
 }
 
-/** Whether this phone may change your note: the web's canWriteHumanNote
- * (cmd/evener-hub/frontend/src/stores/humanNoteDrafts.ts). */
-export function canWriteHumanNote(session: Pick<ThreadModel, "status" | "resumeRequired" | "capabilities">): boolean {
-	return (
-		session.capabilities.sharedNotes === true &&
-		session.resumeRequired !== true &&
-		!["ended", "closed", "notLoaded", "restartRequired"].includes(session.status.type)
-	);
-}
-
 export type NotePhase = "clean" | "editing" | "scheduled" | "saving" | "saved" | "failed";
 
 /** What the line under the editor is about: a save on its way or done, or,
@@ -118,7 +108,7 @@ export interface NotesControllerOptions {
 	savedNote(): string;
 	/** Whether a turn is running, read at each save. */
 	working(): boolean;
-	/** Whether the session takes notes now (canWriteHumanNote), read at each
+	/** Whether the session takes notes now (canWriteSharedNotes), read at each
 	 * save. While it doesn't, nothing is sent and the note stays on this
 	 * phone. */
 	writable(): boolean;

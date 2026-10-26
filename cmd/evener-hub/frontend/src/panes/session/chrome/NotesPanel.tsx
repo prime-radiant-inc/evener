@@ -1,10 +1,15 @@
 import type { SessionURL, ThreadModel } from "@evener/appwire-client";
-import { canReadSharedNotes, isSessionResting, sessionActionError, WireError } from "@evener/appwire-client";
+import {
+  canReadSharedNotes,
+  canWriteSharedNotes,
+  isSessionResting,
+  sessionActionError,
+  WireError,
+} from "@evener/appwire-client";
 import { fileURLToPath } from "@evener/appwire-client/docContent";
 import { useEffect, useRef } from "react";
 import {
   blurHumanNote,
-  canWriteHumanNote,
   editHumanNote,
   focusHumanNote,
   syncHumanNote,
@@ -124,7 +129,7 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
   const removingURLs = usePendingUrlRemovals(sessionRef);
   // Editability here tracks the store's own write gate: rendering controls that
   // setHumanNote/RemoveSessionURL would refuse leaves dead affordances.
-  const live = canWriteHumanNote(model);
+  const live = canWriteSharedNotes(model);
   const idleWake = live && isSessionResting(model.status.type);
   useEffect(() => {
     syncHumanNote(sessionRef, model.humanNote);

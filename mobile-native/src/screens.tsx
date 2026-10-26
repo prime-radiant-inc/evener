@@ -1,3 +1,4 @@
+import { canWriteSharedNotes } from "@evener/appwire-client";
 import { isValidTranscriptRef } from "@evener/appwire-client";
 import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import type { CellRendererProps } from "@react-native/virtualized-lists";
@@ -201,7 +202,7 @@ import {
 	sessionHosts,
 } from "./session/sessionFacts";
 import { type ChipKind, contextChips, SHUT_DOWN } from "./session/sessionState";
-import { canWriteHumanNote, NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
+import { NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
 import { hasFinishedSubagentRow } from "./session/subagentLine";
 import { LiveSessionTitle } from "./session/LiveSessionTitle";
 import { useActivityPoll } from "./board/useActivityPoll";
@@ -2205,7 +2206,7 @@ function ConversationScreenView({
 				savedNote: () => store.getState().conversation?.humanNote ?? "",
 				writable: () => {
 					const live = store.getState().conversation;
-					return live ? canWriteHumanNote(live) : false;
+					return live ? canWriteSharedNotes(live) : false;
 				},
 				working: () => store.getState().conversation?.status.type === "active",
 				storage: Storage,
@@ -2219,7 +2220,7 @@ function ConversationScreenView({
 	useEffect(() => {
 		notes.sync();
 	}, [conversation?.humanNote, notes]);
-	const writable = conversation ? canWriteHumanNote(conversation) : false;
+	const writable = conversation ? canWriteSharedNotes(conversation) : false;
 	// A note kept on this phone because its save failed sends once the
 	// session is open, connected, in front and still takes notes; otherwise
 	// it stays on this phone. The controller is watched, not

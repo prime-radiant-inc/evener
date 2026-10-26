@@ -1,4 +1,10 @@
-import { type ComposerMention, isTurnError, retryEligibility, TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
+import {
+  type ComposerMention,
+  canWriteSharedNotes,
+  isTurnError,
+  retryEligibility,
+  TURN_CONTINUATION_TEXT,
+} from "@evener/appwire-client";
 // threads.ts tracks the ThreadModel for every ref currently open in a pane,
 // refcounted across panes sharing the same ref, and routes live wire
 // notifications into the reducer for whichever tracked model(s) they target.
@@ -74,7 +80,7 @@ import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { backgroundTranscriptOptions } from "./backgroundTranscriptOptions";
 import { connectedClientPort, connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
-import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
+import { acknowledgeHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
 import { MutationDispatcher } from "./mutationDispatcher";
 import {
   type MutationAttachment,
@@ -3327,7 +3333,7 @@ export async function retryBlockedMutation(
   // A background note save keeps its blocked draft when Stop wins; it must
   // neither resume a session nor retry another kind of mutation.
   if (mode === "backgroundNote" && record.method !== "notes/human/set") return false;
-  if (record.method === "notes/human/set" && !canWriteHumanNote(trackedThreadModel(record.targetRef))) return false;
+  if (record.method === "notes/human/set" && !canWriteSharedNotes(trackedThreadModel(record.targetRef))) return false;
   const state = threadsStore.getState();
   // A Retry is a press-time verdict on a ref this tab can still vouch for.
   // The hub's deletion fence (deletedRefs) and a clear's replacement model are
@@ -7994,7 +8000,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async setHumanNote(ref, note, expectedInstanceId, onCommitted) {
     const model = trackedThreadModel(ref);
-    if (!canWriteHumanNote(model)) throw new Error("Session cannot accept notes");
+    if (!canWriteSharedNotes(model)) throw new Error("Session cannot accept notes");
     const instanceId = threadInstanceID(model) ?? "";
     if (expectedInstanceId !== undefined && expectedInstanceId !== instanceId)
       throw new Error("Session instance changed");
@@ -8019,7 +8025,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async removeURL(ref, id) {
     const model = trackedThreadModel(ref);
-    if (!canWriteHumanNote(model)) throw new Error("Session cannot accept notes");
+    if (!canWriteSharedNotes(model)) throw new Error("Session cannot accept notes");
     const client = requireClient();
     try {
       const response = await client.request("urls/remove", {

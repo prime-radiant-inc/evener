@@ -1,3 +1,4 @@
+import { canWriteSharedNotes } from "@evener/appwire-client";
 // The Notes & links sheet route, rendered with a host in notesHosts the way
 // ConversationScreen provides one: a real NotesController over a fake client.
 // Only native edges are mocked.
@@ -26,7 +27,7 @@ import { Sheet } from "../sheet/Sheet";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { type NotesHost, NotesSheet, notesHosts } from "./NotesSheet";
-import { canWriteHumanNote, NOTE_LIMIT, NotesController, type SaveOutcome } from "./sessionNotes";
+import { NOTE_LIMIT, NotesController, type SaveOutcome } from "./sessionNotes";
 
 const navigation = vi.hoisted(() => ({ goBack: vi.fn(), dispatch: vi.fn(), navigate: vi.fn() }));
 const appState = vi.hoisted(() => ({ listeners: [] as ((state: string) => void)[] }));
@@ -115,7 +116,7 @@ function provide(current: Session, { removeThrows }: { removeThrows?: string } =
 		instanceId: () => "instance",
 		savedNote: () => current.humanNote,
 		working: () => current.status.type === "active",
-		writable: () => canWriteHumanNote(current),
+		writable: () => canWriteSharedNotes(current),
 		storage: memoryStorage(),
 		uuid: () => "uuid",
 	});

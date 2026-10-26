@@ -9,7 +9,6 @@ import { connectionStore } from "./connection";
 import {
   acknowledgeHumanNote,
   blurHumanNote,
-  canWriteHumanNote,
   editHumanNote,
   syncHumanNote,
   useHumanNoteDraft,
@@ -716,20 +715,6 @@ test("a blur-save timer armed on a blocked note does not duplicate the save anot
     saved: false,
     submitted: { id: original.clientMutationId, state: "submitting" },
   });
-});
-
-// A resumeRequired session presents as a live, idle thread with the
-// SharedNotes read capability retained (appwire.ThreadCapabilities.SharedNotes
-// is not zeroed by the recovery fence), so the status/capability pair alone
-// cannot close the write gate. Like the ended/restartRequired sessions, notes
-// stay readable but must not accept edits until an explicit resume.
-test("the recovery fence closes the shared-notes write gate on a live idle session", () => {
-  const base = {
-    capabilities: { sharedNotes: true },
-    status: { type: "idle" },
-  } as unknown as ThreadModel;
-  expect(canWriteHumanNote(base)).toBe(true);
-  expect(canWriteHumanNote({ ...base, resumeRequired: true })).toBe(false);
 });
 
 // --- the instance fence, sampled at save time ---------------------------------

@@ -1,3 +1,4 @@
+import { canWriteSharedNotes } from "@evener/appwire-client";
 // The Notes & links sheet (spec 8.8): your note, the agent's note and the
 // session's links, the web's Notes panel on the phone. A formSheet route that
 // opens at large (sheetRoutes.ts). The session screen owns the notes
@@ -32,7 +33,7 @@ import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import { Toast, type ToastController, useToast } from "../Toast";
 import { allowFontScaling, Copy, useColors, useTextScale } from "../ui";
 import { wrapAfterSlashes } from "./format";
-import { canWriteHumanNote, type NotesController, noteStatusLine, type SaveOutcome } from "./sessionNotes";
+import { type NotesController, noteStatusLine, type SaveOutcome } from "./sessionNotes";
 import { destructiveButton, haptic } from "../haptics";
 
 export interface NotesHost {
@@ -63,7 +64,7 @@ export function NotesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 			const host = live.current;
 			// A session that can't take notes keeps anything unsaved on this
 			// phone rather than sending it.
-			if (host && canWriteHumanNote(host.session)) void host.notes.flush().then(host.saved);
+			if (host && canWriteSharedNotes(host.session)) void host.notes.flush().then(host.saved);
 		},
 	});
 	const host = useSheetHost(notesHosts, sheetKey(hubId, ref), sheet);
@@ -78,7 +79,7 @@ export function NotesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 	useEffect(() => {
 		const subscription = AppState.addEventListener("change", (state) => {
 			const current = live.current;
-			if (state === "background" && current && canWriteHumanNote(current.session)) void current.notes.flush();
+			if (state === "background" && current && canWriteSharedNotes(current.session)) void current.notes.flush();
 		});
 		return () => subscription.remove();
 	}, []);
@@ -138,7 +139,7 @@ function NotesBody({
 	openDocument(path: string): void;
 }) {
 	const { session } = host;
-	const writable = canWriteHumanNote(session);
+	const writable = canWriteSharedNotes(session);
 	const human = session.humanNote.trim();
 	// Removing a link succeeds on the hub before the session's own re-read lands
 	// (and counts as removed when the hub says it is already gone), so the row

@@ -1,6 +1,8 @@
-// The mermaid forbid list, owned by the package so the web sanitizer
+// The mermaid sanitizer settings, owned by the package so the web sanitizer
 // (widgets/mermaid/security.ts) and the native page generator
-// (mobile-native/scripts/build-mermaid-page.mts) cannot drift.
+// (mobile-native/scripts/build-mermaid-page.mts) cannot drift. The native
+// WebView page cannot import this module: the generator serializes both
+// exports into the page bundle.
 //
 // Resource-bearing and navigational tags are forbidden at BOTH sanitize layers
 // (mermaid's own dompurifyConfig, and the post-render pass): mermaid at
@@ -24,3 +26,15 @@ export const MERMAID_FORBID_TAGS = [
   "form",
   "input",
 ] as const;
+
+// Mermaid emits flowchart/class/state/ER labels as XHTML inside
+// <foreignObject>; an svg-only profile strips every label. The html profile
+// plus the integration point keeps them; "role" keeps
+// role="graphics-document document" for screen readers.
+export const MERMAID_SANITIZE_CONFIG = {
+  USE_PROFILES: { html: true, svg: true, svgFilters: true },
+  ADD_TAGS: ["foreignObject"],
+  HTML_INTEGRATION_POINTS: { foreignobject: true },
+  ADD_ATTR: ["role"],
+  FORBID_TAGS: [...MERMAID_FORBID_TAGS],
+};

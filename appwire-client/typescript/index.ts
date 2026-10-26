@@ -457,6 +457,8 @@ export {
   resolvedValue,
   schemaPathKind,
 } from "./launchSchema";
+export type { FenceToken } from "./markdownFence";
+export { fenceTokenTerminated, isMermaidCodeToken, MERMAID_FENCE, mermaidText } from "./markdownFence";
 export { marketplaceSourceLabel, marketplaceSourcePin, marketplaceSourceTakesRef } from "./marketplaceSourceLabel";
 export {
   MEMORY_CONTEXT_EVENT_KIND,
@@ -483,7 +485,7 @@ export {
   memoryWritePage,
   memoryWriteSummary,
 } from "./memorySteps";
-export { MERMAID_FORBID_TAGS } from "./mermaidForbidTags";
+export { MERMAID_FORBID_TAGS, MERMAID_SANITIZE_CONFIG } from "./mermaidSecurity";
 export type {
   CapabilitySource,
   HistoryState,
@@ -610,7 +612,7 @@ export { approvalWaiting, attentionNeedsYou, attentionState, normalizeWireState 
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 export type { SettingsHubGeneration } from "./settingsHubGeneration";
 export { createSettingsHubGeneration } from "./settingsHubGeneration";
-export { canReadSharedNotes } from "./sharedNotesAvailability";
+export { canReadSharedNotes, canWriteSharedNotes } from "./sharedNotesAvailability";
 export type {
   SlashEmbedding,
   SlashMatchEvaluation,
