@@ -2,7 +2,6 @@ package agent
 
 import (
 	"fmt"
-	"log/slog"
 	"path/filepath"
 	"sort"
 
@@ -21,7 +20,6 @@ func legacyDelegateStateWarning(stateDir, rootSessionID string) (events.WarningD
 	path := filepath.Join(jobsDir(stateDir, rootSessionID), "jobs.jsonl")
 	jobEvents, err := jobstore.ReadEvents(path)
 	if err != nil {
-		slog.Warn("could not scan the job journal for retired delegate state", "session", rootSessionID, "error", err)
 		return events.WarningData{}, false
 	}
 	legacyJobIDs := legacyDelegateJobIDs(jobEvents)
