@@ -171,7 +171,7 @@ func (s *LocalDaemonSource) AnnounceDaemonGone(entry rendezvous.Entry, sessionID
 
 func NewLocalDaemonSourceWithEntries(sourceID string, entries func() []LocalDaemonEntry, client *http.Client) *LocalDaemonSource {
 	if sourceID == "" {
-		sourceID = "local"
+		sourceID = appwire.LocalSourceID
 	}
 	return &LocalDaemonSource{
 		sourceID:      sourceID,

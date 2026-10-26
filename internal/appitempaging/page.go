@@ -104,7 +104,7 @@ func SelectCandidates(candidates []TranscriptItemCandidate, before *appwire.Thre
 			return nil, false, err
 		}
 		hi = 0
-		for hi < len(candidates) && comparePosition(candidates[hi].Position, *before) < 0 {
+		for hi < len(candidates) && ComparePosition(candidates[hi].Position, *before) < 0 {
 			hi++
 		}
 	}
@@ -186,18 +186,30 @@ func validateCandidates(candidates []TranscriptItemCandidate) error {
 			return fmt.Errorf("candidate %d repeats transcript key", i)
 		}
 		seenKeys[candidate.Item.TranscriptKey] = struct{}{}
-		if i > 0 && comparePosition(candidates[i-1].Position, candidate.Position) >= 0 {
+		if i > 0 && ComparePosition(candidates[i-1].Position, candidate.Position) >= 0 {
 			return fmt.Errorf("candidate positions are not strictly increasing at %d", i)
 		}
 	}
 	return nil
 }
 
-func comparePosition(a, b appwire.ThreadItemPosition) int {
-	return ComparePosition(a, b)
-}
-
 // ComparePosition orders every part of an atomic transcript item position.
 func ComparePosition(a, b appwire.ThreadItemPosition) int {
 	return cmp.Or(cmp.Compare(a.Entry, b.Entry), cmp.Compare(a.Item, b.Item), cmp.Compare(a.Sub, b.Sub))
+}
+
+// CandidatesBefore returns the newest limit candidates strictly older than
+// before. The result never aliases candidates, so callers can keep reading the
+// original window.
+func CandidatesBefore(candidates []TranscriptItemCandidate, before appwire.ThreadItemPosition, limit int) []TranscriptItemCandidate {
+	older := make([]TranscriptItemCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if ComparePosition(candidate.Position, before) < 0 {
+			older = append(older, candidate)
+		}
+	}
+	if len(older) > limit {
+		older = older[len(older)-limit:]
+	}
+	return older
 }

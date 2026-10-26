@@ -6,6 +6,9 @@ import (
 	"strings"
 )
 
+// LocalSourceID is the source ID of the controller's own hub in a ref.
+const LocalSourceID = "local"
+
 var refPartPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
 
 // ValidRefPart reports whether s is a valid part of an AppWire ref: the

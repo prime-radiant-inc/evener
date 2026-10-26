@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
@@ -203,7 +204,7 @@ func TestMessageSearchKeepsUserAndAgentMessagesUnderTheirReadKeys(t *testing.T) 
 			t.Fatalf("hit %+v is not a message item the read shows (%v)", hit, want)
 		}
 	}
-	if compareItemPositions(match.Hits[0].Position, match.Hits[1].Position) <= 0 {
+	if appitempaging.ComparePosition(match.Hits[0].Position, match.Hits[1].Position) <= 0 {
 		t.Fatalf("hits = %+v, want the newest first", match.Hits)
 	}
 	texts, err := index.Texts(context.Background(), match.Hits)
@@ -341,7 +342,7 @@ func TestMessageSearchKeepsTheNewestHitsPerSession(t *testing.T) {
 	for _, position := range all {
 		positions = append(positions, position)
 	}
-	sort.Slice(positions, func(i, j int) bool { return compareItemPositions(positions[i], positions[j]) > 0 })
+	sort.Slice(positions, func(i, j int) bool { return appitempaging.ComparePosition(positions[i], positions[j]) > 0 })
 	for i, hit := range match.Hits {
 		if hit.Position != positions[i] {
 			t.Fatalf("hit %d = %+v, want position %+v, the %d-th newest", i, hit, positions[i], i+1)

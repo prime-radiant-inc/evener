@@ -34,7 +34,7 @@ type ArchiveKey struct {
 // "host-a " must not create a key no real source can ever address.
 func NormalizeDecisionSource(source string) string {
 	source = strings.TrimSpace(source)
-	if source == "" || source == "local" {
+	if source == "" || source == appwire.LocalSourceID {
 		return ""
 	}
 	return source

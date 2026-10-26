@@ -3,6 +3,7 @@ package hubcore
 import (
 	"slices"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 )
@@ -137,7 +138,7 @@ func LocalSessionDecisionAliases(sessionID string, authority FavoriteAuthority) 
 			continue
 		}
 		ref, err := hubapi.ParseRef(alias)
-		if err == nil && ref.HostID == "local" && ref.SessionID == sessionID {
+		if err == nil && ref.HostID == appwire.LocalSourceID && ref.SessionID == sessionID {
 			aliases = appendUniqueString(aliases, alias)
 		}
 	}
@@ -230,7 +231,7 @@ func classifyFavoriteSession(key ArchiveKey, sessions favoriteSessionIndex) Favo
 	ids := sessions.byAlias[key.ID]
 	if len(ids) == 0 {
 		ref, err := hubapi.ParseRef(key.ID)
-		if err == nil && ref.HostID == "local" && identifier.ValidateSessionID(ref.SessionID) == nil {
+		if err == nil && ref.HostID == appwire.LocalSourceID && identifier.ValidateSessionID(ref.SessionID) == nil {
 			return FavoriteDecisionClassification{
 				State:        FavoriteDecisionDormant,
 				CanonicalKey: ArchiveKey{Kind: "session", ID: ref.SessionID},

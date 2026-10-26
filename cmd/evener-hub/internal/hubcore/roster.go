@@ -1102,7 +1102,7 @@ func (r *Roster) hasConfirmedEntry(entry rendezvous.Entry) bool {
 // snapshot. It never reads persisted ancestry or probes daemon endpoints.
 func (r *Roster) RestartRequiredRootRef(rawRef string) (string, bool) {
 	ref, err := appwire.ParseRef(rawRef)
-	if err != nil || ref.SourceID != "local" {
+	if err != nil || ref.SourceID != appwire.LocalSourceID {
 		return "", false
 	}
 	r.mu.RLock()
@@ -1114,7 +1114,7 @@ func (r *Roster) RestartRequiredRootRef(rawRef string) (string, bool) {
 		refs := []string{entry.WorkspaceRef}
 		for _, id := range []string{entry.SessionID, entry.Entry.SessionID, entry.ThreadID} {
 			if id != "" {
-				refs = append(refs, appwire.Ref{SourceID: "local", ThreadID: id}.String())
+				refs = append(refs, appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: id}.String())
 			}
 		}
 		return refs
@@ -1122,7 +1122,7 @@ func (r *Roster) RestartRequiredRootRef(rawRef string) (string, bool) {
 	var owner LiveEntry
 	found := false
 	for _, entry := range r.byPID {
-		if entry.Crashed || (entry.SourceID != "" && entry.SourceID != "local") {
+		if entry.Crashed || (entry.SourceID != "" && entry.SourceID != appwire.LocalSourceID) {
 			continue
 		}
 		ids := aliases(entry)
@@ -1148,10 +1148,10 @@ func (r *Roster) RestartRequiredRootRef(rawRef string) (string, bool) {
 			}
 		}
 	}
-	if workspace, err := appwire.ParseRef(owner.WorkspaceRef); err == nil && workspace.SourceID == "local" {
+	if workspace, err := appwire.ParseRef(owner.WorkspaceRef); err == nil && workspace.SourceID == appwire.LocalSourceID {
 		return owner.WorkspaceRef, true
 	}
-	return appwire.Ref{SourceID: "local", ThreadID: owner.SessionID}.String(), true
+	return appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: owner.SessionID}.String(), true
 }
 
 // Find returns the entry with the given session_id, or false if not present.
