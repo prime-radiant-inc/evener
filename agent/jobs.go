@@ -1817,6 +1817,14 @@ func (jm *jobManager) finalizeWithRunMode(jobID string, prepare func(*runningJob
 	terminal := run.terminal
 	jm.mu.Unlock()
 
+	// The notifying attempt owns initial and retried publication, including the
+	// earlier completion event. Kept-sync keeps its existing no-owner-notice policy.
+	// Release only after attempt bookkeeping unlocks.
+	if armNotification && jm.holdWake != nil {
+		release := jm.holdWake()
+		defer release()
+	}
+
 	var err error
 	if terminal == nil {
 		status, reason, exitCode, prepareErr := prepare(run)
@@ -2062,6 +2070,11 @@ func (jm *jobManager) enqueueNotifications(notifs []jobNotification) bool {
 
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {
 	defer jm.publishWatchActivity()
+	// A single terminal publication includes canonical watch and shell custody.
+	if jm.holdWake != nil {
+		release := jm.holdWake()
+		defer release()
+	}
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] != run || run.terminal != terminal {
 		jm.mu.Unlock()

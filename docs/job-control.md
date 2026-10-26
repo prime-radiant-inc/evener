@@ -385,6 +385,22 @@ Defaults and timeout semantics:
 - A shell command that completes before the tool returns does not inject a terminal notification; the terminal result is already in the tool result. Return field `timed_out`, when present, means the foreground wait expired; it never means the process hit `max_runtime_ms`.
 - To learn when a launch-and-return command reaches a state (e.g. a server printing "ready"), use `job_watch(operation="create", source=<job_id>, output_match=...)` and continue from the notification — an output-match watch catch-up-scans a job's retained output even if it already finished.
 
+For a healthy background completion addressed to its idle owner, matching public
+self `job.notification` watch frames and terminal-expiry EndNotice frames precede
+the distinct shell notification in one provider request. The notifying
+finalization attempt holds the owner's existing notification wake until watch
+and shell custody are accepted, then the receiver rechecks ordinary execution
+eligibility. Wake callbacks hand off and return, rather than running the turn.
+This applies to persistent and memory-only receivers, not foreign receivers or
+unrelated input already admitted before finalization.
+
+The hold is not a transaction or a recovery owner. Source journals and canonical
+receiver custody retain each ID independently. A failed partition releases
+healthy work, and existing retries preserve the later obligation and terminal
+generation, so partial failure or restart may require another request. A
+foreground result already returned inline still earns no duplicate shell
+notification, and its watch/raw-kick paths have no one-handoff grouping promise.
+
 Foreground-wait bounds:
 
 - The foreground wait is the session command timeout (`DefaultCommandTimeoutMS`, 120000 in stock provider profiles), clamped to `MaxCommandTimeoutMS`. Shell has no per-call wait parameter; `mode` selects foreground (wait, then promote), session-owned background, or immediate detached return.

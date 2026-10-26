@@ -92,6 +92,9 @@ func (s *Session) requestNotificationWake() error {
 // before returning a transport error. Best-effort callers log that failure,
 // rather than rejecting an already committed mutation or owning another retry.
 func (s *Session) dispatchNotificationWake() error {
+	if s.deferJobNotificationWake() {
+		return nil
+	}
 	s.mu.Lock()
 	releaseTurnID := s.notificationSchedule.releaseTurnID
 	s.mu.Unlock()

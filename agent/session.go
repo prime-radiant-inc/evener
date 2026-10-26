@@ -1242,9 +1242,24 @@ func (s *Session) holdJobNotificationWake() func() {
 		}
 		s.pendingJobNotifsMu.Unlock()
 		if wake {
-			s.notify()
+			if s.peekNotifications() > 0 {
+				s.notify()
+			} else if err := s.dispatchNotificationWake(); err != nil {
+				slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
+			}
 		}
 	}
+}
+
+// deferJobNotificationWake shares the existing group hold with canonical custody.
+func (s *Session) deferJobNotificationWake() bool {
+	s.pendingJobNotifsMu.Lock()
+	held := s.notifyWakeHolds > 0
+	if held {
+		s.notifyWakeDeferred = true
+	}
+	s.pendingJobNotifsMu.Unlock()
+	return held
 }
 
 func (s *Session) requeueJobNotifications(notifs []jobNotification) {
