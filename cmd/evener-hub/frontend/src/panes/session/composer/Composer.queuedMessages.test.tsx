@@ -1400,6 +1400,119 @@ test("a stop during destination hydration cancels the send", async () => {
   }
 });
 
+type StopMatrixOrigin = "displayed" | "destination" | "both";
+type StopMatrixPhase = "persistence" | "hydration";
+
+// The pane displays the superseded ref after a peer retarget, but the Send
+// targets the destination. A Stop on either owner is a cancellation of this
+// Send, so both press-time epochs fence the resend transaction.
+async function runStopMatrixCase(stop: StopMatrixOrigin, phase: StopMatrixPhase) {
+  const actWarnings = vi.spyOn(console, "error").mockImplementation(() => {});
+  class HeldMatrixStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+    holdNextUpdate = false;
+
+    override async updateRecoveryInput(
+      ...args: Parameters<MutationOutboxIndexedDB["updateRecoveryInput"]>
+    ): ReturnType<MutationOutboxIndexedDB["updateRecoveryInput"]> {
+      const result = await super.updateRecoveryInput(...args);
+      if (this.holdNextUpdate) {
+        this.holdNextUpdate = false;
+        this.reached.resolve();
+        await this.release.promise;
+      }
+      return result;
+    }
+  }
+  const storage = new HeldMatrixStorage();
+  const { fake } = await setup(false, storage);
+  const resumed = `local:stop-matrix-${phase}-${stop}`;
+  const readReached = deferred<void>();
+  const releaseRead = deferred<void>();
+  fake.on("thread/read", async ({ ref }) => {
+    if (phase === "hydration" && ref === resumed) {
+      readReached.resolve();
+      await releaseRead.promise;
+    }
+    return {
+      thread: { ...thread, evener: { ...thread.evener, ref: ref ?? "root" } },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc", length: 0 },
+    };
+  });
+  const delivered: Array<Record<string, unknown>> = [];
+  fake.on("turn/start", (params) => {
+    delivered.push(params as unknown as Record<string, unknown>);
+    return {
+      turn: { id: `stop-matrix-${phase}-${stop}`, status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread-a",
+        projectionState: "reflected",
+      },
+    };
+  });
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const source = createTestComposerSource("root", undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    mount(fake, source);
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+    await peer.retargetOutbox("root", resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    if (phase === "persistence") storage.holdNextUpdate = true;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    if (phase === "persistence") await storage.reached.promise;
+    else await readReached.promise;
+    if (stop === "displayed" || stop === "both") await peer.cancelUnattempted("root");
+    if (stop === "destination" || stop === "both") await peer.cancelUnattempted(resumed);
+    if (phase === "persistence") storage.release.resolve();
+    else releaseRead.resolve();
+    await act(async () => {
+      await source.flushRecoveryWrites();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(delivered).toHaveLength(0);
+  } finally {
+    storage.release.resolve();
+    releaseRead.resolve();
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(actWarnings.mock.calls.every(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
+    actWarnings.mockRestore();
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+}
+
+test.each([
+  ["displayed", "persistence"],
+  ["destination", "persistence"],
+  ["both", "persistence"],
+  ["displayed", "hydration"],
+  ["destination", "hydration"],
+  ["both", "hydration"],
+] as const)("a stop on the %s ref during %s cancels the send", async (stop, phase) => {
+  await runStopMatrixCase(stop, phase);
+});
+
 // The peer's retargeted target and its Stop epoch must be read in the press's
 // own snapshot. If either read is answered only after a later Stop, that Stop
 // still belongs after the press and must cancel it.

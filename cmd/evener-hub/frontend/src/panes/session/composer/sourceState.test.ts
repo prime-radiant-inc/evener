@@ -1132,6 +1132,75 @@ test("a delayed preservation keeps an edited destination's selection after dispo
   }
 });
 
+// A predecessor's saved edit is already part of the row a reopened seat
+// activates. It must not keep counting as newer work against that seat's own
+// preserved row, or reload restores the peer's stale selection.
+test("a reopened seat retires a predecessor's incorporated edit", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "local:retained-generation";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const first = createTestComposerSource(ref, undefined, "pane-a");
+  const reopened = createTestComposerSource(ref, undefined, "pane-a");
+  let reloaded: ReturnType<typeof createTestComposerSource> | undefined;
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    // The first composer edits and saves, then closes. Its evidence outlives it.
+    await first.activateRecovery(recovery);
+    first.editText("first saved work");
+    await first.queueRecoveryPersistence(original.clientMutationId, "first saved work", [], []);
+    first.dispose();
+
+    // A successor opens the same seat and reads that incorporated edit.
+    const saved = await storage.getRecovery(original.clientMutationId);
+    if (!saved) throw new Error("missing saved recovery fixture");
+    await reopened.activateRecovery(saved);
+    reopened.editText("latest local work");
+
+    // A peer advances the row, so the reopened composer's save conflicts and
+    // preservation creates a fresh row under the same ref.
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+    );
+    await reopened.queueRecoveryPersistence(original.clientMutationId, "latest local work", [], []);
+
+    const preserved = (await storage.listRecovery(ref)).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    expect(preserved).toMatchObject({ targetRef: ref, composerText: "latest local work" });
+    expect(readRecoverySelection(ref, reopened.recoverySelectionOwnerId)).toBe(preserved?.clientMutationId);
+    reloaded = createTestComposerSource(ref, undefined, "pane-a");
+    expect(readRecoverySelection(ref, reloaded.recoverySelectionOwnerId)).toBe(preserved?.clientMutationId);
+    expect((await storage.getRecovery(original.clientMutationId))?.composerText).toBe("peer composition");
+  } finally {
+    first.dispose();
+    reopened.dispose();
+    reloaded?.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
 // Draft storage is shared by panes and tabs. Adoption must clear only the
 // exact revision the preserved composition incorporated, never a newer
 // ordinary draft another composer wrote while preservation was waiting.

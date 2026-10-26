@@ -96,6 +96,7 @@ import {
   type MutationStopBarrier,
 } from "./mutationOutbox";
 import {
+  type DisplayedRecoveryStopBarrier,
   MutationOutboxIndexedDB,
   type MutationRecoveryResendResult,
   MutationStorageError,
@@ -3647,11 +3648,13 @@ export async function resendRecoveryMutation(
   barrierRead = captureRecoveryStopBarrier(targetRef),
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
+  displayedBarrierRead?: Promise<DisplayedRecoveryStopBarrier>,
 ): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;
   const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames, commandNames, mentions);
   const barrier = await barrierRead;
+  const displayedBarrier = await displayedBarrierRead;
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
   const result = await trackOutboxWrite(
@@ -3663,6 +3666,7 @@ export async function resendRecoveryMutation(
         barrier,
         expectedRecoveryRevisions,
         compositionOwnerId,
+        displayedBarrier,
       ),
     (outcome) =>
       outcome.status !== "sent"

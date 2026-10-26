@@ -213,6 +213,14 @@ function retainNewerEdit(scope: string, recoveryId: string, from: ComposerSource
   sourceIds.add(sourceId);
 }
 
+// A source that activates a recovery has read the row's current composition,
+// including every edit a predecessor saved into it. That incorporated evidence
+// must stop counting as newer work, or a reopened seat can never replace an
+// older preserved row. Live sources remain protected by the live check.
+function retireRetainedEdits(scope: string, recoveryId: string): void {
+  retainedNewerEdits.delete(retainedEditKey(scope, recoveryId));
+}
+
 function destinationHasNewerEdits(
   scope: string,
   targetRef: string,
@@ -440,6 +448,7 @@ export function createComposerSourceState(
       : null;
     recoveryBaseRecord = record;
     selectionUserEditEpoch = userEditEpoch;
+    if (record !== null) retireRetainedEdits(recoverySelectionOwnerId, record.clientMutationId);
     reconcileRecoveryTarget(record?.targetRef ?? ref);
     const targetRef = record?.targetRef ?? ref;
     // Adopting a preserved row may happen after a replacement composer has

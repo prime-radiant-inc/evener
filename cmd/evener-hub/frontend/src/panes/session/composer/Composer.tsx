@@ -999,6 +999,13 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     const pressedRecoveryTargetRef = source.recoveryTargetRef;
     const pressedRecoveryBarrier =
       submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(pressedRecoveryTargetRef);
+    // The pane may still display the superseded ref after a peer retarget. A
+    // Stop on it names that ref, so the resend must fence both owners.
+    const pressedDisplayedBarrier = pressedRecoveryBarrier?.then((barrier) => ({
+      ...barrier,
+      targetRef: pressedRecoveryTargetRef,
+    }));
+    void pressedDisplayedBarrier?.catch(() => undefined);
     // Request the durable target and its Stop epoch now, in the press's
     // synchronous prefix. Storage orders this readonly snapshot before any
     // Stop the user presses while the Send waits on persistence or hydration.
@@ -1100,6 +1107,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
                   travelingBarrier,
                   { [submittedRecoveryId]: committedRevision },
                   source.compositionOwnerId,
+                  pressedDisplayedBarrier,
                 );
                 if (outcome.status !== "sent") {
                   recoveryResendRefused = outcome.status === "refused";

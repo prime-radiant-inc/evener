@@ -139,6 +139,13 @@ const ENQUEUE_STORES = [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE, SEQUENCE
 // transaction, so the outcome cannot straddle another tab's retarget.
 const PRESERVE_STORES = [...ENQUEUE_STORES, RETARGET_STORE];
 
+// A recovery Send can target a ref a peer retargeted to, while the pane still
+// displays the superseded ref. The resend transaction must fence both Stop
+// epochs, because a Stop on the displayed ref still names that displayed ref.
+export interface DisplayedRecoveryStopBarrier extends MutationStopBarrier {
+  targetRef: string;
+}
+
 // Where retargetOutbox moved a recovery row. Written atomically with the move
 // so a preservation waiting in another tab's adapter can resolve the resumed
 // identity even after the moved row is consumed.
@@ -1216,6 +1223,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     barrier?: MutationStopBarrier,
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
     compositionOwnerId?: string,
+    displayedBarrier?: DisplayedRecoveryStopBarrier,
   ): Promise<MutationOutboxRecord | undefined> {
     const result = await this.resendRecoveryResult(
       sourceIds,
@@ -1223,6 +1231,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       barrier,
       expectedRecoveryRevisions,
       compositionOwnerId,
+      displayedBarrier,
     );
     return result.status === "sent" ? result.record : undefined;
   }
@@ -1233,6 +1242,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     barrier?: MutationStopBarrier,
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
     compositionOwnerId?: string,
+    displayedBarrier?: DisplayedRecoveryStopBarrier,
   ): Promise<MutationRecoveryResendResult> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
     return this.#write(ENQUEUE_STORES, "resendRecovery", async (transaction) => {
@@ -1272,6 +1282,8 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       // submission: its own refused redeliveries stay transient instead of
       // fence-canceling against a Stop that predates the resend.
       const stopEpoch = await this.#stopEpochOf(transaction, intent.targetRef);
+      const displayedStopEpoch =
+        displayedBarrier === undefined ? 0 : await this.#stopEpochOf(transaction, displayedBarrier.targetRef);
       const attachments = intent.attachments.map((attachment) => ({
         ...attachment,
         presentationId: this.#createPresentationId(),
@@ -1287,7 +1299,11 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         originClientId: ownClientId(),
         intentSequence,
         createdAt: this.#now(),
-        state: barrier !== undefined && stopEpoch > barrier.stopEpoch ? "canceled" : "submitting",
+        state:
+          (barrier !== undefined && stopEpoch > barrier.stopEpoch) ||
+          (displayedBarrier !== undefined && displayedStopEpoch > displayedBarrier.stopEpoch)
+            ? "canceled"
+            : "submitting",
         attempted: false,
         stopEpochAtEnqueue: stopEpoch,
       };
