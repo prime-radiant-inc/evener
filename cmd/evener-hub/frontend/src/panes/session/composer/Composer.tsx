@@ -20,7 +20,6 @@
 
 import {
   type BuiltinMatch,
-  type ComposerMention,
   decideSteerRoute,
   matchBuiltinInvocation,
   mergeDraftText,
@@ -28,11 +27,9 @@ import {
   NO_ACTIVE_TURN,
   parseSlashToken,
   SHUT_DOWN_STATUSES,
-  sessionActionError,
   slashCommandInvocation,
   type ThreadModel,
 } from "@evener/appwire-client";
-import { ownPendingSend } from "@evener/appwire-client/state/mutation";
 import {
   type FormEvent,
   memo,
@@ -58,19 +55,9 @@ import {
   pressLocalRecoveryFenced,
   pressRefusal,
   recoveryFence,
-  sendQueueDecisionFor,
 } from "../../../stores/liveControls";
-import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
-import {
-  captureRecoveryStopBarrier,
-  hasBlockedUnknown,
-  hasQueuedNonSend,
-  type InputAttachment,
-  type ResumeOnlySignals,
-  threadsStore,
-  useThreadsStore,
-} from "../../../stores/threads";
+import { hasQueuedNonSend, type ResumeOnlySignals, useThreadsStore } from "../../../stores/threads";
 import {
   Button,
   ConfirmDialog,
@@ -95,37 +82,17 @@ import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { STEER_RECOVERY_FENCED_REASON, steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
-import { clearDraft, clearPersistedDraft, readDraftRevision } from "./draft";
+import { readDraftRevision } from "./draft";
 import { useNarrowComposer } from "./narrowComposer";
-import { pendingTurnEntries, QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
-import {
-  resendRecoveryPendingTurn,
-  useBlockedMutationEntries,
-  useComposerSubmitting,
-  useRecoveryEntries,
-} from "./queue/pendingTurnsStore";
+import { QueueStrip } from "./queue";
+import { useBlockedMutationEntries } from "./queue/pendingTurnsStore";
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
-import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
 import { SlashCompletionMenu } from "./SlashCompletionMenu";
-import {
-  maskSkillAtoms,
-  materializeSelectionReferences,
-  parseSkillDocument,
-  patchSelectionText,
-  type SkillEditorValue,
-  serializeSkillDocument,
-  skillAtomMentions,
-} from "./skillDocument";
-import {
-  beginRecoverySubmission,
-  type ComposerSourceState,
-  recoverySubmissionInFlight,
-  restoredSkillNames,
-  sameSkillSelections,
-} from "./sourceState";
+import { maskSkillAtoms, type SkillEditorValue } from "./skillDocument";
+import type { ComposerSourceState } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
-import { pushRecoveryRefusal, pushSelectionRefusal, selectionRefusal, submitDraftToStore } from "./submitProtocol";
+import { useComposerActions } from "./useComposerActions";
 import { useInlineStopReady } from "./useInlineStopReady";
 import { useSlashCompletion } from "./useSlashCompletion";
 
@@ -164,24 +131,6 @@ const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: Session
   return <SessionChrome {...props} />;
 });
 
-// "drain" is set/cleared only by QueueStrip's own onDrainBusyChange (its
-// "Steer queue now" button) - never by this component's own submitAction, which
-// uses "steer" for its classic drain-as-steer route too (see submitAction's
-// own setBusyAction call). Both surfaces still share this ONE piece of
-// state: whichever one goes busy first disables the other's controls too,
-// closing the race where both could otherwise fire drainAsSteer at once
-// (w5-integration-wiring-report.md's "two Steer buttons" concern).
-type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
-
-// The local recovery fence lives in stores/liveControls.ts (one predicate for
-// every surface that owes it - this module's availability/card/Steer gates and
-// QueueStrip's press gates): QueueStrip cannot import from this module
-// (Composer imports QueueStrip), and a per-file copy of a fence this
-// load-bearing would drift. A LOCAL session carrying a restart-blocking
-// obligation (a Stop, or a snapshot the daemon reports as
-// restartRequired/resumeRequired) cannot be acted on at all until the explicit
-// Resume action clears the fence.
-
 // The missing model's turnVerbs offering: one frozen object, because a fresh
 // {} on every recompute would defeat MemoizedSessionChrome's
 // shallow-equality bailout for a value that carries no information.
@@ -204,8 +153,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // it, so the badge clears when a resume makes the snapshot authoritative.
   const mutationAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
   const mutationWriteStalled = useThreadsStore((s) => s.mutationWriteStalled);
-  const submitting = useComposerSubmitting(ref);
-  const pendingSendEntries = usePendingTurnEntries(ref, "send");
   const toasts = useToasts();
   const isMobile = useIsMobile();
   const editorRef = useRef<SkillEditorHandle>(null);
@@ -248,17 +195,17 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     cursorToRestoreRef.current = cursor;
     setCursorRestoreSeq((seq) => seq + 1);
   }, []);
-  const {
-    text,
-    skillNames,
-    commandNames,
-    mentions,
-    restoreEpoch,
-    activeRecoveryId,
-    recoveryActivating,
-    recoveryOperationBusy,
-    freshRecoveryRef,
-  } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
+  const { text, skillNames, commandNames, mentions, restoreEpoch, activeRecoveryId } = useSyncExternalStore(
+    source.subscribe,
+    source.getSnapshot,
+    source.getSnapshot,
+  );
+  const restoredRecoveryRef = useRef(activeRecoveryId);
+  useLayoutEffect(() => {
+    if (restoredRecoveryRef.current === activeRecoveryId) return;
+    restoredRecoveryRef.current = activeRecoveryId;
+    if (activeRecoveryId !== null) scheduleCursorRestore(source.getSnapshot().text.length);
+  }, [activeRecoveryId, scheduleCursorRestore, source]);
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
   const {
     lastDrainSnapshotRef,
@@ -273,22 +220,18 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     recoveryOwnsLocalDraftRef,
   } = source.continuity;
   const {
-    updateText,
     editText,
     updateSkillNames,
     editSkillNames,
     updateSelectionMeta,
     setActiveRecoveryId,
-    markRestore,
     persistDraft,
     writeDraft,
-    queueRecoveryPersistence,
     clearIfUnchanged,
-    clearSubmittedAttachments,
   } = source;
-  const [busyAction, setBusyAction] = useState<BusyAction>(null);
-  const actionPending =
-    busyAction !== null || submitting || mutationWriteStalled || recoveryActivating || recoveryOperationBusy;
+  const [builtinBusy, setBuiltinBusy] = useState(false);
+  const actions = useComposerActions(source, builtinBusy);
+  const { availability, busy: actionPending, showStop, submit: submitAction, stop: handleInterruptClick } = actions;
   const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
   // Track live focus too, so stopping does not collapse a focused editor.
@@ -412,7 +355,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   const attachments = useAttachments(source.editor, source.attachments);
   const attachmentItemsRef = useRef(attachments.items);
   attachmentItemsRef.current = attachments.items;
-  const recoveryEntries = useRecoveryEntries(ref);
 
   const replaceComposerWithGoalDraft = (objective: string): void => {
     // Invalidate queued recovery work before clearing ownership. Any operation
@@ -463,106 +405,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       activitySidebarStore.getState().openFor(ref, "tasks", undefined, paneId);
     }
   };
-
-  useEffect(() => {
-    source.refreshRecovery();
-  }, [source]);
-
-  // A store-driven resume failure (the Send-resumes face) surfaces as a toast
-  // naming the reason: a store cannot push one, so it publishes the failure and
-  // this composer - the press surface, mounted whenever a session pane is -
-  // reports it. The toast therefore needs a mounted composer; with none, the
-  // failure is only in the store. The pressed text is already a durable outbox
-  // row and Send stays offered, so a later press re-drives the resume.
-  const resumeFailure = useThreadsStore((s) => s.resumeFailures.get(ref));
-  const toastedResumeFailureSeqRef = useRef<number | null>(null);
-  useEffect(() => {
-    const seq = resumeFailure?.seq ?? 0;
-    // Seed from the store on the first run: a failure already published when
-    // this composer mounted has been reported, and a remount (dockview unmounts
-    // inactive panes routinely) must not re-toast it. Only a failure published
-    // after mount is new to this instance.
-    if (toastedResumeFailureSeqRef.current === null) {
-      toastedResumeFailureSeqRef.current = seq;
-      return;
-    }
-    if (seq <= toastedResumeFailureSeqRef.current) return;
-    toastedResumeFailureSeqRef.current = seq;
-    if (resumeFailure) toasts.push("error", `Resume failed: ${resumeFailure.message}`);
-  }, [resumeFailure, toasts]);
-
-  useEffect(() => {
-    if (activeRecoveryId === null || attachments.hasPending || recoverySubmissionInFlight(activeRecoveryId)) return;
-    void queueRecoveryPersistence(
-      activeRecoveryId,
-      text,
-      attachments.toInputAttachments(),
-      skillNames,
-      selectionMeta.commandNames,
-      selectionMeta.mentions,
-    );
-  }, [
-    activeRecoveryId,
-    attachments.hasPending,
-    attachments.toInputAttachments,
-    queueRecoveryPersistence,
-    text,
-    skillNames,
-    selectionMeta,
-  ]);
-
-  useEffect(() => {
-    if (
-      freshRecoveryRef !== ref ||
-      activeRecoveryId !== null ||
-      textRef.current.trim() !== "" ||
-      attachmentItemsRef.current.length > 0 ||
-      skillNamesRef.current.length > 0 ||
-      selectionMetaRef.current.commandNames.length > 0
-    ) {
-      return;
-    }
-    // An interrupt is not a draft. It carries no input, so activating one
-    // loads an empty composer and then resends the user's next keystrokes as a
-    // turn/start -- a Stop becoming a message. QueueStrip renders it as a
-    // failure with its reason instead.
-    const record = recoveryEntries.find(
-      (entry) => entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt" && !entry.preserveComposer,
-    );
-    if (!record) return;
-    const recovered = recoveryComposerDraft(record);
-    const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
-    Object.assign(recovered, visible);
-    recoveryOwnsLocalDraftRef.current = false;
-    setActiveRecoveryId(record);
-    // Restoration replaces this mount's local owner without editing the
-    // shared recovery draft that an earlier mount may still be submitting.
-    draftEditRevisionRef.current += 1;
-    markRestore();
-    updateText(recovered.text);
-    updateSkillNames(restoredSkillNames(recovered));
-    updateSelectionMeta(recovered);
-    attachments.replaceWithSettled(recovered.attachments);
-    clearPersistedDraft(ref);
-    scheduleCursorRestore(recovered.text.length);
-  }, [
-    activeRecoveryId,
-    attachments.replaceWithSettled,
-    draftEditRevisionRef,
-    freshRecoveryRef,
-    markRestore,
-    recoveryEntries,
-    recoveryOwnsLocalDraftRef,
-    ref,
-    scheduleCursorRestore,
-    setActiveRecoveryId,
-    skillNamesRef,
-    selectionMetaRef,
-    textRef,
-    updateText,
-    updateSkillNames,
-    updateSelectionMeta,
-  ]);
 
   // askPending gates hiding/inerting the input row below (AskDock's own
   // seam - see AskDock.tsx's header comment: "that is the composer's own
@@ -723,29 +565,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // at the press (pressRefusal), not from this render.
   const controls = controlsFor(model);
   const canSendWhenEnded = controls.send;
-  // Tier 6: see ownPendingSend in @evener/appwire-client/state/mutation.
-  const hasPendingSend = ownPendingSend(pendingSendEntries);
-  // The Send/Queue availability of a model and this client's pending send,
-  // projected to the composer's two booleans from the shared browser decision
-  // (stores/liveControls.ts's sendQueueDecisionFor: the recovery adapter around
-  // @evener/appwire-client's sendQueueGate under BROWSER_SEND_QUEUE_POLICY).
-  // The gate owns the composition this body used to spell out: the recovery
-  // fence's faces (Send-resumes, still fenced, folded resume), the send/queue
-  // table, and the shut-down send substitution.
-  //
-  // Read at render for the button and its tooltip, and again at submit from the
-  // stores' live model and live pending entries, so a status frame or a pending
-  // send that landed (or cleared) between the two routes the submit rather than
-  // the render.
-  //
-  // The restart-blocking obligation arrives as a parameter: the render passes
-  // the subscribed value (so the availability updates with the store instead of
-  // reading it behind the subscription's back), the submit passes a live store
-  // read like the rest of its re-derivation. It is the raw obligation, not the
-  // render's fence.fencedLocal: the fence here covers every status, active
-  // included, not only the stopped one.
-  const availability = sendQueueDecisionFor(model, hasPendingSend, recoveryRequired, resumeOnlySignals);
-  const showStop = controls.stop;
   const showSteer = controls.steer;
   // The Steer control's own reading of the recovery fence (see
   // the send/queue gate's fence above): the hub refuses turn/steer for the
@@ -768,8 +587,8 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     });
   }
   // The strip's queue depth is what shows the effect of a queued Send.
-  const submitTooltip = submitTooltipLabel({ canQueue: availability.action === "queue", enterToSend });
-  const canCompose = availability.action === "send" || availability.action === "queue";
+  const submitTooltip = submitTooltipLabel({ canQueue: availability.canQueue, enterToSend });
+  const canCompose = availability.canSend || availability.canQueue;
   // Whether the follow-up card renders at all is the capability's call, for the
   // same reason the substitution above is: gating it on the table renders no
   // card for exactly the sessions the hub says are resumable. When the wire
@@ -795,27 +614,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     setSlashToken(parseSlashToken(maskSkillAtoms(value), caret));
   }
 
-  // QueueStrip captures this mount's payload and edit revision through
-  // getComposerText before it starts the drain's durable write.
-  function handleDrainSuccess(): void {
-    const snapshot = lastDrainSnapshotRef.current;
-    if (!snapshot || !source.alive) return;
-    clearIfUnchanged(
-      snapshot.text,
-      snapshot.revision,
-      snapshot.draftRevision,
-      snapshot.skillNames,
-      snapshot.commandNames,
-    );
-    clearSubmittedAttachments(snapshot.attachments);
-  }
-
-  async function getRecoveryRevisionForDrain(): Promise<number | undefined> {
-    await source.flushRecoveryWrites();
-    if (!source.alive || source.getSnapshot().activeRecoveryId !== activeRecoveryId) return undefined;
-    return recoveryOwnerLeaseRef.current?.compositionRevision;
-  }
-
   // A chip's details: the skill's own description, or - when the live catalog
   // report no longer backs the selection - the name plus why it cannot be
   // found. Command rows never render here, so these details are skill-only by
@@ -826,323 +624,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     const info = model?.skills?.find((skill) => skill.name === name);
     if (!info) return `${name} — no longer in this session's skill catalog`;
     return info.description ?? name;
-  }
-
-  // restoreTextToComposer implements the shared "put text back into the
-  // composer without clobbering what's already typed there" merge (parity-
-  // m5-composer.md line 101, byte-ported from renderer.js:6823-6837's own
-  // restoreTextToComposer): existing text is right-trimmed then kept, the
-  // incoming text is appended after a blank line, textEditor.write() keeps
-  // the draft in sync (mirrors the legacy synthetic `input` event) and
-  // parks the cursor at the very end, and the textarea is refocused - same
-  // as legacy's own ta.focus() call.
-  //
-  // QueueStrip uses this behavior when a queued entry is moved back into
-  // the composer for editing.
-  //
-  // `attachments` is accepted for signature symmetry but never restored: a
-  // queued entry's edit keeps image attachments out of the composer per
-  // parity (contracts-composer-queue-pending.md:122, parity-m5-
-  // composer.md:102) - dropped image attachments surface via QueueStrip's
-  // own durable queue state. `skillNames` restores the entry's selections
-  // as chips (union with the current draft's chips, deduped by name): a
-  // queued skill selection must survive the edit round-trip, not silently
-  // drop.
-  function restoreTextToComposer(
-    restoredText: string,
-    _attachments?: InputAttachment[],
-    restoredNames?: readonly string[],
-    restoredCommands?: readonly string[],
-    restoredMentions?: readonly ComposerMention[],
-  ): void {
-    const current = patchSelectionText(
-      { text: textRef.current, skillNames: skillNamesRef.current, ...selectionMetaRef.current },
-      textRef.current.trim() === "" ? "" : textRef.current.replace(/\s+$/, ""),
-    );
-    // An entry can carry a selection with no prose of its own. Its chip has to
-    // be visible in the sentence either way, so spell the reference out rather
-    // than let the restore drop what the user chose.
-    const restored = materializeSelectionReferences({
-      text: restoredText,
-      skillNames: [...(restoredNames ?? [])],
-      commandNames: [...(restoredCommands ?? [])],
-      ...(restoredMentions ? { mentions: [...restoredMentions] } : {}),
-    });
-    const merged = mergeRecoveryComposerDraft(
-      current.text,
-      [],
-      { ...restored, attachments: [], mentions: skillAtomMentions(parseSkillDocument(restored)) },
-      current.skillNames,
-      current.commandNames,
-      skillAtomMentions(parseSkillDocument(current)),
-    );
-    const value = serializeSkillDocument(parseSkillDocument(merged));
-    const text = value.text;
-    editSkillNames(value.skillNames);
-    updateSelectionMeta(value);
-    // A queued entry's selections are named, not spelled out, so the value that
-    // carries them is authoritative here exactly as a recovery activation's is:
-    // without this the merge is a partial append, the references land as plain
-    // text, and the request would carry activations the user cannot see.
-    markRestore();
-    updateText(text);
-    textEditor.write(text, text.length);
-    editorRef.current?.focus();
-  }
-
-  async function activateRecovery(record: MutationRecoveryRecord): Promise<void> {
-    if (!source.alive) return;
-    if (attachments.hasPending) {
-      toasts.push("error", "Image attachment is still processing");
-      return;
-    }
-    try {
-      if (!(await source.activateRecovery(record))) {
-        if (source.alive) pushRecoveryRefusal("changed");
-        return;
-      }
-      if (!source.alive) return;
-      scheduleCursorRestore(source.getSnapshot().text.length);
-      editorRef.current?.focus();
-    } catch (error) {
-      if (source.alive) toasts.push("error", sessionActionError("Edit failed", error));
-    }
-  }
-
-  // getComposerText is QueueStrip's own seam for reading this composer's
-  // CURRENT text/attachments/hasPending at the moment its drain affordance
-  // is used - textRef.current (not the `text` state closure) for the
-  // identical liveness reason textEditor.read() above reads it, and
-  // toInputAttachments() for the same wire shape submitAction's own payload
-  // already uses. `hasPending` mirrors this component's own attachments.
-  // hasPending so QueueStrip's "Steer queue now" button can block with the SAME
-  // "still processing" toast this component's classic submit paths already
-  // use, instead of silently sending a drain payload with a not-yet-encoded
-  // image missing (toInputAttachments() itself only ever filters incomplete
-  // items without signaling it - see that function's own doc comment) - see
-  // w5-integration-wiring-report.md Concern #3. Also stashes a snapshot into
-  // lastDrainSnapshotRef (text, edit revision, and the currently-staged attachments) so
-  // handleDrainSuccess can later tell whether the composer changed between
-  // THIS read and the drain actually resolving - QueueStrip only ever calls
-  // this once per handleDrain invocation, immediately before starting the
-  // request, so the snapshot always reflects exactly what that drain sent.
-  function getComposerText() {
-    lastDrainSnapshotRef.current = {
-      text: textRef.current,
-      attachments: attachments.items,
-      skillNames: [...skillNamesRef.current],
-      commandNames: [...selectionMetaRef.current.commandNames],
-      mentions: selectionMetaRef.current.mentions,
-      revision: draftEditRevisionRef.current,
-      draftRevision: readDraftRevision(ref),
-    };
-    return {
-      text: textRef.current,
-      attachments: attachments.toInputAttachments(),
-      hasPending: attachments.hasPending,
-      skillNames: [...skillNamesRef.current],
-      commandNames: [...selectionMetaRef.current.commandNames],
-      mentions: selectionMetaRef.current.mentions,
-    };
-  }
-
-  // submitAction wraps every method in submitWithPendingTracking (the wave's
-  // own beyond-parity decision - w5-task-3-report.md: "T2's own send/steer
-  // submissions should wrap their threadsStore.send/.steer calls in
-  // submitWithPendingTracking the same way QueueStrip's own drain handler
-  // wraps drainAsSteer... that's what makes optimistic pending genuinely
-  // uniform across all four methods"), exactly mirroring QueueStrip.tsx's
-  // own handleDrain shape.
-  //
-  // Toast/bookkeeping split, reconciled against pendingTurnsStore's own
-  // documented contract (its submitWithPendingTracking doc comment: onFailure
-  // is for toasting, "rethrowing so the caller's OWN catch can still run its
-  // own non-toast bookkeeping"): the toast lives ENTIRELY inside onFailure
-  // (same as QueueStrip's own handleDrain), and the outer catch below only
-  // ever re-runs the isQueuedDrainPartial state-clearing (never a second
-  // toast) - so a failure surfaces exactly once regardless of which branch
-  // it takes. Before this reconciliation, both sides pushed a toast for the
-  // SAME failure; this is the fix, not a pre-existing split.
-  async function submitAction(
-    kind: "send" | "queue" | "steer" | "drain",
-    options: { text?: string; clearDraftText?: string } = {},
-  ): Promise<void> {
-    const releaseRecoveryOperation = source.tryAcquireRecoveryOperation();
-    if (!releaseRecoveryOperation) return;
-    if (source.getSnapshot().recoveryActivating) {
-      releaseRecoveryOperation();
-      return;
-    }
-    const submittedText = options.text ?? textRef.current;
-    const clearDraftText = options.clearDraftText ?? submittedText;
-    const submittedAttachments = attachments.items;
-    const submittedSkillNames = [...skillNamesRef.current];
-    const submittedCommandNames = [...selectionMetaRef.current.commandNames];
-    const submittedMentions = selectionMetaRef.current.mentions;
-    const submittedRevision = draftEditRevisionRef.current;
-    const submittedDraftRevision = readDraftRevision(ref);
-    const payload = attachments.toInputAttachments();
-    const submittedLease = recoveryOwnerLeaseRef.current;
-    const submittedRecoveryId = submittedLease?.clientMutationId ?? null;
-    let releaseRecoveryInFlight: (() => void) | null = null;
-    const releaseInFlightRecovery = () => {
-      releaseRecoveryInFlight?.();
-      releaseRecoveryInFlight = null;
-    };
-    const recoveryBarrier = submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(ref);
-    let recoveryResendRefused = false;
-    let recoveryAlreadySent = false;
-    const recoveryWriteRefusal = new Error("Recovery persistence was refused");
-    const recoveryAlreadySentRefusal = new Error("Recovery source was already consumed");
-    // The UI-side half of the skillInput gate (threads.ts's composerMutationIntent
-    // is the store-side half, and Task 12 gates the hub's forwarding too): a
-    // target that never advertised the capability keeps the draft and hears
-    // why, instead of minting durable intent the wire would refuse.
-    const refusal = selectionRefusal(
-      { skillNames: submittedSkillNames, commandNames: submittedCommandNames },
-      model?.capabilities,
-    );
-    if (refusal) {
-      pushSelectionRefusal(refusal);
-      releaseRecoveryOperation();
-      return;
-    }
-    setBusyAction(kind === "send" || kind === "queue" ? "submit" : "steer");
-    if (submittedRecoveryId !== null) releaseRecoveryInFlight = beginRecoverySubmission(submittedRecoveryId);
-    let submissionFailed = false;
-    try {
-      await submitWithPendingTracking(
-        {
-          ref,
-          text: submittedText,
-          attachments: payload,
-          skillNames: submittedSkillNames,
-          commandNames: submittedCommandNames,
-          recoveryId: submittedRecoveryId ?? undefined,
-          onFailure: (err) => {
-            if (err === recoveryWriteRefusal || err === recoveryAlreadySentRefusal) return;
-            const label = kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
-            toasts.push("error", sessionActionError(`${label} failed`, err));
-          },
-        },
-        async () => {
-          if (submittedRecoveryId !== null) {
-            await source.runRecoveryOperation(async () => {
-              const persisted = await queueRecoveryPersistence(
-                submittedRecoveryId,
-                submittedText,
-                payload,
-                submittedSkillNames,
-                submittedCommandNames,
-                submittedMentions,
-                clearDraftText,
-              );
-              if (!persisted) {
-                throw recoveryWriteRefusal;
-              }
-              const committedRevision = recoveryOwnerLeaseRef.current?.compositionRevision;
-              if (committedRevision === undefined) {
-                throw recoveryWriteRefusal;
-              }
-              const outcome = await resendRecoveryPendingTurn(
-                submittedRecoveryId,
-                ref,
-                kind,
-                submittedText,
-                payload,
-                submittedSkillNames,
-                submittedCommandNames,
-                submittedMentions,
-                recoveryBarrier,
-                { [submittedRecoveryId]: committedRevision },
-                source.compositionOwnerId,
-              );
-              if (outcome.status !== "sent") {
-                recoveryResendRefused = outcome.status === "refused";
-                recoveryAlreadySent = outcome.status === "consumed";
-                throw recoveryResendRefused ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
-              }
-              // The resend transaction consumed the recovery row, so a remount
-              // can no longer restore it. Keep the guard until here rather than
-              // until the network settles.
-              releaseInFlightRecovery();
-            });
-            return;
-          }
-          return submitDraftToStore(kind, ref, {
-            text: submittedText,
-            attachments: payload,
-            skillNames: submittedSkillNames,
-            commandNames: submittedCommandNames,
-            mentions: submittedMentions,
-          });
-        },
-      );
-      if (!source.alive) return;
-      const submittedEditorMatches =
-        textRef.current === clearDraftText &&
-        sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
-        sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames);
-      const cleared = clearIfUnchanged(
-        clearDraftText,
-        submittedRevision,
-        submittedDraftRevision,
-        submittedSkillNames,
-        submittedCommandNames,
-      );
-      // A typed message-producing built-in submits its body while the editor
-      // still holds the invocation. Settlement preserves that literal command,
-      // which changes the edit revision, so the revision-guarded clear above
-      // can decline. Clear the persisted invocation by content instead when the
-      // editor still holds exactly what was submitted.
-      if (
-        options.clearDraftText !== undefined &&
-        options.text !== undefined &&
-        options.text !== options.clearDraftText &&
-        submittedEditorMatches
-      ) {
-        if (!cleared) {
-          updateText("");
-          updateSkillNames([]);
-          updateSelectionMeta({ text: "", skillNames: [] });
-        }
-        if (ownedDraftRevisionRef.current === readDraftRevision(ref)) {
-          clearDraft(ref);
-          ownedDraftRevisionRef.current = readDraftRevision(ref);
-        }
-      }
-      clearSubmittedAttachments(submittedAttachments);
-    } catch (error) {
-      submissionFailed = true;
-      // The local durable write failed. The submitted composer payload stays
-      // untouched and no network request was eligible to start.
-      if (source.alive && recoveryResendRefused) pushRecoveryRefusal("changed");
-      else if (source.alive && recoveryAlreadySent) pushRecoveryRefusal("consumed");
-      else if (error !== recoveryWriteRefusal && error !== recoveryAlreadySentRefusal) return;
-    } finally {
-      if (mountedRef.current) setBusyAction(null);
-      releaseInFlightRecovery();
-      if (submissionFailed && source.alive && draftEditRevisionRef.current !== submittedRevision) {
-        // The recovery autosave effect is suppressed while the guard is held.
-        // Persist edits typed during the failed send through the recovery
-        // chain so reloading does not merge them with the older record as two
-        // separate copies.
-        const activeRecoveryId = source.getSnapshot().activeRecoveryId;
-        if (activeRecoveryId === null) {
-          source.persistDraft(textRef.current);
-        } else {
-          void source.queueRecoveryPersistence(
-            activeRecoveryId,
-            textRef.current,
-            attachments.toInputAttachments(),
-            skillNamesRef.current,
-            selectionMetaRef.current.commandNames,
-            selectionMetaRef.current.mentions,
-          );
-        }
-      }
-      releaseRecoveryOperation();
-    }
   }
 
   // handleBuiltinSubmit is the Slack-model half of Enter/submit
@@ -1172,16 +653,9 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       toasts.push("error", `/${match.command.id} isn't available until this session is resumed`);
       return;
     }
-    // A message-producing built-in typed over an active recovery is the same
-    // submit the user could have made with Send/Queue/Steer: route its parsed
-    // body through the one recovery transaction instead of enqueueing a second
-    // mutation beside the recovery. The literal command text is what gets
-    // cleared from the editor when the resend succeeds.
-    if (
-      (match.command.id === "queue" || match.command.id === "steer") &&
-      activeRecoveryId !== null &&
-      match.argsText.trim()
-    ) {
+    // Message-producing built-ins share submission and recovery ownership.
+    // Submit the parsed body, but clear only the unchanged literal invocation.
+    if ((match.command.id === "queue" || match.command.id === "steer") && match.argsText.trim()) {
       if (match.command.unavailableReason) {
         toasts.push("error", `/${match.command.id} is ${match.command.unavailableReason}`);
         return;
@@ -1200,7 +674,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     const submittedCommandNames = [...selectionMetaRef.current.commandNames];
     const submittedRevision = draftEditRevisionRef.current;
     const submittedDraftRevision = readDraftRevision(ref);
-    setBusyAction("submit");
+    setBuiltinBusy(true);
     const ctx: PaletteRunContext = {
       sessionRef: ref,
       sessionPaneId: paneId ?? null,
@@ -1212,7 +686,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       ui: { clearToSearch: () => {}, showHelp: () => {} },
     };
     const outcome = await runBuiltinCommand(match, ctx);
-    setBusyAction(null);
+    setBuiltinBusy(false);
     if (outcome.ok)
       clearIfUnchanged(
         submittedText,
@@ -1251,37 +725,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
         return;
       }
     }
-    // The same decision the button and its tooltip rendered from
-    // (the send/queue decision, substitution included), re-derived at the press over
-    // the store's live model: the two disagree only when a status frame landed
-    // after the render, and then the frame is what the submit has to follow.
-    // The gate's send/queue action is the route; none is the refusal below.
-    const decision = sendQueueDecisionFor(
-      liveThreadModel(ref) ?? renderedModel,
-      ownPendingSend(pendingTurnEntries(ref, "send")),
-      threadsStore.getState().restartBlockingObligations.has(ref),
-      {
-        // Read live, like stopInFlight and queuedNonSend beside it: the
-        // render-time blockedMutations snapshot cannot have caught a row
-        // published between the render and the press, while the store-wide
-        // predicate resumeOnlyModel (which enqueue and dispatch use) reads
-        // hasBlockedUnknown fresh. Routing both sides through the same live
-        // read keeps the press from folding a resume ahead of an uncertain row.
-        uncertainMessages: hasBlockedUnknown(ref),
-        stopInFlight: threadsStore.getState().stoppingRefs.has(ref),
-        queuedNonSend: hasQueuedNonSend(ref),
-        // Read live like the signals beside it: the render passes this too, so
-        // a snapshot that became authoritative between the render and the
-        // press routes to the Send-resumes face rather than reading as an
-        // owner-retained snapshot and refusing.
-        mutationStateAuthoritative: threadsStore.getState().mutationAuthorityRefs.has(ref),
-      },
-    );
-    const route = decision.action;
-    if (route === "none") {
-      toasts.push("error", "Send is not available for this session");
-      return;
-    }
     // Hand off before Send becomes disabled. Never refocus on completion:
     // the user may have moved to another control or session while submitting.
     const initiator = submitButtonRef.current;
@@ -1293,7 +736,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     ) {
       editorRef.current?.focus();
     }
-    void submitAction(route);
+    void actions.submitFromLiveState();
   }
 
   function handleSteerClick(): void {
@@ -1333,25 +776,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       return;
     }
     void submitAction(route);
-  }
-
-  async function handleInterruptClick(): Promise<void> {
-    if (actionPending) return;
-    // Same press-time rule as Steer: the turn this button was rendered for can
-    // have ended by the time the press lands.
-    const reason = pressRefusal(ref, "stop");
-    if (reason !== undefined) {
-      toasts.push("error", reason === NO_ACTIVE_TURN ? `Interrupt failed: ${reason}` : reason);
-      return;
-    }
-    setBusyAction("interrupt");
-    try {
-      await threadsStore.getState().interrupt(ref);
-    } catch (err) {
-      toasts.push("error", sessionActionError("Interrupt failed", err));
-    } finally {
-      setBusyAction(null);
-    }
   }
 
   // Legacy suppresses every one of these keybindings entirely inside a
@@ -1496,18 +920,18 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
           comment above. busy/onDrainBusyChange share this component's own
           busyAction gate both ways (BusyAction's own "drain" doc comment). */}
       <QueueStrip
-        ref={ref}
-        getComposerText={getComposerText}
-        onRestoreToComposer={restoreTextToComposer}
-        activeRecoveryId={activeRecoveryId ?? undefined}
-        activeRecoveryRevision={recoveryOwnerLeaseRef.current?.compositionRevision}
-        getRecoveryRevision={getRecoveryRevisionForDrain}
-        onEditRecovery={activateRecovery}
-        tryAcquireRecoveryOperation={source.tryAcquireRecoveryOperation}
-        onDrainSuccess={handleDrainSuccess}
-        busy={actionPending}
-        onDrainBusyChange={(draining) => {
-          if (mountedRef.current) setBusyAction(draining ? "drain" : null);
+        {...actions.queueProps}
+        onRestoreToComposer={(...args) => {
+          actions.queueProps.onRestoreToComposer(...args);
+          editorRef.current?.focus();
+        }}
+        onEditRecovery={async (record) => {
+          const epoch = source.getSnapshot().restoreEpoch;
+          await actions.queueProps.onEditRecovery?.(record);
+          if (source.alive && source.getSnapshot().restoreEpoch !== epoch) {
+            scheduleCursorRestore(source.getSnapshot().text.length);
+            editorRef.current?.focus();
+          }
         }}
       />
       {/* Staged attachments. One rendering for every state, so nothing here
