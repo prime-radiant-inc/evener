@@ -245,6 +245,11 @@ describe("OAuthRedirectDialog", () => {
     expect(onSuccess).not.toHaveBeenCalled();
     expect(onAuthorized).not.toHaveBeenCalled();
     expect(toastKinds()).toEqual([]);
+    // The replacement start can be refused and leave this editor on screen. It
+    // no longer offers the discarded flow's Finish, only a way to start again.
+    expect(screen.queryByRole("button", { name: "Finish" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Start again" }));
+    expect(onRestart).toHaveBeenCalledTimes(2);
   });
 
   test("a completed sign-in whose listing read is lost is still reported as a sign-in", async () => {

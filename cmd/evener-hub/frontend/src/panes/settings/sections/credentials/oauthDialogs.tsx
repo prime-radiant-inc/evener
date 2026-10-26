@@ -64,6 +64,9 @@ export function OAuthRedirectDialog({
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // True once the hub discarded this flow unchecked: Finish would resubmit a
+  // flow that no longer exists, so the editor offers Start again instead.
+  const [discarded, setDiscarded] = useState(false);
   const toast = useToasts();
   const active = useEditorLifetime();
 
@@ -82,6 +85,7 @@ export function OAuthRedirectDialog({
       if (completed.restart === true) {
         // Nothing was saved. The error stays up if the replacement start is
         // refused and this editor remains.
+        setDiscarded(true);
         setError(RESTARTED_ERROR);
         onRestart();
         return;
@@ -129,13 +133,19 @@ export function OAuthRedirectDialog({
             value={value}
             onChange={(event) => setValue(event.target.value)}
             placeholder="https://…"
-            disabled={busy}
+            disabled={busy || discarded}
           />
         </FormRow>
         <div className={CLASS.actions}>
-          <Button type="submit" disabled={busy}>
-            Finish
-          </Button>
+          {discarded ? (
+            <Button type="button" onClick={onRestart}>
+              Start again
+            </Button>
+          ) : (
+            <Button type="submit" disabled={busy}>
+              Finish
+            </Button>
+          )}
           <Button type="button" variant="quiet" onClick={onCancel} disabled={busy}>
             Cancel
           </Button>

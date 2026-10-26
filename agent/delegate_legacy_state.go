@@ -91,3 +91,31 @@ func firstLegacyDelegateWatch(events []jobstore.Event, delegateJobIDs map[string
 	sort.Strings(watchIDs)
 	return watchIDs[0], true
 }
+
+// retiredDelegateJobIDs returns the ids of retired delegate job records in the
+// job journal. Their rows stay in the journal and are never restored as live
+// work.
+func (jm *jobManager) retiredDelegateJobIDs() (map[string]struct{}, error) {
+	records, err := jm.store.Load()
+	if err != nil {
+		return nil, err
+	}
+	ids := make(map[string]struct{})
+	for id, record := range records {
+		if record != nil && string(record.Type) == delegateResourceType {
+			ids[id] = struct{}{}
+		}
+	}
+	return ids, nil
+}
+
+// addressedThroughRetiredDelegate reports whether a watch-send frame names a
+// retired delegate job as its target, watched identity or receiver.
+func addressedThroughRetiredDelegate(key jobstore.WatchSendKey, retired map[string]struct{}) bool {
+	for _, id := range []string{key.WatchTarget, key.ResolvedWatchedIdentity, key.ResolvedSendTo} {
+		if _, ok := retired[id]; ok {
+			return true
+		}
+	}
+	return false
+}

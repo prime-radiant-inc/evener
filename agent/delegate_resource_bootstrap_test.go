@@ -137,6 +137,54 @@ func TestDelegateResourceBootstrap_LegacyDelegateStateIsIgnoredAndStartupProceed
 	}
 }
 
+// A pending watch frame addressed through a retired delegate job is not
+// restored into the live delivery set, while a frame on a healthy job still is.
+func TestDelegateResourceBootstrap_LegacyWatchFramesAreNotRestored(t *testing.T) {
+	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
+	removeDelegateStoreIfPresent(t, stateDir, meta.ID)
+	jobPath := filepath.Join(jobsDir(stateDir, meta.ID), "jobs.jsonl")
+	frame := func(deliveryID, target string) jobstore.Event {
+		return jobstore.Event{
+			Kind: jobstore.EventWatchSendPending,
+			WatchSend: &jobstore.WatchSendState{
+				Key: jobstore.WatchSendKey{
+					VisibleSessionID:        meta.ID,
+					WatchID:                 "watch_" + target,
+					WatchTarget:             target,
+					ResolvedWatchedIdentity: target,
+					ResolvedSendTo:          runtimeMessageAliasCaller,
+					WatchGeneration:         "wg_" + target,
+				},
+				DeliveryID:        deliveryID,
+				UpdateSeq:         1,
+				Frame:             "saved frame",
+				ReceiverSessionID: meta.ID,
+				CreatedAt:         time.Unix(10, 0).UTC(),
+				UpdatedAt:         time.Unix(10, 0).UTC(),
+			},
+		}
+	}
+	appendLegacyBootstrapEvents(t, jobPath,
+		jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_legacy_delegate", Type: jobstore.JobType(delegateResourceType), OwnerSessionID: meta.ID},
+		jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_shell", Type: jobstore.JobShell, OwnerSessionID: meta.ID},
+		frame("delivery_legacy", "job_legacy_delegate"),
+		frame("delivery_shell", "job_shell"),
+	)
+
+	restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	defer restored.Close()
+	var restoredFrames []string
+	for _, delivery := range restored.jobManager.pendingWatchSendDeliveries(nil) {
+		restoredFrames = append(restoredFrames, delivery.state.DeliveryID)
+	}
+	if !reflect.DeepEqual(restoredFrames, []string{"delivery_shell"}) {
+		t.Fatalf("restored watch frames = %v, want only the healthy job's", restoredFrames)
+	}
+}
+
 func TestDelegateResourceBootstrap_ShellOnlyAndStableWatchStateOpen(t *testing.T) {
 	t.Parallel()
 	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)

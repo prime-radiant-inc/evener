@@ -1537,9 +1537,13 @@ func (jm *jobManager) restoreWatchSendPendingFrom(load watchSendLoader) error {
 	if len(rec.Pending) == 0 {
 		return nil
 	}
+	retired, err := jm.retiredDelegateJobIDs()
+	if err != nil {
+		return err
+	}
 	states := make([]*jobstore.WatchSendState, 0, len(rec.Pending))
 	for _, state := range rec.Pending {
-		if state == nil {
+		if state == nil || addressedThroughRetiredDelegate(state.Key, retired) {
 			continue
 		}
 		copied := *state
