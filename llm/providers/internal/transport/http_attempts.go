@@ -204,32 +204,12 @@ func (t *apiAttemptRoundTripper) mergeCredentialMaterial(material llm.APILogCred
 		return
 	}
 	t.mu.Lock()
-	t.credentialMaterial = mergeTransportCredentialMaterial(t.credentialMaterial, material)
+	t.credentialMaterial = t.credentialMaterial.Merge(material)
 	attempts := append([]*APIAttemptCapture(nil), t.attempts...)
 	t.mu.Unlock()
 	for _, attempt := range attempts {
 		attempt.mergeCredentialMaterial(material)
 	}
-}
-
-func mergeTransportCredentialMaterial(left, right llm.APILogCredentialMaterial) llm.APILogCredentialMaterial {
-	headerNames := make([]string, 0, len(left.HeaderNames)+len(right.HeaderNames))
-	for name := range left.HeaderNames {
-		headerNames = append(headerNames, name)
-	}
-	for name := range right.HeaderNames {
-		headerNames = append(headerNames, name)
-	}
-	queryNames := make([]string, 0, len(left.QueryNames)+len(right.QueryNames))
-	for name := range left.QueryNames {
-		queryNames = append(queryNames, name)
-	}
-	for name := range right.QueryNames {
-		queryNames = append(queryNames, name)
-	}
-	values := append([]string(nil), left.Values...)
-	values = append(values, right.Values...)
-	return llm.NewAPILogCredentialMaterial(headerNames, queryNames, values...)
 }
 
 func (t *apiAttemptRoundTripper) mergeResponseCookieMaterial(response *http.Response) {

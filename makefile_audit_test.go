@@ -152,3 +152,34 @@ func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 		}
 	}
 }
+
+// TestNoMakefileRecipeCreatesScratchOutsideTMPDIR holds the Makefile to the
+// same TMPDIR rule the scripts audit enforces (see mktempEscapesTMPDIR): a
+// recipe's scratch must live where a caller's TMPDIR can find and reclaim it.
+func TestNoMakefileRecipeCreatesScratchOutsideTMPDIR(t *testing.T) {
+	t.Parallel()
+
+	var offenders []string
+	for _, path := range makefileSourcePaths(t) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			at := strings.Index(trimmed, "mktemp")
+			if at < 0 || !mktempEscapesTMPDIR(trimmed[at:]) {
+				continue
+			}
+			offenders = append(offenders, fmt.Sprintf("%s:%d: %s", path, i+1, trimmed))
+		}
+	}
+	sort.Strings(offenders)
+	for _, o := range offenders {
+		t.Errorf("this recipe's mktemp ignores TMPDIR on macOS; give it an explicit "+
+			"template like mktemp \"$${TMPDIR:-/tmp}/name.XXXXXX\":\n  %s", o)
+	}
+}

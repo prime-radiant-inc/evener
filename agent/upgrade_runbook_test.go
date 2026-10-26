@@ -133,7 +133,7 @@ func TestUpgradeRunbookPreservesHistoryAndContinuesInFreshRoot(t *testing.T) {
 	muteNoteElicitation(restored)
 	completeTask(restored, "compatible.txt")
 	restored.Close()
-	_, restoredEntries, _, err := readTranscript(filepath.Join(compatible, sessionsSubdir, meta.ID+".transcript.jsonl"), "")
+	_, restoredEntries, _, err := readTranscript(schema.SessionTranscriptPath(compatible, meta.ID), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestUpgradeRunbookPreservesHistoryAndContinuesInFreshRoot(t *testing.T) {
 			if !reflect.DeepEqual(legacyBefore, upgradeHashes(t, root)) {
 				t.Fatal("legacy rejection mutated saved state")
 			}
-			_, entries, _, err := readTranscript(filepath.Join(root, sessionsSubdir, meta.ID+".transcript.jsonl"), "")
+			_, entries, _, err := readTranscript(schema.SessionTranscriptPath(root, meta.ID), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -195,7 +195,7 @@ func TestUpgradeRunbookPreservesHistoryAndContinuesInFreshRoot(t *testing.T) {
 	}
 	completeTask(fresh, "fresh-root.txt")
 	fresh.Close()
-	_, entries, _, err := readTranscript(filepath.Join(freshRoot, sessionsSubdir, fresh.ID()+".transcript.jsonl"), "")
+	_, entries, _, err := readTranscript(schema.SessionTranscriptPath(freshRoot, fresh.ID()), "")
 	if err != nil {
 		t.Fatal(err)
 	}

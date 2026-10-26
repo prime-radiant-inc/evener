@@ -354,7 +354,7 @@ token names are retained. The table is a reference; `tokens.css` is authoritativ
 | Fine / strong edge | `#34342F` / `#51514A` | `#DDDCD4` / `#B7B6AC` |
 | High / medium / low ink | `#F2F1EB` / `#B0AFA6` / `#99998F` | `#252521` / `#5F5F57` / `#6D6D64` |
 
-Card, InspectorCard and PaneScaffold share the page ground rather than manufacturing raised
+Card and PaneScaffold share the page ground rather than manufacturing raised
 surfaces. Evidence and overlays still have their own grounds. Fine borders are structure,
 not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 6.12/5.48, light 4.96/5.05.
 Readable secondary metadata uses medium ink; low ink stays placeholders, disabled and timestamps.
@@ -401,8 +401,8 @@ other tracking values that were in use, and it is now THE uppercase tracking in 
 recipe it backs is one rule with no variants: `--font-size-caption`, `--font-weight-medium` (or
 semibold where a header band wants more), `--ink-mid` or darker, `text-transform: uppercase`,
 `letter-spacing: var(--tracking-eyebrow)`, at most two words. It is reserved for short labels inside a
-page (RecommendationCard's kicker and existing rail/settings section labels); InspectorCard
-and Table/DiffTable headers now remain sentence-case. An eyebrow is NEVER a pane title: a PaneScaffold title
+page (existing rail/settings section labels); DiffTable
+headers remain sentence-case. An eyebrow is NEVER a pane title: a PaneScaffold title
 is the page's own heading, set sentence-case at `--font-size-pane-title`, semibold, `--ink-hi`
 (§6). Literal `font-size` values outside `tokens.css`, `letter-spacing` outside the
 `--tracking-*` tokens, and any uppercase rule that is not a complete eyebrow are all enforced by
@@ -420,7 +420,7 @@ Design System's own spacing progression, adopted because it's the only well-know
 exactly fits the plan's stated endpoints (4, 64) and step count (9) while staying on the 4px
 grid; unchanged by the re-theme). Radii are restrained: `--radius-chip` 3px,
 `--radius-control` 4px, `--radius-pane` 4px and `--radius-pill` 999px for switch tracks.
-Structural Card/InspectorCard/PaneScaffold and tables are square; floating layers and fields
+Structural Card/PaneScaffold and tables are square; floating layers and fields
 retain their token radii. Existing widget dimensions and touch targets are unchanged.
 
 **Vertical rhythm** is four named steps over that same grid, so the transcript has a vocabulary
@@ -466,9 +466,9 @@ the duration of a dock drag.
 
 **Elevation** — `--shadow-card: none` in both themes. Keep the token for existing consumers,
 not as a reason to reintroduce raised structure. Card uses padding and page ground;
-InspectorCard uses a sentence-case label and fine property rules; PaneScaffold uses a page
-heading and separating rule without a rounded outside border or tinted header. Table/DiffTable
-use horizontal rules rather than framed grids. Do not remove a field's affordance along with
+PaneScaffold uses a page
+heading and separating rule without a rounded outside border or tinted header. DiffTable
+uses horizontal rules rather than framed grids. Do not remove a field's affordance along with
 card decoration: Input, Select, Textarea and shared picker triggers keep a strong 1px border,
 `--field` fill and `--shadow-inset-field`, with unchanged focus and phone sizing.
 
@@ -515,13 +515,9 @@ during implementation (noted inline); this table is the one to trust.
 | **Meter** | `{label: string; value: number; max: number; tone?: "neutral"\|"attention"\|"alive"\|"danger"}` | `role="meter"`; `label` is required (not optional as an early sketch had it) since role=meter needs an accessible name and a Meter can't ship without one. Fill width via a `--fill` style custom property, not an inline style rule. |
 | **Skeleton** | `{lines?: number}` (default 3) | Static bars, no shimmer (honest-liveness rule) — announces "Loading" once for AT; bars themselves are decorative. |
 | **EmptyState** | `{title: string; hint?: string; action?: ReactNode; size?: "default"\|"display"\|"compact"; reason?: "deleted"\|"unavailable"\|"no-turns"\|"not-built"\|"needs-configuration"\|"no-instances"\|"empty"\|"unsupported"\|"ended"\|"awaiting-reply"\|"version-mismatch"}` | `reason` says why the surface is empty and renders as `data-reason`, so callers and tests tell one empty state from another without reading its copy; it has no loading value. `size="display"` sets the title at `--font-size-display` for the one pane whose empty state IS the page (Welcome); `size="compact"` is the empty message inside a list or section (a settings collection with nothing in it, the activity sidebar's notes, the command palette's "No matches"): left-aligned, the collection row's padding, title in sans `--font-size-ui` `--ink-mid`, hint at caption in `--ink-low`; everything else keeps the centered `--font-size-pane-title` block. `action` is optional (an early plan sketch showed it required; a pane with nothing actionable — e.g. a read-only empty log — is an ordinary case, and every sibling slot-style prop this wave is optional, so this was kept optional as the more consistent, more correct shape). Several actions are a fragment in `action` (the dock and rail chunk-failure fallbacks' Retry + Reload page): the slot is a wrapping flex row with a `--space-2` gap, centered under the default block and start-aligned under `compact`, so callers never space buttons with text nodes. Not a loading state: "Loading…" is `Skeleton`/`Loader`. |
-| **Table** | `{columns: TableColumn<Row>[]; rows: Row[]; rowKey(row); sortKey?; sortDir?: "ascending"\|"descending"; onSortChange?; filters?: {key,label,active}[]; onFilterToggle?; empty?}` | Controlled sort + filter; semantic `<table>`, `aria-sort` on sortable headers, filter chips compose Chip, horizontal overflow scrolls inside the widget. Ported from Beautiful UI's Records/Filter Table. |
 | **DiffTable** | `{columns: {key,label}[]; rows: {key; cells: Record<string,{value; proposed?}>}[]}` | Tabular proposed edits: struck-through old value beside the new one on the neutral `--diff-add-bg` wash — same hue-gate exemption as DiffBlock. Ported from Beautiful UI's Diff Table. |
 | **Loader** | `{label?; rail?; startedAt?; now?}` | Indeterminate-wait indicator (pixel grid + mm:ss elapsed); prop-driven like Cadence, no internal timers. Its animation is the sanctioned exception for user-initiated waits — never agent liveness — and lives entirely inside the reduced-motion gate. `rail` seats the grid in the transcript's icon-rail slot (the content-free "Thinking…" row's status glyph). Ported from Beautiful UI's Loading State. |
-| **InsightCard** | `{insights: {title; body; series?: number[]}[]; page; onPageChange}` | Paged insights with an inline SVG sparkline (aria-hidden + visually-hidden min/max alternative); pagination composes IconButton. Ported from Beautiful UI's Insight Cards. |
-| **RecommendationCard** | `{title; body; confidence?; onAccept?; onReject?; alternatives?}` | Agent-suggested action: micro-label eyebrow, confidence meter (`--accent` on `--field`; not the hue-gated Meter), Accept/Dismiss compose Button. Ported from Beautiful UI's Recommendation Card. |
 | **ContextCard** | `{source; snippet; meta?; href?}` | Retrieved-knowledge chunk: inset card, ToolIcon source glyph, 3-line snippet clamp; renders as a link when `href` given. Ported from Beautiful UI's Context Cards. |
-| **InspectorCard** | `{title; properties: {key; label; value; options?; onChange?}[]}` | Property inspector: sentence-case section label, hairline rows, editable rows compose Select, read-only values in mono. Ported from Beautiful UI's Fine-tune inspector. |
 | **Card** | `{children: ReactNode; variant?: "flat"\|"outlined"; tone?: "neutral"\|"attention"} & Omit<HTMLAttributes<HTMLDivElement>, "children"\|"className"\|"style">` | `variant="flat"` (default) is the passive page-ground section: `--space-4` padding, no outside border (its ring is `--shadow-card`). `variant="outlined"` is a bordered box for a block inside a denser flow (an `ask_user` question in the transcript, the spawn form's plugin and advanced-options panels, the provider-connection review summary): 1px `--edge`, `--radius-pane`, `--surface-1`, `--space-3` padding. `tone="attention"` is the "a human is needed right now" envelope (the pending AskDock batch, a parked sandbox approval): the outlined geometry in `color-mix(--attention 24%, --surface-1)` over a `color-mix(--attention 55%, --edge)` edge, mixed past the `--attention-bg/-edge` token defaults because those barely tint dark's `--surface-1`; it ignores `variant`. Card is on the token-contract `SEMANTIC_USE_ALLOWLIST` for that tone. Spreads native attributes (`role`, `aria-*`, `data-*`, `id`, `tabIndex`, key handlers) onto its `<div>` before `className`, so a caller can make the card a labelled group with a shared keybinding; `className`/`style` are not accepted. Layout of the children (a flex column and its gap) is the caller's, on an inner element. Passive: no focus ring of its own. |
 | **PromptCard** | `{field: ReactNode; leading?: ReactNode; actions?: ReactNode; controlsTestId?; "data-testid"?; hidden?: boolean}` | The app's one prompt surface — the session composer and the spawn form both render it: a bordered card holding `field` (a `seamless` autoGrow Textarea) over a control row (`leading` slot, spacer, `actions` cluster). The card owns the border, padding and the `:focus-within` ring, so the field inside must draw neither; no state, no opinion about verbs. `hidden` also makes the card `inert`. |
 | **Input** | `{value: string; onChange; placeholder?; disabled?; required?; autoComplete?; type?: "text"\|"password"\|"email"\|"search"\|"number"\|"tel"\|"url"; id?; name?; "aria-label"?; "aria-describedby"?}` | Controlled only; labeling is the consumer's job via `<label htmlFor>`. `aria-label` names a field with no visible label (the settings filter, an env-add row) in place of a hand-made visually-hidden `<label>`. |
@@ -829,8 +825,8 @@ size for it: `--font-size-caption`, `--font-weight-medium` (or semibold where a 
 wants more), `--ink-mid` or darker, `text-transform: uppercase`,
 `letter-spacing: var(--tracking-eyebrow)` (0.06em, which replaced a spread of
 0.02/0.04/0.05/0.08em), and **at most two words**. An eyebrow titles a container INSIDE a page:
-RecommendationCard's kicker and existing rail/settings section labels. InspectorCard and
-Table/DiffTable column labels are sentence-case, not eyebrows. Three-word labels were the tell that the rule was being
+existing rail/settings section labels. DiffTable
+column labels are sentence-case, not eyebrows. Three-word labels were the tell that the rule was being
 broken, so "Agents & models" became **"Agent setup"**.
 
 Never an eyebrow: buttons, sentences, and above all **titles**. A pane title is the page's own

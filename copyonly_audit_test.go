@@ -44,3 +44,39 @@ func TestNoNewCopyOnlyTests(t *testing.T) {
 			copyOnlyAllowlist, entry.File, entry.Test)
 	}
 }
+
+const errStringAllowlist = "internal/devtool/copyonly/errstring_allowlist.tsv"
+
+// TestNoNewErrorMessageAssertions is the ratchet for tests that check an
+// error's text against a phrase from production source instead of matching a
+// sentinel, type or code. Each test file may hold no more such checks than
+// its row in the allowlist, and a file with no row may hold none. The counts
+// only go down: a file that holds fewer than its row must lower or remove the
+// row, so the list stays a true record of what is left to convert.
+func TestNoNewErrorMessageAssertions(t *testing.T) {
+	t.Parallel()
+	counts, err := copyonly.ScanErrStrings(".")
+	if err != nil {
+		t.Fatalf("copyonly.ScanErrStrings: %v", err)
+	}
+	body, err := os.ReadFile(errStringAllowlist)
+	if err != nil {
+		t.Fatalf("read allowlist: %v", err)
+	}
+	budgets, err := copyonly.ReadErrStringBudgets(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("%s: %v", errStringAllowlist, err)
+	}
+
+	over, slack := copyonly.CompareErrStrings(counts, budgets)
+	for _, d := range over {
+		t.Errorf("%s checks error text against production copy %d time(s), over its budget of %d. "+
+			"Match a sentinel with errors.Is, a type with errors.As, or a code instead "+
+			"(docs/developing-evener/testing.md, \"Copy Is Not a Test Oracle\")",
+			d.File, d.Count, d.Budget)
+	}
+	for _, d := range slack {
+		t.Errorf("%s now holds %d error-text checks, under its budget of %d; set the count in %s to %d (remove the row at 0)",
+			d.File, d.Count, d.Budget, errStringAllowlist, d.Count)
+	}
+}

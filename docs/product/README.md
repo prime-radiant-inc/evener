@@ -29,12 +29,31 @@ changes; keep implementation history in Git and pull requests.
   proposals, agreed outcomes and deferred work identified separately. Discuss
   unresolved choices individually; an agreed outcome still needs implementation
   and verification before it describes current behavior.
+- [Compatibility](#compatibility): which direction of version skew each boundary tolerates.
 - [Code architecture](../architecture.md): module and process structure.
 - [Web design system](../web-ui/design-system.md): shared visual and interaction
   contracts. [Native development](../../mobile-native/README.md) describes the
   phone client's implementation and qualification.
 - [Developing Evener](../developing-evener/README.md): how to build and verify a
   change.
+
+## Compatibility
+
+Users upgrade at different times and skip versions. Daemons outlive the hub
+that spawned them ([`appwire/types.go`](../../appwire/types.go) explains why a
+hub restart leaves older daemons attached), so version skew is routine rather
+than an error state. The direction of the skew decides who adapts:
+
+| Boundary | Must tolerate | May assume |
+|---|---|---|
+| Hub and its daemons | The hub works with any older daemon. | Daemon code may assume the hub is the same version or newer, and carries no fallback for an older hub. |
+| Phone or web client and hub | The client works with an older hub, including the combined update/apply path. | Hub code carries no fallback for an older phone app. |
+| Local hub and remote hub over SSH | The local hub works with an older remote hub. | Remote-side code carries no fallback for a newer local hub. |
+| On-disk state | Every persisted format stays readable and every migration stays, because users skip versions. | Nothing is dropped on a time window alone. |
+
+Code that serves no producer in any direction is dead code, not compatibility,
+and is deleted. New compatibility code names the version direction it serves
+and the condition that removes it in its pull request description.
 
 ## Keeping the guide useful
 
@@ -54,3 +73,5 @@ functions or types. Do not turn these pages into release notes, dated audit
 diaries, PR progress reports, or duplicate implementation plans. Recheck source
 references when touching a case; a historical decision document cannot establish
 what the current product does.
+
+Delete an implementation plan in the PR that completes it; Git retains it.
