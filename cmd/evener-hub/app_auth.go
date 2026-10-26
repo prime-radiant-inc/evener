@@ -139,9 +139,10 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 		authEnv = effectiveHubAuthEnv(launchEnv[0])
 	}
 	stateDir, stateErr := openAIStateDirFromEnv(authEnv)
-	store, storeErr := hubCredentialStore(stateDir, nil)
-	if stateErr != nil {
-		storeErr = stateErr
+	var store *credentials.Store
+	storeErr := stateErr
+	if stateErr == nil {
+		store, storeErr = hubCredentialStore(stateDir, nil)
 	}
 	c := &hubAuthController{
 		stateDir:             stateDir,
@@ -164,6 +165,7 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 		credentialTestLoader: loadCredentialTestClient,
 		credentialTests:      map[string]*credentialTestCall{},
 	}
+	c.refuseAuthRecordsWithoutStateDir(stateErr)
 	c.wireCredentialStore()
 	return c
 }

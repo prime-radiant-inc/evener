@@ -1668,6 +1668,16 @@ func TestHubAuthControllerWithoutStateHomeRefusesRecords(t *testing.T) {
 		t.Fatalf("an auth directory appeared in the working directory: %v", err)
 	}
 
+	// The launch-env constructor refuses the same way, and does not resolve a
+	// credentials store from the ambient environment instead.
+	launched := newHubAuthController(map[string]string{})
+	if err := launched.saveAuth(launched.stateDir, "openai", authopenai.AuthRecord{}); !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("launch-env saveAuth error = %v, want ErrNoStateHome", err)
+	}
+	if store, credsErr := launched.credentialStore(); store != nil || !errors.Is(credsErr, userdirs.ErrNoStateHome) {
+		t.Fatalf("launch-env credentialStore = %v, %v, want no store and ErrNoStateHome", store, credsErr)
+	}
+
 	t.Setenv(envvars.Home.Name, t.TempDir())
 	recovered := newHubAuthControllerWithStore("", nil)
 	if _, err := recovered.loadAuth(recovered.stateDir, "openai"); !errors.Is(err, authopenai.ErrAuthNotFound) {

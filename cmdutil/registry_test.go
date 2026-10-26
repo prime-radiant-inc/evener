@@ -142,4 +142,14 @@ func TestLoadRegistryWithoutStateHomeIsAnError(t *testing.T) {
 	if _, _, err := LoadRegistry(registry.WithOffline(true), registry.WithoutCache()); !errors.Is(err, userdirs.ErrNoStateHome) {
 		t.Fatalf("LoadRegistry error = %v, want ErrNoStateHome", err)
 	}
+
+	// A caller that names its own state root needs no home.
+	chosen := t.TempDir()
+	r, _, err := LoadRegistry(registry.WithOffline(true), registry.WithoutCache(), registry.WithStateRoot(chosen))
+	if err != nil {
+		t.Fatalf("LoadRegistry with WithStateRoot: %v", err)
+	}
+	if r.StateRoot() != chosen {
+		t.Fatalf("StateRoot = %q, want %q", r.StateRoot(), chosen)
+	}
 }

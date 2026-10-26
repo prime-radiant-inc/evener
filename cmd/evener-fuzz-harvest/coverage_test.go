@@ -400,13 +400,19 @@ func scenarioRemainingFilesystemAndGateBranches(t *testing.T) {
 		t.Fatalf("abs fallback=%v err=%v", got, err)
 	}
 	harvestDefaultStateRoot = func() (string, error) { return "", boom }
-	if _, err := defaultStateDirs(); !errors.Is(err, boom) {
-		t.Fatalf("unresolved state root error=%v, want boom", err)
+	harvestResolveStateBase = func(string) (string, error) { return "/override", nil }
+	harvestIsDir = func(string) bool { return false }
+	if got, err := defaultStateDirs(); err != nil || len(got) != 1 || got[0] != "/override" {
+		t.Fatalf("an unresolved global root must not hide the session base: %v err=%v", got, err)
 	}
 	harvestDefaultStateRoot = func() (string, error) { return "/same", nil }
 	harvestResolveStateBase = func(string) (string, error) { return "", boom }
+	if got, err := defaultStateDirs(); err != nil || len(got) != 1 {
+		t.Fatalf("an unresolved session base must not hide the global root: %v err=%v", got, err)
+	}
+	harvestDefaultStateRoot = func() (string, error) { return "", boom }
 	if _, err := defaultStateDirs(); !errors.Is(err, boom) {
-		t.Fatalf("unresolved state base error=%v, want boom", err)
+		t.Fatalf("nothing resolves: error=%v, want boom", err)
 	}
 	harvestAbs = oldAbs
 	oldDetect := gateDetectSecret

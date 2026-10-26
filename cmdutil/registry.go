@@ -67,14 +67,15 @@ func LoadRegistry(opts ...registry.Option) (*registry.Registry, *credentials.Sto
 	if err != nil {
 		return nil, nil, fmt.Errorf("credentials: %w", err)
 	}
-	stateRoot, err := userdirs.DefaultStateRoot()
-	if err != nil {
-		return nil, store, fmt.Errorf("state root: %w", err)
-	}
+	// The default root comes first so a caller's WithStateRoot overrides it.
+	stateRoot, stateErr := userdirs.DefaultStateRoot()
 	all := append([]registry.Option{registry.WithCredentials(StoreCredentialSource{Store: store}), registry.WithStateRoot(stateRoot)}, opts...)
 	r, err := registry.Load(all...)
 	if err != nil {
 		return nil, store, err
+	}
+	if r.StateRoot() == "" {
+		return nil, store, fmt.Errorf("state root: %w", stateErr)
 	}
 	return r, store, nil
 }

@@ -174,19 +174,23 @@ func defaultStateDirs() (stringSlice, error) {
 		seen[abs] = true
 		out = append(out, dir)
 	}
-	root, err := harvestDefaultStateRoot()
-	if err != nil {
-		return nil, err
+	// The two sources resolve independently (EVENER_STATE_DIR can name usable
+	// recordings when the global root is unavailable); it is an error only
+	// when neither does.
+	root, rootErr := harvestDefaultStateRoot()
+	if rootErr == nil {
+		add(root)
 	}
-	add(root)
-	base, err := harvestResolveStateBase("")
-	if err != nil {
-		return nil, err
+	base, baseErr := harvestResolveStateBase("")
+	if baseErr == nil {
+		if sub := filepath.Join(base, "evener"); harvestIsDir(sub) {
+			add(sub)
+		} else {
+			add(base)
+		}
 	}
-	if sub := filepath.Join(base, "evener"); harvestIsDir(sub) {
-		add(sub)
-	} else {
-		add(base)
+	if len(out) == 0 {
+		return nil, errors.Join(rootErr, baseErr)
 	}
 	return out, nil
 }
