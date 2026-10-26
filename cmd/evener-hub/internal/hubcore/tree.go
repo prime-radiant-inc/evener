@@ -1166,6 +1166,31 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		}
 	}
 
+	// liveSessionNode is the flat row of a live session outside its project:
+	// the Live tier's leaf for a session with no meta and the Needs-you row.
+	// The live facts come from liveFieldsFor; identity, title and times come
+	// from the session's meta when the past index has one, else from the live
+	// entry itself.
+	liveSessionNode := func(le LiveEntry, meta *schema.SessionMeta) TreeNode {
+		node := liveFieldsFor(le.SessionID)
+		node.ID = le.SessionID
+		node.Kind = "session"
+		if meta != nil {
+			node.Title = nodeTitle(*meta, nodeKind(*meta))
+			node.Project = projectName(*meta)
+			node.Branch = meta.EnvInfo.GitBranch
+			node.CreatedAt = OrderCreatedAt(meta.CreatedAt, meta.UpdatedAt)
+			node.UpdatedAt = OrderUpdatedAt(meta.UpdatedAt, meta.CreatedAt)
+			node.Age = AgeString(node.UpdatedAt)
+		} else {
+			node.Title = ShortID(le.SessionID)
+			node.CreatedAt = le.StartedAt
+			node.UpdatedAt = le.StartedAt
+			node.Age = AgeString(le.StartedAt)
+		}
+		return node
+	}
+
 	// Group metas by canonical project identity while preserving each record's
 	// explicit parent lineage.
 	type projectAccum struct {
@@ -1561,14 +1586,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// needs a meta to resolve kind/title/project, and a session with none
 		// has no lineage to recurse into.
 		if !hasMeta {
-			node := liveFieldsFor(le.SessionID)
-			node.ID = le.SessionID
-			node.Kind = "session"
-			node.Title = ShortID(le.SessionID)
-			node.CreatedAt = le.StartedAt
-			node.UpdatedAt = le.StartedAt
-			node.Age = AgeString(le.StartedAt)
-			liveNodes = append(liveNodes, node)
+			liveNodes = append(liveNodes, liveSessionNode(le, nil))
 			continue
 		}
 		kind := nodeKind(metaValue)
@@ -1657,24 +1675,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		if !tierEligible(le.SessionID, roots, runningSubagentIDs, decisions) {
 			continue
 		}
-		node := liveFieldsFor(le.SessionID)
-		node.ID = le.SessionID
-		node.State = st
-		node.Kind = "session"
-		if meta != nil {
-			node.Title = nodeTitle(*meta, nodeKind(*meta))
-			node.Project = projectName(*meta)
-			node.Branch = meta.EnvInfo.GitBranch
-			node.CreatedAt = OrderCreatedAt(meta.CreatedAt, meta.UpdatedAt)
-			node.UpdatedAt = OrderUpdatedAt(meta.UpdatedAt, meta.CreatedAt)
-			node.Age = AgeString(node.UpdatedAt)
-		} else {
-			node.Title = ShortID(le.SessionID)
-			node.CreatedAt = le.StartedAt
-			node.UpdatedAt = le.StartedAt
-			node.Age = AgeString(le.StartedAt)
-		}
-		needsYou = append(needsYou, node)
+		needsYou = append(needsYou, liveSessionNode(le, meta))
 	}
 	// An age-archived live session still reaches Needs you (tierEligible clears
 	// only an explicit decision), so its row carries the archived fact too, and
