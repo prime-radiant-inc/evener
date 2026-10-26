@@ -12,15 +12,16 @@ const phasePattern = /^[A-Za-z -]{1,40}$/;
 const text = (value, pattern) => typeof value === 'string' && pattern.test(value) ? value : null;
 const flag = value => value === true;
 const count = value => Number.isSafeInteger(value) ? value : null;
+const shape = entry => ({length: count(entry?.length), startsWithRequested: flag(entry?.startsWithRequested), endsWithRequested: flag(entry?.endsWithRequested), containsRequested: flag(entry?.containsRequested)});
 const rpcMethod = value => value === 'evener/path/validate' ? value : null;
 const rpcEvent = value => value === 'sent' || value === 'response' ? value : null;
 
 function rpcEntry(entry) {
- return {method: rpcMethod(entry?.method), event: rpcEvent(entry?.event), call: count(entry?.call), timeMS: count(entry?.timeMS), elapsedMS: count(entry?.elapsedMS), valid: entry?.valid === undefined ? null : flag(entry.valid), error: entry?.error === undefined ? null : flag(entry.error), errorCode: count(entry?.errorCode), requested: flag(entry?.requested)};
+ return {method: rpcMethod(entry?.method), event: rpcEvent(entry?.event), call: count(entry?.call), timeMS: count(entry?.timeMS), elapsedMS: count(entry?.elapsedMS), valid: entry?.valid === undefined ? null : flag(entry.valid), error: entry?.error === undefined ? null : flag(entry.error), errorCode: count(entry?.errorCode), requested: flag(entry?.requested), ...shape(entry)};
 }
 
 function pickerEntry(entry) {
- return {stage: text(entry?.stage, stagePattern), timeMS: count(entry?.timeMS), prevented: flag(entry?.prevented), generation: count(entry?.generation), present: flag(entry?.present), inputMatches: flag(entry?.inputMatches), pending: flag(entry?.pending), edited: flag(entry?.edited), error: flag(entry?.error), confirmEnabled: flag(entry?.confirmEnabled)};
+ return {stage: text(entry?.stage, stagePattern), timeMS: count(entry?.timeMS), prevented: flag(entry?.prevented), generation: count(entry?.generation), present: flag(entry?.present), inputMatches: flag(entry?.inputMatches), inputFocused: flag(entry?.inputFocused), selectionLength: count(entry?.selectionLength), inputShape: shape(entry?.inputShape), pending: flag(entry?.pending), edited: flag(entry?.edited), error: flag(entry?.error), confirmEnabled: flag(entry?.confirmEnabled)};
 }
 
 export function sanitizeFailure(record) {
@@ -37,8 +38,8 @@ export function summarizeFailure(failure, tail = 12) {
  const origin = Math.min(...[...failure.rpc, ...failure.picker].map(e => e.timeMS).filter(Number.isFinite));
  const at = e => Number.isFinite(e.timeMS) ? `+${e.timeMS - origin}ms` : '+?';
  const events = [
-  ...failure.rpc.map(e => ({at: e.timeMS, line: `rpc ${at(e)} ${e.event} call=${e.call} requested=${+e.requested} valid=${e.valid === null ? '-' : +e.valid} error=${e.error === null ? '-' : +e.error} code=${e.errorCode ?? '-'} elapsed=${e.elapsedMS ?? '-'}`})),
-  ...failure.picker.map(e => ({at: e.timeMS, line: `picker ${at(e)} ${e.stage} gen=${e.generation} present=${+e.present} match=${+e.inputMatches} pending=${+e.pending} edited=${+e.edited} error=${+e.error} confirm=${+e.confirmEnabled} prevented=${+e.prevented}`})),
+  ...failure.rpc.map(e => ({at: e.timeMS, line: `rpc ${at(e)} ${e.event} call=${e.call} requested=${+e.requested} valid=${e.valid === null ? '-' : +e.valid} error=${e.error === null ? '-' : +e.error} code=${e.errorCode ?? '-'} len=${e.length ?? '-'} start=${+e.startsWithRequested} end=${+e.endsWithRequested} has=${+e.containsRequested} elapsed=${e.elapsedMS ?? '-'}`})),
+  ...failure.picker.map(e => ({at: e.timeMS, line: `picker ${at(e)} ${e.stage} gen=${e.generation} present=${+e.present} match=${+e.inputMatches} focus=${+e.inputFocused} sel=${e.selectionLength ?? '-'} len=${e.inputShape.length ?? '-'} start=${+e.inputShape.startsWithRequested} end=${+e.inputShape.endsWithRequested} has=${+e.inputShape.containsRequested} pending=${+e.pending} edited=${+e.edited} error=${+e.error} confirm=${+e.confirmEnabled} prevented=${+e.prevented}`})),
  ].sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
  return [...lines, ...events.slice(-tail).map(e => e.line)].join('\n');
 }

@@ -119,6 +119,12 @@ test('capture readiness requires every started session in the rail without a nev
  }
 });
 
+test('path shape relates a value to the requested path without storing it',()=>{
+ assert.deepEqual(web.pathShape('/home/x/tmp/owned',['/tmp/owned']),{length:17,startsWithRequested:false,endsWithRequested:true,containsRequested:true});
+ assert.deepEqual(web.pathShape('/tmp/owned',['/tmp/owned']),{length:10,startsWithRequested:true,endsWithRequested:true,containsRequested:true});
+ assert.deepEqual(web.pathShape(undefined,['/tmp/owned']),{length:null,startsWithRequested:false,endsWithRequested:false,containsRequested:false});
+});
+
 test('picker probe observes edited and confirmation state without storing input text',async()=>{
  const browser=await chromium.launch({headless:true});
  try {
@@ -133,6 +139,7 @@ test('picker probe observes edited and confirmation state without storing input 
   });
   const events=await page.evaluate(()=>window.__evenerDirectoryProbe.events);
   assert.ok(events.some(e=>e.inputMatches));
+  assert.ok(events.some(e=>e.inputShape.endsWithRequested&&e.inputShape.length==='/tmp/private-path-canary'.length));
   assert.ok(events.some(e=>e.stage==='before-Enter'));
   assert.ok(events.some(e=>e.stage==='after-Enter'));
   assert.ok(events.some(e=>e.confirmEnabled&&!e.pending));

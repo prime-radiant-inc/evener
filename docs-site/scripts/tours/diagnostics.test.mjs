@@ -12,10 +12,10 @@ const record = {
  stack: 'Error at /home/runner/private-canary',
  details: {
   rpc: [
-   {method: 'evener/path/validate', event: 'sent', call: 1, timeMS: 1000, requested: true, path: '/tmp/private-canary'},
+   {method: 'evener/path/validate', event: 'sent', call: 1, timeMS: 1000, requested: true, length: 30, endsWithRequested: true, containsRequested: true, path: '/tmp/private-canary'},
    {method: 'evener/path/validate', event: 'response', call: 1, timeMS: 1040, elapsedMS: 40, valid: true, error: false, errorCode: null, requested: true},
   ],
-  picker: [{stage: 'before-Enter', timeMS: 1010, prevented: false, generation: 1, present: true, inputMatches: true, pending: false, edited: true, error: false, confirmEnabled: false, value: '/tmp/private-canary'}],
+  picker: [{stage: 'before-Enter', timeMS: 1010, prevented: false, generation: 1, present: true, inputMatches: true, pending: false, edited: true, error: false, confirmEnabled: false, inputFocused: true, selectionLength: 0, inputShape: {length: 30, endsWithRequested: true, containsRequested: true, text: 'private-canary'}, value: '/tmp/private-canary'}],
  },
 };
 
@@ -24,6 +24,9 @@ test('sanitized failure keeps only allowlisted scalars of the trace and probe', 
  assert.equal(failure.phase, 'folder-confirm');
  assert.equal(failure.rpc.length, 2);
  assert.equal(failure.picker[0].confirmEnabled, false);
+ assert.equal(failure.picker[0].inputShape.length, 30);
+ assert.equal(failure.picker[0].inputShape.endsWithRequested, true);
+ assert.equal(failure.rpc[0].containsRequested, true);
  assert.equal(JSON.stringify(failure).includes('canary'), false);
  assert.equal(JSON.stringify(summarizeFailure(failure)).includes('canary'), false);
 });

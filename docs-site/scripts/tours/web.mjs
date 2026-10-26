@@ -13,13 +13,19 @@ export async function recordWebFailure(error, phase, details) {
  error.tourPhase=`${phase}; private diagnostics: ${file}`;
 }
 
+// Length and containment relations to the requested path, never the text.
+export function pathShape(value,requestedPaths) {
+ if(typeof value!=='string')return {length:null,startsWithRequested:false,endsWithRequested:false,containsRequested:false};
+ return {length:value.length,startsWithRequested:requestedPaths.some(p=>value.startsWith(p)),endsWithRequested:requestedPaths.some(p=>value.endsWith(p)),containsRequested:requestedPaths.some(p=>value.includes(p))};
+}
+
 export function pathValidationTrace(requestedPaths) {
  const events=[],pending=new Map();let sequence=0;
  const parse=payload=>{try{return JSON.parse(payload.toString());}catch{return {};}};
  return {events,
   sent(payload) {
    const frame=parse(payload);if(frame.method!=='evener/path/validate')return;
-   const event={method:frame.method,event:'sent',call:++sequence,timeMS:Date.now(),requested:requestedPaths.includes(frame.params?.path)};
+   const event={method:frame.method,event:'sent',call:++sequence,timeMS:Date.now(),requested:requestedPaths.includes(frame.params?.path),...pathShape(frame.params?.path,requestedPaths)};
    pending.set(frame.id,event);events.push(event);
   },
   received(payload) {
@@ -39,7 +45,8 @@ export function installDirectoryProbe(requestedPaths) {
   const dialog=input?.closest('[role="dialog"]');
   if(identity!==dialog){identity=dialog;generation++;}
   const button=[...(dialog?.querySelectorAll('button')??[])].find(b=>b.textContent.trim()==='Use this folder');
-  const state={generation,present:Boolean(dialog),inputMatches:requestedPaths.includes(input?.value),pending:dialog?.querySelector('[aria-label="Folders"]')?.getAttribute('aria-busy')==='true',edited:Boolean(dialog?.querySelector('[data-state="edited"]')),error:Boolean(dialog?.querySelector('[role="alert"]')),confirmEnabled:Boolean(button&&!button.disabled)};
+  const value=input?.value,shape=typeof value==='string'?{length:value.length,startsWithRequested:requestedPaths.some(p=>value.startsWith(p)),endsWithRequested:requestedPaths.some(p=>value.endsWith(p)),containsRequested:requestedPaths.some(p=>value.includes(p))}:{length:null,startsWithRequested:false,endsWithRequested:false,containsRequested:false};
+  const state={generation,present:Boolean(dialog),inputMatches:requestedPaths.includes(value),inputFocused:Boolean(input)&&document.activeElement===input,selectionLength:input?input.selectionEnd-input.selectionStart:null,inputShape:shape,pending:dialog?.querySelector('[aria-label="Folders"]')?.getAttribute('aria-busy')==='true',edited:Boolean(dialog?.querySelector('[data-state="edited"]')),error:Boolean(dialog?.querySelector('[role="alert"]')),confirmEnabled:Boolean(button&&!button.disabled)};
   const encoded=JSON.stringify(state);if(stage==='mutation'&&encoded===previous)return;previous=encoded;
   events.push({stage,timeMS:Date.now(),prevented,...state});if(events.length>100)events.shift();
  };
