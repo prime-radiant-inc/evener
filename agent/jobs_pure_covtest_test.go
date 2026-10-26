@@ -13,7 +13,7 @@ import (
 )
 
 // TestCovTerminalRecordPersistError covers terminalRecordPersistError.Error
-// and Unwrap (jobs.go lines 56-62).
+// and Unwrap.
 func TestCovTerminalRecordPersistError(t *testing.T) {
 	t.Parallel()
 	inner := errors.New("disk full")
@@ -26,7 +26,7 @@ func TestCovTerminalRecordPersistError(t *testing.T) {
 	}
 }
 
-// TestCovJobsDir covers jobsDir (jobs.go lines 534-539).
+// TestCovJobsDir covers jobsDir.
 func TestCovJobsDir(t *testing.T) {
 	t.Parallel()
 	got := jobsDir("/state", "SESS")
@@ -44,8 +44,7 @@ func TestCovJobsDir(t *testing.T) {
 	}
 }
 
-// TestCovKeepListedJobRow exercises all filter branches of keepListedJobRow
-// (jobs.go lines 991-1007).
+// TestCovKeepListedJobRow exercises all filter branches of keepListedJobRow.
 func TestCovKeepListedJobRow(t *testing.T) {
 	t.Parallel()
 	sessionID := "sess1"
@@ -110,7 +109,7 @@ func TestCovKeepListedJobRow(t *testing.T) {
 	}
 }
 
-// TestCovStatusAllowed covers statusAllowed (jobs.go lines 1010-1012).
+// TestCovStatusAllowed covers statusAllowed.
 func TestCovStatusAllowed(t *testing.T) {
 	t.Parallel()
 	allowed := []jobstore.Status{jobstore.StatusRunning, jobstore.StatusCompleted}
@@ -122,7 +121,7 @@ func TestCovStatusAllowed(t *testing.T) {
 	}
 }
 
-// TestCovTypeAllowed covers typeAllowed (jobs.go lines 1014-1016).
+// TestCovTypeAllowed covers typeAllowed.
 func TestCovTypeAllowed(t *testing.T) {
 	t.Parallel()
 	allowed := []jobstore.JobType{jobstore.JobShell}
@@ -135,7 +134,7 @@ func TestCovTypeAllowed(t *testing.T) {
 	}
 }
 
-// TestCovOutputPathForJob covers outputPathForJob (jobs.go lines 1436-1441).
+// TestCovOutputPathForJob covers outputPathForJob.
 func TestCovOutputPathForJob(t *testing.T) {
 	t.Parallel()
 	jm := &jobManager{dir: "/test"}
@@ -157,8 +156,7 @@ func TestCovOutputPathForJob(t *testing.T) {
 	}
 }
 
-// TestCovNoteJobActivity_NilAndEmpty covers noteJobActivity nil/empty guards
-// (jobs.go lines 380-395).
+// TestCovNoteJobActivity_NilAndEmpty covers noteJobActivity nil/empty guards.
 func TestCovNoteJobActivity_NilAndEmpty(t *testing.T) {
 	t.Parallel()
 	var jm *jobManager
@@ -193,7 +191,7 @@ func TestCovNoteJobActivity_NilAndEmpty(t *testing.T) {
 	}
 }
 
-// TestCovJobListFilterFromArgs covers jobListFilterFromArgs (session_tools_jobs.go lines 1664-1698).
+// TestCovJobListFilterFromArgs covers jobListFilterFromArgs.
 func TestCovJobListFilterFromArgs(t *testing.T) {
 	t.Parallel()
 	// Default filter.
@@ -242,7 +240,7 @@ func TestCovJobListFilterFromArgs(t *testing.T) {
 	}
 }
 
-// TestCovJobListItemActivity covers jobListItemActivity (session_tools_jobs.go lines 720-736).
+// TestCovJobListItemActivity covers jobListItemActivity.
 func TestCovJobListItemActivity(t *testing.T) {
 	t.Parallel()
 	// LatestActivitySortAt set — returned directly.
@@ -300,8 +298,7 @@ func TestCovJobListItemActivity(t *testing.T) {
 	}
 }
 
-// TestCovStableJobListItemMatches covers stableJobListItemMatches
-// (session_tools_jobs.go lines 702-718).
+// TestCovStableJobListItemMatches covers stableJobListItemMatches.
 func TestCovStableJobListItemMatches(t *testing.T) {
 	t.Parallel()
 	item := jobListEntry{Status: "running", Type: "shell"}
@@ -353,7 +350,7 @@ func TestCovStableJobListItemMatches(t *testing.T) {
 	}
 }
 
-// TestCovFormatJobWatchList covers formatJobWatchList (session_tools_jobs.go lines 1590-1613).
+// TestCovFormatJobWatchList covers formatJobWatchList.
 func TestCovFormatJobWatchList(t *testing.T) {
 	t.Parallel()
 	// Empty watches.
@@ -377,8 +374,7 @@ func TestCovFormatJobWatchList(t *testing.T) {
 	}
 }
 
-// TestCovFormatJobWatchEventFilter covers formatJobWatchEventFilter
-// (session_tools_jobs.go lines 1573-1588).
+// TestCovFormatJobWatchEventFilter covers formatJobWatchEventFilter.
 func TestCovFormatJobWatchEventFilter(t *testing.T) {
 	t.Parallel()
 	// Nil filter.
@@ -410,7 +406,7 @@ func TestCovFormatJobWatchEventFilter(t *testing.T) {
 	}
 }
 
-// TestCovFormatJobStop covers formatJobStop (session_tools_jobs.go lines 1208-1248).
+// TestCovFormatJobStop covers formatJobStop.
 func TestCovFormatJobStop(t *testing.T) {
 	t.Parallel()
 	// Shell job.
