@@ -91,6 +91,13 @@ export class DraftLibrary {
 			this.deferHandoff(from, to);
 			return false;
 		}
+		// Establish the chain dependency before any early return. A predecessor
+		// that is not redirected here retries first while this edge is deferred,
+		// moving its draft into the retired intermediate identity.
+		if (!this.redirectPredecessors(from, to)) {
+			this.deferHandoff(from, to);
+			return false;
+		}
 		let snapshot = source.getSnapshot();
 		if (!snapshot.loaded) {
 			source.retry();
@@ -112,14 +119,6 @@ export class DraftLibrary {
 			this.deferHandoff(from, to);
 			return false;
 		}
-		// An intermediate identity can resolve again before its predecessor's
-		// handoff retries. Keep this edge pending until every predecessor's
-		// redirect is durable in both stores, or a restart can replay the old
-		// mapping into the retired ref.
-		if (!this.redirectPredecessors(from, to)) {
-			this.deferHandoff(from, to);
-			return false;
-		}
 		const existing = current.record;
 		if (
 			existing.draft !== "" ||
@@ -137,6 +136,14 @@ export class DraftLibrary {
 			existing.completedCommandRecoveryIds?.length ||
 			existing.releasedRecoveryIds?.length
 		) {
+			// A built-in command still submitting writes its completion marker
+			// when it finishes. Finalizing the refusal now would copy only the
+			// markers already on the source and leave the late one stranded for
+			// the destination to restore and run again.
+			if (source.getSnapshot().submitting) {
+				this.deferHandoff(from, to);
+				return false;
+			}
 			// Existing destination work is a permanent refusal, never a retry.
 			if (this.releaseRefusedSources(source, destination)) this.clearPending(from, to);
 			else this.deferHandoff(from, to);
@@ -223,10 +230,25 @@ export class DraftLibrary {
 	private deferHandoff(from: DraftDestination, to: DraftDestination): void {
 		const key = this.handoffKey(from, to);
 		const existing = this.pending.get(key);
+		let rank = existing?.rank;
+		if (rank === undefined) {
+			// Order a new edge against the edges already loaded. An edge whose
+			// source is this destination is downstream and settles first; an edge
+			// pointing at this source must settle after it.
+			let downstream = Number.POSITIVE_INFINITY;
+			let predecessor = Number.NEGATIVE_INFINITY;
+			for (const edge of this.pending.values()) {
+				if (sameDestination(edge.from, to)) downstream = Math.min(downstream, edge.rank);
+				if (sameDestination(edge.to, from)) predecessor = Math.max(predecessor, edge.rank);
+			}
+			if (downstream !== Number.POSITIVE_INFINITY) rank = downstream + 1;
+			else if (predecessor !== Number.NEGATIVE_INFINITY) rank = predecessor - 1;
+			else rank = 0;
+		}
 		this.pending.set(key, {
 			from,
 			to,
-			rank: existing?.rank ?? 0,
+			rank,
 			...(existing?.dependsOn === undefined ? {} : { dependsOn: [...existing.dependsOn] }),
 		});
 		try {
@@ -240,28 +262,45 @@ export class DraftLibrary {
 	private clearPending(from: DraftDestination, to: DraftDestination): void {
 		const key = this.handoffKey(from, to);
 		this.pending.delete(key);
-		let cleanupFailed = false;
-		try {
-			this.repository().markPendingHandoffSettled?.(from, to);
-		} catch {
-			cleanupFailed = true;
-		}
-		let identitiesSettled = true;
+		// The mutations database is a second durable settlement store. It alone
+		// must keep a restart from retrying the transfer when the drafts database
+		// rejects every write.
+		let ledgerSettled = false;
 		try {
 			this.resumeIdentities?.()?.settleResumeIdentity(from, to);
+			ledgerSettled = true;
 		} catch {
-			identitiesSettled = false;
-			cleanupFailed = true;
+			// The drafts database can still record the settlement below.
 		}
-		if (identitiesSettled) {
+		let draftsSettled = false;
+		try {
+			this.repository().markPendingHandoffSettled?.(from, to);
+			draftsSettled = true;
+		} catch {
+			// Retried by retryStaleCleanup while the mutations marker stays put.
+		}
+		// The drafts settlement is the only marker left when the ledger still
+		// has to be cleaned; keep it until the ledger side committed.
+		let draftsCleared = false;
+		if (ledgerSettled && draftsSettled) {
 			try {
 				this.repository().removeSettledHandoff?.(from, to);
+				draftsCleared = true;
 			} catch {
-				cleanupFailed = true;
+				// retryStaleCleanup clears both markers.
 			}
 		}
-		if (cleanupFailed) this.stale.set(key, { from, to });
-		else this.stale.delete(key);
+		let ledgerCleared = false;
+		if (draftsCleared) {
+			try {
+				this.resumeIdentities?.()?.removeResumeIdentitySettlement?.(from, to);
+				ledgerCleared = true;
+			} catch {
+				// The marker is harmless; the next load retries the cleanup.
+			}
+		}
+		if (ledgerSettled && draftsCleared && ledgerCleared) this.stale.delete(key);
+		else this.stale.set(key, { from, to });
 	}
 
 	private retryStaleCleanup(): void {
@@ -278,6 +317,13 @@ export class DraftLibrary {
 				storage.markPendingHandoffSettled?.(edge.from, edge.to);
 				if (storage.removeSettledHandoff) storage.removeSettledHandoff(edge.from, edge.to);
 				else if (!this.pendingTo(edge.to)) storage.removePendingHandoff?.(edge.to);
+			} catch {
+				cleaned = false;
+			}
+			// Drop the mutations marker only after the drafts mapping is gone, or
+			// a restart would reconstruct the transfer from the leftover row.
+			try {
+				this.resumeIdentities?.()?.removeResumeIdentitySettlement?.(edge.from, edge.to);
 			} catch {
 				cleaned = false;
 			}
@@ -311,7 +357,14 @@ export class DraftLibrary {
 			loaded = false;
 		}
 		try {
-			for (const edge of this.resumeIdentities?.()?.readResumeIdentities() ?? []) {
+			const ledger = this.resumeIdentities?.();
+			for (const edge of ledger?.readSettledResumeIdentities?.() ?? []) {
+				const key = this.handoffKey(edge.from, edge.to);
+				settledKeys.add(key);
+				settledSources.add(destinationKey(edge.from));
+				if (!this.stale.has(key)) this.stale.set(key, edge);
+			}
+			for (const edge of ledger?.readResumeIdentities() ?? []) {
 				if (settledKeys.has(this.handoffKey(edge.from, edge.to))) continue;
 				// A settled edge retires its source: edges pointing at that source
 				// are provenance and must not become standalone transfers.
@@ -321,6 +374,13 @@ export class DraftLibrary {
 		} catch {
 			// The mutations database is failing too; a later open looks again.
 			loaded = false;
+		}
+		// A settlement the drafts store did not know about still retires its
+		// edge and every provenance edge pointing at its source.
+		for (let index = raw.length - 1; index >= 0; index--) {
+			const edge = raw[index];
+			if (settledKeys.has(this.handoffKey(edge.from, edge.to)) || settledSources.has(destinationKey(edge.to)))
+				raw.splice(index, 1);
 		}
 		// A partial load may have added a ledger edge before the drafts store
 		// revealed its settled marker. Settlement wins: never keep a transfer.
@@ -498,6 +558,13 @@ export class DraftLibrary {
 				storage.markPendingHandoffSettled?.(edge.from, edge.to);
 				if (storage.removeSettledHandoff) storage.removeSettledHandoff(edge.from, edge.to);
 				else if (!this.pendingTo(edge.to)) storage.removePendingHandoff?.(edge.to);
+			} catch {
+				cleaned = false;
+			}
+			// Keep the mutations settlement marker until the drafts mapping is
+			// removed, so a restart cannot replay the settled edge.
+			try {
+				this.resumeIdentities?.()?.removeResumeIdentitySettlement?.(edge.from, edge.to);
 			} catch {
 				cleaned = false;
 			}
