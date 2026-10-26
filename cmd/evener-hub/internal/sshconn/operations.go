@@ -162,20 +162,9 @@ func (m *Manager) deployForOperationWithSupersession(ctx context.Context, host h
 	if err != nil {
 		return "", facts, err
 	}
-	m.acknowledgeDeployment(host.Name)
-	if target != "" {
-		host.EvenerPath = target
-		m.setResolvedTarget(host.Name, target)
-	}
-	after, err := m.reReadLaunchContract(deployCtx, host, facts)
+	after, err := m.completeDeployLeg(deployCtx, &host, facts, target, intent.expectedVersion, intent.restart)
 	if err != nil {
 		return "", facts, err
-	}
-	if err := m.deployedBuildNotStamped(host.Name, after, intent.expectedVersion); err != nil {
-		return "", facts, err
-	}
-	if !intent.restart {
-		m.clearPendingRestart(host.Name)
 	}
 	return target, after, nil
 }
@@ -334,21 +323,13 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 			result.ReplacedStartedAt = running.startedAt
 		}
 		previous := pending
-		pending, err = m.prepareSelectedRestart(restartCtx, host, facts, owner, version, pin)
+		pending, err = m.prepareAndStoreRestart(restartCtx, host, facts, owner, version, pin, previous.restartPredecessor(running), binding)
 		if err != nil {
 			return result, err
 		}
-		pending.binding = binding
-		pending.replaced = previous.restartPredecessor(running)
-		pending.start = owner.report.State == "stopped"
 		started = pending.start
-		m.mu.Lock()
-		m.pendingRestarts[host.Name] = pending
-		m.mu.Unlock()
 		if err = m.checkEffectBinding(binding); err != nil {
-			m.mu.Lock()
-			m.pendingRestarts[host.Name] = previous
-			m.mu.Unlock()
+			m.storePendingRestart(host.Name, previous)
 			return result, err
 		}
 		err = m.restartPreparedSelectedPending(restartCtx, host, facts, &pending, owner.pid != "0", previous)
@@ -361,9 +342,7 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 		actual, known := identityFromReport(final.report)
 		if finalErr != nil || !known || actual.startedAt.IsZero() || !selectedSuccessor(final, *pending.selected, pending.nextEnv, version, pin) {
 			pending.start, pending.deployment = true, false
-			m.mu.Lock()
-			m.pendingRestarts[host.Name] = pending
-			m.mu.Unlock()
+			m.storePendingRestart(host.Name, pending)
 			return result, fmt.Errorf("%w: host %q startup identity could not be verified", ErrRestart, host.Name)
 		}
 		result.StartedAt = actual.startedAt

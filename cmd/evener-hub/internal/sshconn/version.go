@@ -317,18 +317,13 @@ func (m *Manager) restartHubWithStartProof(ctx context.Context, host hostreg.Hos
 	if err != nil {
 		return false, fmt.Errorf("%w: %w", ErrRestart, err)
 	}
-	pending, err = m.prepareSelectedRestart(ctx, host, facts, owner, expectVersion, expectPin)
-	if err != nil {
-		return false, err
-	}
 	if replaced.startedAt.IsZero() {
 		replaced, _ = identityFromReport(owner.report)
 	}
-	pending.replaced, pending.binding = replaced, binding
-	pending.start = owner.report.State == "stopped"
-	m.mu.Lock()
-	m.pendingRestarts[host.Name] = pending
-	m.mu.Unlock()
+	pending, err = m.prepareAndStoreRestart(ctx, host, facts, owner, expectVersion, expectPin, replaced, binding)
+	if err != nil {
+		return false, err
+	}
 	return pending.start, m.restartPreparedSelectedPending(ctx, host, facts, &pending, owner.pid != "0", previous)
 }
 
@@ -944,6 +939,20 @@ func firstLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// prepareAndStoreRestart prepares the selected owner's restart and records it as
+// the host's pending intent, naming the predecessor it must replace and the entry
+// binding that authorizes it.
+func (m *Manager) prepareAndStoreRestart(ctx context.Context, host hostreg.Host, facts Preflight, owner selectedOwner, version, pin string, replaced hubIdentity, binding *effectBinding) (pendingRestartState, error) {
+	pending, err := m.prepareSelectedRestart(ctx, host, facts, owner, version, pin)
+	if err != nil {
+		return pendingRestartState{}, err
+	}
+	pending.replaced, pending.binding = replaced, binding
+	pending.start = owner.report.State == "stopped"
+	m.storePendingRestart(host.Name, pending)
+	return pending, nil
+}
+
 func (m *Manager) restartSelectedPending(ctx context.Context, host hostreg.Host, facts Preflight, pending *pendingRestartState, predecessorLive bool) error {
 	return m.dispatchSelectedRestart(ctx, host, facts, pending, predecessorLive, nil)
 }
@@ -954,9 +963,7 @@ func (m *Manager) restartPreparedSelectedPending(ctx context.Context, host hostr
 	dispatched := false
 	err := m.dispatchSelectedRestart(ctx, host, facts, pending, predecessorLive, func() { dispatched = true })
 	if err != nil && !dispatched {
-		m.mu.Lock()
-		m.pendingRestarts[host.Name] = previous
-		m.mu.Unlock()
+		m.storePendingRestart(host.Name, previous)
 	}
 	return err
 }
@@ -1000,9 +1007,7 @@ func (m *Manager) dispatchSelectedRestart(ctx context.Context, host hostreg.Host
 	if pending.command == "" {
 		pending.command = selectedRelaunch(*pending.selected)
 	}
-	m.mu.Lock()
-	m.pendingRestarts[host.Name] = *pending
-	m.mu.Unlock()
+	m.storePendingRestart(host.Name, *pending)
 	owner := *pending.selected
 	if owner.supervisor.kind == supervisorLaunchd && facts.UID != owner.domainUID {
 		return fmt.Errorf("%w: selected launchd domain changed", errOwnerEvidence)
