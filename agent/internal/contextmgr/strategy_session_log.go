@@ -3,7 +3,6 @@ package contextmgr
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -28,7 +27,7 @@ type SessionLogStrategy struct {
 // Manager and host. The session log is persisted alongside the
 // session snapshot.
 func NewSessionLogStrategy(cm *Manager, host Host) (*SessionLogStrategy, error) {
-	logPath := filepath.Join(host.StateDir(), "sessions", host.ID()+".log.jsonl")
+	logPath := schema.SessionLogPath(host.StateDir(), host.ID())
 	log, err := sessionlog.NewSessionLog(logPath)
 	if err != nil {
 		return nil, fmt.Errorf("session log strategy: %w", err)

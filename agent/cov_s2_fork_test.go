@@ -19,7 +19,7 @@ import (
 // transcript.Writer would never emit.
 func s2cov_writeRawTranscript(t *testing.T, stateDir, id string, headerLine string, lines []string) {
 	t.Helper()
-	dir := filepath.Join(stateDir, sessionsSubdir)
+	dir := schema.SessionsDir(stateDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestS2Cov_ForkSession_EmptyTranscript(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	id := "01PARENTEMPTY000000000001"
-	dir := filepath.Join(stateDir, sessionsSubdir)
+	dir := schema.SessionsDir(stateDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

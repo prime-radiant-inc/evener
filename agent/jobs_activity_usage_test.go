@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -25,7 +24,7 @@ func TestLoadHistoricalActivityBaseReadsUsage(t *testing.T) {
 	writeOneHistoricalJob(t, stateDir, sessionID)
 
 	tw, err := transcript.NewWriter(
-		filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl"),
+		schema.SessionTranscriptPath(stateDir, sessionID),
 		transcript.Header{
 			SessionID: sessionID,
 			Model:     "gpt-5.2",
@@ -62,7 +61,7 @@ func TestLoadHistoricalActivityBaseReadsUsageWithoutJobsFile(t *testing.T) {
 	savePastActivityMeta(t, stateDir, sessionID, "No jobs")
 
 	tw, err := transcript.NewWriter(
-		filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl"),
+		schema.SessionTranscriptPath(stateDir, sessionID),
 		transcript.Header{
 			SessionID: sessionID,
 			Model:     "gpt-5.2",
@@ -101,7 +100,7 @@ func TestLoadHistoricalActivityBaseUsageNilWithoutTokenData(t *testing.T) {
 	writeOneHistoricalJob(t, stateDir, sessionID)
 
 	tw, err := transcript.NewWriter(
-		filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl"),
+		schema.SessionTranscriptPath(stateDir, sessionID),
 		transcript.Header{
 			SessionID: sessionID,
 			Model:     "gpt-5.2",
