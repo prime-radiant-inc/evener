@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -860,5 +861,77 @@ func TestLoadPlugin_MCPConfigWarn_MalformedInlineJSON(t *testing.T) {
 	}
 	if !strings.Contains(lp.MCPConfigWarnings[0], "badinline") {
 		t.Errorf("warning %q must name the plugin", lp.MCPConfigWarnings[0])
+	}
+}
+
+// A malformed or unreadable command or agent file costs only that file: the
+// plugin's healthy commands, agents and skills keep loading, and each skipped
+// file is reported by kind and path.
+func TestLoad_SkipsAMalformedComponentFileAndKeepsTheRest(t *testing.T) {
+	dir := makePluginDir(t, "partial")
+	writeAgentFile(t, dir, "commands", "good.md", "---\ndescription: works\n---\nrun the good thing\n")
+	writeAgentFile(t, dir, "commands", "bad.md", "---\n: : not valid yaml :\n---\nbody\n")
+	writeAgentFile(t, dir, "agents", "helper.md", "---\nname: helper\ndescription: helps\n---\nbody\n")
+	writeAgentFile(t, dir, "agents", "broken.md", "no frontmatter, so no required fields\n")
+
+	lp, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load must skip a malformed component file, not fail the plugin: %v", err)
+	}
+
+	cmd, err := ResolveCommand(lp.Commands, "partial:good")
+	if err != nil {
+		t.Fatalf("healthy command did not load: %v", err)
+	}
+	if cmd.Body == "" {
+		t.Fatal("healthy command loaded without its body")
+	}
+	if _, err := ResolveCommand(lp.Commands, "partial:bad"); !errors.Is(err, ErrCommandNotFound) {
+		t.Fatalf("malformed command resolved: err = %v", err)
+	}
+	if _, ok := lp.Agents["partial:helper"]; !ok {
+		t.Fatalf("healthy agent did not load: %v", keys(lp.Agents))
+	}
+	if len(lp.Agents) != 1 || len(lp.Commands) != 1 {
+		t.Fatalf("loaded %d agents and %d commands, want only the healthy ones", len(lp.Agents), len(lp.Commands))
+	}
+
+	skipped := map[string]string{}
+	for _, s := range lp.SkippedComponents {
+		skipped[s.Kind+":"+filepath.Base(s.File)] = s.Reason
+	}
+	for _, want := range []string{"command:bad.md", "agent:broken.md"} {
+		if skipped[want] == "" {
+			t.Errorf("SkippedComponents missing %s: %v", want, lp.SkippedComponents)
+		}
+	}
+	if len(skipped) != 2 {
+		t.Errorf("SkippedComponents = %v, want exactly the two bad files", lp.SkippedComponents)
+	}
+}
+
+func TestLoad_SkipsAnUnreadableCommandFileAndKeepsTheRest(t *testing.T) {
+	dir := makePluginDir(t, "unreadable")
+	writeAgentFile(t, dir, "commands", "good.md", "run it\n")
+	writeAgentFile(t, dir, "commands", "locked.md", "never read\n")
+
+	orig := pluginReadFile
+	pluginReadFile = func(path string) ([]byte, error) {
+		if filepath.Base(path) == "locked.md" {
+			return nil, os.ErrPermission
+		}
+		return orig(path)
+	}
+	t.Cleanup(func() { pluginReadFile = orig })
+
+	lp, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load must skip an unreadable command file: %v", err)
+	}
+	if _, err := ResolveCommand(lp.Commands, "unreadable:good"); err != nil {
+		t.Fatalf("healthy command did not load: %v", err)
+	}
+	if len(lp.SkippedComponents) != 1 || filepath.Base(lp.SkippedComponents[0].File) != "locked.md" {
+		t.Fatalf("SkippedComponents = %v, want the unreadable file", lp.SkippedComponents)
 	}
 }

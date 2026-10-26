@@ -1983,6 +1983,14 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 			allAgents[exposedAgentCatalogKey(p, rawKey, agent)] = agent
 		}
 		s.pendingHookWarnings = append(s.pendingHookWarnings, commandUnenforcedFieldWarnings(p)...)
+		for _, skipped := range p.SkippedComponents {
+			s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
+				Source:     "plugin",
+				Title:      "plugin " + skipped.Kind + " skipped",
+				Message:    skipped.File + ": " + skipped.Reason,
+				PluginName: p.Manifest.Name,
+			})
+		}
 		for event, eventHooks := range p.Hooks {
 			runner.Add(event, eventHooks...)
 		}

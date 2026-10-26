@@ -60,7 +60,7 @@ func TestDiscoverPluginAgents_Override(t *testing.T) {
 		dir := t.TempDir()
 		writeAgentFile(t, dir, "extra", "other.md", "---\nname: other\ndescription: d\n---\nx\n")
 		override, _ := json.Marshal([]string{"extra"})
-		agents, err := discoverPluginAgents(dir, override, "p")
+		agents, _, err := discoverPluginAgents(dir, override, "p")
 		if err != nil {
 			t.Fatalf("discoverPluginAgents: %v", err)
 		}
@@ -75,7 +75,7 @@ func TestDiscoverPluginAgents_Override(t *testing.T) {
 		dir := t.TempDir()
 		writeAgentFile(t, dir, "agents", "browser-user.md", "---\nname: browser-user\ndescription: d\ntools: Read, Grep\n---\nx\n")
 		override, _ := json.Marshal([]string{"./agents/browser-user.md"})
-		agents, err := discoverPluginAgents(dir, override, "p")
+		agents, _, err := discoverPluginAgents(dir, override, "p")
 		if err != nil {
 			t.Fatalf("discoverPluginAgents: %v", err)
 		}
@@ -85,7 +85,7 @@ func TestDiscoverPluginAgents_Override(t *testing.T) {
 	})
 
 	t.Run("malformed override errors", func(t *testing.T) {
-		if _, err := discoverPluginAgents(t.TempDir(), json.RawMessage(`{bad`), "p"); err == nil {
+		if _, _, err := discoverPluginAgents(t.TempDir(), json.RawMessage(`{bad`), "p"); err == nil {
 			t.Fatal("err = nil, want an agents-override parse error")
 		}
 	})
@@ -103,7 +103,7 @@ func TestDiscoverPluginCommands_FileOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	override, _ := json.Marshal([]string{"./extra/solo.md"})
-	commands, err := discoverPluginCommands(dir, override, "p")
+	commands, _, err := discoverPluginCommands(dir, override, "p")
 	if err != nil {
 		t.Fatalf("discoverPluginCommands: %v", err)
 	}
