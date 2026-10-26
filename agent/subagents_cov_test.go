@@ -1,8 +1,6 @@
 package agent
 
 import (
-	"context"
-	"strings"
 	"testing"
 )
 
@@ -113,16 +111,5 @@ func TestMarkSalvagedTurnPersistedAndHasSalvageFromFinalRound(t *testing.T) {
 	s.mu.Unlock()
 	if s.hasSalvageFromFinalRound() {
 		t.Fatal("should not have salvage from final round after advancing rounds")
-	}
-}
-
-// TestSendInputUnknownAgent covers sendInput's unknown-agent error path
-// (subagents.go:1142-1144).
-func TestSendInputUnknownAgent(t *testing.T) {
-	t.Parallel()
-	s := newTestSession(t)
-	_, err := s.sendInput(context.Background(), "unknown_id", "hello")
-	if err == nil || !strings.Contains(err.Error(), "unknown agent_id") {
-		t.Fatalf("err = %v, want unknown agent_id", err)
 	}
 }

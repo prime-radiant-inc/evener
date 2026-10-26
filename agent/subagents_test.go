@@ -491,32 +491,6 @@ func TestCancelAgent_JoinedCanceledAndExhaustionStaysCancelledWithJoinedError(t 
 	}
 }
 
-// TestCancelAgent_NotRunning asserts cancelling an idle/terminal child returns the
-// "is not running" error rather than fabricating a cancelled outcome.
-func TestCancelAgent_NotRunning(t *testing.T) {
-	t.Parallel()
-	sess := newTestSession(t)
-	// The child's sess is a distinct session (as in production), so the parent's
-	// teardown closes a different session rather than re-entering its own Close.
-	sub := &subagent{
-		id:      "01IDLE",
-		sess:    newTestSession(t),
-		running: false,
-		status:  SubagentCompleted,
-		done:    make(chan struct{}),
-	}
-	close(sub.done)
-	sess.subagents.track(sub)
-
-	_, err := sess.cancelAgent("01IDLE")
-	if err == nil {
-		t.Fatal("cancelAgent on idle child must error")
-	}
-	if !strings.Contains(err.Error(), "is not running") {
-		t.Fatalf("error = %q, want it to contain \"is not running\"", err.Error())
-	}
-}
-
 // resumeBlockAdapter is a two-step adapter used by TestSubagentTimestamps_ResetOnResume.
 // Step 0 (first run): completes immediately.
 // Step 1 (resumed run): closes started to signal the test that the run is in-flight,

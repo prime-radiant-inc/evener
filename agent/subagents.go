@@ -1151,12 +1151,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	// session and any unadopted fresh environment before returning.
 	// On success, GC-evicted records are closed here, OUTSIDE the manager mutex.
 	if !preparedEnv.stableController {
-		var evicted []*subagent
-		if reserve := s.cfg.testOnly.subagentReserveSlot; reserve != nil {
-			evicted, err = reserve(s)
-		} else {
-			evicted, err = s.subagents.reserveSlot()
-		}
+		evicted, err := s.subagents.reserveSlot()
 		if err != nil {
 			disposeUnadopted()
 			return nil, err
@@ -1175,11 +1170,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	var treeSlot *treeReservation
 	var ok bool
 	if !preparedEnv.stableController {
-		if reserve := s.cfg.testOnly.subagentReserveTreeSlot; reserve != nil {
-			treeSlot, ok = reserve(s)
-		} else {
-			treeSlot, ok = s.reserveTreeSlot(slotKindJob)
-		}
+		treeSlot, ok = s.reserveTreeSlot(slotKindJob)
 		if !ok {
 			disposeUnadopted()
 			return nil, s.treeCapacityErrorFor()
@@ -1355,57 +1346,6 @@ func (s *Session) hasSalvageFromFinalRound() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.salvagedTurnRound != 0 && s.salvagedTurnRound == s.totalRounds
-}
-
-func (s *Session) sendInput(ctx context.Context, agentID string, input string) (any, error) {
-	_ = ctx
-	sub := s.getSub(agentID)
-	if sub == nil {
-		return "", fmt.Errorf("unknown agent_id: %s", agentID)
-	}
-	if _, err := s.startOrSteerSubagentRun(sub, input); err != nil {
-		return "", err
-	}
-	return "ok", nil
-}
-
-func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, error) {
-	sub.mu.Lock()
-	if sub.finalizing || (sub.fatalRunGated && (sub.running || sub.driving)) {
-		sub.mu.Unlock()
-		return false, fmt.Errorf("target_busy: delegate %q is completing its current run; retry", sub.id)
-	}
-	if sub.running || sub.driving {
-		subSess := sub.sess
-		sub.mu.Unlock()
-		// Inject as steering message into the in-flight session. A mid-drive child
-		// (sub.driving) is in flight just like a running one: the drive turn absorbs
-		// the steered input at its tool-round boundary (spec §3, A7 steer-into-drive)
-		// rather than launching a second concurrent run.
-		return false, subSess.SteerKind(input, events.SteeringKindAgentMessage)
-	}
-
-	// Agent is idle — start a new ProcessInput round. Enroll the resumed run in
-	// sendersWG under s.mu (gated on closing) so it joins the same teardown
-	// barrier as the initial spawn.
-	runCtx, runCancel := context.WithCancel(context.Background())
-	resumeTime := s.sclock().Now()
-	s.mu.Lock()
-	if s.closingOrClosedLocked() {
-		s.mu.Unlock()
-		sub.mu.Unlock()
-		runCancel()
-		return false, errors.New("session is closed")
-	}
-	s.sendersWG.Add(1)
-	s.mu.Unlock()
-
-	sub.fatalRunGated = false
-	resetSubagentForRunLocked(sub, runCancel, resumeTime)
-	sub.mu.Unlock()
-
-	s.launchSubagentRun(runCtx, sub, runCancel, input, s.activeCausalProvenance())
-	return true, nil
 }
 
 // trySetDisposeGate arms the dispose gate on a quiescent retained child, but only
@@ -1648,28 +1588,6 @@ func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCa
 		defer runCancel()
 		sub.run(runCtx, input, inputProvenance)
 	}()
-}
-
-func (s *Session) cancelAgent(agentID string) (any, error) {
-	sub := s.getSub(agentID)
-	if sub == nil {
-		return "", fmt.Errorf("unknown agent_id: %s", agentID)
-	}
-	done, err := sub.requestRunCancel(false)
-	if err != nil {
-		return "", fmt.Errorf("agent %s is %w", agentID, err)
-	}
-	select {
-	case <-done:
-	case <-s.sclock().After(5 * time.Second):
-		return "", fmt.Errorf("timed out cancelling subagent %s", agentID)
-	}
-	sub.mu.Lock()
-	result := sub.resultSnapshotLocked()
-	sub.resultConsumed = true
-	sub.mu.Unlock()
-	b, _ := json.Marshal(result)
-	return string(b), nil
 }
 
 func (s *Session) getSub(agentID string) *subagent {

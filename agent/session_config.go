@@ -438,10 +438,6 @@ type testConfig struct {
 	// filesystem reads for this session. Nil preserves the production paths.
 	delegateRestoreStat     func(string) (os.FileInfo, error)
 	delegateRestoreReadFile func(string) ([]byte, error)
-	// subagentReserveSlot replaces only the retained-terminal reservation boundary.
-	subagentReserveSlot func(*Session) ([]*subagent, error)
-	// subagentReserveTreeSlot replaces only the tree-capacity reservation boundary.
-	subagentReserveTreeSlot func(*Session) (*treeReservation, bool)
 	// subagentStopGated overrides child stop-gating when handled is true.
 	subagentStopGated func(*Session, string) (stopped, handled bool)
 	// subagentRunIteration observes each production subagent input iteration.
