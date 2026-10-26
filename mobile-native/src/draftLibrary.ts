@@ -320,6 +320,7 @@ export class DraftLibrary {
 			} catch {
 				cleaned = false;
 			}
+			if (!cleaned) continue;
 			// Drop the mutations marker only after the drafts mapping is gone, or
 			// a restart would reconstruct the transfer from the leftover row.
 			try {
@@ -482,6 +483,23 @@ export class DraftLibrary {
 				...(dependsOn.length ? { dependsOn } : {}),
 			});
 		}
+		// A rejected redirect leaves the mapping an earlier partial read loaded
+		// in pending. It must carry the recovered chain's rank and dependencies,
+		// or it settles ahead of the intermediate edge the redirect still owes.
+		for (const [key, edge] of [...this.pending]) {
+			if (!failedSources.has(destinationKey(edge.from))) continue;
+			const terminal = followHandoffs(edge.to, raw);
+			const dependsOn = uniqueDestinations([
+				...(edge.dependsOn ?? []),
+				...immediateDependencies(edge.from, terminal, adjacency),
+			]);
+			this.pending.set(key, {
+				from: edge.from,
+				to: edge.to,
+				rank: Math.max(edge.rank, handoffRank(edge.from, terminal, adjacency)),
+				...(dependsOn.length ? { dependsOn } : {}),
+			});
+		}
 		if (loaded) {
 			this.pendingLoaded = true;
 			this.graphIncomplete = false;
@@ -560,6 +578,10 @@ export class DraftLibrary {
 				else if (!this.pendingTo(edge.to)) storage.removePendingHandoff?.(edge.to);
 			} catch {
 				cleaned = false;
+			}
+			if (!cleaned) {
+				durable = false;
+				continue;
 			}
 			// Keep the mutations settlement marker until the drafts mapping is
 			// removed, so a restart cannot replay the settled edge.

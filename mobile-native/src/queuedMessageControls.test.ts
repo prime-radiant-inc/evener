@@ -2839,6 +2839,9 @@ test("a refused handoff survives a drafts database that rejects every write", as
 		() => f.runtime.storage,
 	);
 	expect(refusing.handoff(destination, bDestination)).toBe(false);
+	// A cleanup retry during the outage must not erase the only durable
+	// settlement evidence while the drafts mapping still survives.
+	refusing.retryPendingHandoffs();
 	f.drafts.exec("PRAGMA query_only = OFF");
 	expect(f.repository.read(destination).draft).toBe("A draft");
 
@@ -2856,6 +2859,76 @@ test("a refused handoff survives a drafts database that rejects every write", as
 	expect(f.repository.read(destination).draft).toBe("A draft");
 	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
 	expect((f.runtime.storage as unknown as ResumeIdentityLedger).readSettledResumeIdentities?.()).toEqual([]);
+});
+
+test("a partial read then rejected redirect keeps the predecessor behind the chain", async () => {
+	const f = fixture();
+	const hub = destination.hubId;
+	const a = { hubId: hub, sessionRef: "session-a" };
+	const b = { hubId: hub, sessionRef: "session-b" };
+	const c = { hubId: hub, sessionRef: "session-c" };
+	f.repository.write(a, { draft: "A draft", unconfirmed: null });
+	f.repository.write(b, { draft: "B draft", unconfirmed: null });
+	// An earlier partial load recorded A->C in the drafts database.
+	f.drafts
+		.prepare(
+			"INSERT INTO pending_draft_handoffs (from_hub_id, from_session_ref, to_hub_id, to_session_ref) VALUES (?, ?, ?, ?)",
+		)
+		.run(hub, a.sessionRef, hub, c.sessionRef);
+	const seedEdge = (from: DraftDestination, to: DraftDestination) =>
+		f.mutations
+			.prepare(
+				"INSERT INTO resume_identity_edges (from_hub_id, from_ref, to_hub_id, to_ref, created_at) VALUES (?, ?, ?, ?, ?)",
+			)
+			.run(hub, from.sessionRef, hub, to.sessionRef, Date.now());
+	seedEdge(a, b);
+	seedEdge(b, c);
+
+	let ledgerFails = true;
+	const ledger = {
+		readResumeIdentities: () => {
+			if (ledgerFails) throw new Error("ledger unavailable");
+			return f.runtime.storage.readResumeIdentities();
+		},
+		readSettledResumeIdentities: () =>
+			(f.runtime.storage as unknown as ResumeIdentityLedger).readSettledResumeIdentities?.() ?? [],
+		redirectResumeIdentity: (from: DraftDestination, previousTo: DraftDestination, to: DraftDestination) =>
+			f.runtime.storage.redirectResumeIdentity(from, previousTo, to),
+		settleResumeIdentity: (from: DraftDestination, to: DraftDestination) =>
+			f.runtime.storage.settleResumeIdentity(from, to),
+		removeResumeIdentitySettlement: (from: DraftDestination, to: DraftDestination) =>
+			(f.runtime.storage as unknown as ResumeIdentityLedger).removeResumeIdentitySettlement?.(from, to),
+	};
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => ledger,
+	);
+	// The partial read leaves A->C pending at its flat rank.
+	expect(library.hasPendingHandoff(c)).toBe(true);
+	ledgerFails = false;
+	// The recovered ledger reveals A->B->C while the drafts store keeps
+	// rejecting the redirect from A through B.
+	f.drafts.exec(
+		"CREATE TRIGGER reject_pending_c_insert BEFORE INSERT ON pending_draft_handoffs WHEN NEW.to_session_ref = 'session-c' BEGIN SELECT RAISE(ABORT, 'redirect rejected'); END",
+	);
+	f.drafts.exec(
+		"CREATE TRIGGER reject_pending_c_update BEFORE UPDATE ON pending_draft_handoffs WHEN NEW.to_session_ref = 'session-c' BEGIN SELECT RAISE(ABORT, 'redirect rejected'); END",
+	);
+	library.retryPendingHandoffs();
+	expect(f.repository.read(c)).toEqual({ draft: "", unconfirmed: null });
+	expect(f.repository.read(a).draft).toBe("A draft");
+	expect(f.repository.read(b).draft).toBe("B draft");
+
+	// Once the redirect is accepted, B settles at the empty destination first
+	// and A falls under the occupied-destination rule.
+	f.drafts.exec("DROP TRIGGER reject_pending_c_insert");
+	f.drafts.exec("DROP TRIGGER reject_pending_c_update");
+	library.retryPendingHandoffs();
+	expect(f.repository.read(c)).toMatchObject({ draft: "B draft" });
+	expect(f.repository.read(b)).toEqual({ draft: "", unconfirmed: null });
+	expect(f.repository.read(a).draft).toBe("A draft");
+	expect(library.hasPendingHandoff(c)).toBe(false);
 });
 
 test("a built-in command completing after an occupied handoff moves its marker", async () => {
