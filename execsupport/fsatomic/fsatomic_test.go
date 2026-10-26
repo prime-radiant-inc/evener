@@ -106,3 +106,25 @@ func TestRemoveDeletesFileAndToleratesMissingOnes(t *testing.T) {
 		t.Fatalf("removing under a missing directory: %v", err)
 	}
 }
+
+// A failing directory sync is reported as ErrPublished with the new contents
+// already visible, and the caller's own sync sees the directory the file lives
+// in.
+func TestWriteWithDirSyncReportsPublishedWhenTheSyncFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	var synced string
+	err := fsatomic.WriteWithDirSync(path, []byte("new"), 0o600, func(d string) error {
+		synced = d
+		return syscall.EIO
+	})
+	if !errors.Is(err, fsatomic.ErrPublished) || !errors.Is(err, syscall.EIO) {
+		t.Fatalf("err = %v, want ErrPublished wrapping the sync error", err)
+	}
+	if synced != dir {
+		t.Fatalf("synced %q, want %q", synced, dir)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "new" {
+		t.Fatalf("contents = %q, want the published new contents", got)
+	}
+}
