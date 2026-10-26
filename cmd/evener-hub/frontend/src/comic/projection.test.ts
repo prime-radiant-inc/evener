@@ -229,7 +229,8 @@ describe("comic conversation projection", () => {
       expect(entry.persona).toBeUndefined();
       expect(entry.inherited).not.toBe(true);
     }
-    expect(entries[5]?.sourceLabel).toContain("Thought");
+    expect(entries[5]).toMatchObject({ sourceItemId: "unknown-thought", text: "UNPROVEN" });
+    expect(entries[5]?.sourceLabel).not.toBe(entries[4]?.sourceLabel);
     expect(entries[8]).toMatchObject({ kind: "dialogue", speaker: "human", persona: { character: "anna" } });
     expect(entries[9]).toMatchObject({ kind: "caption", speaker: "source" });
     expect(entries[9]?.persona).toBeUndefined();

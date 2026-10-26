@@ -63,7 +63,7 @@ test("plain transcript keeps literal text, thought/source semantics and complete
       images: [{ src: "/s/root/images/a", name: "frame.png", source: "read-file" }],
     },
   ];
-  const { container } = render(<ComicPlainTranscript entries={entries} />);
+  const { container, rerender } = render(<ComicPlainTranscript entries={entries} />);
   expect(container.querySelector("script")).toBeNull();
   expect(container.querySelector("strong")?.textContent).not.toContain("hello");
   const rows = screen.getAllByRole("listitem");
@@ -72,8 +72,8 @@ test("plain transcript keeps literal text, thought/source semantics and complete
   expect(rows[1]?.textContent).toContain("  Consider 🧭\n\ncontinue  ");
   expect(rows[1]?.textContent).toContain("remote:root");
   expect(rows[1]?.textContent).toContain("dlg_7");
-  expect(rows[1]?.textContent).toContain(" · inherited");
-  expect(rows[0]?.textContent).not.toContain(" · inherited");
+  const inheritedIdentity = rows[1]!.firstElementChild!.textContent!;
+  const humanIdentity = rows[0]!.firstElementChild!.textContent;
   expect(rows[3]?.textContent).toContain("  Do this  ");
   expect(rows[2]?.getAttribute("title")).toBeNull();
   expect(rows[2]?.textContent).not.toContain("Consider");
@@ -81,6 +81,14 @@ test("plain transcript keeps literal text, thought/source semantics and complete
     "/s/root/images/a",
   );
   expect(rows[4]?.textContent).toContain("frame.png");
+  rerender(<ComicPlainTranscript entries={entries.map((entry) => ({ ...entry, inherited: false }))} />);
+  const ownIdentity = screen.getAllByRole("listitem")[1]!.firstElementChild!.textContent!;
+  expect(inheritedIdentity.startsWith(ownIdentity)).toBe(true);
+  expect(inheritedIdentity.length).toBeGreaterThan(ownIdentity.length);
+  expect(screen.getAllByRole("listitem")[0]!.firstElementChild!.textContent).toBe(humanIdentity);
+  rerender(<ComicPlainTranscript entries={entries.map(({ inherited: _inherited, ...entry }) => entry)} />);
+  expect(screen.getAllByRole("listitem")[1]!.firstElementChild!.textContent).toBe(ownIdentity);
+  expect(screen.getAllByRole("listitem")[1]!.querySelector("[data-comic-text]")?.textContent).toBe(entries[1]!.text);
 });
 
 test("plain transcript puts positionless turn errors in a separate error group", () => {

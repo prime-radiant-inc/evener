@@ -56,12 +56,23 @@ remain separate from chronology and unplaced delegates. Root history controls
 remain available above the virtual flow, while child history controls belong to
 their reader's rows.
 
+An expanded child shows a bounded loading, repair, disconnected or unavailable
+row using the shared connection and thread signals. Cached content remains
+readable. Recoverable states keep the shared owner's automatic retry; Comic adds
+no timer, retry loop or cache. A deleted child remains explicitly openable, while
+its parent and healthy siblings stay usable.
+
 Saved positions contain the complete target session and expansion path, source
 entry and character offset, never transcript bodies. Restoration demands only the
 saved branch through the existing activity and history pagers. A newly loaded
 source waits for composed layout before any missing-source fallback. User
 movement cancels pending restoration. A collapsed branch keeps its small anchor
 for reopening; a parent end target does not follow later child panels.
+If a saved child never hydrates and the shared owner confirms deletion,
+restoration settles at its parent strip. Temporary loading or repair preserves
+the saved intent until recovery or user movement. **Jump to latest** releases
+every inline reader's pending history demand, not an independent reader's demand
+for the same child.
 
 The explicit **Open conversation** action selects the child's full-page route.
 Inline readers contain no composer or approval submission. Send, Stop and approval

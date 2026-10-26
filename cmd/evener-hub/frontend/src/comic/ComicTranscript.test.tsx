@@ -1,17 +1,32 @@
-import { buildEntityView, hydrateThread, parseActivityTree } from "@evener/appwire-client";
+import "fake-indexeddb/auto";
+import {
+  buildEntityView,
+  hydrateThread,
+  parseActivityTree,
+  type ThreadTurnsListResponse,
+} from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { subagentOutcomesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useImperativeHandle, useRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { UseTranscriptResult } from "../panes/session/transcript/useTranscript";
+import { pagingByRef } from "../panes/session/transcript/transcriptPaging";
+import {
+  resetTranscriptPagingForTests,
+  type UseTranscriptResult,
+  useTranscriptReader,
+} from "../panes/session/transcript/useTranscript";
+import { connectionStore } from "../stores/connection";
+import { resetThreadsStoreForTests } from "../stores/threads";
+import { useThreadModel } from "../stores/useThreadModel";
 import * as widgets from "../widgets";
 import { ComicTranscript } from "./ComicTranscript";
 import { type ComicDelegateStrip, projectComicDelegates } from "./delegates";
 import type { ComicEntry } from "./projection";
 import { readComicPosition, writeComicPosition } from "./readerPosition";
 import { useComicReader } from "./useComicReader";
-import type { ComicSubchatState } from "./useComicSubchats";
+import { type ComicSubchatState, useComicSubchats } from "./useComicSubchats";
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -27,9 +42,13 @@ beforeEach(() => {
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(760);
 });
 afterEach(() => {
+  cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   sessionStorage.clear();
+  connectionStore.setState({ state: "idle", client: null });
+  resetThreadsStoreForTests();
+  resetTranscriptPagingForTests();
 });
 
 const entry: ComicEntry = {
@@ -804,3 +823,112 @@ test("restores only the saved child path and pages its absent source, not the pa
   expect(readComicPosition("local:test")).toEqual(position);
   mounted.unmount();
 });
+
+test.each(["failure", "success"] as const)(
+  "latest retires only Comic child demand before delayed %s",
+  async (settlement) => {
+    const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+    const entities = buildEntityView({
+      sessionRef: model.ref,
+      tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
+      turns: [],
+      stale: false,
+      ended: false,
+    });
+    const strips = projectComicDelegates(model, entities).map((strip) => ({
+      ...strip,
+      ownerRef: "local:test",
+      childRef: `${strip.childRef}-${settlement}`,
+    }));
+    const strip = strips[0]!;
+    const client = new FakeClient("ready");
+    client.on("thread/read", (p) => ({
+      thread: wireThread(p.ref, {
+        turns: [
+          {
+            id: "current",
+            status: "completed",
+            itemsView: "full",
+            items: [{ id: "child-loaded", type: "agentMessage", text: "CHILD_LOADED" }],
+          },
+        ],
+      }),
+      olderCursor: "child-older",
+    }));
+    client.on("thread/unsubscribe", () => ({}));
+    let resolve!: (value: ThreadTurnsListResponse) => void;
+    let reject!: (error: Error) => void;
+    let attempts = 0;
+    const page: ThreadTurnsListResponse = {
+      data: [
+        {
+          id: "old",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "saved-child", type: "agentMessage", text: "SAVED_CHILD" }],
+        },
+      ],
+    };
+    client.on("thread/turns/list", () => {
+      attempts++;
+      return attempts === 1
+        ? new Promise<ThreadTurnsListResponse>((yes, no) => {
+            resolve = yes;
+            reject = no;
+          })
+        : page;
+    });
+    connectionStore.getState().connect(client);
+    let independent!: UseTranscriptResult;
+    let independentID!: string;
+    function Independent() {
+      useThreadModel(strip.childRef);
+      const reader = useComicReader(strip.childRef);
+      independentID = reader.reader.id;
+      independent = useTranscriptReader(strip.childRef, reader.reader);
+      return null;
+    }
+    const parentHistory = history();
+    function Root() {
+      const subchats = useComicSubchats("local:test", undefined);
+      return (
+        <>
+          {subchats.lifetimes}
+          <Reader older={parentHistory} strips={strips} subchats={subchats.state} />
+        </>
+      );
+    }
+    writeComicPosition("local:test", {
+      mode: "away",
+      sessionRef: strip.childRef,
+      path: [strip.key],
+      entryId: "saved-child",
+      offset: 4,
+      viewportOffset: 24,
+    });
+    const other = render(<Independent />);
+    const mounted = render(<Root />);
+    await waitFor(() => expect(attempts).toBe(1));
+    act(() => independent.loadOlderReportingError());
+    const paging = pagingByRef.get(strip.childRef)!;
+    expect(paging.paneConsumers.size).toBe(2);
+    fireEvent.click(screen.getByRole("button", { name: /latest/i }));
+    await act(async () => {
+      if (settlement === "failure") reject(new Error("DELAYED_CHILD_FAILURE"));
+      else resolve(page);
+    });
+    expect([...paging.paneConsumers.keys()]).toEqual([independentID]);
+    expect(readComicPosition("local:test")).toEqual({ mode: "end", sessionRef: "local:test", path: [] });
+    if (settlement === "failure") {
+      expect(independent.olderError).not.toBeNull();
+      act(() => independent.loadOlderReportingError());
+      await waitFor(() => expect(independent.hasOlder).toBe(false));
+    }
+    expect(independent.model?.turns.some((turn) => turn.items.some((item) => item.id === "saved-child"))).toBe(true);
+    mounted.rerender(<Root />);
+    expect(attempts).toBe(settlement === "failure" ? 2 : 1);
+    expect(parentHistory.loadOlderReportingError).not.toHaveBeenCalled();
+    mounted.unmount();
+    other.unmount();
+  },
+);

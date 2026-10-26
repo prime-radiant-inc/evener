@@ -523,30 +523,43 @@ async function rosterJourney(page, fixture, { command, complete, incoming, outgo
   if (rows.size !== 102 || !pages().some(page => page.page.complete)) throw Error('real activity pages incomplete: ' + JSON.stringify({count:rows.size,pages:pages().map(page=>({count:page.delegates.length,page:page.page}))}));
   const observed = new Map();
   let maxMountedHeaders = 0;
+  let direction = 1;
+  const steps = [];
   await evaluateHere(`(() => {const port=document.querySelector('[data-comic-scroll]').firstElementChild;port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:-port.scrollTop}));port.scrollTop=0;})()`);
   for (let index = 0; index < 160; index++) {
     await evaluateHere('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-    const step = await evaluateHere(`(() => { const port=document.querySelector('[data-comic-scroll]').firstElementChild; const headers=[...document.querySelectorAll('[data-comic-delegate]')].map(header=>({key:header.dataset.comicDelegate,ref:header.dataset.comicChildRef,name:header.querySelector('strong').textContent,text:header.textContent,portrait:header.querySelector('img').getAttribute('src')})); const end=port.scrollTop+port.clientHeight>=port.scrollHeight-2; const deltaY=Math.max(200,port.clientHeight-100);port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY}));port.scrollTop+=deltaY; return {headers,end}; })()`);
+    const step = await evaluateHere(`(() => { const port=document.querySelector('[data-comic-scroll]').firstElementChild; const headers=[...document.querySelectorAll('[data-comic-delegate]')].map(header=>({key:header.dataset.comicDelegate,ref:header.dataset.comicChildRef,name:header.querySelector('strong').textContent,text:header.textContent,portrait:header.querySelector('img').getAttribute('src')})); const before={top:port.scrollTop,height:port.scrollHeight,viewport:port.clientHeight}; const boundary=${direction}<0?before.top<=1:before.top+before.viewport>=before.height-2; const deltaY=${direction}*Math.max(200,port.clientHeight-100);port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY}));port.scrollTop+=deltaY; return {headers,boundary,before,command:{deltaY,top:port.scrollTop}}; })()`);
     for (const header of step.headers) observed.set(header.key, header);
     maxMountedHeaders = Math.max(maxMountedHeaders, step.headers.length);
-    if (step.end) break;
+    steps.push({index,direction,...step,uncommandedDelta:step.before.top-(steps.at(-1)?.command.top??0)});
+    if (observed.size === 102) break;
+    if (step.boundary) direction *= -1;
   }
   const named = [...observed.values()].filter(header => header.name.includes('comic-same-name'));
-  writeFileSync(`${fixture.evidenceDir}/activity-roster.json`, JSON.stringify({pages:pages(),observed:[...observed.values()],named,maxMountedHeaders,requests:outgoing.slice(firstRequest)},null,2));
+  writeFileSync(`${fixture.evidenceDir}/activity-roster.json`, JSON.stringify({pages:pages(),observed:[...observed.values()],named,maxMountedHeaders,steps,requests:outgoing.slice(firstRequest)},null,2));
   if (observed.size !== 102 || maxMountedHeaders > 35) throw Error('real roster virtual bounds/coverage: '+JSON.stringify({seen:observed.size,maxMountedHeaders}));
   if (named.length !== 2 || named[0].key === named[1].key || named[0].ref === named[1].ref || named[0].text === named[1].text) throw Error('same-named real delegates not distinctly attributed: ' + JSON.stringify(named));
   const reads = outgoing.slice(firstRequest).filter(frame => frame.method === 'thread/read');
   const leafRefs = new Set([...rows.values()].map(row => row.childRef));
   if (reads.some(frame => leafRefs.has(frame.params?.ref))) throw Error('collapsed named child acquired a transcript');
   await screenshot('activity-roster');
-  writeFileSync(`${fixture.evidenceDir}/activity-roster.json`, JSON.stringify({pages:pages(),observed:[...observed.values()],named,maxMountedHeaders,requests:outgoing.slice(firstRequest)},null,2));
+  writeFileSync(`${fixture.evidenceDir}/activity-roster.json`, JSON.stringify({pages:pages(),observed:[...observed.values()],named,maxMountedHeaders,steps,requests:outgoing.slice(firstRequest)},null,2));
   const directChild = named[0];
   const ownedRow = [...rows.values()].find(row=>row.childRef===directChild.ref);
-  await until('same-named explicit child route',async()=>evaluateHere(`(() => {
+  let namedDirection = 1;
+  const namedSearch = [];
+  try { await until('same-named explicit child route',async()=>{
+    const step = await evaluateHere(`(() => {
     const header=[...document.querySelectorAll('[data-comic-delegate]')].find(node=>node.dataset.comicChildRef===${JSON.stringify(directChild.ref)});
-    if(header){[...header.querySelectorAll('button')].find(button=>button.textContent==='Open conversation').click();return true;}
-    const port=document.querySelector('[data-comic-scroll]').firstElementChild;port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:-300}));port.scrollTop-=300;return false;
-  })()`));
+    if(header){[...header.querySelectorAll('button')].find(button=>button.textContent==='Open conversation').click();return {found:true};}
+    const port=document.querySelector('[data-comic-scroll]').firstElementChild;const before={top:port.scrollTop,height:port.scrollHeight,viewport:port.clientHeight};const boundary=${namedDirection}<0?before.top<=1:before.top+before.viewport>=before.height-2;const deltaY=${namedDirection}*300;port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY}));port.scrollTop+=deltaY;return {found:false,boundary,before,command:{deltaY,top:port.scrollTop}};
+  })()`);
+    namedSearch.push(step);
+    if(step.boundary)namedDirection*=-1;
+    return step.found;
+  }); } finally {
+    writeFileSync(`${fixture.evidenceDir}/named-route-search.json`,JSON.stringify({target:directChild.ref,steps:namedSearch},null,2));
+  }
   const readNamedIdentity = () => evaluateHere(`(() => {const panel=[...document.querySelectorAll('[data-comic-entry]')].find(node=>node.dataset.comicSession===${JSON.stringify(directChild.ref)}&&node.textContent.includes('COMIC_ROSTER_LEAF literal answer'));return panel?.querySelector('[data-comic-identity]')?.textContent;})()`);
   const directIdentity = await until('named direct child identity', readNamedIdentity, value=>value===`comic-same-name · ${ownedRow.delegateId}`);
   await reloadPage(page);
@@ -760,13 +773,38 @@ async function authorshipJourney(page, fixture, { incoming, outgoing, screenshot
   const childID = JSON.parse(child.key)[1];
   if(JSON.parse(child.key)[0]!==fixture.authorshipRef || JSON.parse(leaf.key)[0]!==child.ref)throw Error('fork ancestry lost');
   const cases = [
-    {text:human,identity:'Anna · human · inherited',kind:'speech',speaker:'human',author:{kind:'human'}},
+    {text:human,originalRef:fixture.authorshipRef,kind:'speech',speaker:'human',author:{kind:'human'}},
     ...['ROOT','CHILD'].flatMap(level=>[
       {text:`COMIC_AUTH_ANSWER_${level} literal original answer`,kind:'speech'},
       {text:`COMIC_AUTH_THOUGHT_${level} literal original thought`,kind:'thought'},
-    ].map(value=>({...value,identity:level==='ROOT'?`Xeno · ${fixture.authorshipRef} · inherited`:`comic-auth-child · ${childID} · inherited`,speaker:'assistant',author:level==='ROOT'?{kind:'agent',sessionRef:fixture.authorshipRef}:{kind:'agent',sessionRef:child.ref,ownerRef:fixture.authorshipRef,delegateId:childID,delegateName:'comic-auth-child'}}))),
-    {text:'COMIC_AUTH_UPDATE_CHILD literal original update',identity:`comic-auth-child · ${childID} · inherited`,kind:'speech',speaker:'assistant',author:{kind:'agent',sessionRef:child.ref,ownerRef:fixture.authorshipRef,delegateId:childID,delegateName:'comic-auth-child'}},
+    ].map(value=>({...value,originalRef:level==='ROOT'?fixture.authorshipRef:child.ref,speaker:'assistant',author:level==='ROOT'?{kind:'agent',sessionRef:fixture.authorshipRef}:{kind:'agent',sessionRef:child.ref,ownerRef:fixture.authorshipRef,delegateId:childID,delegateName:'comic-auth-child'}}))),
+    {text:'COMIC_AUTH_UPDATE_CHILD literal original update',originalRef:child.ref,kind:'speech',speaker:'assistant',author:{kind:'agent',sessionRef:child.ref,ownerRef:fixture.authorshipRef,delegateId:childID,delegateName:'comic-auth-child'}},
   ];
+  // Observe the same six fixture sources in their original conversations.
+  // The expected identity is never assembled from production label wording.
+  const baselines=new Map();
+  let baselineDirection=1;
+  await until('six original non-inherited author baselines',async()=>{
+    const result=await evaluateHere(`(() => {
+      const port=document.querySelector('[data-comic-scroll]')?.firstElementChild;if(!port)return null;
+      const entries=[...port.querySelectorAll('[data-comic-entry]')].map(node=>({ref:node.dataset.comicSession,text:node.querySelector('[data-comic-text]')?.textContent,identity:node.querySelector('[data-comic-identity]')?.textContent,kind:node.querySelector('[data-comic-balloon]')?.dataset.comicBalloon,speaker:node.querySelector('article')?.dataset.comicSpeaker}));
+      const controls=[port.parentElement.previousElementSibling,...port.querySelectorAll('[data-comic-flow="history"]')];
+      for(const control of controls){const older=[...(control?.querySelectorAll('button')??[])].find(node=>node.textContent==='Older messages');if(older&&!older.disabled)older.click();}
+      port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:${baselineDirection}*500}));port.scrollTop+=${baselineDirection}*500;
+      return {entries,boundary:${baselineDirection}<0?port.scrollTop<=1:port.scrollTop+port.clientHeight>=port.scrollHeight-1};
+    })()`);
+    if(result?.boundary)baselineDirection*=-1;
+    for(const entry of result?.entries??[])if(cases.some(value=>value.text===entry.text&&value.originalRef===entry.ref))baselines.set(entry.text,entry);
+    await evaluateHere('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    return baselines.size===cases.length;
+  });
+  for(const expected of cases){
+    const baseline=baselines.get(expected.text);
+    if(!baseline.identity || baseline.kind!==expected.kind || baseline.speaker!==expected.speaker)throw Error('invalid original author baseline '+JSON.stringify({expected,baseline}));
+    if(expected.author.kind==='agent' && (expected.author.delegateId
+      ? !baseline.identity.includes(expected.author.delegateId)||!baseline.identity.includes(expected.author.delegateName)
+      : !baseline.identity.includes(expected.author.sessionRef)))throw Error('original identity is not qualified '+JSON.stringify({expected,baseline}));
+  }
   const observations=[];
   const collect = async name => {
     const found=new Map();
@@ -789,12 +827,16 @@ async function authorshipJourney(page, fixture, { incoming, outgoing, screenshot
       await evaluateHere('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
       return found.size===cases.length;
     });
+    const indicators=new Set();
     for(const expected of cases){
       const entry=found.get(expected.text);
-      if(entry.identity!==expected.identity || entry.kind!==expected.kind || entry.speaker!==expected.speaker || entry.start!==0 || entry.end!==expected.text.length)throw Error(name+' wrong original author '+JSON.stringify({expected,entry}));
+      const baseline=baselines.get(expected.text);
+      if(!entry.identity?.startsWith(baseline.identity) || entry.identity===baseline.identity || entry.kind!==expected.kind || entry.speaker!==expected.speaker || entry.start!==0 || entry.end!==expected.text.length)throw Error(name+' wrong original author '+JSON.stringify({expected,baseline,entry}));
+      indicators.add(entry.identity.slice(baseline.identity.length));
     }
+    if(indicators.size!==1)throw Error(name+' inconsistent inheritance distinction '+JSON.stringify([...indicators]));
     observations.push({name,entries:[...found.values()]});
-    writeFileSync(`${fixture.evidenceDir}/authorship.json`,JSON.stringify({root:fixture.authorshipRef,child,leaf,cases,observations},null,2));
+    writeFileSync(`${fixture.evidenceDir}/authorship.json`,JSON.stringify({root:fixture.authorshipRef,child,leaf,cases,baselines:[...baselines.values()],observations},null,2));
   };
   await collect('nested-inline-original-authors');
   if(observations[0].entries.some(entry=>entry.path.length!==2))throw Error('author proof did not use nested inline leaf');

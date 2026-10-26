@@ -435,6 +435,18 @@ export function ComicTranscript({
         return;
       }
       const child = subchats.readers.get(comicPathKey(path));
+      if (subchats.availability?.get(comicPathKey(path)) === "unavailable" && !child) {
+        save({
+          mode: "away",
+          sessionRef: target.ref,
+          path: target.path,
+          entryId: strip.key,
+          offset: 0,
+          viewportOffset: position.mode === "away" ? position.viewportOffset : 0,
+        });
+        restoring.current = false;
+        return;
+      }
       if (!child) return;
       target = child;
     }
@@ -493,7 +505,7 @@ export function ComicTranscript({
     restoring.current = false;
     moving.current = false;
     movementStart.current = undefined;
-    history.cancelOlder();
+    for (const snapshot of snapshots.values()) snapshot.history.cancelOlder();
     setTailSpace(0);
     save({ mode: "end", sessionRef, path: [] });
     if (committed.current) restore(committed.current);
@@ -594,6 +606,17 @@ export function ComicTranscript({
                   )}
                   {flow.kind === "turn-errors-group" && <h2>Turn errors</h2>}
                   {flow.kind === "unplaced-group" && <h2>Meanwhile… outside loaded history</h2>}
+                  {flow.kind === "availability" && (
+                    <div role={flow.availability === "unavailable" ? "alert" : "status"}>
+                      {flow.availability === "unavailable"
+                        ? "This conversation is no longer available"
+                        : flow.availability === "repairing"
+                          ? "Repairing conversation history"
+                          : flow.availability === "disconnected"
+                            ? "Waiting for connection"
+                            : "Loading conversation"}
+                    </div>
+                  )}
                   {flow.kind === "history" && flow.path.length > 0 && (
                     <>
                       {flow.history.hasOlder && (

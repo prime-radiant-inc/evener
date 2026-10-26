@@ -40,7 +40,7 @@ func TestComicChatBrowser(t *testing.T) {
 	ref := skillGuardSessionRef(entry)
 	authorRoot := skillGuardStartHelper(t, fixture, 1)
 	literal := "COMIC_READ_SOURCE_3f " + strings.Repeat("Literal *asterisks*, `code`, and a source-offset reading point. ", 24)
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	roster := hubcore.NewRoster(fixture.runDir, &hubcore.StatusProber{Timeout: 500 * time.Millisecond})
 	if err := roster.RefreshAndWait(ctx); err != nil {

@@ -1,6 +1,8 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import { type ReactNode, useCallback, useLayoutEffect, useMemo, useState } from "react";
 import { type UseTranscriptResult, useTranscriptReader } from "../panes/session/transcript/useTranscript";
+import { useConnectionStore } from "../stores/connection";
+import { useThreadsStore } from "../stores/threads";
 import { useThreadModel } from "../stores/useThreadModel";
 import type { ComicDelegateStrip } from "./delegates";
 import { type ComicEntry, projectComicConversation } from "./projection";
@@ -14,8 +16,10 @@ export type ComicReaderSnapshot = {
   history: UseTranscriptResult;
   activity: ReturnType<typeof useComicActivity>;
 };
+export type ComicChildAvailability = "loading" | "repairing" | "disconnected" | "unavailable" | "ready";
 export type ComicSubchatState = {
   readers: ReadonlyMap<string, ComicReaderSnapshot>;
+  availability?: ReadonlyMap<string, ComicChildAvailability>;
   expandedPaths: readonly (readonly string[])[];
   expand(parentPath: readonly string[], strip: ComicDelegateStrip): void;
   collapse(path: readonly string[]): void;
@@ -32,11 +36,22 @@ export function useComicSubchats(
 ): { state: ComicSubchatState; lifetimes: ReactNode } {
   const [nodes, setNodes] = useState<readonly Node[]>([]);
   const [readers, setReaders] = useState<ReadonlyMap<string, ComicReaderSnapshot>>(new Map());
+  const [availability, setAvailability] = useState<ReadonlyMap<string, ComicChildAvailability>>(new Map());
   // biome-ignore lint/correctness/useExhaustiveDependencies: a different selected root retires every expanded lifetime
   useLayoutEffect(() => {
     setNodes([]);
     setReaders(new Map());
+    setAvailability(new Map());
   }, [rootRef]);
+  const publishAvailability = useCallback((key: string, value: ComicChildAvailability | undefined) => {
+    setAvailability((before) => {
+      if (before.get(key) === value) return before;
+      const next = new Map(before);
+      if (value) next.set(key, value);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
   const publish = useCallback((key: string, snapshot: ComicReaderSnapshot | undefined) => {
     setReaders((before) => {
       const next = new Map(before);
@@ -67,26 +82,50 @@ export function useComicSubchats(
     setNodes((before) => before.filter((node) => !comicPathContains(path, node.path)));
   }, []);
   const state = useMemo(
-    () => ({ readers, expandedPaths: nodes.map((node) => node.path), expand, collapse }),
-    [readers, nodes, expand, collapse],
+    () => ({ readers, availability, expandedPaths: nodes.map((node) => node.path), expand, collapse }),
+    [readers, availability, nodes, expand, collapse],
   );
   return {
     state,
-    lifetimes: nodes.map((node) => <ChildLifetime key={comicPathKey(node.path)} node={node} publish={publish} />),
+    lifetimes: nodes.map((node) => (
+      <ChildLifetime
+        key={comicPathKey(node.path)}
+        node={node}
+        publish={publish}
+        publishAvailability={publishAvailability}
+      />
+    )),
   };
 }
 
 function ChildLifetime({
   node,
   publish,
+  publishAvailability,
 }: {
   node: Node;
   publish(key: string, snapshot: ComicReaderSnapshot | undefined): void;
+  publishAvailability(key: string, value: ComicChildAvailability | undefined): void;
 }) {
   const ref = node.strip.childRef;
   const model = useThreadModel(ref);
   const reader = useComicReader(ref);
   const history = useTranscriptReader(ref, reader.reader);
+  const deleted = useThreadsStore((state) => state.deletedRefs.has(ref));
+  const repairing = useThreadsStore((state) => state.repairingRefs.has(ref));
+  const connection = useConnectionStore((state) => state.state);
+  const availability: ComicChildAvailability = deleted
+    ? "unavailable"
+    : repairing
+      ? "repairing"
+      : connection !== "ready"
+        ? "disconnected"
+        : model
+          ? "ready"
+          : "loading";
+  const key = comicPathKey(node.path);
+  useLayoutEffect(() => publishAvailability(key, availability), [key, availability, publishAvailability]);
+  useLayoutEffect(() => () => publishAvailability(key, undefined), [key, publishAvailability]);
   return model ? <ChildSnapshot node={node} model={model} history={history} publish={publish} /> : null;
 }
 function ChildSnapshot({

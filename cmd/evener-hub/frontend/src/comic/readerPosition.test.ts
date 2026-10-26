@@ -67,3 +67,26 @@ test("storage denial never prevents reading or saving", () => {
   expect(readComicPosition("local:root")).toBeUndefined();
   expect(() => writeComicPosition("local:root", { mode: "end", sessionRef: "local:root", path: [] })).not.toThrow();
 });
+
+test("round-trips a nested qualified child anchor without changing another root's reading intent", () => {
+  const path = [JSON.stringify(["remoteA:root", "dlg_same"]), JSON.stringify(["remoteA:child", "dlg_leaf"])];
+  const nested = {
+    mode: "away" as const,
+    sessionRef: "remoteA:leaf",
+    path,
+    entryId: "same-item",
+    offset: 19,
+    viewportOffset: -6,
+  };
+  const other = { mode: "end" as const, sessionRef: "remoteB:root", path: [] };
+  writeComicPosition("remoteB:root", other);
+  writeComicPosition("remoteA:root", nested);
+  expect(readComicPosition("remoteA:root")).toEqual(nested);
+  expect(readComicPosition("remoteB:root")).toEqual(other);
+  expect(readComicPosition("remoteA:leaf")).toBeUndefined();
+  const restored = readComicPosition("remoteA:root")!;
+  expect(restored.path).not.toBe(path);
+  writeComicPosition("remoteA:root", { mode: "end", sessionRef: "remoteA:root", path: [] });
+  expect(readComicPosition("remoteA:root")).toEqual({ mode: "end", sessionRef: "remoteA:root", path: [] });
+  expect(readComicPosition("remoteB:root")).toEqual(other);
+});

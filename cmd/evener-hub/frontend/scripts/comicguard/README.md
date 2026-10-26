@@ -16,6 +16,7 @@ or invented child refs are used. The helper and browser are test-owned and clean
 up; the running preview and main hub are untouched. Skips and timeouts are failures.
 The fixture runs the production roster watcher as well as its initial refresh.
 A daemonless child response is not proof that its live subscription attached.
+The complete browser journey retains the original two-minute wrapper deadline.
 
 The root journey covers literal source, bounded history reads, available and failed
 font states, responsive layout, plain/comic switching, durable provider failure,
@@ -45,8 +46,12 @@ An independent fresh root runs two explicit `fork_context: true` delegations.
 The nested leaf inherits human input, root and child answers/thoughts, and the
 child's actual `communicate` update. Its original source authors and inheritance
 labels must match in nested inline panels and on the direct page through history
-paging, reload and reconnect. `authorship.json` retains independent literal
-expectations and DOM observations; `authorship-wire.json` retains canonical items,
+paging, reload and reconnect. The driver first observes all six sources in their
+original root/child readers, checks their independent qualified actor identities,
+then requires inherited labels to preserve those identities with one additional
+indicator. It does not assert production label wording. `authorship.json` retains
+these baselines, independent source literals and DOM observations;
+`authorship-wire.json` retains canonical items,
 pages and read-only RPCs. The Go oracle reads the leaf's actual durable transcript
 and checks each original author exactly once in `authorship-durable.json`.
 It does not derive expected authors from the Comic projection or SDK output.
@@ -59,8 +64,14 @@ An additional producer creates 101 actual leaf delegates, including two named
 pages, visits all 102 parent headings with bounded virtual mounts, and rejects
 transcript reads for collapsed leaves. The Go check independently verifies each
 leaf's exact durable input and answer. `activity-roster.json` retains the real
-pages, identities, mounted bound and RPCs. `named-direct.json` proves a named
+pages, identities, mounted bound, RPCs and per-step scan geometry. Its 160-step
+scan reverses at boundaries until all 102 headings have actually been observed;
+recorded commanded scroll targets and subsequent offsets expose repositioning
+between frames. Wire rows never substitute for DOM coverage.
+`named-direct.json` proves a named
 child's full-page identity before and after refresh.
+`named-route-search.json` records its bounded bidirectional heading search,
+which does not assume the coverage scan finished at the bottom.
 
 A second authenticated hub connection exposes the same daemon through the
 production `comic-remote` source. `remote-identity.json` compares its qualified

@@ -5,7 +5,7 @@ import type { createComicMeasurer } from "./measure";
 import type { ComicEntry } from "./projection";
 import type { ComicReadingPosition } from "./readerPosition";
 import type { useComicActivity } from "./useComicActivity";
-import type { ComicReaderSnapshot, ComicSubchatState } from "./useComicSubchats";
+import type { ComicChildAvailability, ComicReaderSnapshot, ComicSubchatState } from "./useComicSubchats";
 export type ComicFlowRow = { id: string; sessionRef: string; path: readonly string[] } & (
   | { kind: "panels"; row: ComicRow }
   | { kind: "strip"; strip: ComicDelegateStrip }
@@ -13,6 +13,7 @@ export type ComicFlowRow = { id: string; sessionRef: string; path: readonly stri
   | { kind: "turn-errors-group" }
   | { kind: "history"; history: UseTranscriptResult }
   | { kind: "activity"; activity: ReturnType<typeof useComicActivity> }
+  | { kind: "availability"; availability: ComicChildAvailability }
 );
 export function composeComicFlow(
   root: ComicReaderSnapshot,
@@ -31,6 +32,16 @@ export function composeComicFlow(
     const stripRow = (strip: ComicDelegateStrip) => {
       rows.push({ ...base, id: id(strip.key), kind: "strip", strip });
       const path = [...reader.path, strip.key];
+      if (!subchats.expandedPaths.some((p) => JSON.stringify(p) === JSON.stringify(path))) return;
+      const availability = subchats.availability?.get(JSON.stringify(path));
+      if (availability && availability !== "ready")
+        rows.push({
+          sessionRef: strip.childRef,
+          path,
+          id: JSON.stringify([strip.childRef, path, "availability"]),
+          kind: "availability",
+          availability,
+        });
       const child = subchats.readers.get(JSON.stringify(path));
       if (
         child &&
