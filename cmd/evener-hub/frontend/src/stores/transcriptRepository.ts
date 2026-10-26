@@ -757,7 +757,6 @@ export class TranscriptRepository {
         );
       }
     }
-    candidate = this.#withoutResolvedEscalations(candidate);
     if (candidate === before) return false;
     this.#model = candidate;
     const previousHistory = before?.history;
@@ -949,11 +948,10 @@ export class TranscriptRepository {
     }
     const previousModel = this.#model;
     const now = this.#now();
-    const next = this.#withoutResolvedEscalations(
+    const next =
       notification.method === "overlay/end"
         ? applyOverlayEndForTranscriptHandoff(this.#model, notification, now)
-        : (this.#binding.foldNotification ?? applyNotification)(this.#model, notification, now),
-    );
+        : (this.#binding.foldNotification ?? applyNotification)(this.#model, notification, now);
     if (next === this.#model) {
       if (notification.method !== "overlay/end") return false;
       this.#admitHandoffRound(next, (notification.params as { roundId?: string }).roundId ?? "");
@@ -3113,7 +3111,9 @@ export class TranscriptRepository {
 
   #publish(): void {
     this.#reconcileHandoffOverlay();
-    if (this.#model) this.#model = hydratedDisplay(this.#model);
+    // Every publication passes here, so no path (a response-only field update
+    // included) can republish a resolved escalation.
+    if (this.#model) this.#model = this.#withoutResolvedEscalations(hydratedDisplay(this.#model));
     if (this.#readerCount > 0 && this.#model) {
       for (const turn of this.#model.turns) {
         for (const item of turn.items) {

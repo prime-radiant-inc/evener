@@ -325,46 +325,54 @@ describe("useThreadsStore.resolveEscalation", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
   });
 
-  test("a resolve acknowledged during a committed Clear stays resolved when a frame arrives before the refresh", async () => {
-    const fake = connectFakeClient();
-    let answerRefresh: (response: ThreadReadResponse) => void = () => {};
-    let reads = 0;
-    fake.on("thread/read", (params) => {
-      reads += 1;
-      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
-      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
-      return new Promise<ThreadReadResponse>((resolve) => {
-        answerRefresh = (response) => resolve({ ...response, requestGeneration });
+  test.each(["a status frame", "a goal response"] as const)(
+    "a resolve acknowledged during a committed Clear stays resolved when %s arrives before the refresh",
+    async (arrival) => {
+      const fake = connectFakeClient();
+      let answerRefresh: (response: ThreadReadResponse) => void = () => {};
+      let reads = 0;
+      fake.on("thread/read", (params) => {
+        reads += 1;
+        if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+        const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+        return new Promise<ThreadReadResponse>((resolve) => {
+          answerRefresh = (response) => resolve({ ...response, requestGeneration });
+        });
       });
-    });
-    fake.on("evener/sandbox/escalation/resolve", () => ({}));
-    await threadsStore.getState().ensureThread("ref_a");
-    await settleEntryTranscriptForTests("ref_a");
+      fake.on("evener/sandbox/escalation/resolve", () => ({}));
+      await threadsStore.getState().ensureThread("ref_a");
+      await settleEntryTranscriptForTests("ref_a");
 
-    let commitClear: () => void = () => {};
-    const heldClear = new Promise<void>((resolve) => {
-      commitClear = resolve;
-    });
-    const originalClear = cache.clear.bind(cache);
-    vi.spyOn(cache, "clear").mockImplementation(async () => {
-      await heldClear;
-      return originalClear();
-    });
-    const clearing = clearCachedSessions();
-    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
-    commitClear();
-    expect(await clearing).toEqual({ committed: true });
-    await vi.waitFor(() => expect(reads).toBe(2));
+      let commitClear: () => void = () => {};
+      const heldClear = new Promise<void>((resolve) => {
+        commitClear = resolve;
+      });
+      const originalClear = cache.clear.bind(cache);
+      vi.spyOn(cache, "clear").mockImplementation(async () => {
+        await heldClear;
+        return originalClear();
+      });
+      const clearing = clearCachedSessions();
+      await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+      commitClear();
+      expect(await clearing).toEqual({ committed: true });
+      await vi.waitFor(() => expect(reads).toBe(2));
 
-    fake.emitNotification({
-      method: "thread/status/changed",
-      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active", activeFlags: [] } },
-    } as never);
-
-    expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("active");
-    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
-    answerRefresh(threadWithEscalation("ref_a", "esc_1"));
-  });
+      if (arrival === "a status frame") {
+        fake.emitNotification({
+          method: "thread/status/changed",
+          params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active", activeFlags: [] } },
+        } as never);
+        expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("active");
+      } else {
+        fake.on("goal/set", () => ({ started: true }));
+        await threadsStore.getState().setGoal("ref_a", "ship it");
+        expect(threadsStore.getState().threads.get("ref_a")?.goal?.objective).toBe("ship it");
+      }
+      expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+      answerRefresh(threadWithEscalation("ref_a", "esc_1"));
+    },
+  );
 
   test("a watch read issued before the resolve and answered after it does not bring the escalation back", async () => {
     const fake = connectFakeClient();
