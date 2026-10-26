@@ -741,32 +741,15 @@ type tombstoneFile struct {
 // omitted-field rules records carry.
 func (f tombstoneFile) tombstone() (Tombstone, error) {
 	tombstone := f.Tombstone
-	if len(f.Progress) > 0 {
-		if jsonFieldIsNull(f.Progress) {
-			return Tombstone{}, fmt.Errorf("tombstone %q carries a null progress list", f.ID)
-		}
-		var progress []ProgressEntry
-		decoder := json.NewDecoder(bytes.NewReader(f.Progress))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&progress); err != nil {
-			return Tombstone{}, fmt.Errorf("tombstone %q carries an unparseable progress list", f.ID)
-		}
+	progress, result, err := decodeProgressAndResult("tombstone", f.ID, f.Progress, f.Result)
+	if err != nil {
+		return Tombstone{}, err
+	}
+	if progress != nil {
 		tombstone.Progress = progress
 	}
-	if len(f.Result) > 0 {
-		if jsonFieldIsNull(f.Result) {
-			return Tombstone{}, fmt.Errorf("tombstone %q carries a null terminal result", f.ID)
-		}
-		var result resultFile
-		decoder := json.NewDecoder(bytes.NewReader(f.Result))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&result); err != nil {
-			return Tombstone{}, fmt.Errorf("tombstone %q carries an unparseable terminal result", f.ID)
-		}
-		if result.OK == nil {
-			return Tombstone{}, fmt.Errorf("tombstone %q carries a terminal result with no outcome", f.ID)
-		}
-		tombstone.Result = &Result{OK: *result.OK, Message: result.Message}
+	if result != nil {
+		tombstone.Result = result
 	}
 	return tombstone, nil
 }
@@ -810,35 +793,51 @@ func (f recordFile) record() (Record, error) {
 	}
 	record := f.Record
 	record.HostRemoved = *f.HostRemoved
-	if len(f.Progress) > 0 {
-		if jsonFieldIsNull(f.Progress) {
-			return Record{}, fmt.Errorf("record %q carries a null progress list", f.ID)
-		}
-		var progress []ProgressEntry
-		decoder := json.NewDecoder(bytes.NewReader(f.Progress))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&progress); err != nil {
-			return Record{}, fmt.Errorf("record %q carries an unparseable progress list", f.ID)
-		}
+	progress, result, err := decodeProgressAndResult("record", f.ID, f.Progress, f.Result)
+	if err != nil {
+		return Record{}, err
+	}
+	if progress != nil {
 		record.Progress = progress
 	}
-	if len(f.Result) > 0 {
-		raw := f.Result
-		if jsonFieldIsNull(raw) {
-			return Record{}, fmt.Errorf("record %q carries a null terminal result", f.ID)
-		}
-		var result resultFile
-		decoder := json.NewDecoder(bytes.NewReader(raw))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&result); err != nil {
-			return Record{}, fmt.Errorf("record %q carries an unparseable terminal result", f.ID)
-		}
-		if result.OK == nil {
-			return Record{}, fmt.Errorf("record %q carries a terminal result with no outcome", f.ID)
-		}
-		record.Result = &Result{OK: *result.OK, Message: result.Message}
+	if result != nil {
+		record.Result = result
 	}
 	return record, nil
+}
+
+// decodeProgressAndResult decodes the persisted progress list and terminal
+// result of a record or tombstone. An absent field comes back nil; a present one
+// must be the shape the writer emits. kind names the owner in the error.
+func decodeProgressAndResult(kind, id string, rawProgress, rawResult json.RawMessage) ([]ProgressEntry, *Result, error) {
+	var progress []ProgressEntry
+	if len(rawProgress) > 0 {
+		if jsonFieldIsNull(rawProgress) {
+			return nil, nil, fmt.Errorf("%s %q carries a null progress list", kind, id)
+		}
+		decoder := json.NewDecoder(bytes.NewReader(rawProgress))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&progress); err != nil {
+			return nil, nil, fmt.Errorf("%s %q carries an unparseable progress list", kind, id)
+		}
+	}
+	var result *Result
+	if len(rawResult) > 0 {
+		if jsonFieldIsNull(rawResult) {
+			return nil, nil, fmt.Errorf("%s %q carries a null terminal result", kind, id)
+		}
+		var decoded resultFile
+		decoder := json.NewDecoder(bytes.NewReader(rawResult))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&decoded); err != nil {
+			return nil, nil, fmt.Errorf("%s %q carries an unparseable terminal result", kind, id)
+		}
+		if decoded.OK == nil {
+			return nil, nil, fmt.Errorf("%s %q carries a terminal result with no outcome", kind, id)
+		}
+		result = &Result{OK: *decoded.OK, Message: decoded.Message}
+	}
+	return progress, result, nil
 }
 
 // loadFS reads and validates the store file. A missing file is an empty store;
@@ -1253,6 +1252,19 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 	return perm, true
 }
 
+// Key sets shared by more than one owned object.
+var (
+	// tokenKeys is the whole token schema: tokens[] rows and the preimage rows of
+	// an armed compensation both carry it.
+	tokenKeys = []string{"host", "value", "generation", "incarnationId", "entryHash",
+		"hubTomlFingerprint", "factsRevision", "factsCapturedAt", "targetPath",
+		"controllerRevision", "runningVersion", "runningHealthy", "processStartTime",
+		"freshnessBoundSec", "mintedAt", "expiresAt"}
+	attestationKeys = []string{"operator", "statement", "recordId", "boundaryRef", "observedAt", "unattributed"}
+	resultKeys      = []string{"ok", "message"}
+	progressKeys    = []string{"ts", "message"}
+)
+
 // ownedObjectKeys is the canonical field set of every object this store itself
 // decodes, keyed by the object's path inside the file. An object not named here is
 // opaque — a raw field's interior, whose schema this store does not own — so
@@ -1274,15 +1286,15 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 	// A prior-build record's pending-spawn intents and attestation stay decodable
 	// so their key spellings are judged rather than silently rewritten.
 	"records[].pendingSpawns[]": keysOf("nonce", "platform", "cgroupId", "pgid", "sessionId", "pid", "startTime"),
-	"records[].attestation":     keysOf("operator", "statement", "recordId", "boundaryRef", "observedAt", "unattributed"),
-	"records[].result":          keysOf("ok", "message"),
-	"records[].progress[]":      keysOf("ts", "message"),
+	"records[].attestation":     keysOf(attestationKeys...),
+	"records[].result":          keysOf(resultKeys...),
+	"records[].progress[]":      keysOf(progressKeys...),
 	"tombstones[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
 		"incarnationId", "orphanResolved", "attestation", "progress", "result", "createdAt", "updatedAt",
 		"hostRemoved", "compactedAt", "compactedSeq"),
-	"tombstones[].attestation": keysOf("operator", "statement", "recordId", "boundaryRef", "observedAt", "unattributed"),
-	"tombstones[].result":      keysOf("ok", "message"),
-	"tombstones[].progress[]":  keysOf("ts", "message"),
+	"tombstones[].attestation": keysOf(attestationKeys...),
+	"tombstones[].result":      keysOf(resultKeys...),
+	"tombstones[].progress[]":  keysOf(progressKeys...),
 	"compactionMarks[]":        keysOf("seq", "hosts"),
 	// The per-name removal markers are objects this store decodes, so their
 	// keys are canonical too: a case variant (Go matches JSON field names
@@ -1290,20 +1302,14 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 	"removedHosts[]":       keysOf("removedAt", "generation", "incarnationId"),
 	"boundaries[]":         keysOf("generation", "incarnationId", "presenceEpoch"),
 	"fencingQuarantines[]": keysOf("recordId", "quarantinedAt"),
-	"tokens[]": keysOf("host", "value", "generation", "incarnationId", "entryHash",
-		"hubTomlFingerprint", "factsRevision", "factsCapturedAt", "targetPath",
-		"controllerRevision", "runningVersion", "runningHealthy", "processStartTime",
-		"freshnessBoundSec", "mintedAt", "expiresAt"),
-	"probeEpochs[]": keysOf("host", "bootId", "opSeq", "generation", "incarnationId", "createdAt"),
-	"guardEpoch":    keysOf("bootId", "opSeq"),
+	"tokens[]":             keysOf(tokenKeys...),
+	"probeEpochs[]":        keysOf("host", "bootId", "opSeq", "generation", "incarnationId", "createdAt"),
+	"guardEpoch":           keysOf("bootId", "opSeq"),
 	// The armed compensation records are objects this store decodes, and their
 	// preimage rows carry the whole token schema, so both key sets are
 	// canonical too.
-	"pendingCompensation[]": keysOf("host", "phase", "rows", "stashReference", "generation"),
-	"pendingCompensation[].rows[]": keysOf("host", "value", "generation", "incarnationId", "entryHash",
-		"hubTomlFingerprint", "factsRevision", "factsCapturedAt", "targetPath",
-		"controllerRevision", "runningVersion", "runningHealthy", "processStartTime",
-		"freshnessBoundSec", "mintedAt", "expiresAt"),
+	"pendingCompensation[]":        keysOf("host", "phase", "rows", "stashReference", "generation"),
+	"pendingCompensation[].rows[]": keysOf(tokenKeys...),
 }
 
 // keysOf builds one canonical key set.
