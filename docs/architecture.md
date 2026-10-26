@@ -27,8 +27,8 @@ Module separation does not by itself imply application independence. Production
 `agent` code imports both AppWire and root `internal` packages, for example
 [client mutations](../agent/session_client_mutation.go) and
 [skill source recovery](../agent/session_skill_source.go). `llm` uses `auth`,
-`envvars`, `execsupport`, `identifier`, and `invariant`; `auth` uses `envvars`.
-Consult imports and `go.mod` when moving a responsibility rather than assuming
+`envvars`, `execsupport`, `identifier`, and `invariant`; `auth` uses `envvars`
+and `execsupport`. Consult imports and `go.mod` when moving a responsibility rather than assuming
 that a module name is an enforced architectural boundary.
 
 ## Application commands and process boundaries

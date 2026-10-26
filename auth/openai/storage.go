@@ -7,35 +7,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
-type authTempFile interface {
-	Name() string
-	Chmod(os.FileMode) error
-	Write([]byte) (int, error)
-	Sync() error
-	Close() error
-}
-
-// authDirFile is the handle WriteAuthFile flushes after renaming: syncing the
-// directory that holds the new file is what makes the replacement durable
-// rather than merely visible. *os.File satisfies it; tests inject a recorder.
-type authDirFile interface {
-	Sync() error
-	Close() error
-}
-
 var (
-	authMkdirAll   = os.MkdirAll
-	authMarshal    = json.MarshalIndent
-	authCreateTemp = func(dir, pattern string) (authTempFile, error) { return os.CreateTemp(dir, pattern) }
-	authRemove     = os.Remove
-	authRename     = os.Rename
-	authOpenDir    = func(name string) (authDirFile, error) { return os.Open(name) }
+	authMkdirAll = os.MkdirAll
+	authMarshal  = json.MarshalIndent
+	authRemove   = os.Remove
 )
 
 const (
@@ -159,77 +140,15 @@ func SaveAuth(stateDir, instanceName string, record AuthRecord) error {
 }
 
 // WriteAuthFile writes data to path as an auth file, replacing whatever was
-// there atomically and durably: a 0600 temp file in the same directory is
-// synced and renamed into place, then the containing directory is synced, so a
-// reader never observes a partially written file, a crash inside the write
-// leaves the previous contents instead of a truncated credential, and a crash
-// after the rename cannot revert to the previous record on a filesystem that
-// can sync a directory. A filesystem that cannot sync a directory at all is
-// tolerated with the file's own flush as the remaining guarantee (see
-// authSyncUnsupported). SaveAuth is its marshalling caller; a caller restoring
-// captured bytes shares these guarantees rather than approximating them.
+// there atomically and durably (fsatomic.Write, mode 0600): a reader never
+// observes a partially written file, a crash inside the write leaves the
+// previous contents instead of a truncated credential, and a crash after the
+// rename cannot revert to the previous record. A directory sync that fails
+// after the rename is reported (fsatomic.ErrPublished) with the new file left
+// in place. SaveAuth is its marshalling caller; a caller restoring captured
+// bytes shares these guarantees rather than approximating them.
 func WriteAuthFile(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	tmp, err := authCreateTemp(dir, filepath.Base(path)+".*")
-	if err != nil {
-		return fmt.Errorf("create temp auth file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		_ = tmp.Close()
-		if cleanup {
-			_ = authRemove(tmpPath)
-		}
-	}()
-
-	if err := tmp.Chmod(0o600); err != nil {
-		return fmt.Errorf("chmod temp auth file: %w", err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		return fmt.Errorf("write temp auth file: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		return fmt.Errorf("sync temp auth file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp auth file: %w", err)
-	}
-	if err := authRename(tmpPath, path); err != nil {
-		return fmt.Errorf("replace auth file: %w", err)
-	}
-	cleanup = false
-
-	// The rename is only durable once the directory entry that names the new
-	// file is flushed: without this, a crash can leave the previous record (or
-	// none) at the path even though the rename returned. The write-then-flush-
-	// the-parent step the hub's atomic-rename stores take; any sync failure
-	// other than "this filesystem cannot sync a directory" is reported, leaving
-	// the already renamed file in place.
-	dirHandle, err := authOpenDir(dir)
-	if err != nil {
-		return fmt.Errorf("open auth directory for sync: %w", err)
-	}
-	syncErr := dirHandle.Sync()
-	closeErr := dirHandle.Close()
-	if syncErr != nil && !authSyncUnsupported(syncErr) {
-		return fmt.Errorf("sync auth directory: %w", syncErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close auth directory: %w", closeErr)
-	}
-	return nil
-}
-
-// authSyncUnsupported reports whether a directory Sync failed because the
-// filesystem cannot sync a directory at all, rather than because the sync
-// failed: ENOSYS (not implemented), ENOTSUP (not supported), or EINVAL (some
-// filesystems answer a directory sync with it). Mirrors the tolerance the
-// client-mutation store and the hub's atomic-rename stores apply.
-func authSyncUnsupported(err error) bool {
-	return errors.Is(err, syscall.ENOSYS) ||
-		errors.Is(err, syscall.ENOTSUP) ||
-		errors.Is(err, syscall.EINVAL)
+	return fsatomic.Write(path, data, 0o600)
 }
 
 // DeleteAuth removes the stored auth file for instanceName under stateDir. It
