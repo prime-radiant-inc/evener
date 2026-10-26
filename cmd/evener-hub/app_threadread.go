@@ -1488,7 +1488,7 @@ func stampDerivedFailureCount(entry hubcore.PastEntry, thread appwire.Thread) ap
 
 // pastTranscriptPath is where a saved session's transcript lives.
 func pastTranscriptPath(entry hubcore.PastEntry) string {
-	return filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	return schema.SessionTranscriptPath(entry.StateDir, entry.Meta.ID)
 }
 
 // computePastEntryTurns projects a saved session's whole transcript into full

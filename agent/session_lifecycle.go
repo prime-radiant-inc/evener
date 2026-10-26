@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -735,7 +734,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 		if !retirement {
 			// Export ATIF trajectory if configured (root session only, after transcript flush).
 			if s.cfg.ExportATIFPath != "" && s.stateDir != "" && s.cfg.spawn.depth == 0 {
-				tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+				tpath := schema.SessionTranscriptPath(s.stateDir, s.id)
 				if err := exportATIF(tpath, s.cfg.ExportATIFPath, s.cfg.ExportATIFProviderHandles); err != nil {
 					s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("ATIF export failed: %v", err)})
 				}

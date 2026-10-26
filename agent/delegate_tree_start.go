@@ -157,7 +157,7 @@ func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor d
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.nextToken++
-	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, childSessionID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(c.stateDir, childSessionID)
 	storedDescriptor := cloneDelegateStartDescriptor(descriptor)
 	reservation := &delegateStartReservation{
 		delegateID:     delegateID,
@@ -346,7 +346,7 @@ func (c *delegateTreeController) reserveAttentionStartLocked(aggregate *delegate
 	}
 	delegateID := aggregate.DelegateID
 	descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
-	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, descriptor.ChildSessionID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(c.stateDir, descriptor.ChildSessionID)
 	worktreePath := ""
 	if descriptor.Isolation == "worktree" {
 		worktreePath = descriptor.WorkingDir
@@ -648,7 +648,7 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	ctx, cancel := context.WithCancel(context.Background())
 	c.nextToken++
 	descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
-	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, descriptor.ChildSessionID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(c.stateDir, descriptor.ChildSessionID)
 	worktreePath := ""
 	if descriptor.Isolation == "worktree" {
 		worktreePath = descriptor.WorkingDir
