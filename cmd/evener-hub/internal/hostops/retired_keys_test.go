@@ -41,6 +41,7 @@ func TestPriorBuildStoreLoadsAndDropsRetiredKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open on a prior-build store: %v", err)
 	}
+	pinFixtureClock(store)
 	record, ok := store.Record("00000000000000000001")
 	if !ok || record.State != StatePending {
 		t.Fatalf("the prior-build record = %+v/%t, want the pending record served", record, ok)
@@ -94,6 +95,7 @@ func TestPriorBuildCorruptStoreStillQuarantinesAndWritesNoRetiredKeys(t *testing
 	if err != nil {
 		t.Fatalf("Open on a corrupt prior-build store: %v", err)
 	}
+	pinFixtureClock(store)
 	if store.Quarantine() == nil {
 		t.Fatal("the corrupt prior-build store did not quarantine")
 	}
@@ -143,6 +145,7 @@ func TestPriorBuildMalformedBoundaryStillLoadsAndQuarantines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open on a prior-build store with a malformed boundary: %v", err)
 	}
+	pinFixtureClock(store)
 	if store.Quarantine() == nil {
 		t.Fatal("the corrupt prior-build store with a malformed boundary did not quarantine")
 	}

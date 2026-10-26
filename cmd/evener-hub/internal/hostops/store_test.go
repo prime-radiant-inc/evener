@@ -65,6 +65,14 @@ func reopenFresh(t *testing.T, path string) *Store {
 	return store
 }
 
+// pinFixtureClock sets store's clock to tokenEpoch, the day after the dated
+// fixtures' timestamps. Retention ages terminal records against the store's
+// clock, so a fixture read against the wall clock compacts once its dates are
+// older than TerminalMaxAge.
+func pinFixtureClock(store *Store) {
+	store.clock = (&testClock{at: tokenEpoch}).now
+}
+
 // leftoverTemps lists the store's temp files still present in dir. The atomic
 // write creates them beside the store and must never leave one behind.
 func leftoverTemps(t *testing.T, dir string) []string {

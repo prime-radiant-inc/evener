@@ -139,6 +139,7 @@ func FuzzLoadStore(f *testing.F) {
 		if store == nil {
 			t.Fatalf("an accepted store came back nil")
 		}
+		pinFixtureClock(store)
 
 		before := store.Records()
 		sequenceBefore := store.Sequence()
@@ -257,6 +258,7 @@ func TestRepairedFuzzSeedsReachTheirIntendedArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open(pending/complete): %v", err)
 	}
+	pinFixtureClock(store)
 	moved, err := store.RecoverInterrupted()
 	if err != nil || moved != 1 {
 		t.Fatalf("RecoverInterrupted = %d, %v; want 1 moved", moved, err)
@@ -280,6 +282,7 @@ func TestRepairedFuzzSeedsReachTheirIntendedArms(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: Open = %v, want the custody-first quarantine", name, err)
 		}
+		pinFixtureClock(store)
 		wantQuarantined(t, store, path, body)
 		if got := store.Sequence(); got != 0 {
 			t.Fatalf("%s: the replacement sequence = %d, want the fresh store's 0", name, got)
