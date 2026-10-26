@@ -297,6 +297,7 @@ describe("useThreadsStore.watchThread", () => {
 
     // The failure rides the watched model, keeps the content already held, and
     // is not a transport hiccup: no retry is armed and no pane model appears.
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.history?.failed).toBeDefined();
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.name).toBe("Held");
     expect(scheduledHydrationRetries).toHaveLength(0);
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
