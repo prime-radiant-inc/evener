@@ -982,18 +982,38 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       // reconstructed under a new pane id. Candidates already held by another
       // restored pane are skipped, so two live panes never share a scope.
       const usedSeats = new Set<string>();
-      for (const pane of panes) {
-        if (!isConversationPaneType(pane.type)) continue;
-        const ref = refParam(pane.params);
-        const candidates = [
-          ref === null ? undefined : readPaneComposerSeat(pane.id, ref),
-          ref === null ? undefined : readRefComposerSeat(ref),
-          pane.id,
-        ];
+      const conversations = panes.flatMap((pane) => {
+        if (!isConversationPaneType(pane.type)) return [];
+        return [{ pane, ref: refParam(pane.params) }];
+      });
+      // Reserve every validated pane-specific seat across the whole layout
+      // first. Otherwise an unfamiliar pane listed earlier can consume the ref
+      // fallback that belongs to a known pane later in the same conversation.
+      const reserved = new Set<OpenPaneRecord>();
+      for (const { pane, ref } of conversations) {
+        if (ref === null) continue;
+        const saved = readPaneComposerSeat(pane.id, ref);
+        if (saved === undefined || usedSeats.has(saved)) continue;
+        pane.composerSeatId = saved;
+        usedSeats.add(saved);
+        reserved.add(pane);
+      }
+      for (const { pane, ref } of conversations) {
+        if (reserved.has(pane)) continue;
+        const candidates = [ref === null ? undefined : readRefComposerSeat(ref), pane.id];
         pane.composerSeatId =
           candidates.find((candidate) => candidate !== undefined && !usedSeats.has(candidate)) ?? createSecureUUID();
         usedSeats.add(pane.composerSeatId);
-        writeComposerSeat(pane.id, ref, pane.composerSeatId);
+      }
+      // Persist fallback seats first, then validated ones, so a reserved pane's
+      // conversation mapping is the one left behind.
+      for (const { pane, ref } of conversations) {
+        if (reserved.has(pane)) continue;
+        writeComposerSeat(pane.id, ref, pane.composerSeatId ?? pane.id);
+      }
+      for (const { pane, ref } of conversations) {
+        if (!reserved.has(pane)) continue;
+        writeComposerSeat(pane.id, ref, pane.composerSeatId ?? pane.id);
       }
       for (const listener of workspaceRestoreListeners) listener(panes);
       bumpPastRestoredIds(panes);

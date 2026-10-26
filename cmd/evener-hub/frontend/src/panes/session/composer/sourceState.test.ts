@@ -1390,6 +1390,47 @@ test("preservation after disposal records the resumed seat mapping", async () =>
   }
 });
 
+// A peer retarget does not advance the recovery's composition revision, so a
+// later autosave can succeed without activating anything. The target ref must
+// follow the durable owner the write returned.
+test("successful recovery writes follow a peer retarget", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "local:write-retarget-old";
+  const resumed = "local:write-retarget-middle";
+  const resumedAgain = "local:write-retarget-new";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    await peer.retargetOutbox(ref, resumed, { threadId: "thread-mid", instanceId: "instance-mid" });
+    expect(await source.queueRecoveryPersistence(original.clientMutationId, "first newer", [], [])).toBe(true);
+    expect(source.recoveryTargetRef).toBe(resumed);
+    expect(readRefComposerSeat(resumed)).toBe("pane-a");
+
+    // Another tab retargets the row again; the next successful write follows.
+    await peer.retargetOutbox(resumed, resumedAgain, { threadId: "thread-new", instanceId: "instance-new" });
+    expect(await source.queueRecoveryPersistence(original.clientMutationId, "second newer", [], [])).toBe(true);
+    expect(source.recoveryTargetRef).toBe(resumedAgain);
+    expect(readRefComposerSeat(resumedAgain)).toBe("pane-a");
+  } finally {
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
 // Another tab may consume the source row before it retargets the ref, and the
 // ref may resume again afterwards. No surviving recovery row can carry the
 // destination, so ref forwarding itself must persist every hop.

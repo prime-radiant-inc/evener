@@ -496,3 +496,43 @@ test("shared-layout restore ignores a pane seat saved for another conversation",
     setMutationClientIdentityForTests(undefined);
   }
 });
+
+// A restored layout can list an unfamiliar pane before a known one for the
+// same conversation (a session and a cascade saved by another tab). The known
+// pane's validated mapping must be reserved before the unfamiliar pane can
+// consume the ref fallback.
+test("restore reserves known pane seats before ref fallbacks", () => {
+  installLocalStorage(new MemoryStorage());
+  try {
+    setMutationClientIdentityForTests("tab-a");
+    writeComposerSeat("p_known", "ref_a", "seat-known");
+    writeRecoverySelection("ref_a", composerSelectionScope("seat-known"), "known-row");
+
+    restorePanels({
+      p_unknown: {
+        id: "p_unknown",
+        contentComponent: "default",
+        // A cascade for the same conversation (plain session duplicates are
+        // collapsed by the legacy reconciliation).
+        params: {
+          paneType: "sessionZoom",
+          paneParams: { ref: "ref_a", source: { type: "session", params: { ref: "local:root" } }, edges: [] },
+        },
+      },
+      p_known: {
+        id: "p_known",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "ref_a" } },
+      },
+    });
+
+    const panes = workspaceStore.getState().panes;
+    const known = panes.find((pane) => pane.id === "p_known");
+    const unknown = panes.find((pane) => pane.id === "p_unknown");
+    expect(known?.composerSeatId).toBe("seat-known");
+    expect(unknown?.composerSeatId).not.toBe("seat-known");
+    expect(readRecoverySelection("ref_a", composerSelectionScope("seat-known"))).toBe("known-row");
+  } finally {
+    setMutationClientIdentityForTests(undefined);
+  }
+});

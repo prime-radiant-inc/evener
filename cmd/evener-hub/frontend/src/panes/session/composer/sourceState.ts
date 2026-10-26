@@ -404,15 +404,7 @@ export function createComposerSourceState(
       : null;
     recoveryBaseRecord = record;
     selectionUserEditEpoch = userEditEpoch;
-    if (record !== null && record.targetRef !== ref) {
-      // Another tab retargeted this recovery. Reconcile this seat with the
-      // destination before activating it, so a Send uses the preserved target
-      // and a mobile reload can find the seat under that ref.
-      recoveryTargetRef = record.targetRef;
-      if (selectionOwnerId !== undefined) writeRefComposerSeat(record.targetRef, selectionOwnerId);
-    } else {
-      recoveryTargetRef = ref;
-    }
+    reconcileRecoveryTarget(record?.targetRef ?? ref);
     const targetRef = record?.targetRef ?? ref;
     // Adopting a preserved row may happen after a replacement composer has
     // selected a newer row under the destination. Only replace the lease's own
@@ -427,6 +419,19 @@ export function createComposerSourceState(
         currentSelection === activeRecoveryId);
     if (mayWriteSelection) writeRecoverySelection(targetRef, recoverySelectionOwnerId, activeRecoveryId);
     state.setState({ activeRecoveryId });
+  }
+
+  // The durable owner, not this source's original ref, is what a Send and the
+  // Stop barrier must name. The target follows retargets that happen without a
+  // recovery activation, such as a peer's write followed by a successful
+  // autosave.
+  function reconcileRecoveryTarget(targetRef: string): void {
+    recoveryTargetRef = targetRef === ref ? ref : targetRef;
+    if (targetRef === ref || selectionOwnerId === undefined) return;
+    const establishedSeat = readRefComposerSeat(targetRef);
+    if (establishedSeat === undefined || establishedSeat === selectionOwnerId) {
+      writeRefComposerSeat(targetRef, selectionOwnerId);
+    }
   }
 
   // Preservation can commit after this pane is disposed. Persist the fresh
@@ -694,6 +699,9 @@ export function createComposerSourceState(
             compositionRevision: recoveryCompositionRevision(updated),
           };
           recoveryBaseRecord = updated;
+          // The write returned the row's current durable target; a peer may
+          // have retargeted it without changing the composition revision.
+          reconcileRecoveryTarget(updated.targetRef);
           committedRecoveryComposition = recoveryCompositionFingerprint({
             text: nextText,
             attachments: nextAttachments,

@@ -89,7 +89,9 @@ then return to the resumed session) rewrites the destination ref's mapping so
 a mobile reconstruction still finds that seat and its selection. Each pane-id
 mapping records the conversation it belongs to; a shared layout that reuses
 that id for another conversation falls back to this tab's mapping for the
-restored ref instead of assigning the other conversation's seat.
+restored ref instead of assigning the other conversation's seat. Validated
+pane-specific seats are reserved across the whole restored layout before any
+pane falls back to the ref mapping or a fresh seat.
 
 Restoring a composer prefers the recovery row its seat last selected, falling
 back to the oldest restorable rejected row. This keeps a pane's preserved local
@@ -125,6 +127,11 @@ When another tab retargets the recovery while this composer preserves, the
 adopted row belongs to the resumed ref. The seat is reconciled with that ref
 before the row is activated: its ref-to-seat mapping moves with it and a Send
 uses the preserved target instead of repeating the old ref's target mismatch.
+Before building the resend, the destination thread model is loaded if this tab
+never read it, so the instance fence and skill/command capability checks see
+the resumed target's real model. A successful recovery write also reconciles
+the target from the row's durable ref, and the resend and Stop barrier describe
+that current owner.
 If the originating pane closes before preservation finishes, remembering the
 preserved row still records the destination selection and its ref-to-seat
 mapping, unless another owner already established that ref's mapping.

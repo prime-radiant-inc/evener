@@ -1138,7 +1138,6 @@ test("a peer retarget lets the original composer send the preserved row", async 
     epoch: 1,
     snapshot: { incarnation: "inc", length: 0 },
   }));
-  await threadsStore.getState().ensureThread(resumed);
   const delivered: Array<Record<string, unknown>> = [];
   fake.on("turn/start", (params) => {
     delivered.push(params as unknown as Record<string, unknown>);
@@ -1217,6 +1216,7 @@ test("a peer retarget lets the original composer send the preserved row", async 
     await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(delivered).toHaveLength(1));
     expect(delivered[0]).toMatchObject({ ref: resumed });
+    expect(typeof delivered[0]?.expectedInstanceId).toBe("string");
   } finally {
     storage.release.resolve();
     act(() => cleanup());

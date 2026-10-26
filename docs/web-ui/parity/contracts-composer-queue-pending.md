@@ -79,7 +79,8 @@ except where a line says so itself.
   rewrites the destination ref's mapping, so a mobile reconstruction recovers
   that seat and its selection. Pane-id mappings store the conversation they
   belong to; a shared layout that reuses the id for another conversation
-  falls back to this tab's mapping for the restored ref.
+  falls back to this tab's mapping for the restored ref. Validated pane seats
+  are reserved across the layout before any ref fallback or fresh seat.
 - Independent panes on one conversation hold distinct seats and therefore
   independent recovery selections. A `sessionZoom` cascade uses one tab-scoped
   seat for its columns, with a separate selection entry per column ref.
@@ -107,6 +108,9 @@ except where a line says so itself.
 - When another tab retargets recovery during preservation, the adopted row's
   resumed ref is reconciled with the originating seat: the ref mapping moves
   with the seat and a Send targets the preserved ref, not the superseded one.
+  The destination thread model is loaded before the resend intent is built,
+  and a successful write reconciles the target and Stop barrier from the row's
+  durable ref.
   If the originating pane is disposed first, preservation still records the
   destination selection and ref-to-seat mapping unless another owner already
   established that mapping.

@@ -995,8 +995,9 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       releaseRecoveryInFlight?.();
       releaseRecoveryInFlight = null;
     };
-    const recoveryTargetRef = source.recoveryTargetRef;
-    const recoveryBarrier = submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(recoveryTargetRef);
+    const pressedRecoveryTargetRef = source.recoveryTargetRef;
+    const pressedRecoveryBarrier =
+      submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(pressedRecoveryTargetRef);
     let recoveryResendRefused = false;
     let recoveryAlreadySent = false;
     const recoveryWriteRefusal = new Error("Recovery persistence was refused");
@@ -1051,16 +1052,31 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
               if (committedRevision === undefined) {
                 throw recoveryWriteRefusal;
               }
+              // The persisted write may have followed a peer retarget. Load the
+              // destination model (expectedInstanceId and capability gates come
+              // from it) and make the resend barrier describe that owner.
+              const sendTargetRef = source.recoveryTargetRef;
+              const targetState = threadsStore.getState();
+              if (
+                targetState.threads.get(sendTargetRef) === undefined &&
+                targetState.watchedThreads.get(sendTargetRef) === undefined
+              ) {
+                await targetState.ensureThread(sendTargetRef);
+              }
+              const sendBarrier =
+                sendTargetRef === pressedRecoveryTargetRef
+                  ? pressedRecoveryBarrier
+                  : captureRecoveryStopBarrier(sendTargetRef);
               const outcome = await resendRecoveryPendingTurn(
                 submittedRecoveryId,
-                recoveryTargetRef,
+                sendTargetRef,
                 kind,
                 submittedText,
                 payload,
                 submittedSkillNames,
                 submittedCommandNames,
                 submittedMentions,
-                recoveryBarrier,
+                sendBarrier,
                 { [submittedRecoveryId]: committedRevision },
                 source.compositionOwnerId,
               );
