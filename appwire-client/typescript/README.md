@@ -268,6 +268,18 @@ decoding; each application owns its read cadence, retained windows and recovery.
 The [output guide](../../docs/product/session-activity.md#job-output-pages)
 defines snapshot selection, floor/EOF semantics and the current protocol.
 
+## Session attention
+
+`attentionState(wireState, facts)` is the one precedence order that turns a
+session's wire state and its facts (a pending question or approval, running
+children, an unreachable source) into an `AttentionClass`. It accepts the raw
+`ThreadStatus.type` vocabulary and the navigation summary's, through
+`normalizeWireState`. `attentionNeedsYou` names the needs-you family and
+`approvalWaiting` states the approval half of the rule the hub's
+`hubapi.AttentionState` shares; the cases both run live in
+`testdata/attention`. Clients map the class onto their own presentation and keep
+no precedence table of their own.
+
 ## Search grouping
 
 The root exports `groupSearchResults(live, past)`, which orders a
