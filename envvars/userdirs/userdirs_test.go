@@ -91,3 +91,55 @@ func TestStateHomeForBucketDir(t *testing.T) {
 		})
 	}
 }
+
+func TestStateRoot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		xdg     string
+		home    string
+		err     error
+		want    string
+		wantErr bool
+	}{
+		{name: "xdg wins", xdg: "/xdg", home: "/home", want: "/xdg/evener"},
+		{name: "xdg wins without a home", xdg: "/xdg", err: os.ErrNotExist, want: "/xdg/evener"},
+		{name: "home fallback", home: "/home", want: "/home/.local/state/evener"},
+		{name: "both unset", err: os.ErrNotExist, wantErr: true},
+		{name: "empty home", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := StateRoot(tc.xdg, func() (string, error) { return tc.home, tc.err })
+			if tc.wantErr {
+				if !errors.Is(err, ErrNoStateHome) {
+					t.Fatalf("StateRoot() error = %v, want ErrNoStateHome", err)
+				}
+				if got != "" {
+					t.Fatalf("StateRoot() = %q alongside an error, want empty", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("StateRoot() error = %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("StateRoot() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStateHome(t *testing.T) {
+	t.Parallel()
+
+	got, err := StateHome("", func() (string, error) { return "/home", nil })
+	if err != nil || got != "/home/.local/state" {
+		t.Fatalf("StateHome() = %q, %v", got, err)
+	}
+	if _, err := StateHome("", func() (string, error) { return "", os.ErrNotExist }); !errors.Is(err, ErrNoStateHome) {
+		t.Fatalf("StateHome() error = %v, want ErrNoStateHome", err)
+	}
+}
