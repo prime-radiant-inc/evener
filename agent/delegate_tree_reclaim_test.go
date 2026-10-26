@@ -97,8 +97,12 @@ func TestDelegateRuntimeReclaim_ClosesPostorderAfterUnlock(t *testing.T) {
 		closed = append(closed, byRuntime[runtime])
 	}
 
-	if err := root.reclaimDelegateRuntimeCapacity(1); err != nil {
-		t.Fatalf("reclaimDelegateRuntimeCapacity: %v", err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(1)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatalf("reclaimDelegateRuntimeCapacity: %v", err)
+		}
 	}
 	if !reflect.DeepEqual(closed, []string{"dlg_child", "dlg_parent"}) {
 		t.Fatalf("close order = %v, want postorder [dlg_child dlg_parent]", closed)
@@ -114,8 +118,12 @@ func TestDelegateRuntimeReclaim_ClearsOnlyExactResidentPointers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ClaimRuntimeReclamation: %v", err)
 		}
-		if err := c.CompleteRuntimeReclamation(claim, map[string]*Session{"dlg_target": runtime}); err != nil {
-			t.Fatalf("CompleteRuntimeReclamation: %v", err)
+		{
+			recheck, err := c.CompleteRuntimeReclamation(claim, map[string]*Session{"dlg_target": runtime})
+			recheckNotificationsForTest(c, recheck)
+			if err != nil {
+				t.Fatalf("CompleteRuntimeReclamation: %v", err)
+			}
 		}
 		c.mu.Lock()
 		got := c.live["dlg_target"].runtime
@@ -137,8 +145,12 @@ func TestDelegateRuntimeReclaim_ClearsOnlyExactResidentPointers(t *testing.T) {
 		c.mu.Lock()
 		c.live["dlg_target"].runtime = replacement
 		c.mu.Unlock()
-		if err := c.CompleteRuntimeReclamation(claim, map[string]*Session{"dlg_target": oldRuntime}); err != nil {
-			t.Fatalf("CompleteRuntimeReclamation: %v", err)
+		{
+			recheck, err := c.CompleteRuntimeReclamation(claim, map[string]*Session{"dlg_target": oldRuntime})
+			recheckNotificationsForTest(c, recheck)
+			if err != nil {
+				t.Fatalf("CompleteRuntimeReclamation: %v", err)
+			}
 		}
 		c.mu.Lock()
 		got := c.live["dlg_target"].runtime
@@ -183,8 +195,12 @@ func TestDelegateRuntimeReclaim_InsufficientCapacityFailsBeforeIDMintOrConstruct
 	constructed := 0
 	root.cfg.testOnly.delegateRuntimeReclaimClose = func(*Session) { constructed++ }
 
-	if err := root.reclaimDelegateRuntimeCapacity(1); err == nil || !strings.Contains(err.Error(), "retained delegate limit reached") {
-		t.Fatalf("reclamation error = %v, want retained-limit refusal", err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(1)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err == nil || !strings.Contains(err.Error(), "retained delegate limit reached") {
+			t.Fatalf("reclamation error = %v, want retained-limit refusal", err)
+		}
 	}
 	if minted != 0 || constructed != 0 {
 		t.Fatalf("refused admission minted %d IDs and closed/constructed %d runtimes, want zero side effects", minted, constructed)
@@ -237,7 +253,9 @@ func TestDelegateRuntimeReclaim_CreateAndColdRestoreTriggerReclamation(t *testin
 		}
 		var closed []*Session
 		root.cfg.testOnly.delegateRuntimeReclaimClose = func(runtime *Session) { closed = append(closed, runtime) }
-		if _, _, err := (delegateRuntime{owner: root}).restoreIdle(started); err == nil {
+		_, _, recheck, err := (delegateRuntime{owner: root}).restoreIdle(started)
+		t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
+		if err == nil {
 			t.Fatal("restoreIdle unexpectedly found missing committed session metadata")
 		}
 		if !reflect.DeepEqual(closed, []*Session{resident}) {
@@ -269,8 +287,12 @@ func TestDelegateRuntimeReclaim_NoTimerUnloadEventOrStableDataDeletion(t *testin
 	if err != nil {
 		t.Fatalf("ClaimRuntimeReclamation: %v", err)
 	}
-	if err := c.CompleteRuntimeReclamation(claim, map[string]*Session{"dlg_target": runtime}); err != nil {
-		t.Fatalf("CompleteRuntimeReclamation: %v", err)
+	{
+		recheck, err := c.CompleteRuntimeReclamation(claim, map[string]*Session{"dlg_target": runtime})
+		recheckNotificationsForTest(c, recheck)
+		if err != nil {
+			t.Fatalf("CompleteRuntimeReclamation: %v", err)
+		}
 	}
 	after := readDelegateControllerFile(t, path)
 	if !reflect.DeepEqual(before, after) {

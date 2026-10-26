@@ -1293,14 +1293,6 @@ func (s *Session) countJobNotificationsDelivered(n int) {
 	s.jobNotifsDelivered += uint64(n)
 }
 
-// jobNotificationsDelivered reports the lifetime count of job notifications
-// delivered to the model.
-func (s *Session) jobNotificationsDelivered() uint64 {
-	s.pendingJobNotifsMu.Lock()
-	defer s.pendingJobNotifsMu.Unlock()
-	return s.jobNotifsDelivered
-}
-
 // SetNotifyFunc registers the callback the server uses to wake an idle session
 // when a job notification is pending. It mirrors SetKickFunc: the agent module
 // must not import server, so serve.go wires this callback into the server's input

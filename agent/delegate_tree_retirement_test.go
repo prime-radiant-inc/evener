@@ -439,8 +439,12 @@ func TestRetirementColdDelegateEvidence(t *testing.T) {
 			defer root.Close()
 			d := retirementIdleDelegate(t, root)
 			// Use the production capacity reclaimer, including actual child teardown.
-			if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
-				t.Fatal(err)
+			{
+				recheck, err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal)
+				recheckNotificationsForTest(root.delegateController, recheck)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			if tree.residentDelegateRuntime(d.DelegateID) != nil || root.subagents.get(d.ChildSessionID) != nil {
 				t.Fatal("production reclamation left a resident runtime")
@@ -714,8 +718,12 @@ func TestRetirementDelegatePopulatedSourceRefusal(t *testing.T) {
 			root, tree, c := newRetirementDelegateController(t)
 			defer root.Close()
 			d := retirementIdleDelegate(t, root)
-			if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
-				t.Fatal(err)
+			{
+				recheck, err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal)
+				recheckNotificationsForTest(root.delegateController, recheck)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			var plans delegateMutationPlans
 			var watch *delegateWatchReceipt
@@ -1031,8 +1039,12 @@ func TestRetirementDelegateColdReconstructionAdmittedFirst(t *testing.T) {
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
 	old := tree.residentDelegateRuntime(d.DelegateID)
-	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
-		t.Fatal(err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	before, err := tree.store.Load()
 	if err != nil {
@@ -1147,8 +1159,12 @@ func TestRetirementDelegateIdleInstallationOwnerBoundary(t *testing.T) {
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
-	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
-		t.Fatal(err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	started, _, err := tree.idleDelegateRestoreCommit(d.DelegateID)
 	if err != nil {
@@ -1395,8 +1411,12 @@ func TestRetirementDelegateOutcomeAcknowledgementAdmittedFirst(t *testing.T) {
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
-	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
-		t.Fatal(err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	r, err := tree.ReserveStart(rootDelegateActor(root.ID()), d.DelegateID)
 	if err != nil {
@@ -1464,8 +1484,12 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	cold := retirementIdleDelegate(t, root)
-	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
-		t.Fatal(err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	d := retirementIdleDelegate(t, root)
 	sub := root.subagents.get(d.ChildSessionID)
@@ -1931,8 +1955,12 @@ func TestRetirementDelegateReleaseExactRuntime(t *testing.T) {
 			original := tree.residentDelegateRuntime(d.DelegateID)
 			provided := original
 			if mode == "replacement" {
-				if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
-					t.Fatal(err)
+				{
+					recheck, err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal)
+					recheckNotificationsForTest(root.delegateController, recheck)
+					if err != nil {
+						t.Fatal(err)
+					}
 				}
 				_, sub, err := restoreColdRuntimeWithHandoffForTest(root, d.DelegateID)
 				if err != nil {

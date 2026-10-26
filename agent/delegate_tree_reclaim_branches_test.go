@@ -245,7 +245,8 @@ func TestRuntimeReclamationIntersectsProcessWorkLockedWithReclaiming(t *testing.
 func TestReclaimDelegateRuntimeCapacityNil(t *testing.T) {
 	t.Parallel()
 	var s *Session
-	err := s.reclaimDelegateRuntimeCapacity(1)
+	// The nil-session/controller guard returns false before any effect.
+	_, err := s.reclaimDelegateRuntimeCapacity(1)
 	if err == nil {
 		t.Fatalf("expected error for nil session")
 	}
@@ -254,7 +255,8 @@ func TestReclaimDelegateRuntimeCapacityNil(t *testing.T) {
 func TestReclaimDelegateRuntimeCapacityNilController(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	err := s.reclaimDelegateRuntimeCapacity(1)
+	// The nil-session/controller guard returns false before any effect.
+	_, err := s.reclaimDelegateRuntimeCapacity(1)
 	if err == nil || !errors.Is(err, errors.New("delegate controller is unavailable")) {
 		// It returns a plain error, not a sentinel
 		if err == nil {

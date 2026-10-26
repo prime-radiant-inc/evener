@@ -80,7 +80,8 @@ func TestRestoredStableDelegateTakesTheAgentsDocPathFromTheLiveParent(t *testing
 		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(errors.New("test complete"), "construction_failed"))
 	}()
 
-	sub, _, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	sub, _, recheck, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
 	if err != nil {
 		t.Fatalf("restoreIdle: %v", err)
 	}

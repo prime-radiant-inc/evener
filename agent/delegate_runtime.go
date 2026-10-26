@@ -1024,13 +1024,17 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 	var recheck bool
 	runtime := delegateRuntime{owner: owner}
 	sub, restored, finishRestore, err := runtime.restoreIdleForSend(started)
+	finishRestoration := func(sub *subagent, restoreErr error) {
+		released := finishRestore(sub, restoreErr)
+		recheck = recheck || released
+	}
 	if err != nil {
-		finishRestore(nil, err)
+		finishRestoration(nil, err)
 		return nil, recheck, err
 	}
 	if sub == nil || sub.sess == nil {
 		err = errors.New("delegate attention runtime is unavailable")
-		finishRestore(nil, err)
+		finishRestoration(nil, err)
 		return nil, recheck, err
 	}
 	// Before attachment the not-ready lease excludes callbacks installed by
@@ -1055,7 +1059,7 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 			if restored {
 				sub.sess.discardRestoredCandidate()
 			}
-			finishRestore(nil, err)
+			finishRestoration(nil, err)
 			return nil, recheck, err
 		}
 		defer installation.release()
@@ -1081,7 +1085,7 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		tracked, inserted, trackErr := owner.subagents.admitReconstructed(candidate, attach)
 		if trackErr != nil {
 			candidate.sess.discardRestoredCandidate()
-			finishRestore(nil, trackErr)
+			finishRestoration(nil, trackErr)
 			return nil, recheck, trackErr
 		}
 		if !inserted {
@@ -1090,7 +1094,7 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 			restored = false
 		}
 	} else if err := attach(sub); err != nil {
-		finishRestore(nil, err)
+		finishRestoration(nil, err)
 		return nil, recheck, err
 	}
 	if restored && owner.delegateRestoreBeforeSideEffects != nil {
@@ -1099,7 +1103,7 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 	bindStableDelegateActivityToOwner(sub.sess, s.delegateController, started.lease, owner)
 	if restored && len(gates) != 0 {
 		if err := gates[0].add(owner, sub, started); err != nil {
-			finishRestore(nil, err)
+			finishRestoration(nil, err)
 			return nil, recheck, err
 		}
 		gateOwnsGuard = guarded
@@ -1108,7 +1112,7 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 			sub.sess.emit(events.EventWarning, warningDataFromError("restored delegate side effects incomplete", err))
 		}
 	}
-	finishRestore(sub, nil)
+	finishRestoration(sub, nil)
 	return sub, recheck, nil
 }
 func (s *Session) restoreColdDelegateOwnerRuntime(parentID string, gates ...*owedBootstrapRestore) (*Session, bool, error) {
@@ -1827,9 +1831,13 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		})
 	}
 	sub, restored, finishRestore, err := runtime.restoreIdleForSend(started)
+	finishRestoration := func(sub *subagent, restoreErr error) {
+		released := finishRestore(sub, restoreErr)
+		recheck = recheck || released
+	}
 	if err != nil {
 		return failStart(err, func() {
-			finishRestore(nil, err)
+			finishRestoration(nil, err)
 		})
 	}
 	if restored {
@@ -1842,7 +1850,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		if trackErr != nil {
 			candidate.sess.discardRestoredCandidate()
 			return failStart(trackErr, func() {
-				finishRestore(nil, trackErr)
+				finishRestoration(nil, trackErr)
 			})
 		}
 		if !inserted {
@@ -1857,7 +1865,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if sub == nil || sub.sess == nil {
 		cause := errors.New("delegate runtime is unavailable")
 		return failStart(cause, func() {
-			finishRestore(nil, cause)
+			finishRestoration(nil, cause)
 		})
 	}
 	if !restored {
@@ -1865,7 +1873,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		recheck = recheck || released
 		if err != nil {
 			return failStart(err, func() {
-				finishRestore(nil, err)
+				finishRestoration(nil, err)
 			})
 		}
 	}
@@ -1893,7 +1901,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		if !s.takeSendDriveGuard(sub) {
 			cause := errDelegateTargetBusy
 			return failStart(cause, func() {
-				finishRestore(sub, nil)
+				finishRestoration(sub, nil)
 			})
 		}
 		guarded = sub
@@ -1909,12 +1917,12 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		s.mu.Unlock()
 		cause := errors.New("session is closed")
 		return failStart(cause, func() {
-			finishRestore(sub, nil)
+			finishRestoration(sub, nil)
 		})
 	}
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
-	finishRestore(sub, nil)
+	finishRestoration(sub, nil)
 	if observer := s.cfg.testOnly.delegateSendStartCommitted; observer != nil {
 		observer(sub)
 	}
@@ -2283,7 +2291,9 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if err != nil {
 		return delegateStartFailed(err)
 	}
-	if err := s.reclaimDelegateRuntimeCapacity(1); err != nil {
+	reclaimed, err := s.reclaimDelegateRuntimeCapacity(1)
+	recheck = recheck || reclaimed
+	if err != nil {
 		return delegateStartFailed(err)
 	}
 	// Read the overlap before this delegate is prepared or tracked, while the
@@ -2815,43 +2825,45 @@ func (runtime delegateRuntime) construct(_ context.Context, args delegateArgs, s
 	return prepared, nil
 }
 
-func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subagent, bool, error) {
+func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subagent, bool, bool, error) {
+	var recheck bool
 	s := runtime.owner
 	if s == nil || started.lease.delegateID == "" {
-		return nil, false, errors.New("delegate restore reservation is unavailable")
+		return nil, false, recheck, errors.New("delegate restore reservation is unavailable")
 	}
 	release, err := s.beginRetirementMutation("delegate_restore")
 	if err != nil {
-		return nil, false, err
+		return nil, false, recheck, err
 	}
 	defer release()
 	descriptor := cloneDelegateStartDescriptor(started.descriptor)
 	if retained := s.subagents.get(descriptor.ChildSessionID); retained != nil && retained.sess != nil {
-		return retained, false, nil
+		return retained, false, recheck, nil
 	}
 	policy, err := s.restoreDelegateSandboxFloor(&descriptor)
 	if err != nil {
-		return nil, false, err
+		return nil, false, recheck, err
 	}
-	if err := s.reclaimDelegateRuntimeCapacity(1); err != nil {
-		return nil, false, err
+	recheck, err = s.reclaimDelegateRuntimeCapacity(1)
+	if err != nil {
+		return nil, false, recheck, err
 	}
 	meta, err := schema.LoadSessionMeta(s.stateDir, descriptor.ChildSessionID)
 	if err != nil {
-		return nil, false, fmt.Errorf("load committed delegate session metadata: %w", err)
+		return nil, false, recheck, fmt.Errorf("load committed delegate session metadata: %w", err)
 	}
 	if meta.ID != descriptor.ChildSessionID {
-		return nil, false, errors.New("committed delegate session metadata has the wrong identity")
+		return nil, false, recheck, errors.New("committed delegate session metadata has the wrong identity")
 	}
 	meta.Config = descriptor.Config.Clone()
 	profile, err := s.resolveDelegateRestoreProfileRef(s.currentProfile(), descriptor.ResolvedProfileID, descriptor.ResolvedModel)
 	if err != nil {
-		return nil, false, fmt.Errorf("resolve committed delegate profile: %w", err)
+		return nil, false, recheck, fmt.Errorf("resolve committed delegate profile: %w", err)
 	}
 	resultSchema := make(map[string]any)
 	if len(descriptor.ResultSchema) != 0 {
 		if err := json.Unmarshal(descriptor.ResultSchema, &resultSchema); err != nil {
-			return nil, false, fmt.Errorf("decode committed delegate result schema: %w", err)
+			return nil, false, recheck, fmt.Errorf("decode committed delegate result schema: %w", err)
 		}
 		if len(resultSchema) != 0 {
 			profile = provider.WithCommunicateOutputSchema(profile, resultSchema)
@@ -2870,7 +2882,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	} else {
 		childEnv, ownsFresh, err = s.prepareSubagentEnvironmentFor(descriptor.WorkingDir, policy, descriptor.ChildSessionID)
 		if err != nil {
-			return nil, false, err
+			return nil, false, recheck, err
 		}
 	}
 	discardEnv := true
@@ -2884,17 +2896,17 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		}
 	}()
 	if childEnv == nil || childEnv.WorkingDirectory() != descriptor.WorkingDir || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(childEnv, descriptor.Sandbox) {
-		return nil, false, errors.New("committed delegate environment is unavailable")
+		return nil, false, recheck, errors.New("committed delegate environment is unavailable")
 	}
 	activatedSkillBodies, err := restoreFrozenSkillBodies(descriptor.FrozenSkillNames, descriptor.FrozenSkillBodies)
 	if err != nil {
-		return nil, false, err
+		return nil, false, recheck, err
 	}
 	var sharedStore *task.TaskStore
 	if descriptor.Config.ShareTasksWithChildren {
 		sharedStore, err = s.resolveStableSharedTaskStore(descriptor.SharedTaskStoreOwnerSessionID)
 		if err != nil {
-			return nil, false, err
+			return nil, false, recheck, err
 		}
 	}
 	restoreCfg := RestoreSessionConfig{
@@ -2952,18 +2964,18 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	child, err := RestoreSessionFromMetaWithConfig(s.client, profile, childEnv, meta, restoreCfg)
 	if err != nil {
-		return nil, false, err
+		return nil, false, recheck, err
 	}
 	child.recordEnvironmentOwnership(childEnv, ownsFresh)
 	discardEnv = false
 	if child.delegateController != s.delegateController || child.owningDelegateID != started.lease.delegateID {
 		child.discardRestoredCandidate()
-		return nil, false, errors.New("restored delegate did not inherit the exact controller binding")
+		return nil, false, recheck, errors.New("restored delegate did not inherit the exact controller binding")
 	}
 	for name := range child.reg.RegisteredNames() {
 		if !hasString(descriptor.ToolNameCeiling, name) {
 			child.discardRestoredCandidate()
-			return nil, false, fmt.Errorf("restored delegate tool %q exceeds the committed ceiling", name)
+			return nil, false, recheck, fmt.Errorf("restored delegate tool %q exceeds the committed ceiling", name)
 		}
 	}
 	if len(descriptor.TaskTemplates) != 0 {
@@ -2986,7 +2998,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			return nil
 		}); err != nil {
 			child.discardRestoredCandidate()
-			return nil, false, fmt.Errorf("restore committed delegate tasks: %w", err)
+			return nil, false, recheck, fmt.Errorf("restore committed delegate tasks: %w", err)
 		}
 		// A shared store is the parent's list, not this child's plan, so it is
 		// never announced. Keep the single current-task reminder for it.
@@ -2994,7 +3006,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			if current, ok := childStore.CurrentInProgress(); ok {
 				if err := child.SteerKind(formatCurrentTaskSteering(current, child.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
 					child.discardRestoredCandidate()
-					return nil, false, err
+					return nil, false, recheck, err
 				}
 			}
 		} else if seeded || !child.hasTaskListAnnouncement() {
@@ -3004,7 +3016,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			// durable record of delivery, so announce when it shows no plan.
 			if err := steerDelegatePlan(child, childStore); err != nil {
 				child.discardRestoredCandidate()
-				return nil, false, err
+				return nil, false, recheck, err
 			}
 		}
 	}
@@ -3023,7 +3035,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		stableDescriptor: &stableDescriptor,
 	}
 	s.installDelegateNotify(sub)
-	return sub, true, nil
+	return sub, true, recheck, nil
 }
 
 // sharedRestoreEnvironment resolves the parent environment a shared child
@@ -3065,9 +3077,10 @@ func (s *Session) sharedRestoreEnvironment(descriptor delegatestore.Descriptor) 
 	return nil
 }
 
-func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (*subagent, bool, func(*subagent, error), error) {
+func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (*subagent, bool, func(*subagent, error) bool, error) {
 	s := runtime.owner
-	finish := func(*subagent, error) {}
+	var recheck bool
+	finish := func(*subagent, error) bool { return recheck }
 	if s == nil {
 		return nil, false, finish, errors.New("delegate restore reservation is unavailable")
 	}
@@ -3076,7 +3089,7 @@ func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (
 		return nil, false, finish, err
 	}
 	// Every caller finishes after installation and deferred effects or rollback.
-	finish = func(*subagent, error) { release() }
+	finish = func(*subagent, error) bool { release(); return recheck }
 	childID := strings.TrimSpace(started.descriptor.ChildSessionID)
 	if childID == "" {
 		return nil, false, finish, errors.New("delegate restore child identity is unavailable")
@@ -3092,11 +3105,13 @@ func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (
 		reconstructed, waitErr := pending.wait()
 		return reconstructed, false, finish, waitErr
 	}
-	finish = func(sub *subagent, restoreErr error) {
+	finish = func(sub *subagent, restoreErr error) bool {
 		defer release()
 		s.subagents.finishReconstruction(childID, pending, sub, restoreErr)
+		return recheck
 	}
-	sub, restored, restoreErr := runtime.restoreIdle(started)
+	sub, restored, reclaimed, restoreErr := runtime.restoreIdle(started)
+	recheck = reclaimed
 	return sub, restored, finish, restoreErr
 }
 

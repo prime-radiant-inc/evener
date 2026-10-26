@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -128,7 +129,183 @@ func runFinalizationHandoffOwnedByRunner(t *testing.T) {
 	})
 }
 
+func TestFinalizationHandoffCreateReclamationOuterAdmission(t *testing.T) {
+	t.Parallel()
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = repeatFinalResponse(2, "complete")
+	root := restoreSupervisionRoot(t, fixture, nil)
+	rc, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.AttachRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	c := root.delegateController
+	entered, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	root.cfg.testOnly.subagentBeforeGenerationReleased = func(_ *subagent, lease delegateLease) {
+		if lease.delegateID == fixture.delegateID {
+			close(entered)
+			<-release
+		}
+	}
+	warmStableDelegateUnservedRoot(t, root, fixture)
+	<-entered
+	c.mu.Lock()
+	c.maxRetainedTerminal = 1
+	c.mu.Unlock()
+	observed := make(chan int, 10)
+	root.cfg.testOnly.notificationRecheckBeforeDispatch = func() {
+		c.mu.Lock()
+		cleared := c.live[fixture.delegateID].runtime == nil && c.live[fixture.delegateID].finalizing == nil
+		c.mu.Unlock()
+		if !cleared {
+			return
+		}
+		rc.mu.Lock()
+		active := 0
+		for _, blocker := range rc.active {
+			if blocker.SessionID == root.ID() && blocker.Category == "delegate" {
+				active++
+			}
+		}
+		rc.mu.Unlock()
+		select {
+		case observed <- active:
+		default:
+		}
+	}
+	result := root.createDelegate(context.Background(), delegateArgs{Task: "new delegate after reclamation"})
+	unblock()
+	root.sendersWG.Wait()
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	select {
+	case active := <-observed:
+		if active != 0 {
+			t.Fatalf("reclamation recheck retained %d root delegate retirement admission(s)", active)
+		}
+	default:
+		t.Fatal("reclamation handoff did not fire")
+	}
+}
+
+func TestFinalizationHandoffRecursiveWakeOuterAdmission(t *testing.T) {
+	// Not parallel: the empty-fold barrier wraps the package-wide filesystem seam.
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = repeatFinalResponse(1, "complete")
+	root := restoreSupervisionRoot(t, fixture, nil)
+	rc, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.AttachRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	c := root.delegateController
+	if _, err := c.openDelegateAttention(fixture.delegateID, "stale-empty-handoff"); err != nil {
+		t.Fatal(err)
+	}
+	path := transcriptPath(root.stateDir, fixture.childID)
+	if err := os.Chtimes(path, time.Unix(1, 0), time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	compute := readExistingDelegateAttentionFoldCompute
+	entered, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	var once sync.Once
+	readExistingDelegateAttentionFoldCompute = func(readPath, sessionID string) (delegateAttentionFold, int64, error) {
+		fold, consumed, readErr := compute(readPath, sessionID)
+		if readPath == path && readErr == nil && len(fold.pendingIDs()) == 0 {
+			once.Do(func() { close(entered); <-release })
+		}
+		return fold, consumed, readErr
+	}
+	done := make(chan error, 1)
+	joined := false
+	defer func() {
+		unblock()
+		if !joined {
+			<-done
+		}
+		root.sendersWG.Wait()
+		readExistingDelegateAttentionFoldCompute = compute
+	}()
+	go func() { done <- c.requestSessionWake(fixture.childID) }()
+	<-entered
+	// Remember this invocation's exact lease, not unrelated runner admissions.
+	rc.mu.Lock()
+	outerLeases := make(map[uint64]bool)
+	for lease, blocker := range rc.active {
+		if blocker.SessionID == root.ID() && blocker.Category == "delegate" {
+			outerLeases[lease] = true
+		}
+	}
+	rc.mu.Unlock()
+	if len(outerLeases) != 1 {
+		t.Fatalf("empty wake outer admissions=%d, want 1", len(outerLeases))
+	}
+	// Controlled old-finalization seam, as in the attachment carrier tests.
+	// Real restoration must release it and carry true through the recursive pass.
+	admission := make(chan struct{})
+	root.delegateRestoreAfterCommit = func(id string) {
+		c.mu.Lock()
+		if c.live[id] == nil {
+			c.live[id] = &delegateLiveState{}
+		}
+		c.live[id].finalizing = &delegateFinalization{runtime: &Session{}, released: admission}
+		c.mu.Unlock()
+	}
+	observed := make(chan bool, 10)
+	root.cfg.testOnly.notificationRecheckBeforeDispatch = func() {
+		select {
+		case <-admission:
+		default:
+			return
+		}
+		rc.mu.Lock()
+		retained := false
+		for lease := range outerLeases {
+			_, active := rc.active[lease]
+			retained = retained || active
+		}
+		rc.mu.Unlock()
+		select {
+		case observed <- retained:
+		default:
+		}
+	}
+	if err := c.enqueueNotification(fixture.childID, handoffNotification()); err != nil {
+		t.Fatal(err)
+	}
+	unblock()
+	err = <-done
+	joined = true
+	root.sendersWG.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case retained := <-observed:
+		if retained {
+			t.Fatal("recursive recheck retained the empty wake's outer retirement admission")
+		}
+	default:
+		t.Fatal("recursive restoration did not produce a finalization handoff")
+	}
+	assertHandoffRaw(t, path, true)
+}
+
 // Direct fixture attachments have no enclosing manager/restore admission.
+func recheckNotificationsForTest(c *delegateTreeController, recheck bool) {
+	if recheck {
+		c.recheckNotificationReceivers()
+	}
+}
+
 func attachRuntimeWithHandoffForTest(c *delegateTreeController, lease delegateLease, runtime *Session) error {
 	recheck, err := c.AttachRuntime(lease, runtime)
 	if recheck {
@@ -510,6 +687,64 @@ func TestFinalizationHandoffAttachmentBoundaries(t *testing.T) {
 
 func TestFinalizationHandoffReleaseCarriers(t *testing.T) {
 	t.Parallel()
+	t.Run("restore_reclamation_failure", func(t *testing.T) {
+		root, _, _ := newDelegateResourceBootstrapSession(t)
+		c := root.delegateController
+		c.maxRetainedTerminal = 1
+		resident := seedDelegateReclaimRuntime(t, c, "dlg_old", "", time.Unix(5, 0).UTC(), false, false)
+		released := make(chan struct{})
+		c.mu.Lock()
+		c.live["dlg_old"].finalizing = &delegateFinalization{runtime: resident, released: released}
+		target := delegateControllerCreatedEvent("dlg_restore", "")
+		target.Created.Descriptor.OwnerSessionID = root.ID()
+		_, err := c.appendLocked(target)
+		c.mu.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+		reservation, err := c.ReserveStart(rootDelegateActor(root.ID()), "dlg_restore")
+		if err != nil {
+			t.Fatal(err)
+		}
+		started, err := c.CommitStart(reservation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
+		rc, err := NewRetirementController(0, clock.Real())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rc.AttachRoot(root); err != nil {
+			t.Fatal(err)
+		}
+		outerRelease, err := root.beginRetirementMutation("delegate")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer outerRelease()
+		root.cfg.testOnly.delegateRuntimeReclaimClose = func(*Session) {}
+		rechecks := 0
+		root.cfg.testOnly.notificationRecheckBeforeDispatch = func() { rechecks++ }
+		_, _, finish, restoreErr := (delegateRuntime{owner: root}).restoreIdleForSend(started)
+		recheck := finish(nil, restoreErr)
+		if !errors.Is(restoreErr, os.ErrNotExist) || !recheck {
+			t.Fatalf("failed restore carrier recheck=%v err=%v", recheck, restoreErr)
+		}
+		select {
+		case <-released:
+		default:
+			t.Fatal("reclamation retained the finalization admission")
+		}
+		if rechecks != 0 {
+			t.Fatalf("restoration consumed %d rechecks before its outer caller", rechecks)
+		}
+		outerRelease()
+		recheckNotificationsForTest(c, recheck)
+		if rechecks != 1 {
+			t.Fatalf("outer consumer dispatched %d rechecks, want 1", rechecks)
+		}
+	})
 	for _, stop := range []bool{false, true} {
 		t.Run(map[bool]string{false: "failed_start", true: "stop_reconciliation"}[stop], func(t *testing.T) {
 			c, _ := newDelegateControllerTestHarness(t, 2, 2)
@@ -602,7 +837,9 @@ func TestFinalizationHandoffReleaseCarriers(t *testing.T) {
 				c.mu.Unlock()
 				err = c.releaseRetiredRuntimes(map[string]*Session{"carrier": runtime})
 			} else {
-				err = c.CompleteRuntimeReclamation(claim, map[string]*Session{"carrier": runtime})
+				var reclaimed bool
+				reclaimed, err = c.CompleteRuntimeReclamation(claim, map[string]*Session{"carrier": runtime})
+				recheckNotificationsForTest(c, reclaimed)
 			}
 			if err != nil {
 				t.Fatal(err)

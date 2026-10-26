@@ -52,10 +52,14 @@ wake. An external owner closes the session after the handoff.
 
 Releasing a finalization fence permits waiting admissions to retry immediately.
 The operation that released it carries its notification recheck past enclosing
-locks, reconstruction publication and restore/start admissions, then runs the
-recheck synchronously before it completes. The admission-release channel is not
-a tail-completion channel. An already-closing controller or root ends that old
-runtime's traversal, leaving persisted custody for restoration. Only the exact
+locks, reconstruction publication and all enclosing retirement and restore/start
+admissions, then runs the recheck synchronously before it completes. Capacity
+reclamation returns the effect through create or restoration to that operation's
+outer consumer. Recursive empty-to-pending wake passes return the effect to the
+original wake caller rather than consuming it inside an outer wake admission.
+The admission-release channel is not a tail-completion channel. An already-closing
+controller or root ends that old runtime's traversal, leaving persisted custody
+for restoration. Only the exact
 early controller-close refusal is classified as shutdown. Storage, target and
 retirement failures remain diagnostic errors.
 

@@ -310,11 +310,12 @@ func TestRestoreIdleFailureOnASharedEnvKeepsTheParentTempContainer(t *testing.T)
 		Resumable:         true,
 	}
 	saveColdRestorableChild(t, stateDir, meta, childID, meta.ID, childDescriptor.Task, childWorkspace, 1)
-	childSub, _, err := (delegateRuntime{owner: root}).restoreIdle(delegateStartCommit{
+	childSub, _, recheck, err := (delegateRuntime{owner: root}).restoreIdle(delegateStartCommit{
 		lease:      delegateLease{delegateID: identifier.MustNewDelegateID()},
 		ctx:        context.Background(),
 		descriptor: childDescriptor,
 	})
+	t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
 	if err != nil {
 		t.Fatalf("restore the child owner: %v", err)
 	}
@@ -384,11 +385,13 @@ func TestRestoreIdleFailureOnASharedEnvKeepsTheParentTempContainer(t *testing.T)
 		return nil
 	}
 
-	if _, _, err := (delegateRuntime{owner: parent}).restoreIdle(delegateStartCommit{
+	_, _, grandchildRecheck, err := (delegateRuntime{owner: parent}).restoreIdle(delegateStartCommit{
 		lease:      delegateLease{delegateID: identifier.MustNewDelegateID()},
 		ctx:        context.Background(),
 		descriptor: grandchildDescriptor,
-	}); !errors.Is(err, boom) {
+	})
+	t.Cleanup(func() { recheckNotificationsForTest(parent.delegateController, grandchildRecheck) })
+	if !errors.Is(err, boom) {
 		t.Fatalf("restoreIdle error = %v, want %v", err, boom)
 	}
 

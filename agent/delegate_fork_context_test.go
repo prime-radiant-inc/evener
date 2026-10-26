@@ -195,8 +195,12 @@ func TestDelegateForkContext_ColdResumePreservesSnapshot(t *testing.T) {
 	root.delegateController.mu.Lock()
 	root.delegateController.maxRetainedTerminal = 1
 	root.delegateController.mu.Unlock()
-	if err := root.reclaimDelegateRuntimeCapacity(1); err != nil {
-		t.Fatal(err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(1)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if root.getSub(result.ChildSessionID) != nil {
 		t.Fatal("child runtime was not reclaimed")

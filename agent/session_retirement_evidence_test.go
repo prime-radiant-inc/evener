@@ -3062,8 +3062,12 @@ func TestRetirementSafetyColdGoal(t *testing.T) {
 	if _, err := child.SetGoal(t.Context(), "original-cold-goal-objective"); err != nil {
 		t.Fatal(err)
 	}
-	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
-		t.Fatal(err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if tree.residentDelegateRuntime(d.DelegateID) != nil || root.subagents.get(d.ChildSessionID) != nil {
 		t.Fatal("real reclamation did not make delegate cold")
@@ -3125,8 +3129,12 @@ func TestRetirementSafetyColdGoal(t *testing.T) {
 	if settled == nil || settled.Objective != original.Goal.Objective || settled.Status != "complete" {
 		t.Fatalf("actual resumed tool did not settle original goal: %+v", settled)
 	}
-	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
-		t.Fatal(err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	terminal, err := schema.LoadSessionMeta(root.stateDir, d.ChildSessionID)
 	if err != nil {
@@ -3154,8 +3162,12 @@ func TestRetirementSafetyColdJobEvidence(t *testing.T) {
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
-	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
-		t.Fatal(err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if tree.residentDelegateRuntime(d.DelegateID) != nil || root.subagents.get(d.ChildSessionID) != nil {
 		t.Fatal("real reclamation did not make delegate cold")
@@ -3373,8 +3385,12 @@ func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	sub.mu.Lock()
 	attentionRunDone := sub.done
 	sub.mu.Unlock()
-	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
-		t.Fatal(err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if tree.residentDelegateRuntime(d.DelegateID) == nil {
 		t.Fatal("pending shell attention did not pin the delegate resident")
@@ -3655,8 +3671,12 @@ func TestRetirementSafetyColdJobWatchContent(t *testing.T) {
 	if pending := settledAttn.pendingIDs(); len(pending) != 0 {
 		t.Fatalf("settled delegate still owes original shell attention: %v", pending)
 	}
-	if err := root2.reclaimDelegateRuntimeCapacity(tree2.maxRetainedTerminal); err != nil {
-		t.Fatal(err)
+	{
+		recheck, err := root2.reclaimDelegateRuntimeCapacity(tree2.maxRetainedTerminal)
+		recheckNotificationsForTest(root2.delegateController, recheck)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if tree2.residentDelegateRuntime(d.DelegateID) != nil {
 		t.Fatal("settled original did not go cold again")

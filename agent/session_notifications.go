@@ -430,42 +430,47 @@ func (notificationWakeClosingError) Error() string { return errDelegateTargetBus
 func (notificationWakeClosingError) Unwrap() error { return errDelegateTargetBusy }
 
 func (c *delegateTreeController) requestSessionWake(sessionID string) error {
-	if c == nil {
-		return errDelegateDeliveryReceiverUnavailable
+	recheck, err := c.requestSessionWakeEffect(sessionID)
+	if recheck {
+		c.recheckNotificationReceivers()
 	}
+	return err
+}
+
+// Recursive empty-to-pending passes return their effect to the original caller,
+// after every enclosing retirement admission and restore hold has unwound.
+func (c *delegateTreeController) requestSessionWakeEffect(sessionID string) (bool, error) {
 	var recheck bool
-	defer func() {
-		if recheck {
-			c.recheckNotificationReceivers()
-		}
-	}()
+	if c == nil {
+		return false, errDelegateDeliveryReceiverUnavailable
+	}
 	release, err := c.beginRetirementMutation()
 	if err != nil {
-		return err
+		return recheck, err
 	}
 	defer release()
 	c.mu.Lock()
 	if c.closing {
 		c.mu.Unlock()
-		return notificationWakeClosingError{}
+		return recheck, notificationWakeClosingError{}
 	}
 	if sessionID == c.rootSessionID {
 		root := c.rootRuntime
 		c.mu.Unlock()
 		if root != nil {
-			return root.dispatchNotificationWake()
+			return recheck, root.dispatchNotificationWake()
 		}
-		return errDelegateDeliveryReceiverUnavailable
+		return recheck, errDelegateDeliveryReceiverUnavailable
 	}
 	id := c.delegateOwnerOfSessionLocked(sessionID)
 	if id == "" {
 		c.mu.Unlock()
-		return errDelegateDeliveryReceiverUnavailable
+		return recheck, errDelegateDeliveryReceiverUnavailable
 	}
 	if live := c.live[id]; live != nil && live.runtime != nil {
 		receiver := live.runtime
 		c.mu.Unlock()
-		return receiver.releaseNotificationAdmission()
+		return recheck, receiver.releaseNotificationAdmission()
 	}
 	run := c.durable[id]
 	if run != nil && run.Phase == delegatestore.PhaseRunning && run.CurrentRunOpen {
@@ -474,7 +479,7 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		blocked := c.stopCoversLocked(id) || c.reclamationCoversLocked(id) || c.hasColdDeliveryWorkForOwnerLocked(id)
 		c.mu.Unlock()
 		if blocked || root == nil {
-			return nil
+			return recheck, nil
 		}
 		path, expectedID, pendingErr := delegateTranscriptPathFromRef(stateDir, ref)
 		var fold delegateAttentionFold
@@ -483,18 +488,18 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		}
 		if pendingErr != nil {
 			c.scheduleSessionWakeRetry(sessionID)
-			return pendingErr
+			return recheck, pendingErr
 		}
 		if len(fold.pendingIDs()) == 0 {
-			return nil
+			return recheck, nil
 		}
 		_, sub, released, restoreErr := root.restoreColdDelegateAttentionRuntime(id)
 		recheck = recheck || released
 		if restoreErr != nil {
 			c.scheduleSessionWakeRetry(sessionID)
-			return restoreErr
+			return recheck, restoreErr
 		}
-		return sub.sess.releaseNotificationAdmission()
+		return recheck, sub.sess.releaseNotificationAdmission()
 	}
 	// Restore can replay a committed receiver's still-unacknowledged source
 	// packet. Its deferred wake must not join the reconstruction it is inside.
@@ -502,7 +507,7 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 	// on failure. This hold is receiver-scoped, not a fence on other receivers.
 	if c.attentionRestoreHeldLocked(id) {
 		c.mu.Unlock()
-		return nil
+		return recheck, nil
 	}
 	state := c.attention[id]
 	paused := state != nil && state.parked
@@ -524,11 +529,11 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		} else {
 			root.delegateAttentionWarningResolved(delegateAttentionEscalateLabel, id)
 		}
-		return err
+		return recheck, err
 	}
 	if !ready || paused || root == nil {
 		c.mu.Unlock()
-		return nil
+		return recheck, nil
 	}
 	ref := c.durable[id].Descriptor.TranscriptRef
 	stateDir := c.stateDir
@@ -553,7 +558,7 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 				if hook := root.cfg.testOnly.afterSessionWakeRecoveryScheduled; hook != nil {
 					hook(sessionID, err)
 				}
-				return err
+				return recheck, err
 			}
 			// Acceptance may have coalesced behind this empty pass's hold.
 			// Clear revalidates custody but does not dispatch pending content.
@@ -565,9 +570,9 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 			c.mu.Unlock()
 			holdingRestore = false
 			if pending {
-				return c.requestSessionWake(sessionID)
+				return c.requestSessionWakeEffect(sessionID)
 			}
-			return nil
+			return recheck, nil
 		}
 	}
 	var sub *subagent
@@ -585,7 +590,7 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		if hook := root.cfg.testOnly.afterSessionWakeRecoveryScheduled; hook != nil {
 			hook(sessionID, err)
 		}
-		return err
+		return recheck, err
 	}
 	c.delegateAttentionRestored(id)
 	root.delegateAttentionWarningResolved(delegateAttentionRestoreLabel, id)
@@ -594,7 +599,7 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 	}
 	// Callback installation can refuse before AttachIdleRuntime completes.
 	// Attachment releases that existing admission hold, as on the resident path.
-	return sub.sess.releaseNotificationAdmission()
+	return recheck, sub.sess.releaseNotificationAdmission()
 }
 
 func (c *delegateTreeController) scheduleSessionWakeRetry(sessionID string) {
