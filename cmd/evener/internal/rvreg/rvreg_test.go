@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -16,8 +17,8 @@ import (
 // TestRegistrationFailedUpdateLeavesMemoryAndDiskAgreeing is the regression
 // for UpdateSessionID mutating the in-registration copy BEFORE it persists the
 // new identity. A rendezvous write that fails (here: a directory staged where
-// the atomic write puts <pid>.json.tmp, so the write fails while the previous
-// record stays on disk) must leave memory holding the identity that is
+// the per-PID ownership lock file lives, so the write fails before it touches
+// the previous record) must leave memory holding the identity that is
 // actually on disk. Without that, Remove compares a memory identity newer than
 // the file, sees the mismatch, and diskHoldsReplacement misreads the stale
 // file as a live replacement's entry — declaring a completed no-op while
@@ -39,9 +40,16 @@ func TestRegistrationFailedUpdateLeavesMemoryAndDiskAgreeing(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	artifact := filepath.Join(runDir, fmt.Sprintf("%d.json", pid))
-	// A directory at the temp path the atomic write renames from makes the
-	// update's write fail and leaves the registered record untouched.
-	sabotage := artifact + ".tmp"
+	// A directory where the ownership lock file is makes the update's write
+	// fail and leaves the registered record untouched. Only platforms with
+	// the flock-based ownership lock can be sabotaged this way.
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("no ownership lock file to sabotage on this platform")
+	}
+	sabotage := filepath.Join(runDir, fmt.Sprintf("%d.lock", pid))
+	if err := os.Remove(sabotage); err != nil {
+		t.Fatalf("remove ownership lock file: %v", err)
+	}
 	if err := os.Mkdir(sabotage, 0o700); err != nil {
 		t.Fatalf("sabotage rendezvous write: %v", err)
 	}
