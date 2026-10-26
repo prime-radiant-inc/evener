@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // attachmentsSubdir is the per-session directory, under
@@ -174,11 +175,10 @@ func writeAttachmentFile(path string, data []byte, write func(*os.File, []byte) 
 // dedupe hit — because a create whose dir sync failed leaves the file in
 // place (the jobs-store posture) and the retry must complete the flush
 // instead of masking it. A filesystem that cannot sync a directory at all
-// reports the same unsupported-sync errors the client-mutation store
-// tolerates; the file's own contents are already flushed there.
+// reports an unsupported-sync error (fsatomic.SyncUnsupported); the file's own contents are already flushed there.
 func syncAttachmentDirs(path string, syncDir func(string) error) error {
 	for _, dir := range []string{filepath.Dir(path), filepath.Dir(filepath.Dir(path))} {
-		if err := syncDir(dir); err != nil && !clientMutationSyncUnsupported(err) {
+		if err := syncDir(dir); err != nil && !fsatomic.SyncUnsupported(err) {
 			return err
 		}
 	}

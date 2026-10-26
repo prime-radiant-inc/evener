@@ -719,12 +719,7 @@ func (c *delegateTreeController) releaseReservationLocked(record *delegateStartR
 		close(record.done)
 		record.done = nil
 	}
-	if c.stop != nil {
-		if _, tracked := c.stop.starts[record.token]; tracked {
-			delete(c.stop.starts, record.token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[uint64]struct{} { return s.starts }, record.token)
 	c.releaseCapacityLocked(record.capacityKind)
 	c.evidenceVersion++
 	return record.cancel
@@ -828,12 +823,7 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 		close(record.done)
 		record.done = nil
 	}
-	if c.stop != nil {
-		if _, tracked := c.stop.starts[record.token]; tracked {
-			delete(c.stop.starts, record.token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[uint64]struct{} { return s.starts }, record.token)
 	live := c.live[record.delegateID]
 	if live == nil {
 		live = &delegateLiveState{}

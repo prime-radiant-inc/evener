@@ -122,6 +122,16 @@ function needsYouCanDemand(state: ReturnType<typeof navigationStore.getState>): 
   return retryingPopulatedPage || selectSectionCanDemand("needs_you", state);
 }
 
+// The next needs-you session after the focused one. While more of the queue is
+// unloaded, the last loaded row has no known successor: wrapping to the first
+// row would skip rows not yet read, so the answer is null until they load.
+function resolveNextRef(state: ReturnType<typeof navigationStore.getState>): string | null {
+  const refs = [...new Set(needsYouRefs(selectNeedsYouRows(state)))];
+  const focused = focusedSessionRef();
+  if (selectSectionRemaining("needs_you", state) > 0 && focused === refs.at(-1)) return null;
+  return nextNeedsYouRef(refs, focused);
+}
+
 export function createNeedsYouController(options: NeedsYouControllerOptions = {}): NeedsYouController {
   let actionSerial = 0;
   let disposed = false;
@@ -148,10 +158,7 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
         refreshState,
       };
     });
-    const remaining = selectSectionRemaining("needs_you", state);
-    const refs = needsYouRefs(uniqueRows);
-    let nextRef = nextNeedsYouRef(refs, focusedSessionRef());
-    if (remaining > 0 && focusedSessionRef() === refs.at(-1)) nextRef = null;
+    const nextRef = resolveNextRef(state);
     const pages = needsYouPages(state);
     const failed = pages.some((page) => !!page.error);
     const loading = pages.some((page) => page.loading);
@@ -388,10 +395,7 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     const routeAtStart = routeSerial;
     let state = navigationStore.getState();
     const rows = selectNeedsYouRows(state);
-    let nextRef = nextNeedsYouRef(needsYouRefs(rows), focusedSessionRef());
-    const remaining = selectSectionRemaining("needs_you", state);
-    const uniqueRefs = needsYouRefs(rows);
-    if (remaining > 0 && focusedSessionRef() === uniqueRefs.at(-1)) nextRef = null;
+    let nextRef = resolveNextRef(state);
     if (
       !nextRef ||
       !rows.some((row) => {
@@ -406,12 +410,8 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
         state = navigationStore.getState();
         if (disposed || serial !== actionSerial) return;
         if (sourceIdentity() !== sourceAtStart || routeSerial !== routeAtStart || snapshot.blocked) return;
-        const freshRows = selectNeedsYouRows(state);
-        nextRef = nextNeedsYouRef(needsYouRefs(freshRows), focusedSessionRef());
-        const freshRefs = needsYouRefs(freshRows);
-        const freshRemaining = selectSectionRemaining("needs_you", state);
-        if (freshRemaining > 0 && focusedSessionRef() === freshRefs.at(-1)) nextRef = null;
-        if (!nextRef && freshRemaining > 0) return;
+        nextRef = resolveNextRef(state);
+        if (!nextRef && selectSectionRemaining("needs_you", state) > 0) return;
       }
     }
     if (!nextRef || sourceIdentity() !== sourceAtStart || routeSerial !== routeAtStart || snapshot.blocked) return;

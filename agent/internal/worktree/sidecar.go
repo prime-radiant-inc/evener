@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 var sidecarWrite = func(f *os.File, raw []byte) (int, error) { return f.Write(raw) }
@@ -235,7 +237,7 @@ func replaceSidecar(path string, raw []byte) error {
 		return err
 	}
 	committed = true
-	return syncDir(dir)
+	return fsatomic.SyncDir(dir)
 }
 
 // DeleteSidecar removes name's sidecar from metaDir. A missing file returns

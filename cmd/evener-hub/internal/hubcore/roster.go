@@ -836,97 +836,26 @@ func (r *Roster) refresh() error {
 			res.OK = false
 		}
 		if !res.OK {
-			alive := identity != ProcessNotOwner
-			if alive {
-				for _, claim := range previousUnconfirmed {
-					if claim.PID == e.PID {
-						retainUnconfirmed(claim)
+			prev, had := prevByPID[e.PID]
+			miss := classifyMissedProbe(prev, had, e, identity, previousUnconfirmed)
+			for _, claim := range miss.retain {
+				retainUnconfirmed(claim)
+			}
+			switch miss.kind {
+			case missReused:
+				byPID[e.PID] = miss.entry
+				if miss.entry.SessionID != "" {
+					if current, ok := bySess[miss.entry.SessionID]; !ok || preferLiveEntry(miss.entry, current) {
+						bySess[miss.entry.SessionID] = miss.entry
 					}
 				}
-			}
-			// A transient probe miss preserves a route only while the complete
-			// rendezvous identity is unchanged. PID liveness cannot confirm a
-			// replacement's ownership of either the old or the new session.
-			//
-			// Nor can it tell a busy daemon from a PID the kernel reused after
-			// the daemon crashed: both miss the probe, both answer signal 0,
-			// and the crashed daemon's file is byte-identical. The identity
-			// verdict taken above folds into `alive`, so a PID verified not
-			// to be the daemon's never reaches this branch: it takes the
-			// crashed path below and leaves the listing, which is what lets
-			// the relay announce the daemon gone.
-			if prev, had := prevByPID[e.PID]; had && alive {
-				if !sameDaemonIdentity(prev.Entry, e) {
-					retainUnconfirmed(prev.Entry)
-					resolved := prev.Entry
-					resolved.SessionID = prev.SessionID
-					retainUnconfirmed(resolved)
-					retainUnconfirmed(e)
-					continue
-				}
-				// The exact identity still matches, so keep the last-known route
-				// and status. The probe itself failed, though, so this reused entry
-				// carries no fresh lifecycle observation: clear the capability and
-				// mark it stale. Stale lifecycle data must never present as current
-				// eligibility, and a stale row must not offer a retire action.
-				prev.Lifecycle = nil
-				prev.LifecycleFresh = false
-				byPID[e.PID] = prev
-				if prev.SessionID != "" {
-					if current, ok := bySess[prev.SessionID]; !ok || preferLiveEntry(prev, current) {
-						bySess[prev.SessionID] = prev
-					}
-				}
-				continue
-			}
-			if alive {
-				retainUnconfirmed(e)
-				continue // ownership is unresolved; do not publish it as a live daemon
-			}
-			// The process is confirmed GONE, yet its rendezvous file is still
-			// on disk. The rendezvous package writes that file on startup and
-			// removes it only on graceful shutdown (rvreg.Registration.Remove);
-			// a file surviving its own PID's death means the daemon never got
-			// to run that cleanup - a crash, not a normal exit (kata zm6s: a
-			// SIGKILLed session read identically to one that finished its
-			// task). Surface it as "errored" instead of silently dropping it,
-			// using whichever session id the file itself carries - it was
-			// written before the daemon could die, so this needs no in-memory
-			// history and survives a hub restart discovering an
-			// already-stale file just as well as watching the crash live.
-			sessionID := envvars.FirstNonEmpty(e.SessionID, e.ThreadID)
-			if sessionID == "" {
-				// Never resolved an id; nothing to attribute the crash to. The
-				// file on disk is pure garbage, so reclaim it instead of
-				// rescanning it on every refresh forever. Removal failure is
-				// non-fatal (same stance as the List error above): the file
-				// just survives until a later refresh. Removal is exact-owned:
-				// if a replacement daemon has since reused this PID and
-				// rewritten the file, it is not ours to unlink, so the guard's
-				// refusal is a normal no-op rather than an error to surface.
+			case missReclaim:
 				_ = rendezvous.RemoveIfOwned(r.runDir, e)
-				continue
-			}
-			if time.Since(e.StartedAt) > crashedFileRetention {
-				// Old enough that crash reporting no longer matters: drop the
-				// entry and unlink the file so dead-pid rendezvous files stop
-				// accumulating forever. Fresh crashes keep the retained
-				// "errored" contract below untouched.
-				_ = rendezvous.RemoveIfOwned(r.runDir, e)
-				continue
-			}
-			crashed := LiveEntry{Entry: e, SessionID: sessionID}
-			if prev, had := prevByPID[e.PID]; had {
-				// Prefer the roster's own richer last-seen snapshot (ask/
-				// subagent state) when available; a crash always overrides
-				// whatever status the daemon last reported before dying.
-				crashed = prev
-			}
-			crashed.Status = "errored"
-			crashed.Crashed = true
-			byPID[e.PID] = crashed
-			if current, ok := bySess[sessionID]; !ok || preferLiveEntry(crashed, current) {
-				bySess[sessionID] = crashed
+			case missCrashed:
+				byPID[e.PID] = miss.entry
+				if current, ok := bySess[miss.sessionID]; !ok || preferLiveEntry(miss.entry, current) {
+					bySess[miss.sessionID] = miss.entry
+				}
 			}
 			continue
 		}
@@ -1144,6 +1073,130 @@ func (r *Roster) RefreshAndWait(ctx context.Context) error {
 	case <-batch.done:
 		return batch.err
 	}
+}
+
+type missKind int
+
+const (
+	// missRetained: the process may still be the daemon but nothing confirms
+	// it, so the entry stays an unconfirmed claim and is not published.
+	missRetained missKind = iota
+	// missReused: the exact rendezvous identity still matches the last
+	// confirmed one, so that row is kept with its lifecycle marked stale.
+	missReused
+	// missReclaim: the daemon is gone and its file is not worth reporting; the
+	// refresh unlinks it.
+	missReclaim
+	// missCrashed: the daemon is gone and left its file behind; the row is
+	// published as errored.
+	missCrashed
+)
+
+// missOutcome is what one refresh does with an entry whose probe missed.
+type missOutcome struct {
+	kind missKind
+	// retain lists the unconfirmed claims to keep, in order.
+	retain []rendezvous.Entry
+	// entry is the row to publish for missReused and missCrashed.
+	entry LiveEntry
+	// sessionID is the session a missCrashed row is indexed under.
+	sessionID string
+}
+
+// classifyMissedProbe decides what a probe that did not confirm entry e means.
+// prev is the last confirmed row for e's PID (had reports whether there is
+// one), identity is the host's verdict on the process behind the PID, and
+// previousUnconfirmed holds the claims the previous refresh kept.
+func classifyMissedProbe(prev LiveEntry, had bool, e rendezvous.Entry, identity ProcessIdentity, previousUnconfirmed []rendezvous.Entry) missOutcome {
+	var outcome missOutcome
+	alive := identity != ProcessNotOwner
+	if alive {
+		for _, claim := range previousUnconfirmed {
+			if claim.PID == e.PID {
+				outcome.retain = append(outcome.retain, claim)
+			}
+		}
+	}
+	// A transient probe miss preserves a route only while the complete
+	// rendezvous identity is unchanged. PID liveness cannot confirm a
+	// replacement's ownership of either the old or the new session.
+	//
+	// Nor can it tell a busy daemon from a PID the kernel reused after
+	// the daemon crashed: both miss the probe, both answer signal 0,
+	// and the crashed daemon's file is byte-identical. The identity
+	// verdict taken above folds into `alive`, so a PID verified not
+	// to be the daemon's never reaches this branch: it takes the
+	// crashed path below and leaves the listing, which is what lets
+	// the relay announce the daemon gone.
+	if had && alive {
+		if !sameDaemonIdentity(prev.Entry, e) {
+			resolved := prev.Entry
+			resolved.SessionID = prev.SessionID
+			outcome.kind = missRetained
+			outcome.retain = append(outcome.retain, prev.Entry, resolved, e)
+			return outcome
+		}
+		// The exact identity still matches, so keep the last-known route
+		// and status. The probe itself failed, though, so this reused entry
+		// carries no fresh lifecycle observation: clear the capability and
+		// mark it stale. Stale lifecycle data must never present as current
+		// eligibility, and a stale row must not offer a retire action.
+		prev.Lifecycle = nil
+		prev.LifecycleFresh = false
+		outcome.kind = missReused
+		outcome.entry = prev
+		return outcome
+	}
+	if alive {
+		outcome.kind = missRetained
+		outcome.retain = append(outcome.retain, e)
+		return outcome // ownership is unresolved; do not publish it as a live daemon
+	}
+	// The process is confirmed GONE, yet its rendezvous file is still
+	// on disk. The rendezvous package writes that file on startup and
+	// removes it only on graceful shutdown (rvreg.Registration.Remove);
+	// a file surviving its own PID's death means the daemon never got
+	// to run that cleanup - a crash, not a normal exit (kata zm6s: a
+	// SIGKILLed session read identically to one that finished its
+	// task). Surface it as "errored" instead of silently dropping it,
+	// using whichever session id the file itself carries - it was
+	// written before the daemon could die, so this needs no in-memory
+	// history and survives a hub restart discovering an
+	// already-stale file just as well as watching the crash live.
+	sessionID := envvars.FirstNonEmpty(e.SessionID, e.ThreadID)
+	if sessionID == "" {
+		// Never resolved an id; nothing to attribute the crash to. The
+		// file on disk is pure garbage, so reclaim it instead of
+		// rescanning it on every refresh forever. Removal failure is
+		// non-fatal (same stance as the List error above): the file
+		// just survives until a later refresh. Removal is exact-owned:
+		// if a replacement daemon has since reused this PID and
+		// rewritten the file, it is not ours to unlink, so the guard's
+		// refusal is a normal no-op rather than an error to surface.
+		outcome.kind = missReclaim
+		return outcome
+	}
+	if time.Since(e.StartedAt) > crashedFileRetention {
+		// Old enough that crash reporting no longer matters: drop the
+		// entry and unlink the file so dead-pid rendezvous files stop
+		// accumulating forever. Fresh crashes keep the retained
+		// "errored" contract below untouched.
+		outcome.kind = missReclaim
+		return outcome
+	}
+	crashed := LiveEntry{Entry: e, SessionID: sessionID}
+	if had {
+		// Prefer the roster's own richer last-seen snapshot (ask/
+		// subagent state) when available; a crash always overrides
+		// whatever status the daemon last reported before dying.
+		crashed = prev
+	}
+	crashed.Status = "errored"
+	crashed.Crashed = true
+	outcome.kind = missCrashed
+	outcome.entry = crashed
+	outcome.sessionID = sessionID
+	return outcome
 }
 
 func (r *Roster) refreshOwnership() {
@@ -1573,23 +1626,7 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 	result := ProbeResultFromThread(root)
 	result.OK = true
 	if root.Evener.Diagnostics != nil {
-		result.RunningSubagentStates = make(map[string]string)
-		for _, delegate := range root.Evener.Diagnostics.Delegates {
-			if delegate.ChildSessionID == "" || delegate.Lifecycle == "closed" {
-				continue
-			}
-			state := ""
-			switch delegate.Lifecycle {
-			case "idle":
-				state = appwire.ThreadStatusIdle
-			case "running":
-				state = appwire.ThreadStatusActive
-				if delegate.NeedsAttention {
-					state = appwire.ThreadStatusAwaiting
-				}
-			}
-			result.RunningSubagentStates[delegate.ChildSessionID] = state
-		}
+		result.RunningSubagentStates = subagentStatesFromDelegates(root.Evener.Diagnostics)
 		for childID := range result.RunningSubagentStates {
 			result.RunningSubagentIDs = append(result.RunningSubagentIDs, childID)
 		}

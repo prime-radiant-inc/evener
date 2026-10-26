@@ -19,38 +19,10 @@ func (l authfz_badListener) Accept() (net.Conn, error) { return nil, errors.New(
 func (l authfz_badListener) Close() error              { return nil }
 func (l authfz_badListener) Addr() net.Addr            { return l.addr }
 
-type authfz_tempFile struct{ fail byte }
-
 type authfz_errContext struct{ context.Context }
 
 func (authfz_errContext) Done() <-chan struct{} { return nil }
 func (authfz_errContext) Err() error            { return context.Canceled }
-
-func (f *authfz_tempFile) Name() string { return "authfz-temp" }
-func (f *authfz_tempFile) Chmod(os.FileMode) error {
-	if f.fail == 0 {
-		return errors.New("chmod")
-	}
-	return nil
-}
-func (f *authfz_tempFile) Write(p []byte) (int, error) {
-	if f.fail == 1 {
-		return 0, errors.New("write")
-	}
-	return len(p), nil
-}
-func (f *authfz_tempFile) Sync() error {
-	if f.fail == 2 {
-		return errors.New("sync")
-	}
-	return nil
-}
-func (f *authfz_tempFile) Close() error {
-	if f.fail == 3 {
-		return errors.New("close")
-	}
-	return nil
-}
 
 func FuzzAuthOpenAIFaultSeams(f *testing.F) {
 	for i := byte(0); i < 18; i++ {
@@ -152,30 +124,10 @@ func FuzzAuthOpenAIFaultSeams(f *testing.F) {
 			authMarshal = func(any, string, string) ([]byte, error) { return nil, errors.New("marshal") }
 			t.Cleanup(func() { authMarshal = old })
 			_ = SaveAuth(t.TempDir(), "openai", sampleAuthRecord())
-		case 11:
-			old := authCreateTemp
-			authCreateTemp = func(string, string) (authTempFile, error) { return nil, errors.New("create") }
-			t.Cleanup(func() { authCreateTemp = old })
-			_ = SaveAuth(t.TempDir(), "openai", sampleAuthRecord())
-		case 12, 13, 14, 15:
-			oldCreate, oldRename := authCreateTemp, authRename
-			fail := (selector % 18) - 12
-			authCreateTemp = func(string, string) (authTempFile, error) { return &authfz_tempFile{fail: fail}, nil }
-			if fail == 3 {
-				authRename = func(string, string) error { return errors.New("rename") }
-			}
-			t.Cleanup(func() { authCreateTemp, authRename = oldCreate, oldRename })
-			_ = SaveAuth(t.TempDir(), "openai", sampleAuthRecord())
 		case 16:
 			old := authMkdirAll
 			authMkdirAll = func(string, os.FileMode) error { return errors.New("mkdir") }
 			t.Cleanup(func() { authMkdirAll = old })
-			_ = SaveAuth(t.TempDir(), "openai", sampleAuthRecord())
-		case 17:
-			oldCreate, oldRename := authCreateTemp, authRename
-			authCreateTemp = func(string, string) (authTempFile, error) { return &authfz_tempFile{fail: 99}, nil }
-			authRename = func(string, string) error { return errors.New("rename") }
-			t.Cleanup(func() { authCreateTemp, authRename = oldCreate, oldRename })
 			_ = SaveAuth(t.TempDir(), "openai", sampleAuthRecord())
 		}
 	})

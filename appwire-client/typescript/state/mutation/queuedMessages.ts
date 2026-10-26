@@ -34,8 +34,6 @@ export function matchesQueuedMessageSnapshot(record: MutationOutboxRecord, expec
   );
 }
 
-const REMOVABLE_MESSAGE_METHODS: ReadonlySet<string> = new Set(PENDING_TURN_METHODS);
-
 function hasContradictoryAttemptEvidence(record: MutationOutboxRecord): boolean {
   return record.attempted === true || (record.unresolvedAttempts !== undefined && record.unresolvedAttempts > 0);
 }
@@ -73,5 +71,5 @@ export function canEditQueuedMessage(record: MutationOutboxRecord): boolean {
 }
 
 export function canRemoveQueuedMessage(record: MutationOutboxRecord): boolean {
-  return isSafelyWaiting(record) && REMOVABLE_MESSAGE_METHODS.has(record.method);
+  return isSafelyWaiting(record) && PENDING_TURN_METHODS.includes(record.method);
 }

@@ -20,6 +20,7 @@ import (
 
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/internal/apptranscript"
 )
 
@@ -1292,11 +1293,7 @@ func persistCommCalls(m map[string]commState) []persistedCommCall {
 // writeFileAtomically replaces path by rename. There is no fsync: the index is
 // derived, and whatever a crash loses rebuilds or replays.
 func writeFileAtomically(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("write transcript index: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := fsatomic.WriteWithoutSync(path, data, 0o600); err != nil {
 		return fmt.Errorf("publish transcript index: %w", err)
 	}
 	return nil

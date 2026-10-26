@@ -1,12 +1,5 @@
+import { MERMAID_FORBID_TAGS } from "@evener/appwire-client";
 import DOMPurify from "dompurify";
-import { MERMAID_FORBID_TAGS } from "./forbidTags";
-
-// The forbid list lives in its zero-import leaf module (forbidTags.ts) so the
-// native page generator (mobile-native/scripts/build-mermaid-page.mts) can
-// import it without pulling in this file's dompurify/mermaid dependencies -
-// the generator runs from mobile-native's own install, where those are absent.
-// Re-exported here so existing importers of security.ts keep working.
-export { MERMAID_FORBID_TAGS } from "./forbidTags";
 
 // Mermaid emits flowchart/class/state/ER labels as XHTML inside
 // <foreignObject>; an svg-only profile strips every label (round-1 review

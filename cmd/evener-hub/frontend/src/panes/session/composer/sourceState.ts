@@ -37,6 +37,7 @@ import {
   type SkillEditorValue,
   serializeSkillDocument,
 } from "./skillDocument";
+import { pushRecoveryRefusal } from "./submitProtocol";
 
 type RevisionRef<T> = { current: T };
 export type RecoveryOwnerLease = { clientMutationId: string; compositionRevision: number };
@@ -487,7 +488,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             }
           }
           if (!disposed) {
-            pushToast("info", "This message changed in another tab. Refresh and try again.");
+            pushRecoveryRefusal("changed");
           }
           return false;
         }

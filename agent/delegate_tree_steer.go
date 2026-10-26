@@ -291,22 +291,12 @@ func (c *delegateTreeController) AbortModelRequest(claim *delegateModelRequestCl
 
 func (c *delegateTreeController) releaseSteeringClaimLocked(token uint64) {
 	delete(c.steeringClaims, token)
-	if c.stop != nil {
-		if _, tracked := c.stop.steeringClaims[token]; tracked {
-			delete(c.stop.steeringClaims, token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[uint64]struct{} { return s.steeringClaims }, token)
 }
 
 func (c *delegateTreeController) releaseModelClaimLocked(token uint64) {
 	delete(c.modelClaims, token)
-	if c.stop != nil {
-		if _, tracked := c.stop.modelClaims[token]; tracked {
-			delete(c.stop.modelClaims, token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[uint64]struct{} { return s.modelClaims }, token)
 }
 
 func (c *delegateTreeController) dropRuntimeClaimsForMembersLocked(members map[string]struct{}) {

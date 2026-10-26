@@ -6,6 +6,7 @@
 package credentials
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -15,7 +16,8 @@ import (
 	"sync"
 
 	"github.com/BurntSushi/toml"
-	"github.com/spf13/afero"
+
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 type fileShape struct {
@@ -33,12 +35,10 @@ type providerSection struct {
 // single connection - two browser tabs, or a browser and the TUI, can call
 // Set/Clear/Get concurrently. mu guards data (a plain map, unsafe for
 // concurrent read+write) and serializes each mutation's persist, so two racing
-// writers can't drop each other's update. path and fs are set once at
-// construction (loadStoreFS) and never mutated again, so reading them needs no
-// lock.
+// writers can't drop each other's update. path is set once at construction
+// (LoadStore) and never mutated again, so reading it needs no lock.
 type Store struct {
 	path string
-	fs   afero.Fs
 
 	mu   sync.RWMutex
 	data fileShape
@@ -47,17 +47,8 @@ type Store struct {
 // LoadStore reads path. Missing returns an empty Store. Non-missing files
 // must have mode 0600 (group/world bits unset).
 func LoadStore(path string) (*Store, error) {
-	return loadStoreFS(afero.NewOsFs(), path)
-}
-
-// loadStoreFS is the construction seam beneath LoadStore: it builds a Store over
-// an injected afero.Fs. Production passes afero.NewOsFs(), whose methods forward
-// straight to the os package, so behavior is byte-identical to direct os calls.
-// Tests and fuzzers inject an in-memory or sandboxed filesystem to drive
-// persistence off real disk.
-func loadStoreFS(fs afero.Fs, path string) (*Store, error) {
-	s := &Store{path: path, data: fileShape{Schema: 1}, fs: fs}
-	info, err := fs.Stat(path)
+	s := &Store{path: path, data: fileShape{Schema: 1}}
+	info, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			s.data.Providers = map[string]providerSection{}
@@ -68,7 +59,7 @@ func loadStoreFS(fs afero.Fs, path string) (*Store, error) {
 	if info.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("credentials: %s has mode %o; require 0600", path, info.Mode().Perm())
 	}
-	raw, err := afero.ReadFile(fs, path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("credentials: read %s: %w", path, err)
 	}
@@ -183,43 +174,26 @@ func restoreEntry(providers map[string]providerSection, name string, prev provid
 }
 
 // save persists s.data. Callers must hold mu (Lock, not RLock): it reads data
-// for encoding, and holding the lock across the temp-write-then-rename keeps a
-// racing pair from dropping one update. The temp file is created exclusively
-// under a random name (never a fixed <path>.tmp): a planted symlink at a
-// predictable temp name would otherwise redirect the saved credentials into a
-// file of the attacker's choosing, the same class #1040 fixed for the target
-// itself.
-// Because the temp name is random, a save killed between the exclusive create
-// and the rename (crash, SIGKILL, power loss) leaves a unique
-// credentials.toml.tmp-* file behind that nothing reclaims; that is the
-// accepted cost of never reusing a name an attacker could plant.
+// for encoding, and holding the lock across the write keeps a racing pair from
+// dropping one update. fsatomic.Write publishes the file under a random temp
+// name, never a fixed <path>.tmp: a planted symlink at a predictable temp name
+// would otherwise redirect the saved credentials into a file of the attacker's
+// choosing, the same class #1040 fixed for the target itself.
 func (s *Store) save() error {
 	if s.path == "" {
 		return nil
 	}
-	dir := filepath.Dir(s.path)
-	if err := s.fs.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("credentials: mkdir: %w", err)
 	}
-	f, err := afero.TempFile(s.fs, dir, filepath.Base(s.path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("credentials: open: %w", err)
-	}
-	tmp := f.Name()
-	// A save that dies partway has already created the temp file, so clear it
-	// too: the rename takes the name with it, so this is a no-op once the save
-	// has landed.
-	defer func() { _ = s.fs.Remove(tmp) }()
-	if err := toml.NewEncoder(f).Encode(s.data); err != nil {
-		_ = f.Close()
+	var encoded bytes.Buffer
+	if err := toml.NewEncoder(&encoded).Encode(s.data); err != nil {
 		return fmt.Errorf("credentials: encode: %w", err)
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
+	// A directory sync that fails after the rename leaves the new file in
+	// place, which is what memory now holds, so it is not a failed save.
+	if err := fsatomic.Write(s.path, encoded.Bytes(), 0o600); err != nil && !errors.Is(err, fsatomic.ErrPublished) {
 		return err
 	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return s.fs.Rename(tmp, s.path)
+	return nil
 }

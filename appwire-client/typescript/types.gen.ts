@@ -5231,6 +5231,33 @@ export const SHIPPED_TRANSCRIPT_DISPLAY_DEFAULTS: TranscriptDisplayDefaults = {
   }
 };
 
+export const WIRE_FIELD_KEYS = {
+  ThreadItemPosition: ["entry", "item", "sub"],
+  TurnError: ["message", "additionalDetails", "codexErrorInfo", "source", "title", "hint", "cause"],
+  DiagnosticCause: ["kind", "provider", "model", "status"],
+  ThreadItem: ["type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
+  InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata"],
+  InputMention: ["kind", "name", "offset"],
+  OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
+  QueueState: ["depth", "revision", "preview", "ids", "clientMutationIds", "texts", "skillNames", "commandNames", "mentions"],
+  EvenerUsage: ["inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"],
+  EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
+  JobActivityWorktree: ["path", "branch", "headSha", "ahead", "dirty"],
+  CommandDescriptor: ["name", "pluginName", "description", "argumentHint", "source"],
+  EvenerSkillInfo: ["name", "description", "disableModelInvocation", "userInvocable", "available", "allowedTools"],
+  SandboxEscalationRequested: ["threadId", "ref", "escalationId", "mode", "tool", "kind", "deniedPath", "command", "outputSoFar", "partiallyRan"],
+  SessionURL: ["id", "url", "label", "addedBy", "addedAt"],
+  ThreadStatus: ["type", "activeFlags"],
+  TaskAggregate: ["total", "done", "cancelled", "remaining", "current"],
+  TaskSummary: ["id", "description"],
+  ThreadAccess: ["sandbox", "network"],
+  GoalState: ["objective", "status", "iterations"],
+  EvenerTurnSlots: ["inUse", "cap", "jobs", "driveTurns"],
+  ThreadTurnsListResponse: ["data", "nextCursor", "bootGeneration", "epoch", "snapshot", "authoritative"],
+  SnapshotIdentity: ["incarnation", "length"],
+  Turn: ["id", "items", "itemsView", "status", "error", "version", "hasEarlierItems", "hasLaterItems", "startedAt", "completedAt", "durationMs", "usage", "cost"],
+} as const;
+
 export interface MethodTypes {
   "initialize": { params: InitializeParams; result: InitializeResponse };
   "ping": { params: EmptyParams; result: EmptyResponse };

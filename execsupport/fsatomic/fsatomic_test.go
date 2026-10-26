@@ -128,3 +128,52 @@ func TestWriteWithDirSyncReportsPublishedWhenTheSyncFails(t *testing.T) {
 		t.Fatalf("contents = %q, want the published new contents", got)
 	}
 }
+
+func TestWriteWithoutSyncPublishesContentsAtTheRequestedMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cache.json")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsatomic.WriteWithoutSync(path, []byte("new"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "new" {
+		t.Fatalf("contents = %q, %v; want new", got, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf("mode = %v, %v; want 0640", info, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("directory entries = %v, %v; want only the cache file", entries, err)
+	}
+}
+
+// A symlink planted at the old fixed temp name must not redirect the write.
+func TestWriteWithoutSyncDoesNotFollowPlantedTempSymlink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "cache.json")
+	if err := os.Symlink(victim, path+".tmp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsatomic.WriteWithoutSync(path, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "untouched" {
+		t.Fatalf("symlink target was written: %q", got)
+	}
+}
+
+func TestWriteWithoutSyncMissingDirectoryFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "cache.json")
+	if err := fsatomic.WriteWithoutSync(path, []byte("x"), 0o600); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("err = %v, want ErrNotExist", err)
+	}
+}

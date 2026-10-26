@@ -5,10 +5,10 @@ import { focusedSessionRef } from "../../shell/focusedSession";
 import { paneToURL, refParam } from "../../shell/routing";
 import { cadenceStateFor } from "../../shell/sessionStatus";
 import { workspaceStore } from "../../shell/workspace";
-import { connectionStore } from "../../stores/connection";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { ownerRetainedRef, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
+import { useThreadClaim } from "../../stores/useThreadModel";
 import { Button, Cadence, EmptyState, InlineNotice, type VirtualListHandle, VisuallyHidden } from "../../widgets";
 import { zoomPaneCoversConversation } from "../zoom/cascadeCoverage";
 import { SessionChrome } from "./chrome/SessionChrome";
@@ -125,26 +125,7 @@ export function ConversationBody({
   seat: ConversationSeat;
   render: (parts: ConversationParts) => React.ReactNode;
 }) {
-  // One ensureThread(ref) claim on mount, one matching releaseThread(ref) on
-  // unmount — the threads store owns hydration, retries and re-subscription
-  // from there; the claim, not this effect, is what the store converges on.
-  useEffect(() => {
-    let started = false;
-    const tryStart = () => {
-      if (started || connectionStore.getState().state !== "ready") return;
-      started = true;
-      threadsStore
-        .getState()
-        .ensureThread(ref)
-        .catch(() => {});
-    };
-    tryStart();
-    const unsubscribe = connectionStore.subscribe(tryStart);
-    return () => {
-      unsubscribe();
-      if (started) threadsStore.getState().releaseThread(ref);
-    };
-  }, [ref]);
+  useThreadClaim(ref);
 
   // Opening a conversation marks its session seen on the hub, so the
   // session's blue dot clears on the phone too.

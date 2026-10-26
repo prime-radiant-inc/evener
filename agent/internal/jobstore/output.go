@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // ErrOutputPruned is returned by output reads when the durable record remains
@@ -952,7 +953,7 @@ func syncParentDir(fs afero.Fs, path string) error {
 	defer func() {
 		_ = dir.Close()
 	}()
-	if err := dir.Sync(); err != nil {
+	if err := dir.Sync(); err != nil && !fsatomic.SyncUnsupported(err) {
 		return fmt.Errorf("jobstore: sync output metadata directory: %w", err)
 	}
 	return nil

@@ -1164,3 +1164,53 @@ func TestEmitHostRequestMethodCatalog(t *testing.T) {
 		t.Error("HostRequestMethod is not derived from the runtime catalog")
 	}
 }
+
+// WIRE_FIELD_KEYS carries, for every wire type a client validator checks
+// against, exactly the JSON field names of the registered Go struct, so the
+// validator's allowed-key list cannot drift from the wire type.
+func TestEmitCatalogEmitsWireFieldKeys(t *testing.T) {
+	out := EmitCatalog()
+	const open = "export const WIRE_FIELD_KEYS = {\n"
+	_, rest, ok := strings.Cut(out, open)
+	if !ok {
+		t.Fatal("missing WIRE_FIELD_KEYS")
+	}
+	body, _, ok := strings.Cut(rest, "} as const;\n")
+	if !ok {
+		t.Fatal("WIRE_FIELD_KEYS has no `} as const;` terminator")
+	}
+	emitted := map[string][]string{}
+	for line := range strings.SplitSeq(strings.TrimSpace(body), "\n") {
+		name, list, ok := strings.Cut(strings.TrimSpace(line), ": ")
+		if !ok {
+			t.Fatalf("WIRE_FIELD_KEYS line has no name: %q", line)
+		}
+		var keys []string
+		if err := json.Unmarshal([]byte(strings.TrimSuffix(list, ",")), &keys); err != nil {
+			t.Fatalf("decode %s keys: %v", name, err)
+		}
+		emitted[name] = keys
+	}
+
+	for _, name := range keyedWireTypes {
+		if _, ok := emitted[name]; !ok {
+			t.Errorf("WIRE_FIELD_KEYS is missing %s", name)
+		}
+	}
+	for name, keys := range emitted {
+		if !strings.Contains(out, "export interface "+name+" {\n") {
+			t.Errorf("WIRE_FIELD_KEYS names %s, which is not an emitted interface", name)
+		}
+		if len(keys) == 0 {
+			t.Errorf("WIRE_FIELD_KEYS.%s is empty", name)
+		}
+	}
+	if got, want := emitted["EvenerUsage"], []string{"inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"}; !slices.Equal(got, want) {
+		t.Errorf("WIRE_FIELD_KEYS.EvenerUsage = %v, want %v", got, want)
+	}
+	for _, f := range rawFieldsOf(reflect.TypeFor[appwire.EvenerDelegateInfo]()) {
+		if !slices.Contains(emitted["EvenerDelegateInfo"], f.json) {
+			t.Errorf("WIRE_FIELD_KEYS.EvenerDelegateInfo lacks %s", f.json)
+		}
+	}
+}

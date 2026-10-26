@@ -26,6 +26,13 @@ import {
 import { Button, IconButton, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
+  pushRecoveryRefusal,
+  pushSelectionRefusal,
+  type RecoveryRefusal,
+  selectionRefusal,
+  submitDraftToStore,
+} from "../submitProtocol";
+import {
   discardRecoveryPendingTurn,
   editQueuedPendingTurn,
   type PendingTurnEntry,
@@ -284,9 +291,9 @@ export function QueueStrip({
       if (action === "edit") {
         const recovery = await editQueuedPendingTurn(id, sessionRef);
         if (recovery) await onEditRecovery?.(recovery);
-        else toasts.push("info", "This message changed in another tab. Refresh and try again.");
+        else pushRecoveryRefusal("changed");
       } else if (!(await removeQueuedPendingTurn(id, sessionRef))) {
-        toasts.push("info", "This message changed in another tab. Refresh and try again.");
+        pushRecoveryRefusal("changed");
       }
     } catch (error) {
       toasts.push("error", sessionActionError(action === "edit" ? "Edit failed" : "Remove failed", error));
@@ -421,21 +428,13 @@ export function QueueStrip({
       releaseRecoveryOperation?.();
       return;
     }
-    // The UI-side half of the skillInput gate, mirroring Composer's own
-    // submitAction: a target that does not advertise the capability keeps
-    // the draft and hears why instead of enqueueing a drain the store (and
-    // the hub) would refuse.
-    if ((skillNames?.length ?? 0) > 0 && model?.capabilities.skillInput !== true) {
-      toasts.push("error", "Skill selections aren't supported on this session yet; your draft is kept");
+    const selectionGate = selectionRefusal({ skillNames, commandNames }, model?.capabilities);
+    if (selectionGate) {
+      pushSelectionRefusal(selectionGate);
       releaseRecoveryOperation?.();
       return;
     }
-    if ((commandNames?.length ?? 0) > 0 && model?.capabilities.commandInput !== true) {
-      toasts.push("error", "Command selections are not supported on this session; your draft is kept");
-      releaseRecoveryOperation?.();
-      return;
-    }
-    let recoveryRefusal: "changed" | "consumed" | undefined;
+    let recoveryRefusal: RecoveryRefusal | undefined;
     const recoveryResendRefusal = new Error("Recovery resend was refused");
     // Capture the Stop fence before any await: a Stop during the autosave
     // wait must still land between this submission and its mutation.
@@ -446,7 +445,7 @@ export function QueueStrip({
       if (activeRecoveryId && getRecoveryRevision) {
         expectedRecoveryRevision = await getRecoveryRevision();
         if (expectedRecoveryRevision === undefined) {
-          toasts.push("info", "This message changed in another tab. Refresh and try again.");
+          pushRecoveryRefusal("changed");
           return;
         }
       }
@@ -485,9 +484,7 @@ export function QueueStrip({
             }
             return;
           }
-          return threadsStore
-            .getState()
-            .drainAsSteer(sessionRef, text, attachments, skillNames, commandNames, mentions);
+          return submitDraftToStore("drain", sessionRef, { text, attachments, skillNames, commandNames, mentions });
         },
       );
       onDrainSuccess();
@@ -495,9 +492,7 @@ export function QueueStrip({
       // Already reported via onFailure above; swallow so the rejection
       // doesn't reach React as an unhandled promise rejection from this
       // fire-and-forget click handler.
-      if (recoveryRefusal === "changed")
-        toasts.push("info", "This message changed in another tab. Refresh and try again.");
-      else if (recoveryRefusal === "consumed") toasts.push("info", "This message was already sent in another tab.");
+      if (recoveryRefusal) pushRecoveryRefusal(recoveryRefusal);
     } finally {
       onDrainBusyChange(false);
       releaseRecoveryOperation?.();
@@ -549,7 +544,7 @@ export function QueueStrip({
         undefined,
         record.compositionRevision ?? 0,
       );
-      if (!discarded) toasts.push("info", "This message changed in another tab. Refresh and try again.");
+      if (!discarded) pushRecoveryRefusal("changed");
     } catch (error) {
       toasts.push("error", `Couldn't dismiss this row: ${errorText(error)}`);
     } finally {

@@ -60,6 +60,8 @@
     "steeringNotifications.ts",
     "itemFailure.ts",
     "jobOutput.ts",
+    "ansi.ts",
+    "mermaidForbidTags.ts",
     "hostMutations.ts",
     "hostRouting.ts",
     "hubOverview.ts",

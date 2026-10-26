@@ -49,6 +49,36 @@ type stringEnum struct {
 	values    []string
 }
 
+// keyedWireTypes names the wire interfaces whose field lists the client's
+// cache validators check unknown keys against. Each is emitted in
+// WIRE_FIELD_KEYS so the validator reads the generated list instead of a copy.
+var keyedWireTypes = []string{
+	"ThreadItemPosition",
+	"TurnError",
+	"DiagnosticCause",
+	"ThreadItem",
+	"InputItem",
+	"InputMention",
+	"OutputImage",
+	"QueueState",
+	"EvenerUsage",
+	"EvenerDelegateInfo",
+	"JobActivityWorktree",
+	"CommandDescriptor",
+	"EvenerSkillInfo",
+	"SandboxEscalationRequested",
+	"SessionURL",
+	"ThreadStatus",
+	"TaskAggregate",
+	"TaskSummary",
+	"ThreadAccess",
+	"GoalState",
+	"EvenerTurnSlots",
+	"ThreadTurnsListResponse",
+	"SnapshotIdentity",
+	"Turn",
+}
+
 var stringEnums = []stringEnum{
 	{reflect.TypeFor[appwire.SessionActivityScope](), "SESSION_ACTIVITY_SCOPES", "SessionActivityScope", []string{string(appwire.SessionActivityScopeSession), string(appwire.SessionActivityScopeSubtree)}},
 	{reflect.TypeFor[appwire.SessionActivityResource](), "SESSION_ACTIVITY_RESOURCES", "SessionActivityResource", []string{string(appwire.SessionActivityResourceSummary), string(appwire.SessionActivityResourceDelegates), string(appwire.SessionActivityResourceJobs), string(appwire.SessionActivityResourceWatches)}},
@@ -579,6 +609,24 @@ func writeShippedTranscriptDisplayDefaults(b *strings.Builder) {
 	fmt.Fprintf(b, "export const SHIPPED_TRANSCRIPT_DISPLAY_DEFAULTS: TranscriptDisplayDefaults = %s;\n\n", encoded)
 }
 
+// writeWireFieldKeys emits WIRE_FIELD_KEYS: for each keyedWireTypes entry, the
+// JSON field names of its registered struct in declaration order.
+func writeWireFieldKeys(b *strings.Builder, reg *registry) {
+	b.WriteString("export const WIRE_FIELD_KEYS = {\n")
+	for _, name := range keyedWireTypes {
+		t, ok := reg.types[name]
+		if !ok {
+			panic("appwirets: keyedWireTypes names an unregistered type: " + name)
+		}
+		keys := make([]string, 0)
+		for _, f := range rawFieldsOf(t) {
+			keys = append(keys, strconv.Quote(f.json))
+		}
+		fmt.Fprintf(b, "  %s: [%s],\n", name, strings.Join(keys, ", "))
+	}
+	b.WriteString("} as const;\n\n")
+}
+
 type methodEntry struct {
 	name   string
 	params string
@@ -668,6 +716,7 @@ func EmitCatalog() string {
 	writeNameCatalog(&b, "STEERING_KINDS", "SteeringKind", events.AllSteeringKinds)
 	writeNameCatalog(&b, "RETRY_SAFE_MUTATION_METHODS", "RetrySafeMutationMethod", appwire.RetrySafeMutationMethods)
 	writeShippedTranscriptDisplayDefaults(&b)
+	writeWireFieldKeys(&b, reg)
 
 	b.WriteString("export interface MethodTypes {\n")
 	for _, m := range methods {

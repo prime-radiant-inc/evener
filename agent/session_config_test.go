@@ -1000,8 +1000,9 @@ func TestSession_SubagentStopHookRunsWhenSubagentFinishes(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return finalResponse("subagent done") },
 	}})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
+		StateDir:         t.TempDir(),
 		PluginDirs:       []string{plugin},
 	})
 	if err != nil {
@@ -1010,22 +1011,10 @@ func TestSession_SubagentStopHookRunsWhenSubagentFinishes(t *testing.T) {
 	defer sess.Close()
 
 	// This fixture intentionally requires its SubagentStop hook to mutate the
-	// shared workspace, so declare a mutating child scope instead of asking the
-	// read-only explorer floor to permit the write.
-	result, err := sess.spawnAgent(context.Background(), "inspect", "", "", 1, "explorer", "", nil, []string{"write_file"})
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
-	}
-	var spawned struct {
-		AgentID string `json:"agent_id"`
-	}
-	if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
-		t.Fatalf("spawn result: %v", err)
-	}
-	if spawned.AgentID == "" {
-		t.Fatalf("spawn result missing agent_id: %s", result)
-	}
-	waitForRuntimeSubagent(t, sess, spawned.AgentID)
+	// shared workspace, so it runs under the mutating default agent rather than
+	// the read-only explorer floor.
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "inspect"})
+	waitForRuntimeSubagent(t, sess, agentID)
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("SubagentStop hook did not run: %v", err)
 	}

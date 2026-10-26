@@ -54,6 +54,17 @@ export {
   watchName,
   watchRowID,
 } from "./activityRows";
+export type {
+  AnsiByteRow,
+  AnsiByteRows,
+  AnsiByteState,
+  AnsiColor,
+  AnsiLine,
+  AnsiNamedColor,
+  AnsiRun,
+  AnsiTailSnapshot,
+} from "./ansi";
+export { ANSI_BYTE_FRAGMENT_BYTES, AnsiTailBuffer, parseAnsiByteRows, parseAnsiLines } from "./ansi";
 export {
   APPROVAL_DECISION_EVENT_KIND,
   type ApprovalDecision,
@@ -475,6 +486,7 @@ export {
   memoryWritePage,
   memoryWriteSummary,
 } from "./memorySteps";
+export { MERMAID_FORBID_TAGS } from "./mermaidForbidTags";
 export type {
   CapabilitySource,
   HistoryState,

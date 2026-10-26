@@ -21,6 +21,7 @@ import {
   findEntityView,
   formatClockTime,
   jobCommandLabel,
+  parseAnsiLines,
   parseJobOutputPage,
   parseTimestampMs,
   splitMandate,
@@ -34,7 +35,6 @@ import { useNavigationStore } from "../../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { useEntityViews } from "../../../transcriptDisplay/entityViews";
 import { Disclosure, Markdown, MarkdownBubble } from "../../../widgets";
-import { parseAnsiLines } from "../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../widgets/codeblock/ansiLine";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { navigationSummaryFor } from "../threadTitle";
