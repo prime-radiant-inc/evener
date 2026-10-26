@@ -279,6 +279,124 @@ func selectStrategy(cfg SessionConfig, cm *contextmgr.Manager, sess *Session) (c
 	}
 }
 
+// requireSessionDeps rejects the nil collaborators every session constructor
+// needs before it touches any of them.
+func requireSessionDeps(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment) error {
+	if client == nil {
+		return errors.New("llm client is nil")
+	}
+	if profile == nil {
+		return errors.New("profile is nil")
+	}
+	if env == nil {
+		return errors.New("execution environment is nil")
+	}
+	return nil
+}
+
+// bindSpawnCounters returns the delegation allowance and tree-wide counters a
+// session starts with and mirrors the counters onto cfg.spawn, so
+// s.cfg.spawn.treeCounter always reflects the live counter. Root sessions
+// derive their allowance from MaxSubagentDepth (already defaulted to 1 by
+// applyDefaults) and mint the counters; children inherit the spawn carrier's.
+// prepareSubagentRun threads the pointers to children via subCfg := s.cfg, so
+// the mirror is what carries the root's minted counters down the tree.
+func (cfg *SessionConfig) bindSpawnCounters() (delegationAllowance int, tc, dc *treeCounter) {
+	delegationAllowance = cfg.spawn.delegationAllowance
+	tc = cfg.spawn.treeCounter
+	dc = cfg.spawn.driveCounter
+	if cfg.spawn.parentSessionID == "" {
+		delegationAllowance = cfg.MaxSubagentDepth
+		tc = newTreeCounter(int64(cfg.MaxConcurrentDelegateTurns))
+		dc = newTreeCounter(defaultMaxConcurrentDriveTurns)
+	}
+	cfg.spawn.treeCounter = tc
+	cfg.spawn.driveCounter = dc
+	return delegationAllowance, tc, dc
+}
+
+// bindJobActivityClock returns the clock ordering this session's job
+// activity and mirrors it onto cfg.spawn. A root session without a carried
+// clock starts a new tree, so it mints one for sessionID; a child keeps the
+// carrier's.
+func (cfg *SessionConfig) bindJobActivityClock(sessionID string) *jobActivityClock {
+	clock := cfg.spawn.jobActivityClock
+	if cfg.spawn.parentSessionID == "" && clock == nil {
+		clock = newJobActivityClock(sessionID)
+	}
+	cfg.spawn.jobActivityClock = clock
+	return clock
+}
+
+// wireJobManager connects a job manager to this session. It leaves jm.enqueue
+// to the caller: NewSession hands the hook to the constructor, while restore
+// installs it only after the session's queues are reloaded.
+func (s *Session) wireJobManager(jm *jobManager) {
+	jm.forward = s.cfg.spawn.forwardJobEvent
+	jm.parentDelegateID = s.cfg.spawn.parentDelegateID
+	jm.consume = s.consumeJobNotification
+	jm.holdWake = s.holdJobNotificationWake
+	jm.notifySystem = s.routeSystemNotification
+	jm.wake = s.notify
+	jm.emit = s.emitWithJobTreeRevision
+	jm.currentProvenance = s.activeCausalProvenance
+	jm.clock = s.clock
+	jm.now = s.clock.Now
+	jm.delegateController = s.delegateController
+	jm.retirementOwner = s
+	s.jobManager = jm
+}
+
+// transcriptHeader is the header of a transcript this session creates.
+func (s *Session) transcriptHeader(createdAt time.Time) transcript.Header {
+	return transcript.Header{
+		SessionID:        s.id,
+		ParentSessionID:  s.cfg.spawn.parentSessionID,
+		ParentToolCallID: s.cfg.spawn.parentToolCallID,
+		Task:             s.cfg.spawn.subagentTask,
+		CreatedAt:        createdAt,
+		ProfileID:        s.profile.ID(),
+		Model:            s.profile.Model(),
+		WorkingDir:       s.envInfo.WorkingDir,
+		Depth:            s.cfg.spawn.depth,
+		BuildVersion:     BuildVersion,
+		SystemPrompt:     s.cachedSystemPrompt,
+	}
+}
+
+// createTranscript creates this session's transcript file, failing at the
+// named init fault point when a test injects one.
+func (s *Session) createTranscript(faultPoint string, hdr transcript.Header) (*transcript.Writer, error) {
+	if fault := s.sessionInitFault(faultPoint); fault != nil {
+		return nil, fault
+	}
+	tpath := schema.SessionTranscriptPath(s.stateDir, s.id)
+	if testSpeedIO(s.cfg) {
+		return transcript.NewWriterNoSync(tpath, hdr)
+	}
+	return transcript.NewWriter(tpath, hdr)
+}
+
+// installContextStrategy selects the configured context strategy and registers
+// the tools it provides.
+func (s *Session) installContextStrategy() error {
+	contextmgr.ApplyThresholdScale(s.contextMgr, s.cfg.testOnly.compactionThresholdScale)
+	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
+	strategy, err := selectStrategy(s.cfg, s.contextMgr, s)
+	if err != nil {
+		return err
+	}
+	s.strategy = strategy
+	if s.strategy != nil {
+		for _, tool := range s.strategy.Tools() {
+			if err := s.reg.Register(tool); err != nil {
+				return fmt.Errorf("register strategy tool: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
 // NewSession creates a new Session from the given client, provider profile,
 // execution environment, and config. It validates the inputs, initializes the
 // environment, applies config defaults, performs the shared session-state setup
@@ -292,14 +410,8 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err != nil {
 		return nil, err
 	}
-	if client == nil {
-		return nil, errors.New("llm client is nil")
-	}
-	if profile == nil {
-		return nil, errors.New("profile is nil")
-	}
-	if env == nil {
-		return nil, errors.New("execution environment is nil")
+	if err := requireSessionDeps(client, profile, env); err != nil {
+		return nil, err
 	}
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
@@ -360,25 +472,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			}
 		}
 	}()
-	delegationAllowance := cfg.spawn.delegationAllowance
-	if cfg.spawn.parentSessionID == "" {
-		// Root sessions derive their allowance from MaxSubagentDepth (already
-		// defaulted to 1 by applyDefaults), not from the spawn carrier.
-		delegationAllowance = cfg.MaxSubagentDepth
-	}
-	tc := cfg.spawn.treeCounter
-	dc := cfg.spawn.driveCounter
-	if cfg.spawn.parentSessionID == "" {
-		// Root sessions mint the tree-wide counters; children inherit the pointers.
-		tc = newTreeCounter(int64(cfg.MaxConcurrentDelegateTurns))
-		dc = newTreeCounter(defaultMaxConcurrentDriveTurns)
-	}
-	// Mirror the live counter onto cfg.spawn so s.cfg.spawn.treeCounter always
-	// reflects it. prepareSubagentRun threads the pointer to children via
-	// subCfg := s.cfg, so the mirror is what carries the root's minted counter
-	// down the tree.
-	cfg.spawn.treeCounter = tc
-	cfg.spawn.driveCounter = dc
+	delegationAllowance, tc, dc := cfg.bindSpawnCounters()
 	if sessionID == "" {
 		sessionID, err = identifier.NewSessionID()
 		if err != nil {
@@ -390,11 +484,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if cfg.spawn.parentSessionID == "" {
 		nameRootScratch(env, sessionID, sessionID)
 	}
-	jobClock := cfg.spawn.jobActivityClock
-	if cfg.spawn.parentSessionID == "" && jobClock == nil {
-		jobClock = newJobActivityClock(sessionID)
-	}
-	cfg.spawn.jobActivityClock = jobClock
+	jobClock := cfg.bindJobActivityClock(sessionID)
 	cfg.StateDir = canonicalStateDir(cfg.StateDir)
 	clientMutations, err := newClientMutationStore(cfg.StateDir, sessionID)
 	if err != nil {
@@ -470,9 +560,8 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
 	}
-	closeDelegateStoreOnError := true
 	defer func() {
-		if closeDelegateStoreOnError {
+		if !initComplete {
 			_ = s.closeOwnedDelegateStore()
 		}
 	}()
@@ -490,25 +579,12 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
-	closeJobManagerOnError := true
 	defer func() {
-		if closeJobManagerOnError {
+		if !initComplete {
 			_ = jm.closeStoreOnly()
 		}
 	}()
-	jm.forward = cfg.spawn.forwardJobEvent
-	jm.parentDelegateID = cfg.spawn.parentDelegateID
-	jm.consume = s.consumeJobNotification
-	jm.holdWake = s.holdJobNotificationWake
-	jm.notifySystem = s.routeSystemNotification
-	jm.wake = s.notify
-	jm.emit = s.emitWithJobTreeRevision
-	jm.currentProvenance = s.activeCausalProvenance
-	jm.clock = s.clock
-	jm.now = s.clock.Now
-	jm.delegateController = s.delegateController
-	jm.retirementOwner = s
-	s.jobManager = jm
+	s.wireJobManager(jm)
 
 	// Capture the launch origin from the environment before initSessionState
 	// runs. initSessionState is shared with RestoreSessionFromMetaWithConfig
@@ -527,9 +603,8 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
 	// live server connections; every error return below this point must close
 	// it rather than orphan those connections.
-	closeMCPManagerOnError := true
 	defer func() {
-		if closeMCPManagerOnError && s.mcpMgr != nil {
+		if !initComplete && s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
 	}()
@@ -572,29 +647,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		if s.taskStore != nil {
 			agentTasks = s.taskStore.View()
 		}
-		hdr := transcript.Header{
-			SessionID:        s.id,
-			ParentSessionID:  cfg.spawn.parentSessionID,
-			ParentToolCallID: cfg.spawn.parentToolCallID,
-			Task:             cfg.spawn.subagentTask,
-			CreatedAt:        s.sclock().Now().UTC(),
-			ProfileID:        profile.ID(),
-			Model:            profile.Model(),
-			WorkingDir:       s.envInfo.WorkingDir,
-			Depth:            cfg.spawn.depth,
-			BuildVersion:     BuildVersion,
-			SystemPrompt:     s.cachedSystemPrompt,
-			AgentTasks:       agentTasks,
-		}
-		tpath := schema.SessionTranscriptPath(s.stateDir, s.id)
+		hdr := s.transcriptHeader(s.sclock().Now().UTC())
+		hdr.AgentTasks = agentTasks
 		var twErr error
-		if fault := s.sessionInitFault("new_transcript"); fault != nil {
-			twErr = fault
-		} else if testSpeedIO(cfg) {
-			tw, twErr = transcript.NewWriterNoSync(tpath, hdr)
-		} else {
-			tw, twErr = transcript.NewWriter(tpath, hdr)
-		}
+		tw, twErr = s.createTranscript("new_transcript", hdr)
 		if twErr != nil {
 			// Buffered, not emitted directly (kata et0x): SESSION_START has not
 			// fired yet at this point in construction, and every other
@@ -634,23 +690,8 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
 
-	contextmgr.ApplyThresholdScale(s.contextMgr, cfg.testOnly.compactionThresholdScale)
-	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
-
-	// Create context strategy.
-	strategy, err := selectStrategy(cfg, s.contextMgr, s)
-	if err != nil {
+	if err := s.installContextStrategy(); err != nil {
 		return nil, err
-	}
-	s.strategy = strategy
-
-	// Register any tools provided by the context strategy.
-	if s.strategy != nil {
-		for _, tool := range s.strategy.Tools() {
-			if err := s.reg.Register(tool); err != nil {
-				return nil, fmt.Errorf("register strategy tool: %w", err)
-			}
-		}
 	}
 
 	s.emitSessionStartEnvelope(events.SessionStartData{
@@ -666,9 +707,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// The method itself no-ops for subagent sessions and non-local envs.
 	s.armLaneResidueSweepTimer()
 	initComplete = true
-	closeJobManagerOnError = false
-	closeMCPManagerOnError = false
-	closeDelegateStoreOnError = false
 	return s, nil
 }
 
@@ -838,14 +876,8 @@ func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env e
 // RestoreSessionFromMetaWithConfig is RestoreSessionFromMeta with explicit
 // runtime-only restore configuration.
 func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, restoreCfg RestoreSessionConfig) (*Session, error) {
-	if client == nil {
-		return nil, errors.New("llm client is nil")
-	}
-	if profile == nil {
-		return nil, errors.New("profile is nil")
-	}
-	if env == nil {
-		return nil, errors.New("execution environment is nil")
+	if err := requireSessionDeps(client, profile, env); err != nil {
+		return nil, err
 	}
 	// meta arrives from a caller, not from a load this function performs itself,
 	// so validate before meta.ID is joined into any transcript path below.
@@ -1085,36 +1117,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		owner = context.Background()
 	}
 	sessCtx, sessCancel := context.WithCancel(owner)
-	delegationAllowance := cfg.spawn.delegationAllowance
-	if cfg.spawn.parentSessionID == "" {
-		// Root sessions derive their allowance from MaxSubagentDepth (already
-		// defaulted to 1 by applyDefaults), not from the spawn carrier.
-		delegationAllowance = cfg.MaxSubagentDepth
-	}
-	tc := cfg.spawn.treeCounter
-	dc := cfg.spawn.driveCounter
-	if cfg.spawn.parentSessionID == "" {
-		// Root sessions mint the tree-wide counters; children inherit the pointers.
-		tc = newTreeCounter(int64(cfg.MaxConcurrentDelegateTurns))
-		dc = newTreeCounter(defaultMaxConcurrentDriveTurns)
-	}
-	// Mirror the live counter onto cfg.spawn so s.cfg.spawn.treeCounter always
-	// reflects it. prepareSubagentRun threads the pointer to children via
-	// subCfg := s.cfg, so the mirror is what carries the root's minted counter
-	// down the tree.
-	cfg.spawn.treeCounter = tc
-	cfg.spawn.driveCounter = dc
-	jobClock := cfg.spawn.jobActivityClock
-	if cfg.spawn.parentSessionID == "" && jobClock == nil {
-		// A restore without the parent's live tree carrier is a new root runtime.
-		// Persisted ancestor identity remains useful to durable history traversal,
-		// but must not route new lifecycle notifications to that old tree.
-		jobClock = newJobActivityClock(meta.ID)
-	}
+	delegationAllowance, tc, dc := cfg.bindSpawnCounters()
+	// A restore without the parent's live tree carrier is a new root runtime.
+	// Persisted ancestor identity remains useful to durable history traversal,
+	// but must not route new lifecycle notifications to that old tree.
+	jobClock := cfg.bindJobActivityClock(meta.ID)
 	if jobClock != nil {
 		jobClock.ensureAtLeast(meta.JobTreeRevision)
 	}
-	cfg.spawn.jobActivityClock = jobClock
 	s := &Session{
 		id:                       meta.ID,
 		skillLifecycle:           schema.SkillLifecycleSnapshot{Inventory: make(map[string]schema.SkillInventoryEntry)},
@@ -1193,9 +1203,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	profile, selectedModels := resolveStartupModelProfileWithReuse(client, profile, s.id, *s.providerAdapterTimeout(), restoreCfg.StartupModelListing)
 	s.profile = profile
 	s.captureModelAvailability(selectedModels)
-	closeDelegateStoreOnError := true
 	defer func() {
-		if closeDelegateStoreOnError {
+		if !restoreComplete {
 			_ = s.closeOwnedDelegateStore()
 		}
 	}()
@@ -1208,26 +1217,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
-	closeJobManagerOnError := true
 	defer func() {
-		if closeJobManagerOnError {
+		if !restoreComplete {
 			_ = jm.closeStoreOnly()
 		}
 	}()
-	jm.forward = cfg.spawn.forwardJobEvent
-	jm.parentDelegateID = cfg.spawn.parentDelegateID
+	s.wireJobManager(jm)
 	jm.enqueue = s.enqueueJobNotificationAndNotify
-	jm.consume = s.consumeJobNotification
-	jm.holdWake = s.holdJobNotificationWake
-	jm.notifySystem = s.routeSystemNotification
-	jm.wake = s.notify
-	jm.emit = s.emitWithJobTreeRevision
-	jm.currentProvenance = s.activeCausalProvenance
-	jm.clock = s.clock
-	jm.now = s.clock.Now
-	jm.delegateController = s.delegateController
-	jm.retirementOwner = s
-	s.jobManager = jm
 	// Restore daemon steering before restore side effects can enqueue a
 	// restart-owned notification. Loading it later would overwrite that new
 	// notification with the pre-restart snapshot.
@@ -1359,9 +1355,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
 	// live server connections; every error return below this point must close
 	// it rather than orphan those connections.
-	closeMCPManagerOnError := true
 	defer func() {
-		if closeMCPManagerOnError && s.mcpMgr != nil {
+		if !restoreComplete && s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
 	}()
@@ -1388,30 +1383,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// writeTranscript consults is closed exactly once, on every path.
 	var tw *transcript.Writer
 	if s.stateDir != "" {
-		tpath := schema.SessionTranscriptPath(s.stateDir, s.id)
 		tw = resumeTranscript
 		if tw == nil {
-			hdr := transcript.Header{
-				SessionID:        s.id,
-				ParentSessionID:  cfg.spawn.parentSessionID,
-				ParentToolCallID: cfg.spawn.parentToolCallID,
-				Task:             cfg.spawn.subagentTask,
-				CreatedAt:        meta.CreatedAt,
-				ProfileID:        profile.ID(),
-				Model:            profile.Model(),
-				WorkingDir:       s.envInfo.WorkingDir,
-				Depth:            cfg.spawn.depth,
-				BuildVersion:     BuildVersion,
-				SystemPrompt:     s.cachedSystemPrompt,
-			}
 			var twErr error
-			if fault := s.sessionInitFault("restore_new_transcript"); fault != nil {
-				twErr = fault
-			} else if testSpeedIO(cfg) {
-				tw, twErr = transcript.NewWriterNoSync(tpath, hdr)
-			} else {
-				tw, twErr = transcript.NewWriter(tpath, hdr)
-			}
+			tw, twErr = s.createTranscript("restore_new_transcript", s.transcriptHeader(meta.CreatedAt))
 			if twErr != nil {
 				return nil, fmt.Errorf("create transcript for resume: %w", twErr)
 			}
@@ -1521,22 +1496,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}
 
-	contextmgr.ApplyThresholdScale(s.contextMgr, cfg.testOnly.compactionThresholdScale)
-	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
-
-	// Create context strategy.
-	strategy, err := selectStrategy(cfg, s.contextMgr, s)
-	if err != nil {
+	if err := s.installContextStrategy(); err != nil {
 		return nil, err
-	}
-	s.strategy = strategy
-
-	if s.strategy != nil {
-		for _, tool := range s.strategy.Tools() {
-			if err := s.reg.Register(tool); err != nil {
-				return nil, fmt.Errorf("register strategy tool: %w", err)
-			}
-		}
 	}
 
 	// Re-derive the at-rest state from the restored history's tail: an
@@ -1608,10 +1569,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		// path keeps that guarantee explicit.
 		s.armLaneResidueSweepTimer()
 	}
-	closeJobManagerOnError = false
-	closeMCPManagerOnError = false
 	restoreComplete = true
-	closeDelegateStoreOnError = false
 	return s, nil
 }
 
