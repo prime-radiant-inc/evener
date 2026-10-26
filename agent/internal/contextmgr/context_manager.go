@@ -101,8 +101,7 @@ type postFoldInjectionCallbackKey struct{}
 
 // WithPostFoldInjectionCallback returns a context whose callback receives the
 // net turn-count delta a Strategy appends to history AFTER its own fold layers
-// run — MemoryCrystalsStrategy's crystal bank, RecursiveDistillStrategy's
-// distilled-memory banner, OODAStrategy's orientation message. Those turns
+// run — OODAStrategy's orientation message. Those turns
 // land after whatever the fold preserved, so a caller measuring the overall
 // before/after turn-count delta across the whole ManageContext call needs this
 // reported separately to avoid under-shrinking the N4 in-flight-turn boundary
@@ -143,7 +142,7 @@ type baselineQueryKey struct{}
 // perform on its own.
 //
 // A self-injecting Strategy that replaces an existing marker turn
-// (memory-crystals, recursive-distill, ooda) uses this to tell whether the
+// (ooda) uses this to tell whether the
 // marker it's about to remove sits before or after the boundary: removing a
 // pre-boundary marker shifts every in-flight turn left by one, and the
 // marker's own re-append (always at the end) does not restore that —
@@ -193,9 +192,9 @@ func (cm *Manager) metaFor(ctx context.Context) *CompactionMeta {
 // recording the last match's index — appends a fresh steering turn carrying
 // text at the end (the strongest recency position, inside the preserved
 // window for the next compaction), and reports the baseline-corrected
-// injection delta via reportPostFoldInjection. Shared by the three
-// self-injecting strategies (memory-crystals, recursive-distill, ooda),
-// whose marker banners are replaced, not accumulated, on every ManageContext.
+// injection delta via reportPostFoldInjection. Used by the
+// self-injecting ooda strategy, whose marker banner is replaced, not
+// accumulated, on every ManageContext.
 //
 // Each removal before the boundary shifts every in-flight turn left by one,
 // and the re-append does not undo that — recording only the last match
@@ -257,7 +256,7 @@ type Manager struct {
 	// ObservationMaskThreshold and ThinkingClearThreshold are not used by the
 	// default compaction path (MaybeCompact/ForceCompact) because in-place
 	// modifications bust the prompt cache for all providers. They remain here
-	// for experimental Strategy implementations that call
+	// for the session-log strategy, which calls
 	// maskObservations/clearThinking directly.
 	ObservationMaskThreshold float64
 	ThinkingClearThreshold   float64
@@ -308,10 +307,6 @@ func NewManager(profile *provider.Profile, client *llm.Client, cheap *cheapmodel
 		SummarizeThreshold:       0.95,
 		PreserveRecentTurns:      6,
 	}
-}
-
-func (cm *Manager) completeCheap(ctx context.Context, req llm.Request) (llm.Response, error) {
-	return cm.cheap.Complete(ctx, cm.currentProfile(), req)
 }
 
 func (cm *Manager) resultToolName() string {

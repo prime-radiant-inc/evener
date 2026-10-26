@@ -32,7 +32,7 @@ func TestCovAbortOwedDelegateBootstrap(t *testing.T) {
 		id:                 "root-session",
 		state:              SessionProcessing,
 		delegateController: controller,
-		subagents:          newSubagentManager(nil, 3),
+		subagents:          newSubagentManager(3),
 		events:             make(chan events.SessionEvent, 4),
 	}
 	controller.rootRuntime = root
@@ -42,7 +42,7 @@ func TestCovAbortOwedDelegateBootstrap(t *testing.T) {
 		seedDelegateControllerRunning(t, controller, delegateID, "")
 		child := &Session{
 			id:        "child-" + delegateID,
-			subagents: newSubagentManager(nil, 1),
+			subagents: newSubagentManager(1),
 			events:    make(chan events.SessionEvent, 1),
 		}
 		sub := &subagent{id: child.id, sess: child}
@@ -65,7 +65,7 @@ func TestCovAbortOwedDelegateBootstrap(t *testing.T) {
 
 	first := newRestored("dlg_first")
 	second := newRestored("dlg_second")
-	doneChild := &Session{id: "child-done", subagents: newSubagentManager(nil, 1), events: make(chan events.SessionEvent, 1)}
+	doneChild := &Session{id: "child-done", subagents: newSubagentManager(1), events: make(chan events.SessionEvent, 1)}
 	doneSub := &subagent{id: doneChild.id, sess: doneChild}
 	root.subagents.track(doneSub)
 	gate := &owedBootstrapRestore{
