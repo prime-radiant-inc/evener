@@ -186,15 +186,6 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 var (
 	resolveTurnStartSource = sourceForThread
 	resumeTurnStartThread  = resumeTurnStartThreadResume
-	authLoginComplete      = func(c *hubAuthController, ctx context.Context, p appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
-		return c.LoginComplete(ctx, p)
-	}
-	authDevicePoll = func(c *hubAuthController, ctx context.Context, p appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
-		return c.DevicePoll(ctx, p)
-	}
-	launchTrustRepo = func(c *hubLaunchController, ctx context.Context, p appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
-		return c.TrustRepo(ctx, p)
-	}
 )
 
 // resumeTurnStartThreadResume is the resume a failed turn/start runs before its
@@ -1996,7 +1987,7 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 		return authController.LoginStart(params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
-		resp, err := authLoginComplete(authController, ctx, params)
+		resp, err := authController.LoginComplete(ctx, params)
 		notifyAuthWrite(server, err, resp.Status, params.OriginClientId)
 		return resp, err
 	})
@@ -2040,7 +2031,7 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 		return authController.DeviceStart(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDevicePoll, func(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
-		resp, err := authDevicePoll(authController, ctx, params)
+		resp, err := authController.DevicePoll(ctx, params)
 		// A pending poll wrote nothing, which the state says; an authorized one
 		// wrote the record, whether or not the status read after it failed.
 		if resp.State == "authorized" {
@@ -2202,7 +2193,7 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchTrustRepo, func(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
-		resp, err := launchTrustRepo(launchController, ctx, params)
+		resp, err := launchController.TrustRepo(ctx, params)
 		if writeDidApply(err) {
 			notifyLaunchUpdated(server, params.CWD, "repo")
 		}
