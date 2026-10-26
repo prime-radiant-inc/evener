@@ -740,9 +740,6 @@ interface EntryTranscriptRoute {
   identity?: TranscriptResolvedIdentity;
   cachedUnverified?: boolean;
   cachedOpening?: Promise<void>;
-  // Escalations this client resolved; shared with every repository the route
-  // installs, so a replacement keeps them.
-  resolvedEscalations?: Set<string>;
   // Local reader continuation, separate from the repository's opaque server cursor.
   localBefore?: ThreadItemPosition;
   // The status the last local open (`openEntryTranscript`) reported for this
@@ -1261,7 +1258,6 @@ function createEntryTranscriptRepository(
   const { threadId, historyKey, identity, clearEpoch, historyGeneration, seedModel } = binding;
   const ref = fixture.ref;
   const productionRoute = productionEntryRoutes.get(ref) === fixture;
-  fixture.resolvedEscalations ??= new Set();
   return new TranscriptRepository(fixture.cache, {
     ref,
     threadId,
@@ -1269,7 +1265,7 @@ function createEntryTranscriptRepository(
     identity,
     clearEpoch,
     historyGeneration,
-    resolvedEscalations: fixture.resolvedEscalations,
+    resolvedEscalations: resolvedEscalationsFor(ref),
     lifetime: fixture.lifetime,
     seedModel,
     now: () => fixture.cache.now(),
@@ -3886,7 +3882,7 @@ async function hydrateAndSubscribe(
   // can be enriched under recorded coverage, never replacing response-owned
   // overlay slots or replaying their already-represented deltas.
   const fixtureNotifications = pending.notifications.slice();
-  const cutModel = withBufferedEscalationResolutions(pending, model);
+  const cutModel = withoutResolvedEscalations(ref, pending, model);
   applyHydrationResponseCut(pending, ref, cutModel);
   return {
     model: cutModel,
@@ -4038,7 +4034,7 @@ async function hydrateAndSubscribeWatch(
     !discardHeldHistory && pending.baseModel?.history !== undefined
       ? applyReadResponse(pending.baseModel, resp, now)
       : hydrateThread(resp, ref, now);
-  const cutModel = withBufferedEscalationResolutions(pending, model);
+  const cutModel = withoutResolvedEscalations(ref, pending, model);
   applyHydrationResponseCut(pending, ref, cutModel);
   return cutModel;
 }
@@ -5137,27 +5133,37 @@ function notificationThreadId(n: AnyNotification): string | undefined {
   return typeof params.threadId === "string" ? params.threadId : undefined;
 }
 
-// A resolved escalation never returns, but the resolving client learns of it by
-// its own acknowledgment, which the daemon's snapshot cut does not order. A
-// read issued before the resolve can therefore still carry the escalation, so
-// buffered resolutions are replayed over the response model.
-function withBufferedEscalationResolutions(pending: PendingThreadHydration, model: ThreadModel): ThreadModel {
-  // A discarded response is the base model itself (isDiscardedReadResult).
-  if (model === pending.baseModel) return model;
-  let resolved = model;
-  for (const { notification } of pending.notifications) {
-    if (notification.method === "evener/sandbox/escalation/resolved") {
-      resolved = resolvePendingEscalation(resolved, notification.params.escalationId);
-    }
+// Escalations this client resolved, per ref. A resolved escalation never
+// returns, but the resolving client learns of it by its own acknowledgment,
+// which the daemon's snapshot cut does not order: a read issued before the
+// resolve, or one that starts while the approved tool is still rerunning, can
+// carry the escalation. Every model this client builds from a read drops these.
+const resolvedEscalationsByRef = new Map<string, Set<string>>();
+
+function resolvedEscalationsFor(ref: string): Set<string> {
+  let resolved = resolvedEscalationsByRef.get(ref);
+  if (!resolved) {
+    resolved = new Set();
+    resolvedEscalationsByRef.set(ref, resolved);
   }
   return resolved;
+}
+
+function withoutResolvedEscalations(ref: string, pending: PendingThreadHydration, model: ThreadModel): ThreadModel {
+  // A discarded response is the base model itself (isDiscardedReadResult).
+  if (model === pending.baseModel) return model;
+  let kept = model;
+  for (const escalationId of resolvedEscalationsByRef.get(ref) ?? []) {
+    kept = resolvePendingEscalation(kept, escalationId);
+  }
+  return kept;
 }
 
 function applyHydrationResponseCut(pending: PendingThreadHydration, ref: string, model: ThreadModel): void {
   // AppWire orders the matching response at the authoritative snapshot cut.
   // Every notification already buffered is at or before that cut and is
   // already represented by this model, except a resolved escalation (see
-  // withBufferedEscalationResolutions). Notifications delivered after the
+  // withoutResolvedEscalations). Notifications delivered after the
   // response enter the buffer later and remain ordered for replay.
   releasePendingHydrationBytes(ref, pending);
   pending.notifications = [];
@@ -8284,14 +8290,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       resolvedWatched !== undefined && resolvedWatched !== watchedModel ? resolvedWatched : undefined,
     );
     // The daemon broadcasts the resolved notification to every other client, so
-    // this one folds it itself, through the same routing a broadcast takes. The
-    // transcript repository republishes its own model on later frames and
-    // would otherwise put the cleared card back, including after a Clear
-    // window or a hydration that was in flight when the resolve landed.
-    // Recorded on the route as well as folded through the repository: a frame
-    // suppressed by an in-flight Clear is discarded when the Clear commits, and
-    // the retained repository still has to drop this escalation.
-    entryTranscriptRoute(ref)?.resolvedEscalations?.add(escalationId);
+    // this one records the resolve itself (see resolvedEscalationsByRef), then
+    // folds it through the same routing a broadcast takes for the models and
+    // hydrations that are live now.
+    resolvedEscalationsFor(ref).add(escalationId);
     const resolvedAnywhere =
       (model !== undefined && resolvedModel !== model) ||
       (watchedModel !== undefined && resolvedWatched !== watchedModel);
@@ -8817,6 +8819,7 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // test's first rewireClient() call never fires a stale unwire closure from
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
+  resolvedEscalationsByRef.clear();
   for (const route of productionEntryRoutes.values()) retireEntryTranscriptRoute(route);
   productionEntryRoutes.clear();
   productionEntryCache?.close();

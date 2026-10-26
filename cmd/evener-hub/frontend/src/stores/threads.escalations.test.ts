@@ -423,6 +423,24 @@ describe("useThreadsStore.resolveEscalation", () => {
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
   });
 
+  test("a watch upgrade after the resolve does not bring the escalation back", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return { ...threadWithEscalation("ref_a", "esc_1"), requestGeneration };
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().watchThread("ref_a");
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+
+    expect(reads).toBe(2);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
   test("updates BOTH threads and watchedThreads when the same ref is tracked in each", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
