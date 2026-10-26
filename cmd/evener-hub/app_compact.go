@@ -9,14 +9,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-func shouldResumeAfterTurnStartError(err error) bool {
-	return shouldResumeAfterSessionUnavailable(err)
-}
-
-func shouldResumeAfterSessionUnavailable(err error) bool {
-	return isSessionUnavailableError(err)
-}
-
 func isSessionUnavailableError(err error) bool {
 	if err == nil {
 		return false
@@ -29,49 +21,18 @@ func isSessionUnavailableError(err error) bool {
 }
 
 func compactThreadWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadCompactStartParams) error {
-	err := compactThreadOnce(ctx, cfg, sources, params)
-	if err == nil {
-		return nil
-	}
-	if params.Ref != "" && !hubKnowsRef(cfg, params.Ref) {
-		return err
-	}
-	if !shouldResumeAfterSessionUnavailable(err) {
-		return err
-	}
-	if _, resumeErr := hubThreadAutoResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref}); resumeErr != nil {
-		return resumeErr
-	}
-	return compactThreadOnce(ctx, cfg, sources, params)
-}
-
-func compactThreadOnce(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadCompactStartParams) error {
-	_, err := withSessionActionOwnership(ctx, cfg, params.Ref, "", func() (struct{}, error) {
-		source, err := sourceForThread(sources, params.Ref, "")
-		if err != nil {
-			return struct{}{}, err
-		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "compact"); err != nil {
-			return struct{}{}, err
-		}
-		return struct{}{}, source.CompactThread(ctx, params)
-	})
+	_, err := relayWithResume(ctx, cfg, sources, params.Ref, "", "compact",
+		func(source appsource.Source) (struct{}, error) {
+			return struct{}{}, source.CompactThread(ctx, params)
+		})
 	return err
 }
 
 func clearThreadWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-	return withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.ThreadClearResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, "")
-		if err != nil {
-			// Resolution failed before anything reached a source, so a resume
-			// retry that fails the same way proves nothing was dispatched.
-			return appwire.ThreadClearResponse{}, preDispatchRefusalError{err}
-		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "clear"); err != nil {
-			return appwire.ThreadClearResponse{}, err
-		}
-		return source.ClearThread(ctx, params)
-	})
+	return relayWithResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, "clear",
+		func(source appsource.Source) (appwire.ThreadClearResponse, error) {
+			return source.ClearThread(ctx, params)
+		})
 }
 
 func ensureThreadActionAvailable(ctx context.Context, source appsource.Source, ref, threadID, action string) error {

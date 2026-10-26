@@ -1746,7 +1746,7 @@ func registerThreadHandlers(
 		if params.Ref != "" && !hubKnowsRef(cfg, params.Ref) {
 			return appwire.TurnStartResponse{}, err
 		}
-		if !shouldResumeAfterTurnStartError(err) {
+		if !isSessionUnavailableError(err) {
 			return appwire.TurnStartResponse{}, err
 		}
 		if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {

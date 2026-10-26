@@ -116,7 +116,7 @@ func withSessionResume[R any](
 	// Outside the retry rule the pre-dispatch signal carries no meaning: the
 	// first attempt's failure is returned exactly as it was raised.
 	err = unwrapPreDispatchRefusal(err)
-	if !shouldResumeAfterSessionUnavailable(err) {
+	if !isSessionUnavailableError(err) {
 		return resp, err
 	}
 	if ref != "" && !hubKnowsRef(cfg, ref) {
@@ -301,21 +301,10 @@ func shutdownCleanupError(cfg hubcore.WebConfig, ref string) error {
 }
 
 func setGoalWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
-	return withSessionResume(ctx, cfg, sources, params.Ref, "", func() (appwire.GoalSetResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, "")
-		if err != nil {
-			// Resolution failed before anything reached a source, so a resume
-			// retry that fails the same way proves nothing was dispatched.
-			return appwire.GoalSetResponse{}, preDispatchRefusalError{err}
-		}
-		// Gate like every sibling thread action so goal/set is rejected uniformly
-		// on sources without the engine rather than only self-guarding inside the
-		// source implementation.
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "goal"); err != nil {
-			return appwire.GoalSetResponse{}, err
-		}
-		return source.GoalSet(ctx, params)
-	})
+	return relayWithResume(ctx, cfg, sources, params.Ref, "", "goal",
+		func(source appsource.Source) (appwire.GoalSetResponse, error) {
+			return source.GoalSet(ctx, params)
+		})
 }
 
 // setNotesHumanWithResume relays notes/human/set to the owning source,
