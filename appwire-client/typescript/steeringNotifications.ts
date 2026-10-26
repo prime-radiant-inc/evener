@@ -17,6 +17,7 @@
 
 import { jobStatusDisplay } from "./activityData";
 import { delegateEndingText } from "./delegateDetails";
+import { formatSpan } from "./displayFormat";
 import { isPlainObject } from "./plainObject";
 
 export type NotificationTone = "success" | "warning" | "error" | "neutral";
@@ -828,45 +829,6 @@ function terminalJobTitle(status: string, reason: string, exitCode?: number): st
   return `Job ${status}`;
 }
 
-// Local duration humanizer for timer secondaries. jobWatch.tsx owns the
-// canonical humanizeSeconds/humanizeInterval, but this file is a message
-// parser and must not import a tool renderer for one of its descriptors —
-// the parser stays independent of any single tool's rendering layer — so the
-// tiny minutes math is duplicated here instead of cross-imported. The hour
-// branch matches the renderer's grammar (whole hours "1h", else "1h05m") so
-// a day-long timer never reads "after 1440m" (RoboRev PR #954 combined
-// review: valid timers run to 86,400s). Rounding runs first, mirroring the
-// renderer: a remainder can never surface as 60 ("after 59m60s").
-function humanizeTimerAfter(totalSeconds: number): string {
-  const rounded = Math.round(totalSeconds);
-  if (rounded < 60) return `after ${rounded}s`;
-  const totalMinutes = Math.floor(rounded / 60);
-  const leftoverSeconds = rounded % 60;
-  if (totalMinutes < 60) {
-    return leftoverSeconds === 0
-      ? `after ${totalMinutes}m`
-      : `after ${totalMinutes}m${String(leftoverSeconds).padStart(2, "0")}s`;
-  }
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return minutes === 0 ? `after ${hours}h` : `after ${hours}h${String(minutes).padStart(2, "0")}m`;
-}
-
-function humanizeTimerEvery(totalSeconds: number): string {
-  const rounded = Math.round(totalSeconds);
-  if (rounded < 60) return `every ${rounded}s`;
-  const totalMinutes = Math.floor(rounded / 60);
-  const leftoverSeconds = rounded % 60;
-  if (totalMinutes < 60) {
-    return leftoverSeconds === 0
-      ? `every ${totalMinutes}m`
-      : `every ${totalMinutes}m${String(leftoverSeconds).padStart(2, "0")}s`;
-  }
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return minutes === 0 ? `every ${hours}h` : `every ${hours}h${String(minutes).padStart(2, "0")}m`;
-}
-
 // timerSecondaryFromProse humanizes a bare timer reason ("after"/"repeat")
 // from the prose lead's own seconds ("Timer fired after 300s." /
 // "Timer fired (every 300s).", agent/job_notify.go). Undefined when the prose
@@ -877,7 +839,7 @@ function timerSecondaryFromProse(reason: string, prose: string | undefined): str
   if (seconds === undefined) return undefined;
   const totalSeconds = Number(seconds);
   if (!Number.isFinite(totalSeconds)) return undefined;
-  return reason === "after" ? humanizeTimerAfter(totalSeconds) : humanizeTimerEvery(totalSeconds);
+  return `${reason === "after" ? "after" : "every"} ${formatSpan(totalSeconds)}`;
 }
 
 function notificationSecondary(

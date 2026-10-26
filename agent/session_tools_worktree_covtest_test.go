@@ -330,7 +330,7 @@ func TestCovLiveSubagentSession(t *testing.T) {
 	}
 
 	// Non-existent child — nil.
-	mgr := newSubagentManager(nil, 10)
+	mgr := newSubagentManager(10)
 	if liveSubagentSession(mgr, "nonexistent") != nil {
 		t.Fatal("non-existent child should return nil")
 	}

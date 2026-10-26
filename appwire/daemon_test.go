@@ -198,7 +198,7 @@ func TestDaemonWireShapes(t *testing.T) {
 // (internal/appserver/router.go admission-before-handler; replay lookup inside
 // the handler at agent/session_client_mutation.go), so the refusing path
 // cannot know whether a retried ClientMutationID was already durably
-// accepted. Plan line 918 (docs/superpowers/plans/2026-09-10-daemon-idle-retirement.md)
+// accepted. The idle-retirement design
 // forbids reporting a possibly-accepted mutation as rejected solely because
 // its reply was lost; "unknown" is the truthful epistemic state
 // (appwire/errors.go MutationOutcomeUnknown).

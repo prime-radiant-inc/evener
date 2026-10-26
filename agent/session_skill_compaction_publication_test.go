@@ -14,7 +14,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -901,7 +900,7 @@ func TestSkillCompaction_RestartAfterPublish(t *testing.T) {
 	}
 	// Snapshot the pre-publication metadata bytes — the stale state a crash
 	// between the winning publication and its metadata save would leave.
-	metaPath := filepath.Join(stateDir, sessionsSubdir, id+".meta.json")
+	metaPath := schema.SessionMetaPath(stateDir, id)
 	stale, err := os.ReadFile(metaPath)
 	if err != nil {
 		t.Fatalf("read stale metadata: %v", err)
@@ -1011,7 +1010,7 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("requestSkillCompaction (second): %v", err)
 		}
-		metaPath := filepath.Join(stateDir, sessionsSubdir, id+".meta.json")
+		metaPath := schema.SessionMetaPath(stateDir, id)
 		stale, err := os.ReadFile(metaPath)
 		if err != nil {
 			t.Fatalf("read stale metadata: %v", err)
@@ -1064,7 +1063,7 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 		// the selection of — a DIFFERENT generation's pending intent.
 		stateDir := t.TempDir()
 		id := identifier.MustNewSessionID()
-		if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+		if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 			t.Fatalf("mkdir sessions: %v", err)
 		}
 		writer, err := transcript.NewWriter(transcriptPath(stateDir, id), transcript.Header{SessionID: id, ProfileID: "openai", Model: "gpt-5.2"})
@@ -1133,7 +1132,7 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 		// receipts show was already delivered — and consume its selection.
 		stateDir := t.TempDir()
 		id := identifier.MustNewSessionID()
-		if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+		if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 			t.Fatalf("mkdir sessions: %v", err)
 		}
 		writer, err := transcript.NewWriter(transcriptPath(stateDir, id), transcript.Header{SessionID: id, ProfileID: "openai", Model: "gpt-5.2"})
@@ -1265,7 +1264,7 @@ func TestSkillCompaction_IntermediateSaveWindowRestore(t *testing.T) {
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 	id := s.Meta().ID
 	disableSessionNaming(s)
-	metaPath := filepath.Join(stateDir, sessionsSubdir, id+".meta.json")
+	metaPath := schema.SessionMetaPath(stateDir, id)
 	var windowBytes []byte
 	var windowSaves atomic.Int32
 	updateSessionTestConfig(s, func(cfg *testConfig) {

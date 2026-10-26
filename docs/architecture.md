@@ -18,7 +18,7 @@ clients. [go.work](../go.work) is the workspace module inventory; each module's
 | LLM | [llm/](../llm/go.mod) | Provider registry, requests, streaming, retries and model metadata |
 | Authentication | [auth/](../auth/go.mod) | OAuth flows and token storage |
 | Environment | [envvars/](../envvars/go.mod) | Environment-variable definitions and user-directory resolution |
-| Execution support | [execsupport/](../execsupport/README.md) | Value expressions, process groups, pipe draining and shell quoting |
+| Execution support | [execsupport/](../execsupport/README.md) | Value expressions, process groups, pipe draining, shell quoting and durable atomic file writes |
 | Identifiers | [identifier/](../identifier/go.mod) | Session, job, mutation and other domain identities |
 | Invariants | [invariant/](../invariant/invariant.go) | Assertions enabled in fuzz builds; no-op assertions in normal builds |
 | Fuzz tooling | [fuzz/](../fuzz/README.md) | Portable generation, oracles and regression-promotion tooling |

@@ -1068,7 +1068,7 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 func (s *Session) announceRootAttentionPaused(turnErr error) {
 	summary := llm.ProviderFailureSummary(turnErr)
 	slog.Warn("background updates paused", "session", s.ID(), "failure", summary)
-	s.emit(events.EventWarning, events.WarningData{
+	s.emit(events.WarningData{
 		Message: rootAttentionPausedMessage(turnErr),
 		Source:  string(diagnostic.SourceEvener),
 		Title:   "Background updates paused",

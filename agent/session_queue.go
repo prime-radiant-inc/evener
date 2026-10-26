@@ -739,7 +739,7 @@ func (s *Session) popQueueHeadRefusingPoison() (queuedInput, error) {
 	}
 	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
 		return queuedInput{}, nil
 	}
 	// The writer is sampled under s.mu here, before the serializer takes
@@ -797,7 +797,7 @@ func (s *Session) popQueueHeadRefusingPoison() (queuedInput, error) {
 		return queuedInput{}, err
 	}
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim queued input failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("claim queued input failed: %v", err)})
 		return queuedInput{}, nil
 	}
 	if queued.ClientMutationID != "" {
@@ -863,7 +863,7 @@ func (s *Session) pushQueueHead(entry queuedInput) error {
 			return nil
 		})
 		if err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("return claimed input failed: %v", err)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("return claimed input failed: %v", err)})
 			return err
 		}
 		s.reflectDurableInputQueue()
@@ -874,7 +874,7 @@ func (s *Session) pushQueueHead(entry queuedInput) error {
 	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
 	s.persistQueuesSnapshot()
-	s.emit(events.EventQueueChanged, data)
+	s.emit(data)
 	return nil
 }
 
@@ -1072,7 +1072,7 @@ func (s *Session) reconcileRecordedSteering() {
 		reconcileClientSteering(snapshot, recorded, false)
 		return nil
 	}); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("mark recorded steering incorporated: %v; the transcript holds it", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("mark recorded steering incorporated: %v; the transcript holds it", err)})
 		return
 	}
 	s.steeringMarked(ids)
@@ -1271,7 +1271,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 			// failing without poisoning the writer (ENOSPC before a byte
 			// lands) would otherwise loop failed carrier turns with no pause,
 			// and a paced retry is not this design's answer.
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 			s.steeringLanded(msg.ClientMutationID)
 			s.parkSteering()
 			return steeringAppendFailed
@@ -1283,7 +1283,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 			// re-queues it and no carrier claims it, and the input's settle,
 			// the next wake, a Stop or restore writes the mark through the
 			// steering table (reconcileRecordedSteering).
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v; the transcript holds the steer", err)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v; the transcript holds the steer", err)})
 			s.markSteeringRecorded(msg.ClientMutationID, "incorporated")
 		} else {
 			s.steeringLanded(msg.ClientMutationID)
@@ -1299,7 +1299,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 		if hook := s.cfg.testOnly.beforeSteeringInjectedPublish; hook != nil {
 			hook()
 		}
-		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+		s.emit(steeringInjectedDataFromMessage(msg))
 		s.admitPreparedSkillSelection(selectionBatch)
 		s.unparkSteering()
 		return steeringDelivered
@@ -1312,7 +1312,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 	if hook := s.cfg.testOnly.beforeSteeringInjectedPublish; hook != nil {
 		hook()
 	}
-	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+	s.emit(steeringInjectedDataFromMessage(msg))
 	s.admitPreparedSkillSelection(selectionBatch)
 	return steeringDelivered
 }
@@ -1400,7 +1400,7 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 		// client steer lands like any failed append (still accepted in the
 		// store, so the reflect re-queues it at its place in the order);
 		// daemon steering has no store and goes back to the head directly.
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist failed steering selection: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("persist failed steering selection: %v", err)})
 		if msg.ClientMutationID != "" {
 			s.steeringLanded(msg.ClientMutationID)
 			s.parkSteering()
@@ -1411,7 +1411,7 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 		}
 		return false
 	}
-	s.emit(events.EventError, errorDataFromError(cause))
+	s.emit(errorDataFromError(cause))
 	if msg.ClientMutationID == "" {
 		return true
 	}
@@ -1432,7 +1432,7 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 		// The failure is in the transcript and the retirement is not in the
 		// store: recorded, unmarked, and reconciled like an incorporation
 		// write the store refused.
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("clear failed steering execution: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("clear failed steering execution: %v", err)})
 		s.markSteeringRecorded(msg.ClientMutationID, "failed")
 		return true
 	}
@@ -1453,7 +1453,7 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 	t.SteeringKind = kind
 	t.OwningTurnID = s.activeTurnOwner()
 	s.recordTurn(t, t)
-	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: text, Kind: kind})
+	s.emit(events.SteeringInjectedData{Text: text, Kind: kind})
 }
 
 func (s *Session) activeTurnOwner() string {
@@ -1494,7 +1494,7 @@ func (s *Session) appendSteeringTurnDurablyForOwner(text, kind, owningTurnID str
 		func() { s.history = append(s.history, t) },
 	)
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	return err
 }

@@ -9,6 +9,9 @@ used by Evener's root, agent, and LLM modules:
 - `orphanpipe` handles subprocess pipe-drain results, with test fixtures in
   `orphanpipe/orphanpipetest`.
 - `shellquote` renders POSIX shell words.
+- `fsatomic` publishes a file atomically and durably (temp file, fsync,
+  rename, directory fsync) and owns the one predicate for "this filesystem
+  cannot sync".
 - `syncio` wraps an io.Writer so concurrent writes from different goroutines
   serialize onto it instead of racing.
 

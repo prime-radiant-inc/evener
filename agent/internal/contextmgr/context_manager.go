@@ -101,8 +101,7 @@ type postFoldInjectionCallbackKey struct{}
 
 // WithPostFoldInjectionCallback returns a context whose callback receives the
 // net turn-count delta a Strategy appends to history AFTER its own fold layers
-// run — MemoryCrystalsStrategy's crystal bank, RecursiveDistillStrategy's
-// distilled-memory banner, OODAStrategy's orientation message. Those turns
+// run — OODAStrategy's orientation message. Those turns
 // land after whatever the fold preserved, so a caller measuring the overall
 // before/after turn-count delta across the whole ManageContext call needs this
 // reported separately to avoid under-shrinking the N4 in-flight-turn boundary
@@ -143,7 +142,7 @@ type baselineQueryKey struct{}
 // perform on its own.
 //
 // A self-injecting Strategy that replaces an existing marker turn
-// (memory-crystals, recursive-distill, ooda) uses this to tell whether the
+// (ooda) uses this to tell whether the
 // marker it's about to remove sits before or after the boundary: removing a
 // pre-boundary marker shifts every in-flight turn left by one, and the
 // marker's own re-append (always at the end) does not restore that —
@@ -193,9 +192,9 @@ func (cm *Manager) metaFor(ctx context.Context) *CompactionMeta {
 // recording the last match's index — appends a fresh steering turn carrying
 // text at the end (the strongest recency position, inside the preserved
 // window for the next compaction), and reports the baseline-corrected
-// injection delta via reportPostFoldInjection. Shared by the three
-// self-injecting strategies (memory-crystals, recursive-distill, ooda),
-// whose marker banners are replaced, not accumulated, on every ManageContext.
+// injection delta via reportPostFoldInjection. Used by the
+// self-injecting ooda strategy, whose marker banner is replaced, not
+// accumulated, on every ManageContext.
 //
 // Each removal before the boundary shifts every in-flight turn left by one,
 // and the re-append does not undo that — recording only the last match
@@ -257,7 +256,7 @@ type Manager struct {
 	// ObservationMaskThreshold and ThinkingClearThreshold are not used by the
 	// default compaction path (MaybeCompact/ForceCompact) because in-place
 	// modifications bust the prompt cache for all providers. They remain here
-	// for experimental Strategy implementations that call
+	// for the session-log strategy, which calls
 	// maskObservations/clearThinking directly.
 	ObservationMaskThreshold float64
 	ThinkingClearThreshold   float64
@@ -308,10 +307,6 @@ func NewManager(profile *provider.Profile, client *llm.Client, cheap *cheapmodel
 		SummarizeThreshold:       0.95,
 		PreserveRecentTurns:      6,
 	}
-}
-
-func (cm *Manager) completeCheap(ctx context.Context, req llm.Request) (llm.Response, error) {
-	return cm.cheap.Complete(ctx, cm.currentProfile(), req)
 }
 
 func (cm *Manager) resultToolName() string {
@@ -678,6 +673,52 @@ func attentionTransparentRecentCutoff(history []schema.Turn, preserveRecent int)
 
 // --- MaybeCompact orchestrator ---
 
+// resetMeasurement drops the exact API token measurement so the next pressure
+// reading falls back to char/4 estimates that reflect in-place history changes.
+func (cm *Manager) resetMeasurement() {
+	cm.mu.Lock()
+	cm.lastInputTokens = 0
+	cm.historyLenAtMeasure = 0
+	cm.mu.Unlock()
+}
+
+// applyLayer runs one compaction layer over *history and reports it: fn
+// returns the new history, EventContextCompaction carries the turn and token
+// counts measured under prof, and a turn of headKind at the head of the result
+// is handed to handleCompactionTurn. A layer that fails warns and leaves
+// *history untouched; applyLayer reports whether the layer ran. Pass an empty
+// headKind for in-place layers, which produce no compaction turn.
+func (cm *Manager) applyLayer(
+	ctx context.Context,
+	emitFn func(events.EventKind, events.EventData),
+	history *[]schema.Turn,
+	prof *provider.Profile,
+	layer string,
+	headKind schema.TurnKind,
+	fn func([]schema.Turn) ([]schema.Turn, error),
+) bool {
+	turnsBefore := len(*history)
+	before := cm.estimateTokensFor(prof, *history)
+	result, err := fn(*history)
+	if err != nil {
+		emitFn(events.EventWarning, summarizerFailureWarning(err))
+		return false
+	}
+	*history = result
+	after := cm.estimateTokensFor(prof, *history)
+	emitFn(events.EventContextCompaction, events.ContextCompactionData{
+		Layer:           layer,
+		TurnsBefore:     turnsBefore,
+		TurnsAfter:      len(*history),
+		EstTokensBefore: before,
+		EstTokensAfter:  after,
+	})
+	if headKind != "" && len(*history) > 0 && (*history)[0].Kind == headKind {
+		cm.handleCompactionTurn(ctx, (*history)[0])
+	}
+	return true
+}
+
 // MaybeCompact checks context pressure and applies compaction layers progressively.
 // It modifies history in place and emits events for each layer applied.
 // Called before each LLM request. A model whose window is unknown is managed
@@ -716,10 +757,7 @@ func (cm *Manager) MaybeCompact(
 	// mutations). Without this, stale lastInputTokens causes both layers
 	// to cascade in a single pass.
 	if p >= cm.CheckpointThreshold {
-		cm.mu.Lock()
-		cm.lastInputTokens = 0
-		cm.historyLenAtMeasure = 0
-		cm.mu.Unlock()
+		cm.resetMeasurement()
 	}
 
 	// Layer 1: Deterministic checkpoint at ≥80%.
@@ -727,55 +765,28 @@ func (cm *Manager) MaybeCompact(
 	// completing the same fold reads the partner's messages from.
 	var checkpointed []schema.Turn
 	if p >= cm.CheckpointThreshold {
-		turnsBefore := len(*history)
-		before := cm.estimateTokensFor(prof, *history)
-		*history, checkpointed = checkpointFold(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
-		after := cm.estimateTokensFor(prof, *history)
-		emitFn(events.EventContextCompaction, events.ContextCompactionData{
-			Layer:           "checkpoint",
-			TurnsBefore:     turnsBefore,
-			TurnsAfter:      len(*history),
-			EstTokensBefore: before,
-			EstTokensAfter:  after,
+		cm.applyLayer(ctx, emitFn, history, prof, "checkpoint", schema.TurnCheckpoint, func(h []schema.Turn) ([]schema.Turn, error) {
+			var folded []schema.Turn
+			h, folded = checkpointFold(h, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
+			checkpointed = folded
+			return h, nil
 		})
-		if len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
-			cm.handleCompactionTurn(ctx, (*history)[0])
-		}
 		compacted = true
 		p, prof = pressure()
 	}
 
 	// Layer 2: LLM summarization at ≥90%.
 	if p >= cm.SummarizeThreshold && cm.client != nil {
-		turnsBefore := len(*history)
-		before := cm.estimateTokensFor(prof, *history)
-		result, err := cm.summarizeFold(ctx, *history, cm.PreserveRecentTurns, "", checkpointed)
-		if err != nil {
-			// On error, emit warning but continue with current history.
-			emitFn(events.EventWarning, summarizerFailureWarning(err))
-		} else {
-			*history = result
-			after := cm.estimateTokensFor(prof, *history)
-			emitFn(events.EventContextCompaction, events.ContextCompactionData{
-				Layer:           "summarize",
-				TurnsBefore:     turnsBefore,
-				TurnsAfter:      len(*history),
-				EstTokensBefore: before,
-				EstTokensAfter:  after,
-			})
-			if len(*history) > 0 && (*history)[0].Kind == schema.TurnSummary {
-				cm.handleCompactionTurn(ctx, (*history)[0])
-			}
+		if cm.applyLayer(ctx, emitFn, history, prof, "summarize", schema.TurnSummary, func(h []schema.Turn) ([]schema.Turn, error) {
+			return cm.summarizeFold(ctx, h, cm.PreserveRecentTurns, "", checkpointed)
+		}) {
 			compacted = true
 		}
 	}
 
 	// Reset token measurement after compaction since history content changed.
 	if compacted {
-		cm.mu.Lock()
-		cm.lastInputTokens = 0
-		cm.historyLenAtMeasure = 0
-		cm.mu.Unlock()
+		cm.resetMeasurement()
 	}
 }
 
@@ -867,65 +878,35 @@ func (cm *Manager) ForceCompact(
 	emitFn func(events.EventKind, events.EventData),
 ) (summarized bool) {
 	// Reset token measurement so inter-layer estimates use char/4.
-	cm.mu.Lock()
-	cm.lastInputTokens = 0
-	cm.historyLenAtMeasure = 0
-	cm.mu.Unlock()
+	cm.resetMeasurement()
 
 	// One profile snapshot covers every diagnostic below, for the same reason as
 	// MaybeCompact: the readings describe one model's rules, not two half-read.
 	prof, _, _ := cm.profileSnapshot()
 
 	// Layer 1: Deterministic checkpoint.
-	turnsBefore := len(*history)
-	before := cm.estimateTokensFor(prof, *history)
 	var checkpointed []schema.Turn
-	*history, checkpointed = checkpointFold(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
-	after := cm.estimateTokensFor(prof, *history)
-	emitFn(events.EventContextCompaction, events.ContextCompactionData{
-		Layer:           "checkpoint",
-		TurnsBefore:     turnsBefore,
-		TurnsAfter:      len(*history),
-		EstTokensBefore: before,
-		EstTokensAfter:  after,
+	cm.applyLayer(ctx, emitFn, history, prof, "checkpoint", schema.TurnCheckpoint, func(h []schema.Turn) ([]schema.Turn, error) {
+		var folded []schema.Turn
+		h, folded = checkpointFold(h, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
+		checkpointed = folded
+		return h, nil
 	})
-	if len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
-		cm.handleCompactionTurn(ctx, (*history)[0])
-	}
 
 	// Layer 2: LLM summarization (only if client is available).
 	if cm.client != nil {
-		turnsBefore = len(*history)
-		before = cm.estimateTokensFor(prof, *history)
 		// The summarizer returns the input unchanged for short or unsafe history,
 		// which must not count a pre-existing summary as a newly generated one.
 		canSummarize := attentionTransparentTurnCount(*history) > cm.PreserveRecentTurns &&
 			safeCutoff(*history, attentionTransparentRecentCutoff(*history, cm.PreserveRecentTurns)) >= 0
-		result, err := cm.summarizeFold(ctx, *history, cm.PreserveRecentTurns, instructions, checkpointed)
-		if err != nil {
-			emitFn(events.EventWarning, summarizerFailureWarning(err))
-		} else {
-			summarized = canSummarize && len(result) > 0 && result[0].Kind == schema.TurnSummary
-			*history = result
-			after := cm.estimateTokensFor(prof, *history)
-			emitFn(events.EventContextCompaction, events.ContextCompactionData{
-				Layer:           "summarize",
-				TurnsBefore:     turnsBefore,
-				TurnsAfter:      len(*history),
-				EstTokensBefore: before,
-				EstTokensAfter:  after,
-			})
-			if len(*history) > 0 && (*history)[0].Kind == schema.TurnSummary {
-				cm.handleCompactionTurn(ctx, (*history)[0])
-			}
-		}
+		ok := cm.applyLayer(ctx, emitFn, history, prof, "summarize", schema.TurnSummary, func(h []schema.Turn) ([]schema.Turn, error) {
+			return cm.summarizeFold(ctx, h, cm.PreserveRecentTurns, instructions, checkpointed)
+		})
+		summarized = ok && canSummarize && len(*history) > 0 && (*history)[0].Kind == schema.TurnSummary
 	}
 
 	// Reset token measurement after compaction.
-	cm.mu.Lock()
-	cm.lastInputTokens = 0
-	cm.historyLenAtMeasure = 0
-	cm.mu.Unlock()
+	cm.resetMeasurement()
 	return summarized
 }
 

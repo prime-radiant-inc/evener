@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -240,7 +239,7 @@ func TestRootDelegateAttentionKeepsDeliveryOrderAcrossCompactionRestart(t *testi
 	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := identifier.MustNewSessionID()
-	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+	if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 		t.Fatalf("mkdir sessions: %v", err)
 	}
 	writer, err := transcript.NewWriter(transcriptPath(stateDir, rootID), transcript.Header{SessionID: rootID, ProfileID: "openai", Model: "gpt-5.2"})

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
@@ -197,7 +196,7 @@ func (s *Session) admitPreparedSkillSelection(batch *skillActivationBatch) {
 			s.pendingSkillAdmissions = append(s.pendingSkillAdmissions, batch)
 		}
 		s.mu.Unlock()
-		s.emit(events.EventWarning, warningDataFromError("admitting a prepared skill selection failed", err))
+		s.emit(warningDataFromError("admitting a prepared skill selection failed", err))
 	}
 }
 
@@ -327,7 +326,7 @@ func (s *Session) reconcilePendingSkillSelections(ctx context.Context, entries [
 		historyBefore := len(s.history)
 		batch, err := s.prepareSkillActivations(ctx, invocations)
 		if err != nil {
-			s.emit(events.EventWarning, warningDataFromError("reconciling lost skill selection failed", err))
+			s.emit(warningDataFromError("reconciling lost skill selection failed", err))
 			continue
 		}
 		// Admission gates the next request on its own failure (it retains the
@@ -465,7 +464,7 @@ func (s *Session) mintSkillOperationID() (string, error) {
 	id := fmt.Sprintf("skill-op-%d", s.skillLifecycle.NextOperationGen)
 	s.mu.Unlock()
 	if err := s.saveMeta(); err != nil {
-		s.emit(events.EventWarning, warningDataFromError("persisting skill operation identity failed", err))
+		s.emit(warningDataFromError("persisting skill operation identity failed", err))
 		return "", err
 	}
 	return id, nil
@@ -586,7 +585,7 @@ func (s *Session) admitSkillActivationBatch(batch *skillActivationBatch) error {
 		s.skillLifecycle.Obligations = withoutObligationsByInvocationID(s.skillLifecycle.Obligations, added)
 		s.skillLifecycle.Revision++
 		s.mu.Unlock()
-		s.emit(events.EventWarning, warningDataFromError("saving skill delivery obligations failed", err))
+		s.emit(warningDataFromError("saving skill delivery obligations failed", err))
 		return err
 	}
 	for _, adm := range admissions {

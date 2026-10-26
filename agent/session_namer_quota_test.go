@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -111,7 +110,7 @@ func (h *namerQuotaHarness) failingNamerAdapter(t *testing.T, providerName strin
 // namerFailureAdvisories counts the session log's session_namer failure entries.
 func (h *namerQuotaHarness) namerFailureAdvisories(t *testing.T) int {
 	t.Helper()
-	log := mustNewSessionLog(t, filepath.Join(h.dir, sessionsSubdir, h.sess.ID()+".log.jsonl"))
+	log := mustNewSessionLog(t, schema.SessionLogPath(h.dir, h.sess.ID()))
 	count := 0
 	for _, entry := range log.Entries() {
 		if entry.Action == "session_namer" && entry.Outcome == "failure" {

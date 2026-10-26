@@ -23,9 +23,9 @@ func TestNewSessionAcquiresOwnershipBeforePersistingIdentity(t *testing.T) {
 		AcquireSessionOwnership: func(id string) error {
 			sessionID = id
 			for _, path := range []string{
-				filepath.Join(stateDir, sessionsSubdir, id),
-				filepath.Join(stateDir, sessionsSubdir, id+".meta.json"),
-				filepath.Join(stateDir, sessionsSubdir, id+".transcript.jsonl"),
+				filepath.Join(stateDir, schema.SessionsSubdir, id),
+				schema.SessionMetaPath(stateDir, id),
+				schema.SessionTranscriptPath(stateDir, id),
 			} {
 				if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 					t.Fatalf("session artifact %s existed before ownership acquisition: %v", path, statErr)
@@ -106,7 +106,7 @@ func TestRestoreSessionReloadsMetadataAfterOwnershipAcquisition(t *testing.T) {
 	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 		t.Fatal(err)
 	}
-	metaPath := filepath.Join(stateDir, sessionsSubdir, meta.ID+".meta.json")
+	metaPath := schema.SessionMetaPath(stateDir, meta.ID)
 	acquired := false
 	_, err := RestoreSessionFromMetaWithConfig(
 		llm.NewClient(),
@@ -130,7 +130,7 @@ func TestRestoreSessionReloadsMetadataAfterOwnershipAcquisition(t *testing.T) {
 	if !acquired {
 		t.Fatal("restore did not acquire ownership")
 	}
-	transcriptPath := filepath.Join(stateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(stateDir, meta.ID)
 	if _, statErr := os.Stat(transcriptPath); !os.IsNotExist(statErr) {
 		t.Fatalf("failed revalidation created transcript: %v", statErr)
 	}
@@ -142,7 +142,7 @@ func TestRestoreSessionFailureRetainsPreAcquiredOwnership(t *testing.T) {
 	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 		t.Fatal(err)
 	}
-	transcriptPath := filepath.Join(stateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(stateDir, meta.ID)
 	if err := os.Mkdir(transcriptPath, 0o700); err != nil {
 		t.Fatal(err)
 	}

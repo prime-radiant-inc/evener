@@ -201,7 +201,7 @@ func FuzzAreqToAnthropicMessages(f *testing.F) {
 }
 
 // ---------------------------------------------------------------------------
-// clampEffort
+// llm.ClampReasoningEffort
 // ---------------------------------------------------------------------------
 
 var areqHierarchy = []string{"low", "medium", "high", "max"}
@@ -233,7 +233,7 @@ func areqEffortLevels(sel []byte, requested string) []string {
 // FuzzAreqClampEffort drives reasoning-effort clamping. Oracles:
 //   - never panics (floor);
 //   - determinism;
-//   - idempotence: clampEffort(clampEffort(x)) == clampEffort(x);
+//   - idempotence: llm.ClampReasoningEffort(llm.ClampReasoningEffort(x)) == llm.ClampReasoningEffort(x);
 //   - empty supported set is a pass-through (returns the raw requested string);
 //   - a directly-supported request is returned unchanged (normalized);
 //   - membership: when the request is a known level and at least one supported
@@ -248,12 +248,12 @@ func FuzzAreqClampEffort(f *testing.F) {
 	f.Fuzz(func(t *testing.T, requested string, sel []byte) {
 		levels := areqEffortLevels(sel, requested)
 
-		got := clampEffort(requested, levels)
-		if got2 := clampEffort(requested, levels); got != got2 {
-			t.Fatalf("nondeterministic clampEffort(%q,%v): %q vs %q", requested, levels, got, got2)
+		got := llm.ClampReasoningEffort(requested, levels)
+		if got2 := llm.ClampReasoningEffort(requested, levels); got != got2 {
+			t.Fatalf("nondeterministic llm.ClampReasoningEffort(%q,%v): %q vs %q", requested, levels, got, got2)
 		}
-		if reGot := clampEffort(got, levels); reGot != got {
-			t.Fatalf("clampEffort not idempotent: clamp(%q)=%q, clamp(clamp)=%q (levels=%v)", requested, got, reGot, levels)
+		if reGot := llm.ClampReasoningEffort(got, levels); reGot != got {
+			t.Fatalf("ClampReasoningEffort not idempotent: clamp(%q)=%q, clamp(clamp)=%q (levels=%v)", requested, got, reGot, levels)
 		}
 
 		if len(levels) == 0 {
@@ -265,13 +265,13 @@ func FuzzAreqClampEffort(f *testing.F) {
 
 		norm := strings.ToLower(strings.TrimSpace(requested))
 		// This oracle deliberately uses a narrower notion of "known"/"directly
-		// supported" than clampEffort itself: it lowercases (but does not trim)
+		// supported" than llm.ClampReasoningEffort itself: it lowercases (but does not trim)
 		// each supported level and only recognizes the low/medium/high/max
-		// hierarchy, whereas clampEffort delegates to llm.ClampReasoningEffort,
-		// which trims and also recognizes minimal/xhigh. That makes this check a
+		// hierarchy, whereas llm.ClampReasoningEffort
+		// trims and also recognizes minimal/xhigh. That makes this check a
 		// conservative under-approximation — it can only skip an assertion it
 		// isn't sure about, never wrongly demand one — so it stays valid even
-		// though it no longer mirrors clampEffort's comparisons exactly.
+		// though it no longer mirrors llm.ClampReasoningEffort's comparisons exactly.
 		supportedHasKnown := false
 		directlySupported := false
 		for _, l := range levels {

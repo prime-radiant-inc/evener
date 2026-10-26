@@ -424,7 +424,6 @@ func TestCancelAgent_GenuineFailureRacingCancelStaysFailed(t *testing.T) {
 	sub := &subagent{
 		id:              sess.id,
 		sess:            sess,
-		emit:            sess.emit,
 		running:         true,
 		status:          SubagentRunning,
 		done:            make(chan struct{}),
@@ -476,7 +475,6 @@ func TestCancelAgent_JoinedCanceledAndExhaustionStaysCancelledWithJoinedError(t 
 	sub := &subagent{
 		id:              sess.id,
 		sess:            sess,
-		emit:            sess.emit,
 		running:         true,
 		status:          SubagentRunning,
 		done:            make(chan struct{}),
@@ -514,7 +512,6 @@ func TestCancelAgent_NotRunning(t *testing.T) {
 	sub := &subagent{
 		id:      "01IDLE",
 		sess:    newTestSession(t),
-		emit:    sess.emit,
 		running: false,
 		status:  SubagentCompleted,
 		done:    make(chan struct{}),

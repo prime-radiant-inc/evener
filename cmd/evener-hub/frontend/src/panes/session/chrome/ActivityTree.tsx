@@ -10,10 +10,12 @@ import {
   activityDelegateState,
   buildActivityRows,
   buildWatchRows,
+  compactDuration,
   delegateStatedIntent,
   delegateTiming,
   delegateWorkText,
   jobIsFailed,
+  parseTimestampMs,
   watchMeta,
   watchName,
 } from "@evener/appwire-client";
@@ -40,7 +42,6 @@ import { OpenTranscriptButton } from "../transcript/openTranscript";
 import { ActivityRowDetail, ActivityWatchDetail } from "./ActivityRowDetail";
 import {
   delegateName,
-  formatQuietAge,
   formatUsagePair,
   jobStatusDisplay,
   jobStatusDotState,
@@ -143,16 +144,10 @@ interface MetaSegment {
   tone?: "quiet";
 }
 
-function parseMillis(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? undefined : parsed;
-}
-
 // terminalSegment renders the duration (quiet-age bucketed) when the row has
 // one, else the true status text. Settled outcomes use ordinary ink.
 function terminalSegment(durationMs: number | undefined, statusText: string): MetaSegment {
-  if (durationMs !== undefined) return { key: "duration", text: formatQuietAge(durationMs) };
+  if (durationMs !== undefined) return { key: "duration", text: compactDuration(durationMs) };
   return { key: "status", text: statusText };
 }
 
@@ -177,12 +172,12 @@ function liveMetaSegments(
   if (intent) {
     const segments: MetaSegment[] = [{ key: "intent", text: intent }];
     if (tokens) segments.push({ key: "tokens", text: tokens });
-    if (quietMs !== undefined) segments.push({ key: "quiet", text: formatQuietAge(quietMs), tone: "quiet" });
+    if (quietMs !== undefined) segments.push({ key: "quiet", text: compactDuration(quietMs), tone: "quiet" });
     return segments;
   }
   const first: MetaSegment = tokens ? { key: "tokens", text: tokens } : { key: "status", text: statusText };
   const segments: MetaSegment[] = [first];
-  if (quietMs !== undefined) segments.push({ key: "quiet", text: formatQuietAge(quietMs), tone: "quiet" });
+  if (quietMs !== undefined) segments.push({ key: "quiet", text: compactDuration(quietMs), tone: "quiet" });
   return segments;
 }
 
@@ -192,8 +187,8 @@ function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
     return liveMetaSegments(undefined, rowStatusText(row), now - quietAnchorMillis(job));
   }
   // The row's accessible status preserves the outcome when duration replaces it.
-  const start = parseMillis(job.startedAt);
-  const end = parseMillis(job.endedAt);
+  const start = parseTimestampMs(job.startedAt);
+  const end = parseTimestampMs(job.endedAt);
   const durationMs = start !== undefined && end !== undefined ? end - start : undefined;
   return [terminalSegment(durationMs, rowStatusText(row))];
 }

@@ -28,7 +28,7 @@ func TestLoadSessionMetaFS_ReadOnlyFs_MemMapRoundTrip(t *testing.T) {
 
 	mem := afero.NewMemMapFs()
 	// Write the sessions dir and a valid meta file into the MemMapFs.
-	if err := afero.WriteFile(mem, filepath.Join(dir, sessionsSubdir, id+".meta.json"),
+	if err := afero.WriteFile(mem, SessionMetaPath(dir, id),
 		[]byte(`{"id":"`+id+`","name":"from-mem"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestLoadSessionMetaFS_ReadOnlyFs_MemMapRoundTrip(t *testing.T) {
 // readMetaFile unwrapped BasePathFs unconditionally via RealPath and called
 // readFileNoFollowOS, so a BasePathFs over MemMapFs read the OS filesystem.
 //
-// loadSessionMetaFS builds path = filepath.Join(dir, sessionsSubdir, leaf). With
+// loadSessionMetaFS builds path = filepath.Join(dir, SessionsSubdir, leaf). With
 // dir="/" that is "/sessions/<id>.meta.json"; BasePathFs.RealPath maps that to
 // "<base>/sessions/<id>.meta.json". So the MemMapFs must hold the file at that
 // resolved path — matching how the fuzz test drives BasePathFs with dir="/".
@@ -67,7 +67,7 @@ func TestLoadSessionMetaFS_BasePathFs_MemMapRoundTrip(t *testing.T) {
 	mem := afero.NewMemMapFs()
 	// RealPath maps "/sessions/<id>.meta.json" to "/state/sessions/<id>.meta.json",
 	// so write the file there in the MemMapFs backing.
-	if err := afero.WriteFile(mem, filepath.Join(base, sessionsSubdir, id+".meta.json"),
+	if err := afero.WriteFile(mem, filepath.Join(base, SessionsSubdir, id+".meta.json"),
 		[]byte(`{"id":"`+id+`","name":"from-mem"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -332,7 +332,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	}
 	s.attentionMu.Unlock()
 	for _, err := range mergedTailWriteErrs {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	// The fold's buffered marker/steering writes and its durable merged-tail
 	// copies each queue a diagnostic when a whole line landed but did not sync;
@@ -618,7 +618,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			artifactProduced = true
 		}
 	})
-	// A non-default Strategy (memory-crystals, recursive-distill, ooda) can
+	// A non-default Strategy (ooda) can
 	// append its own steering turn AFTER its fold layers run, inside its own
 	// ManageContext — not through runPreCompactHook below, so it needs its own
 	// reporting channel into the same injected-turn correction (issue #634).
@@ -667,7 +667,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			}
 			return
 		}
-		s.emit(kind, data)
+		s.emit(data)
 	}
 	// commitTranscriptsLocked and flush are the two staged-commit phases a
 	// winning publish runs, in order — a losing fold runs NEITHER: it must
@@ -741,7 +741,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			hook()
 		}
 		for _, ccd := range pendingCompactionEvents {
-			s.emit(events.EventContextCompaction, ccd)
+			s.emit(ccd)
 		}
 		for i, turn := range pendingCompactionTurns {
 			s.handleCompactionTurnEffects(turn, compactionTurnWriteErrs[i], superseded, commit.publishedRevision)
@@ -763,8 +763,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// during this call from either source: runPreCompactHook (pinned-note
 	// handoff, PreCompact plugin hook output, goal-objective steering —
 	// appendSteeringMessagesToHistory above) or a Strategy's own post-fold
-	// injection reported via WithPostFoldInjectionCallback (memory-crystals,
-	// recursive-distill, ooda). Both land strictly after whatever the fold
+	// injection reported via WithPostFoldInjectionCallback (ooda). Both land strictly after whatever the fold
 	// preserved, so a caller that nets them against the fold's own removal (a
 	// plain before/after turn-count delta) under-shrinks the N4 in-flight-turn
 	// boundary by exactly this many turns (issue #634 Finding 1) — adding this
@@ -956,9 +955,9 @@ func (s *Session) writeSteeringTurnRecordsLocked(records []steeringTurnRecord) [
 func (s *Session) emitSteeringTurnRecords(records []steeringTurnRecord, errs []error) {
 	for i, record := range records {
 		if i < len(errs) && errs[i] != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", errs[i])})
+			s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", errs[i])})
 		}
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: record.text, Kind: record.kind})
+		s.emit(events.SteeringInjectedData{Text: record.text, Kind: record.kind})
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/turnwindow"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm/apilog"
 )
 
@@ -141,7 +142,7 @@ type apiLogBodyContinuation struct {
 }
 
 func apiLogPathForTranscript(path string) string {
-	return strings.TrimSuffix(path, ".transcript.jsonl") + ".api.jsonl"
+	return strings.TrimSuffix(path, schema.SessionTranscriptSuffix) + schema.SessionAPILogSuffix
 }
 
 func readAPILogSummary(ctx context.Context, path, root, ref, rangeArg string) (any, error) {

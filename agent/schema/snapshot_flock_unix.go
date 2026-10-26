@@ -33,7 +33,7 @@ func lockSessionMetaCrossProcess(fs afero.Fs, dir, id string) (func(), bool, err
 	default:
 		return func() {}, false, nil
 	}
-	lockPath := filepath.Join(dir, sessionsSubdir, id+".meta.json.lock")
+	lockPath := filepath.Join(SessionsDir(dir), id+SessionMetaLockSuffix)
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, true, err

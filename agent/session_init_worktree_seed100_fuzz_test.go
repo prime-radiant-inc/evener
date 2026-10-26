@@ -6,7 +6,6 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
@@ -177,7 +176,7 @@ func fuzzInitWorktreePureEdges(t *testing.T) {
 	if err := (*Session)(nil).trackAndLaunchPreparedSubagent(nil); err == nil {
 		t.Fatal("nil prepared run succeeded")
 	}
-	missingSub := &Session{subagents: newSubagentManager(func(events.EventKind, events.EventData) {}, 0)}
+	missingSub := &Session{subagents: newSubagentManager(0)}
 	if _, err := missingSub.sendInput(context.Background(), "missing", "input"); err == nil {
 		t.Fatal("unknown subagent send succeeded")
 	}

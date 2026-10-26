@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/afero"
@@ -192,7 +191,7 @@ func readForkParent(fs afero.Fs, stateDir, parentID string, maxScanToken int) (t
 	if err := schema.ValidateSessionID(parentID); err != nil {
 		return transcript.Header{}, nil, err
 	}
-	transcriptPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(stateDir, parentID)
 
 	// Read the raw transcript lines so we can replay entry lines into the child.
 	f, err := fs.Open(transcriptPath)
@@ -288,7 +287,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 		ParentToolCallID: parentHeader.ParentToolCallID,
 	}
 
-	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
+	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
 	tw, err := deps.newWriter(fs, childTranscriptPath, childHeader)
 	if err != nil {
 		return "", fmt.Errorf("create child transcript: %w", err)

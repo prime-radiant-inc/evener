@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +60,7 @@ func TestSessionNameFromPrompt_UpdatesMetaAndAdvisoryLog(t *testing.T) {
 		t.Fatalf("persisted Name = %q, want Fix Flaky Test", persisted.Name)
 	}
 
-	log := mustNewSessionLog(t, filepath.Join(dir, sessionsSubdir, sess.ID()+".log.jsonl"))
+	log := mustNewSessionLog(t, schema.SessionLogPath(dir, sess.ID()))
 	entries := log.Entries()
 	if len(entries) != 1 {
 		t.Fatalf("log entries = %d, want 1", len(entries))
@@ -97,7 +96,7 @@ func TestSessionNameFromPrompt_LogsAdvisoryFailureWithoutFailingSession(t *testi
 	if got := sess.Meta().Name; got != "" {
 		t.Fatalf("Name = %q, want empty after failure", got)
 	}
-	log := mustNewSessionLog(t, filepath.Join(dir, sessionsSubdir, sess.ID()+".log.jsonl"))
+	log := mustNewSessionLog(t, schema.SessionLogPath(dir, sess.ID()))
 	entries := log.Entries()
 	if len(entries) != 1 {
 		t.Fatalf("log entries = %d, want 1", len(entries))

@@ -113,7 +113,7 @@ test("one visible-sidebar clock advances activity rows and expanded watch detail
   const beforeFacts = screen.getByTestId("watch-facts").textContent;
   const readsBeforeTick = client.calls.length;
   act(() => {
-    vi.setSystemTime(now + 30_000);
+    vi.setSystemTime(now + 60_000);
     const tick = intervals.mock.calls.find(([, delay]) => delay === 30_000)?.[0];
     if (typeof tick === "function") Function.prototype.call.call(tick, undefined);
   });

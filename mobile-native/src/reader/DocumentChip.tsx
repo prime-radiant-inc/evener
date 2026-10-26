@@ -5,8 +5,9 @@
 import { filenameOf } from "@evener/appwire-client/docContent";
 import { useMemo, useSyncExternalStore } from "react";
 import { Pressable, Text, View } from "react-native";
+import { spokenDuration } from "@evener/appwire-client";
 import { fonts } from "../design/tokens";
-import { spokenDuration, timeAgo } from "../session/format";
+import { timeAgo } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useReadingFace } from "../display/displayContext";

@@ -165,9 +165,6 @@ func FuzzCovRPCThreadsHelpers(f *testing.F) {
 			if isSessionUnavailableError(appwire.Unavailable("action")) || isSessionUnavailableError(appwire.InvalidParams("bad")) {
 				t.Fatal("wrong wire error classified session unavailable")
 			}
-			if !shouldResumeAfterTurnStartError(appwire.SessionUnavailable("gone")) || !shouldResumeAfterSessionUnavailable(appwire.SessionUnavailable("gone")) {
-				t.Fatal("resume wrappers rejected session-unavailable")
-			}
 		}
 	})
 }
@@ -194,12 +191,12 @@ func FuzzCovRPCThreadsHandlers(f *testing.F) {
 			}
 		case 6:
 			registry := appsource.NewRegistry()
-			if err := compactThreadOnce(ctx, hubcore.WebConfig{}, registry, appwire.ThreadCompactStartParams{Ref: "missing:id"}); err == nil {
+			if err := compactThreadWithResume(ctx, hubcore.WebConfig{}, registry, appwire.ThreadCompactStartParams{Ref: "missing:id"}); err == nil {
 				t.Fatal("compact resolved missing source")
 			}
 			source := &scriptedAppSource{id: "local", thread: appwire.Thread{Evener: appwire.EvenerThread{Capabilities: appwire.ThreadCapabilities{Compact: true}}}}
 			registry.Add(source)
-			err := compactThreadOnce(ctx, hubcore.WebConfig{}, registry, appwire.ThreadCompactStartParams{Ref: appwire.Ref{SourceID: "local", ThreadID: "id"}.String()})
+			err := compactThreadWithResume(ctx, hubcore.WebConfig{}, registry, appwire.ThreadCompactStartParams{Ref: appwire.Ref{SourceID: "local", ThreadID: "id"}.String()})
 			if err == nil {
 				t.Fatal("scripted compact unexpectedly succeeded")
 			}

@@ -759,7 +759,7 @@ preserving an unanswered question.
 **Evidence.** [Compact](../../agent/session_compaction.go#L30) checks pending asks
 before compaction, and the [explicit command
 callback](../../cmd/evener/serve.go#L1430) uses that entry point. Automatic
-[context management](../../agent/internal/contextmgr/context_strategy.go#L91)
+[context management](../../agent/internal/contextmgr/context_strategy.go#L68)
 calls the context manager separately. Existing `session_ask_test.go` tests the
 explicit-compaction refusal.
 

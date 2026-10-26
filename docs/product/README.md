@@ -73,3 +73,5 @@ functions or types. Do not turn these pages into release notes, dated audit
 diaries, PR progress reports, or duplicate implementation plans. Recheck source
 references when touching a case; a historical decision document cannot establish
 what the current product does.
+
+Delete an implementation plan in the PR that completes it; Git retains it.

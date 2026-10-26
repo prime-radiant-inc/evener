@@ -653,7 +653,7 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 			// Provider errors can contain request URLs, bodies, IDs, or credentials.
 			// The user-facing steering below is deliberately sanitized, so keep the
 			// warning sanitized too rather than reintroducing the raw adapter error.
-			s.emit(events.EventWarning, events.WarningData{Message: "vision side-channel unavailable"})
+			s.emit(events.WarningData{Message: "vision side-channel unavailable"})
 		}
 		return visionSideChannelResult{elapsed: elapsed, outcome: outcome}
 	}
@@ -812,7 +812,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			Changes:  changeStrings(prep.Changes),
 		}
 		s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeToolRepair, ToolRepair: &schema.ToolRepairNotice{ToolName: repaired.ToolName, CallID: repaired.CallID, Changes: repaired.Changes}})
-		s.emit(events.EventToolCallRepaired, repaired)
+		s.emit(repaired)
 	}
 
 	// PreToolUse hooks
@@ -900,7 +900,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	if err := s.withResponseSideEffects(ctx, func() {
 		s.toolEventsWG.Add(1)
 		toolEventOpen = true
-		s.emit(events.EventToolCallStart, startData)
+		s.emit(startData)
 		// The report rides the start's own serialized, cancellation-checked
 		// block: parallel read-only calls admit starts in lock order, so the
 		// newest admitted start's line is the one that stands, and a call
@@ -916,7 +916,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	emitCanceledEnd := func(err error) {
 		res := skippedToolResult(call, err)
 		s.responseSideEffectsMu.Lock()
-		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
+		s.emit(events.ToolCallEndData{
 			ToolName:      res.ToolName,
 			CallID:        res.CallID,
 			ArgumentsJSON: argsJSON,
@@ -972,7 +972,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	s.responseSideEffectsMu.Lock()
 	s.execToolCheckpoint("after_side_effect_lock")
 	if err := s.errIfClosing(); err != nil {
-		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
+		s.emit(events.ToolCallEndData{
 			ToolName:      call.Name,
 			CallID:        call.ID,
 			ArgumentsJSON: argsJSON,
@@ -989,7 +989,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	const chunk = 4000
 	for i := 0; i < len(full); i += chunk {
 		j := min(i+chunk, len(full))
-		s.emit(events.EventToolCallOutputDelta, events.ToolCallOutputDeltaData{
+		s.emit(events.ToolCallOutputDeltaData{
 			ToolName: res.ToolName,
 			CallID:   res.CallID,
 			Delta:    full[i:j],
@@ -1018,7 +1018,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	} else {
 		endData.Output = res.FullOutput
 	}
-	s.emit(events.EventToolCallEnd, endData)
+	s.emit(endData)
 	s.responseSideEffectsMu.Unlock()
 	closeToolEvent()
 
@@ -1315,7 +1315,7 @@ func (s *Session) appendToolResultsDurably(live, persisted llm.Message, skillSta
 		func() { s.history = append(s.history, liveTurn) },
 	)
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	return err
 }
@@ -1404,7 +1404,7 @@ func (s *Session) announceReadableToolResultImages(results []tool.ExecResult) {
 	if len(callIDs) == 0 {
 		return
 	}
-	s.emit(events.EventToolResultImagesPersisted, events.ToolResultImagesPersistedData{CallIDs: callIDs})
+	s.emit(events.ToolResultImagesPersistedData{CallIDs: callIDs})
 }
 
 // hasTranscriptWriter reports whether this session has somewhere durable to put

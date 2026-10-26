@@ -340,7 +340,7 @@ func TestMissingDelegateRestoreInputReason(t *testing.T) {
 
 	// Corrupt child session meta (invalid JSON).
 	childID := "02" + strings.Repeat("a", 20)
-	metaPath := filepath.Join(tmpDir, sessionsSubdir, childID+".meta.json")
+	metaPath := schema.SessionMetaPath(tmpDir, childID)
 	if err := os.MkdirAll(filepath.Dir(metaPath), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -336,7 +336,6 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 	textStarted := false
 	reasoningStarted := false
 	finished := false
-	var finalEvent *llm.StreamEvent
 	// sawResponsesEvent records an event this decoder recognizes as belonging
 	// to the Responses API. It is the whole evidence the empty-stream sentinel
 	// rests on: an endpoint that does not implement the API cannot produce one,
@@ -345,13 +344,14 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 	sawResponsesEvent := false
 	acc := newResponsesOutputAccumulator()
 
-	runner := &transport.StreamRunner{
+	var runner *transport.StreamRunner
+	runner = &transport.StreamRunner{
 		Provider:   res.Instance,
 		Resp:       resp,
 		Stream:     s,
 		Attempt:    attempt,
 		StatusCode: resp.StatusCode,
-		FinalEvent: func() *llm.StreamEvent { return finalEvent },
+		Cancel:     cancel,
 		// HTTP response-byte idle is owned by ClientWithAdapterTimeout, below gzip decoding.
 		Finished: &finished,
 		// This transport has four ways to end without completing, and the
@@ -512,16 +512,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 					s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
 					textStarted = false
 				}
-				rp := built
-				event := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &built.Finish, Usage: &built.Usage, Response: &rp}
-				if attempt.Active() {
-					finalEvent = &event
-				} else {
-					s.Send(event)
-				}
-				// Stop parsing after finish.
-				finished = true
-				cancel()
+				runner.Finish(built)
 			case "error", "response.failed":
 				// The Responses API reports a mid-stream failure either as a flat
 				// "error" event or as an error nested in the response object of
