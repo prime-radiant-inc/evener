@@ -869,8 +869,10 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       // known to belong together. Persist the pane mapping here, not at route
       // placement: before restoration, a restarted id may still name another
       // conversation's saved pane.
-      if (isConversationPaneType(pane.type) && pane.composerSeatId !== undefined)
-        writePaneComposerSeat(pane.id, pane.composerSeatId);
+      if (isConversationPaneType(pane.type) && pane.composerSeatId !== undefined) {
+        const ref = refParam(pane.params);
+        if (ref !== null) writePaneComposerSeat(pane.id, ref, pane.composerSeatId);
+      }
     }
     // The conversation parent-context record is object-keyed beside this
     // store, so a layout must carry its edges separately or a reload
@@ -984,7 +986,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         if (!isConversationPaneType(pane.type)) continue;
         const ref = refParam(pane.params);
         const candidates = [
-          readPaneComposerSeat(pane.id),
+          ref === null ? undefined : readPaneComposerSeat(pane.id, ref),
           ref === null ? undefined : readRefComposerSeat(ref),
           pane.id,
         ];

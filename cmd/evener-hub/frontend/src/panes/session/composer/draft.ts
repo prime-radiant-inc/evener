@@ -141,8 +141,19 @@ function storedSeat(key: string): string | undefined {
   }
 }
 
-export function readPaneComposerSeat(paneId: string): string | undefined {
-  return storedSeat(paneSeatKey(paneId));
+// A pane-id seat is only meaningful for the conversation it was saved with.
+// Shared desktop layouts can reuse an id for another conversation (another tab
+// saved it), so the stored record carries the ref and must match.
+export function readPaneComposerSeat(paneId: string, ref: string): string | undefined {
+  const raw = storedSeat(paneSeatKey(paneId));
+  if (raw === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as { seat?: unknown; ref?: unknown };
+    return typeof parsed.seat === "string" && parsed.ref === ref ? parsed.seat : undefined;
+  } catch {
+    // A pre-identity mapping cannot prove which conversation it belongs to.
+    return undefined;
+  }
 }
 
 export function readRefComposerSeat(ref: string): string | undefined {
@@ -160,17 +171,19 @@ export function writeRefComposerSeat(ref: string, seat: string): void {
   }
 }
 
-export function writePaneComposerSeat(paneId: string, seat: string): void {
+export function writePaneComposerSeat(paneId: string, ref: string, seat: string): void {
   try {
-    localStorage.setItem(paneSeatKey(paneId), seat);
+    localStorage.setItem(paneSeatKey(paneId), JSON.stringify({ ref, seat }));
   } catch {
     // Best-effort, like every other composer persistence.
   }
 }
 
 export function writeComposerSeat(paneId: string, ref: string | null, seat: string): void {
-  writePaneComposerSeat(paneId, seat);
-  if (ref !== null) writeRefComposerSeat(ref, seat);
+  if (ref !== null) {
+    writePaneComposerSeat(paneId, ref, seat);
+    writeRefComposerSeat(ref, seat);
+  }
 }
 
 function isStoredComposerDraft(value: unknown): value is ComposerDraft {

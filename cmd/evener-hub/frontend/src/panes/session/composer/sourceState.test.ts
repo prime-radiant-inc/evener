@@ -1217,6 +1217,101 @@ test("explicit activation keeps newer draft work over delayed preservation", asy
   }
 });
 
+// Typing while an explicit activation awaits storage must also count as newer
+// work. The activation merged it into its post-await composition, so delayed
+// preservation cannot replace it with the older preserved row.
+test("typing during activation survives delayed preservation", async () => {
+  class HeldActivationStorage extends MutationOutboxIndexedDB {
+    readonly preservationReached = deferred<void>();
+    readonly releasePreservation = deferred<void>();
+    readonly activationReached = deferred<void>();
+    readonly releaseActivation = deferred<void>();
+    holdActivation = false;
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.preservationReached.resolve();
+      await this.releasePreservation.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+
+    override async updateRecoveryInput(
+      ...args: Parameters<MutationOutboxIndexedDB["updateRecoveryInput"]>
+    ): ReturnType<MutationOutboxIndexedDB["updateRecoveryInput"]> {
+      const result = await super.updateRecoveryInput(...args);
+      if (this.holdActivation) {
+        this.holdActivation = false;
+        this.activationReached.resolve();
+        await this.releaseActivation.promise;
+      }
+      return result;
+    }
+  }
+  const storage = new HeldActivationStorage();
+  setMutationStorageForTests(storage);
+  const oldRef = "local:activation-typing-old";
+  const resumed = "local:activation-typing-new";
+  const original = await storage.enqueueIntent({
+    targetRef: oldRef,
+    method: "turn/start",
+    payload: { ref: oldRef, input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(oldRef, undefined, "pane-a");
+  const replacement = createTestComposerSource(resumed, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    source.editText("older preserved composition");
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+    );
+
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, "older preserved composition", [], []);
+    await storage.preservationReached.promise;
+    await peer.retargetOutbox(oldRef, resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    const retargeted = await storage.getRecovery(original.clientMutationId);
+    if (!retargeted) throw new Error("missing retargeted recovery fixture");
+
+    storage.holdActivation = true;
+    const activating = replacement.activateRecovery(retargeted);
+    await storage.activationReached.promise;
+    replacement.editText("typed during activation");
+    storage.releaseActivation.resolve();
+    await expect(activating).resolves.toBe(true);
+    storage.releasePreservation.resolve();
+    await saving;
+
+    expect(replacement.getSnapshot().text).toContain("typed during activation");
+    expect(replacement.getSnapshot().text).not.toBe("older preserved composition");
+    expect(replacement.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+    expect(readRecoverySelection(resumed, replacement.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+  } finally {
+    storage.releaseActivation.resolve();
+    storage.releasePreservation.resolve();
+    source.dispose();
+    replacement.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
 // The originating pane can close before its preservation finishes. The
 // destination selection and the resumed ref's seat mapping must still be
 // recorded, or a mobile reconstruction allocates a fresh seat.

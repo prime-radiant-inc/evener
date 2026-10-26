@@ -86,7 +86,10 @@ placement writes only the conversation mapping; pane-id mappings are written
 when a layout is saved or restored, so startup cannot overwrite a saved pane's
 seat before that layout returns. A retarget that keeps a pane's seat (resume,
 then return to the resumed session) rewrites the destination ref's mapping so
-a mobile reconstruction still finds that seat and its selection.
+a mobile reconstruction still finds that seat and its selection. Each pane-id
+mapping records the conversation it belongs to; a shared layout that reuses
+that id for another conversation falls back to this tab's mapping for the
+restored ref instead of assigning the other conversation's seat.
 
 Restoring a composer prefers the recovery row its seat last selected, falling
 back to the oldest restorable rejected row. This keeps a pane's preserved local
@@ -115,7 +118,8 @@ composer is never treated as a newer-edit destination of its own same-ref
 conflict, so its fresh row still becomes the seat's selection. An explicit
 activation that merged this composer's newer draft into the stale row is
 likewise newer work: delayed preservation leaves the merged text and
-attachments in place.
+attachments in place. Typing during the activation write is also captured
+across that wait and counts as newer work, not as an untouched restoration.
 
 When another tab retargets the recovery while this composer preserves, the
 adopted row belongs to the resumed ref. The seat is reconciled with that ref

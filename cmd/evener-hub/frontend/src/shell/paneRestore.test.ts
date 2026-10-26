@@ -35,6 +35,7 @@ import {
   readRecoverySelection,
   writeComposerSeat,
   writeRecoverySelection,
+  writeRefComposerSeat,
 } from "../panes/session/composer/draft";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { setMutationClientIdentityForTests } from "../stores/mutationClientIdentity";
@@ -458,6 +459,39 @@ test("a route placement before restore keeps the saved pane seat", () => {
     expect(readRecoverySelection("local:a", composerSelectionScope("saved-a-seat"))).toBe("a-row");
     // B's route placement never claimed A's saved seat.
     expect(readRecoverySelection("local:b", composerSelectionScope("saved-a-seat"))).toBeUndefined();
+  } finally {
+    setMutationClientIdentityForTests(undefined);
+  }
+});
+
+// Another tab can save a different conversation under this pane id. This tab
+// still remembers that id as conversation A, but the restored pane is B; the
+// pane mapping must be validated against B rather than preferred blindly.
+test("shared-layout restore ignores a pane seat saved for another conversation", () => {
+  installLocalStorage(new MemoryStorage());
+  try {
+    setMutationClientIdentityForTests("tab-a");
+    // This tab remembers p1 as conversation A.
+    writeComposerSeat("p1", "ref_a", "seat-a");
+    writeRecoverySelection("ref_a", composerSelectionScope("seat-a"), "a-row");
+    // This tab's correct mapping for conversation B.
+    writeRefComposerSeat("ref_b", "seat-b");
+    writeRecoverySelection("ref_b", composerSelectionScope("seat-b"), "b-row");
+
+    // Another tab saved conversation B under the same pane id.
+    restorePanels({
+      p1: {
+        id: "p1",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "ref_b" } },
+      },
+    });
+
+    const restored = workspaceStore.getState().panes.find((pane) => pane.id === "p1");
+    expect(restored?.composerSeatId).toBe("seat-b");
+    expect(readRecoverySelection("ref_b", composerSelectionScope("seat-b"))).toBe("b-row");
+    // Conversation A's saved selection is not overwritten by the B restore.
+    expect(readRecoverySelection("ref_a", composerSelectionScope("seat-a"))).toBe("a-row");
   } finally {
     setMutationClientIdentityForTests(undefined);
   }

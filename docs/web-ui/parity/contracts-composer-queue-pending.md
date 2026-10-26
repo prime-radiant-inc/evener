@@ -77,7 +77,9 @@ except where a line says so itself.
   when a layout is saved or restored, so startup ordering cannot overwrite a
   saved pane's seat before its layout returns. A retarget that retains a seat
   rewrites the destination ref's mapping, so a mobile reconstruction recovers
-  that seat and its selection.
+  that seat and its selection. Pane-id mappings store the conversation they
+  belong to; a shared layout that reuses the id for another conversation
+  falls back to this tab's mapping for the restored ref.
 - Independent panes on one conversation hold distinct seats and therefore
   independent recovery selections. A `sessionZoom` cascade uses one tab-scoped
   seat for its columns, with a separate selection entry per column ref.
@@ -100,7 +102,8 @@ except where a line says so itself.
   composer is excluded from its own newer-edit check, so a same-ref conflict
   still remembers the fresh row. An explicit activation that merged a newer
   draft into the stale row is newer work too; delayed adoption leaves the
-  merged text and attachments alone.
+  merged text and attachments alone. Typing during the activation write is
+  tracked across the wait and counts as newer work.
 - When another tab retargets recovery during preservation, the adopted row's
   resumed ref is reconciled with the originating seat: the ref mapping moves
   with the seat and a Send targets the preserved ref, not the superseded one.

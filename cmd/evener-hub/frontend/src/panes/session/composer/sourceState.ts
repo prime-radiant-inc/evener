@@ -805,6 +805,9 @@ export function createComposerSourceState(
               skillNamesRef.current.length > 0 ||
               selectionMetaRef.current.commandNames.length > 0 ||
               (selectionMetaRef.current.mentions?.length ?? 0) > 0);
+          // Typing during the awaited write also becomes part of `latest`.
+          // Track it across the wait so adoption treats it as newer work.
+          const activationUserEditEpoch = userEditEpoch;
           const ownerId = currentRecoveryId() ?? record.clientMutationId;
           const ownerLease = recoveryOwnerLeaseRef.current;
           const ownerRecord = ownerId === record.clientMutationId ? record : undefined;
@@ -848,11 +851,12 @@ export function createComposerSourceState(
           // A commit may finish after new typing or attachment work. Append to
           // that newer draft rather than restoring the press-time snapshot.
           const latest = merge();
+          const editedDuringActivation = userEditEpoch !== activationUserEditEpoch;
           recoveryReplacementEpochRef.current += 1;
           recoveryOwnsLocalDraftRef.current = true;
           // Adoption uses the transaction's committed record and revision.
           setActiveRecoveryId(updated);
-          activationIncorporatedWork = incorporatedLocalWork;
+          activationIncorporatedWork = incorporatedLocalWork || editedDuringActivation;
           // Rehydrating an already-owned recovery draft is not a user edit.
           // Counting it as one makes a submission that began before the
           // remount look stale, so its commit observer cannot clear unchanged
