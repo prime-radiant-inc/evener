@@ -54,17 +54,15 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 	// earlier top-level ones.
 	var sawTopLevelUsage bool
 	finished := false
-	var finalEvent *llm.StreamEvent
 
-	runner := &transport.StreamRunner{
+	var runner *transport.StreamRunner
+	runner = &transport.StreamRunner{
 		Provider:   res.Instance,
 		Resp:       resp,
 		Stream:     s,
 		Attempt:    attempt,
 		StatusCode: resp.StatusCode,
-		FinalEvent: func() *llm.StreamEvent {
-			return finalEvent
-		},
+		Cancel:     cancel,
 		// HTTP response-byte idle is owned by ClientWithAdapterTimeout, below gzip decoding.
 		Finished:      &finished,
 		IncompleteMsg: res.Instance + " stream ended without completion",
@@ -159,20 +157,9 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 					}
 				}
 				llm.StampEndpointURL(finalResp, r.EndpointURL, r.Material)
-				event := llm.StreamEvent{
-					Type:         llm.StreamEventFinish,
-					FinishReason: &finish,
-					Usage:        usage,
-					Response:     finalResp,
-				}
-				if attempt.Active() {
-					finalEvent = &event
-				} else {
-					s.Send(event)
-				}
-				// The provider may keep the body open after [DONE]. Stop the
-				// parser before its next read; finished preserves success accounting.
-				cancel()
+				// The provider may keep the body open after [DONE]; Finish stops
+				// the parser before its next read.
+				runner.Finish(*finalResp)
 				return nil
 			}
 

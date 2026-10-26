@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -145,7 +146,7 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 	// The sandbox request is fixed for the session's life; SessionStart
 	// carries it so a subagent's thread reports its own access (S15).
 	start.Sandbox = s.cfg.Sandbox
-	start.SandboxNet = cloneBool(s.cfg.SandboxNet)
+	start.SandboxNet = appwire.ClonePointer(s.cfg.SandboxNet)
 	store := s.getOrCreateTaskStore()
 	_ = store.MutateAndPublish(func(epoch, revision uint64) error {
 		// Sample current work only after entering the shared store's publication
@@ -159,7 +160,7 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 		}
 		start.TaskPublicationEpoch = epoch
 		start.TaskPublicationRevision = revision
-		s.emit(events.EventSessionStart, start)
+		s.emit(start)
 		return nil
 	})
 	s.mu.Lock()
@@ -171,11 +172,11 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 	// emitDiagnosticWarning), so they still fire the Notification hook exactly
 	// as they did before kata et0x moved them off the direct-emit path.
 	for _, w := range s.pendingTranscriptWarnings {
-		s.emit(events.EventWarning, w)
+		s.emit(w)
 	}
 	s.pendingTranscriptWarnings = nil
 	for _, data := range s.pendingPluginEvents {
-		s.emit(events.EventPluginLoaded, data)
+		s.emit(data)
 	}
 	s.pendingPluginEvents = nil
 	// Loud, visible warnings for misconfigured plugin hook declarations (unknown
@@ -194,7 +195,7 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 	}
 	s.pendingMCPWarnings = nil
 	for _, src := range promptSources {
-		s.emit(events.EventPromptLoaded, events.PromptLoadedData{Label: src.Label, Size: src.Size})
+		s.emit(events.PromptLoadedData{Label: src.Label, Size: src.Size})
 	}
 }
 
@@ -218,47 +219,37 @@ func (s *Session) currentWorkSeedData() *events.CurrentWorkSeedData {
 	return seed
 }
 
-// emit sends data on the session's event stream. The kind argument is retained
-// for the contextmgr.Host interface contract (strategies call Emit with an
-// explicit kind via the ctxHost adapter), but the event's Kind is authoritative
-// from the payload: events.New derives it via data.eventKind(), so Kind and
-// payload can never disagree even if a caller passes a mismatched kind.
+// emit sends data on the session's event stream. The event's Kind is derived
+// from the payload (events.KindOf), so Kind and payload can never disagree.
 //
 // An EventWarning emitted here is a genuine, model-facing warning (context-length,
 // content-filter, transcript-write failure, …): it runs the Notification hook so
 // the model is informed. Hook-CONFIGURATION diagnostics must NOT run the
 // Notification hook and instead go through emitDiagnosticWarning.
-func (s *Session) emit(kind events.EventKind, data events.EventData) {
+func (s *Session) emit(data events.EventData) {
 	// Task mutations are emitted by transport-neutral tool handlers. Stamp the
 	// owning session at this Session boundary so shared descendants name the
 	// durable root store without leaking Session into the handler dependency.
-	switch update := data.(type) {
-	case events.TaskUpdatedData:
-		if update.TaskStoreOwnerSessionID == "" {
-			update.TaskStoreOwnerSessionID = s.taskStoreOwnerSessionID()
-			data = update
-		}
-	case *events.TaskUpdatedData:
-		if update != nil && update.TaskStoreOwnerSessionID == "" {
-			update.TaskStoreOwnerSessionID = s.taskStoreOwnerSessionID()
-		}
+	if update, ok := data.(events.TaskUpdatedData); ok && update.TaskStoreOwnerSessionID == "" {
+		update.TaskStoreOwnerSessionID = s.taskStoreOwnerSessionID()
+		data = update
 	}
-	s.emitWithProvenance(kind, data, s.activeCausalProvenance())
+	s.emitWithProvenance(data, s.activeCausalProvenance())
 }
 
 // emitWithProvenance is emit with an explicit causal provenance stamp. emit
 // passes the session's active provenance; callers with a more specific origin
 // (a watch delivery) pass it directly. The Notification-hook decision and the
 // jobManager fan-out are identical to emit.
-func (s *Session) emitWithProvenance(kind events.EventKind, data events.EventData, p *provenance.Causal) {
+func (s *Session) emitWithProvenance(data events.EventData, p *provenance.Causal) {
 	if s == nil || s.events == nil {
 		return
 	}
-	data, ev := s.sendEvent(kind, data, p)
+	data, ev := s.sendEvent(data, p)
 	if s.jobManager != nil {
 		s.jobManager.onSessionEvent(ev)
 	}
-	if kind == events.EventWarning {
+	if events.KindOf(data) == events.EventWarning {
 		s.fireNotificationHook(warningHookMessage(data))
 	}
 }
@@ -274,7 +265,7 @@ func (s *Session) emitWithProvenance(kind events.EventKind, data events.EventDat
 // shows the failure, so a live view need not keep it.
 func (s *Session) emitTurnFailure(data events.ErrorData) {
 	data.Recorded = s.recordTurnFailure(data, false).Recorded
-	s.emit(events.EventError, data)
+	s.emit(data)
 }
 
 // emitSteeringCarrierTurnFailure is emitTurnFailure's steering-carrier
@@ -293,7 +284,7 @@ func (s *Session) emitTurnFailure(data events.ErrorData) {
 // this function, gated by the same answering check.
 func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData) {
 	data.Recorded = s.recordTurnFailure(data, true).Recorded
-	s.emit(events.EventError, data)
+	s.emit(data)
 }
 
 // recordTurnFailure persists the diagnostic of a failed turn as a TurnFailure
@@ -337,7 +328,7 @@ func (s *Session) recordTurnFailure(data events.ErrorData, steeringCarrier bool)
 // — turning it on would reveal only hooks that ran afterwards, which is the
 // same "switch that governs nothing" complaint this fixes (kata qm9y).
 func (s *Session) emitHookCompleted(data events.HookEndData) {
-	s.emit(events.EventHookEnd, data)
+	s.emit(data)
 	info := schema.HookInfo{
 		Event:      data.Event,
 		HookType:   data.HookType,
@@ -368,15 +359,15 @@ func (s *Session) emitDiagnosticWarning(data events.WarningData) {
 	if s == nil || s.events == nil {
 		return
 	}
-	s.sendEvent(events.EventWarning, data, s.activeCausalProvenance())
+	s.sendEvent(data, s.activeCausalProvenance())
 }
 
 // sendEvent enriches and delivers data on the event stream, stamping the given
 // causal provenance onto the envelope, and returns the enriched payload alongside
 // the delivered envelope. Summary failure metadata is also retained in the
 // process log; the Notification hook decision belongs to the caller.
-func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent) {
-	data, ev, _ := s.sendEventContext(context.Background(), kind, data, p)
+func (s *Session) sendEvent(data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent) {
+	data, ev, _ := s.sendEventContext(context.Background(), data, p)
 	return data, ev
 }
 
@@ -385,8 +376,8 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *pro
 // event cannot be lost; when that consumer is wedged, the close deadline must
 // release eventsMu so teardown can close the stream and preserve the durable
 // closed state.
-func (s *Session) sendEventContext(ctx context.Context, kind events.EventKind, data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent, bool) {
-	data = enrichDiagnosticData(kind, data)
+func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent, bool) {
+	data = enrichDiagnosticData(data)
 	ev := events.New(data)
 	ev.SessionID = s.id
 	ev.Provenance = provenance.Clone(p)
@@ -503,7 +494,7 @@ func (s *Session) sendEventContext(ctx context.Context, kind events.EventKind, d
 		}
 	}
 	s.eventsMu.RUnlock()
-	if open && kind == events.EventWarning {
+	if open && events.KindOf(data) == events.EventWarning {
 		s.logSummaryFailure(data)
 	}
 	if open && s.descendantEvent != nil {
@@ -570,13 +561,8 @@ func (s *Session) fireNotificationHook(message string) {
 }
 
 func warningHookMessage(data events.EventData) string {
-	switch v := data.(type) {
-	case events.WarningData:
+	if v, ok := data.(events.WarningData); ok {
 		return v.Message
-	case *events.WarningData:
-		if v != nil {
-			return v.Message
-		}
 	}
 	return fmt.Sprint(data)
 }
@@ -756,8 +742,8 @@ func (s *Session) persistSalvagedTurn(salvaged, model, provider string) error {
 // the LARGEST. The sequence mirrors a normal assistant text round
 // (consumeModelStream's start/delta, emitAssistantResponse's end).
 func (s *Session) emitSalvagedTurn(salvaged, model string) {
-	s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
-	s.emit(events.EventAssistantTextStart, events.AssistantTextStartData{Model: model})
-	s.emit(events.EventAssistantTextDelta, events.AssistantTextDeltaData{Delta: salvaged})
-	s.emit(events.EventAssistantTextEnd, events.AssistantTextEndData{Text: salvaged, Model: model})
+	s.emit(events.AssistantTextResetData{})
+	s.emit(events.AssistantTextStartData{Model: model})
+	s.emit(events.AssistantTextDeltaData{Delta: salvaged})
+	s.emit(events.AssistantTextEndData{Text: salvaged, Model: model})
 }

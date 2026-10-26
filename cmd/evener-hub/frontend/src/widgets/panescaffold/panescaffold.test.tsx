@@ -357,7 +357,7 @@ test("the header shares the page surface with a fine separating rule", () => {
 test("the title renders as a sentence-case pane-title heading, not an uppercase micro-label", () => {
   // typography-spacing-critique-2026-09-06 R4: the pane IS the page, so its
   // title is the page heading. The micro-label recipe stays for containers
-  // inside a page (InspectorCard, RecommendationCard, Table headers).
+  // inside a page (DiffTable headers, rail section labels).
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
   const rule = css.match(/\.title \{([^}]*)\}/)?.[1] ?? "";
