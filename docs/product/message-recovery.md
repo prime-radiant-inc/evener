@@ -93,6 +93,11 @@ restored ref instead of assigning the other conversation's seat. Validated
 pane-specific seats are reserved across the whole restored layout before any
 pane falls back to the ref mapping or a fresh seat.
 
+When a successful write follows a retarget, the selected recovery ID moves to
+the returned target unless that target already has its own selection. Reopening
+the destination therefore selects this pane's work, not an older rejected peer
+row.
+
 Restoring a composer prefers the recovery row its seat last selected, falling
 back to the oldest restorable rejected row. This keeps a pane's preserved local
 work selected after reload even when an older rejected peer row exists.
@@ -131,7 +136,10 @@ Before building the resend, the destination thread model is loaded if this tab
 never read it, so the instance fence and skill/command capability checks see
 the resumed target's real model. A successful recovery write also reconciles
 the target from the row's durable ref, and the resend and Stop barrier describe
-that current owner.
+that current owner. The Stop fence is dated to the durable owner before the
+persistence and model-load waits, so a Stop during either wait still cancels
+the Send; a target that moves again during persistence fails closed. The
+temporary model claim is released after the resend, on failure too.
 If the originating pane closes before preservation finishes, remembering the
 preserved row still records the destination selection and its ref-to-seat
 mapping, unless another owner already established that ref's mapping.

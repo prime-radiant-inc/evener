@@ -1217,8 +1217,176 @@ test("a peer retarget lets the original composer send the preserved row", async 
     await waitFor(() => expect(delivered).toHaveLength(1));
     expect(delivered[0]).toMatchObject({ ref: resumed });
     expect(typeof delivered[0]?.expectedInstanceId).toBe("string");
+    // The temporary destination claim is released after the resend, so with no
+    // reader left the model can retire.
+    act(() => cleanup());
+    await source.flushRecoveryWrites();
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(threadsStore.getState().threads.has(resumed)).toBe(false));
   } finally {
     storage.release.resolve();
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(actWarnings.mock.calls.every(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
+    actWarnings.mockRestore();
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+// A Stop on the destination while the Send's own persistence is in flight must
+// still cancel that Send. A barrier captured after persistence would absorb it.
+test("a stop during retargeted persistence cancels the send", async () => {
+  const actWarnings = vi.spyOn(console, "error").mockImplementation(() => {});
+  class HeldUpdateStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+    holdNextUpdate = false;
+
+    override async updateRecoveryInput(
+      ...args: Parameters<MutationOutboxIndexedDB["updateRecoveryInput"]>
+    ): ReturnType<MutationOutboxIndexedDB["updateRecoveryInput"]> {
+      const result = await super.updateRecoveryInput(...args);
+      if (this.holdNextUpdate) {
+        this.holdNextUpdate = false;
+        this.reached.resolve();
+        await this.release.promise;
+      }
+      return result;
+    }
+  }
+  const storage = new HeldUpdateStorage();
+  const { fake } = await setup(false, storage);
+  const resumed = "local:stop-persist";
+  fake.on("thread/read", ({ ref }) => ({
+    thread: { ...thread, evener: { ...thread.evener, ref: ref ?? "root" } },
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc", length: 0 },
+  }));
+  const delivered: Array<Record<string, unknown>> = [];
+  fake.on("turn/start", (params) => {
+    delivered.push(params as unknown as Record<string, unknown>);
+    return {
+      turn: { id: "stop-persist", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread-a",
+        projectionState: "reflected",
+      },
+    };
+  });
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const source = createTestComposerSource("root", undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    mount(fake, source);
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+    await peer.retargetOutbox("root", resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    storage.holdNextUpdate = true;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    await storage.reached.promise;
+    await peer.cancelUnattempted(resumed);
+    storage.release.resolve();
+    await act(async () => {
+      await source.flushRecoveryWrites();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(delivered).toHaveLength(0);
+  } finally {
+    storage.release.resolve();
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(actWarnings.mock.calls.every(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
+    actWarnings.mockRestore();
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+// The destination model load is another wait after the press. A Stop during
+// that hydration must still be in the Send's future, not its baseline.
+test("a stop during destination hydration cancels the send", async () => {
+  const actWarnings = vi.spyOn(console, "error").mockImplementation(() => {});
+  const storage = new MutationOutboxIndexedDB();
+  const { fake } = await setup(false, storage);
+  const resumed = "local:stop-hydrate";
+  const readReached = deferred<void>();
+  const releaseRead = deferred<void>();
+  fake.on("thread/read", async ({ ref }) => {
+    if (ref === resumed) {
+      readReached.resolve();
+      await releaseRead.promise;
+    }
+    return {
+      thread: { ...thread, evener: { ...thread.evener, ref: ref ?? "root" } },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc", length: 0 },
+    };
+  });
+  const delivered: Array<Record<string, unknown>> = [];
+  fake.on("turn/start", (params) => {
+    delivered.push(params as unknown as Record<string, unknown>);
+    return {
+      turn: { id: "stop-hydrate", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread-a",
+        projectionState: "reflected",
+      },
+    };
+  });
+  const queued = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(queued.clientMutationId, "rejected");
+  const source = createTestComposerSource("root", undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    mount(fake, source);
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(queued.clientMutationId));
+    await peer.retargetOutbox("root", resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    await readReached.promise;
+    await peer.cancelUnattempted(resumed);
+    releaseRead.resolve();
+    await act(async () => {
+      await source.flushRecoveryWrites();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(delivered).toHaveLength(0);
+  } finally {
+    releaseRead.resolve();
     act(() => cleanup());
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));

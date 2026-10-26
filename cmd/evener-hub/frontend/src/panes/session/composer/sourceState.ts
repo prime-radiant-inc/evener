@@ -428,6 +428,12 @@ export function createComposerSourceState(
   function reconcileRecoveryTarget(targetRef: string): void {
     recoveryTargetRef = targetRef === ref ? ref : targetRef;
     if (targetRef === ref || selectionOwnerId === undefined) return;
+    const selected = currentRecoveryId();
+    if (selected !== null && readRecoverySelection(targetRef, recoverySelectionOwnerId) === undefined) {
+      // The selected row moved with the retarget. Carry this pane's choice to
+      // the destination unless it already has one of its own.
+      writeRecoverySelection(targetRef, recoverySelectionOwnerId, selected);
+    }
     const establishedSeat = readRefComposerSeat(targetRef);
     if (establishedSeat === undefined || establishedSeat === selectionOwnerId) {
       writeRefComposerSeat(targetRef, selectionOwnerId);

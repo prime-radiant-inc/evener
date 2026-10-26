@@ -1431,6 +1431,53 @@ test("successful recovery writes follow a peer retarget", async () => {
   }
 });
 
+// Reopening the destination must select the row this pane selected before the
+// retarget, not an older rejected peer row for the same conversation.
+test("a successful retargeting write carries the selected recovery", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "local:selection-old";
+  const resumed = "local:selection-new";
+  const peer = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "older peer work" }] },
+    attachments: [],
+    composerText: "older peer work",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "older peer work" }] },
+  });
+  await storage.transferToRecovery(peer.clientMutationId, "rejected");
+  const selected = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "selected local work" }] },
+    attachments: [],
+    composerText: "selected local work",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "selected local work" }] },
+  });
+  await storage.transferToRecovery(selected.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(selected.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const peerReader = new MutationOutboxIndexedDB();
+  let reopened: ReturnType<typeof createTestComposerSource> | undefined;
+  try {
+    await source.activateRecovery(recovery);
+    await peerReader.retargetOutbox(ref, resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    expect(await source.queueRecoveryPersistence(selected.clientMutationId, "selected local work", [], [])).toBe(true);
+    expect(readRecoverySelection(resumed, source.recoverySelectionOwnerId)).toBe(selected.clientMutationId);
+    expect(readRecoverySelection(resumed, source.recoverySelectionOwnerId)).not.toBe(peer.clientMutationId);
+
+    reopened = createTestComposerSource(resumed, undefined, "pane-a");
+    expect(readRecoverySelection(resumed, reopened.recoverySelectionOwnerId)).toBe(selected.clientMutationId);
+  } finally {
+    source.dispose();
+    reopened?.dispose();
+    peerReader.close();
+    storage.close();
+  }
+});
+
 // Another tab may consume the source row before it retargets the ref, and the
 // ref may resume again afterwards. No surviving recovery row can carry the
 // destination, so ref forwarding itself must persist every hop.

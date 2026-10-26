@@ -68,6 +68,7 @@ import {
   hasQueuedNonSend,
   type InputAttachment,
   type ResumeOnlySignals,
+  readRecoveryMutation,
   threadsStore,
   useThreadsStore,
 } from "../../../stores/threads";
@@ -1036,6 +1037,16 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
         async () => {
           if (submittedRecoveryId !== null) {
             await source.runRecoveryOperation(async () => {
+              // The row may already have been retargeted by a peer without
+              // this source's mirror noticing. Date the Stop fence to the
+              // owner this Send will actually target, before the write and
+              // hydration waits that a later Stop must fall after.
+              const durable = await readRecoveryMutation(submittedRecoveryId);
+              const durableTargetRef = durable?.targetRef ?? pressedRecoveryTargetRef;
+              const travelingBarrier =
+                durableTargetRef === pressedRecoveryTargetRef
+                  ? pressedRecoveryBarrier
+                  : captureRecoveryStopBarrier(durableTargetRef);
               const persisted = await queueRecoveryPersistence(
                 submittedRecoveryId,
                 submittedText,
@@ -1052,38 +1063,47 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
               if (committedRevision === undefined) {
                 throw recoveryWriteRefusal;
               }
-              // The persisted write may have followed a peer retarget. Load the
-              // destination model (expectedInstanceId and capability gates come
-              // from it) and make the resend barrier describe that owner.
               const sendTargetRef = source.recoveryTargetRef;
-              const targetState = threadsStore.getState();
-              if (
-                targetState.threads.get(sendTargetRef) === undefined &&
-                targetState.watchedThreads.get(sendTargetRef) === undefined
-              ) {
-                await targetState.ensureThread(sendTargetRef);
+              if (sendTargetRef !== durableTargetRef) {
+                // The row moved again while this Send was persisting. No fence
+                // we hold dates that destination's Stop history, so fail
+                // closed rather than let the Send cross a Stop.
+                recoveryResendRefused = true;
+                throw recoveryWriteRefusal;
               }
-              const sendBarrier =
-                sendTargetRef === pressedRecoveryTargetRef
-                  ? pressedRecoveryBarrier
-                  : captureRecoveryStopBarrier(sendTargetRef);
-              const outcome = await resendRecoveryPendingTurn(
-                submittedRecoveryId,
-                sendTargetRef,
-                kind,
-                submittedText,
-                payload,
-                submittedSkillNames,
-                submittedCommandNames,
-                submittedMentions,
-                sendBarrier,
-                { [submittedRecoveryId]: committedRevision },
-                source.compositionOwnerId,
-              );
-              if (outcome.status !== "sent") {
-                recoveryResendRefused = outcome.status === "refused";
-                recoveryAlreadySent = outcome.status === "consumed";
-                throw recoveryResendRefused ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
+              // Destinations this tab never read need their model for
+              // expectedInstanceId and capability gates. Hold that foreground
+              // claim only for this resend.
+              let destinationClaim = false;
+              try {
+                const targetState = threadsStore.getState();
+                if (
+                  targetState.threads.get(sendTargetRef) === undefined &&
+                  targetState.watchedThreads.get(sendTargetRef) === undefined
+                ) {
+                  destinationClaim = true;
+                  await targetState.ensureThread(sendTargetRef);
+                }
+                const outcome = await resendRecoveryPendingTurn(
+                  submittedRecoveryId,
+                  sendTargetRef,
+                  kind,
+                  submittedText,
+                  payload,
+                  submittedSkillNames,
+                  submittedCommandNames,
+                  submittedMentions,
+                  travelingBarrier,
+                  { [submittedRecoveryId]: committedRevision },
+                  source.compositionOwnerId,
+                );
+                if (outcome.status !== "sent") {
+                  recoveryResendRefused = outcome.status === "refused";
+                  recoveryAlreadySent = outcome.status === "consumed";
+                  throw recoveryResendRefused ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
+                }
+              } finally {
+                if (destinationClaim) threadsStore.getState().releaseThread(sendTargetRef);
               }
               // The resend transaction consumed the recovery row, so a remount
               // can no longer restore it. Keep the guard until here rather than

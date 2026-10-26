@@ -3533,6 +3533,14 @@ export function captureRecoveryStopBarrier(targetRef: string): Promise<MutationS
   return barrier;
 }
 
+/** Read a recovery row's durable target without writing it. Composer uses this
+ * to date its Stop barrier to the owner the Send will actually target. */
+export async function readRecoveryMutation(clientMutationId: string): Promise<MutationRecoveryRecord | undefined> {
+  const runtime = requireMutationRuntime();
+  await runtime.start;
+  return runtime.storage.getRecovery(clientMutationId);
+}
+
 export async function updateRecoveryMutation(
   clientMutationId: string,
   targetRef: string,

@@ -110,7 +110,11 @@ except where a line says so itself.
   with the seat and a Send targets the preserved ref, not the superseded one.
   The destination thread model is loaded before the resend intent is built,
   and a successful write reconciles the target and Stop barrier from the row's
-  durable ref.
+  durable ref. The Stop fence dates from before persistence and hydration, and
+  the temporary destination claim is released after the resend.
+- A successful retargeting write carries the selected recovery ID to the
+  destination unless that ref already has its own selection, so reopening the
+  resumed conversation restores this pane's work rather than an older peer row.
   If the originating pane is disposed first, preservation still records the
   destination selection and ref-to-seat mapping unless another owner already
   established that mapping.
