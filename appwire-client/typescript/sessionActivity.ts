@@ -9,6 +9,13 @@ import type { SessionActivity } from "./types.gen";
 export const QUIET_AFTER_MS = 3 * 60_000;
 /** A working session reads May be stuck after ten. */
 export const STUCK_AFTER_MS = 10 * 60_000;
+
+/** The one stuck rule every client shares: ten minutes of silence, and never
+ * while a subagent runs, since a subagent inside one long model call sends
+ * nothing for minutes. */
+export function isStuck(silenceMs: number, runningSubagents: number): boolean {
+  return runningSubagents === 0 && silenceMs >= STUCK_AFTER_MS;
+}
 /** The wire's bound on a session's latest tool intent, in Unicode code points
  * (appwire.MaxIntentRunes): a hub never sends a longer one, so this is the
  * whole of what a row may carry rather than a runaway backstop. Counting code
@@ -80,7 +87,7 @@ export function quietState(
 ): { state: QuietState; forMs: number } | null {
   if (activity.quietForMs === undefined || activity.runningSubagents > 0) return null;
   const forMs = activity.quietForMs + Math.max(0, sinceReadMs);
-  if (forMs >= STUCK_AFTER_MS) return { state: "stuck", forMs };
+  if (isStuck(forMs, activity.runningSubagents)) return { state: "stuck", forMs };
   if (forMs >= QUIET_AFTER_MS) return { state: "quiet", forMs };
   return null;
 }

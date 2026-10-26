@@ -403,6 +403,21 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(trayLine(session({ ...silent, turns: [turn([running])] }), NOW)?.attention).toBe(false);
 	});
 
+	it("never turns amber on a retry while a subagent runs", () => {
+		const retry: ModelRetryState = {
+			attempt: 3,
+			maxAttempts: 11,
+			attemptCap: 4,
+			delayMs: 30_000,
+			errorClass: "rate_limit",
+			groupElapsedMs: 5_000,
+			receivedAt: NOW,
+		};
+		const silent = { modelRetry: retry, lastFrameAt: NOW - 15 * 60_000 };
+		expect(trayLine(session({ ...silent, delegates: [delegate("running", 1)] }), NOW)?.attention).toBe(false);
+		expect(trayLine(session(silent), NOW)?.attention).toBe(true);
+	});
+
 	it("waits for the quiet threshold before explaining a first retry", () => {
 		const retry: ModelRetryState = {
 			attempt: 1,

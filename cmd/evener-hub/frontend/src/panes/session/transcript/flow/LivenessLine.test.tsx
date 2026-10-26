@@ -1,3 +1,4 @@
+import { STUCK_AFTER_MS } from "@evener/appwire-client";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
@@ -34,11 +35,11 @@ test("renders the quiet phrase once the gap crosses the quiet threshold", () => 
   expect(el.textContent).toContain(formatQuietBucket(30_000));
 });
 
-test("renders the stalled phrase once the gap crosses the stall threshold, for an active turn tracking no children at all", () => {
-  render(<LivenessLine lastFrameAt={0} now={185_000} active={true} sessionRef="s1" turnId="turn_0" />);
+test("renders the stalled phrase once the gap crosses the stuck threshold, for an active turn tracking no children at all", () => {
+  render(<LivenessLine lastFrameAt={0} now={STUCK_AFTER_MS + 5_000} active={true} sessionRef="s1" turnId="turn_0" />);
   const el = screen.getByTestId("liveness-line");
   expect(el.getAttribute("data-level")).toBe("stalled");
-  expect(el.textContent).toContain(formatExactGap(185_000));
+  expect(el.textContent).toContain(formatExactGap(STUCK_AFTER_MS + 5_000));
 });
 
 // Cadence's own doc comment ("pure: no timers, no Date.now()") is the
@@ -80,15 +81,12 @@ test("reads as waiting on one subagent instead of quiet once a running child is 
   expect(el.textContent).toBe(describeLiveness(60_000, true, 1).text);
 });
 
-// Past the stall threshold the line stops taking the child's word for it and
-// reports both facts - see describeLiveness's own comment for why a believed-
-// running child must not be able to silence the stall report forever.
-test("past the stall threshold, a tracked running child still surfaces the silence rather than hiding it", () => {
+// A tracked running child keeps the line on "waiting" however long the
+// silence: the shared stuck rule never fires while a subagent runs.
+test("a tracked running child is never reported stalled, however long the silence", () => {
   seedRunningChildren(1);
-  render(<LivenessLine lastFrameAt={0} now={185_000} active={true} sessionRef="s1" turnId="turn_0" />);
-  const el = screen.getByTestId("liveness-line");
-  expect(el.getAttribute("data-level")).toBe("stalled");
-  expect(el.textContent).toBe(describeLiveness(185_000, true, 1).text);
+  render(<LivenessLine lastFrameAt={0} now={STUCK_AFTER_MS * 3} active={true} sessionRef="s1" turnId="turn_0" />);
+  expect(screen.getByTestId("liveness-line").getAttribute("data-level")).toBe("waiting");
 });
 
 test("counts every running child once past the quiet threshold, pre-empting the quiet phrase too", () => {
@@ -169,7 +167,7 @@ test("renders the retry cause and wait instead of the quiet phrase", () => {
   expect(el.textContent).toBe("rate limited — attempt 9/11 — retrying in 60s — 5s on this call");
 });
 
-test("past the stall threshold a retry still surfaces the silence rather than hiding it", () => {
+test("past the stuck threshold a retry still surfaces the silence rather than hiding it", () => {
   render(
     <LivenessLine lastFrameAt={0} now={630_000} active={true} sessionRef="s1" turnId="turn_0" retry={rawRetry()} />,
   );
