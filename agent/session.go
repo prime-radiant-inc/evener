@@ -56,7 +56,7 @@ func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.Eve
 			s.maybeAutoSave()
 		}
 	}
-	s.emitWithProvenance(kind, data, p)
+	s.emitWithProvenance(data, p)
 	if kind == events.EventJobStarted || kind == events.EventJobFinished {
 		s.emitSessionActivityChanged(s.ID(), appwire.SessionActivityResourceJobs)
 	}
@@ -1572,7 +1572,7 @@ func (s *Session) SetReasoningEffort(effort string) error {
 	s.cfg.ReasoningEffort = llm.NormalizeReasoningEffort(effort)
 	normalized := s.cfg.ReasoningEffort
 	s.mu.Unlock()
-	s.emit(events.EventReasoningEffortChanged, events.ReasoningEffortChangedData{ReasoningEffort: normalized})
+	s.emit(events.ReasoningEffortChangedData{ReasoningEffort: normalized})
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk cfg stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
@@ -1759,7 +1759,7 @@ func (s *Session) SetModel(model string) error {
 		NewProvider: nextProfile.ID(), NewModel: nextProfile.Model(),
 	}
 	s.recordTurn(marker, marker)
-	s.emit(events.EventModelChanged, events.ModelChangedData{
+	s.emit(events.ModelChangedData{
 		OldProvider:           oldProfile.ID(),
 		OldModel:              oldProfile.Model(),
 		NewProvider:           nextProfile.ID(),
@@ -1856,7 +1856,7 @@ func (s *Session) SetVisionModel(ref string) error {
 	}
 	s.cfg.VisionModel = ref
 	s.mu.Unlock()
-	s.emit(events.EventVisionModelChanged, events.VisionModelChangedData{OldVisionModel: oldCanonical, NewVisionModel: ref})
+	s.emit(events.VisionModelChangedData{OldVisionModel: oldCanonical, NewVisionModel: ref})
 	s.maybeAutoSave()
 	return nil
 }
@@ -1966,7 +1966,7 @@ func (s *Session) Rename(name string) error {
 	s.naming.updated = s.sclock().Now().UTC()
 	s.naming.set = true
 	s.mu.Unlock()
-	s.emit(events.EventSessionNameChanged, events.SessionNameChangedData{Name: name, Source: sessionNameSourceUser})
+	s.emit(events.SessionNameChangedData{Name: name, Source: sessionNameSourceUser})
 	// maybeAutoSave re-acquires s.mu via s.Meta(); must not hold the lock here.
 	s.maybeAutoSave()
 	return nil
@@ -2208,7 +2208,7 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		if hook := s.cfg.testOnly.beforeEnvironmentEventPublish; hook != nil {
 			hook()
 		}
-		s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
+		s.emit(events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
 	}
 	s.attentionMu.Unlock()
 	if committed {
@@ -2223,7 +2223,7 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	// is on the writer's warning queue; surface it here, outside the door.
 	s.surfaceTranscriptWarnings()
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	return err
 }
@@ -2388,7 +2388,7 @@ func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.
 		func() { s.history = append(s.history, t) },
 	)
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	return err
 }
@@ -2426,7 +2426,7 @@ func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
 	}
 	s.attentionMu.Unlock()
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.surfaceTranscriptWarnings()
 	return rec
@@ -2581,7 +2581,7 @@ func (s *Session) drainTranscriptWarnings(sink func(events.WarningData)) {
 // surfaceTranscriptWarnings emits every pending retained-entry diagnostic. Its
 // callers have already released the transcript locks.
 func (s *Session) surfaceTranscriptWarnings() {
-	s.drainTranscriptWarnings(func(w events.WarningData) { s.emit(events.EventWarning, w) })
+	s.drainTranscriptWarnings(func(w events.WarningData) { s.emit(w) })
 	s.announceFailClosed()
 }
 
@@ -2706,7 +2706,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		},
 	)
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	return err
 }
@@ -2716,7 +2716,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 // The conversation history is already durably recorded by the transcript JSONL.
 func (s *Session) maybeAutoSave() {
 	if err := s.autoSaveMeta(); err != nil {
-		s.emit(events.EventWarning, events.WarningData{
+		s.emit(events.WarningData{
 			Message: fmt.Sprintf("auto-save failed: %v", err),
 		})
 	}

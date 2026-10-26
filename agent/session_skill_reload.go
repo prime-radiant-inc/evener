@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
@@ -357,7 +356,7 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 					s.consumeSkillReloadReminderLocked(publicationID)
 				},
 			); err != nil {
-				s.emit(events.EventWarning, warningDataFromError("recording the post-compaction skill reminder failed", err))
+				s.emit(warningDataFromError("recording the post-compaction skill reminder failed", err))
 				return nil, nil, 0, fmt.Errorf("recording the post-compaction skill reminder: %w", err)
 			}
 			stagedTokens += skillReloadTurnTokens(content)
@@ -389,7 +388,7 @@ func (s *Session) consumeSkillReloadReminderLocked(publicationID string) {
 // turn (reconcileSkillCompactionReceipts).
 func (s *Session) persistSkillReloadReminderConsumption() error {
 	if err := s.saveMeta(); err != nil {
-		s.emit(events.EventWarning, warningDataFromError("persisting the compaction skill reminder consumption failed", err))
+		s.emit(warningDataFromError("persisting the compaction skill reminder consumption failed", err))
 		return err
 	}
 	return nil
@@ -554,7 +553,7 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 		}
 		return err
 	}(); err != nil {
-		s.emit(events.EventWarning, warningDataFromError("persisting the compacted skill reload admission failed", err))
+		s.emit(warningDataFromError("persisting the compacted skill reload admission failed", err))
 		return err
 	}
 	for _, carrier := range carriers {

@@ -459,8 +459,8 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, childJM, childRec.JobID) })
 
-	child := &Session{id: testChildSessionID, jobManager: childJM, subagents: newSubagentManager(nil, 0)}
-	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	child := &Session{id: testChildSessionID, jobManager: childJM, subagents: newSubagentManager(0)}
+	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(0)}
 	root.subagents.track(&subagent{id: testChildSessionID, sess: child, status: SubagentRunning})
 
 	out, err := jobWatchTool(root, map[string]any{
@@ -616,10 +616,10 @@ func TestJobWatchAllowsDescendantConcreteJobSource(t *testing.T) {
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, workerJM, workerRec.JobID) })
 
-	worker := &Session{id: testWorkerSessionID, jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
-	coordinator := &Session{id: testCoordinatorSessionID, jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
+	worker := &Session{id: testWorkerSessionID, jobManager: workerJM, subagents: newSubagentManager(0)}
+	coordinator := &Session{id: testCoordinatorSessionID, jobManager: coordJM, subagents: newSubagentManager(0)}
 	coordinator.subagents.track(&subagent{id: testWorkerSessionID, sess: worker, status: SubagentRunning})
-	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(0)}
 	root.subagents.track(&subagent{id: testCoordinatorSessionID, sess: coordinator, status: SubagentRunning})
 
 	out, err := jobWatchTool(root, map[string]any{

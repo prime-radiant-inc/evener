@@ -154,26 +154,18 @@ func wpfpTerminalSnapshots(t *testing.T, r *wpfpReader) {
 func wpfpRenderFrames(t *testing.T, r *wpfpReader) {
 	t.Helper()
 	text := r.text("message-")
-	selector := int(r.next()) % 8
+	selector := int(r.next()) % 4
 	var data events.EventData
 	switch selector {
 	case 0:
 		data = events.AssistantTextEndData{Text: text, Model: "model-x", FinishReason: "stop"}
 	case 1:
-		data = &events.AssistantTextEndData{Text: text, Model: "model-x", FinishReason: "stop"}
-	case 2:
 		data = events.ToolCallEndData{ToolName: "read_file", CallID: "call-1", ArgumentsJSON: "{}", Output: text}
-	case 3:
-		data = &events.ToolCallEndData{ToolName: "read_file", CallID: "call-1", ArgumentsJSON: "{}", Error: text}
-	case 4:
+	case 2:
 		data = events.CommunicateData{Message: text, EndTurn: r.next()&1 != 0}
-	case 5:
-		data = &events.CommunicateData{Message: text, EndTurn: r.next()&1 != 0}
-	case 6:
+	default:
 		exit := int(r.next())
 		data = events.JobFinishedData{JobID: "job_child", JobType: "delegate", Status: "completed", Reason: text, ExitCode: &exit, OutputBytes: int64(r.next())}
-	default:
-		data = &events.JobFinishedData{JobID: "job_child", JobType: "delegate", Status: "failed", Reason: text, OutputBytes: int64(r.next())}
 	}
 	p := provenance.WithWatch(nil, "watch_source", "generation_source", "delivery_source", "session_source", "job_source")
 	var first, second strings.Builder

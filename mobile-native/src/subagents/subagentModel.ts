@@ -1,18 +1,14 @@
 // Native activity rows and outcome words over the shared session projection.
 import {
-	type ActivityDelegate,
-	type ActivityJob,
-	type ActivitySessionNode,
-	type ActivityTree,
 	activityNodeID,
 	buildEntityView,
-	findEntityView,
-	type SessionActivityCounts,
+	compactDuration,
 	delegateEndingText,
 	delegateHasActiveWork,
 	delegateModel,
 	delegateStatedIntent,
 	delegateTiming,
+	findEntityView,
 	firstLine,
 	formatTokenCount,
 	isActivityFailure,
@@ -22,9 +18,14 @@ import {
 	jobStatusDisplay,
 	plainQuoteLine,
 	shellJobState,
+	spokenDuration,
+	type ActivityDelegate,
+	type ActivityJob,
+	type ActivitySessionNode,
+	type ActivityTree,
+	type SessionActivityCounts,
 } from "@evener/appwire-client";
 import { waitingOnSubagents } from "../board/attention";
-import { compactDuration, spokenDuration } from "../session/format";
 import type { SubagentTally } from "../session/sessionState";
 
 export type SubagentState = "running" | "failed" | "done";

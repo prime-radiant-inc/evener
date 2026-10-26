@@ -194,18 +194,19 @@ func TestAuth_EndpointAssertionsTheHubCannotResolveAreRefused(t *testing.T) {
 	// state an unusable key or an unloaded registry leaves.
 	ctrl.reg = nil
 
-	if err := ctrl.verifyEndpointFingerprint("work", ""); err != nil {
+	key, keyErr := resolveEndpointFingerprintKey(ctrl.stateDir)
+	if err := ctrl.verifyEndpointFingerprint("work", "", key, keyErr); err != nil {
 		t.Fatalf("verifyEndpointFingerprint with no assertion = %v, want nil", err)
 	}
-	if err := ctrl.verifyFlowEndpoint("work", ""); err != nil {
+	if err := ctrl.verifyFlowEndpoint("work", "", key); err != nil {
 		t.Fatalf("verifyFlowEndpoint with no capture = %v, want nil", err)
 	}
 
-	err := ctrl.verifyEndpointFingerprint("work", "asserted-by-a-form")
+	err := ctrl.verifyEndpointFingerprint("work", "asserted-by-a-form", key, keyErr)
 	if !errors.Is(err, errEndpointUnresolvable) {
 		t.Fatalf("verifyEndpointFingerprint = %v, want the refusal for an assertion the hub cannot resolve", err)
 	}
-	err = ctrl.verifyFlowEndpoint("work", "captured-when-the-flow-started")
+	err = ctrl.verifyFlowEndpoint("work", "captured-when-the-flow-started", key)
 	if !errors.Is(err, errEndpointUnresolvable) {
 		t.Fatalf("verifyFlowEndpoint = %v, want the refusal for a flow the hub cannot place", err)
 	}
@@ -527,7 +528,7 @@ func TestAuth_VerifyFlowEndpointEmptyCaptureFollowsTheStateRoot(t *testing.T) {
 	if bare.stateDir != "" || !bare.endpointHasDestination("work") {
 		t.Fatalf("bare fixture: stateDir = %q, endpointHasDestination = %v, want \"\"/true", bare.stateDir, bare.endpointHasDestination("work"))
 	}
-	if err := bare.verifyFlowEndpoint("work", ""); err != nil {
+	if err := bare.verifyFlowEndpoint("work", "", nil); err != nil {
 		t.Fatalf("verifyFlowEndpoint on a controller with no state root = %v, want nil: there is nothing to key with, so nothing to refuse", err)
 	}
 
@@ -537,5 +538,5 @@ func TestAuth_VerifyFlowEndpointEmptyCaptureFollowsTheStateRoot(t *testing.T) {
 	if rooted.stateDir == "" || rooted.endpointFingerprintFor("work") != "" {
 		t.Fatalf("rooted fixture: stateDir = %q, fingerprint = %q, want a root and an empty fingerprint", rooted.stateDir, rooted.endpointFingerprintFor("work"))
 	}
-	assertFlowEndpointRefusal(t, rooted.verifyFlowEndpoint("work", ""))
+	assertFlowEndpointRefusal(t, rooted.verifyFlowEndpoint("work", "", nil))
 }

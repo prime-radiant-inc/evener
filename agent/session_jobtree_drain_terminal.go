@@ -48,7 +48,7 @@ func (s *Session) discardTerminalWatchLeftovers() {
 	if len(dropped) == 0 {
 		return
 	}
-	s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+	s.emit(events.WarningData{Message: fmt.Sprintf(
 		"terminal communicate ended this run; discarding %d watch notification(s) queued before the final answer: %s",
 		len(dropped), strings.Join(dropped, ", "))})
 }

@@ -99,83 +99,50 @@ func nonNilRecords(records hostTOMLRecords) hostTOMLRecords {
 	return records
 }
 
-// hostRecordPolicyFor resolves the retention knobs a zero WebConfig leaves
-// unset to the hub package's documented defaults, so tests and embedders get
-// the spec's numbers without restating them.
+// defaultHostRecordPolicy is the one retention policy the host-record
+// derivation runs under: the bounds registry spec 08 §6/§11/§15 names. Only the
+// tombstone retention is operator-tunable (host_tombstone_retention).
+func defaultHostRecordPolicy() hostRecordPolicy {
+	const week = 7 * 24 * time.Hour
+	return hostRecordPolicy{
+		tombstoneRetention:   DefaultHostTombstoneRetention,
+		tombstoneMaxRows:     500,
+		tombstoneMaxRowBytes: 1 << 20,
+		tombstoneMaxCount:    64,
+		tombstoneMaxBytes:    16 << 20,
+		// The superseded-receipt, pruned-marker, and cleared/recovery-remnant
+		// windows match the tombstone retention: a replay past it refuses through
+		// the retained pruned marker instead.
+		supersededMaxCount: 8,
+		supersededTTL:      week,
+		prunedMaxCount:     64,
+		prunedTTL:          week,
+		// The keyless-add audit trail outlives the tombstone window: its purpose
+		// is post-hoc forensics rather than outcome recovery.
+		auditMaxCount:    64,
+		auditTTL:         30 * 24 * time.Hour,
+		clearedMaxCount:  64,
+		clearedTTL:       week,
+		recoveryMaxCount: 64,
+		recoveryTTL:      week,
+		attemptMaxCount:  8,
+		// A local teardown drains well inside two minutes; a stuck remote then
+		// surfaces its terminal outcome with a live retry handle instead of
+		// holding the host gate.
+		teardownTimeout: 2 * time.Minute,
+		// An hour lets a transient teardown failure resolve through one retry and
+		// still tells the operator about a remnant that is not going away.
+		escalationAge: time.Hour,
+	}
+}
+
+// hostRecordPolicyFor resolves the policy for one WebConfig: the defaults, with
+// the operator's tombstone retention when it is positive. A zero WebConfig
+// (tests, embedders) gets the shipped numbers.
 func hostRecordPolicyFor(cfg hubcore.WebConfig) hostRecordPolicy {
-	policy := hostRecordPolicy{
-		tombstoneRetention:   cfg.HostTombstoneRetention,
-		tombstoneMaxRows:     cfg.HostTombstoneMaxRows,
-		tombstoneMaxRowBytes: cfg.HostTombstoneMaxRowBytes,
-		tombstoneMaxCount:    cfg.HostTombstoneMaxCount,
-		tombstoneMaxBytes:    cfg.HostTombstoneMaxBytes,
-		supersededMaxCount:   cfg.HostSupersededReceiptMaxCount,
-		supersededTTL:        cfg.HostSupersededReceiptTTL,
-		prunedMaxCount:       cfg.HostPrunedReceiptMaxCount,
-		prunedTTL:            cfg.HostPrunedReceiptTTL,
-		auditMaxCount:        cfg.HostKeylessAuditMaxCount,
-		auditTTL:             cfg.HostKeylessAuditTTL,
-		clearedMaxCount:      cfg.HostRemnantClearedMaxCount,
-		clearedTTL:           cfg.HostRemnantClearedTTL,
-		recoveryMaxCount:     cfg.HostRemnantRecoveryMaxCount,
-		recoveryTTL:          cfg.HostRemnantRecoveryTTL,
-		attemptMaxCount:      cfg.HostRemnantAttemptMaxCount,
-		teardownTimeout:      cfg.HostRemnantTeardownTimeout,
-		escalationAge:        cfg.HostRemnantEscalationAge,
-	}
-	if policy.tombstoneRetention <= 0 {
-		policy.tombstoneRetention = DefaultHostTombstoneRetention
-	}
-	if policy.tombstoneMaxRows <= 0 {
-		policy.tombstoneMaxRows = DefaultHostTombstoneMaxRows
-	}
-	if policy.tombstoneMaxRowBytes <= 0 {
-		policy.tombstoneMaxRowBytes = DefaultHostTombstoneMaxRowBytes
-	}
-	if policy.tombstoneMaxCount <= 0 {
-		policy.tombstoneMaxCount = DefaultHostTombstoneMaxCount
-	}
-	if policy.tombstoneMaxBytes <= 0 {
-		policy.tombstoneMaxBytes = DefaultHostTombstoneMaxBytes
-	}
-	if policy.supersededMaxCount <= 0 {
-		policy.supersededMaxCount = DefaultHostSupersededReceiptMaxCount
-	}
-	if policy.supersededTTL <= 0 {
-		policy.supersededTTL = DefaultHostSupersededReceiptTTL
-	}
-	if policy.prunedMaxCount <= 0 {
-		policy.prunedMaxCount = DefaultHostPrunedReceiptMaxCount
-	}
-	if policy.prunedTTL <= 0 {
-		policy.prunedTTL = DefaultHostPrunedReceiptTTL
-	}
-	if policy.auditMaxCount <= 0 {
-		policy.auditMaxCount = DefaultHostKeylessAuditMaxCount
-	}
-	if policy.auditTTL <= 0 {
-		policy.auditTTL = DefaultHostKeylessAuditTTL
-	}
-	if policy.clearedMaxCount <= 0 {
-		policy.clearedMaxCount = DefaultHostRemnantClearedMaxCount
-	}
-	if policy.clearedTTL <= 0 {
-		policy.clearedTTL = DefaultHostRemnantClearedTTL
-	}
-	if policy.recoveryMaxCount <= 0 {
-		policy.recoveryMaxCount = DefaultHostRemnantRecoveryMaxCount
-	}
-	if policy.recoveryTTL <= 0 {
-		policy.recoveryTTL = DefaultHostRemnantRecoveryTTL
-	}
-	if policy.attemptMaxCount <= 0 {
-		policy.attemptMaxCount = DefaultHostRemnantAttemptMaxCount
-	}
-	if policy.teardownTimeout <= 0 {
-		policy.teardownTimeout = DefaultHostRemnantTeardownTimeout
-	}
-	if policy.escalationAge <= 0 {
-		policy.escalationAge = DefaultHostRemnantEscalationAge
+	policy := defaultHostRecordPolicy()
+	if cfg.HostTombstoneRetention > 0 {
+		policy.tombstoneRetention = cfg.HostTombstoneRetention
 	}
 	return policy
 }
@@ -192,21 +159,9 @@ func (m *hubHostManager) nowTime() time.Time {
 // spec 08 §6's retention and §15's capacity rules skip: an open remnant pins
 // its name's tombstone until the remnant resolves, so such a tombstone is
 // never an expiry or eviction candidate.
-//
-// BOUNDARY (S12): remnants are S12's records; no remnant store exists yet.
-// The gate is parameterized over a "remnant-gated names" source that is empty
-// today: cfg.remnantFence answers when a build wires one, and the test-only
-// testOnlyRemnantGated override lets the exemption and the tombstone-capacity
-// refusal be falsified now (the S10 testOnlyParkPostCommit precedent). S12
-// replaces the override by wiring cfg.remnantFence to the real remnant
-// records; nothing else in this slice needs to change.
 func (m *hubHostManager) remnantGated(name string) bool {
-	if m.cfg.remnantFence != nil {
-		if _, open := m.cfg.remnantFence(name); open {
-			return true
-		}
-	}
-	return m.testOnlyRemnantGated != nil && m.testOnlyRemnantGated(name)
+	_, open := m.openRemnantID(name)
+	return open
 }
 
 // hostNameSet returns the names in a host slice.

@@ -189,8 +189,7 @@ func TestProtocolBuildBody_CapsAndRequestFields(t *testing.T) {
 // TestProtocolBuildBody_HighThinkingClampsUnderUnknownOutputCapFallback
 // updates the #824 guard's unknown-cap case. That guard exists to stop body
 // construction from RAISING max_tokens above its ceiling to fit a thinking
-// budget (docs/superpowers/plans/2026-09-01-provider-safe-token-budget.md,
-// step 1), and it still does — for caller-provided budgets (the ProviderOnly
+// budget, and it still does — for caller-provided budgets (the ProviderOnly
 // test below) and for ceilings too small to fit Anthropic's 1024-token
 // thinking minimum. But an effort-derived budget must not wedge the request:
 // with no row cap the body's fallback max_tokens is the ceiling, and the

@@ -1863,12 +1863,12 @@ func (p navigationProjection) seenThrough(ref hubapi.Ref, live bool) *time.Time 
 
 func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.NavigationSessionSummary {
 	clone := summary
-	clone.UpdatedAt = clonePointer(summary.UpdatedAt)
-	clone.TurnEndedAt = clonePointer(summary.TurnEndedAt)
-	clone.SeenThrough = clonePointer(summary.SeenThrough)
-	clone.Tasks = clonePointer(summary.Tasks)
-	clone.Subagents = clonePointer(summary.Subagents)
-	clone.Failure = clonePointer(summary.Failure)
+	clone.UpdatedAt = appwire.ClonePointer(summary.UpdatedAt)
+	clone.TurnEndedAt = appwire.ClonePointer(summary.TurnEndedAt)
+	clone.SeenThrough = appwire.ClonePointer(summary.SeenThrough)
+	clone.Tasks = appwire.ClonePointer(summary.Tasks)
+	clone.Subagents = appwire.ClonePointer(summary.Subagents)
+	clone.Failure = appwire.ClonePointer(summary.Failure)
 	if summary.Question != nil {
 		question := *summary.Question
 		question.Options = append([]string(nil), summary.Question.Options...)
@@ -1879,17 +1879,6 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 		clone.Children[index] = cloneNavigationSummary(child)
 	}
 	return clone
-}
-
-// clonePointer returns a pointer to a shallow copy of *value; nil stays nil.
-// It is for the summaries' pointers to values (a time, the task progress, the
-// subagent tally, the failure), so the copy shares nothing that can change.
-func clonePointer[T any](value *T) *T {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
 }
 
 func navigationPage[T any](rows []T, offset uint32, limit, maximum int) ([]T, int) {

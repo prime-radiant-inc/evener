@@ -6,23 +6,23 @@
 // hub's, taken as the Board's row takes it (spec 13.1), with the session's own
 // delegates as the last resort.
 import {
-	type ItemModel,
+	compactDuration,
+	formatTokenCount,
 	isActiveItem,
 	isInProgressStatus,
-	formatTokenCount,
-	type ModelRetryState,
-	type NavigationSessionSummary,
 	pendingTextJoined,
-	type SessionActivity,
 	STUCK_AFTER_MS,
-	type ThreadModel,
 	toolFamily,
 	toolStepProgress,
+	type ItemModel,
+	type ModelRetryState,
+	type NavigationSessionSummary,
+	type SessionActivity,
+	type ThreadModel,
 } from "@evener/appwire-client";
 import { runningSubagentCount } from "../subagents/subagentModel";
 import { AGENT_QUIET_AFTER_MS, quietOrWorking, waitingOnSubagents } from "../board/attention";
 import { PULSE_BARS } from "../board/pulse";
-import { compactDuration } from "./format";
 
 export interface TrayLine {
 	text: string;

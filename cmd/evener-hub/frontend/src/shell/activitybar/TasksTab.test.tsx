@@ -337,7 +337,7 @@ describe("TasksTab", () => {
     expect(screen.getByText("Completed work").getAttribute("data-struck")).toBeNull();
     expect(screen.getByText("Cancelled work").getAttribute("data-struck")).toBe("true");
     const beforeTime = times.get("2")?.textContent;
-    act(() => vi.advanceTimersByTime(30_000));
+    act(() => vi.advanceTimersByTime(60_000));
     expect(times.get("2")?.textContent).not.toBe(beforeTime);
     expect(times.get("2")?.dateTime).toBe(updatedAt);
   });

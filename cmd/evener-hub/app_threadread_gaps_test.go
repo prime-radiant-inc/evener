@@ -1,51 +1,13 @@
 package hub
 
 import (
+	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 )
-
-// TestCloneHubBoolNonNil covers the non-nil path.
-func TestCloneHubBoolNonNil(t *testing.T) {
-	v := true
-	clone := cloneHubBool(&v)
-	if clone == nil || *clone != true {
-		t.Fatalf("cloneHubBool(&true) = %v, want &true", clone)
-	}
-	*clone = false
-	if v != true {
-		t.Fatalf("original was mutated: v = %v, want true", v)
-	}
-}
-
-// TestCloneHubBoolNil covers the nil path.
-func TestCloneHubBoolNil(t *testing.T) {
-	if clone := cloneHubBool(nil); clone != nil {
-		t.Fatalf("cloneHubBool(nil) = %v, want nil", clone)
-	}
-}
-
-// TestCloneHubInt64NonNil covers the non-nil path.
-func TestCloneHubInt64NonNil(t *testing.T) {
-	v := int64(42)
-	clone := cloneHubInt64(&v)
-	if clone == nil || *clone != 42 {
-		t.Fatalf("cloneHubInt64(&42) = %v, want &42", clone)
-	}
-	*clone = 99
-	if v != 42 {
-		t.Fatalf("original was mutated: v = %d, want 42", v)
-	}
-}
-
-// TestCloneHubInt64Nil covers the nil path.
-func TestCloneHubInt64Nil(t *testing.T) {
-	if clone := cloneHubInt64(nil); clone != nil {
-		t.Fatalf("cloneHubInt64(nil) = %v, want nil", clone)
-	}
-}
 
 // TestOutputImageDescriptorKeySHA covers the SHA path.
 func TestOutputImageDescriptorKeySHA(t *testing.T) {
@@ -141,5 +103,23 @@ func TestAppwireDelegateFromAgentStatusWithWorktree(t *testing.T) {
 	info := appwireDelegateFromAgentStatus(delegate)
 	if info.Worktree == nil || info.Worktree.Branch != "test" {
 		t.Fatalf("Worktree = %+v, want Branch=test", info.Worktree)
+	}
+}
+
+// Every field the agent reports on a delegate reaches the wire row.
+func TestAppwireDelegateFromAgentStatusCarriesEveryAgentField(t *testing.T) {
+	var in agent.DelegateStatusInfo
+	appwiretest.FillNonZero(&in)
+	got := reflect.ValueOf(appwireDelegateFromAgentStatus(in))
+	src := reflect.TypeOf(in)
+	for f := range src.Fields() {
+		name := f.Name
+		field := got.FieldByName(name)
+		if !field.IsValid() {
+			t.Fatalf("EvenerDelegateInfo has no field %s for the agent status field", name)
+		}
+		if field.IsZero() {
+			t.Errorf("appwireDelegateFromAgentStatus dropped %s", name)
+		}
 	}
 }

@@ -136,7 +136,6 @@ native:agent:./internal/worktree:FuzzWorktreePredicatesProgram
 native:agent:./internal/worktree:FuzzSidecarLifecycleProgram
 native:agent:./command:FuzzExpandInertArgumentDirectives
 native:agent:./command:FuzzExpandTemplateProgram
-native:agent:./events:FuzzSessionEventToStreamEvent
 native:agent:./events:FuzzEventDataProgram
 native:agent:./internal/agenttest:FuzzScriptedAdapterReplay
 native:agent:./internal/agenttest:FuzzAgenttestAdaptersProgram
@@ -265,7 +264,6 @@ native:agent:.:FuzzCovJobShellSeed100
 native:agent:./internal/tool:FuzzApatchApplyPatch
 native:agent:./internal/tool:FuzzApatchParseV4APatchLines
 native:agent:./internal/contextmgr:FuzzCtxmgrCheckpointData
-native:agent:./internal/contextmgr:FuzzCtxmgrCheckpointPredManageContext
 native:agent:./internal/contextmgr:FuzzCtxmgrSessionLogManageContext
 native:agent:./internal/contextmgr:FuzzCtxmgrSummarizeSteered
 native:agent:./internal/contextmgr:FuzzFc1EstimateUsedTokens
@@ -376,7 +374,6 @@ rapid:.:./internal/appserver:TestRouterSeqFuzz
 rapid:.:./internal/appserver:TestHubMultiSessionSeqFuzz
 native:agent:./doctor:FuzzDr2BuildWatchReport
 native:agent:./doctor:FuzzDr2APILog
-native:agent:./internal/contextmgr:FuzzCxjsObsMaskManageContext
 native:agent:./internal/jobstore:FuzzCxjsGrepReaderLimit
 native:agent:./execenv:FuzzExfsListDirectory
 native:agent:./execenv:FuzzExfsInjectLocalVenvPath

@@ -416,6 +416,17 @@ function renderedSentinelRowsExpr(ref) {
   })()`;
 }
 
+// renderedSentinelRowsOnceExpr is renderedSentinelRowsExpr held to a non-empty
+// answer, so a wait on it returns the rows it saw. Pane text proves a marker is
+// somewhere in the pane; the journey asserts the anchored rows, so it waits on
+// those rather than on the text.
+function renderedSentinelRowsOnceExpr(ref) {
+  return `(() => {
+    const rows = ${renderedSentinelRowsExpr(ref)};
+    return rows.length > 0 ? rows : null;
+  })()`;
+}
+
 // A fresh browser document joins the real hub while the provider is gated
 // mid-turn. Both panes must load that turn and receive its remaining output.
 async function runLiveTwoTabs(driver, harnessUrl) {
@@ -438,7 +449,12 @@ async function runLiveTwoTabs(driver, harnessUrl) {
       await pane.send("Page.bringToFront");
       await waitForPaneText(pane, SESSION_B, BEFORE, 30000, `initial live output in tab ${index}`);
       await waitForTargetRunning(pane, SESSION_B);
-      beforeRows.push(await evaluate(pane.send, renderedSentinelRowsExpr(SESSION_B)));
+      beforeRows.push(
+        await pane.waitPage(renderedSentinelRowsOnceExpr(SESSION_B), {
+          timeoutMs: 30000,
+          label: `initial live output rendered as a transcript row in tab ${index}`,
+        }),
+      );
     }
     driver.phase("after-eviction");
     for (const pane of [driver, sibling]) {
@@ -1966,6 +1982,17 @@ async function waitForRestoredDomain(driver, ref, sentinel, timeoutMs = 30000) {
   return last;
 }
 
+// A hidden page gets no rendering opportunities, so a viewport change made
+// while the page is hidden never reaches the responsive host (the media-query
+// change event does not fire). Callers that hide the page must bring it back
+// to the front before waiting here.
+async function waitForResponsiveHost(driver) {
+  await driver.waitPage(`(() => {
+    const mobile = matchMedia("(max-width: 899px)").matches;
+    return mobile === Boolean(document.querySelector("[data-stacked-pane-type]"));
+  })()`, { label: "the responsive host has committed" });
+}
+
 // openSessionInCurrentShell activates a session through whichever shell the
 // current viewport hosts. At or below the mobile breakpoint
 // (useIsMobile.ts MOBILE_QUERY "(max-width: 899px)") the desktop RailHost is
@@ -1973,10 +2000,7 @@ async function waitForRestoredDomain(driver, ref, sentinel, timeoutMs = 30000) {
 // through the tree-drawer trigger. The guarantee - a real rail-row activation
 // that re-focuses the session - is identical.
 async function openSessionInCurrentShell(driver, ref) {
-  await driver.waitPage(`(() => {
-    const mobile = matchMedia("(max-width: 899px)").matches;
-    return mobile === Boolean(document.querySelector("[data-stacked-pane-type]"));
-  })()`, { label: "the responsive host has committed" });
+  await waitForResponsiveHost(driver);
   const rowSelector = `[data-session-ref='${ref}']`;
   const rowVisible = async () =>
     evaluate(
@@ -2077,6 +2101,11 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
         `${error instanceof Error ? error.message : String(error)}\ntab errors:\n${tabErrors.join("\n") || "(none captured)"}`,
       );
     }
+    // Opening the second tab hid the driver's page; restore it so a viewport
+    // change still pending from the journey reaches the desktop rail before the
+    // rail row is pressed.
+    await driver.send("Page.bringToFront");
+    await waitForResponsiveHost(driver);
     const call = (send, method, ...args) =>
       evaluate(send, `window.backgroundTranscriptGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
     const fence = (send, ref) => call(send, "fenceState", ref);

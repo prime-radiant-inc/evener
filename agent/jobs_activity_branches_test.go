@@ -52,18 +52,6 @@ func TestActivityUsageFromCumulative(t *testing.T) {
 	}
 }
 
-func TestCloneInt64(t *testing.T) {
-	t.Parallel()
-	if got := cloneInt64(nil); got != nil {
-		t.Fatalf("cloneInt64(nil) = %v, want nil", got)
-	}
-	v := int64(42)
-	got := cloneInt64(&v)
-	if got == nil || *got != 42 || got == &v {
-		t.Fatalf("cloneInt64 = %v, want distinct copy of 42", got)
-	}
-}
-
 func TestActivityOwnedRecords(t *testing.T) {
 	t.Parallel()
 	// Empty sessionID or no records returns records as-is.

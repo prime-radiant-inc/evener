@@ -213,35 +213,6 @@ func EchoesAssistantText(shown, message string) bool {
 	return shown != "" && shown == strings.TrimSpace(message)
 }
 
-// ToolIntentFromArguments extracts a compact tool-call description from the
-// "intent" field, falling back to "purpose" — the field's name before the
-// 2026-08-29 rename (7512a736e) — so transcripts recorded before that
-// rename still surface the tool-intent line on reload (issue #709). This is
-// a reader-side rule: the model-facing tool schema and every write path
-// still emit "intent" exclusively. Every other transcript/projector reader
-// that extracts this field applies the same rule independently rather than
-// sharing this function — agent/transcript_render.go's toolIntent,
-// agent/doctor's toolIntentFromArguments, and the TUI's toolsummary and
-// msgrender packages — since each lives in a different Go module or is a
-// standalone binary that cannot import this one.
-func ToolIntentFromArguments(raw json.RawMessage) string {
-	var args map[string]any
-	if len(raw) == 0 || json.Unmarshal(raw, &args) != nil {
-		return ""
-	}
-	if value, ok := args["intent"].(string); ok {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	if value, ok := args["purpose"].(string); ok {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
-
 // ExitCodeFromToolState extracts a shell tool call's process exit code from
 // its raw ToolState JSON snapshot (the "exit_code" field of shellToolResult,
 // agent/session_tools_shell.go:483), so the live projector and transcript
@@ -1044,7 +1015,7 @@ func toolCallItem(turnID string, turnIndex, part int, turn schema.Turn) appwire.
 	// oversized valid JSON has RawArguments="" and would otherwise show
 	// intent on reload.
 	if call.RawArguments == "" && argrepair.ValidateRawArguments(call.Arguments) == nil {
-		description = ToolIntentFromArguments(call.Arguments)
+		description = schema.ToolIntent(call.Arguments)
 	}
 	item := appwire.ThreadItem{
 		Type:          "commandExecution",

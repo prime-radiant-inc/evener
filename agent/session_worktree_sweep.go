@@ -99,7 +99,7 @@ func (s *Session) disposeLaneResidueAtClose(ctx context.Context) {
 		return
 	}
 	if s.runLaneResidueSweep(ctx) {
-		s.emit(events.EventWarning, events.WarningData{
+		s.emit(events.WarningData{
 			Message: "close budget exhausted; delegate-lane residue sweep left remaining foreign lanes for the next open-pass sweep",
 		})
 	}

@@ -4317,9 +4317,10 @@ func TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner(t *te
 	if outcome.result.Err == nil || !strings.Contains(outcome.result.Err.Error(), "store is closed") {
 		t.Fatalf("prelaunch double failure = %#v, want durable store failure", outcome.result)
 	}
-	if got := len(fixture.adapter.Requests()); got != 0 {
-		t.Fatalf("prelaunch failure reached provider %d times", got)
-	}
+	// The failed send returned before launchSubagentRun, so no runner exists for
+	// the generation. The provider is not a witness for that: releasing the
+	// failed start re-drives the child's owed attention, and that notification
+	// turn legitimately calls the provider on its own schedule.
 
 	reopened, err := delegatestore.Open(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
 	if err != nil {

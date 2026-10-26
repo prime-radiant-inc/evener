@@ -14,11 +14,6 @@ func (s *Session) logSummaryFailure(data events.EventData) {
 	switch d := data.(type) {
 	case events.WarningData:
 		warning = d
-	case *events.WarningData:
-		if d == nil {
-			return
-		}
-		warning = *d
 	default:
 		return
 	}

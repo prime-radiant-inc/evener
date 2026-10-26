@@ -35,13 +35,13 @@ import {
 	type PluginsStore,
 	runGatedMutation,
 } from "@evener/appwire-client/state/extensions";
+import { compactDuration } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { isReady } from "../connectionDisplay";
 import { destructiveButton } from "../haptics";
 import { INSTALLED_PLUGINS_FAILED, MarketplaceBrowser } from "../MarketplaceBrowser";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
 import { space } from "../design/tokens";
-import { compactDuration } from "../session/format";
 import { Group, GroupedPage, GroupFooter, GroupGap, Row, Segmented, SwitchRow } from "../sheet/Grouped";
 import { ModalSheet } from "../sheet/ModalSheet";
 import { SearchField } from "../sheet/SearchField";

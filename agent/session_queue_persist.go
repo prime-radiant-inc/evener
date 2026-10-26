@@ -6,9 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/spf13/afero"
-
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // queuePersistSubdir is the state-dir subdirectory holding one queue-snapshot
@@ -35,46 +34,31 @@ func queuesFilePath(stateDir, id string) string {
 }
 
 // saveQueues writes the given queues to <stateDir>/queues/<id>.json
-// atomically (write-temp, rename), matching TaskStore.save's pattern. An
+// durably and atomically (fsatomic.Write), matching TaskStore.save's pattern. An
 // empty snapshot (both slices empty) removes the file instead of writing an
 // empty-array residue, so "no queued messages" is absent, not noise. A blank
 // stateDir (state persistence disabled, e.g. ephemeral `evener run`) is a no-op,
 // matching maybeAutoSave's own convention.
 func saveQueues(stateDir, id string, steering []steeringMessage, input []queuedInput) error {
-	return saveQueuesFS(afero.NewOsFs(), stateDir, id, steering, input)
-}
-
-// saveQueuesFS is the filesystem seam beneath saveQueues (mirrors
-// schema.SaveSessionMetaWithFS / TaskStore's injected afero.Fs): production calls
-// saveQueues, which passes afero.NewOsFs() (byte-identical to direct os
-// calls); tests inject an in-memory or sandboxed filesystem.
-func saveQueuesFS(fs afero.Fs, stateDir, id string, steering []steeringMessage, input []queuedInput) error {
 	if stateDir == "" {
 		return nil
 	}
 	path := queuesFilePath(stateDir, id)
 	if len(steering) == 0 && len(input) == 0 {
-		if err := fs.Remove(path); err != nil && !os.IsNotExist(err) {
+		if err := fsatomic.Remove(path); err != nil {
 			return fmt.Errorf("remove empty queue snapshot: %w", err)
 		}
 		return nil
 	}
-
-	dir := filepath.Dir(path)
-	if err := fs.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create queues dir: %w", err)
 	}
 	data, err := json.Marshal(persistedQueues{Steering: steering, Input: input})
 	if err != nil {
 		return fmt.Errorf("marshal queues: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := afero.WriteFile(fs, tmp, data, 0o644); err != nil {
-		return fmt.Errorf("write temp queues file: %w", err)
-	}
-	if err := fs.Rename(tmp, path); err != nil {
-		_ = fs.Remove(tmp)
-		return fmt.Errorf("rename queues file: %w", err)
+	if err := fsatomic.Write(path, data, 0o600); err != nil {
+		return fmt.Errorf("write queues file: %w", err)
 	}
 	return nil
 }
@@ -84,15 +68,10 @@ func saveQueuesFS(fs afero.Fs, stateDir, id string, steering []steeringMessage, 
 // error: it returns two nil slices, exactly the zero-value queues a fresh
 // session starts with.
 func loadQueues(stateDir, id string) ([]steeringMessage, []queuedInput, error) {
-	return loadQueuesFS(afero.NewOsFs(), stateDir, id)
-}
-
-// loadQueuesFS is the filesystem seam beneath loadQueues; see saveQueuesFS.
-func loadQueuesFS(fs afero.Fs, stateDir, id string) ([]steeringMessage, []queuedInput, error) {
 	if stateDir == "" {
 		return nil, nil, nil
 	}
-	data, err := afero.ReadFile(fs, queuesFilePath(stateDir, id))
+	data, err := os.ReadFile(queuesFilePath(stateDir, id))
 	if os.IsNotExist(err) {
 		return nil, nil, nil
 	}
@@ -131,7 +110,7 @@ func (s *Session) persistQueuesSnapshot() {
 	id := s.id
 	s.mu.Unlock()
 	if err := saveQueues(stateDir, id, steering, nil); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("queue persist failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("queue persist failed: %v", err)})
 	}
 }
 

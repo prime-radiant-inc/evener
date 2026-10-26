@@ -3,15 +3,15 @@
 // The same file names the model for the composer's chip (spec 8.5).
 import {
 	basename,
+	compactDuration,
 	formatTokenCount,
-	type ModelDescriptor,
 	sessionEffortLevels,
+	type ModelDescriptor,
 	type ThreadModel,
 } from "@evener/appwire-client";
 import type { MobileTimelineItem } from "../projectedRows";
 import { sameModel } from "../subagents/subagentModel";
 import { localSessionId } from "../sessionDeletionResult";
-import { compactDuration } from "./format";
 
 /** A ref names its host first ("<host>:<session>"); "local" is the hub's own. */
 export function hostIdOf(ref: string): string {

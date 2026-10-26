@@ -724,14 +724,7 @@ func (jm *jobManager) finalizeKeptSyncUntilDurable(run *runningJob, status jobst
 }
 
 func shellFinalizeBackoff(attempt int) time.Duration {
-	delay := shellFinalizeRetryDelay
-	for range attempt {
-		delay *= 2
-		if delay >= shellFinalizeMaxRetryDelay {
-			return shellFinalizeMaxRetryDelay
-		}
-	}
-	return delay
+	return backoffDelay(attempt, shellFinalizeRetryDelay, shellFinalizeMaxRetryDelay)
 }
 
 func (jm *jobManager) shellTerminalWithSignal(run *runningJob, exitCode int, signalName string, timedOut bool, waitErr error) (jobstore.Status, string, *int) {

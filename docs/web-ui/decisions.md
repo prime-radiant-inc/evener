@@ -432,9 +432,7 @@ and applies to all four alternatives — neither is D's, and D's one original id
 belongs. Shipped `c16f8178f`. Title clustering (C) has since been removed:
 session titles are agentic and do not repeat, so every session is its own row.
 
-Verdict **superseded** for Alt A: `docs/superpowers/plans/2026-07-23-webui-ux-round2.md`
-records the decision to keep Live, Pinned, Projects, Archived and Test runs, and
-that "residual duplication is accepted." Alts C and D are **ABSENT**, and in a
+Verdict **superseded** for Alt A: the decision is to keep Live, Pinned, Projects, Archived and Test runs, and "residual duplication is accepted." Alts C and D are **ABSENT**, and in a
 telling way — `TreeNode.cluster_count` and `TreeProject.rollup_live` are both
 defined on the wire and never read by anything. A half-finished backend-first
 cut, not a rejection. No "you are here" row exists.

@@ -10,14 +10,25 @@ package hubapi
 // normalized state, except that a pending approval (a sandbox escalation, M7)
 // reads as "awaiting". The escalation blocks mid-turn, so the session keeps
 // reporting "active" while it waits on a person the way a question does. A
-// failure still outranks it: "errored" stays "errored". Rank and level a
-// session through this, never through its reported state alone, which stays
-// unchanged on every row.
+// failure, a session that needs a restart and one that has ended or never
+// loaded still outrank it: an approval cannot answer them, so a stale
+// escalation never masks them. Rank and level a session through this, never
+// through its reported state alone, which stays unchanged on every row.
+// appwire-client's approvalWaiting states the same rule; testdata/attention
+// holds the cases both run.
 func AttentionState(state string, approvalPending bool) string {
-	if approvalPending && state != "errored" {
+	if approvalPending && !outranksApproval(state) {
 		return "awaiting"
 	}
 	return state
+}
+
+func outranksApproval(state string) bool {
+	switch state {
+	case "errored", "restartRequired", "ended", "notLoaded":
+		return true
+	}
+	return false
 }
 
 // AttentionRank maps a normalized state to a sort key for live-session
@@ -78,12 +89,13 @@ func NeedsResponse(state string, askPending bool) bool {
 // blocks mid-turn, so its session still reports "active" and only
 // approvalPending can place it; pass false where the caller has no approval
 // information. Both flags are ignored when state is "errored" (errored
-// always wins regardless).
+// always wins regardless), and approvalPending counts only where
+// AttentionState lets it escalate.
 func NeedsYouBand(state string, askPending, approvalPending bool) int {
 	switch {
 	case state == "errored":
 		return 2
-	case state == "awaiting" || askPending || approvalPending:
+	case state == "awaiting" || askPending || AttentionState(state, approvalPending) == "awaiting":
 		return 1
 	default:
 		return 0

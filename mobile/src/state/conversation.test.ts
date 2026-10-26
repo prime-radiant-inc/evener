@@ -14796,9 +14796,7 @@ describe("ConversationStore", () => {
 
 	// The reread's snapshot is authoritative over every thread-level frame that
 	// preceded its response: AppWire orders the response at the snapshot cut,
-	// so such a frame is already folded into the snapshot (docs/superpowers/
-	// plans/2026-07-28-appwire-retry-safe-mutations-and-atomic-rejoin.md:19,
-	// 372-373). These fixtures hand the store a snapshot that does NOT reflect
+	// so such a frame is already folded into the snapshot. These fixtures hand the store a snapshot that does NOT reflect
 	// the frame — an ordering the protocol excludes — to pin that the store
 	// does not second-guess the snapshot: no replay, no per-field ownership.
 	async function rereadRacing(

@@ -1938,7 +1938,7 @@ func (jm *jobManager) persistStableShellAttention(jobID string) (string, *Sessio
 			return "", owner, err
 		}
 		if err := jm.forwardSnapshot(delivered); err != nil {
-			owner.emit(events.EventWarning, warningDataFromError("forward stable shell attention acknowledgement", err))
+			owner.emit(warningDataFromError("forward stable shell attention acknowledgement", err))
 		}
 	}
 	return attentionID, owner, nil

@@ -144,11 +144,9 @@ func FuzzSessionAuxExactProgram(f *testing.F) {
 			s.hookRunner = runner
 			s.runNotificationHook(context.Background(), "notice")
 			_ = s.Events()
-			_ = warningHookMessage((*events.WarningData)(nil))
-			_ = warningHookMessage(&events.WarningData{Message: "pointer"})
 			_ = warningHookMessage(events.SessionEndData{Reason: "done"})
 			var nilSession *Session
-			nilSession.emitWithProvenance(events.EventWarning, events.WarningData{}, nil)
+			nilSession.emitWithProvenance(events.WarningData{}, nil)
 		case 19:
 			s := newSession(t)
 			repo := t.TempDir()
