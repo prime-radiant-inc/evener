@@ -265,6 +265,24 @@ func TestProjectActivitySession_CapsDelegateProse(t *testing.T) {
 	}
 }
 
+// Retired delegate job rows are kept in the journal and ignored: they are not an
+// unsupported type, so they do not leave the branch with a permanent error.
+func TestProjectActivitySession_RetiredDelegateRecordsAreNotBranchErrors(t *testing.T) {
+	t.Parallel()
+	records := []*jobstore.JobRecord{
+		{JobID: "job_legacy_delegate", Type: jobstore.JobType(delegateResourceType), OwnerSessionID: "root", Status: jobstore.StatusStopped},
+		{JobID: "job_shell", Type: jobstore.JobShell, OwnerSessionID: "root", Status: jobstore.StatusRunning},
+	}
+	snap := activitySessionSnapshot{SessionID: "root", Ref: "local:root", Jobs: records}
+	got := projectActivitySession(snap, newActivityBudget())
+	if got.Branch.Error != "" {
+		t.Fatalf("branch error = %q, want none for a retired delegate record", got.Branch.Error)
+	}
+	if len(got.Entries) != 1 {
+		t.Fatalf("entries = %d, want only the shell job", len(got.Entries))
+	}
+}
+
 // TestProjectActivitySession_CollapsesUnsupportedTypeErrors pins that a
 // session whose journal holds many records this projection cannot render
 // reports them once, counted, rather than appending one sentence per record
