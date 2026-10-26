@@ -272,13 +272,17 @@ func TestTranscriptAuthorshipForkCopiesKnown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, e := range child.Entries {
-		if e.Turn.Message.Text() == "original-human" {
-			assertTranscriptAuthor(t, e.Turn, map[string]any{"kind": "human"}, true)
+	for text, inherited := range map[string]bool{"original-human": true, "edited-human": false} {
+		var matches []schema.Turn
+		for _, e := range child.Entries {
+			if e.Turn.Kind == schema.TurnUserInput && e.Turn.Message.Text() == text {
+				matches = append(matches, e.Turn)
+			}
 		}
-		if e.Turn.Message.Text() == "edited-human" {
-			assertTranscriptAuthor(t, e.Turn, map[string]any{"kind": "human"}, false)
+		if len(matches) != 1 {
+			t.Fatalf("fork input %q count=%d, want 1", text, len(matches))
 		}
+		assertTranscriptAuthor(t, matches[0], map[string]any{"kind": "human"}, inherited)
 	}
 }
 
@@ -329,7 +333,9 @@ func TestTranscriptAuthorshipInternalNudgeAndExplicitHuman(t *testing.T) {
 	root := restoreSupervisionRoot(t, fixture, nil)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "inspect", 60_000)
 	abortUnpersistedStableDelegateOutcome(t, outcome)
-	assertSingleRecoveryNudge(t, fixture.adapter)
+	if requests := fixture.adapter.Requests(); len(requests) != 5 {
+		t.Fatalf("provider requests=%d, want four bare replies and terminal reply", len(requests))
+	}
 	sub := root.getSub(fixture.childID)
 	if sub == nil {
 		t.Fatal("missing child")
@@ -338,17 +344,25 @@ func TestTranscriptAuthorshipInternalNudgeAndExplicitHuman(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nudges := 0
+	var inputs []schema.Turn
+	var repliesBeforeInput []int
+	replies := 0
 	for _, e := range data.Entries {
-		if e.Turn.Kind == schema.TurnUserInput && e.Turn.Message.Text() == communicateNudge(sub.sess.resultToolName()) {
-			nudges++
-			if e.Turn.Authorship != nil {
-				t.Fatal("harness nudge labeled human")
-			}
+		if e.Turn.Kind == schema.TurnAssistant {
+			replies++
+		}
+		if e.Turn.Kind == schema.TurnUserInput {
+			inputs = append(inputs, e.Turn)
+			repliesBeforeInput = append(repliesBeforeInput, replies)
 		}
 	}
-	if nudges != 1 {
-		t.Fatalf("nudges=%d", nudges)
+	// The empty cold transcript receives our instruction, four bare replies,
+	// one harness input, then the terminal reply. No production wording selects it.
+	if len(inputs) != 2 || inputs[0].Message.Text() != "inspect" || !reflect.DeepEqual(repliesBeforeInput, []int{0, 4}) || replies != 5 {
+		t.Fatalf("inputs=%d replies before inputs=%v total replies=%d", len(inputs), repliesBeforeInput, replies)
+	}
+	if inputs[1].Authorship != nil {
+		t.Fatal("harness nudge labeled human")
 	}
 	// The same child accepts explicit human/client input without borrowing the
 	// harness origin or its parent. No provider call is needed to accept it.
