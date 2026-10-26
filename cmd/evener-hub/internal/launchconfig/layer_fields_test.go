@@ -117,9 +117,11 @@ func TestEveryLayerFieldSurvivesMerge(t *testing.T) {
 				t.Skip(reason)
 			}
 			// app_replay_size is honored only at the global layer.
-			resolved, _ := mergeLayers(map[LayerName]Layer{LayerGlobal: layerWith(f)})
-			if reflect.ValueOf(resolved.Effective).FieldByName(f.Name).IsZero() {
-				t.Fatalf("Layer.%s set at a layer is zero in the merged Effective layer", f.Name)
+			in := layerWith(f)
+			resolved, _ := mergeLayers(map[LayerName]Layer{LayerGlobal: in})
+			got := reflect.ValueOf(resolved.Effective).FieldByName(f.Name).Interface()
+			if want := reflect.ValueOf(in).FieldByName(f.Name).Interface(); !reflect.DeepEqual(got, want) {
+				t.Fatalf("Layer.%s merged to %#v, want %#v", f.Name, got, want)
 			}
 		})
 	}
@@ -143,13 +145,17 @@ func TestEveryLayerFieldReachesArgs(t *testing.T) {
 		"SystemPromptText":       "spawn writes inline text to a file and renders the file mode",
 		"SystemPromptAppendText": "spawn writes inline text to a file and renders the file mode",
 	}
-	base := ToArgs(Resolved{})
 	for _, f := range layerFields() {
 		t.Run(f.Name, func(t *testing.T) {
 			if reason, excluded := exclusions[f.Name]; excluded {
 				t.Skip(reason)
 			}
-			if got := ToArgs(Resolved{Effective: layerWith(f)}); reflect.DeepEqual(got, base) {
+			// The baseline keeps the companion fields and unsets only the
+			// field under test.
+			with := layerWith(f)
+			without := with
+			reflect.ValueOf(&without).Elem().FieldByName(f.Name).SetZero()
+			if got, base := ToArgs(Resolved{Effective: with}), ToArgs(Resolved{Effective: without}); reflect.DeepEqual(got, base) {
 				t.Fatalf("Layer.%s set in Effective leaves argv unchanged", f.Name)
 			}
 		})
