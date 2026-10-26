@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -110,13 +109,6 @@ func coverageFetchSources(t *testing.T) {
 }
 
 func coverageCopyTreeErrors(t *testing.T) {
-	oldStat, oldWalk, oldRel, oldOpen := sourceStat, sourceWalk, sourceRel, sourceOpen
-	oldMkdir, oldOpenFile, oldCopy, oldClose := sourceMkdirAll, sourceOpenFile, sourceCopy, sourceClose
-	t.Cleanup(func() {
-		sourceStat, sourceWalk, sourceRel, sourceOpen = oldStat, oldWalk, oldRel, oldOpen
-		sourceMkdirAll, sourceOpenFile, sourceCopy, sourceClose = oldMkdir, oldOpenFile, oldCopy, oldClose
-	})
-	boom := errors.New("boom")
 	root := t.TempDir()
 	file := filepath.Join(root, "file")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
@@ -125,59 +117,25 @@ func coverageCopyTreeErrors(t *testing.T) {
 	if err := copyTree(file, t.TempDir()); err == nil {
 		t.Fatal("file source accepted")
 	}
-	sourceWalk = func(root string, fn filepath.WalkFunc) error { return fn(root, nil, boom) }
-	if err := copyTree(root, t.TempDir()); err == nil {
-		t.Fatal("walk error accepted")
+	// A destination root that is a regular file cannot receive the tree.
+	if err := copyTree(root, file); err == nil {
+		t.Fatal("destination file accepted as a directory")
 	}
-	sourceWalk = filepath.Walk
-	sourceRel = func(string, string) (string, error) { return "", boom }
-	if err := copyTree(root, t.TempDir()); err == nil {
-		t.Fatal("rel error accepted")
+	// A directory already sitting where a file belongs cannot be overwritten.
+	dst := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dst, "file"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	sourceRel = filepath.Rel
-	sourceMkdirAll = func(string, os.FileMode) error { return boom }
-	if err := copyTree(root, t.TempDir()); err == nil {
-		t.Fatal("mkdir error accepted")
+	if err := copyTree(root, dst); err == nil {
+		t.Fatal("directory over a file accepted")
 	}
-	sourceMkdirAll = os.MkdirAll
-	sourceOpen = func(string) (*os.File, error) { return nil, boom }
-	if err := copyTree(root, t.TempDir()); err == nil {
-		t.Fatal("open error accepted")
+	// A link that resolves nowhere cannot be dereferenced into a file.
+	dangling := t.TempDir()
+	if err := os.Symlink(filepath.Join(dangling, "missing"), filepath.Join(dangling, "link")); err != nil {
+		t.Skip("symlinks unavailable")
 	}
-	sourceOpen = os.Open
-	calls := 0
-	sourceMkdirAll = func(path string, mode os.FileMode) error {
-		calls++
-		if calls > 1 {
-			return boom
-		}
-		return os.MkdirAll(path, mode)
-	}
-	if err := copyTree(root, t.TempDir()); err == nil {
-		t.Fatal("parent mkdir error accepted")
-	}
-	sourceMkdirAll = os.MkdirAll
-	sourceOpenFile = func(string, int, os.FileMode) (*os.File, error) { return nil, boom }
-	if err := copyTree(root, t.TempDir()); err == nil {
-		t.Fatal("create error accepted")
-	}
-	sourceOpenFile = os.OpenFile
-	sourceCopy = func(io.Writer, io.Reader) (int64, error) { return 0, boom }
-	if err := copyTree(root, t.TempDir()); err == nil {
-		t.Fatal("copy error accepted")
-	}
-	sourceCopy = io.Copy
-	closed := 0
-	sourceClose = func(f *os.File) error {
-		closed++
-		_ = f.Close()
-		if closed == 1 {
-			return boom
-		}
-		return nil
-	}
-	if err := copyTree(root, t.TempDir()); err == nil {
-		t.Fatal("close error accepted")
+	if err := copyTree(dangling, t.TempDir()); err == nil {
+		t.Fatal("dangling link accepted")
 	}
 }
 

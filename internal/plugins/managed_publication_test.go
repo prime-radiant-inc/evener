@@ -471,3 +471,20 @@ func TestPublishStagedCrossDeviceRestoresReadOnlyDirectoryModes(t *testing.T) {
 		t.Fatalf("nested file = %q, %v", got, err)
 	}
 }
+
+func TestCopyTreeOverwritesExistingFilesInFull(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "f"), []byte("a much longer old body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyTree(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dst, "f"))
+	if err != nil || string(got) != "new" {
+		t.Fatalf("overwritten file = %q, %v", got, err)
+	}
+}
