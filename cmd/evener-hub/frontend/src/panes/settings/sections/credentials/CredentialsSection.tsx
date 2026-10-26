@@ -697,11 +697,13 @@ export function CredentialsSection({
         })()}
       {openEditor?.kind === "oauth-redirect" && (
         <OAuthRedirectDialog
+          key={openEditor.flowId}
           name={openEditor.name}
           flowId={openEditor.flowId}
           authUrl={openEditor.authUrl}
           onCancel={closeEditor}
           onSuccess={closeEditor}
+          onRestart={() => void handleOAuthStart(openEditor.name)}
         />
       )}
       {openEditor?.kind === "device" && (

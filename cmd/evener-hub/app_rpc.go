@@ -1988,7 +1988,11 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 		resp, err := authController.LoginComplete(ctx, params)
-		notifyAuthWrite(server, err, resp.Status, params.OriginClientId)
+		// A restart answer discarded the flow and wrote nothing, so it owes no
+		// broadcast.
+		if err != nil || !resp.Restart {
+			notifyAuthWrite(server, err, resp.Status, params.OriginClientId)
+		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLogout, func(ctx context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {

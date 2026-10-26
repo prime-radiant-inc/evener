@@ -9,9 +9,10 @@ through legacy delegate jobs, resume on the current runtime without that
 state.** The retired rows stay in the job journal and are ignored; the session
 reports a `legacy_delegate_state` warning when it starts. History, the workspace
 and every other saved record restore normally. Delegates that ran under the
-older runtime are not resumed, and watches addressed through them no longer
-deliver, so review their results in the transcript and start any remaining work
-as new delegates. `evener migrate` moves supported layouts and provider
+older runtime are not resumed: one that was still running is recorded as lost,
+like any job that did not survive a restart, and watches addressed through them
+end. Review their results in the transcript and start any remaining work as new
+delegates. `evener migrate` moves supported layouts and provider
 configuration; it does not convert this retired state.
 
 Finish essential work on the old runtime before the

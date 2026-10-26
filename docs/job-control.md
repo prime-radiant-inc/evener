@@ -1646,7 +1646,8 @@ remains addressable by `dlg_...`; missing or pruned retained state makes it
 non-resumable instead of triggering best-effort replay. Legacy delegate job
 rows or job-addressed watch rows do not block startup: they are ignored, kept in
 the journal, and reported once per session start as a `legacy_delegate_state`
-warning.
+warning. A retired delegate job that was still running ends as lost, as any job
+that did not survive the restart does.
 
 ```mermaid
 stateDiagram-v2

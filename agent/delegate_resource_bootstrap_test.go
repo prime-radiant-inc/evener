@@ -123,6 +123,16 @@ func TestDelegateResourceBootstrap_LegacyDelegateStateIsIgnoredAndStartupProceed
 			if !reported {
 				t.Fatal("ignored legacy delegate state was not reported")
 			}
+
+			// The retired delegate is not resumed: like any job that did not
+			// survive the restart it ends as lost rather than staying running.
+			journal, err := jobstore.ReadEvents(jobPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if legacy := jobstore.Fold(journal)["job_legacy_delegate"]; legacy == nil || legacy.Status == jobstore.StatusRunning {
+				t.Fatalf("retired delegate job after restore = %+v, want it ended as lost", legacy)
+			}
 		})
 	}
 }
