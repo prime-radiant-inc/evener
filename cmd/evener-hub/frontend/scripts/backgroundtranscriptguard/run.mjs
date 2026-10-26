@@ -416,6 +416,17 @@ function renderedSentinelRowsExpr(ref) {
   })()`;
 }
 
+// renderedSentinelRowsOnceExpr is renderedSentinelRowsExpr held to a non-empty
+// answer, so a wait on it returns the rows it saw. Pane text proves a marker is
+// somewhere in the pane; the journey asserts the anchored rows, so it waits on
+// those rather than on the text.
+function renderedSentinelRowsOnceExpr(ref) {
+  return `(() => {
+    const rows = ${renderedSentinelRowsExpr(ref)};
+    return rows.length > 0 ? rows : null;
+  })()`;
+}
+
 // A fresh browser document joins the real hub while the provider is gated
 // mid-turn. Both panes must load that turn and receive its remaining output.
 async function runLiveTwoTabs(driver, harnessUrl) {
@@ -438,7 +449,12 @@ async function runLiveTwoTabs(driver, harnessUrl) {
       await pane.send("Page.bringToFront");
       await waitForPaneText(pane, SESSION_B, BEFORE, 30000, `initial live output in tab ${index}`);
       await waitForTargetRunning(pane, SESSION_B);
-      beforeRows.push(await evaluate(pane.send, renderedSentinelRowsExpr(SESSION_B)));
+      beforeRows.push(
+        await pane.waitPage(renderedSentinelRowsOnceExpr(SESSION_B), {
+          timeoutMs: 30000,
+          label: `initial live output rendered as a transcript row in tab ${index}`,
+        }),
+      );
     }
     driver.phase("after-eviction");
     for (const pane of [driver, sibling]) {
