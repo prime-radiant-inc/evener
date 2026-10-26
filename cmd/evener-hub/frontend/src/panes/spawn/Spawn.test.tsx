@@ -2624,6 +2624,49 @@ test("a spawn retry that recovers the registry reads the selected host's listing
   expect(listingReads()).toHaveLength(1);
 });
 
+// The host picker reads the navigation manifest, and the host registry behind
+// the launch-config store is only re-read by Settings. A registry snapshot that
+// predates a host added from another client must not turn that host's path and
+// resolve reads into refusals.
+test("a selected host the cached registry predates is still resolved on that host", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const hostRow = (name: string) => ({
+    name,
+    generation: 1,
+    incarnationId: `inc-${name}`,
+    origin: "hub.toml" as const,
+    attached: true,
+    midAttach: false,
+    removed: false,
+  });
+  const fake = readyClient((f) => {
+    f.on("evener/host/list", () => ({ hosts: [hostRow("other"), hostRow("buildbox")] }));
+    f.on("evener/host/request", (params) => routedDiscoveryDefault((params as HostRequestParams).method));
+  });
+  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow("other")] } });
+  renderSpawn(fake);
+  await settled();
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  await setWorkingDir(user, "/srv/app");
+  await settled();
+
+  await waitFor(() =>
+    expect(
+      fake.calls.some(
+        (call) =>
+          call.method === "evener/host/request" &&
+          (call.params as HostRequestParams).host === "buildbox" &&
+          (call.params as HostRequestParams).method === "evener/launch/resolve",
+      ),
+    ).toBe(true),
+  );
+});
+
 test("successful keyless testing refreshes availability without an auth notification", async () => {
   const user = setupUser();
   let available = false;

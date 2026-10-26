@@ -41,6 +41,7 @@ import { navigate, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
 import { useExtensionsStore } from "../../stores/extensions";
 import { hostRequest, isLocalHost } from "../../stores/hostRouting";
+import { hostsStore, registrySaysHostGone } from "../../stores/hosts";
 import { launchConfigStoreForHost } from "../../stores/launchConfig";
 import { selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
@@ -1336,6 +1337,14 @@ function SpawnForm({
   // the MACHINE that ran it, never for the one the reader moved to.
   const activeHostRef = useRef(submittedSource);
   activeHostRef.current = submittedSource;
+  // The host picker lists the navigation manifest, but the launch-config store
+  // serves only hosts the host registry lists, and only Settings re-reads that
+  // registry. Selecting a host a cached registry snapshot predates re-reads it,
+  // so the host's path and resolve reads are served instead of refused.
+  useEffect(() => {
+    if (isLocalHost(submittedSource)) return;
+    if (registrySaysHostGone(hostsStore.getState().load, submittedSource)) void hostsStore.getState().refresh();
+  }, [submittedSource]);
   const validatePath = useCallback(
     (path: string, kind: string): Promise<PathValidation> => {
       // `path` is the server-canonicalized spelling, which a pathList add stores
