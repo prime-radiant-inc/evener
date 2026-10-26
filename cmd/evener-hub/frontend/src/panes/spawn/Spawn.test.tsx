@@ -9642,65 +9642,78 @@ test("a remote target's advanced path value is not dropped for being invisible h
 // Switching to a host the cached registry predates re-judges the stored path
 // values on that host; the verdict must wait for the registry to list it rather
 // than be refused and left standing as the previous host's "invalid".
-test("a path judged invalid on the previous host is re-judged once the registry lists the new host", async () => {
-  seedSources([
-    { id: "local", label: "Local", kind: "local", online: true },
-    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
-  ]);
-  const schema = {
-    options: [
-      {
-        field: "agent",
-        wireField: "agent",
-        label: "Agent",
-        kind: "text",
-        group: "general",
-        pathKind: "command",
-        perLaunch: true,
-      },
-    ],
-  };
-  const hostRow = (name: string) => ({
-    name,
-    generation: 1,
-    incarnationId: `inc-${name}`,
-    origin: "hub.toml" as const,
-    attached: true,
-    midAttach: false,
-    removed: false,
-  });
-  const registry = deferred<{ hosts: ReturnType<typeof hostRow>[] }>();
-  const fake = readyClient((f) => {
-    f.on("evener/launch/schema", () => schema);
-    f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" }));
-    f.on("evener/host/list", () => registry.promise);
-    f.on("evener/host/request", (params) => {
-      const method = (params as HostRequestParams).method;
-      if (method === "evener/launch/schema") return schema as HostForwardedResult;
-      if (method === "evener/path/validate") return { path: "", valid: true } as HostForwardedResult;
-      return routedDiscoveryDefault(method);
+test.each([false, true])(
+  "a path judged invalid on the previous host is re-judged once the registry lists the new host (older poll in flight: %s)",
+  async (pollInFlight) => {
+    seedSources([
+      { id: "local", label: "Local", kind: "local", online: true },
+      { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+    ]);
+    const schema = {
+      options: [
+        {
+          field: "agent",
+          wireField: "agent",
+          label: "Agent",
+          kind: "text",
+          group: "general",
+          pathKind: "command",
+          perLaunch: true,
+        },
+      ],
+    };
+    const hostRow = (name: string) => ({
+      name,
+      generation: 1,
+      incarnationId: `inc-${name}`,
+      origin: "hub.toml" as const,
+      attached: true,
+      midAttach: false,
+      removed: false,
     });
-  });
-  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow("other")] } });
-  window.history.pushState({}, "", "/new?dir=/tmp/registry-lag-path");
-  renderSpawn(fake);
-  await settled();
-  fireEvent.click(screen.getByRole("button", { name: "Advanced options" }));
-  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "host-only-agent" } });
-  await waitFor(() =>
-    expect(completionDraft("/tmp/registry-lag-path").fields.getState().advancedOverrides).toEqual({}),
-  );
+    const registry = deferred<{ hosts: ReturnType<typeof hostRow>[] }>();
+    const olderPoll = deferred<{ hosts: ReturnType<typeof hostRow>[] }>();
+    let listReads = 0;
+    const fake = readyClient((f) => {
+      f.on("evener/launch/schema", () => schema);
+      f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" }));
+      f.on("evener/host/list", () => {
+        listReads += 1;
+        // The first read is a poll that started before the host was added.
+        return pollInFlight && listReads === 1 ? olderPoll.promise : registry.promise;
+      });
+      f.on("evener/host/request", (params) => {
+        const method = (params as HostRequestParams).method;
+        if (method === "evener/launch/schema") return schema as HostForwardedResult;
+        if (method === "evener/path/validate") return { path: "", valid: true } as HostForwardedResult;
+        return routedDiscoveryDefault(method);
+      });
+    });
+    hostsStore.setState({ load: { phase: "ready", hosts: [hostRow("other")] } });
+    window.history.pushState({}, "", "/new?dir=/tmp/registry-lag-path");
+    renderSpawn(fake);
+    if (pollInFlight) await act(async () => void hostsStore.getState().refresh());
+    await settled();
+    fireEvent.click(screen.getByRole("button", { name: "Advanced options" }));
+    fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "host-only-agent" } });
+    await waitFor(() =>
+      expect(completionDraft("/tmp/registry-lag-path").fields.getState().advancedOverrides).toEqual({}),
+    );
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
-  await settled();
-  await act(async () => registry.resolve({ hosts: [hostRow("other"), hostRow("buildbox")] }));
+    fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+    await settled();
+    await act(async () => {
+      registry.resolve({ hosts: [hostRow("other"), hostRow("buildbox")] });
+      olderPoll.resolve({ hosts: [hostRow("other")] });
+    });
 
-  await waitFor(() =>
-    expect(completionDraft("/tmp/registry-lag-path").fields.getState().advancedOverrides).toEqual({
-      agent: "host-only-agent",
-    }),
-  );
-});
+    await waitFor(() =>
+      expect(completionDraft("/tmp/registry-lag-path").fields.getState().advancedOverrides).toEqual({
+        agent: "host-only-agent",
+      }),
+    );
+  },
+);
 
 // The host picker is a DISPLAY of what the manifest last said about the hosts.
 // The store retains that snapshot while the fresh manifest is in flight, and
