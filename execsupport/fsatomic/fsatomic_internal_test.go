@@ -29,8 +29,10 @@ func TestMkdirAllSyncsAStrandedDirectoryOnTheNextCall(t *testing.T) {
 	if err := MkdirAll(dir, 0o700); !errors.Is(err, removeFails) {
 		t.Fatalf("err = %v, want the rollback failure reported", err)
 	}
-	if err := MkdirAll(dir, 0o700); err == nil {
-		t.Fatal("retry accepted a directory whose parent sync never succeeded")
+	for _, spelling := range []string{dir, filepath.Join(base, ".", "a"), base + "//a"} {
+		if err := MkdirAll(spelling, 0o700); err == nil {
+			t.Fatalf("retry through %q accepted a directory whose parent sync never succeeded", spelling)
+		}
 	}
 	if err := os.Chmod(base, 0o700); err != nil {
 		t.Fatal(err)
@@ -38,7 +40,7 @@ func TestMkdirAllSyncsAStrandedDirectoryOnTheNextCall(t *testing.T) {
 	if err := MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("retry once the parent can be synced: %v", err)
 	}
-	if stranded[dir] {
+	if stranded[dirKey(dir)] {
 		t.Fatal("directory still marked stranded after a successful sync")
 	}
 }

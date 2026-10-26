@@ -104,7 +104,7 @@ func MkdirAll(dir string, perm os.FileMode) error {
 			if !info.IsDir() {
 				return &os.PathError{Op: "mkdir", Path: p, Err: syscall.ENOTDIR}
 			}
-			if !stranded[p] {
+			if !stranded[dirKey(p)] {
 				break
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -123,14 +123,29 @@ func MkdirAll(dir string, perm os.FileMode) error {
 		}
 		if err := syncDir(filepath.Dir(p)); err != nil {
 			if rmErr := removeDir(p); rmErr != nil {
-				stranded[p] = true
+				stranded[dirKey(p)] = true
 				return errors.Join(err, rmErr)
 			}
 			return err
 		}
-		delete(stranded, p)
+		delete(stranded, dirKey(p))
 	}
 	return nil
+}
+
+// dirKey names a directory the same way however the caller spelled its path:
+// absolute and cleaned, with symlinks resolved in the parent (which exists even
+// when the directory itself does not).
+func dirKey(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return filepath.Clean(dir)
+	}
+	parent, base := filepath.Split(abs)
+	if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+		parent = resolved
+	}
+	return filepath.Join(parent, base)
 }
 
 // Remove deletes the file at path and syncs its directory so the deletion is
