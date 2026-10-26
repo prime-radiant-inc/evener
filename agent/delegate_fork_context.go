@@ -39,6 +39,7 @@ func delegateContextEntries(parent []transcript.Entry) []transcript.Entry {
 		// continuation handles. Those belong to its execution, not the child.
 		entry.Turn = schema.Turn{
 			Kind:                 t.Kind,
+			Authorship:           inheritedTranscriptAuthorship(t.Authorship),
 			Message:              t.Message,
 			Timestamp:            t.Timestamp,
 			SteeringSource:       t.SteeringSource,

@@ -685,6 +685,7 @@ func (x *Index) pendingRegistry(r *reader) (*apptranscript.ToolCallRegistry, err
 	for id := range reg.CommRawArgs {
 		if _, ok := x.builder.commCalls[id]; !ok {
 			delete(reg.CommRawArgs, id)
+			delete(reg.CommAuthorship, id)
 		}
 	}
 	return reg, nil

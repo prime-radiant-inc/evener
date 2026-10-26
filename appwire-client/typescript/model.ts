@@ -21,6 +21,7 @@ import type {
   ThreadItemPosition,
   ThreadStatus,
   ThreadTurnsListResponse,
+  TranscriptAuthorship,
 } from "./types.gen";
 
 // A single image handle on an item: `src` is the already-resolved fetch URL
@@ -40,6 +41,7 @@ export interface ItemImage {
 }
 
 export interface ItemModel {
+  authorship?: TranscriptAuthorship;
   id: string;
   turnId: string;
   // Stable identity across historical/live projections. Display ids can be

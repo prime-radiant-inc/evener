@@ -594,7 +594,8 @@ type Session struct {
 	recordedExecutions map[string]bool
 	// roundID names the open model round, "" when none is open; guarded by
 	// mu. See roundIDForModelCall.
-	roundID string
+	roundID         string
+	roundAuthorship *schema.TranscriptAuthorship
 	// lastRoundID is the latest round the session opened, and lastRoundEnded
 	// whether its EventRoundEnded was emitted; guarded by mu.
 	lastRoundID    string
@@ -2672,6 +2673,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseContextMarker:           finalAttempt.ContextMarker,
 		RoundID:                         s.roundIDForModelCall(),
 	}
+	t.Authorship = s.roundTranscriptAuthorship()
 	err := s.appendTurnAfterTranscriptWrite(
 		t,
 		func() error { return s.writeTranscriptDurableLocked(t) },

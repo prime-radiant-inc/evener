@@ -74,6 +74,55 @@ construction and history fencing; after a stale cursor, a client refreshes the
 latest selected window without discarding unsent work. Source/index repair and
 transport recovery remain owned by their existing subsystems.
 
+## Original transcript authors
+
+Optional `ThreadItem.authorship` records an original author and an `inherited`
+flag. It does not change message roles, item identities, positions or paging.
+Authors are `human`, `agent`, `system` or `unknown`. An agent names its session
+with `sessionRef`; a delegate also carries its logical parent's `ownerRef`,
+stable `delegateId` and bounded canonical `delegateName`. The logical parent
+can differ from the root session that physically stores the delegate.
+
+```mermaid
+flowchart LR
+  Producer[Validated input or agent producer] --> Record[Durable Turn authorship]
+  Producer --> Overlay[First live chunk authorship]
+  Record --> History[Shared history and indexed projection]
+  Overlay --> Wire[AppWire item]
+  History --> Wire
+  Wire --> SDK[Shared SDK model and cache]
+```
+
+Fresh client input is human. Parent delegate instructions retain their actual
+sender, including active steering and input sent after the child completes.
+Internal harness nudges are not human input. Assistant text, reasoning and
+communicate previews use the same author snapshot as their durable records.
+Deferred legacy communicate messages take authorship from the original call,
+not the later tool result or the page on which it appears.
+
+Ordinary forks and opt-in delegate context forks preserve original authors and
+mark copied entries `inherited: true`, without mutating their sources. Fresh
+edited human input is not inherited. Fork inclusion rules are unchanged.
+An absent authorship field means both author and inheritance are unknown,
+not fresh. Copying an old source-less entry proves inheritance but not its
+author, so it becomes unknown/inherited. Placement in a child transcript,
+the enclosing thread and prose that resembles a human message prove no author.
+
+Remote sources qualify only structural author refs into their own namespaces;
+opaque tool payloads and message text are unchanged. Live, reconnect, crash
+recovery and cold history reads use the same recorded evidence without extra
+subscriptions or context lookups. SDK normalization and cache codecs preserve
+valid metadata. Sparse updates preserve omitted attribution, but authoritative
+replacements can clear it or explicitly replace a known author with unknown.
+
+Semantically invalid but structurally decodable author evidence projects as
+unknown while preserving proven inheritance. Wrong-typed and unknown JSON
+fields retain the transcript decoder's existing strict outcomes. The transcript
+format marker is unchanged: older strict readers can reject records containing
+the new field, so downgrading a writer is not a promise of readable new history.
+This shared metadata does not change human-interaction permissions or complete
+the Comic client’s consumer and browser acceptance work.
+
 ## Summary failure diagnostics
 
 A failed conversation summary leaves the existing history or the operation's

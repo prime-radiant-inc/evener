@@ -4044,6 +4044,7 @@ export interface ThreadForkResponse {
 }
 
 export interface ThreadItem {
+  authorship?: TranscriptAuthorship;
   type: string;
   id: string;
   transcriptKey?: string;
@@ -4569,6 +4570,19 @@ export interface ThreadVisionModelChangedParams {
 export interface ThreadVisionModelSetParams {
   ref: string;
   visionModel: string;
+}
+
+export interface TranscriptAuthor {
+  kind: string;
+  sessionRef?: string;
+  ownerRef?: string;
+  delegateId?: string;
+  delegateName?: string;
+}
+
+export interface TranscriptAuthorship {
+  author: TranscriptAuthor;
+  inherited: boolean;
 }
 
 export interface TranscriptDisplayAdvanced {

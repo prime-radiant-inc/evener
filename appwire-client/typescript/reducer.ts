@@ -30,6 +30,7 @@ import type {
   ThreadReadResponse,
   ThreadResyncParams,
   ThreadTurnsListResponse,
+  TranscriptAuthorship,
   Turn,
   WarningParams,
 } from "./types.gen";
@@ -301,6 +302,58 @@ function itemIsIdentityOnly(item: ItemModel): boolean {
   });
 }
 
+function normalizeAuthorship(value: unknown): TranscriptAuthorship | undefined {
+  if (!isRecord(value) || typeof value.inherited !== "boolean") return undefined;
+  const neutral: TranscriptAuthorship = { author: { kind: "unknown" }, inherited: value.inherited };
+  const author = value.author;
+  if (!isRecord(author)) return neutral;
+  const { kind, sessionRef, ownerRef, delegateId, delegateName } = author;
+  if (kind === "human" || kind === "system" || kind === "unknown") {
+    if ([sessionRef, ownerRef, delegateId, delegateName].some((field) => field !== undefined && field !== "")) {
+      return neutral;
+    }
+    return { author: { kind }, inherited: value.inherited };
+  }
+  const validRef = (ref: unknown): ref is string =>
+    typeof ref === "string" && /^[A-Za-z0-9._~-]+:[A-Za-z0-9._~-]+$/.test(ref) && !ref.split(":")[1]?.includes("..");
+  if (kind !== "agent" || !validRef(sessionRef)) return neutral;
+  const hasOwner = ownerRef !== undefined && ownerRef !== "";
+  const hasDelegate = delegateId !== undefined && delegateId !== "";
+  if (hasOwner !== hasDelegate) return neutral;
+  if (
+    hasOwner &&
+    (!validRef(ownerRef) ||
+      typeof delegateId !== "string" ||
+      !/^dlg_[A-Za-z0-9._~-]+$/.test(delegateId) ||
+      delegateId.includes(".."))
+  )
+    return neutral;
+  if (delegateName !== undefined && (typeof delegateName !== "string" || (delegateName !== "" && !hasDelegate)))
+    return neutral;
+  let boundedName = "";
+  if (typeof delegateName === "string") {
+    const runes: string[] = [];
+    for (const rune of delegateName) {
+      if (runes.length === 200) {
+        runes[199] = "…";
+        break;
+      }
+      runes.push(rune);
+    }
+    boundedName = runes.join("");
+  }
+  return {
+    author: {
+      kind,
+      sessionRef,
+      ...(typeof ownerRef === "string" && ownerRef !== "" ? { ownerRef } : {}),
+      ...(typeof delegateId === "string" && delegateId !== "" ? { delegateId } : {}),
+      ...(boundedName !== "" ? { delegateName: boundedName } : {}),
+    },
+    inherited: value.inherited,
+  };
+}
+
 // imageSessionRoute threads through wireItemToModel/wireToTurnModel from the
 // callers that can name the serving session — hydrateThread's wire
 // thread.sessionId (falling back to the thread id, mirroring
@@ -335,6 +388,8 @@ function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): ItemMode
     startedAt: epochMsToISO(item.startedAt),
     completedAt: epochMsToISO(item.completedAt),
   };
+  const authorship = normalizeAuthorship(item.authorship);
+  if (authorship !== undefined) model.authorship = authorship;
   setItemTextPresence(model, item.text === undefined ? "omitted" : "provided");
   if (item.transcriptKey !== undefined) model.transcriptKey = item.transcriptKey;
   if (item.position !== undefined) model.position = { ...item.position };
@@ -812,6 +867,7 @@ function mergePageItem(older: ItemModel, newer: ItemModel): ItemModel {
     mergeItemIdentityMetadata(older, {
       ...older,
       ...newer,
+      authorship: newer.authorship ?? older.authorship,
       text: textSource.text,
       toolName: newer.toolName ?? older.toolName,
       callId: newer.callId ?? older.callId,
@@ -1356,6 +1412,7 @@ function encodeCachedItem(item: ItemModel, includeIdentityOnly = false): CachedS
 
 function decodeCachedItem(cached: CachedSessionItem): ItemModel {
   const { textOmitted, identityOnly, ...item } = cached;
+  if (item.authorship !== undefined) item.authorship = normalizeAuthorship(item.authorship);
   const decoded = textOmitted === true ? markItemTextOmitted(item) : copyItemTextPresence(cached, item);
   return identityOnly === true ? markItemIdentityOnly(decoded) : decoded;
 }
@@ -1393,6 +1450,7 @@ function validPosition(value: unknown): value is ThreadItemPosition {
 }
 
 const ITEM_MODEL_KEYS = new Set([
+  "authorship",
   "id",
   "turnId",
   "transcriptKey",
@@ -2708,6 +2766,7 @@ const itemNonCoverageFields = new Set([
 // fresh side's own property wins, even when its value is undefined), where
 // the property's presence — read below — is the absence marker.
 const itemNullishMergedFields = new Set([
+  "authorship",
   "position",
   "toolName",
   "callId",

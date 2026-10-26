@@ -1626,6 +1626,7 @@ func (s *Session) recordClientMutationFailure(
 		// bytes rewrites the same path.
 		queued.Images = s.persistInputImages(queued.Images)
 		turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(queued.Text, queued.Images, queued.SkillNames))
+		turn.Authorship = humanTranscriptAuthorship()
 		turn.CommandInput = commandInputRecordFromQueued(queued)
 		turn.ClientMutationID = clientMutationID
 		turn.StableTurnID = pending.TurnID

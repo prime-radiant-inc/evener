@@ -30,6 +30,7 @@ import (
 type ToolCallRegistry struct {
 	Names             map[string]string
 	CommRawArgs       map[string]string
+	CommAuthorship    map[string]*schema.TranscriptAuthorship
 	LastAssistantText string
 	// LastAssistantTurnID is the logical turn ID of the ASSISTANT record that
 	// set LastAssistantText. The healed-communicate echo check scopes by turn
@@ -43,7 +44,7 @@ type ToolCallRegistry struct {
 // NewToolCallRegistry returns a ready-to-use ToolCallRegistry with both maps
 // initialized.
 func NewToolCallRegistry() *ToolCallRegistry {
-	return &ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}}
+	return &ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}}
 }
 
 // EntryProjector converts one already-decoded transcript turn into AppWire
@@ -428,6 +429,9 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 			reg.Names = map[string]string{}
 		}
 		items = projectIdentityAssistant(turnID, entryIndex, turn, reg.Names, &parts)
+		for i := range items {
+			items[i].Authorship = ProjectAuthorship(turn.Authorship)
+		}
 		return items, parts
 	case schema.TurnCommunicate:
 		if item, ok := CommunicateItem(turnID, entryIndex, turn); ok {
@@ -451,6 +455,13 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 // one item per content part (assistant and tool results) record each item's
 // part index in it.
 func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRegistry, imageProjector ImageProjector, outputImageProjector OutputImageProjector, parts *[]int) (out []appwire.ThreadItem) {
+	defer func() {
+		if turn.Kind != schema.TurnTool && turn.Kind != schema.TurnToolResults {
+			for i := range out {
+				out[i].Authorship = ProjectAuthorship(turn.Authorship)
+			}
+		}
+	}()
 	// A persisted message has the entry's recorded instant, not a duration.
 	defer func() {
 		if turn.Timestamp.IsZero() {
@@ -475,6 +486,9 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 	}
 	if reg.CommRawArgs == nil {
 		reg.CommRawArgs = map[string]string{}
+	}
+	if reg.CommAuthorship == nil {
+		reg.CommAuthorship = map[string]*schema.TranscriptAuthorship{}
 	}
 	if invariant.Enabled {
 		// Every item ProjectTurn emits belongs to the turn it was asked to
@@ -720,6 +734,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 					// This makes live and reload agree: both defer, both render
 					// the same item at the result turn.
 					reg.CommRawArgs[part.ToolCall.ID] = part.ToolCall.SentArguments()
+					reg.CommAuthorship[part.ToolCall.ID] = turn.Authorship.Clone()
 					continue
 				}
 				items = append(items, toolCallItem(turnID, turnIndex, i, turn))
@@ -748,6 +763,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				name = reg.Names[part.ToolResult.ToolCallID]
 			}
 			if name == "communicate" {
+				first := len(items)
 				// A rejected communicate (IsError=true, PrevalOnly=true) was
 				// never executed — live suppresses it entirely (no
 				// EventCommunicate). Render the raw bytes as a tool/error item,
@@ -826,6 +842,10 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 						}
 					}
 				}
+				for j := first; j < len(items); j++ {
+					items[j].Authorship = ProjectAuthorship(reg.CommAuthorship[part.ToolResult.ToolCallID])
+				}
+				delete(reg.CommAuthorship, part.ToolResult.ToolCallID)
 				delete(reg.Names, part.ToolResult.ToolCallID)
 				delete(reg.CommRawArgs, part.ToolResult.ToolCallID)
 				continue

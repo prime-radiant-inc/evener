@@ -1,6 +1,7 @@
 package transcriptindex
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -195,6 +196,40 @@ func TestInputImagesCarryTheirContentAddress(t *testing.T) {
 		want := map[string]string{"sha": events.ImageSHA(pngBytes), "size": strconv.Itoa(len(pngBytes))}
 		if len(images) != 1 || !reflect.DeepEqual(images[0].Metadata, want) {
 			t.Fatalf("%s: images = %+v, want one carrying %v", name, images, want)
+		}
+	}
+}
+
+func TestAuthorshipCommunicateWindow(t *testing.T) {
+	for _, pending := range []bool{false, true} {
+		source := assistant(call("call", "communicate", `{"message":"delivered"}`))
+		source.Authorship = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "parent"}, Inherited: true}
+		lines := []fixtureLine{entryLine(user("input")), entryLine(source)}
+		if !pending {
+			lines = append(lines, entryLine(results(result("call", "", "ok"))))
+		}
+		path := writeFixture(t, fixture{name: "authorship", header: transcript.Header{SessionID: "child"}, lines: lines})
+		x := openIndex(t, path, t.TempDir())
+		w, err := x.Latest(1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(w.Candidates) != 1 || !w.HasOlder || w.Candidates[0].Item.Text != "delivered" {
+			t.Fatalf("window=%+v", w)
+		}
+		b, err := json.Marshal(w.Candidates[0].Item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(b, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if string(fields["authorship"]) != `{"author":{"kind":"agent","sessionRef":"local:parent"},"inherited":true}` {
+			t.Errorf("pending=%v authorship=%s", pending, fields["authorship"])
+		}
+		if w.Candidates[0].Item.CallID != "call" || w.Candidates[0].Item.TranscriptKey == "" {
+			t.Fatal(w.Candidates[0])
 		}
 	}
 }
