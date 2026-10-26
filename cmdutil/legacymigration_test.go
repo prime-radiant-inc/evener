@@ -80,7 +80,7 @@ func TestEnsureUserConfigDirsProceedsWhenNoLegacyDataExists(t *testing.T) {
 // (~/.serf) home root: it pre-rename held providers.toml/credentials.toml/
 // auth-token/hub.lock/index.db/run, none of which have a whole-directory
 // destination to compare against any more (they split across the config and
-// state roots) — see homeRootFiles / firstUnmigratedHomeRootFile.
+// state roots) — see userdirs.HomeRootFiles / firstUnmigratedHomeRootFile.
 func TestEnsureUserConfigDirsRefusesStrandedLegacyHomeRoot(t *testing.T) {
 	home, _, _ := setEveneryTestEnv(t)
 	legacy := filepath.Join(home, ".serf")
