@@ -11,33 +11,9 @@ func envOf(entries map[string]string) func(string) string {
 	return func(name string) string { return entries[name] }
 }
 
-// schemaForTest builds a minimal LaunchOption schema exercising the
-// builtin-default and env-fallback mechanisms, keyed by wire field.
-func schemaForTest() []LaunchOption {
-	return []LaunchOption{
-		{Field: "model", WireField: "model", Kind: LaunchControlModelPicker, EnvFallback: &LaunchOptionEnvFallback{Name: envvars.EVENERModel.Name}},
-		{Field: "agent", WireField: "agent", Kind: LaunchControlText, BuiltinDefault: "default"},
-		{Field: "fast_cheap_model", WireField: "fastCheapModel", Kind: LaunchControlModelPicker, BuiltinDefaultLabel: "primary model"},
-		{Field: "reasoning_effort", WireField: "reasoningEffort", Kind: LaunchControlSelect, EnvFallback: &LaunchOptionEnvFallback{Name: envvars.EVENERReasoningEffort.Name}},
-		{Field: "context_strategy", WireField: "contextStrategy", Kind: LaunchControlSelect, BuiltinDefault: "compact"},
-		{Field: "sandbox", WireField: "sandbox", Kind: LaunchControlSelect, BuiltinDefault: "off"},
-		{Field: "sandbox_net", WireField: "sandboxNet", Kind: LaunchControlBoolean, BuiltinDefaultBool: &builtinBoolTrue},
-		{Field: "openai_responses_continuation", WireField: "openAIResponsesContinuation", Kind: LaunchControlSelect, BuiltinDefault: "off", EnvFallback: &LaunchOptionEnvFallback{Name: envvars.EVENEROpenAIResponsesContinuation.Name}},
-		{Field: "max_rounds", WireField: "maxRounds", Kind: LaunchControlInteger, BuiltinDefaultInt: &builtinIntNeg1},
-		{Field: "max_subagent_depth", WireField: "maxSubagentDepth", Kind: LaunchControlInteger, BuiltinDefaultInt: &builtinInt2},
-		{Field: "max_concurrent_delegate_turns", WireField: "maxConcurrentDelegateTurns", Kind: LaunchControlInteger, BuiltinDefaultInt: &builtinInt50},
-		{Field: "max_retained_terminal", WireField: "maxRetainedTerminal", Kind: LaunchControlInteger, BuiltinDefaultInt: &builtinInt2048},
-		{Field: "verbose", WireField: "verbose", Kind: LaunchControlBoolean, BuiltinDefaultBool: &builtinBoolFalse},
-		{Field: "app_replay_size", WireField: "appReplaySize", Kind: LaunchControlInteger, BuiltinDefaultInt: &builtinInt1000},
-		{Field: "export_atif_provider_handles", WireField: "exportATIFProviderHandles", Kind: LaunchControlSelect, BuiltinDefault: "redacted"},
-		// A field with neither env nor builtin stays unset.
-		{Field: "trace_file", WireField: "traceFile", Kind: LaunchControlPath},
-	}
-}
-
 func TestApplyRuntimeDefaultsFillsBuiltinsFromSchema(t *testing.T) {
 	resolved := Resolved{Effective: Layer{}}
-	got := ApplyRuntimeDefaults(resolved, envOf(nil), schemaForTest())
+	got := ApplyRuntimeDefaults(resolved, envOf(nil), LaunchOptionSchema())
 
 	if got.Effective.Agent != "default" {
 		t.Errorf("Agent = %q, want builtin 'default'", got.Effective.Agent)
@@ -112,7 +88,7 @@ func TestApplyRuntimeDefaultsProviderIdleTimeout(t *testing.T) {
 
 func TestApplyRuntimeDefaultsProvenance(t *testing.T) {
 	resolved := Resolved{Effective: Layer{}}
-	got := ApplyRuntimeDefaults(resolved, envOf(nil), schemaForTest())
+	got := ApplyRuntimeDefaults(resolved, envOf(nil), LaunchOptionSchema())
 
 	for field, want := range map[string]LayerName{
 		"agent":                         LayerBuiltin,
@@ -140,7 +116,7 @@ func TestApplyRuntimeDefaultsEnvFillsFromEnv(t *testing.T) {
 		envvars.EVENERModel.Name:                       "anthropic/claude-sonnet-4",
 		envvars.EVENERReasoningEffort.Name:             "high",
 		envvars.EVENEROpenAIResponsesContinuation.Name: "auto",
-	}), schemaForTest())
+	}), LaunchOptionSchema())
 
 	if got.Effective.Model != "anthropic/claude-sonnet-4" {
 		t.Errorf("Model = %q, want env model", got.Effective.Model)
@@ -173,7 +149,7 @@ func TestApplyRuntimeDefaultsLayerWinsOverEnvAndBuiltin(t *testing.T) {
 	}
 	got := ApplyRuntimeDefaults(resolved, envOf(map[string]string{
 		envvars.EVENERModel.Name: "env/model",
-	}), schemaForTest())
+	}), LaunchOptionSchema())
 
 	if got.Effective.Model != "layer/model" {
 		t.Errorf("Model = %q, want layer value", got.Effective.Model)
@@ -198,7 +174,7 @@ func TestApplyRuntimeDefaultsWhitespaceOnlyEnvIgnored(t *testing.T) {
 	got := ApplyRuntimeDefaults(resolved, envOf(map[string]string{
 		envvars.EVENERModel.Name:           "   ",
 		envvars.EVENERReasoningEffort.Name: "\t",
-	}), schemaForTest())
+	}), LaunchOptionSchema())
 
 	if got.Effective.Model != "" || got.Effective.ReasoningEffort != "" {
 		t.Errorf("whitespace env leaked: %#v", got.Effective)
@@ -212,7 +188,7 @@ func TestApplyEnvDefaultsFillsOnlyEnv(t *testing.T) {
 	resolved := Resolved{Effective: Layer{}}
 	got := ApplyEnvDefaults(resolved, envOf(map[string]string{
 		envvars.EVENERModel.Name: "openai/gpt-5",
-	}), schemaForTest())
+	}), LaunchOptionSchema())
 
 	if got.Effective.Model != "openai/gpt-5" {
 		t.Fatalf("Model = %q, want env model", got.Effective.Model)
