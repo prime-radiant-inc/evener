@@ -175,6 +175,32 @@ type DelegateStatusInfo struct {
 	Worktree            *appwire.JobActivityWorktree `json:"worktree,omitempty"`
 }
 
+// AppwireInfo maps the delegate read model onto the AppWire row. The row owns
+// its pointers and slices, so callers may keep or mutate it independently of
+// the status it came from.
+func (d DelegateStatusInfo) AppwireInfo() appwire.EvenerDelegateInfo {
+	return appwire.EvenerDelegateInfo{
+		DelegateID: d.DelegateID, RunGeneration: d.RunGeneration, OwnerSessionID: d.OwnerSessionID, RootSessionID: d.RootSessionID,
+		ChildSessionID: d.ChildSessionID, TranscriptRef: d.TranscriptRef, ParentDelegateID: d.ParentDelegateID,
+		Type: d.Type, Lifecycle: d.Lifecycle, Phase: d.Phase, Status: d.Status,
+		Outcome: d.Outcome, Reason: d.Reason, Error: d.Error, Terminal: d.Terminal, Resumable: d.Resumable, NeedsAttention: d.NeedsAttention,
+		NotResumableReason: d.NotResumableReason, ProjectionRevision: d.ProjectionRevision,
+		Task: d.Task, Description: d.Description, AgentType: d.AgentType, RequestedModel: d.RequestedModel,
+		ResolvedProfileID: d.ResolvedProfileID, ResolvedModel: d.ResolvedModel, Model: d.Model,
+		ReasoningEffort: d.ReasoningEffort, OriginTurnID: d.OriginTurnID, OriginToolCallID: d.OriginToolCallID,
+		OriginItemID: d.OriginItemID, RunStartedAt: d.RunStartedAt, RunEndedAt: d.RunEndedAt,
+		LatestActivityAt: d.LatestActivityAt, LatestIntent: d.LatestIntent, RunningForMS: appwire.ClonePointer(d.RunningForMS),
+		QuietForMS: appwire.ClonePointer(d.QuietForMS), DurationMS: appwire.ClonePointer(d.DurationMS), PacketKind: d.PacketKind,
+		Message: append(json.RawMessage(nil), d.Message...), StructuredResult: append(json.RawMessage(nil), d.StructuredResult...),
+		StructuredValid: appwire.ClonePointer(d.StructuredValid), StructuredReason: d.StructuredReason,
+		Warnings: append([]string(nil), d.Warnings...), Diagnostics: append([]string(nil), d.Diagnostics...),
+		ExhaustionBudget: d.ExhaustionBudget, ExhaustionLimit: d.ExhaustionLimit,
+		ExhaustionResumable: appwire.ClonePointer(d.ExhaustionResumable), DelegationAllowance: d.DelegationAllowance,
+		ParentWatchGranted: d.ParentWatchGranted,
+		Usage:              appwire.ClonePointer(d.Usage), Worktree: appwire.ClonePointer(d.Worktree),
+	}
+}
+
 // HookEventStatus describes a single hook event's registration state and
 // compatibility tier for typed diagnostics.
 // Tier: Supported=true events are "claude-compatible-subset";

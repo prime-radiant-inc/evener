@@ -1226,7 +1226,7 @@ func projectPastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hu
 				thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{}
 			}
 			for _, delegate := range delegates {
-				projected := appwire.SlimDelegateForRoster(appwireDelegateFromAgentStatus(delegate))
+				projected := appwire.SlimDelegateForRoster(delegate.AppwireInfo())
 				projected.Diagnostics = append(projected.Diagnostics, delegateDiagnostics...)
 				thread.Evener.Diagnostics.Delegates = append(thread.Evener.Diagnostics.Delegates, projected)
 			}
@@ -1273,31 +1273,6 @@ func pastEntryDelegateStatus(ctx context.Context, entry hubcore.PastEntry) ([]ag
 		return nil, nil, err
 	}
 	return agent.LoadSessionDelegateStatus(ctx, entry.StateDir, sessionID)
-}
-
-func appwireDelegateFromAgentStatus(delegate agent.DelegateStatusInfo) appwire.EvenerDelegateInfo {
-	out := appwire.EvenerDelegateInfo{
-		DelegateID: delegate.DelegateID, RunGeneration: delegate.RunGeneration, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
-		ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
-		Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,
-		Outcome: delegate.Outcome, Reason: delegate.Reason, Error: delegate.Error, Terminal: delegate.Terminal, Resumable: delegate.Resumable, NeedsAttention: delegate.NeedsAttention,
-		NotResumableReason: delegate.NotResumableReason, ProjectionRevision: delegate.ProjectionRevision,
-		Task: delegate.Task, Description: delegate.Description, AgentType: delegate.AgentType, RequestedModel: delegate.RequestedModel,
-		ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,
-		ReasoningEffort: delegate.ReasoningEffort, OriginTurnID: delegate.OriginTurnID, OriginToolCallID: delegate.OriginToolCallID,
-		OriginItemID: delegate.OriginItemID, RunStartedAt: delegate.RunStartedAt, RunEndedAt: delegate.RunEndedAt,
-		LatestActivityAt: delegate.LatestActivityAt, LatestIntent: delegate.LatestIntent, RunningForMS: appwire.ClonePointer(delegate.RunningForMS),
-		QuietForMS: appwire.ClonePointer(delegate.QuietForMS), DurationMS: appwire.ClonePointer(delegate.DurationMS), PacketKind: delegate.PacketKind,
-		Message: append(json.RawMessage(nil), delegate.Message...), StructuredResult: append(json.RawMessage(nil), delegate.StructuredResult...),
-		StructuredValid: appwire.ClonePointer(delegate.StructuredValid), StructuredReason: delegate.StructuredReason,
-		Warnings: append([]string(nil), delegate.Warnings...), Diagnostics: append([]string(nil), delegate.Diagnostics...),
-		ExhaustionBudget: delegate.ExhaustionBudget, ExhaustionLimit: delegate.ExhaustionLimit,
-		ExhaustionResumable: appwire.ClonePointer(delegate.ExhaustionResumable), DelegationAllowance: delegate.DelegationAllowance,
-		ParentWatchGranted: delegate.ParentWatchGranted,
-	}
-	out.Usage = appwire.ClonePointer(delegate.Usage)
-	out.Worktree = appwire.ClonePointer(delegate.Worktree)
-	return out
 }
 
 // persistedTaskAggregate returns a task count only when the session has a
