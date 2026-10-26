@@ -18,13 +18,13 @@ import (
 	"primeradiant.com/evener/internal/remoteinstall"
 )
 
-// TestRound11EmbeddedInstallerMatchesTheReviewedScript pins the round-eleven
+// TestEmbeddedInstallerMatchesTheReviewedScript pins the round-eleven
 // High's trust anchor: the installer the fallback runs is compiled into this
 // binary, and the only thing that makes it trustworthy is that it is the
 // repository's reviewed install.sh, byte for byte. This test is the pin on that
 // claim — a future edit to install.sh fails here until the embedded copy is
 // re-copied from the reviewed file, so the copy cannot drift silently.
-func TestRound11EmbeddedInstallerMatchesTheReviewedScript(t *testing.T) {
+func TestEmbeddedInstallerMatchesTheReviewedScript(t *testing.T) {
 	if len(remoteinstall.Script) == 0 {
 		t.Fatal("the embedded installer is empty")
 	}
@@ -41,12 +41,12 @@ func TestRound11EmbeddedInstallerMatchesTheReviewedScript(t *testing.T) {
 	}
 }
 
-// TestRound11InstallerFallbackStreamsTheEmbeddedScript pins the rest of the
+// TestInstallerFallbackStreamsTheEmbeddedScript pins the rest of the
 // High: the fallback must hand the host the embedded bytes over stdin and run
 // nothing it fetched. It exercises deployInstaller end to end, so the stdin the
 // host receives, the absence of any URL in the remote command, and the returned
 // run target are all checked against the production seam.
-func TestRound11InstallerFallbackStreamsTheEmbeddedScript(t *testing.T) {
+func TestInstallerFallbackStreamsTheEmbeddedScript(t *testing.T) {
 	origChannel, origTag, origDirty := buildinfo.Channel, buildinfo.ReleaseTag, buildinfo.GitDirty
 	t.Cleanup(func() { buildinfo.Channel, buildinfo.ReleaseTag, buildinfo.GitDirty = origChannel, origTag, origDirty })
 	buildinfo.Channel, buildinfo.ReleaseTag, buildinfo.GitDirty = "release", "v1.2.3", ""
@@ -100,12 +100,12 @@ func TestRound11InstallerFallbackStreamsTheEmbeddedScript(t *testing.T) {
 	}
 }
 
-// TestRound11PreflightDiscoveredTargetReachesTheAttachArgv pins the round-eleven
+// TestPreflightDiscoveredTargetReachesTheAttachArgv pins the round-eleven
 // Medium that a target discovered by preflight never reached host.EvenerPath:
 // for an already-healthy host whose binary lives at the installer default (off
 // the non-interactive PATH), the first explicit attach built the bridge from the
 // bare word `evener` and failed with command-not-found.
-func TestRound11PreflightDiscoveredTargetReachesTheAttachArgv(t *testing.T) {
+func TestPreflightDiscoveredTargetReachesTheAttachArgv(t *testing.T) {
 	const resolved = "/home/dev/.local/bin/evener"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"} // no evener_path
 	fr := &fakeRunner{
@@ -163,12 +163,12 @@ func TestRound11PreflightDiscoveredTargetReachesTheAttachArgv(t *testing.T) {
 	}
 }
 
-// TestRound11FreshHostWithoutLsofIsProvisioned pins the consequence of the lsof
+// TestFreshHostWithoutLsofIsProvisioned pins the consequence of the lsof
 // fallback: a fresh host whose port probe can only answer through ss or the
 // kernel tables must still be provisioned — cross-compiled, pushed, started,
 // and attached — instead of failing with ErrRestart before anything was
 // installed.
-func TestRound11FreshHostWithoutLsofIsProvisioned(t *testing.T) {
+func TestFreshHostWithoutLsofIsProvisioned(t *testing.T) {
 	const resolved = "/home/dev/.local/bin/evener"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"} // no evener_path
 	pushed, launched := false, false

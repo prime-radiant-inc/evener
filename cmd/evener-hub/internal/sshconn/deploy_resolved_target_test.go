@@ -16,13 +16,13 @@ import (
 	"primeradiant.com/evener/execsupport/shellquote"
 )
 
-// TestRound8PushDeployReturnsResolvedTarget pins the round-eight High that the
+// TestPushDeployReturnsResolvedTarget pins the round-eight High that the
 // push deploy resolved the path it installed to and then discarded it: deploy's
 // build branch returned "" so ensureOnce never recorded host.EvenerPath. On a
 // fresh host that path is the installer default ~/.local/bin/evener, and without
 // it the post-deploy launch-check addressed the literal `evener`, which the
 // non-interactive PATH cannot resolve.
-func TestRound8PushDeployReturnsResolvedTarget(t *testing.T) {
+func TestPushDeployReturnsResolvedTarget(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"} // no evener_path
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
@@ -55,13 +55,13 @@ func TestRound8PushDeployReturnsResolvedTarget(t *testing.T) {
 	}
 }
 
-// TestRound8EnsureFreshHostPushDeployRecordsTarget pins the same High end to end:
+// TestEnsureFreshHostPushDeployRecordsTarget pins the same High end to end:
 // after a push deploy on a host with no evener_path and no evener on PATH, the
 // post-deploy launch-check (refreshLaunchContract) must address the recorded
 // install target. Before the fix host.EvenerPath stayed empty, the re-probe ran
 // the literal `evener`, and the terminal ErrExecutableMissing refused a host the
 // push had just provisioned.
-func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
+func TestEnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	installed, launched := false, false
 	var launchPaths []string
@@ -145,13 +145,13 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 	}
 }
 
-// TestRound8InstallerPreservesSymlinkedInstallLayout pins the round-eight High
+// TestInstallerPreservesSymlinkedInstallLayout pins the round-eight High
 // that the installer fallback canonicalized the user-facing `bin/evener` symlink
 // to the real binary under `share/evener/bin` before deriving BINDIR. installerDirs
 // then produced nested paths like share/evener/bin/share/evener/bin and installed
 // to the wrong location. The run target and BINDIR must be the user-facing symlink
 // and its directory; only identity checks may canonicalize.
-func TestRound8InstallerPreservesSymlinkedInstallLayout(t *testing.T) {
+func TestInstallerPreservesSymlinkedInstallLayout(t *testing.T) {
 	origSHA, origDirty, origChannel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
 	t.Cleanup(func() {
 		buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = origSHA, origDirty, origChannel
@@ -202,12 +202,12 @@ func TestRound8InstallerPreservesSymlinkedInstallLayout(t *testing.T) {
 	}
 }
 
-// TestRound8IgnoredGoFileRefusedInBuildSource pins the round-eight Medium that
+// TestIgnoredGoFileRefusedInBuildSource pins the round-eight Medium that
 // `git status --porcelain` omits ignored untracked files, so an ignored .go source
 // file could be compiled into the build while the deployed binary kept the
 // repository's unchanged clean SHA. The revision check must refuse ignored Go
 // sources; the ignored (and required) embedded frontend dist must still not count.
-func TestRound8IgnoredGoFileRefusedInBuildSource(t *testing.T) {
+func TestIgnoredGoFileRefusedInBuildSource(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -257,13 +257,13 @@ func TestRound8IgnoredGoFileRefusedInBuildSource(t *testing.T) {
 	}
 }
 
-// TestRound8InstallerVersionMismatchIsTerminal pins the round-eight Medium that a
+// TestInstallerVersionMismatchIsTerminal pins the round-eight Medium that a
 // snapshot-channel installer ref is the mutable `snapshot` channel: once the
 // channel serves a build past the controller's commit the fetched artifact no
 // longer matches, and the mismatch was wrapped in ErrDeploy (non-terminal), so
 // the supervisor re-fetched and re-rejected it forever. It must be a terminal
 // ErrVersionMismatch instead.
-func TestRound8InstallerVersionMismatchIsTerminal(t *testing.T) {
+func TestInstallerVersionMismatchIsTerminal(t *testing.T) {
 	origSHA, origDirty, origChannel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
 	t.Cleanup(func() {
 		buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = origSHA, origDirty, origChannel

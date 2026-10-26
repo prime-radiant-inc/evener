@@ -14,7 +14,7 @@ import (
 	"primeradiant.com/evener/internal/remoteinstall"
 )
 
-// TestRound12InstallerPinsDefaultDirsAgainstInheritedEnv pins the round-twelve
+// TestInstallerPinsDefaultDirsAgainstInheritedEnv pins the round-twelve
 // Medium that the default-path install left PREFIX/BINDIR/EVENER_SHARE_BINDIR to
 // the remote shell environment, while the manager recorded and probed
 // $HOME/.local/bin/evener. A non-interactive ssh session still carries whatever
@@ -24,7 +24,7 @@ import (
 // dirs are now passed explicitly; install.sh gives BINDIR and EVENER_SHARE_BINDIR
 // precedence over PREFIX (install.sh:7-18), so the layout is pinned to the run
 // target the manager records.
-func TestRound12InstallerPinsDefaultDirsAgainstInheritedEnv(t *testing.T) {
+func TestInstallerPinsDefaultDirsAgainstInheritedEnv(t *testing.T) {
 	// The fix's premise, pinned: install.sh derives its two directories from
 	// PREFIX only as a FALLBACK. If that ever changes, this fails and the fix must
 	// change with it rather than silently relying on an inherited variable.
@@ -60,14 +60,14 @@ func TestRound12InstallerPinsDefaultDirsAgainstInheritedEnv(t *testing.T) {
 	}
 }
 
-// TestRound12InstallerCommandVerifiesByteCount pins the round-twelve Medium that
+// TestInstallerCommandVerifiesByteCount pins the round-twelve Medium that
 // the embedded installer was streamed with `cat > "$tmp" && sh "$tmp"` and no
 // byte-count check, unlike pushBinaryRemote. ssh reports a dropped stream as a
 // successful EOF, so `cat` exits 0 on a partial transfer and a truncated
 // installer executed as a valid partial script, leaving a half-installed
 // share/evener/bin. The count is checked — before the script is handed to sh, not
 // after — exactly as the push path checks the binary it streams.
-func TestRound12InstallerCommandVerifiesByteCount(t *testing.T) {
+func TestInstallerCommandVerifiesByteCount(t *testing.T) {
 	got := remoteinstall.Command("v1.2.3", "", "/opt/evener/bin", "/opt/evener/share/evener/bin")
 	check := "v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = " + strconv.Itoa(len(remoteinstall.Script)) + " ]"
 	if !strings.Contains(got, check) {
@@ -97,14 +97,14 @@ func TestRound12InstallerCommandVerifiesByteCount(t *testing.T) {
 	}
 }
 
-// TestRound12PreflightProbesInstallerDefaultWithoutADeploy pins the round-twelve
+// TestPreflightProbesInstallerDefaultWithoutADeploy pins the round-twelve
 // Medium that the installer-default fallback probe ran only when m.canDeploy()
 // was true, so a controller with no build source (or an unpublishable installer
 // ref) could not discover a perfectly good installed binary that is simply off
 // the non-interactive PATH — preflight reported ErrExecutableMissing and the
 // attach failed for a host that needed no deploy at all. Only the later
 // deploy decision is gated on canDeploy.
-func TestRound12PreflightProbesInstallerDefaultWithoutADeploy(t *testing.T) {
+func TestPreflightProbesInstallerDefaultWithoutADeploy(t *testing.T) {
 	const resolved = "/home/dev/.local/bin/evener"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"} // no evener_path
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
@@ -151,7 +151,7 @@ func TestRound12PreflightProbesInstallerDefaultWithoutADeploy(t *testing.T) {
 
 // Build equality is irrelevant to ordinary startup eligibility, including dev
 // and dirty identities. Protocol and launch capabilities still govern startup.
-func TestRound12BuildLabelsDoNotRequireDeployment(t *testing.T) {
+func TestBuildLabelsDoNotRequireDeployment(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	m := newTestManager(t, testRegistry(t, host), &fakeRunner{}, Options{BuildBinary: writeStageBinary})
 	for _, version := range []string{"abc1234-dirty", "dev", "abc1234", "other"} {
@@ -166,14 +166,14 @@ func TestRound12BuildLabelsDoNotRequireDeployment(t *testing.T) {
 	}
 }
 
-// TestRound12PendingRestartSurvivesAnUnknownIdentity pins the round-twelve
+// TestPendingRestartSurvivesAnUnknownIdentity pins the round-twelve
 // Medium that a pending restart was cleared when sameProcessAs returned false —
 // which it also does when EITHER process lacks started_at. A failed restart
 // followed by an old hub answering with the expected version and no start
 // timestamp therefore cleared the pending marker and the next Ensure attached to
 // the process the restart was supposed to replace. Unknown identities are
 // unresolved: the marker stays and the restart is retried.
-func TestRound12PendingRestartSurvivesAnUnknownIdentity(t *testing.T) {
+func TestPendingRestartSurvivesAnUnknownIdentity(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	restarts := 0
 	healthCalls := 0
@@ -244,13 +244,13 @@ func TestRound12PendingRestartSurvivesAnUnknownIdentity(t *testing.T) {
 	requireNoAttach(t, fr)
 }
 
-// TestRound12PIDCommandsAreStructurallySafe pins the structural half of the same
+// TestPIDCommandsAreStructurallySafe pins the structural half of the same
 // finding: every builder that interpolates a host-derived pid into a remote
 // command goes through numericPID, the kill is issued as `kill -- <pid>`, and the
 // /proc path is built only from a validated pid. A future caller that bypasses
 // the probe's parse boundary therefore still cannot smuggle an option or a path
 // fragment into a command.
-func TestRound12PIDCommandsAreStructurallySafe(t *testing.T) {
+func TestPIDCommandsAreStructurallySafe(t *testing.T) {
 	for _, bad := range []string{"", " ", "-9", "--", "4242; rm -rf /", "/etc/passwd", "42 42", "$(id -u)", "0x10", "42\n"} {
 		if _, err := numericPID(bad); err == nil || !errors.Is(err, ErrRestart) {
 			t.Errorf("numericPID(%q) = %v, want ErrRestart", bad, err)
@@ -287,14 +287,14 @@ func TestRound12PIDCommandsAreStructurallySafe(t *testing.T) {
 	}
 }
 
-// TestRound12UnrelatedHealthBodyIsNotTheHostsHub pins the round-twelve Medium
+// TestUnrelatedHealthBodyIsNotTheHostsHub pins the round-twelve Medium
 // that any JSON object with a non-empty version was accepted as hub health. An
 // unrelated service answering on the hub's loopback port with the expected
 // version would make version auto-match skip recovery, satisfy restart
 // verification, and receive the hub auth token during attach. A body must carry
 // the hub REST contract version and report the address this controller
 // configured.
-func TestRound12UnrelatedHealthBodyIsNotTheHostsHub(t *testing.T) {
+func TestUnrelatedHealthBodyIsNotTheHostsHub(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	for _, body := range []string{
 		`{"version":"newsha"}`,
