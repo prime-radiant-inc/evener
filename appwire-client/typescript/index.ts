@@ -208,15 +208,21 @@ export { isUserAuthoredSteer, liveAskQuestions } from "./deriveAskQuestions";
 export type { DisclosureReadOptions, DisclosureState, DisclosureStore } from "./disclosure";
 export { createDisclosureStore, isDisclosureOpenIn, scopedDisclosureId } from "./disclosure";
 export {
+  compactDuration,
+  DURATION_UNIT_MS,
+  type DurationUnit,
+  durationParts,
   firstLine,
   formatCharCount,
   formatClockTime,
-  formatClockTimeSeconds,
   formatDurationMs,
   formatElapsed,
+  formatSpan,
   formatTokenCount,
+  parseTimestampMs,
   plainQuoteLine,
   splitMandate,
+  spokenDuration,
 } from "./displayFormat";
 export type { DocFileContent, DocFileErrorKind } from "./docContent";
 // readDocFile is deliberately absent from the root: it needs a DocPort from the
@@ -490,7 +496,7 @@ export {
 export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
 export { isPlainObject, sameJsonValue } from "./plainObject";
-export { approvalWaiting, humanizeState, needsResponseRest } from "./railSessionState";
+export { humanizeState, needsResponseRest } from "./railSessionState";
 export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
@@ -585,6 +591,8 @@ export type {
   SessionActivitySnapshot,
 } from "./sessionActivityStore";
 export { isValidActivityTimestamp, SessionActivityStore } from "./sessionActivityStore";
+export type { AttentionClass, AttentionFacts } from "./sessionAttention";
+export { approvalWaiting, attentionNeedsYou, attentionState, normalizeWireState } from "./sessionAttention";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 export type { SettingsHubGeneration } from "./settingsHubGeneration";
 export { createSettingsHubGeneration } from "./settingsHubGeneration";

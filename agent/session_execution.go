@@ -65,7 +65,7 @@ func (s *Session) beginExecution(name string) {
 		if started != nil {
 			started(turnID)
 		}
-		s.emit(events.EventExecutionStarted, events.ExecutionStartedData{TurnID: turnID})
+		s.emit(events.ExecutionStartedData{TurnID: turnID})
 		// A new execution clears the reported line, the root meter's own
 		// boundary: a row names this turn's work, not the words of a turn
 		// that already finished.
@@ -115,7 +115,7 @@ func (s *Session) completeExecution(status schema.TurnCompletionStatus) {
 		}
 	}
 	if execution.announced {
-		s.emit(events.EventExecutionEnded, events.ExecutionEndedData{TurnID: execution.turnID, Status: string(ended)})
+		s.emit(events.ExecutionEndedData{TurnID: execution.turnID, Status: string(ended)})
 	}
 }
 
@@ -197,9 +197,9 @@ func (s *Session) roundIDForModelCall() string {
 	roundID := s.roundID
 	s.mu.Unlock()
 	if previous != "" {
-		s.emit(events.EventRoundEnded, events.RoundEndedData{RoundID: previous})
+		s.emit(events.RoundEndedData{RoundID: previous})
 	}
-	s.emit(events.EventRoundStarted, events.RoundStartedData{RoundID: roundID})
+	s.emit(events.RoundStartedData{RoundID: roundID})
 	return roundID
 }
 
@@ -212,7 +212,7 @@ func (s *Session) endLastRound() {
 	s.lastRoundEnded = true
 	s.mu.Unlock()
 	if roundID != "" && !ended {
-		s.emit(events.EventRoundEnded, events.RoundEndedData{RoundID: roundID})
+		s.emit(events.RoundEndedData{RoundID: roundID})
 	}
 }
 
@@ -427,7 +427,7 @@ func (s *Session) recordTranscriptOnlyThrough(turn schema.Turn, door transcript.
 		return s.recordTranscriptLocked(turn, door, place)
 	}()
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.surfaceTranscriptWarnings()
 	return rec, err
@@ -440,7 +440,7 @@ func (s *Session) recordTranscriptOnlyThrough(turn schema.Turn, door transcript.
 // drop the mismatch silently.
 func (s *Session) recordNotice(notice schema.NoticeInfo) {
 	if err := notice.Validate(); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("invalid notice not recorded: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("invalid notice not recorded: %v", err)})
 		return
 	}
 	_ = s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnNotice, Notice: &notice}, transcript.PlaceSession)
@@ -490,7 +490,7 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 	s.mu.Lock()
 	s.noteAgentMessageLocked(data.Message)
 	s.mu.Unlock()
-	s.emit(events.EventCommunicate, data)
+	s.emit(data)
 	return nil
 }
 

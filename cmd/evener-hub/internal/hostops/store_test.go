@@ -452,6 +452,16 @@ func TestCreateRefusesRecordsOutsideTheStoreSchema(t *testing.T) {
 	}
 }
 
+// fixtureDate is the calendar date the raw store fixtures carry in their
+// timestamps. currentFixtureDates rewrites it to today: the store compacts
+// terminal records older than the retention horizon when it opens, so a fixed
+// calendar date ages the fixtures out and changes what they exercise.
+const fixtureDate = "2026-09-26T"
+
+func currentFixtureDates(body string) string {
+	return strings.ReplaceAll(body, fixtureDate, time.Now().UTC().Format("2006-01-02")+"T")
+}
+
 // writeRawStore writes body as the store file with exactly mode: os.WriteFile
 // applies the process umask, so the mode is forced afterwards.
 func writeRawStore(t *testing.T, path string, mode os.FileMode, body string) {

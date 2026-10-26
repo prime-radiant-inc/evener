@@ -16,7 +16,7 @@ const bootGenerationSuffix = ".boot-generation"
 // BootGenerationPath is where the session's boot counter lives:
 // <dir>/sessions/<id>.boot-generation.
 func BootGenerationPath(dir, id string) string {
-	return filepath.Join(dir, sessionsSubdir, id+bootGenerationSuffix)
+	return filepath.Join(dir, SessionsSubdir, id+bootGenerationSuffix)
 }
 
 // NextBootGeneration increments the session's boot counter and returns the
@@ -38,7 +38,7 @@ func NextBootGeneration(dir, id string, floor uint64) (uint64, error) {
 	if err := ValidateSessionID(id); err != nil {
 		return 0, err
 	}
-	sessDir := filepath.Join(dir, sessionsSubdir)
+	sessDir := SessionsDir(dir)
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {
 		return 0, fmt.Errorf("create sessions dir: %w", err)
 	}

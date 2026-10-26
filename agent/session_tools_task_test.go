@@ -46,8 +46,8 @@ func newTaskToolHarness(t *testing.T, inputs []taskpkg.TaskInput) *taskToolHarne
 	}
 	h := &taskToolHarness{store: store, dir: dir}
 	deps := &toolDeps{
-		emit: func(kind events.EventKind, data events.EventData) {
-			h.emitted = append(h.emitted, taskToolEvent{kind: kind, data: data})
+		emit: func(data events.EventData) {
+			h.emitted = append(h.emitted, taskToolEvent{kind: events.KindOf(data), data: data})
 		},
 		steer: func(text, _ string) error {
 			h.steers = append(h.steers, text)

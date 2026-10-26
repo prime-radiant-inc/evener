@@ -1,6 +1,17 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { firstLine, formatCharCount, formatClockTime, formatDurationMs, formatTokenCount } from "./displayFormat";
+import {
+  compactDuration,
+  durationParts,
+  firstLine,
+  formatCharCount,
+  formatClockTime,
+  formatDurationMs,
+  formatSpan,
+  formatTokenCount,
+  parseTimestampMs,
+  spokenDuration,
+} from "./displayFormat";
 
 // --- formatTokenCount -----------------------------------------------------
 // The one token count formatter both clients use (spec 5's compact numbers):
@@ -153,4 +164,63 @@ test.each([
   [8_234, "8.2K chars"],
 ])("formatCharCount(%d) reads %s", (n, text) => {
   expect(formatCharCount(n)).toBe(text);
+});
+
+// --- durations on the floor ladder -----------------------------------------
+// One boundary table every duration/age formatter in the package and both
+// clients builds on: a duration is its one largest whole unit, rounded down.
+
+test.each([
+  [0, "0s", "0 seconds"],
+  [999, "0s", "0 seconds"],
+  [1_000, "1s", "1 second"],
+  [59_999, "59s", "59 seconds"],
+  [60_000, "1m", "1 minute"],
+  [119_999, "1m", "1 minute"],
+  [120_000, "2m", "2 minutes"],
+  [3_599_999, "59m", "59 minutes"],
+  [3_600_000, "1h", "1 hour"],
+  [86_399_999, "23h", "23 hours"],
+  [86_400_000, "1d", "1 day"],
+  [26 * 3_600_000, "1d", "1 day"],
+  [-5, "0s", "0 seconds"],
+  [Number.NaN, "0s", "0 seconds"],
+  [Number.POSITIVE_INFINITY, "0s", "0 seconds"],
+])("duration of %dms reads %s and is spoken %s", (ms, compact, spoken) => {
+  expect(compactDuration(ms)).toBe(compact);
+  expect(spokenDuration(ms)).toBe(spoken);
+});
+
+test("durationParts names the unit and its count", () => {
+  expect(durationParts(59_000)).toEqual({ count: 59, unit: "second" });
+  expect(durationParts(60_000)).toEqual({ count: 1, unit: "minute" });
+  expect(durationParts(3_600_000)).toEqual({ count: 1, unit: "hour" });
+  expect(durationParts(2 * 86_400_000)).toEqual({ count: 2, unit: "day" });
+});
+
+// --- formatSpan -------------------------------------------------------------
+// A caller-supplied span of seconds in the units a person would say it in;
+// rounding runs first so a 60s carry never surfaces.
+
+test.each([
+  [45, "45s"],
+  [1.5, "1.5s"],
+  [59.6, "1m"],
+  [60, "1m"],
+  [90, "1m30s"],
+  [3_599, "59m59s"],
+  [3_600, "1h"],
+  [3_900, "1h05m"],
+  [86_400, "24h"],
+])("formatSpan(%d) reads %s", (seconds, text) => {
+  expect(formatSpan(seconds)).toBe(text);
+});
+
+// --- parseTimestampMs -------------------------------------------------------
+
+test("parseTimestampMs answers undefined for a missing or malformed timestamp", () => {
+  expect(parseTimestampMs("2026-08-09T12:00:00Z")).toBe(Date.parse("2026-08-09T12:00:00Z"));
+  expect(parseTimestampMs(undefined)).toBeUndefined();
+  expect(parseTimestampMs("")).toBeUndefined();
+  expect(parseTimestampMs("not a time")).toBeUndefined();
 });

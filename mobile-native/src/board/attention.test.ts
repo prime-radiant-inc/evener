@@ -215,8 +215,8 @@ describe("Live bands (spec 7.1)", () => {
 	// boardState's mark precedence returns "warning"/"restartNeeded" for these
 	// rows before it ever looks at ask_pending/approval_pending, so ranking by
 	// mark alone would bury a row the hub still counts as blocked on you under
-	// every plain warning or restart-needed row, however old. The band must
-	// read the flags directly instead.
+	// every plain warning row, however old. The band must read the flags
+	// directly instead. A restart need outranks an approval, as in the hub.
 	it("a warning that also carries ask_pending sorts in the middle band, above an older plain warning", () => {
 		const bands = liveBands(
 			[
@@ -231,17 +231,18 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bands.needsYou.find((item) => item.row.ref === "w-asking")?.state).toBe("warning");
 	});
 
-	it("a restart-needed row that also carries approval_pending sorts in the middle band, above an older plain restart-needed", () => {
+	it("a restart-needed row with a stale approval_pending stays in the last band, below a genuine question", () => {
 		const bands = liveBands(
 			[
+				row("r-stale", { state: "restartRequired", approval_pending: true, updated_at: at(1) }),
+				row("q", { state: "awaiting", ask_pending: true, updated_at: at(30) }),
 				row("r-plain", { state: "restartRequired", updated_at: at(5) }),
-				row("r-approving", { state: "restartRequired", approval_pending: true, updated_at: at(30) }),
 			],
 			[],
 			never,
 		);
-		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["r-approving", "r-plain"]);
-		expect(bands.needsYou.find((item) => item.row.ref === "r-approving")?.state).toBe("restartNeeded");
+		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["q", "r-stale", "r-plain"]);
+		expect(bands.needsYou.find((item) => item.row.ref === "r-stale")?.state).toBe("restartNeeded");
 	});
 
 	// A hub that predates S2a never sends approval_pending; approvalRefs infers

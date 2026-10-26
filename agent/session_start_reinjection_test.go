@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -18,7 +17,7 @@ import (
 // written by a session's SessionStart dispatch.
 func sessionStartHookDispatchEntry(t *testing.T, stateDir, sessionID string) sessionlog.SessionLogEntry {
 	t.Helper()
-	log := mustNewSessionLog(t, filepath.Join(stateDir, sessionsSubdir, sessionID+".log.jsonl"))
+	log := mustNewSessionLog(t, schema.SessionLogPath(stateDir, sessionID))
 	var found []sessionlog.SessionLogEntry
 	for _, e := range log.Entries() {
 		if e.Action == "session_start_hooks" {

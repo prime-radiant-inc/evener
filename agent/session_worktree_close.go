@@ -87,16 +87,16 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 		}
 	}
 	if len(kept) > 0 {
-		s.emit(events.EventWarning, events.WarningData{
+		s.emit(events.WarningData{
 			Message: "kept " + strconv.Itoa(len(kept)) + " isolation worktree lane(s) not collected automatically (unmerged or squash-merged), dirty, or unverifiable at session close: " + strings.Join(kept, "; "),
 		})
 	}
 	if len(tail) > 0 {
-		s.emit(events.EventWarning, events.WarningData{
+		s.emit(events.WarningData{
 			Message: "close budget exhausted; " + strconv.Itoa(len(tail)) + " isolation worktree lane(s) touched+unlocked without disposal (evaluation skipped, left resumable for prune): " + strings.Join(tail, "; "),
 		})
 		if len(tail) > laneTailWarnThreshold {
-			s.emit(events.EventWarning, events.WarningData{
+			s.emit(events.WarningData{
 				Message: "delegate lane close tail of " + strconv.Itoa(len(tail)) + " lane(s) exceeded threshold " + strconv.Itoa(laneTailWarnThreshold) + ": this session leaked more isolation lanes than a bounded close pass can collect",
 			})
 		}
@@ -173,7 +173,7 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 
 	_, _, plans, closeErr := s.delegateController.closeStableWorktreeResumability(s, lane.delegateID, stableWorktreeDisposalReason, true)
 	if closeErr != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane resumability closure failed for %s: %v", lane.delegateID, closeErr)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("delegate lane resumability closure failed for %s: %v", lane.delegateID, closeErr)})
 		return lane.delegateID + " at " + lanePath + " (resumability closure failed; retained intact)", true
 	}
 	s.delegateController.emitDelegateUpdates(plans)
@@ -463,7 +463,7 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 		// future caller's omission) must not delete the sidecar and strand the
 		// real branch behind it. Touch nothing; the lane stays exactly as it
 		// is, like a lane whose lock could not be released.
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane %s reached disposal without a resolved branch; left untouched", lane.delegateID)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("delegate lane %s reached disposal without a resolved branch; left untouched", lane.delegateID)})
 		return laneDeclined, "its branch was never resolved"
 	}
 	lanePath := filepath.Clean(lane.path)
@@ -502,7 +502,7 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 			case downgradeRelockKeep:
 				marker := worktree.FormatDelegateMarker(lane.delegateID, s.id)
 				if _, lockErr := run("worktree", "lock", "--reason", marker, lanePath); lockErr != nil {
-					s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane %s kept after eviction but its lock could not be re-acquired at %s: %v", lane.delegateID, lanePath, lockErr)})
+					s.emit(events.WarningData{Message: fmt.Sprintf("delegate lane %s kept after eviction but its lock could not be re-acquired at %s: %v", lane.delegateID, lanePath, lockErr)})
 				}
 				return laneKeptDirty, lane.delegateID + " at " + lanePath + " (dirty at removal; re-locked)"
 			default: // downgradeUnlockKeep
@@ -515,7 +515,7 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 	// Delete the branch (unchanged lane: tip == base, no work lost) and the
 	// sidecar. Best-effort — the lane is already unrevivable.
 	if _, err := run("branch", "-D", lane.branch); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane branch delete failed for %s: %v", lane.delegateID, err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("delegate lane branch delete failed for %s: %v", lane.delegateID, err)})
 	}
 	_ = worktree.DeleteSidecar(metaDir, lane.delegateID)
 	return laneDisposed, ""
@@ -593,12 +593,12 @@ func (s *Session) unlockOwnManagedWorktreeAtClose(closeCtx context.Context) {
 	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
 	porcelain, err := readWorktreePorcelain(run)
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking own worktree locks under %s at close failed: %v", projectDir, err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("unlocking own worktree locks under %s at close failed: %v", projectDir, err)})
 		return
 	}
 	for _, e := range managedPorcelainEntries(porcelain, projectDir) {
 		if err := s.releaseOwnWorktreeLock(run, e.Path, e.Locked, e.LockReason); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking own worktree %s at close failed: %v", e.Path, err)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("unlocking own worktree %s at close failed: %v", e.Path, err)})
 		}
 	}
 }

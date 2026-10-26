@@ -15,6 +15,7 @@ import (
 	"regexp"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -57,7 +58,7 @@ func (s *WebServer) handleSessionImage(w http.ResponseWriter, r *http.Request, s
 		http.NotFound(w, r)
 		return
 	}
-	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(entry.StateDir, entry.Meta.ID)
 	data, mediaType, ok, err := findImageInTranscript(transcriptPath, sha)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

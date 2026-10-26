@@ -403,7 +403,7 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 	}
 	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
 		return queuedInput{}, nil
 	}
 	// Eligibility is decided on one sample: the store as the serializer holds
@@ -448,7 +448,7 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 		// -- the next external wake, attach or any accepted client mutation,
 		// claims it again. No paced retry. A closed rail or an occupied slot
 		// returns nil above.
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v; the steering stays queued", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v; the steering stays queued", err)})
 		s.parkSteering()
 		return queuedInput{}, nil
 	}
@@ -681,7 +681,7 @@ func (s *Session) reflectDurableInputQueue(consumedClientMutationIDs ...string) 
 	data.ClientMutationIDs = clientMutationQueueClientMutationIDs(snapshot.InputQueue)
 	s.mu.Unlock()
 	data.ConsumedClientMutationIDs = consumedClientMutationIDs
-	s.emit(events.EventQueueChanged, data)
+	s.emit(data)
 }
 
 func queuedInputFromClientMutation(entry clientMutationQueueEntry) queuedInput {
@@ -1542,7 +1542,7 @@ func (s *Session) restoreDurableClientMutationQueues() {
 		snapshot.QueueRevision++
 		return nil
 	}); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restore client mutations failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("restore client mutations failed: %v", err)})
 	}
 	snapshot := s.clientMutations.snapshot()
 	s.inputQueue = make([]queuedInput, 0, len(snapshot.InputQueue))

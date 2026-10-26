@@ -91,7 +91,7 @@ func (s *Session) reportPromptRenderFailure(warning string) {
 	if warning == "" {
 		return
 	}
-	s.emit(events.EventWarning, events.WarningData{Message: warning})
+	s.emit(events.WarningData{Message: warning})
 }
 
 // buildPromptData assembles a promptData from session state for template

@@ -1064,7 +1064,7 @@ func TestDelegateResourceCreate_ResumabilityAppendFailureDestroysNothing(t *test
 		root.delegateController.mu.Lock()
 		for _, aggregate := range root.delegateController.durable {
 			if aggregate != nil && aggregate.CurrentRunOpen {
-				artifactPath = filepath.Join(root.stateDir, sessionsSubdir, aggregate.Descriptor.ChildSessionID+".transcript.jsonl")
+				artifactPath = schema.SessionTranscriptPath(root.stateDir, aggregate.Descriptor.ChildSessionID)
 				break
 			}
 		}
@@ -1284,7 +1284,7 @@ func TestDelegateResourceCreate_CloseAfterDrainRefusesFailedStartRetention(t *te
 	}
 	for _, path := range []string{
 		started.transcriptPath,
-		filepath.Join(root.stateDir, sessionsSubdir, prepared.sub.id+".meta.json"),
+		schema.SessionMetaPath(root.stateDir, prepared.sub.id),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("durable isolation artifact %s was not retained: %v", path, err)
@@ -1417,7 +1417,7 @@ func TestDelegateResourceCreate_ChildTranscriptIsPreseededBeforeRun(t *testing.T
 	case <-time.After(30 * time.Second):
 		t.Fatal("provider was not reached")
 	}
-	_, entries, _, err := readTranscript(filepath.Join(stateDir, "", sessionsSubdir, childID+".transcript.jsonl"), "")
+	_, entries, _, err := readTranscript(filepath.Join(stateDir, "", schema.SessionsSubdir, childID+".transcript.jsonl"), "")
 	if err != nil {
 		t.Fatalf("read child transcript at provider boundary: %v", err)
 	}
@@ -1471,7 +1471,7 @@ func TestDelegateResourceCreate_InputTranscriptAppendRunsAfterControllerUnlock(t
 	if providerChildID != childID {
 		t.Fatalf("provider child = %q, want registered child %q", providerChildID, childID)
 	}
-	_, entries, _, err := readTranscript(filepath.Join(root.stateDir, "", sessionsSubdir, childID+".transcript.jsonl"), "")
+	_, entries, _, err := readTranscript(filepath.Join(root.stateDir, "", schema.SessionsSubdir, childID+".transcript.jsonl"), "")
 	if err != nil {
 		t.Fatalf("read real child transcript at provider boundary: %v", err)
 	}

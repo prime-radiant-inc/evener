@@ -20,11 +20,11 @@ import (
 	"github.com/BurntSushi/toml"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/fsdurability"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -226,18 +226,6 @@ type hostManagerConfig struct {
 	// applies, as Ensure's explicit attach) from the reconnect-shaped reattach
 	// (false: never start a hub).
 	attachUnderGate func(ctx context.Context, entry hostreg.Host, holder hostops.Holder, explicit bool) (func() bool, error)
-	// remnantFence reports the open teardown remnant fencing a host name, if
-	// one does: §6 step 2's `remnant-open` refusal is emitted from here, past
-	// the dedup check and before any probe or acquisition. Remnant semantics
-	// are S12's (registry spec §6); no remnant store exists yet, so a nil seam
-	// answers "no remnant".
-	remnantFence func(name string) (string, bool)
-	// lastKnownPublish, when set, publishes the post-operation refresh's
-	// verified facts into the (generation, incarnation id)-scoped last-known
-	// store (§6 seam (c)'s second half). That store is its own slice's and is
-	// not built here: the seam is the routing point, and nil is the honest
-	// "nowhere to publish yet".
-	lastKnownPublish func(entry hostreg.Host, probe hubcore.HostRuntimeProbe, facts hubcore.HostPlanFacts) error
 	// opsCtx is the controller-lifetime context the deploy/restart workers run
 	// under (created on first use), opsCancel cancels it, and opsWG is the
 	// workers' wait group the shutdown path waits on. opsMu guards the lazy
@@ -1020,11 +1008,11 @@ func hubTOMLRenameCommitted(err error) bool {
 
 // hubTOMLSyncUnsupported reports whether a sync failed because the
 // filesystem cannot sync a directory at all. It delegates to the hub's one
-// canonical predicate (internal/fsdurability); hubcore's deletion store and
+// canonical predicate (execsupport/fsatomic); hubcore's deletion store and
 // the server's thread-clear journal keep matching package-private copies of
 // the same tolerance in their own modules.
 func hubTOMLSyncUnsupported(err error) bool {
-	return fsdurability.SyncUnsupported(err)
+	return fsatomic.SyncUnsupported(err)
 }
 
 // add inserts entry at the end. Callers hold hostManagerConfig.mu.
@@ -1331,15 +1319,6 @@ func (s *hostAttachState) restore(name string, rec *hostAttachRecord) {
 // pinned by TestHostManageRefusesRemoteOrigin.
 type hubHostManager struct {
 	cfg *hostManagerConfig
-	// testOnlyRemnantGated, when non-nil, marks names the tombstone retention
-	// and capacity rules must treat as holding an open teardown remnant — the
-	// exemption and the tombstone-capacity refusal path. Remnants are S12's
-	// records and no remnant store exists yet, so production leaves this nil
-	// and remnantGated (app_host_record_pruning.go) answers from
-	// cfg.remnantFence when one is wired; S12 replaces this seam by wiring that
-	// fence to the real records. It exists so the gated paths are falsified
-	// NOW, the S10 testOnlyParkPostCommit precedent; nil in production.
-	testOnlyRemnantGated func(name string) bool
 	// testOnlyParkPostCommit, when non-nil, is called by Update and Remove after
 	// their durable commit, with the mutation mutex released and the per-host
 	// gate reservation still held, and immediately before the post-commit live
@@ -1431,13 +1410,6 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		policy:           hostRecordPolicyFor(cfg),
 		logf:             logf,
 	}}
-	// The remnant fence is wired to the real record set (registry spec 08 §6):
-	// every gate that consults it — the retention and capacity exemptions, the
-	// boot collision rule, `deploy`/`restart`/`plan`, attach, and the
-	// re-add/update/remove refusals — reads the durable open remnants rather
-	// than a placeholder. A nil seam would answer "no remnant" and silently
-	// disable the host-wide fence, so it is never left nil.
-	m.cfg.remnantFence = m.openRemnantID
 	if m.cfg.planFacts == nil && manager != nil {
 		// The production refresh seam (deploy pipeline 08b §6 step 1): the
 		// ungated one-shot SSH preflight the manager runs against the host, read
@@ -1631,37 +1603,33 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 // write (the derivation's live-name purge). It reports whether any name was
 // rebased, which forces the boot write.
 //
-// BOUNDARY (S12): §15's remnant arm of this rule — a colliding name that holds
-// an open teardown remnant excludes the live entry from the live set as
-// `blocked-pending-teardown` instead of rebasing — needs the remnant records
-// S12 owns. The gate below is empty today (remnantGated), so no colliding name
-// is skipped; S12 replaces it by wiring cfg.remnantFence.
+// §15's remnant arm: a colliding name that holds an open teardown remnant
+// excludes the live entry from the live set as `blocked-pending-teardown`
+// instead of rebasing.
 func (m *hubHostManager) breakBootTombstoneCollision(records Config) bool {
 	collided := false
 	for _, entry := range m.cfg.store.snapshot() {
 		if _, collides := records.Tombstones[entry.Name]; !collides {
 			continue
 		}
-		{
-			if remnantID, open := m.openRemnantID(entry.Name); open {
-				// Spec §6's fenced arm: "a boot collision involving a
-				// remnant-gated name leaves the open remnant resumable by
-				// `remnantId`: the boot-collision above-mark bump is forbidden
-				// while a remnant is open for that name — boot excludes the
-				// colliding live entry from the live set as
-				// `blocked-pending-teardown` (never published live) until
-				// `teardown-retry` resolves it, so no live incarnation is ever
-				// created over an open remnant". The name stays in hub.toml and
-				// leaves the live set here; `teardown-retry` resolves the remnant
-				// and the operator's next boot (or re-add) publishes it.
-				m.logf("host %q is blocked-pending-teardown: open remnant %s fences the colliding live entry; resume it through evener/host/teardown-retry", entry.Name, remnantID)
-				m.cfg.store.remove(entry.Name)
-				if err := m.cfg.hosts.Remove(entry.Name); err != nil {
-					m.logf("host %q not excluded from the live set: %v", entry.Name, err)
-				}
-				collided = true
-				continue
+		if remnantID, open := m.openRemnantID(entry.Name); open {
+			// Spec §6's fenced arm: "a boot collision involving a
+			// remnant-gated name leaves the open remnant resumable by
+			// `remnantId`: the boot-collision above-mark bump is forbidden
+			// while a remnant is open for that name — boot excludes the
+			// colliding live entry from the live set as
+			// `blocked-pending-teardown` (never published live) until
+			// `teardown-retry` resolves it, so no live incarnation is ever
+			// created over an open remnant". The name stays in hub.toml and
+			// leaves the live set here; `teardown-retry` resolves the remnant
+			// and the operator's next boot (or re-add) publishes it.
+			m.logf("host %q is blocked-pending-teardown: open remnant %s fences the colliding live entry; resume it through evener/host/teardown-retry", entry.Name, remnantID)
+			m.cfg.store.remove(entry.Name)
+			if err := m.cfg.hosts.Remove(entry.Name); err != nil {
+				m.logf("host %q not excluded from the live set: %v", entry.Name, err)
 			}
+			collided = true
+			continue
 		}
 		rebased, err := m.cfg.hosts.RebaseBootCollision(entry.Name)
 		if err != nil {
@@ -2699,24 +2667,7 @@ func validateHostMirrorCommits(commits map[string]HostMirrorCommit) error {
 func hubTOMLStoreSyncTables(cfg Config, entries, known []hostreg.Host, intents map[string]HostStoreSyncIntent, dropped map[string]struct{}) map[string]HostStoreSyncIntent {
 	out := make(map[string]HostStoreSyncIntent, len(intents)+len(cfg.PendingStoreSync))
 	maps.Copy(out, intents)
-	owned := ownedRecordNames(entries, known)
-	if owned == nil {
-		return out
-	}
-	for name, intent := range cfg.PendingStoreSync {
-		if _, carried := out[name]; carried {
-			continue
-		}
-		if _, ok := owned[name]; ok {
-			continue
-		}
-		if _, pruned := dropped[name]; pruned {
-			// The derivation dropped this intent (a converged clear, a
-			// compensation): the file's older copy must not ride back in.
-			continue
-		}
-		out[name] = intent
-	}
+	preserveUnowned(out, cfg.PendingStoreSync, ownedRecordNames(entries, known), keyIsHost, dropped)
 	return out
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -153,14 +152,14 @@ func (s *Session) joinWithinCloseBudget(ctx context.Context, wg *sync.WaitGroup,
 	select {
 	case <-joined:
 	case <-ctx.Done():
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+		s.emit(events.WarningData{Message: fmt.Sprintf(
 			"close budget expired joining %s; their remaining events are dropped", what)})
 	}
 }
 
 func (s *Session) releaseAPILogRoute() {
 	if err := s.client.ReleaseSessionAPILog(s.id); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("release session API log: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("release session API log: %v", err)})
 	}
 }
 
@@ -401,7 +400,7 @@ func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
 	if len(outstanding) == 0 {
 		return
 	}
-	s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+	s.emit(events.WarningData{Message: fmt.Sprintf(
 		"close budget expired with environment work still in flight (%s); the environment is cleaned under it",
 		strings.Join(outstanding, "; "))})
 }
@@ -533,7 +532,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 		// resident child runtimes are released leaf-first by the caller instead.
 		if !retirement {
 			if err := s.closeOwnedDelegateRuntimeTree(budgetCtx); err != nil {
-				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate tree close incomplete: %v", err)})
+				s.emit(events.WarningData{Message: fmt.Sprintf("delegate tree close incomplete: %v", err)})
 				// A hopeless stop has already consumed its dedicated half of the
 				// cascade budget. Do not spend the remaining half joining the same
 				// wedged child again through its generic Session.Close path.
@@ -601,7 +600,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 		}
 		if s.ownsArtifactStore && s.artifactStore != nil {
 			if err := s.artifactStore.Close(); err != nil {
-				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("artifact store close incomplete: %v", err)})
+				s.emit(events.WarningData{Message: fmt.Sprintf("artifact store close incomplete: %v", err)})
 				if retirement {
 					releaseErr = errors.Join(releaseErr, err)
 				}
@@ -630,13 +629,13 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			jobManagerCloseErr = errors.Join(jobManagerCloseErr, s.jobManager.closeStoreOnly())
 		}
 		if jobManagerCloseErr != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("job manager close incomplete: %v", jobManagerCloseErr)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("job manager close incomplete: %v", jobManagerCloseErr)})
 			if retirement {
 				releaseErr = errors.Join(releaseErr, jobManagerCloseErr)
 			}
 		}
 		if err := s.closeOwnedDelegateStoreWithContext(budgetCtx); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate store close incomplete: %v", err)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("delegate store close incomplete: %v", err)})
 			if retirement {
 				releaseErr = errors.Join(releaseErr, err)
 			}
@@ -702,7 +701,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 					State:  string(SessionClosed),
 					Turns:  turns,
 				}
-				_, ev, delivered := s.sendEventContext(budgetCtx, events.EventSessionEnd, data, s.activeCausalProvenance())
+				_, ev, delivered := s.sendEventContext(budgetCtx, data, s.activeCausalProvenance())
 				if delivered && s.jobManager != nil {
 					s.jobManager.onSessionEvent(ev)
 				}
@@ -735,9 +734,9 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 		if !retirement {
 			// Export ATIF trajectory if configured (root session only, after transcript flush).
 			if s.cfg.ExportATIFPath != "" && s.stateDir != "" && s.cfg.spawn.depth == 0 {
-				tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+				tpath := schema.SessionTranscriptPath(s.stateDir, s.id)
 				if err := exportATIF(tpath, s.cfg.ExportATIFPath, s.cfg.ExportATIFProviderHandles); err != nil {
-					s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("ATIF export failed: %v", err)})
+					s.emit(events.WarningData{Message: fmt.Sprintf("ATIF export failed: %v", err)})
 				}
 			}
 
@@ -843,7 +842,7 @@ func (s *Session) endOwnedCurrentScratch() {
 		return
 	}
 	if err := local.EndSessionScratch(); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: "session scratch removal incomplete: " + err.Error()})
+		s.emit(events.WarningData{Message: "session scratch removal incomplete: " + err.Error()})
 	}
 }
 
@@ -1335,7 +1334,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 						// check — clears after the marker is accepted.
 						s.clearAskPending()
 						s.finishProcessingAtBoundary(processCtx, SessionIdle)
-						s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: interruptMsg, Kind: events.SteeringKindInterrupted})
+						s.emit(events.SteeringInjectedData{Text: interruptMsg, Kind: events.SteeringKindInterrupted})
 					}
 				} else {
 					// A closing session cannot publish a marker. Preserve the
@@ -1355,7 +1354,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					}
 					s.mu.Unlock()
 					if emitEnd {
-						s.emit(events.EventSessionEnd, events.SessionEndData{
+						s.emit(events.SessionEndData{
 							Reason: "interrupted",
 							// The boundary above settled the session; WireState says
 							// whether queued work will move it on.
@@ -1676,7 +1675,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// turn-tail window (after the gate's store read) so it is not stranded until
 		// the next user message (spec §7). No-op when no fresh goal is pending.
 		if err := s.flushPendingDelegateDeliveries(); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: "delegate delivery retry at processing boundary failed: " + err.Error()})
+			s.emit(events.WarningData{Message: "delegate delivery retry at processing boundary failed: " + err.Error()})
 		}
 		goalKicked := s.settleGoalOnIdle()
 		// A steer this input recorded whose store mark the store refused gets
@@ -1688,7 +1687,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			s.sessionEndEmitted = true
 			turns := s.modelResponses
 			s.mu.Unlock()
-			s.emit(events.EventSessionEnd, events.SessionEndData{
+			s.emit(events.SessionEndData{
 				Reason: "input_complete",
 				State:  s.WireState(),
 				Turns:  turns,
@@ -1721,7 +1720,7 @@ func (s *Session) endInputAtTurnFailure() {
 	}
 	s.mu.Unlock()
 	if emitEnd {
-		s.emit(events.EventSessionEnd, events.SessionEndData{
+		s.emit(events.SessionEndData{
 			Reason: "turn_failed",
 			State:  s.WireState(),
 			Turns:  turns,
@@ -1946,7 +1945,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	communicatePreviewCalls := map[string]struct{}{}
 	defer func() {
 		for callID := range communicatePreviewCalls {
-			s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+			s.emit(events.CommunicatePreviewResetData{CallID: callID})
 		}
 	}()
 	var rootAttentionIDs []string
@@ -1983,7 +1982,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			err = errors.Join(err, finishErr)
 			return
 		}
-		s.emit(events.EventWarning, warningDataFromError("mid-turn delegate attention consumption failed; left pending for its wake", finishErr))
+		s.emit(warningDataFromError("mid-turn delegate attention consumption failed; left pending for its wake", finishErr))
 	}()
 	// Flush meta.json on every exit from this function — normal return, error
 	// return, ctx cancellation, retry-budget exhaustion, or panic. Without
@@ -2107,7 +2106,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	select {
 	case <-ctx.Done():
-		s.emit(events.EventError, errorDataFromError(ctx.Err()))
+		s.emit(errorDataFromError(ctx.Err()))
 		// Leave the processing boundary for the outer cancellation handler. It
 		// must first admit the interrupt marker, then settle Awaiting when a
 		// pending ask survives a rejected marker; settling Idle here would make
@@ -2198,7 +2197,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			case refusal == turnNameFenced, s.runningTurnNameHasOwner():
 				s.scheduleRunningTurnNameRetry(jobNotificationRetryMaxDelay)
 			default:
-				s.emit(events.EventWarning, events.WarningData{
+				s.emit(events.WarningData{
 					Message: "a turn name is held with no pending mutation to release it; deferring this wake would never resume",
 				})
 			}
@@ -2328,7 +2327,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 		select {
 		case <-ctx.Done():
-			s.emit(events.EventError, errorDataFromError(ctx.Err()))
+			s.emit(errorDataFromError(ctx.Err()))
 			// Leave the processing boundary for the outer cancellation handler.
 			// A cancellation between rounds has the same marker-admission and
 			// pending-ask boundary as cancellation before the first round.
@@ -2339,7 +2338,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		profile, sys, _, req, fullHistory, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
 		if prepareErr != nil {
 			if isLocalContextCompactionError(prepareErr) && !localAdmissionCompacted && s.contextMgr != nil {
-				s.emit(events.EventWarning, warningDataFromError(
+				s.emit(warningDataFromError(
 					"Local context admission failed; compacting context and retrying", prepareErr))
 				localAdmissionCompacted = true
 				s.forceCompactForModelRecovery(ctx)
@@ -2367,7 +2366,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		if err != nil {
 			if isLocalContextCompactionError(err) && !localAdmissionCompacted && s.contextMgr != nil {
-				s.emit(events.EventWarning, warningDataFromError(
+				s.emit(warningDataFromError(
 					"Local context admission failed; compacting context and retrying", err))
 				localAdmissionCompacted = true
 				s.forceCompactForModelRecovery(ctx)
@@ -2384,7 +2383,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				if failedModel == "" {
 					failedModel = profile.Model()
 				}
-				s.emit(events.EventWarning, bareWarningDataFromError(
+				s.emit(bareWarningDataFromError(
 					"Context length exceeded: Provider context disagreement for "+failedProvider+"/"+failedModel+"; compacting context and retrying", err))
 				providerContextRecovered = true
 				s.forceCompactForModelRecovery(ctx)
@@ -2453,7 +2452,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			round-- // Don't count pause_turn as a tool round.
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-			s.emit(events.EventRoundTimings, timings)
+			s.emit(timings)
 			continue
 		}
 
@@ -2502,7 +2501,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			round-- // Don't count empty/bare-text retries as tool rounds.
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-			s.emit(events.EventRoundTimings, timings)
+			s.emit(timings)
 			continue
 		}
 
@@ -2566,7 +2565,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Emit round timings before checking result delivery.
 		timings.TotalRound = time.Since(roundStart)
 		timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall - timings.ToolExec - timings.Persistence - timings.AfterAction
-		s.emit(events.EventRoundTimings, timings)
+		s.emit(timings)
 
 		// communicate sets the flag, or this round posted question(s) (spec
 		// §5.1) — either ends the turn; deliverIfCommunicated decides the
@@ -2594,7 +2593,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}
 
 	s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeTurnLimit, TurnLimit: &schema.TurnLimitNotice{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput}})
-	s.emit(events.EventTurnLimit, events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
+	s.emit(events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
 	s.finishProcessingAtFailureBoundary(ctx)
 	if goalControlsCap {
 		return lastText, progressed, nil
@@ -2688,7 +2687,7 @@ func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
 		if refusal := s.transcriptRefusalForWrite(err); refusal != nil {
 			return errors.Join(err, refusal)
 		}
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	return err
 }
@@ -2727,7 +2726,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				return fmt.Errorf("reserve user turn budget: %w", err)
 			}
 			s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeTurnLimit, TurnLimit: &schema.TurnLimitNotice{MaxTurns: s.cfg.MaxTurns}})
-			s.emit(events.EventTurnLimit, events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
+			s.emit(events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
 			s.finishProcessingAtFailureBoundary(ctx)
 			return &budgetExhaustionError{
 				Budget:    exhaustedBudgetTurns,
@@ -2833,14 +2832,14 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				if !userRecorded {
 					return failure
 				}
-				s.emit(events.EventUserInput, events.UserInputData{
+				s.emit(events.UserInputData{
 					Text:             input,
 					Images:           userInputImagesFromAttachments(images),
 					ClientMutationID: queuedIdentity.ClientMutationID,
 					StableTurnID:     queuedIdentity.StableTurnID,
 					Turn:             s.recordedUserInputTurn(userInputTurn),
 				})
-				s.emit(events.EventError, errorDataFromError(failure))
+				s.emit(errorDataFromError(failure))
 				return failure
 			}
 		}
@@ -2866,7 +2865,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		// point. Earlier admission failures intentionally leave askPending set.
 		s.clearAskPending()
 	}
-	s.emit(events.EventUserInput, events.UserInputData{
+	s.emit(events.UserInputData{
 		Text:             input,
 		Images:           userInputImagesFromAttachments(images),
 		ClientMutationID: queuedIdentity.ClientMutationID,
@@ -2927,7 +2926,7 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 	if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Objective != "" {
 		marker = "Continuing toward: " + snap.Objective
 	}
-	s.emit(events.EventGoalContinuation, events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})
+	s.emit(events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})
 	turn := schema.NewTurn(schema.TurnSteering, llm.User(input))
 	turn.GoalContinuation = &schema.GoalContinuationInfo{Text: marker}
 	turn.StableTurnID = stableTurnID
@@ -3039,9 +3038,9 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	//
 	// The announce precedes every content event of the turn. A boundary that
 	// came after would leave that content attributed to the turn before it.
-	s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
+	s.emit(events.TurnStartedData{TurnID: turnID})
 	if reminder != "" {
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
+		s.emit(events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
 	}
 
 	deliveredFailures := s.markJobNotificationsDelivered(jobNotifs)
@@ -3107,7 +3106,7 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 	// acceptNotificationInput's boundary: content emitted before it would be
 	// attributed to the turn before this one.
 	if s.servedByDaemon() {
-		s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
+		s.emit(events.TurnStartedData{TurnID: turnID})
 	}
 	// The carrier turn runs on resume semantics too: the drained human-note
 	// steer it carries is already in the store, and this projection puts the
@@ -3180,7 +3179,7 @@ func (s *Session) settleDeliveredWatchNotification(ctx context.Context, d delive
 		err = d.watchJM.settleWatchSendDelivered(d.watchCfg, d.watchState)
 	}
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: "watch send settle failed: " + err.Error()})
+		s.emit(events.WarningData{Message: "watch send settle failed: " + err.Error()})
 	}
 }
 
@@ -3366,7 +3365,7 @@ func (s *Session) markJobNotificationsDelivered(notifs []deliverableJobNotificat
 			JobID:       n.notification.JobID,
 			TerminalGen: n.terminalGen,
 		}); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("job notification delivery mark failed: %v", err)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("job notification delivery mark failed: %v", err)})
 			failed = append(failed, n.notification)
 			continue
 		}
@@ -3383,7 +3382,7 @@ func (s *Session) markJobNotificationsDelivered(notifs []deliverableJobNotificat
 			JobID:       n.notification.JobID,
 			TerminalGen: n.terminalGen,
 		}); ferr != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("job notification delivery forward failed: %v", ferr)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("job notification delivery forward failed: %v", ferr)})
 		}
 	}
 	return failed

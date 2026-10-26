@@ -225,7 +225,7 @@ func (s *Session) persistSkillToolObligations(state *schema.SkillTurnState) erro
 		s.skillLifecycle.Obligations = withoutObligationsByInvocationID(s.skillLifecycle.Obligations, state.Obligations)
 		s.skillLifecycle.Revision++
 		s.mu.Unlock()
-		s.emit(events.EventWarning, warningDataFromError("saving skill delivery obligations failed", err))
+		s.emit(warningDataFromError("saving skill delivery obligations failed", err))
 		return err
 	}
 	return nil
@@ -249,7 +249,7 @@ func (s *Session) recordSkillCarrierDurably(live, persisted schema.Turn) error {
 		func() { s.history = append(s.history, live) },
 	)
 	if err != nil {
-		s.emit(events.EventWarning, warningDataFromError("recording a skill carrier turn failed", err))
+		s.emit(warningDataFromError("recording a skill carrier turn failed", err))
 	}
 	return err
 }
@@ -452,7 +452,7 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 		// Obligation identity corrections and failure finalizations must be
 		// durable before a retry or restart can lose them.
 		if err := s.saveMeta(); err != nil {
-			s.emit(events.EventWarning, warningDataFromError("saving skill delivery state failed", err))
+			s.emit(warningDataFromError("saving skill delivery state failed", err))
 			return req, commit, err
 		}
 	}
@@ -617,11 +617,11 @@ func (s *Session) commitSkillDelivery(ctx context.Context, commit skillDeliveryC
 			s.skillLifecycle.Revision = commit.Revision
 		}
 		s.mu.Unlock()
-		s.emit(events.EventWarning, warningDataFromError("saving skill delivery admission failed", err))
+		s.emit(warningDataFromError("saving skill delivery admission failed", err))
 		return true, err
 	}
 	for _, name := range newBodies {
-		s.emit(events.EventSkillActivated, events.SkillActivatedData{Name: name})
+		s.emit(events.SkillActivatedData{Name: name})
 	}
 	return true, nil
 }

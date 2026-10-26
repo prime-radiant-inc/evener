@@ -331,7 +331,7 @@ func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 		t.Fatalf("expected 2 USER_INPUT events, got %d (turns=%v)", len(emittedTurns), emittedTurns)
 	}
 
-	tpath := filepath.Join(dir, sessionsSubdir, sessID+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(dir, sessID)
 	_, entries, _, err := readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)

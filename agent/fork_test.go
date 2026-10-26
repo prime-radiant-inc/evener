@@ -28,7 +28,7 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 	stateDir = t.TempDir()
 	parentID = "01PARENT00000000000000001"
 
-	tpath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(stateDir, parentID)
 	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID:  parentID,
 		CreatedAt:  time.Now().UTC(),
@@ -74,7 +74,7 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 
 func appendParentTranscript(t *testing.T, stateDir, parentID, suffix string) {
 	t.Helper()
-	path := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	path := schema.SessionTranscriptPath(stateDir, parentID)
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatalf("open parent transcript: %v", err)
@@ -90,7 +90,7 @@ func appendParentTranscript(t *testing.T, stateDir, parentID, suffix string) {
 
 func sessionArtifactNames(t *testing.T, stateDir string) string {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(stateDir, sessionsSubdir))
+	entries, err := os.ReadDir(schema.SessionsDir(stateDir))
 	if err != nil {
 		t.Fatalf("read session artifacts: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	}
 
 	// Child transcript must contain the edited message in its last entry line.
-	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
+	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
 	data, err := os.ReadFile(childTranscriptPath)
 	if err != nil {
 		t.Fatalf("ReadFile(child transcript): %v", err)
@@ -394,7 +394,7 @@ func TestForkSession_RejectsUnsupportedHeader(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			stateDir, parentID := buildParentSession(t)
-			parentPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+			parentPath := schema.SessionTranscriptPath(stateDir, parentID)
 			raw, err := os.ReadFile(parentPath)
 			if err != nil {
 				t.Fatalf("read parent transcript: %v", err)
@@ -432,7 +432,7 @@ func TestForkSession_RejectsUnknownTranscriptFields(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stateDir, parentID := buildParentSession(t)
-			parentPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+			parentPath := schema.SessionTranscriptPath(stateDir, parentID)
 			raw, err := os.ReadFile(parentPath)
 			if err != nil {
 				t.Fatal(err)
@@ -450,7 +450,7 @@ func TestForkSession_RejectsUnknownTranscriptFields(t *testing.T) {
 func TestForkSession_UsesFirstNonEmptyRecordAsHeader(t *testing.T) {
 	t.Parallel()
 	stateDir, parentID := buildParentSession(t)
-	parentPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	parentPath := schema.SessionTranscriptPath(stateDir, parentID)
 	raw, err := os.ReadFile(parentPath)
 	if err != nil {
 		t.Fatalf("read parent transcript: %v", err)
@@ -744,7 +744,7 @@ func TestForkAndAsideReplayLargeTranscriptLine(t *testing.T) {
 	stateDir := "/state"
 	parentID := "01PARENT00000000000000001"
 
-	tw, err := transcript.NewWriterWithFS(fs, filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl"), transcript.Header{
+	tw, err := transcript.NewWriterWithFS(fs, schema.SessionTranscriptPath(stateDir, parentID), transcript.Header{
 		SessionID: parentID,
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "openai",

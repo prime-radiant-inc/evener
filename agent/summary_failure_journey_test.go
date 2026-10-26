@@ -248,17 +248,17 @@ func TestSummaryFailurePublicationFilters(t *testing.T) {
 		{Code: "another_warning", SummaryFailure: failure},
 		{Code: "summary_failure"},
 	} {
-		sess.sendEvent(events.EventWarning, warning, nil)
+		sess.sendEvent(warning, nil)
 	}
 	if got := len(summaryFailureLogRecords(t, output.Bytes())); got != 0 {
 		t.Errorf("unrelated or incomplete warnings logged: %d", got)
 	}
-	warning := &events.WarningData{Code: "summary_failure", SummaryFailure: failure, Message: "private-copy-e4c2", Hint: "private-hint-2e7c"}
-	sess.sendEvent(events.EventWarning, warning, nil)
+	warning := events.WarningData{Code: "summary_failure", SummaryFailure: failure, Message: "private-copy-e4c2", Hint: "private-hint-2e7c"}
+	sess.sendEvent(warning, nil)
 	sess.Close()
-	sess.sendEvent(events.EventWarning, warning, nil)
+	sess.sendEvent(warning, nil)
 	if got := len(summaryFailureLogRecords(t, output.Bytes())); got != 1 {
-		t.Errorf("pointer/closed publication records = %d, want 1", got)
+		t.Errorf("open/closed publication records = %d, want 1", got)
 	}
 	for _, canary := range []string{"private-copy-e4c2", "private-hint-2e7c"} {
 		if bytes.Contains(output.Bytes(), []byte(canary)) {

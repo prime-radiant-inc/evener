@@ -1440,12 +1440,12 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 		}
 		run, done, err := s.worktreeCleanupRun(res.MainRoot)
 		if err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("rolling back worktree %s after a failed create failed: %v", res.Path, err)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("rolling back worktree %s after a failed create failed: %v", res.Path, err)})
 			return
 		}
 		defer done()
 		if rbErr := s.rollbackFreshWorktree(run, res.Path, res.Branch, res.MetaDir, name); rbErr != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("rolling back worktree %s after a failed create failed: %v", res.Path, rbErr)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("rolling back worktree %s after a failed create failed: %v", res.Path, rbErr)})
 		}
 	}()
 
@@ -1951,12 +1951,12 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 			}
 			unlock, done, err := s.worktreeCleanupRun(st.mainRepoRoot)
 			if err != nil {
-				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking switch target %s after a failed switch failed: %v", target, err)})
+				s.emit(events.WarningData{Message: fmt.Sprintf("unlocking switch target %s after a failed switch failed: %v", target, err)})
 				return
 			}
 			defer done()
 			if _, unlockErr := unlock("worktree", "unlock", target); unlockErr != nil {
-				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking switch target %s after a failed switch failed: %v", target, unlockErr)})
+				s.emit(events.WarningData{Message: fmt.Sprintf("unlocking switch target %s after a failed switch failed: %v", target, unlockErr)})
 			}
 		}()
 	case worktree.ActAdopt:
@@ -3377,7 +3377,7 @@ func (s *Session) releaseStrandedOwnMarker(files execenv.FileMutator, lanePath s
 	if claimedErr == nil && s.isOwnMarker(claimedReason) {
 		// The lane is already unlocked; a leftover claim file is harmless to git.
 		if rmErr := os.Remove(claimedPath); rmErr != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("removing the released lock claim %s failed: %v", claimedPath, rmErr)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("removing the released lock claim %s failed: %v", claimedPath, rmErr)})
 		}
 		return true, nil
 	}
@@ -3452,7 +3452,7 @@ func (s *Session) restoreStrandedOwnMarker(lanePath string) {
 	f, err := os.OpenFile(lockFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		if !os.IsExist(err) && !os.IsNotExist(err) {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("re-locking stranded own worktree marker at %s after a failed collection failed: %v", lanePath, err)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("re-locking stranded own worktree marker at %s after a failed collection failed: %v", lanePath, err)})
 		}
 		return
 	}
@@ -3461,7 +3461,7 @@ func (s *Session) restoreStrandedOwnMarker(lanePath string) {
 		writeErr = closeErr
 	}
 	if writeErr != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("re-locking stranded own worktree marker at %s after a failed collection failed: %v", lanePath, writeErr)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("re-locking stranded own worktree marker at %s after a failed collection failed: %v", lanePath, writeErr)})
 	}
 }
 

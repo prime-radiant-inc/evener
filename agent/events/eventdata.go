@@ -5,9 +5,8 @@ import "time"
 // EventData is the sealed set of payloads that may ride on a SessionEvent. The
 // unexported eventKind method both (a) restricts the SessionEvent.Data field to
 // this package's payload types — a foreign type cannot satisfy the interface —
-// and (b) records which EventKind a payload belongs to, so the emit chokepoint
-// can derive Kind from the payload instead of trusting a separately passed
-// argument.
+// and (b) records which EventKind a payload belongs to, so KindOf can derive
+// Kind from the payload alone.
 //
 // What this guarantees and what it does NOT: the interface gives compile-checked
 // payload VALIDITY (you cannot put a non-payload value on the stream). It does
@@ -20,11 +19,16 @@ type EventData interface {
 	eventKind() EventKind
 }
 
+// KindOf reports the EventKind the payload belongs to.
+func KindOf(data EventData) EventKind {
+	return data.eventKind()
+}
+
 // New builds a SessionEvent for the given payload, owning the Kind (derived
 // from the payload) and Timestamp. The caller sets SessionID afterward.
 func New(data EventData) SessionEvent {
 	return SessionEvent{
-		Kind:      data.eventKind(),
+		Kind:      KindOf(data),
 		Timestamp: time.Now().UTC(),
 		Data:      data,
 	}

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"sync"
@@ -18,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -466,7 +466,7 @@ func TestRetirementColdDelegateEvidence(t *testing.T) {
 				tree.mu.Unlock()
 				defer func() { tree.mu.Lock(); tree.durable[d.DelegateID].Descriptor = before; tree.mu.Unlock() }()
 			case "transcript":
-				path := filepath.Join(root.stateDir, sessionsSubdir, d.ChildSessionID+".transcript.jsonl")
+				path := schema.SessionTranscriptPath(root.stateDir, d.ChildSessionID)
 				if err := os.Rename(path, path+".held"); err != nil {
 					t.Fatal(err)
 				}
@@ -476,7 +476,7 @@ func TestRetirementColdDelegateEvidence(t *testing.T) {
 					}
 				}()
 			case "corrupt transcript":
-				path := filepath.Join(root.stateDir, sessionsSubdir, d.ChildSessionID+".transcript.jsonl")
+				path := schema.SessionTranscriptPath(root.stateDir, d.ChildSessionID)
 				original, err := os.ReadFile(path)
 				if err != nil {
 					t.Fatal(err)
@@ -746,7 +746,7 @@ func TestRetirementDelegatePopulatedSourceRefusal(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			finish := retirementPauseColdClaim(t, c, filepath.Join(root.stateDir, sessionsSubdir, d.ChildSessionID+".meta.json"))
+			finish := retirementPauseColdClaim(t, c, schema.SessionMetaPath(root.stateDir, d.ChildSessionID))
 			defer finish()
 			if family == "outcome" {
 				plan := plans.deliveries[0]
@@ -982,7 +982,7 @@ func TestRetirementDelegateDescendantSendAdmittedFirst(t *testing.T) {
 		t.Fatal(result.Err)
 	}
 	retirementAwait(t, adapter.entered)
-	transcriptPath := filepath.Join(root.stateDir, sessionsSubdir, d.ChildSessionID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(root.stateDir, d.ChildSessionID)
 	originalInput, err := os.ReadFile(transcriptPath)
 	if err != nil || bytes.Count(originalInput, []byte("descendant-send-sentinel")) != 1 {
 		t.Fatalf("original send input was not persisted exactly once: %v", err)
@@ -1634,7 +1634,7 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 	if !pending {
 		t.Fatal("original attention source was not populated")
 	}
-	finish := retirementPauseColdClaim(t, c, filepath.Join(root.stateDir, sessionsSubdir, cold.ChildSessionID+".meta.json"))
+	finish := retirementPauseColdClaim(t, c, schema.SessionMetaPath(root.stateDir, cold.ChildSessionID))
 	defer finish()
 	added, blocker, _, emit, err := tree.tryOpenDelegateAttention(d.DelegateID, attentionID)
 	if !errors.Is(err, ErrRetirementUnavailable) || added || blocker != nil || emit {

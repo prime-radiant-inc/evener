@@ -155,7 +155,7 @@ func FuzzSessionInitSeed100Exact(f *testing.F) {
 			nilSession.runSessionStartHooksWithContext(context.Background(), plugin.SessionStartKindStartup)
 
 			blocked := t.TempDir()
-			logDir := filepath.Join(blocked, sessionsSubdir)
+			logDir := schema.SessionsDir(blocked)
 			if err := os.MkdirAll(logDir, 0o700); err != nil {
 				t.Fatal(err)
 			}

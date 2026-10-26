@@ -2823,40 +2823,18 @@ func appDelegateFromDetailedStatus(delegate DelegateStatusInfo) appwire.EvenerDe
 		ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,
 		ReasoningEffort: delegate.ReasoningEffort, OriginTurnID: delegate.OriginTurnID, OriginToolCallID: delegate.OriginToolCallID,
 		OriginItemID: delegate.OriginItemID, RunStartedAt: delegate.RunStartedAt, RunEndedAt: delegate.RunEndedAt,
-		LatestActivityAt: delegate.LatestActivityAt, RunningForMS: cloneServerInt64(delegate.RunningForMS),
-		QuietForMS: cloneServerInt64(delegate.QuietForMS), DurationMS: cloneServerInt64(delegate.DurationMS),
+		LatestActivityAt: delegate.LatestActivityAt, LatestIntent: delegate.LatestIntent, RunningForMS: appwire.ClonePointer(delegate.RunningForMS),
+		QuietForMS: appwire.ClonePointer(delegate.QuietForMS), DurationMS: appwire.ClonePointer(delegate.DurationMS),
 		PacketKind: delegate.PacketKind, Message: append(json.RawMessage(nil), delegate.Message...),
-		StructuredResult: append(json.RawMessage(nil), delegate.StructuredResult...), StructuredValid: cloneServerBool(delegate.StructuredValid),
+		StructuredResult: append(json.RawMessage(nil), delegate.StructuredResult...), StructuredValid: appwire.ClonePointer(delegate.StructuredValid),
 		StructuredReason: delegate.StructuredReason, Warnings: append([]string(nil), delegate.Warnings...),
 		Diagnostics: append([]string(nil), delegate.Diagnostics...), ExhaustionBudget: delegate.ExhaustionBudget,
-		ExhaustionLimit: delegate.ExhaustionLimit, ExhaustionResumable: cloneServerBool(delegate.ExhaustionResumable),
+		ExhaustionLimit: delegate.ExhaustionLimit, ExhaustionResumable: appwire.ClonePointer(delegate.ExhaustionResumable),
 		DelegationAllowance: delegate.DelegationAllowance, ParentWatchGranted: delegate.ParentWatchGranted,
 	}
-	if delegate.Usage != nil {
-		usage := *delegate.Usage
-		out.Usage = &usage
-	}
-	if delegate.Worktree != nil {
-		worktree := *delegate.Worktree
-		out.Worktree = &worktree
-	}
+	out.Usage = appwire.ClonePointer(delegate.Usage)
+	out.Worktree = appwire.ClonePointer(delegate.Worktree)
 	return out
-}
-
-func cloneServerBool(value *bool) *bool {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-
-func cloneServerInt64(value *int64) *int64 {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
 }
 
 func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCapabilities {

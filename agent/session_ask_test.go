@@ -3878,7 +3878,7 @@ func TestAskUser_RestoreRederivesIdleAfterInterruptedAsk(t *testing.T) {
 		t.Fatalf("marshal ask args: %v", err)
 	}
 
-	tpath := filepath.Join(dir, sessionsSubdir, id+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(dir, id)
 	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID: id,
 		ProfileID: "openai",

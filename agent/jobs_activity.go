@@ -1185,9 +1185,9 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		OriginItemID:        truncateActivityText(descriptor.OriginItemID, activityMaxLabelRunes),
 		RunStartedAt:        status.RunStartedAt,
 		LatestActivityAt:    status.LatestActivityAt,
-		RunningForMS:        cloneInt64(status.RunningForMS),
-		QuietForMS:          cloneInt64(status.QuietForMS),
-		DurationMS:          cloneInt64(status.DurationMS),
+		RunningForMS:        appwire.ClonePointer(status.RunningForMS),
+		QuietForMS:          appwire.ClonePointer(status.QuietForMS),
+		DurationMS:          appwire.ClonePointer(status.DurationMS),
 		DelegationAllowance: descriptor.DelegationAllowance,
 		ParentWatchGranted:  descriptor.ParentWatchGranted,
 		Turns:               []appwire.JobActivityJob{},
@@ -1280,14 +1280,6 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 	projectedChild := projectActivitySessionAt(*child, budget, depth+1, childPath, resumeIndex)
 	delegate.Child = &projectedChild
 	return delegate
-}
-
-func cloneInt64(value *int64) *int64 {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
 }
 
 func activityUsageFromCumulative(usage *schema.CumulativeUsage) *appwire.EvenerUsage {

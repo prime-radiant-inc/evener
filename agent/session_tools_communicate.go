@@ -291,7 +291,7 @@ func (s *Session) postDelegateUpdate(ctx context.Context, message string) *deleg
 		// The update is durable in the journal. A delivery that failed stays
 		// pending there, and executeDelegateMutationPlans has queued the
 		// journal's pending heads and the rest of its queue for retry.
-		s.emit(events.EventWarning, warningDataFromError("deliver delegate update", err))
+		s.emit(warningDataFromError("deliver delegate update", err))
 	}
 	// A missing aggregate reads as not pending: it cannot occur while the run
 	// that just posted is open.

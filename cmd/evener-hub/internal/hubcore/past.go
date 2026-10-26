@@ -367,10 +367,6 @@ func (i *PastIndex) scanAll() ([]PastEntry, map[string]PastEntry, map[string]str
 // and a count rather than hundreds of lines.
 const maxReportedSkips = 5
 
-// metaFileSuffix is the on-disk filename suffix schema writes a session meta
-// under, mirrored here so a skip report can name the files the lister dropped.
-const metaFileSuffix = ".meta.json"
-
 // The identifier validators report the rule an id broke ("invalid UUID
 // payload") but not the shape to write instead, which is the fact whoever
 // seeded the entry actually needs. A skip report carries both.
@@ -392,7 +388,7 @@ func badProjectID(err error) string {
 // sessionMetaPath renders the on-disk location a session's meta was read from,
 // for naming it in a skip report.
 func sessionMetaPath(project, id string) string {
-	return filepath.Join(project, "sessions", id+".meta.json")
+	return schema.SessionMetaPath(project, id)
 }
 
 // reportUnlistedMetas records every <id>.meta.json under a project that
@@ -405,16 +401,16 @@ func sessionMetaPath(project, id string) string {
 // lister already refused to hand it. Re-deriving the difference here is what
 // puts the seeded path and its rejection in front of whoever seeded it.
 func reportUnlistedMetas(fs afero.Fs, project string, indexed map[string]bool, skipped map[string]string) {
-	sessionsDir := filepath.Join(project, "sessions")
+	sessionsDir := schema.SessionsDir(project)
 	entries, err := afero.ReadDir(fs, sessionsDir)
 	if err != nil {
 		return // no sessions dir (or unreadable): nothing to compare against
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), metaFileSuffix) {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), schema.SessionMetaSuffix) {
 			continue
 		}
-		id := strings.TrimSuffix(e.Name(), metaFileSuffix)
+		id := strings.TrimSuffix(e.Name(), schema.SessionMetaSuffix)
 		if indexed[id] {
 			continue
 		}

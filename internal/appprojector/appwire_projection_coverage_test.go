@@ -1,7 +1,6 @@
 package appprojector
 
 import (
-	"encoding/json"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -44,78 +43,6 @@ func TestDelegateActivityAfterSameTimestamp(t *testing.T) {
 	ts := "2024-01-01T00:00:00Z"
 	if delegateActivityAfter(ts, ts) {
 		t.Fatal("same timestamp should return false (not strictly after)")
-	}
-}
-
-func TestCloneBoolPointerNil(t *testing.T) {
-	if cloneBoolPointer(nil) != nil {
-		t.Fatal("nil should return nil")
-	}
-}
-
-func TestCloneBoolPointerValue(t *testing.T) {
-	v := true
-	got := cloneBoolPointer(&v)
-	if got == nil || !*got {
-		t.Fatal("should clone true")
-	}
-	*got = false
-	if !v {
-		t.Fatal("modifying clone should not affect original")
-	}
-}
-
-func TestCloneInt64PointerNil(t *testing.T) {
-	if cloneInt64Pointer(nil) != nil {
-		t.Fatal("nil should return nil")
-	}
-}
-
-func TestCloneInt64PointerValue(t *testing.T) {
-	v := int64(42)
-	got := cloneInt64Pointer(&v)
-	if got == nil || *got != 42 {
-		t.Fatal("should clone 42")
-	}
-	*got = 99
-	if v != 42 {
-		t.Fatal("modifying clone should not affect original")
-	}
-}
-
-func TestCloneAppwireDelegateInfo(t *testing.T) {
-	original := appwire.EvenerDelegateInfo{
-		DelegateID:      "dlg_1",
-		Message:         json.RawMessage(`{"x":1}`),
-		Warnings:        []string{"w1", "w2"},
-		StructuredValid: &[]bool{true}[0],
-		Usage:           &appwire.EvenerUsage{InputTokens: 100},
-		Worktree:        &appwire.JobActivityWorktree{Path: "/tmp"},
-	}
-	clone := cloneAppwireDelegateInfo(original)
-	if clone.DelegateID != "dlg_1" {
-		t.Fatal("DelegateID should be preserved")
-	}
-	// Verify slices are cloned, not shared
-	clone.Warnings[0] = "modified"
-	if original.Warnings[0] != "w1" {
-		t.Fatal("original should be unaffected by clone modification")
-	}
-	// Verify usage is cloned
-	if clone.Usage == nil {
-		t.Fatal("Usage should be cloned")
-	}
-	clone.Usage.InputTokens = 999
-	if original.Usage.InputTokens != 100 {
-		t.Fatal("original Usage should be unaffected")
-	}
-	// Verify worktree is cloned
-	if clone.Worktree == nil {
-		t.Fatal("Worktree should be cloned")
-	}
-	clone.Worktree.Path = "/other"
-	if original.Worktree.Path != "/tmp" {
-		t.Fatal("original Worktree should be unaffected")
 	}
 }
 

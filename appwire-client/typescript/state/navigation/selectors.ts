@@ -7,6 +7,7 @@
 // over NavigationStoreState - no store handle, no host API - so an app
 // passes whichever instance's state it holds, and a selector that memoizes
 // for one host's render loop stays in that host.
+import { durationParts } from "../../displayFormat";
 import type { NavigationProjectSummary, NavigationSessionSummary, Source } from "../../types.gen";
 import type { NavigationStoreState } from "./store";
 import {
@@ -32,11 +33,8 @@ export function relativeAge(updatedAt?: string, now: number = Date.now()): strin
   if (!updatedAt) return undefined;
   const timestamp = Date.parse(updatedAt);
   if (!Number.isFinite(timestamp)) return undefined;
-  const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
-  if (seconds < 60) return "now";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  return `${Math.floor(seconds / 86400)}d`;
+  const { count, unit } = durationParts(now - timestamp);
+  return unit === "second" ? "now" : `${count}${unit[0]}`;
 }
 
 function normalizedRootCount(resource: ResourceState, slot: string): number | undefined {

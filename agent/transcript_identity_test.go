@@ -118,7 +118,7 @@ func TestForkCopiesKeepTheParentsIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, child, _, err := readTranscript(filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl"), "")
+	_, child, _, err := readTranscript(schema.SessionTranscriptPath(stateDir, childID), "")
 	if err != nil {
 		t.Fatal(err)
 	}

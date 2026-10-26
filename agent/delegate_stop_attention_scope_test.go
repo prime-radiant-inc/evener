@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // A root's stop must not repeatedly parse every unrelated root's transcript.
@@ -19,9 +20,9 @@ func TestDelegateStopDrainScopesAttentionToMembers(t *testing.T) {
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_target")
 	seedDelegateControllerIdle(t, c, "dlg_unrelated", "")
-	targetPath := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
-	childPath := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_child.transcript.jsonl")
-	unrelatedPath := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_unrelated.transcript.jsonl")
+	targetPath := filepath.Join(c.stateDir, schema.SessionsSubdir, "child-dlg_target.transcript.jsonl")
+	childPath := filepath.Join(c.stateDir, schema.SessionsSubdir, "child-dlg_child.transcript.jsonl")
+	unrelatedPath := filepath.Join(c.stateDir, schema.SessionsSubdir, "child-dlg_unrelated.transcript.jsonl")
 	writeDelegateAttentionTranscriptState(t, targetPath, "child-dlg_target", "target-attention", false)
 	writeDelegateAttentionTranscriptState(t, childPath, "child-dlg_child", "child-attention", false)
 	// A complete invalid record makes an unwanted read observable, without
@@ -114,7 +115,7 @@ func TestDelegateStopReconcileRejectsScopedEvidence(t *testing.T) {
 			seedDelegateControllerIdle(t, c, "dlg_target", "")
 			seedDelegateControllerIdle(t, c, "dlg_child", "dlg_target")
 			seedDelegateControllerIdle(t, c, "dlg_unrelated", "")
-			childPath := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_child.transcript.jsonl")
+			childPath := filepath.Join(c.stateDir, schema.SessionsSubdir, "child-dlg_child.transcript.jsonl")
 			writeDelegateAttentionTranscriptState(t, childPath, "child-dlg_child", "child-attention", false)
 			result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
 			if err != nil {

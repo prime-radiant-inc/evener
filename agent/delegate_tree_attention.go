@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 )
 
 type coldDelegateAttentionRef struct {
@@ -937,7 +937,7 @@ func (c *delegateTreeController) idleDelegateRestoreCommit(delegateID string) (d
 		lease:          delegateLease{delegateID: delegateID, generation: aggregate.Generation},
 		ctx:            context.Background(),
 		descriptor:     descriptor,
-		transcriptPath: filepath.Join(c.stateDir, sessionsSubdir, descriptor.ChildSessionID+".transcript.jsonl"),
+		transcriptPath: schema.SessionTranscriptPath(c.stateDir, descriptor.ChildSessionID),
 		worktreePath:   worktreePath,
 	}, descriptor.ParentDelegateID, nil
 }

@@ -2,7 +2,6 @@ package hubedge
 
 import (
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,23 +19,9 @@ func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
 
 func checkLoadOrCreateAuthToken_RandomError(t *testing.T) {
 	want := errors.New("random failed")
-	_, err := loadOrCreateAuthToken(t.TempDir(), errorReader{err: want}, os.Rename)
+	_, err := loadOrCreateAuthToken(t.TempDir(), errorReader{err: want})
 	if !errors.Is(err, want) {
 		t.Fatalf("loadOrCreateAuthToken error = %v, want %v", err, want)
-	}
-}
-
-func checkLoadOrCreateAuthToken_RenameErrorRemovesTemporaryFile(t *testing.T) {
-	root := t.TempDir()
-	want := errors.New("rename failed")
-	_, err := loadOrCreateAuthToken(root, io.LimitReader(strings.NewReader(strings.Repeat("x", 32)), 32), func(string, string) error {
-		return want
-	})
-	if !errors.Is(err, want) {
-		t.Fatalf("loadOrCreateAuthToken error = %v, want %v", err, want)
-	}
-	if _, statErr := os.Stat(filepath.Join(root, TokenFileName+".tmp")); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("temporary token remains after rename error: %v", statErr)
 	}
 }
 
@@ -475,21 +460,25 @@ func checkLoadOrCreateAuthToken_ReadFileError(t *testing.T) {
 	}
 }
 
-func checkLoadOrCreateAuthToken_WriteFileError(t *testing.T) {
+func checkLoadOrCreateAuthToken_DoesNotFollowSymlinkAtTempName(t *testing.T) {
 	root := t.TempDir()
-	// The token file doesn't exist yet (ReadFile returns ErrNotExist), so the
-	// code proceeds to write the temp file path+".tmp". Pre-create that path as
-	// a directory: opening a directory for writing fails with EISDIR even for
-	// root, so this exercises the write-error branch regardless of uid.
-	if err := os.Mkdir(filepath.Join(root, TokenFileName+".tmp"), 0o700); err != nil {
+	victim := filepath.Join(root, "victim")
+	if err := os.WriteFile(victim, []byte("untouched"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := LoadOrCreateAuthToken(root)
-	if err == nil {
-		t.Fatal("expected error when write file fails")
+	if err := os.Symlink(victim, filepath.Join(root, TokenFileName+".tmp")); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "write") {
-		t.Errorf("error should be from the write path, got %v", err)
+	tok, err := LoadOrCreateAuthToken(root)
+	if err != nil {
+		t.Fatalf("LoadOrCreateAuthToken: %v", err)
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "untouched" {
+		t.Fatalf("token write followed the planted symlink: victim = %q", got)
+	}
+	again, err := LoadOrCreateAuthToken(root)
+	if err != nil || again != tok {
+		t.Fatalf("second load = %q, %v; want the persisted token %q", again, err, tok)
 	}
 }
 

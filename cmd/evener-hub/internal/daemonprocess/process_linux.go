@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+	"primeradiant.com/evener/agent/schema"
 )
 
 type linuxProcess struct{ pid, fd int }
@@ -172,7 +173,7 @@ func (p *linuxProcess) inspectionError(err error) error {
 
 func linuxOwnsLog(root string, t Target) (bool, error) {
 	var expected unix.Stat_t
-	path := filepath.Join(t.StateDir, "sessions", t.SessionID+".api.jsonl")
+	path := schema.SessionAPILogPath(t.StateDir, t.SessionID)
 	if err := unix.Lstat(path, &expected); err != nil {
 		return false, err
 	}

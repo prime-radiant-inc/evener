@@ -1540,7 +1540,7 @@ func restoreAttentionCompactionFixture(t *testing.T, withMarker bool) (restored 
 	t.Helper()
 	stateDir := t.TempDir()
 	rootID := identifier.MustNewSessionID()
-	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+	if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 		t.Fatalf("mkdir sessions: %v", err)
 	}
 	pendingID = "delegate:dlg_fold/delivery/1"

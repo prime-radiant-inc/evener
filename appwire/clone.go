@@ -12,7 +12,7 @@ import (
 // Value-typed scalar fields are copied by value semantics.
 func CloneThread(t Thread) Thread {
 	t.Status = cloneThreadStatus(t.Status)
-	t.GitInfo = clonePointer(t.GitInfo)
+	t.GitInfo = ClonePointer(t.GitInfo)
 	t.Turns = cloneTurns(t.Turns)
 	t.Evener = cloneEvenerThread(t.Evener)
 	return t
@@ -38,10 +38,10 @@ func cloneTurns(turns []Turn) []Turn {
 func CloneTurn(turn Turn) Turn {
 	turn.Items = cloneThreadItems(turn.Items)
 	turn.Error = cloneTurnError(turn.Error)
-	turn.StartedAt = clonePointer(turn.StartedAt)
-	turn.CompletedAt = clonePointer(turn.CompletedAt)
-	turn.DurationMS = clonePointer(turn.DurationMS)
-	turn.Usage = clonePointer(turn.Usage)
+	turn.StartedAt = ClonePointer(turn.StartedAt)
+	turn.CompletedAt = ClonePointer(turn.CompletedAt)
+	turn.DurationMS = ClonePointer(turn.DurationMS)
+	turn.Usage = ClonePointer(turn.Usage)
 	return turn
 }
 
@@ -61,11 +61,11 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 func CloneThreadItem(item ThreadItem) ThreadItem {
 	item.Images = cloneInputItems(item.Images)
 	item.OutputImages = CloneOutputImages(item.OutputImages)
-	item.Position = clonePointer(item.Position)
-	item.StartedAt = clonePointer(item.StartedAt)
-	item.CompletedAt = clonePointer(item.CompletedAt)
-	item.DurationMS = clonePointer(item.DurationMS)
-	item.ExitCode = clonePointer(item.ExitCode)
+	item.Position = ClonePointer(item.Position)
+	item.StartedAt = ClonePointer(item.StartedAt)
+	item.CompletedAt = ClonePointer(item.CompletedAt)
+	item.DurationMS = ClonePointer(item.DurationMS)
+	item.ExitCode = ClonePointer(item.ExitCode)
 	if item.Raw != nil {
 		item.Raw = append(json.RawMessage{}, item.Raw...)
 	}
@@ -99,35 +99,35 @@ func cloneTurnError(e *TurnError) *TurnError {
 		return nil
 	}
 	cp := *e
-	cp.Cause = clonePointer(cp.Cause)
+	cp.Cause = ClonePointer(cp.Cause)
 	cp.CodexErrorInfo = cloneCodexErrorInfo(e.CodexErrorInfo)
 	return &cp
 }
 
 func cloneEvenerThread(e EvenerThread) EvenerThread {
 	e.Diagnostics = CloneEvenerDiagnostics(e.Diagnostics)
-	e.Queue = cloneQueueState(e.Queue)
+	e.Queue = CloneQueueState(e.Queue)
 	e.PendingMutations = clonePendingMutations(e.PendingMutations)
 	e.PendingEscalations = append([]SandboxEscalationRequested(nil), e.PendingEscalations...)
 	e.ReasoningEffortLevels = append([]string(nil), e.ReasoningEffortLevels...)
 	e.Tasks = CloneTaskAggregate(e.Tasks)
-	e.Goal = clonePointer(e.Goal)
+	e.Goal = ClonePointer(e.Goal)
 	e.SessionURLs = append([]SessionURL(nil), e.SessionURLs...)
-	e.Usage = clonePointer(e.Usage)
-	e.FailedToolCalls = clonePointer(e.FailedToolCalls)
+	e.Usage = ClonePointer(e.Usage)
+	e.FailedToolCalls = ClonePointer(e.FailedToolCalls)
 	e.Activity = CloneThreadActivity(e.Activity)
-	e.Subagents = clonePointer(e.Subagents)
+	e.Subagents = ClonePointer(e.Subagents)
 	e.PendingQuestion = ClonePendingQuestion(e.PendingQuestion)
 	e.Failure = CloneThreadFailure(e.Failure)
-	e.Access = clonePointer(e.Access)
+	e.Access = ClonePointer(e.Access)
 	// Capabilities is all bools (value type) — no copy needed.
 	return e
 }
 
-// clonePointer returns a copy of *value that shares nothing with it; nil stays
+// ClonePointer returns a copy of *value that shares nothing with it; nil stays
 // nil. The copy is one level deep, so it is only for types whose fields are
 // all values.
-func clonePointer[T any](value *T) *T {
+func ClonePointer[T any](value *T) *T {
 	if value == nil {
 		return nil
 	}
@@ -163,7 +163,7 @@ func CloneThreadFailure(value *ThreadFailure) *ThreadFailure {
 		return nil
 	}
 	clone := *value
-	clone.Cause = clonePointer(value.Cause)
+	clone.Cause = ClonePointer(value.Cause)
 	return &clone
 }
 
@@ -174,7 +174,7 @@ func CloneTaskAggregate(value *TaskAggregate) *TaskAggregate {
 		return nil
 	}
 	clone := *value
-	clone.Current = clonePointer(value.Current)
+	clone.Current = ClonePointer(value.Current)
 	return &clone
 }
 
@@ -225,7 +225,7 @@ func CloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 	cp.Jobs = CloneEvenerJobs(d.Jobs)
 	cp.Delegates = cloneDelegateInfos(d.Delegates)
 	cp.Watches = CloneEvenerWatches(d.Watches)
-	cp.TurnSlots = clonePointer(d.TurnSlots)
+	cp.TurnSlots = ClonePointer(d.TurnSlots)
 	cp.Agents = append([]string(nil), d.Agents...)
 	cp.DelegateDiagnostics = append([]string(nil), d.DelegateDiagnostics...)
 	cp.SkillDiagnostics = append([]EvenerSkillDiagnostic(nil), d.SkillDiagnostics...)
@@ -240,8 +240,8 @@ func CloneEvenerJobs(jobs []EvenerJobInfo) []EvenerJobInfo {
 	out := make([]EvenerJobInfo, len(jobs))
 	for i := range jobs {
 		out[i] = jobs[i]
-		out[i].Resumable = clonePointer(jobs[i].Resumable)
-		out[i].ExitCode = clonePointer(jobs[i].ExitCode)
+		out[i].Resumable = ClonePointer(jobs[i].Resumable)
+		out[i].ExitCode = ClonePointer(jobs[i].ExitCode)
 	}
 	return out
 }
@@ -281,18 +281,21 @@ func cloneDelegateInfos(delegates []EvenerDelegateInfo) []EvenerDelegateInfo {
 	}
 	out := make([]EvenerDelegateInfo, len(delegates))
 	for i := range delegates {
-		out[i] = cloneDelegateInfo(delegates[i])
+		out[i] = CloneDelegateInfo(delegates[i])
 	}
 	return out
 }
 
-func cloneDelegateInfo(d EvenerDelegateInfo) EvenerDelegateInfo {
-	d.RunningForMS = clonePointer(d.RunningForMS)
-	d.QuietForMS = clonePointer(d.QuietForMS)
-	d.DurationMS = clonePointer(d.DurationMS)
-	d.StructuredValid = clonePointer(d.StructuredValid)
-	d.Usage = clonePointer(d.Usage)
-	d.Worktree = clonePointer(d.Worktree)
+// CloneDelegateInfo returns a copy of d that shares no pointer, slice or raw
+// message with it.
+func CloneDelegateInfo(d EvenerDelegateInfo) EvenerDelegateInfo {
+	d.RunningForMS = ClonePointer(d.RunningForMS)
+	d.QuietForMS = ClonePointer(d.QuietForMS)
+	d.DurationMS = ClonePointer(d.DurationMS)
+	d.StructuredValid = ClonePointer(d.StructuredValid)
+	d.ExhaustionResumable = ClonePointer(d.ExhaustionResumable)
+	d.Usage = ClonePointer(d.Usage)
+	d.Worktree = ClonePointer(d.Worktree)
 	d.Warnings = append([]string(nil), d.Warnings...)
 	d.Diagnostics = append([]string(nil), d.Diagnostics...)
 	d.Message = append(json.RawMessage(nil), d.Message...)
@@ -300,7 +303,8 @@ func cloneDelegateInfo(d EvenerDelegateInfo) EvenerDelegateInfo {
 	return d
 }
 
-func cloneQueueState(q QueueState) QueueState {
+// CloneQueueState returns a copy of q that shares no slice with it.
+func CloneQueueState(q QueueState) QueueState {
 	q.Preview = append([]string(nil), q.Preview...)
 	q.IDs = append([]string(nil), q.IDs...)
 	q.ClientMutationIDs = append([]string(nil), q.ClientMutationIDs...)

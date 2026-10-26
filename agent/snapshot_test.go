@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -99,7 +98,7 @@ func TestSession_AutoSave_WritesMetaAfterProcessInput(t *testing.T) {
 	}
 
 	// History should be in the transcript, not the meta.
-	tpath := filepath.Join(dir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(dir, sess.ID())
 	_, entries, _, err := readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
@@ -167,7 +166,7 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 	}
 
 	// Tool results should be in the transcript.
-	tpath := filepath.Join(dir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(dir, sess.ID())
 	_, entries, _, err := readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
@@ -289,7 +288,7 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 	}
 
 	// Verify tool results are complete in the transcript.
-	tpath := filepath.Join(dir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(dir, sess.ID())
 	_, entries, _, err := readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
@@ -352,7 +351,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	initialTurnCount := list[0].TurnCount
 
 	// Verify transcript has the initial history.
-	tpath := filepath.Join(dir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(dir, sess.ID())
 	_, entries, _, err := readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript after phase 1: %v", err)
