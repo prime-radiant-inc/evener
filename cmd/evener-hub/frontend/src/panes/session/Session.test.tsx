@@ -2748,7 +2748,7 @@ test("survives unmount/remount mid-stream: durable state lives in the store, not
   );
 });
 
-test("Cadence's dot reflects the thread's live status via cadenceStateForStatus, and updates on a live status change", async () => {
+test("Cadence's dot reflects the thread's live status via cadenceStateFor, and updates on a live status change", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", { status: { type: "active" } }));
 
@@ -2766,7 +2766,7 @@ test("Cadence's dot reflects the thread's live status via cadenceStateForStatus,
     } as AnyNotification);
   });
   // needs-you (awaiting) is a visibly different dot than working (active) -
-  // asserted via the shared cadenceStateForStatus mapping rather than a
+  // asserted via the shared cadenceStateFor mapping rather than a
   // brittle class-name string, see liveness.test.ts's direct unit tests
   // for that.
   await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("awaiting"));
@@ -2820,9 +2820,6 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect').length).toBeGreaterThan(0);
   expect(StatusBarModule.StatusBar).toHaveBeenCalledTimes(footerRenderCount);
 });
-
-// cadenceStateForStatus's own direct unit tests now live in
-// liveness.test.ts, alongside the function itself.
 
 // --- transcript/flow integration (wave 4 T4) -----------------------------
 //

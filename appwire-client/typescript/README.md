@@ -35,7 +35,11 @@ both render out of (`createTasksPanelStore(listTasks)`: the triple plus a
 coalescing `refresh` and a notification-following `watch`, over a
 `TasksListRead` port so the web's reconnect-waiting read and native's direct
 one both fit), the display formatters
-both apps render counts, durations and clock times with, the text and
+both apps render counts, durations and clock times with (every duration and
+age builds on `durationParts`, which floors to the largest whole unit:
+`compactDuration`, `spokenDuration`, the rail's `relativeAge` and the task
+list's `relativeTime` all agree that 90 minutes is 1h; `formatSpan` words a
+caller-supplied span of seconds), the text and
 argument helpers a tool call's rendering is built from, the marketplace
 source label both apps show beside a registered marketplace,
 the short lowercase session-state gloss a session row's second line leads
@@ -263,6 +267,18 @@ Fixtures use the same six-field contract. The codec owns validation and
 decoding; each application owns its read cadence, retained windows and recovery.
 The [output guide](../../docs/product/session-activity.md#job-output-pages)
 defines snapshot selection, floor/EOF semantics and the current protocol.
+
+## Session attention
+
+`attentionState(wireState, facts)` is the one precedence order that turns a
+session's wire state and its facts (a pending question or approval, running
+children, an unreachable source) into an `AttentionClass`. It accepts the raw
+`ThreadStatus.type` vocabulary and the navigation summary's, through
+`normalizeWireState`. `attentionNeedsYou` names the needs-you family and
+`approvalWaiting` states the approval half of the rule the hub's
+`hubapi.AttentionState` shares; the cases both run live in
+`testdata/attention`. Clients map the class onto their own presentation and keep
+no precedence table of their own.
 
 ## Search grouping
 

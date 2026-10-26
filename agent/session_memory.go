@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -198,7 +199,9 @@ type memoryEnvironmentFlight struct {
 // memory read ends a read parked on a stream.
 func (s *Session) renderMemoryScope(ctx context.Context, env *execenv.LocalExecutionEnvironment, p *memoryProjection) error {
 	if s.memorySaveInstructionsEnabled() {
-		_ = migrateMemoryScopeCtx(ctx, env)
+		if err := migrateMemoryScopeCtx(ctx, env); err != nil {
+			slog.Warn("memory migration failed; will retry on the next render", "session", s.ID(), "error", err)
+		}
 	}
 	pages, err := listMemoryPagesCtx(ctx, env)
 	if err != nil {

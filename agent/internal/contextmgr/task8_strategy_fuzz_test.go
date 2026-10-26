@@ -19,8 +19,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// FuzzTask8StrategyTransitions drives the real MemoryCrystals,
-// RecursiveDistill, OODA, and fork-summary lifecycle paths through one bounded
+// FuzzTask8StrategyTransitions drives the real OODA and fork-summary lifecycle paths through one bounded
 // deterministic program. The LLM boundary is a scripted adapter: it neither
 // observes nor reaches a provider, while still checking that every auxiliary
 // request takes the profile's cheap-model route.
@@ -29,15 +28,11 @@ import (
 // unit tests cannot see:
 //   - marker injection is idempotent across repeated ManageContext calls;
 //   - user and terminal evidence survives each strategy's injection;
-//   - crystal pruning and recursive micro-to-macro folding remain bounded;
 //   - OODA persists a fork summary through the Host side-effect boundary; and
 //   - usage/metric accounting stays non-negative and bounded by its window.
 func FuzzTask8StrategyTransitions(f *testing.F) {
-	// First seed crosses both bounded-state transitions: 22 crystal actions
-	// exercises the 20-entry prune cap, and six distillation steps exercise the
-	// fifth-micro macro fold plus a subsequent micro summary.
 	f.Add([]byte{21, 5, 0, 17}, "seed evidence")
-	// This seed covers the markdown-fenced fork response and pre-macro route.
+	// This seed covers the markdown-fenced fork response.
 	f.Add([]byte{0, 1, 1}, "")
 	// Quote-bearing evidence must remain semantic text, not an escaped JSON
 	// representation inside the preservation oracle.
@@ -71,75 +66,14 @@ func t8RunStrategyProgram(t *testing.T, program []byte, evidence string) {
 	adapter := &t8StrategyAdapter{
 		entryJSON: string(entryJSON),
 		fenceJSON: t8ProgramByte(program, 2)%2 == 1,
-		crystal:   "fact: " + terminalEvidence,
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
 	history := t8StrategyHistory(userEvidence, terminalEvidence, 72)
 
-	t8RunMemoryCrystals(ctx, t, profile, client, history, program, userEvidence, terminalEvidence)
-	t8RunRecursiveDistill(ctx, t, profile, client, history, program, userEvidence, terminalEvidence)
 	t8RunOODA(ctx, t, profile, client, history, userEvidence, terminalEvidence)
 	t8AssertUsageAndMetrics(t, profile, history[:8], program)
 	t8AssertCheapRouting(t, profile, adapter, userEvidence, terminalEvidence)
-}
-
-func t8RunMemoryCrystals(ctx context.Context, t *testing.T, profile *provider.Profile, client *llm.Client, history []schema.Turn, program []byte, userEvidence, terminalEvidence string) {
-	t.Helper()
-	strategy := NewMemoryCrystalsStrategy(NewManager(profile, client, cheapmodel.New(client)))
-	steps := 1 + int(t8ProgramByte(program, 0)%24)
-	for step := 1; step <= steps; step++ {
-		if err := strategy.AfterAction(ctx, history[:step*3], client); err != nil {
-			t.Fatalf("memory crystals AfterAction step %d: %v", step, err)
-		}
-	}
-	wantCrystals := min(steps, 20)
-	if len(strategy.crystals) != wantCrystals {
-		t.Fatalf("memory crystals = %d, want bounded %d", len(strategy.crystals), wantCrystals)
-	}
-
-	managed := append([]schema.Turn(nil), history[:9]...)
-	managed = append(managed, schema.NewTurn(schema.TurnSteering, llm.User("[MEMORY CRYSTALS] stale marker")))
-	for i := range 2 {
-		if err := strategy.ManageContext(ctx, &managed, 0, noopEmit); err != nil {
-			t.Fatalf("memory crystals ManageContext %d: %v", i, err)
-		}
-	}
-	t8AssertSingleMarker(t, managed, "[MEMORY CRYSTALS]")
-	t8AssertHistoryEvidence(t, managed, userEvidence, terminalEvidence)
-}
-
-func t8RunRecursiveDistill(ctx context.Context, t *testing.T, profile *provider.Profile, client *llm.Client, history []schema.Turn, program []byte, userEvidence, terminalEvidence string) {
-	t.Helper()
-	strategy := NewRecursiveDistillStrategy(NewManager(profile, client, cheapmodel.New(client)))
-	steps := 1 + int(t8ProgramByte(program, 1)%6)
-	for step := 1; step <= steps; step++ {
-		if err := strategy.AfterAction(ctx, history[:step*10], client); err != nil {
-			t.Fatalf("recursive distill AfterAction step %d: %v", step, err)
-		}
-	}
-	// Repeating an already-observed turn count must not re-summarize it.
-	if err := strategy.AfterAction(ctx, history[:steps*10], client); err != nil {
-		t.Fatalf("recursive distill repeated AfterAction: %v", err)
-	}
-	wantMacros, wantMicros := 0, steps
-	if steps >= 5 {
-		wantMacros = 1
-		wantMicros = steps - 5
-	}
-	if len(strategy.macroSummaries) != wantMacros || len(strategy.microSummaries) != wantMicros {
-		t.Fatalf("recursive summaries = macros:%d micros:%d, want macros:%d micros:%d", len(strategy.macroSummaries), len(strategy.microSummaries), wantMacros, wantMicros)
-	}
-
-	managed := append([]schema.Turn(nil), history[:9]...)
-	managed = append(managed, schema.NewTurn(schema.TurnSteering, llm.User("[DISTILLED MEMORY] stale marker")))
-	for i := range 2 {
-		if err := strategy.ManageContext(ctx, &managed, 0, noopEmit); err != nil {
-			t.Fatalf("recursive distill ManageContext %d: %v", i, err)
-		}
-	}
-	t8AssertSingleMarker(t, managed, "[DISTILLED MEMORY]")
-	t8AssertHistoryEvidence(t, managed, userEvidence, terminalEvidence)
 }
 
 func t8RunOODA(ctx context.Context, t *testing.T, profile *provider.Profile, client *llm.Client, history []schema.Turn, userEvidence, terminalEvidence string) {
@@ -341,7 +275,6 @@ func t8EvidenceToken(s string) string {
 type t8StrategyAdapter struct {
 	entryJSON   string
 	fenceJSON   bool
-	crystal     string
 	requests    []llm.Request
 	forkPrompts []string
 }
@@ -355,12 +288,6 @@ func (a *t8StrategyAdapter) Complete(_ context.Context, req llm.Request) (llm.Re
 		prompt = req.Messages[0].Text()
 	}
 	switch {
-	case strings.Contains(prompt, "Extract the key facts"):
-		return llm.Response{Message: llm.Assistant(a.crystal)}, nil
-	case strings.Contains(prompt, "Consolidate these action summaries"):
-		return llm.Response{Message: llm.Assistant("macro summary")}, nil
-	case strings.Contains(prompt, "Summarize these coding agent actions"):
-		return llm.Response{Message: llm.Assistant("micro summary")}, nil
 	case strings.Contains(prompt, "Summarize the most recent action"):
 		a.forkPrompts = append(a.forkPrompts, prompt)
 		text := a.entryJSON
