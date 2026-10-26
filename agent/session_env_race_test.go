@@ -33,10 +33,15 @@ func TestSession_CurrentEnv_NoRaceWithConcurrentSwap(t *testing.T) {
 		t.Skip("race-detector stress test; run with -race")
 	}
 	t.Parallel()
-	sess := newSession(t)
+	// Both swapped environments share the session's working directory: stable
+	// construction freezes the directory in describe and re-reads the
+	// environment in prepareIsolation, so a swap to a different directory
+	// between those reads is a legitimate refusal, not a race.
+	dir := t.TempDir()
+	sess := newSession(t, withDir(dir))
 
-	envA := execenv.NewLocalExecutionEnvironment(t.TempDir())
-	envB := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	envA := execenv.NewLocalExecutionEnvironment(dir)
+	envB := execenv.NewLocalExecutionEnvironment(dir)
 	if err := envA.Initialize(); err != nil {
 		t.Fatalf("envA.Initialize: %v", err)
 	}
@@ -88,12 +93,13 @@ func TestSession_CurrentEnv_NoRaceWithConcurrentSwap(t *testing.T) {
 	var prepareErr error
 	wg.Go(func() {
 		for range spawnIterations {
-			_, _, _, prepared, err := buildCommittedDelegate(sess, delegateArgs{Task: "noop"}, committedDelegateLane{})
+			_, started, _, prepared, err := buildCommittedDelegate(sess, delegateArgs{Task: "noop"}, committedDelegateLane{})
 			if err != nil {
 				prepareErr = err
 				return
 			}
 			prepared.disposeUnadopted()
+			endUnlaunchedDelegate(sess, started)
 		}
 	})
 

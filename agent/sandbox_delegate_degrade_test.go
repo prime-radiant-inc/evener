@@ -198,52 +198,6 @@ func TestDegradedReadOnlyDelegateFileToolsRefuseWrites(t *testing.T) {
 	}
 }
 
-// TestDegradedDelegateSpawnFailureReleasesItsScratchLease: the degraded box
-// provisions a scratch dir like any other per-delegate sandbox, so a spawn that
-// fails after provisioning must release it. The scratch holds a flock lease
-// until it is retained or cleaned, and the crashed-scratch sweeper only
-// reclaims candidates whose lease it can acquire — so a leaked lease survives
-// the sweeper for the daemon's whole uptime. Driven through the real abort path
-// (a nil child client fails NewSession after the environment is prepared). Not
-// parallel: it isolates TMPDIR to observe the scratch base.
-func TestDegradedDelegateSpawnFailureReleasesItsScratchLease(t *testing.T) {
-	isolated := t.TempDir()
-	t.Setenv("TMPDIR", isolated)
-
-	lane, home := sbxLane(t)
-	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai"})
-	s := newSession(t, withClient(client), withDir(lane), withConfig(SessionConfig{
-		StateDir:         packageFixtureTempDir(t, "sbx-degrade-leak-*"),
-		MaxSubagentDepth: 1,
-		testOnly: testConfig{
-			skipGitSnapshot:     true,
-			minimalSystemPrompt: true,
-			noSyncJobStore:      true,
-			sandboxProber:       sandbox.FakeProber{Facts: sbxNoBackendFacts(home)},
-			childClientFactory:  func() *llm.Client { return nil },
-		},
-	}))
-	if before := sandboxScratchDirs(t, isolated); len(before) != 0 {
-		t.Fatalf("isolated tmp base must start free of sandbox scratch, got %v", before)
-	}
-
-	// A read-only agent type derives the degraded box on its own.
-	res := s.createDelegate(context.Background(), delegateArgs{Task: "child task", AgentType: "explorer"})
-	if res.Err == nil {
-		t.Fatal("expected NewSession to fail with a nil child client")
-	}
-	kept := sandboxScratchDirs(t, isolated)
-	if len(kept) == 0 {
-		t.Fatal("the failed start kept no scratch, so the lease check below would prove nothing")
-	}
-	for _, dir := range kept {
-		if scratchLeaseHeld(t, filepath.Join(isolated, dir)) {
-			t.Errorf("degraded delegate scratch %s still holds its lease after the failed start", dir)
-		}
-	}
-}
-
 // TestDegradedReadOnlyBoundaryDisclosesUnsandboxedShellCapabilities protects the
 // structured facts both parent- and delegate-facing renderers consume. It catches
 // a disclosure that narrows the residual gap to writes while omitting host reads

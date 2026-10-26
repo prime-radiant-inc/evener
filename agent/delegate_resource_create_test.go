@@ -1317,11 +1317,7 @@ func prepareStableChildOnLane(t *testing.T, root *Session, args delegateArgs, la
 		t.Fatal(err)
 	}
 	t.Cleanup(prepared.disposeUnadopted)
-	// The delegate never runs, so end its generation at teardown: a root that
-	// closes with a generation still open waits out its stop drain.
-	t.Cleanup(func() {
-		_, _ = root.delegateController.FinishGeneration(started.lease, delegatePermanentStartFailure(errors.New("test teardown"), "test_teardown"))
-	})
+	t.Cleanup(func() { endUnlaunchedDelegate(root, started) })
 	claim, err := root.delegateController.BeginStartInput(started.lease)
 	if err != nil {
 		t.Fatalf("BeginStartInput: %v", err)
@@ -1330,6 +1326,13 @@ func prepareStableChildOnLane(t *testing.T, root *Session, args delegateArgs, la
 		t.Fatalf("CompleteStartInput: %v", err)
 	}
 	return prepared
+}
+
+// endUnlaunchedDelegate ends the open generation of a delegate that was built
+// but never launched. A root that closes with a generation still open waits out
+// its stop drain.
+func endUnlaunchedDelegate(root *Session, started delegateStartCommit) {
+	_, _ = root.delegateController.FinishGeneration(started.lease, delegatePermanentStartFailure(errors.New("test teardown"), "test_teardown"))
 }
 
 // delegateActorForTest is the actor a create from owner would act as: the
