@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -688,62 +689,7 @@ func TestFinalizationHandoffAttachmentBoundaries(t *testing.T) {
 func TestFinalizationHandoffReleaseCarriers(t *testing.T) {
 	t.Parallel()
 	t.Run("restore_reclamation_failure", func(t *testing.T) {
-		root, _, _ := newDelegateResourceBootstrapSession(t)
-		c := root.delegateController
-		c.maxRetainedTerminal = 1
-		resident := seedDelegateReclaimRuntime(t, c, "dlg_old", "", time.Unix(5, 0).UTC(), false, false)
-		released := make(chan struct{})
-		c.mu.Lock()
-		c.live["dlg_old"].finalizing = &delegateFinalization{runtime: resident, released: released}
-		target := delegateControllerCreatedEvent("dlg_restore", "")
-		target.Created.Descriptor.OwnerSessionID = root.ID()
-		_, err := c.appendLocked(target)
-		c.mu.Unlock()
-		if err != nil {
-			t.Fatal(err)
-		}
-		reservation, err := c.ReserveStart(rootDelegateActor(root.ID()), "dlg_restore")
-		if err != nil {
-			t.Fatal(err)
-		}
-		started, err := c.CommitStart(reservation)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer c.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
-		rc, err := NewRetirementController(0, clock.Real())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := rc.AttachRoot(root); err != nil {
-			t.Fatal(err)
-		}
-		outerRelease, err := root.beginRetirementMutation("delegate")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer outerRelease()
-		root.cfg.testOnly.delegateRuntimeReclaimClose = func(*Session) {}
-		rechecks := 0
-		root.cfg.testOnly.notificationRecheckBeforeDispatch = func() { rechecks++ }
-		_, _, finish, restoreErr := (delegateRuntime{owner: root}).restoreIdleForSend(started)
-		recheck := finish(nil, restoreErr)
-		if !errors.Is(restoreErr, os.ErrNotExist) || !recheck {
-			t.Fatalf("failed restore carrier recheck=%v err=%v", recheck, restoreErr)
-		}
-		select {
-		case <-released:
-		default:
-			t.Fatal("reclamation retained the finalization admission")
-		}
-		if rechecks != 0 {
-			t.Fatalf("restoration consumed %d rechecks before its outer caller", rechecks)
-		}
-		outerRelease()
-		recheckNotificationsForTest(c, recheck)
-		if rechecks != 1 {
-			t.Fatalf("outer consumer dispatched %d rechecks, want 1", rechecks)
-		}
+		runFinalizationHandoffLifecycleSubprocess(t, "restore_reclamation_failure")
 	})
 	for _, stop := range []bool{false, true} {
 		t.Run(map[bool]string{false: "failed_start", true: "stop_reconciliation"}[stop], func(t *testing.T) {
@@ -859,14 +805,103 @@ func TestFinalizationHandoffReleaseCarriers(t *testing.T) {
 	}
 }
 
+func runFinalizationHandoffRestoreReclamationFailure(t *testing.T) {
+	t.Helper()
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	eventsDrained := make(chan struct{})
+	root.ConsumeEventsLossless(func(events.SessionEvent) {}, func() { close(eventsDrained) })
+	t.Cleanup(func() {
+		root.Close()
+		root.sendersWG.Wait()
+		<-eventsDrained
+	})
+	c := root.delegateController
+	c.maxRetainedTerminal = 1
+	resident := seedDelegateReclaimRuntime(t, c, "dlg_old", "", time.Unix(5, 0).UTC(), false, false)
+	// Rechecking the reclaimed old delegate must find valid, empty attention
+	// evidence. Only the distinct restore target's metadata is intentionally absent.
+	writer, writeErr := transcript.NewWriter(transcriptPath(root.stateDir, resident.ID()), transcript.Header{
+		SessionID:       resident.ID(),
+		ParentSessionID: root.ID(),
+	})
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	c.mu.Lock()
+	c.live["dlg_old"].finalizing = &delegateFinalization{runtime: resident, released: released}
+	target := delegateControllerCreatedEvent("dlg_restore", "")
+	target.Created.Descriptor.OwnerSessionID = root.ID()
+	_, err := c.appendLocked(target)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := c.ReserveStart(rootDelegateActor(root.ID()), "dlg_restore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
+	rc, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.AttachRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	outerRelease, err := root.beginRetirementMutation("delegate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outerRelease()
+	root.cfg.testOnly.delegateRuntimeReclaimClose = func(*Session) {}
+	rechecks := 0
+	root.cfg.testOnly.notificationRecheckBeforeDispatch = func() { rechecks++ }
+	_, _, finish, restoreErr := (delegateRuntime{owner: root}).restoreIdleForSend(started)
+	recheck := finish(nil, restoreErr)
+	if !errors.Is(restoreErr, os.ErrNotExist) || !recheck {
+		t.Fatalf("failed restore carrier recheck=%v err=%v", recheck, restoreErr)
+	}
+	var missingMeta *os.PathError
+	wantMeta := filepath.Join(root.stateDir, sessionsSubdir, started.descriptor.ChildSessionID+".meta.json")
+	if !errors.As(restoreErr, &missingMeta) || missingMeta.Path != wantMeta {
+		t.Fatalf("restore failure did not concern the target metadata %q: %v", wantMeta, restoreErr)
+	}
+	select {
+	case <-released:
+	default:
+		t.Fatal("reclamation retained the finalization admission")
+	}
+	if rechecks != 0 {
+		t.Fatalf("restoration consumed %d rechecks before its outer caller", rechecks)
+	}
+	outerRelease()
+	recheckNotificationsForTest(c, recheck)
+	if rechecks != 1 {
+		t.Fatalf("outer consumer dispatched %d rechecks, want 1", rechecks)
+	}
+}
+
 func TestFinalizationHandoffLifecycle(t *testing.T) {
 	t.Parallel()
+	runFinalizationHandoffLifecycleSubprocess(t, "1")
+}
+
+func runFinalizationHandoffLifecycleSubprocess(t *testing.T, scenario string) {
+	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(executable, "-test.run=^TestFinalizationHandoffLifecycleHelper$", "-test.timeout=60s")
-	cmd.Env = append(os.Environ(), "EVENER_HANDOFF_LIFECYCLE=1")
+	cmd.Env = append(os.Environ(), "EVENER_HANDOFF_LIFECYCLE="+scenario)
 	output, err := cmd.CombinedOutput() // Drains all stderr through normal process exit.
 	if err != nil {
 		t.Fatalf("lifecycle helper: %v\n%s", err, output)
@@ -1037,6 +1072,10 @@ func TestFinalizationHandoffLifecycleHelper(t *testing.T) {
 	}
 	// Not parallel: process-global logger, deliberately no default/log bridge.
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	if os.Getenv("EVENER_HANDOFF_LIFECYCLE") == "restore_reclamation_failure" {
+		runFinalizationHandoffRestoreReclamationFailure(t)
+		return
+	}
 	runFinalizationHandoffOwnedByRunner(t)
 	fixture := newColdStableDelegateFixture(t, "") // Includes the empty cold child.
 	root := restoreSupervisionRoot(t, fixture, nil)
