@@ -1147,6 +1147,21 @@ test("/help shows a rebound app-global chord and drops an unbound one", async ()
   });
 });
 
+test("/help keeps the press boundaries of a multi-press rebinding", async () => {
+  const user = userEvent.setup();
+  await openHelpFromCommand(user);
+
+  act(() => rebindAction(keybindingsRegistry, ACTIONS.composerFocus, "Control+Y Control+W"));
+
+  const term = screen.getAllByRole("term").find((el) => el.textContent === "Ctrl+Y");
+  if (term === undefined) throw new Error("first press is not the term");
+  const definition = term.nextElementSibling;
+  // The second press is its own keycap group, not run on to the first with "+".
+  expect(definition?.querySelectorAll("kbd")).toHaveLength(2);
+  expect(chordCount(["Ctrl", "Y", "Ctrl", "W"])).toBe(0);
+  act(() => restoreDefaultBinding(keybindingsRegistry, ACTIONS.composerFocus));
+});
+
 test("/help lists the UX-fix chords the old table never had", async () => {
   const user = userEvent.setup();
   await openHelpFromCommand(user);

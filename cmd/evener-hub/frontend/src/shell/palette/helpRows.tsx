@@ -1,8 +1,8 @@
-import { ACTIONS, type Binding, chordDisplayKeys, displayBindingsFor } from "@evener/appwire-client";
-import { useEffect } from "react";
+import { ACTIONS, type Binding, chordDisplayKeys, displayBindingsFor, serializeChord } from "@evener/appwire-client";
+import { Fragment, useEffect } from "react";
 import { useStore } from "zustand";
 import { keybindingsRegistry } from "../../keybindings/appRegistry";
-import type { ShortcutListItem } from "../../widgets";
+import { KeyHint, type ShortcutListItem } from "../../widgets";
 import { installKeybindings } from "../installKeybindings";
 
 type HelpRow = { keys: string[]; label: string } | { actionId: string; label: string };
@@ -48,15 +48,30 @@ const HELP_ROWS: readonly HelpRow[] = [
   { keys: ["→"], label: "next ask-dock question" },
 ];
 
-// A multi-press sequence ("g g") lists its presses in order, as the
-// cheatsheet overlay does.
+// A ShortcutList term is a single chord, so a multi-press override ("g g")
+// shows its first press as the term and the later presses, each its own
+// KeyHint, ahead of the label.
 function helpRowsFor(bindings: readonly Binding[]): ShortcutListItem[] {
   return HELP_ROWS.flatMap((row): ShortcutListItem[] => {
     if ("keys" in row) return [row];
-    return displayBindingsFor(bindings, row.actionId).map((binding) => ({
-      keys: binding.chord.flatMap(chordDisplayKeys),
-      label: row.label,
-    }));
+    return displayBindingsFor(bindings, row.actionId).flatMap((binding) => {
+      const [first, ...rest] = binding.chord;
+      if (first === undefined) return [];
+      const label =
+        rest.length === 0 ? (
+          row.label
+        ) : (
+          <>
+            {rest.map((press) => (
+              <Fragment key={serializeChord([press])}>
+                <KeyHint keys={chordDisplayKeys(press)} />{" "}
+              </Fragment>
+            ))}
+            {row.label}
+          </>
+        );
+      return [{ keys: chordDisplayKeys(first), label }];
+    });
   });
 }
 
