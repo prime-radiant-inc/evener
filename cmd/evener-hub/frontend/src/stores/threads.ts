@@ -1261,6 +1261,7 @@ function createEntryTranscriptRepository(
   const { threadId, historyKey, identity, clearEpoch, historyGeneration, seedModel } = binding;
   const ref = fixture.ref;
   const productionRoute = productionEntryRoutes.get(ref) === fixture;
+  fixture.resolvedEscalations ??= new Set();
   return new TranscriptRepository(fixture.cache, {
     ref,
     threadId,
@@ -1268,7 +1269,7 @@ function createEntryTranscriptRepository(
     identity,
     clearEpoch,
     historyGeneration,
-    resolvedEscalations: (fixture.resolvedEscalations ??= new Set()),
+    resolvedEscalations: fixture.resolvedEscalations,
     lifetime: fixture.lifetime,
     seedModel,
     now: () => fixture.cache.now(),
