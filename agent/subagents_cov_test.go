@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestTrySetDisposeGate covers trySetDisposeGate (subagents.go:1198-1205):
+// TestTrySetDisposeGate covers trySetDisposeGate:
 // returns false when running or driving, true and sets gate when quiescent.
 func TestTrySetDisposeGate(t *testing.T) {
 	t.Parallel()
@@ -33,7 +33,7 @@ func TestTrySetDisposeGate(t *testing.T) {
 	}
 }
 
-// TestClearDisposeGate covers clearDisposeGate (subagents.go:1211-1214):
+// TestClearDisposeGate covers clearDisposeGate:
 // reverses the dispose gate set by trySetDisposeGate.
 func TestClearDisposeGate(t *testing.T) {
 	t.Parallel()
@@ -49,8 +49,7 @@ func TestClearDisposeGate(t *testing.T) {
 	}
 }
 
-// TestNoteParentJobActivity covers noteParentJobActivity
-// (subagents.go:1095-1103): nil session and nil callback guards, and the
+// TestNoteParentJobActivity covers noteParentJobActivity: nil session and nil callback guards, and the
 // happy path.
 func TestNoteParentJobActivity(t *testing.T) {
 	t.Parallel()
@@ -90,8 +89,7 @@ func TestNoteParentJobActivity(t *testing.T) {
 }
 
 // TestMarkSalvagedTurnPersistedAndHasSalvageFromFinalRound covers
-// markSalvagedTurnPersisted and hasSalvageFromFinalRound
-// (subagents.go:1111-1138).
+// markSalvagedTurnPersisted and hasSalvageFromFinalRound.
 func TestMarkSalvagedTurnPersistedAndHasSalvageFromFinalRound(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
@@ -116,8 +114,7 @@ func TestMarkSalvagedTurnPersistedAndHasSalvageFromFinalRound(t *testing.T) {
 	}
 }
 
-// TestSendInputUnknownAgent covers sendInput's unknown-agent error path
-// (subagents.go:1142-1144).
+// TestSendInputUnknownAgent covers sendInput's unknown-agent error path.
 func TestSendInputUnknownAgent(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)

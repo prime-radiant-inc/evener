@@ -10,7 +10,7 @@ import (
 )
 
 // TestNoteJobActivityTerminalJobGuard covers the terminal-job early-return in
-// noteJobActivity (jobs.go:388-389): a terminal job in jm.running does not
+// noteJobActivity: a terminal job in jm.running does not
 // update LastActivity or Phase.
 func TestNoteJobActivityTerminalJobGuard(t *testing.T) {
 	t.Parallel()
@@ -50,7 +50,7 @@ func TestNoteJobActivityTerminalJobGuard(t *testing.T) {
 	}
 }
 
-// TestReadOutputHeadLiveAndStorePaths covers readOutputHead (jobs.go:1217-1238)
+// TestReadOutputHeadLiveAndStorePaths covers readOutputHead
 // for both the live-running path and the store-only fallback path.
 func TestReadOutputHeadLiveAndStorePaths(t *testing.T) {
 	t.Parallel()
@@ -101,7 +101,7 @@ func TestReadOutputHeadLiveAndStorePaths(t *testing.T) {
 }
 
 // TestReadOutputHeadStorePathStatsError covers the error path when the output
-// file stats fail for a store-only job (jobs.go:1233-1237).
+// file stats fail for a store-only job.
 func TestReadOutputHeadStorePathStatsError(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -124,7 +124,7 @@ func TestReadOutputHeadStorePathStatsError(t *testing.T) {
 	}
 }
 
-// TestOutputDroppedLiveAndStorePaths covers outputDropped (jobs.go:1246-1263)
+// TestOutputDroppedLiveAndStorePaths covers outputDropped
 // for both the live-running and store-only paths.
 func TestOutputDroppedLiveAndStorePaths(t *testing.T) {
 	t.Parallel()
@@ -159,7 +159,7 @@ func TestOutputDroppedLiveAndStorePaths(t *testing.T) {
 	}
 }
 
-// TestReadOutputWindowLivePath covers readOutputWindow (jobs.go:1178-1213)
+// TestReadOutputWindowLivePath covers readOutputWindow
 // for the live-running path.
 func TestReadOutputWindowLivePath(t *testing.T) {
 	t.Parallel()
@@ -218,7 +218,7 @@ func TestReadOutputWindowNotFound(t *testing.T) {
 	}
 }
 
-// TestHeadOutput covers headOutput (jobs.go:2163-2166), the live output head
+// TestHeadOutput covers headOutput, the live output head
 // reader wrapper.
 func TestHeadOutput(t *testing.T) {
 	t.Parallel()
@@ -242,8 +242,7 @@ func TestHeadOutput(t *testing.T) {
 	}
 }
 
-// TestBoundedStructuredResult covers all branches of boundedStructuredResult
-// (jobs.go:1804-1834): nil value with captureFailed, nil value with schema,
+// TestBoundedStructuredResult covers all branches of boundedStructuredResult: nil value with captureFailed, nil value with schema,
 // nil value without schema, marshal error/too large, schema validation fail,
 // and the happy path.
 func TestBoundedStructuredResult(t *testing.T) {
@@ -287,7 +286,7 @@ func TestBoundedStructuredResult(t *testing.T) {
 }
 
 // TestBoundedStructuredResultSchemaValidation covers the schema validation
-// failure branch (jobs.go:1828-1831).
+// failure branch.
 func TestBoundedStructuredResultSchemaValidation(t *testing.T) {
 	t.Parallel()
 	// A schema that rejects the value — pass a non-matching schema.
@@ -307,7 +306,7 @@ func TestBoundedStructuredResultSchemaValidation(t *testing.T) {
 	}
 }
 
-// TestAbandonRunningJob covers abandonRunningJob (jobs.go:808-837) for a
+// TestAbandonRunningJob covers abandonRunningJob for a
 // single running job.
 func TestAbandonRunningJob(t *testing.T) {
 	t.Parallel()

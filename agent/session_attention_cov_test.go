@@ -9,7 +9,7 @@ import (
 )
 
 // TestNewDelegateAttentionFoldAndPendingIDs covers newDelegateAttentionFold
-// and the pendingIDs method (session_attention.go:190-208).
+// and the pendingIDs method.
 func TestNewDelegateAttentionFoldAndPendingIDs(t *testing.T) {
 	t.Parallel()
 	fold := newDelegateAttentionFold()
@@ -43,8 +43,7 @@ func TestNewDelegateAttentionFoldAndPendingIDs(t *testing.T) {
 	}
 }
 
-// TestHasPendingRootDelegateAttentionNilGuard covers the nil-session guard
-// (session_attention.go:586-587).
+// TestHasPendingRootDelegateAttentionNilGuard covers the nil-session guard.
 func TestHasPendingRootDelegateAttentionNilGuard(t *testing.T) {
 	t.Parallel()
 	var s *Session
@@ -54,7 +53,7 @@ func TestHasPendingRootDelegateAttentionNilGuard(t *testing.T) {
 }
 
 // TestIsRootDelegateAttentionReceiverNilGuard covers the nil-session and
-// nil-controller guards (session_attention.go:553-554).
+// nil-controller guards.
 func TestIsRootDelegateAttentionReceiverNilGuard(t *testing.T) {
 	t.Parallel()
 	var s *Session
@@ -69,8 +68,7 @@ func TestIsRootDelegateAttentionReceiverNilGuard(t *testing.T) {
 	}
 }
 
-// TestHasPendingDelegateAttentionArmRetryNilGuard covers the nil-session guard
-// (session_attention.go:486-487).
+// TestHasPendingDelegateAttentionArmRetryNilGuard covers the nil-session guard.
 func TestHasPendingDelegateAttentionArmRetryNilGuard(t *testing.T) {
 	t.Parallel()
 	var s *Session
@@ -79,8 +77,7 @@ func TestHasPendingDelegateAttentionArmRetryNilGuard(t *testing.T) {
 	}
 }
 
-// TestPendingDelegateAttentionIDsNilGuard covers the nil-session guard
-// (session_attention.go:496-497).
+// TestPendingDelegateAttentionIDsNilGuard covers the nil-session guard.
 func TestPendingDelegateAttentionIDsNilGuard(t *testing.T) {
 	t.Parallel()
 	var s *Session
@@ -90,8 +87,7 @@ func TestPendingDelegateAttentionIDsNilGuard(t *testing.T) {
 	}
 }
 
-// TestScheduleStableDelegateAttentionRetryNilGuard covers the nil-session guard
-// (session_attention.go:741-742).
+// TestScheduleStableDelegateAttentionRetryNilGuard covers the nil-session guard.
 func TestScheduleStableDelegateAttentionRetryNilGuard(t *testing.T) {
 	t.Parallel()
 	var s *Session
@@ -99,8 +95,7 @@ func TestScheduleStableDelegateAttentionRetryNilGuard(t *testing.T) {
 	s.scheduleStableDelegateAttentionRetry()
 }
 
-// TestResetStableDelegateAttentionRetryNilGuard covers the nil-session guard
-// (session_attention.go:785-786).
+// TestResetStableDelegateAttentionRetryNilGuard covers the nil-session guard.
 func TestResetStableDelegateAttentionRetryNilGuard(t *testing.T) {
 	t.Parallel()
 	var s *Session
@@ -108,8 +103,7 @@ func TestResetStableDelegateAttentionRetryNilGuard(t *testing.T) {
 	s.resetStableDelegateAttentionRetry()
 }
 
-// TestFinishRootDelegateAttentionTurnEmptyIDs covers the empty-ids early-return
-// (session_attention.go:622-623).
+// TestFinishRootDelegateAttentionTurnEmptyIDs covers the empty-ids early-return.
 func TestFinishRootDelegateAttentionTurnEmptyIDs(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
@@ -122,8 +116,7 @@ func TestFinishRootDelegateAttentionTurnEmptyIDs(t *testing.T) {
 }
 
 // TestFoldDelegateAttentionResolutionBeforeAppend covers the error path where
-// a resolution appears before the attention was appended
-// (session_attention.go:135-136).
+// a resolution appears before the attention was appended.
 func TestFoldDelegateAttentionResolutionBeforeAppend(t *testing.T) {
 	t.Parallel()
 	resolutionTurn := schema.NewTurn(schema.TurnAttentionResolution, llm.System("resolved"))
@@ -138,8 +131,7 @@ func TestFoldDelegateAttentionResolutionBeforeAppend(t *testing.T) {
 }
 
 // TestFoldDelegateAttentionInvalidResolutionTurn covers the error path where
-// a resolution turn has an attention ID set or wrong kind
-// (session_attention.go:125-126).
+// a resolution turn has an attention ID set or wrong kind.
 func TestFoldDelegateAttentionInvalidResolutionTurn(t *testing.T) {
 	t.Parallel()
 	// Resolution turn with attention ID set (should not be set on resolution turns).
@@ -167,8 +159,7 @@ func TestFoldDelegateAttentionInvalidResolutionTurn(t *testing.T) {
 }
 
 // TestFoldDelegateAttentionResolutionTurnNoResolution covers the error path
-// where a TurnAttentionResolution has no resolution info
-// (session_attention.go:120-121).
+// where a TurnAttentionResolution has no resolution info.
 func TestFoldDelegateAttentionResolutionTurnNoResolution(t *testing.T) {
 	t.Parallel()
 	turn := schema.NewTurn(schema.TurnAttentionResolution, llm.System("no resolution"))
@@ -179,8 +170,7 @@ func TestFoldDelegateAttentionResolutionTurnNoResolution(t *testing.T) {
 }
 
 // TestFoldDelegateAttentionInvalidDisposition covers the error path where a
-// resolution has an invalid disposition string
-// (session_attention.go:129-130).
+// resolution has an invalid disposition string.
 func TestFoldDelegateAttentionInvalidDisposition(t *testing.T) {
 	t.Parallel()
 	// First add the attention.
@@ -202,8 +192,7 @@ func TestFoldDelegateAttentionInvalidDisposition(t *testing.T) {
 }
 
 // TestFoldDelegateAttentionDiscardedWithResumeGeneration covers the error path
-// where a discarded resolution carries a non-zero resume generation
-// (session_attention.go:132-133).
+// where a discarded resolution carries a non-zero resume generation.
 func TestFoldDelegateAttentionDiscardedWithResumeGeneration(t *testing.T) {
 	t.Parallel()
 	attentionTurn := schema.NewTurn(schema.TurnSteering, llm.User("hello"))

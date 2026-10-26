@@ -17,7 +17,7 @@ import (
 // Unreachable statements (per coverage-floors.txt comment):
 //
 //   project.go:146 — ValidateProjectID's base62 suffix loop error return:
-//     The preceding character loop (project.go:136) rejects any byte that is
+//     The preceding character loop rejects any byte that is
 //     not an ASCII alphanumeric or '-'. When that loop passes, every byte in
 //     value is alphanumeric or '-'. The suffix is the substring after the last
 //     '-', so it contains only alphanumerics. isBase62 is identical to

@@ -28,7 +28,7 @@ func w3sub_call(t *testing.T, reg *tool.Registry, env execenv.ExecutionEnvironme
 }
 
 // The shell handler rejects a negative max_runtime_ms in parseShellToolArgs
-// before it ever touches the environment (session_tools_shell.go:131).
+// before it ever touches the environment.
 func TestW3Sub_RegisterShellTools_ParseError(t *testing.T) {
 	t.Parallel()
 	reg := w3sub_shellReg(t, nil)
@@ -40,8 +40,7 @@ func TestW3Sub_RegisterShellTools_ParseError(t *testing.T) {
 	}
 }
 
-// A StreamingExecutor environment with no initialized JobManager fails fast
-// (session_tools_shell.go:135). The local execenv is a StreamingExecutor.
+// A StreamingExecutor environment with no initialized JobManager fails fast. The local execenv is a StreamingExecutor.
 func TestW3Sub_RegisterShellTools_StreamingNoJobManager(t *testing.T) {
 	t.Parallel()
 	reg := w3sub_shellReg(t, nil) // nil session -> nil jobManager
@@ -53,7 +52,7 @@ func TestW3Sub_RegisterShellTools_StreamingNoJobManager(t *testing.T) {
 }
 
 // list_dir parses its optional offset and limit arguments before delegating to
-// the environment (session_tools_shell.go:158, 162).
+// the environment.
 func TestW3Sub_RegisterShellTools_ListDirOffsetLimit(t *testing.T) {
 	t.Parallel()
 	reg := w3sub_shellReg(t, nil)
@@ -68,7 +67,7 @@ func TestW3Sub_RegisterShellTools_ListDirOffsetLimit(t *testing.T) {
 }
 
 // grep parses its optional case_insensitive and max_results arguments before
-// delegating to the environment (session_tools_shell.go:182, 186).
+// delegating to the environment.
 func TestW3Sub_RegisterShellTools_GrepArgs(t *testing.T) {
 	t.Parallel()
 	reg := w3sub_shellReg(t, nil)
@@ -80,7 +79,7 @@ func TestW3Sub_RegisterShellTools_GrepArgs(t *testing.T) {
 	}
 }
 
-// glob surfaces an environment error from its lookup (session_tools_shell.go:207).
+// glob surfaces an environment error from its lookup.
 func TestW3Sub_RegisterShellTools_GlobError(t *testing.T) {
 	t.Parallel()
 	reg := w3sub_shellReg(t, nil)

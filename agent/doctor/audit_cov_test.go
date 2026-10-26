@@ -5,7 +5,7 @@ import (
 )
 
 // TestMetricSourceResolve_TruncationWarnings covers the truncation_warnings
-// metric path (audit.go:373-377) including the error path for extra segments.
+// metric path including the error path for extra segments.
 func TestMetricSourceResolve_TruncationWarnings(t *testing.T) {
 	t.Parallel()
 	m := metricSource{health: HealthResult{TruncationWarnings: 3}}
@@ -21,7 +21,7 @@ func TestMetricSourceResolve_TruncationWarnings(t *testing.T) {
 }
 
 // TestMetricSourceResolve_StaleNotifications covers the stale_notifications
-// metric path (audit.go:378-382).
+// metric path.
 func TestMetricSourceResolve_StaleNotifications(t *testing.T) {
 	t.Parallel()
 	m := metricSource{health: HealthResult{StaleNotifications: 5}}
@@ -36,7 +36,7 @@ func TestMetricSourceResolve_StaleNotifications(t *testing.T) {
 }
 
 // TestMetricSourceResolve_UserCorrections covers the user_corrections metric
-// path (audit.go:383-387).
+// path.
 func TestMetricSourceResolve_UserCorrections(t *testing.T) {
 	t.Parallel()
 	m := metricSource{health: HealthResult{UserCorrections: 2}}
@@ -50,8 +50,7 @@ func TestMetricSourceResolve_UserCorrections(t *testing.T) {
 	}
 }
 
-// TestMetricSourceResolve_Steering covers the steering metric path
-// (audit.go:388-392) including the empty-key error.
+// TestMetricSourceResolve_Steering covers the steering metric path including the empty-key error.
 func TestMetricSourceResolve_SteeringCov(t *testing.T) {
 	t.Parallel()
 	m := metricSource{health: HealthResult{Steering: map[string]int{"restart": 1}}}
@@ -71,8 +70,7 @@ func TestMetricSourceResolve_SteeringCov(t *testing.T) {
 	}
 }
 
-// TestMetricSourceResolve_ToolCallsCov covers the tool_calls metric path
-// (audit.go:393-397).
+// TestMetricSourceResolve_ToolCallsCov covers the tool_calls metric path.
 func TestMetricSourceResolve_ToolCallsCov(t *testing.T) {
 	t.Parallel()
 	m := metricSource{health: HealthResult{ToolCalls: map[string]int{"exec_command": 10}}}
@@ -93,7 +91,7 @@ func TestMetricSourceResolve_ToolCallsCov(t *testing.T) {
 }
 
 // TestMetricSourceResolve_APILogNotLoaded covers the error when apilog
-// totals are requested but not loaded (audit.go:426-427).
+// totals are requested but not loaded.
 func TestMetricSourceResolve_APILogNotLoaded(t *testing.T) {
 	t.Parallel()
 	m := metricSource{haveAPILog: false}
@@ -104,7 +102,7 @@ func TestMetricSourceResolve_APILogNotLoaded(t *testing.T) {
 }
 
 // TestMetricSourceResolve_APIHealthNotLoaded covers the error when apilog
-// health is requested but not loaded (audit.go:406-407).
+// health is requested but not loaded.
 func TestMetricSourceResolve_APIHealthNotLoaded(t *testing.T) {
 	t.Parallel()
 	m := metricSource{haveAPIHealth: false}
@@ -115,7 +113,7 @@ func TestMetricSourceResolve_APIHealthNotLoaded(t *testing.T) {
 }
 
 // TestMetricSourceResolve_JobsZeroOutputTerminalExtra covers the error path
-// for extra path segments on jobs.zero_output_terminal (audit.go:357-358).
+// for extra path segments on jobs.zero_output_terminal.
 func TestMetricSourceResolve_JobsZeroOutputTerminalExtra(t *testing.T) {
 	t.Parallel()
 	m := metricSource{health: HealthResult{Jobs: JobsHealth{ZeroOutputTerminal: 1}}}
@@ -125,8 +123,7 @@ func TestMetricSourceResolve_JobsZeroOutputTerminalExtra(t *testing.T) {
 	}
 }
 
-// TestParseAuditFenceEmptyList covers the empty-list case in parseAuditFence
-// (audit.go:252-254) where YAML decodes successfully but the audit list is
+// TestParseAuditFenceEmptyList covers the empty-list case in parseAuditFence where YAML decodes successfully but the audit list is
 // empty — should return found=false.
 func TestParseAuditFenceEmptyList(t *testing.T) {
 	t.Parallel()
@@ -143,7 +140,7 @@ func TestParseAuditFenceEmptyList(t *testing.T) {
 }
 
 // TestParseRunbookDefaultStepReset covers the default case in ParseRunbook's
-// line loop (audit.go:228-230) where a non-indented, non-bullet line resets
+// line loop where a non-indented, non-bullet line resets
 // the open step.
 func TestParseRunbookDefaultStepReset(t *testing.T) {
 	t.Parallel()

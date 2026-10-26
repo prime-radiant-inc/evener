@@ -3156,7 +3156,7 @@ func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	}
 	// A TryClaim whose evidence collection races the still-settling durable
 	// attention stream legitimately returns errDelegateTargetBusy — the tree
-	// version moved mid-collection (delegate_tree_retirement.go:193); that is
+	// version moved mid-collection; that is
 	// a retry signal, never an escape. The pin holds when every attempt
 	// refuses and a settled attempt still names the original owner.
 	settledRefusal := func(stage string) RetirementSnapshot {

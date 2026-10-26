@@ -2018,8 +2018,7 @@ func TestBackgroundTranscriptTargetTraceEvidenceReusedIDsAcrossConnections(t *te
 
 // TestBackgroundTranscriptDurableTranscriptPath pins that the durable-transcript
 // reader follows the fixture's real layout: the daemons persist to
-// stateRoot/projects/<project>/sessions/<id>.transcript.jsonl
-// (skill_composer_browser_test.go:534-543). A reader that omits the "projects"
+// stateRoot/projects/<project>/sessions/<id>.transcript.jsonl. A reader that omits the "projects"
 // segment silently finds nothing and fails every content assertion regardless of
 // browser success.
 func TestBackgroundTranscriptDurableTranscriptPath(t *testing.T) {
@@ -2296,8 +2295,7 @@ func backgroundMilestonePresent(milestones []skillGuardMilestone, name string) b
 
 // backgroundTranscriptsFor reads exactly the named target session's durable
 // transcript under the fixture's real layout:
-// stateRoot/projects/<project>/sessions/<sessionID>.transcript.jsonl
-// (skill_composer_browser_test.go:534-543). A missing or unreadable expected
+// stateRoot/projects/<project>/sessions/<sessionID>.transcript.jsonl. A missing or unreadable expected
 // file is an error, never empty content, and no other session's transcript is
 // combined in.
 func backgroundTranscriptsFor(t *testing.T, stateRoot, sessionID string) (string, error) {

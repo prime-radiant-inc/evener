@@ -45,7 +45,7 @@ func w3subSeedPendingScenario(t *testing.T, fs afero.Fs) (outPath, pendingPath, 
 // valid prefix-recovery triple and asserts the read is rejected with an error.
 func TestW3Sub_ReadValidPendingMeta_RejectionArms(t *testing.T) {
 	t.Run("pending retained bytes invalid", func(t *testing.T) {
-		// TotalBytes < RetainedStart -> outputMetaRetainedBytes error (output.go:507).
+		// TotalBytes < RetainedStart -> outputMetaRetainedBytes error.
 		fs := afero.NewMemMapFs()
 		outPath, pendingPath, finalPath := w3subSeedPendingScenario(t, fs)
 		if err := writeOutputMetaFileFs(fs, pendingPath, outputMeta{TotalBytes: 5, RetainedStart: 20}); err != nil {
@@ -57,7 +57,7 @@ func TestW3Sub_ReadValidPendingMeta_RejectionArms(t *testing.T) {
 	})
 
 	t.Run("suffix sha mismatch", func(t *testing.T) {
-		// metaRetained<retained but the retained tail hash is wrong (output.go:513).
+		// metaRetained<retained but the retained tail hash is wrong.
 		fs := afero.NewMemMapFs()
 		outPath, pendingPath, finalPath := w3subSeedPendingScenario(t, fs)
 		if err := writeOutputMetaFileFs(fs, pendingPath, outputMeta{
@@ -71,7 +71,7 @@ func TestW3Sub_ReadValidPendingMeta_RejectionArms(t *testing.T) {
 	})
 
 	t.Run("final meta corrupt", func(t *testing.T) {
-		// Final metadata is unparseable JSON (output.go:520).
+		// Final metadata is unparseable JSON.
 		fs := afero.NewMemMapFs()
 		outPath, pendingPath, finalPath := w3subSeedPendingScenario(t, fs)
 		if err := afero.WriteFile(fs, finalPath, []byte("{not json"), 0o644); err != nil {
@@ -83,7 +83,7 @@ func TestW3Sub_ReadValidPendingMeta_RejectionArms(t *testing.T) {
 	})
 
 	t.Run("final meta missing", func(t *testing.T) {
-		// A valid pending prefix but no final journal to reconcile against (output.go:523).
+		// A valid pending prefix but no final journal to reconcile against.
 		fs := afero.NewMemMapFs()
 		outPath, pendingPath, finalPath := w3subSeedPendingScenario(t, fs)
 		if err := fs.Remove(finalPath); err != nil {
@@ -95,7 +95,7 @@ func TestW3Sub_ReadValidPendingMeta_RejectionArms(t *testing.T) {
 	})
 
 	t.Run("final retained bytes invalid", func(t *testing.T) {
-		// Final TotalBytes < RetainedStart -> outputMetaRetainedBytes error (output.go:528).
+		// Final TotalBytes < RetainedStart -> outputMetaRetainedBytes error.
 		fs := afero.NewMemMapFs()
 		outPath, pendingPath, finalPath := w3subSeedPendingScenario(t, fs)
 		if err := writeOutputMetaFileFs(fs, finalPath, outputMeta{TotalBytes: 2, RetainedStart: 10}); err != nil {
@@ -107,7 +107,7 @@ func TestW3Sub_ReadValidPendingMeta_RejectionArms(t *testing.T) {
 	})
 
 	t.Run("final invariant mismatch", func(t *testing.T) {
-		// Final RetainedStart no longer lines up with pending's prefix (output.go:533).
+		// Final RetainedStart no longer lines up with pending's prefix.
 		fs := afero.NewMemMapFs()
 		outPath, pendingPath, finalPath := w3subSeedPendingScenario(t, fs)
 		if err := writeOutputMetaFileFs(fs, finalPath, outputMeta{
@@ -121,7 +121,7 @@ func TestW3Sub_ReadValidPendingMeta_RejectionArms(t *testing.T) {
 	})
 
 	t.Run("metaRetained exceeds retained", func(t *testing.T) {
-		// metaRetained > retained falls to the equal-check mismatch arm (output.go:549).
+		// metaRetained > retained falls to the equal-check mismatch arm.
 		fs := afero.NewMemMapFs()
 		if err := afero.WriteFile(fs, "j.out", []byte("hello"), 0o644); err != nil {
 			t.Fatal(err)
@@ -140,7 +140,7 @@ func TestW3Sub_ReadValidPendingMeta_RejectionArms(t *testing.T) {
 // The filesystem-read error arms: sweep the fault seam over the valid
 // prefix-recovery scenario so that each output-file open/seek/read faults once,
 // proving the suffix/prefix/full-file hash error arms surface the injected
-// fault (output.go:511, 536, 542).
+// fault.
 func TestW3Sub_ReadValidPendingMeta_HashReadFaultArms(t *testing.T) {
 	errs := faultSweep(t, 48,
 		func(base afero.Fs) {
@@ -158,7 +158,7 @@ func TestW3Sub_ReadValidPendingMeta_HashReadFaultArms(t *testing.T) {
 	assertArmReached(t, errs, "jobstore: hash output metadata")
 }
 
-// The equal-branch full-file hash open faults through the seam (output.go:553).
+// The equal-branch full-file hash open faults through the seam.
 func TestW3Sub_ReadValidPendingMeta_ExactHashFaultArm(t *testing.T) {
 	errs := faultSweep(t, 24,
 		func(base afero.Fs) {

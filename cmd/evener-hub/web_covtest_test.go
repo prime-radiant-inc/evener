@@ -24,7 +24,7 @@ func (s *offlineStubSource) Online() bool { return s.online }
 // --- web.go: lockForSession ---
 
 // TestCovLockForSessionCreatesRegistry covers the path where ResumeLocks is
-// already initialized by NewWebServer (web.go:96).
+// already initialized by NewWebServer.
 func TestCovLockForSessionCreatesRegistry(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	if web.cfg.ResumeLocks == nil {
@@ -42,7 +42,7 @@ func TestCovLockForSessionCreatesRegistry(t *testing.T) {
 }
 
 // TestCovLockForSessionWithExistingRegistry covers the path where ResumeLocks
-// is already set (web.go:96).
+// is already set.
 func TestCovLockForSessionWithExistingRegistry(t *testing.T) {
 	registry := hubcore.NewResumeLocks()
 	web := NewWebServer(hubcore.WebConfig{
@@ -60,8 +60,7 @@ func TestCovLockForSessionWithExistingRegistry(t *testing.T) {
 
 // --- web_api_tree.go: mergeFavoriteAuthorityQuality ---
 
-// TestCovMergeFavoriteAuthorityQualityAmbiguous covers the ambiguous branch
-// (web_api_tree.go:1499-1500).
+// TestCovMergeFavoriteAuthorityQualityAmbiguous covers the ambiguous branch.
 func TestCovMergeFavoriteAuthorityQualityAmbiguous(t *testing.T) {
 	for _, left := range []hubcore.FavoriteAuthorityQuality{
 		hubcore.FavoriteAuthorityComplete,
@@ -77,8 +76,7 @@ func TestCovMergeFavoriteAuthorityQualityAmbiguous(t *testing.T) {
 	}
 }
 
-// TestCovMergeFavoriteAuthorityQualityIncomplete covers the incomplete branch
-// (web_api_tree.go:1502-1503).
+// TestCovMergeFavoriteAuthorityQualityIncomplete covers the incomplete branch.
 func TestCovMergeFavoriteAuthorityQualityIncomplete(t *testing.T) {
 	if got := mergeFavoriteAuthorityQuality(hubcore.FavoriteAuthorityIncomplete, hubcore.FavoriteAuthorityComplete); got != hubcore.FavoriteAuthorityIncomplete {
 		t.Errorf("merge incomplete+complete = %v, want incomplete", got)
@@ -89,7 +87,7 @@ func TestCovMergeFavoriteAuthorityQualityIncomplete(t *testing.T) {
 }
 
 // TestCovMergeFavoriteAuthorityQualityBothComplete covers the both-complete
-// branch (web_api_tree.go:1505-1506).
+// branch.
 func TestCovMergeFavoriteAuthorityQualityBothComplete(t *testing.T) {
 	if got := mergeFavoriteAuthorityQuality(hubcore.FavoriteAuthorityComplete, hubcore.FavoriteAuthorityComplete); got != hubcore.FavoriteAuthorityComplete {
 		t.Errorf("merge complete+complete = %v, want complete", got)
@@ -97,7 +95,7 @@ func TestCovMergeFavoriteAuthorityQualityBothComplete(t *testing.T) {
 }
 
 // TestCovMergeFavoriteAuthorityQualityFallback covers the fallback incomplete
-// branch (web_api_tree.go:1508).
+// branch.
 func TestCovMergeFavoriteAuthorityQualityFallback(t *testing.T) {
 	// The only remaining combination where neither is ambiguous, neither is
 	// incomplete, and they aren't both complete would require a zero-value.
@@ -111,8 +109,7 @@ func TestCovMergeFavoriteAuthorityQualityFallback(t *testing.T) {
 
 // --- web_api_tree.go: favoriteProjectSourceClaim ---
 
-// TestCovFavoriteProjectSourceClaimRemote covers the remote ownership path
-// (web_api_tree.go:1512-1515).
+// TestCovFavoriteProjectSourceClaimRemote covers the remote ownership path.
 func TestCovFavoriteProjectSourceClaimRemote(t *testing.T) {
 	snap := navigationSnapshot{
 		remoteOwnership: map[string]favoriteRemoteOwnership{
@@ -125,7 +122,7 @@ func TestCovFavoriteProjectSourceClaimRemote(t *testing.T) {
 }
 
 // TestCovFavoriteProjectSourceClaimRemoteIncomplete covers the remote
-// ownership with empty sourceID (web_api_tree.go:1515-1516).
+// ownership with empty sourceID.
 func TestCovFavoriteProjectSourceClaimRemoteIncomplete(t *testing.T) {
 	snap := navigationSnapshot{
 		remoteOwnership: map[string]favoriteRemoteOwnership{
@@ -137,8 +134,7 @@ func TestCovFavoriteProjectSourceClaimRemoteIncomplete(t *testing.T) {
 	}
 }
 
-// TestCovFavoriteProjectSourceClaimLocal covers the local fallback
-// (web_api_tree.go:1518).
+// TestCovFavoriteProjectSourceClaimLocal covers the local fallback.
 func TestCovFavoriteProjectSourceClaimLocal(t *testing.T) {
 	snap := navigationSnapshot{}
 	if got := favoriteProjectSourceClaim("local:s1", snap); got != "local" {
@@ -148,8 +144,7 @@ func TestCovFavoriteProjectSourceClaimLocal(t *testing.T) {
 
 // --- web_api_tree.go: favoriteSessionSourceQuality ---
 
-// TestCovFavoriteSessionSourceQualityEmpty covers the empty ID path
-// (web_api_tree.go:1255-1256).
+// TestCovFavoriteSessionSourceQualityEmpty covers the empty ID path.
 func TestCovFavoriteSessionSourceQualityEmpty(t *testing.T) {
 	if got := favoriteSessionSourceQuality("", nil, nil, nil); got != hubcore.FavoriteAuthorityIncomplete {
 		t.Fatalf("expected incomplete for empty id, got %v", got)
@@ -157,7 +152,7 @@ func TestCovFavoriteSessionSourceQualityEmpty(t *testing.T) {
 }
 
 // TestCovFavoriteSessionSourceQualityIncompleteID covers the incompleteIDs
-// path (web_api_tree.go:1258-1259).
+// path.
 func TestCovFavoriteSessionSourceQualityIncompleteID(t *testing.T) {
 	incomplete := map[string]struct{}{"remote1:s1": {}}
 	if got := favoriteSessionSourceQuality("remote1:s1", nil, nil, incomplete); got != hubcore.FavoriteAuthorityIncomplete {
@@ -165,8 +160,7 @@ func TestCovFavoriteSessionSourceQualityIncompleteID(t *testing.T) {
 	}
 }
 
-// TestCovFavoriteSessionSourceQualityLocal covers the non-remote path
-// (web_api_tree.go:1262-1263).
+// TestCovFavoriteSessionSourceQualityLocal covers the non-remote path.
 func TestCovFavoriteSessionSourceQualityLocal(t *testing.T) {
 	if got := favoriteSessionSourceQuality("local:s1", nil, nil, nil); got != hubcore.FavoriteAuthorityComplete {
 		t.Fatalf("expected complete for local, got %v", got)
@@ -174,7 +168,7 @@ func TestCovFavoriteSessionSourceQualityLocal(t *testing.T) {
 }
 
 // TestCovFavoriteSessionSourceQualityRemoteIncomplete covers the incomplete
-// remote ownership path (web_api_tree.go:1265-1266).
+// remote ownership path.
 func TestCovFavoriteSessionSourceQualityRemoteIncomplete(t *testing.T) {
 	ownership := map[string]favoriteRemoteOwnership{
 		"remote1:s1": {sourceID: "remote1", complete: false},
@@ -185,7 +179,7 @@ func TestCovFavoriteSessionSourceQualityRemoteIncomplete(t *testing.T) {
 }
 
 // TestCovFavoriteSessionSourceQualityUnparseableRef covers the unparseable ref
-// path (web_api_tree.go:1268-1270).
+// path.
 func TestCovFavoriteSessionSourceQualityUnparseableRef(t *testing.T) {
 	ownership := map[string]favoriteRemoteOwnership{
 		"not-a-ref": {sourceID: "remote1", complete: true},
@@ -196,7 +190,7 @@ func TestCovFavoriteSessionSourceQualityUnparseableRef(t *testing.T) {
 }
 
 // TestCovFavoriteSessionSourceQualitySourceMismatch covers the source mismatch
-// path (web_api_tree.go:1272-1273).
+// path.
 func TestCovFavoriteSessionSourceQualitySourceMismatch(t *testing.T) {
 	ownership := map[string]favoriteRemoteOwnership{
 		"remote1:s1": {sourceID: "remote2", complete: true},
@@ -207,7 +201,7 @@ func TestCovFavoriteSessionSourceQualitySourceMismatch(t *testing.T) {
 }
 
 // TestCovFavoriteSessionSourceQualitySourceUnknown covers the unknown source
-// path (web_api_tree.go:1275-1276).
+// path.
 func TestCovFavoriteSessionSourceQualitySourceUnknown(t *testing.T) {
 	ownership := map[string]favoriteRemoteOwnership{
 		"remote1:s1": {sourceID: "remote1", complete: true},
@@ -219,7 +213,7 @@ func TestCovFavoriteSessionSourceQualitySourceUnknown(t *testing.T) {
 }
 
 // TestCovFavoriteSessionSourceQualitySourceIncomplete covers the incomplete
-// source path (web_api_tree.go:1276-1277).
+// source path.
 func TestCovFavoriteSessionSourceQualitySourceIncomplete(t *testing.T) {
 	ownership := map[string]favoriteRemoteOwnership{
 		"remote1:s1": {sourceID: "remote1", complete: true},
@@ -233,7 +227,7 @@ func TestCovFavoriteSessionSourceQualitySourceIncomplete(t *testing.T) {
 }
 
 // TestCovFavoriteSessionSourceQualityMatchingThread covers the matching thread
-// path (web_api_tree.go:1279-1287).
+// path.
 func TestCovFavoriteSessionSourceQualityMatchingThread(t *testing.T) {
 	ownership := map[string]favoriteRemoteOwnership{
 		"remote1:s1": {sourceID: "remote1", complete: true},
@@ -252,7 +246,7 @@ func TestCovFavoriteSessionSourceQualityMatchingThread(t *testing.T) {
 }
 
 // TestCovFavoriteSessionSourceQualityNoMatchingThread covers the no-matching-
-// thread path (web_api_tree.go:1288).
+// thread path.
 func TestCovFavoriteSessionSourceQualityNoMatchingThread(t *testing.T) {
 	ownership := map[string]favoriteRemoteOwnership{
 		"remote1:s1": {sourceID: "remote1", complete: true},
@@ -271,7 +265,7 @@ func TestCovFavoriteSessionSourceQualityNoMatchingThread(t *testing.T) {
 }
 
 // TestCovFavoriteSessionSourceQualityThreadWithDifferentSource covers the
-// path where a thread's Source differs from the ref SourceID (web_api_tree.go:1280-1281).
+// path where a thread's Source differs from the ref SourceID.
 func TestCovFavoriteSessionSourceQualityThreadWithDifferentSource(t *testing.T) {
 	ownership := map[string]favoriteRemoteOwnership{
 		"remote1:s1": {sourceID: "remote1", complete: true},
@@ -291,8 +285,7 @@ func TestCovFavoriteSessionSourceQualityThreadWithDifferentSource(t *testing.T) 
 
 // --- web_api_tree.go: favoriteSessionAliases ---
 
-// TestCovFavoriteSessionAliasesLocalRef covers the local ref path
-// (web_api_tree.go:1246-1247).
+// TestCovFavoriteSessionAliasesLocalRef covers the local ref path.
 func TestCovFavoriteSessionAliasesLocalRef(t *testing.T) {
 	aliases := favoriteSessionAliases("local:02wMz5Txv1C3Hut0M8GCeB")
 	want := []string{"local:02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv1C3Hut0M8GCeB"}
@@ -301,8 +294,7 @@ func TestCovFavoriteSessionAliasesLocalRef(t *testing.T) {
 	}
 }
 
-// TestCovFavoriteSessionAliasesBareID covers the bare-ID path
-// (web_api_tree.go:1248-1249).
+// TestCovFavoriteSessionAliasesBareID covers the bare-ID path.
 func TestCovFavoriteSessionAliasesBareID(t *testing.T) {
 	aliases := favoriteSessionAliases("02wMz5Txv1C3Hut0M8GCeB")
 	want := []string{"02wMz5Txv1C3Hut0M8GCeB", "local:02wMz5Txv1C3Hut0M8GCeB"}
@@ -323,8 +315,7 @@ func TestCovFavoriteSessionAliasesNonLocalRef(t *testing.T) {
 
 // --- web_api_tree.go: addNavigationProjectCandidate ---
 
-// TestCovAddNavigationProjectCandidateEmptyPath covers the empty path guard
-// (web_api_tree.go:651).
+// TestCovAddNavigationProjectCandidateEmptyPath covers the empty path guard.
 func TestCovAddNavigationProjectCandidateEmptyPath(t *testing.T) {
 	candidates := map[string]map[string]identifier.Project{}
 	addNavigationProjectCandidate(candidates, "", identifier.Project{ID: "p1"})
@@ -334,7 +325,7 @@ func TestCovAddNavigationProjectCandidateEmptyPath(t *testing.T) {
 }
 
 // TestCovAddNavigationProjectCandidateEmptyProjectID covers the empty project ID
-// guard (web_api_tree.go:651).
+// guard.
 func TestCovAddNavigationProjectCandidateEmptyProjectID(t *testing.T) {
 	candidates := map[string]map[string]identifier.Project{}
 	addNavigationProjectCandidate(candidates, "/path", identifier.Project{ID: ""})
@@ -343,8 +334,7 @@ func TestCovAddNavigationProjectCandidateEmptyProjectID(t *testing.T) {
 	}
 }
 
-// TestCovAddNavigationProjectCandidateNewPath covers the new-path branch
-// (web_api_tree.go:654-655).
+// TestCovAddNavigationProjectCandidateNewPath covers the new-path branch.
 func TestCovAddNavigationProjectCandidateNewPath(t *testing.T) {
 	candidates := map[string]map[string]identifier.Project{}
 	project := identifier.Project{ID: "p1", CanonicalPath: "/path"}
@@ -359,8 +349,7 @@ func TestCovAddNavigationProjectCandidateNewPath(t *testing.T) {
 
 // --- web_api_tree.go: selectNavigationProjects ---
 
-// TestCovSelectNavigationProjectsConflict covers the conflict path
-// (web_api_tree.go:678-679).
+// TestCovSelectNavigationProjectsConflict covers the conflict path.
 func TestCovSelectNavigationProjectsConflict(t *testing.T) {
 	candidates := map[string]map[string]identifier.Project{
 		"/path": {
@@ -382,8 +371,7 @@ func TestCovSelectNavigationProjectsConflict(t *testing.T) {
 	}
 }
 
-// TestCovSelectNavigationProjectsEmpty covers the empty-candidates path
-// (web_api_tree.go:674-675).
+// TestCovSelectNavigationProjectsEmpty covers the empty-candidates path.
 func TestCovSelectNavigationProjectsEmpty(t *testing.T) {
 	candidates := map[string]map[string]identifier.Project{
 		"/path": {},
@@ -424,7 +412,7 @@ func TestCovSplitProviderModelNoSlash(t *testing.T) {
 // --- web_api_tree.go: apiTreeSources ---
 
 // TestCovAPITreeSourcesLocalOnly covers the sources path when only the local
-// source is configured (web_api_tree.go:970-977).
+// source is configured.
 func TestCovAPITreeSourcesLocalOnly(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	sources := web.apiTreeSources()
@@ -585,8 +573,7 @@ func TestCovResumeProjectDeletionsWithEmptyStore(t *testing.T) {
 
 // --- webnext.go: webassetsHandler ---
 
-// TestCovWebassetsHandlerTraversal covers the path-traversal guard
-// (webnext.go:68-69).
+// TestCovWebassetsHandlerTraversal covers the path-traversal guard.
 func TestCovWebassetsHandlerTraversal(t *testing.T) {
 	handler := webassetsHandler(distFS())
 	req := httptest.NewRequest(http.MethodGet, "/webassets/../secret", nil)
