@@ -455,6 +455,12 @@ func testHubRelayInterruptedRead(t *testing.T, disconnect bool) {
 	if _, err := client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
 		t.Fatal(err)
 	}
+	// The hub releases a read's command owner when the response enters the
+	// connection's send queue, which can follow the client receiving it. Wait
+	// for that release so the count below belongs to the interrupted read.
+	awaitActivityRelayCondition(f.ctx, t, func() bool {
+		return f.relays.relayCommandCount(rootRef) == 0
+	}, "initial read did not release its owner")
 	readCtx, cancelRead := context.WithCancel(f.ctx)
 	t.Cleanup(cancelRead)
 	f.gateArmed.Store(true)
