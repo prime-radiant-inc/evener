@@ -24,6 +24,7 @@ import {
   transitionTranscriptViews,
 } from "./flow/transcriptViewRegistry";
 import * as flowModule from "./flow/useTranscriptScroll";
+import * as registrationModule from "./flow/useTranscriptViewRegistration";
 import { TranscriptBody, transcriptAnchorEntriesForRows, transcriptRowsForProjection } from "./TranscriptBody";
 import { installTranscriptGeometry } from "./transcriptReadingGeometryTestUtils";
 import { threadFingerprintForItem } from "./types";
@@ -1306,10 +1307,10 @@ describe("trailingRow", () => {
 
 describe("trailingRow scroll coordination", () => {
   test("the view registration's rendered row count includes the trailing row", async () => {
-    const realRegistration = flowModule.useTranscriptViewRegistration;
+    const realRegistration = registrationModule.useTranscriptViewRegistration;
     const capturedCounts: Array<number | undefined> = [];
     const spy = vi
-      .spyOn(flowModule, "useTranscriptViewRegistration")
+      .spyOn(registrationModule, "useTranscriptViewRegistration")
       .mockImplementation((options: Parameters<typeof realRegistration>[0]) => {
         capturedCounts.push(options.renderedRowCount);
         return realRegistration(options);

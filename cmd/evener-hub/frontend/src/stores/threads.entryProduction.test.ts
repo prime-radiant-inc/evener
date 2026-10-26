@@ -14,7 +14,7 @@ import { IDBFactory, IDBIndex, IDBKeyRange, IDBObjectStore } from "fake-indexedd
 import { createElement, createRef } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useStore } from "zustand";
-import { useTranscriptViewRegistration } from "../panes/session/transcript/flow/useTranscriptScroll";
+import { useTranscriptViewRegistration } from "../panes/session/transcript/flow/useTranscriptViewRegistration";
 import { installTranscriptGeometry } from "../panes/session/transcript/transcriptReadingGeometryTestUtils";
 import { deleteSession } from "../shell/rail/actions";
 import { VirtualList, type VirtualListHandle } from "../widgets";

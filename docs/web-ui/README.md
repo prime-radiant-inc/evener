@@ -255,7 +255,7 @@ usable reading depth, and an entry whose tail is showing keeps that tail in
 place rather than filling the pane. A height-only change, such as later
 composer-height settlement after a pane widens, keeps the reading line where it
 was. The existing
-[transcript registration](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts)
+[transcript registration](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptViewRegistration.ts)
 owns that intent; VirtualList owns measurement and committed geometry.
 Mounted and remounted readers use the same reflow policy. Retained placement
 waits while the thread store's ref-scoped local opening restores bodies, then

@@ -14,7 +14,8 @@ import {
   resetTranscriptViewRegistryForTests,
   transitionTranscriptViews,
 } from "./transcriptViewRegistry";
-import { useTranscriptScroll, useTranscriptViewRegistration } from "./useTranscriptScroll";
+import { useTranscriptScroll } from "./useTranscriptScroll";
+import { useTranscriptViewRegistration } from "./useTranscriptViewRegistration";
 import { captureTopAnchor, captureTranscriptView, restoreTopAnchor, type ViewAnchorPosition } from "./viewAnchor";
 
 // --- fixtures ------------------------------------------------------------
