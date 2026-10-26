@@ -5137,6 +5137,8 @@ function notificationThreadId(n: AnyNotification): string | undefined {
 // read issued before the resolve can therefore still carry the escalation, so
 // buffered resolutions are replayed over the response model.
 function withBufferedEscalationResolutions(pending: PendingThreadHydration, model: ThreadModel): ThreadModel {
+  // A discarded response is the base model itself (isDiscardedReadResult).
+  if (model === pending.baseModel) return model;
   let resolved = model;
   for (const { notification } of pending.notifications) {
     if (notification.method === "evener/sandbox/escalation/resolved") {

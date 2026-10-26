@@ -18,6 +18,7 @@ import {
   mergeTranscriptTurnVersioned,
   pruneBackgroundHistoryBodies,
   readDisposition,
+  resolvePendingEscalation,
   type SnapshotIdentity,
   type ThreadItem,
   type ThreadItemPosition,
@@ -483,6 +484,11 @@ export class TranscriptRepository {
   // whose demand the eviction policy consults.
   #unregisterPreferred: (() => void) | undefined;
   readonly #endClaims = new Set<string>();
+  // A resolved escalation never returns. The resolving client learns of it from
+  // its own acknowledgment, which the daemon's snapshot cut does not order, so
+  // a read issued before the resolve can still carry the card; every read the
+  // repository adopts drops these.
+  readonly #resolvedEscalations = new Set<string>();
   #endWork: Promise<void> | undefined;
   #endRetryCancel: (() => void) | undefined;
   #endRetryAttempt = 0;
@@ -745,6 +751,9 @@ export class TranscriptRepository {
         );
       }
     }
+    for (const escalationId of this.#resolvedEscalations) {
+      candidate = resolvePendingEscalation(candidate, escalationId);
+    }
     if (candidate === before) return false;
     this.#model = candidate;
     const previousHistory = before?.history;
@@ -880,14 +889,11 @@ export class TranscriptRepository {
    * cannot replace or append to a response-owned slot. Capture that authority
    * once for the whole cut, so a missing upsert and its deltas stay together.
    * The shared reducer prunes any overlay the versioned recorded history covers.
-   * A resolved escalation never returns, so it is replayed over a read that
-   * captured the escalation before the resolution: the resolving client's own
-   * acknowledgment is not ordered against the daemon's snapshot cut.
    */
   acceptBeforeReadCut(notifications: readonly AnyNotification[], context: { lifetime: number }): void {
     const responseOverlayKeys = new Set(Object.keys(this.#model?.overlay ?? {}));
     for (const notification of notifications) {
-      if (notification.method === "history/updated" || notification.method === "evener/sandbox/escalation/resolved") {
+      if (notification.method === "history/updated") {
         this.accept(notification, context);
       } else if (
         notification.method === "thread/queueChanged" &&
@@ -925,6 +931,9 @@ export class TranscriptRepository {
         this.#endClaims.add(notification.params.roundId);
         this.#startEndDisposition();
       }
+    }
+    if (notification.method === "evener/sandbox/escalation/resolved") {
+      this.#resolvedEscalations.add(notification.params.escalationId);
     }
     const previousModel = this.#model;
     const now = this.#now();

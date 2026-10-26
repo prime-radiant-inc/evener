@@ -244,6 +244,33 @@ describe("useThreadsStore.resolveEscalation", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
   });
 
+  test("a superseded read answered after the resolve is still discarded", async () => {
+    const fake = connectFakeClient();
+    let answerRead: (response: ThreadReadResponse) => void = () => {};
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      return new Promise<ThreadReadResponse>((resolve) => {
+        answerRead = resolve;
+      });
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    const publishedBefore = threadsStore.getState().hydrations.get("ref_a");
+
+    const refresh = threadsStore.getState().refreshThread("ref_a");
+    await vi.waitFor(() => expect(reads).toBe(2));
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    // No requestGeneration echo: the response answers an older request than the
+    // one issued, so the reducer discards it.
+    answerRead(threadWithEscalation("ref_a", "esc_1"));
+    await refresh;
+
+    expect(threadsStore.getState().hydrations.get("ref_a")).toBe(publishedBefore);
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
   test("a watch read issued before the resolve and answered after it does not bring the escalation back", async () => {
     const fake = connectFakeClient();
     let answerWatchRead: (response: ThreadReadResponse) => void = () => {};

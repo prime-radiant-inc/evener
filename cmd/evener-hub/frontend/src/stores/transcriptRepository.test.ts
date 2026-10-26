@@ -3168,3 +3168,52 @@ it("issues no IDB transaction, request, or recorded-history load for overlay-onl
   }
   owner.dispose();
 });
+
+it("keeps a resolved escalation out of every later read, including one issued before the resolve", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  const reader = repo.attachReader();
+  const withEscalation = (response: ThreadReadResponse): ThreadReadResponse => ({
+    ...response,
+    thread: {
+      ...response.thread,
+      evener: {
+        ...response.thread.evener,
+        pendingEscalations: [
+          {
+            ref,
+            threadId,
+            escalationId: "esc_1",
+            mode: "workspace-write",
+            tool: "shell",
+            kind: "shell",
+            deniedPath: "/etc/hosts",
+          },
+        ],
+      },
+    },
+  });
+  try {
+    repo.acceptRead(withEscalation(read("baseline", 1)), { lifetime: 1, readId: "baseline", boundary: "baseline" });
+    expect(repo.getSnapshot()?.pendingEscalations).toHaveLength(1);
+    expect(
+      repo.accept(
+        {
+          method: "evener/sandbox/escalation/resolved",
+          params: { threadId, ref, escalationId: "esc_1" },
+        } as AnyNotification,
+        { lifetime: 1 },
+      ),
+    ).toBe(true);
+    expect(repo.getSnapshot()?.pendingEscalations).toEqual([]);
+
+    repo.acceptRead(withEscalation(read("later", 2)), { lifetime: 1, readId: "later", boundary: "later" });
+
+    expect(repo.getSnapshot()?.history?.length).toBe(2);
+    expect(repo.getSnapshot()?.pendingEscalations).toEqual([]);
+  } finally {
+    reader.dispose();
+    repo.dispose();
+  }
+});
