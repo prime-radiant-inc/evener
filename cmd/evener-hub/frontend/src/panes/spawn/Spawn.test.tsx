@@ -52,7 +52,7 @@ import {
   setDraftField,
   spawnDraftsStore,
 } from "./spawnDrafts";
-import { SPAWN_SLASH_CATALOG_DEBOUNCE_MS } from "./useSpawnSlashCatalog";
+import { SCOPED_HOST_READ_DEBOUNCE_MS } from "./useScopedHostRead";
 
 let modelListOverride: ModelDescriptor[] | null = null;
 
@@ -217,7 +217,12 @@ function attachCalls(fake: FakeClient): { host: string }[] {
     .map((call) => call.params as { host: string });
 }
 
-function renderSpawn(client: FakeClient, focused = true) {
+// connectStore wires `client` as the app's connected client, as the shell does:
+// the launch-config store behind the path and resolve reads speaks through it,
+// and so do the global stores that fetch on connect. Tests counting this pane's
+// own requests opt out.
+function renderSpawn(client: FakeClient, focused = true, { connectStore = true } = {}) {
+  if (connectStore) act(() => connectionStore.getState().connect(client));
   return render(
     <ClientProvider client={client}>
       <Spawn params={{}} paneId="spawn-1" focused={focused} />
@@ -685,13 +690,13 @@ test("completion menu ownership: a remounted prompt's cleared snapshot retires i
     f.on("thread/start", () => started.promise);
     f.on("evener/spawn/slashCatalog", () => ({ commands: [{ name: "review", description: "Review" }], skills: [] }));
   });
-  const mounted = renderSpawn(fake);
+  const mounted = renderSpawn(fake, true, { connectStore: false });
   await user.type(promptField(), "/re");
   await screen.findByTestId("composer-slash-menu");
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
   mounted.unmount();
-  renderSpawn(fake);
+  renderSpawn(fake, true, { connectStore: false });
   await screen.findByTestId("composer-slash-menu");
   await act(async () => started.resolve(startResponse("local:completion-a")));
   expect(promptField().textContent).toBe("");
@@ -883,7 +888,7 @@ test.each([false, true])("project navigation isolates stale-model notices (late 
       harness === "evener" && cwd === undefined ? catalog.promise : { data: [{ provider: "openai", model: "gpt-5" }] },
     ),
   );
-  renderSpawn(fake);
+  renderSpawn(fake, true, { connectStore: false });
   await waitFor(() => expect(fake.calls.some((c) => c.method === "model/list")).toBe(true));
   if (late) await visitSpawnURL("/new?dir=/tmp/review-b");
   await act(async () => catalog.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
@@ -905,7 +910,7 @@ test.each([false, true])("stale-model sweep retires its originating draft (navig
       harness === "evener" && cwd === undefined ? catalog.promise : { data: [{ provider: "openai", model: "gpt-5" }] },
     ),
   );
-  renderSpawn(fake);
+  renderSpawn(fake, true, { connectStore: false });
   await waitFor(() => expect(fake.calls.some((c) => c.method === "model/list")).toBe(true));
   expect(modelValue().textContent).toBe("openai/retired");
   if (navigate) await visitSpawnURL("/new?dir=/tmp/review-b");
@@ -3827,6 +3832,7 @@ test("loads sticky defaults from localStorage on mount", async () => {
   localStorage.setItem("evener-hub.spawn-defaults.global.working_dir", "/saved/project");
   localStorage.setItem("evener-hub.spawn-defaults./saved/project", JSON.stringify({ access_mode: "workspace-write" }));
   renderSpawn(readyClient());
+  await settled();
 
   await waitFor(() => expectWorkingDir("/saved/project"));
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
@@ -3894,7 +3900,7 @@ test("kata 11ee: a second ?dir= navigation while already mounted still prefills 
 // while the pane is already open must refill the prompt too.
 test("kata 11ee: a second ?prompt= navigation while already mounted still prefills the prompt", async () => {
   window.history.pushState({}, "", "/new?prompt=first");
-  renderSpawn(readyClient());
+  renderSpawn(readyClient(), true, { connectStore: false });
   await waitFor(() =>
     expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("first"),
   );
@@ -3918,7 +3924,7 @@ test("kata 11ee: a second ?prompt= navigation while already mounted still prefil
 test("kata 11ee: a navigation with no ?dir=/?prompt= at all leaves already-typed values untouched", async () => {
   const user = setupUser();
   window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp");
-  renderSpawn(readyClient());
+  renderSpawn(readyClient(), true, { connectStore: false });
   await waitFor(() => expectWorkingDir("/home/me/app"));
   await fillPrompt(user, "typed by hand");
 
@@ -4640,6 +4646,7 @@ test.each([false, true])(
     const fake = readyClient((client) => {
       client.on("evener/launch/resolve", () => ({ effective: { sandbox: "read-only" }, layers: {}, provenance: {} }));
     });
+    connectionStore.getState().connect(fake);
     render(
       <>
         <button type="button" aria-controls="unrelated-panel" aria-expanded="false" onClick={unrelated}>
@@ -4745,6 +4752,7 @@ test.each([false, true])("Advanced sandbox select owns Change focus, initially o
     }));
   });
   const unrelated = vi.fn();
+  connectionStore.getState().connect(fake);
   render(
     <>
       <button type="button" aria-controls="unrelated-panel" aria-expanded="false" onClick={unrelated}>
@@ -5649,7 +5657,7 @@ test("the Effort select and picker share one scoped model/list response", async 
           }),
     );
   });
-  renderSpawn(fake);
+  renderSpawn(fake, true, { connectStore: false });
   await settled();
 
   await waitFor(() => expect(resolve).toBeDefined());
@@ -5690,7 +5698,7 @@ test("the Effort select and picker share one scoped model/list response", async 
 test("evener/auth/updated drops the pane's model/list cache so the catalog and picker reload", async () => {
   const user = setupUser();
   const fake = readyClient();
-  renderSpawn(fake);
+  renderSpawn(fake, true, { connectStore: false });
   await settled();
   await waitFor(() => expect(modelListRequests(fake).filter((params) => params.harness === undefined)).toHaveLength(1));
   expect(
@@ -6518,6 +6526,7 @@ test.each(["desktop", "mobile"])("%s directory picker follows route directory ch
   const user = setupUser();
   window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp");
   renderSpawn(readyClient());
+  await settled();
   await waitFor(() => expectWorkingDir("/home/me/app"));
   await user.click(
     surface === "desktop"
@@ -6889,7 +6898,7 @@ test("a prefilled slash token opens its menu without waiting for a keystroke", a
       skills: [],
     }));
   });
-  renderSpawn(fake);
+  renderSpawn(fake, true, { connectStore: false });
 
   await waitFor(() =>
     expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("/rev"),
@@ -6953,7 +6962,7 @@ test("a non-evener harness sends no slashCatalog call and typing /goal shows no 
   // Run the fake clock past the debounce so a timer the switch failed to
   // cancel would fire here and be caught.
   await act(async () => {
-    await vi.advanceTimersByTimeAsync(SPAWN_SLASH_CATALOG_DEBOUNCE_MS + 1);
+    await vi.advanceTimersByTimeAsync(SCOPED_HOST_READ_DEBOUNCE_MS + 1);
   });
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
   expect(fake.calls.some((call) => call.method === "evener/spawn/slashCatalog")).toBe(false);
@@ -9725,7 +9734,7 @@ test("a draft already on a remote host is never swept by the controller's catalo
       return { data: [{ provider: "openai", model: "retired" }] } as HostForwardedResult;
     });
   });
-  const mounted = renderSpawn(fake);
+  const mounted = renderSpawn(fake, true, { connectStore: false });
   await settled();
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
   await act(async () => parked.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
@@ -9735,7 +9744,7 @@ test("a draft already on a remote host is never swept by the controller's catalo
   // catalog request resolves under a remote target from its first render - and
   // that request is the HOST's (routed), never the controller's parked one.
   mounted.unmount();
-  renderSpawn(fake);
+  renderSpawn(fake, true, { connectStore: false });
   await settled();
   await act(async () => {});
   expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");

@@ -41,6 +41,7 @@ import { navigate, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
 import { useExtensionsStore } from "../../stores/extensions";
 import { hostRequest, isLocalHost } from "../../stores/hostRouting";
+import { launchConfigStoreForHost } from "../../stores/launchConfig";
 import { selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import {
@@ -94,7 +95,7 @@ import {
 import { MobileSettingRows } from "./MobileSettingRows";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
 import pluginSelectionStyles from "./pluginSelection.module.css";
-import { createDir, preflightDir } from "./preflight";
+import { preflightDir } from "./preflight";
 import styles from "./spawn.module.css";
 import {
   getGlobalLastWorkingDir,
@@ -1306,10 +1307,10 @@ function SpawnForm({
     },
     [providerSetup.retry, loadModelList, setDefaultModelFallback, setModel, setStaleNotice],
   );
-  // Both path RPCs answer with a Go slice, and an EMPTY one marshals as JSON
-  // null rather than [] - a hub with no remembered projects, or a directory with
-  // no children. types.gen.ts declares `data: string[]`, so the compiler is no
-  // help here; these coalesce so a consumer counting entries never sees null.
+  // An EMPTY Go slice marshals as JSON null rather than [] - a hub with no
+  // remembered projects. types.gen.ts declares `data: string[]`, so the compiler
+  // is no help here; this coalesces so a consumer counting entries never sees
+  // null. (The launch-config store does the same for paths/complete.)
   const listRecents = useCallback(
     () => hostRequest(client, submittedSource, "evener/projects/recent", {}).then((r) => r.data ?? []),
     [client, submittedSource],
@@ -1319,8 +1320,8 @@ function SpawnForm({
   // from its own kind, so this just forwards it.
   const complete = useCallback(
     (prefix: string, includeFiles: boolean) =>
-      hostRequest(client, submittedSource, "evener/paths/complete", { prefix, includeFiles }).then((r) => r.data ?? []),
-    [client, submittedSource],
+      launchConfigStoreForHost(submittedSource).getState().completePaths(prefix, includeFiles),
+    [submittedSource],
   );
   // Path unfolding is host-scoped (component 07b). evener/path/validate answers
   // for the filesystem of the hub it reaches, so a remote target's paths are
@@ -1340,11 +1341,10 @@ function SpawnForm({
       // `path` is the server-canonicalized spelling, which a pathList add stores
       // in place of the raw input (matching the settings-side pathList field).
       const ask = (host: string) =>
-        hostRequest(client, host, "evener/path/validate", { path, kind }).then((r) => ({
-          valid: r.valid,
-          error: r.error,
-          path: r.path,
-        }));
+        launchConfigStoreForHost(host)
+          .getState()
+          .validatePath(path, kind)
+          .then((r) => ({ valid: r.valid, error: r.error, path: r.path }));
       // A superseded host's answer must not land (component 07b review, round
       // five): the advanced panel accepts a validation result on FIELD identity
       // alone, and a pathList add goes on its "ok" verdict, so a response issued
@@ -1361,7 +1361,7 @@ function SpawnForm({
         });
       return askSelectedHost(submittedSource);
     },
-    [client, submittedSource],
+    [submittedSource],
   );
   // Creating a folder is a WRITE, and evener/dirs/create MkdirAll's it on the
   // filesystem of the hub it reaches. A remote target's path belongs to the
@@ -1369,8 +1369,8 @@ function SpawnForm({
   // through evener/host/request (component 07b): the folder is created on the
   // machine the launch will use, never here.
   const createDirectory = useCallback(
-    (path: string) => createDir(client, path, submittedSource),
-    [client, submittedSource],
+    (path: string) => launchConfigStoreForHost(submittedSource).getState().createDirectory(path),
+    [submittedSource],
   );
   // A path-kind value's verdict belongs to the TARGET it was judged for, but
   // the record the advanced panel keeps carries no target with it: `invalid`
@@ -1447,13 +1447,15 @@ function SpawnForm({
   const pickerFallbackDir = isLocalHost(submittedSource) ? getGlobalLastWorkingDir() : "";
   const resolveConfig = useCallback(
     (overrides: LaunchConfigLayer) =>
-      hostRequest(client, submittedSource, "evener/launch/resolve", {
-        cwd,
-        launchOverrides: pluginSelectionSupported
-          ? withPluginSelection(overrides, pluginSelection)
-          : withPluginSelection(overrides, { mode: "default" }),
-      }),
-    [client, submittedSource, cwd, pluginSelection, pluginSelectionSupported],
+      launchConfigStoreForHost(submittedSource)
+        .getState()
+        .resolve(
+          cwd,
+          pluginSelectionSupported
+            ? withPluginSelection(overrides, pluginSelection)
+            : withPluginSelection(overrides, { mode: "default" }),
+        ),
+    [submittedSource, cwd, pluginSelection, pluginSelectionSupported],
   );
 
   const pluginPreview = usePluginPreview({
@@ -2645,7 +2647,7 @@ function SpawnForm({
     const submittedPromptRevision = draft.fields.getState().promptRevision;
     const ownsLaunchView = captureLaunchView();
     try {
-      await createDir(client, path, submittedSource);
+      await launchConfigStoreForHost(submittedSource).getState().createDirectory(path);
       await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
       // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call

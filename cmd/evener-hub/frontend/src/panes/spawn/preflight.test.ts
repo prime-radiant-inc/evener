@@ -1,9 +1,8 @@
 // @vitest-environment node
 
-import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, test } from "vitest";
-import { createDir, preflightDir } from "./preflight";
+import { preflightDir } from "./preflight";
 
 describe("preflightDir", () => {
   test("a valid directory preflights ok", async () => {
@@ -63,29 +62,9 @@ describe("preflightDir", () => {
   });
 });
 
-describe("createDir", () => {
-  test("requests directory creation over AppWire", async () => {
-    const fake = new FakeClient("ready");
-    fake.on("evener/dirs/create", () => ({ path: "/tmp/new", created: true }));
-
-    await createDir(fake, "/tmp/new");
-
-    expect(fake.calls[0]).toEqual({ method: "evener/dirs/create", params: { path: "/tmp/new" } });
-  });
-
-  test("throws the server's error message on failure", async () => {
-    const fake = new FakeClient("ready");
-    fake.on("evener/dirs/create", () => {
-      throw new WireError("a file already exists at that path", -32013);
-    });
-
-    await expect(createDir(fake, "/tmp/file")).rejects.toThrow("a file already exists at that path");
-  });
-});
-
 // Component 07b: a remote host's directory is validated and created on that
 // host through evener/host/request, not on the controller.
-describe("preflightDir/createDir (remote host routing)", () => {
+describe("preflightDir (remote host routing)", () => {
   test("preflightDir wraps path validation for a remote host", async () => {
     const fake = new FakeClient("ready");
     fake.on("evener/host/request", () => ({ path: "/srv/app", valid: true }));
@@ -95,20 +74,6 @@ describe("preflightDir/createDir (remote host routing)", () => {
       {
         method: "evener/host/request",
         params: { host: "buildbox", method: "evener/path/validate", params: { path: "/srv/app", kind: "dir" } },
-      },
-    ]);
-  });
-
-  test("createDir wraps directory creation for a remote host", async () => {
-    const fake = new FakeClient("ready");
-    fake.on("evener/host/request", () => ({ path: "/srv/app", created: true }));
-
-    await createDir(fake, "/srv/app", "buildbox");
-
-    expect(fake.calls).toEqual([
-      {
-        method: "evener/host/request",
-        params: { host: "buildbox", method: "evener/dirs/create", params: { path: "/srv/app" } },
       },
     ]);
   });

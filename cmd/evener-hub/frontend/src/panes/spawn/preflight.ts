@@ -1,6 +1,6 @@
 // preflight is the working-directory preflight seam (floor §1.13): validate
-// the cwd via appwire "evener/path/validate" and create it via appwire
-// "evener/dirs/create".
+// the cwd via appwire "evener/path/validate". Creating it is the launch-config
+// store's createDirectory.
 // T1 defines the signatures + a minimal working body; T2 wires them into the
 // real submission flow and adds the "doesn't exist yet -> offer to create"
 // discrimination (the offer-create outcome + the in-form Create&start dialog,
@@ -43,8 +43,4 @@ export async function preflightDir(
     // spawn - let submission proceed (spawn.js:573-580).
     return { kind: "ok" };
   }
-}
-
-export async function createDir(client: AppwireClientLike, path: string, host: string = "local"): Promise<void> {
-  await hostRequest(client, host, "evener/dirs/create", { path });
 }

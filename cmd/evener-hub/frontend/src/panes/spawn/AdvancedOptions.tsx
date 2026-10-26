@@ -22,11 +22,13 @@ import {
   asStringList,
   collectAdvancedOverrides,
   inheritedItems,
+  inputDefaultPlaceholder,
   type LaunchConfigLayer,
   type LaunchConfigResolved,
   type LaunchOption,
   type MCPServerSpec,
   type PathValidation,
+  resolvedValue,
   schemaPathKind,
   validatePathListAdd,
 } from "@evener/appwire-client";
@@ -272,14 +274,6 @@ interface ControlProps {
   onValue: (field: AdvancedFieldValue) => void;
 }
 
-/** The effective layer's raw value for this field, or undefined when no layer
- * sets it (or the resolve hasn't landed) - the source for every "<value>
- * (default)" label below. */
-function resolvedValue(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): unknown {
-  if (!resolvedDefaults) return undefined;
-  return (resolvedDefaults as Record<string, unknown>)[option.wireField];
-}
-
 /** The "<value> (default)" label for an unset string-valued control, or plain
  * "(default)" when the effective layer doesn't set the field. Falls back to
  * the schema's builtinDefaultLabel for a field whose default is dynamic
@@ -299,34 +293,6 @@ function booleanDefaultLabel(option: LaunchOption, resolvedDefaults: LaunchConfi
   if (value === true) return "On (default)";
   if (value === false) return "Off (default)";
   return "(default)";
-}
-
-/** The longest a resolved default runs in a placeholder before it is clipped:
- * long free-text values (a system prompt) must not turn a placeholder into a
- * wall of text. */
-const DEFAULT_PLACEHOLDER_MAX = 60;
-
-/** The placeholder naming the resolved default for the input-based controls
- * (integer, text, and the browsable path widget): "<value> (default)", with
- * long strings clipped. "" when no layer sets the field - the inputs stay
- * bare then, exactly as they were before the resolved-default labels. */
-function inputDefaultPlaceholder(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): string {
-  const value = resolvedValue(option, resolvedDefaults);
-  if (typeof value === "number" && Number.isFinite(value)) {
-    // max_rounds -1 and 0 both mean unlimited: the flag's own "unlimited"
-    // sentinel (fs.Int("max-rounds", -1, "... 0=unlimited")), and the agent's
-    // applyDefaults converts 0→-1. Keyed on the wire field: the spawn panel's
-    // option objects carry it verbatim.
-    if (option.wireField === "maxRounds" && (value === -1 || value === 0)) return "unlimited (default)";
-    return `${value} (default)`;
-  }
-  if (typeof value === "string" && value.trim() !== "") {
-    const trimmed = value.trim();
-    const shown =
-      trimmed.length > DEFAULT_PLACEHOLDER_MAX ? `${trimmed.slice(0, DEFAULT_PLACEHOLDER_MAX - 1)}…` : trimmed;
-    return `${shown} (default)`;
-  }
-  return "";
 }
 
 /** The schema's browsable path kinds, mapped onto the widget's. A "command"
