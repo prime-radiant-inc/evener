@@ -332,7 +332,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	}
 	s.attentionMu.Unlock()
 	for _, err := range mergedTailWriteErrs {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	// The fold's buffered marker/steering writes and its durable merged-tail
 	// copies each queue a diagnostic when a whole line landed but did not sync;
@@ -667,7 +667,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			}
 			return
 		}
-		s.emit(kind, data)
+		s.emit(data)
 	}
 	// commitTranscriptsLocked and flush are the two staged-commit phases a
 	// winning publish runs, in order — a losing fold runs NEITHER: it must
@@ -741,7 +741,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			hook()
 		}
 		for _, ccd := range pendingCompactionEvents {
-			s.emit(events.EventContextCompaction, ccd)
+			s.emit(ccd)
 		}
 		for i, turn := range pendingCompactionTurns {
 			s.handleCompactionTurnEffects(turn, compactionTurnWriteErrs[i], superseded, commit.publishedRevision)
@@ -956,9 +956,9 @@ func (s *Session) writeSteeringTurnRecordsLocked(records []steeringTurnRecord) [
 func (s *Session) emitSteeringTurnRecords(records []steeringTurnRecord, errs []error) {
 	for i, record := range records {
 		if i < len(errs) && errs[i] != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", errs[i])})
+			s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", errs[i])})
 		}
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: record.text, Kind: record.kind})
+		s.emit(events.SteeringInjectedData{Text: record.text, Kind: record.kind})
 	}
 }
 

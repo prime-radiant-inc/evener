@@ -116,7 +116,6 @@ implementation bases.
 ## Authoritative pointers
 
 - Product authority: `docs/subagent-management/11-delegate-resource-model.md`
-- Execution plan and remaining task dependencies: `docs/superpowers/plans/2026-08-12-delegate-resource-recovery.md`
 - Task 6 closure: `.superpowers/sdd/2026-08-12-delegate-resource-recovery/task-6-stabilization-report.md`
 - Task 7 closure: `.superpowers/sdd/2026-08-12-delegate-resource-recovery/task-7-report.md`
 - Append-only project ledger: `.superpowers/sdd/2026-08-12-delegate-resource-recovery/progress.md`

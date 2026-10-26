@@ -9,6 +9,9 @@ Ownership here means code responsibility, not a team or person. A client can sho
 a failure while another component owns its cause. Follow both sides before adding
 a retry, refusal, banner, or repair action.
 
+Version skew between hub, daemons, clients and remote hubs follows the
+direction rules in the [compatibility policy](README.md#compatibility).
+
 ## How the product fits together
 
 ```mermaid
