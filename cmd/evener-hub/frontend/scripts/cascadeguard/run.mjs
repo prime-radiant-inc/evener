@@ -216,7 +216,7 @@ const sourcePortExpr = `${driver.paneScopeExpr(fixture.rootRef)}?.querySelector(
 const sourceReadingPointExpr = readingPointExpr(sourcePortExpr);
 
 // The reader-reflow rule (docs/superpowers/specs/2026-10-04-shared-transcript-
-// reader-reflow-design.md, readingPointOffset in useTranscriptScroll.ts): where
+// reader-reflow-design.md, readingPointOffset in viewAnchor.ts): where
 // the entry that held the reading point should start relative to the viewport
 // top after a reflow. Also evaluated in the page, so it stays self-contained.
 // When the entry did not reflow (same width and height), the reading line

@@ -266,7 +266,7 @@ func summarizeTurn(e transcript.Entry, resultTool string, textMax int) TurnSumma
 			// placeholder, which can only parse to an empty intent anyway.
 			if part.ToolCall.RawArguments == "" {
 				arguments = strings.TrimSpace(arguments)
-				intent = toolIntentFromArguments(part.ToolCall.Arguments)
+				intent = schema.ToolIntent(part.ToolCall.Arguments)
 			}
 			ts.ToolCalls = append(ts.ToolCalls, ToolCallSummary{
 				Name:       part.ToolCall.Name,
@@ -288,32 +288,6 @@ func summarizeTurn(e transcript.Entry, resultTool string, textMax int) TurnSumma
 	}
 	ts.Text = Truncate(strings.TrimSpace(text.String()), textMax)
 	return ts
-}
-
-// toolIntentFromArguments returns a tool call's stated "intent" argument, or
-// "" if none is present. Falls back to "purpose" -- the field's name before
-// the 2026-08-29 rename (7512a736e) -- so a transcript recorded before that
-// rename still shows its intent line when read back (issue #709). Doctor
-// imports agent/schema and agent/transcript but not the agent package
-// itself (toolIntent's home) or internal/apptranscript, so this mirrors --
-// rather than shares -- the same reader-side rule applied independently in
-// each of those packages.
-func toolIntentFromArguments(raw json.RawMessage) string {
-	var args map[string]any
-	if len(raw) == 0 || json.Unmarshal(raw, &args) != nil {
-		return ""
-	}
-	if v, ok := args["intent"].(string); ok {
-		if s := strings.TrimSpace(v); s != "" {
-			return s
-		}
-	}
-	if v, ok := args["purpose"].(string); ok {
-		if s := strings.TrimSpace(v); s != "" {
-			return s
-		}
-	}
-	return ""
 }
 
 func toolResultContentText(content any) string {

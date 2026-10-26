@@ -293,8 +293,8 @@ func TestHostTombstonePersistBounds(t *testing.T) {
 		t.Fatalf("Remove: %v", err)
 	}
 	tombstone := tombstoneFor(t, f.m, "side")
-	if len(tombstone.Rows) != DefaultHostTombstoneMaxRows {
-		t.Fatalf("persisted rows = %d, want the %d-row bound", len(tombstone.Rows), DefaultHostTombstoneMaxRows)
+	if len(tombstone.Rows) != defaultHostRecordPolicy().tombstoneMaxRows {
+		t.Fatalf("persisted rows = %d, want the %d-row bound", len(tombstone.Rows), defaultHostRecordPolicy().tombstoneMaxRows)
 	}
 	if !tombstone.RowsTruncated {
 		t.Fatal("rowsTruncated = false at the row bound")
@@ -310,8 +310,8 @@ func TestHostTombstonePersistBounds(t *testing.T) {
 		t.Fatalf("persisted rows are not newest-first: first updated %d, last %d", first.UpdatedAt, last.UpdatedAt)
 	}
 	row := rowFor(t, f.m, "side")
-	if row.RetainedRows == nil || *row.RetainedRows != DefaultHostTombstoneMaxRows || !row.RowsTruncated {
-		t.Fatalf("list row = %+v, want retainedRows %d and rowsTruncated true", row, DefaultHostTombstoneMaxRows)
+	if row.RetainedRows == nil || *row.RetainedRows != defaultHostRecordPolicy().tombstoneMaxRows || !row.RowsTruncated {
+		t.Fatalf("list row = %+v, want retainedRows %d and rowsTruncated true", row, defaultHostRecordPolicy().tombstoneMaxRows)
 	}
 }
 
@@ -816,62 +816,72 @@ func TestHostTombstoneWriteLeavesEntryFingerprints(t *testing.T) {
 	}
 }
 
-// TestHostTombstoneKnobsLoadAndDefaults pins the owner-adjustable knob family
-// (spec §15: "owner-adjustable knobs in the same family as the cleared-marker
-// TTL; the defaults ship in the implementing PR"): the shipped defaults, the
-// explicit overrides, the integer-duration refusal, and the floor that keeps
-// an unset knob from disabling a bound.
-func TestHostTombstoneKnobsLoadAndDefaults(t *testing.T) {
-	defaults := DefaultConfig()
-	if defaults.HostTombstoneRetention != DefaultHostTombstoneRetention ||
-		defaults.HostTombstoneMaxRows != DefaultHostTombstoneMaxRows ||
-		defaults.HostTombstoneMaxRowBytes != DefaultHostTombstoneMaxRowBytes ||
-		defaults.HostTombstoneMaxCount != DefaultHostTombstoneMaxCount ||
-		defaults.HostTombstoneMaxBytes != DefaultHostTombstoneMaxBytes ||
-		defaults.HostSupersededReceiptMaxCount != DefaultHostSupersededReceiptMaxCount ||
-		defaults.HostPrunedReceiptMaxCount != DefaultHostPrunedReceiptMaxCount ||
-		defaults.HostKeylessAuditMaxCount != DefaultHostKeylessAuditMaxCount {
-		t.Fatalf("DefaultConfig does not ship the tombstone/retention defaults: %+v", defaults)
-	}
+// TestHostRetentionKnobsFoldIntoDefaults pins the retention surface: only
+// host_tombstone_retention is tunable, every other bound comes from one
+// default policy, and a hub.toml that still sets a removed key starts normally,
+// ignores the value, and reports the key so boot can warn about it.
+func TestHostRetentionKnobsFoldIntoDefaults(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hub.toml")
-	body := "host_tombstone_retention = \"1h\"\n" +
-		"host_tombstone_max_rows = 7\n" +
-		"host_tombstone_max_count = 3\n" +
-		"host_superseded_receipt_ttl = \"2h\"\n" +
-		"host_pruned_receipt_max_count = 5\n" +
-		"host_keyless_audit_ttl = \"3h\"\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
+	load := func(t *testing.T, body string) (Config, error) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		return LoadConfig(path)
 	}
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	if cfg.HostTombstoneRetention != time.Hour || cfg.HostTombstoneMaxRows != 7 || cfg.HostTombstoneMaxCount != 3 ||
-		cfg.HostSupersededReceiptTTL != 2*time.Hour || cfg.HostPrunedReceiptMaxCount != 5 || cfg.HostKeylessAuditTTL != 3*time.Hour {
-		t.Fatalf("loaded knobs = %+v, want the explicit values", cfg)
-	}
-	// The integer duration footgun is refused, not floored.
-	if err := os.WriteFile(path, []byte("host_tombstone_retention = 7\n"), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if _, err := LoadConfig(path); err == nil {
-		t.Fatal("an integer host_tombstone_retention loaded")
-	} else if !strings.Contains(err.Error(), "host_tombstone_retention") {
-		t.Fatalf("refusal = %v, want it to name the knob", err)
-	}
-	// A zero knob takes the default rather than disabling the bound.
-	if err := os.WriteFile(path, []byte("host_tombstone_max_rows = 0\n"), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	cfg, err = LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	if cfg.HostTombstoneMaxRows != DefaultHostTombstoneMaxRows {
-		t.Fatalf("zero knob = %d, want the default %d", cfg.HostTombstoneMaxRows, DefaultHostTombstoneMaxRows)
-	}
+
+	t.Run("kept keys are honored and nothing is reported", func(t *testing.T) {
+		cfg, err := load(t, "host_tombstone_retention = \"1h\"\nhost_probe_timeout = \"30s\"\n")
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.HostTombstoneRetention != time.Hour || cfg.HostProbeTimeout != 30*time.Second {
+			t.Fatalf("loaded knobs = %v / %v, want the explicit values", cfg.HostTombstoneRetention, cfg.HostProbeTimeout)
+		}
+		if len(cfg.removedHostKnobs) != 0 {
+			t.Fatalf("removedHostKnobs = %v, want none", cfg.removedHostKnobs)
+		}
+		policy := hostRecordPolicyFor(hubcore.WebConfig{HostTombstoneRetention: cfg.HostTombstoneRetention})
+		want := defaultHostRecordPolicy()
+		want.tombstoneRetention = time.Hour
+		if policy != want {
+			t.Fatalf("policy = %+v, want the defaults with a one-hour retention %+v", policy, want)
+		}
+	})
+
+	t.Run("a removed key starts the hub on the default and is reported", func(t *testing.T) {
+		cfg, err := load(t, "host_tombstone_max_rows = 5\nhost_keyless_audit_ttl = \"3h\"\nhost_remnant_escalation_age = 7\n")
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		want := []string{"host_tombstone_max_rows", "host_keyless_audit_ttl", "host_remnant_escalation_age"}
+		got := slices.Clone(cfg.removedHostKnobs)
+		slices.Sort(got)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Fatalf("removedHostKnobs = %v, want %v", got, want)
+		}
+		if policy := hostRecordPolicyFor(hubcore.WebConfig{HostTombstoneRetention: cfg.HostTombstoneRetention}); policy != defaultHostRecordPolicy() {
+			t.Fatalf("policy = %+v, want the defaults %+v", policy, defaultHostRecordPolicy())
+		}
+	})
+
+	t.Run("an integer retention duration is refused, not floored", func(t *testing.T) {
+		if _, err := load(t, "host_tombstone_retention = 7\n"); !errors.Is(err, errIntegerDuration) {
+			t.Fatalf("LoadConfig err = %v, want errIntegerDuration", err)
+		}
+	})
+
+	t.Run("a zero retention takes the default", func(t *testing.T) {
+		cfg, err := load(t, "host_tombstone_retention = \"0s\"\n")
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.HostTombstoneRetention != DefaultHostTombstoneRetention {
+			t.Fatalf("zero retention = %v, want the default %v", cfg.HostTombstoneRetention, DefaultHostTombstoneRetention)
+		}
+	})
 }
 
 // TestHostTombstoneRequiresTheHighWaterTwin pins the review finding: a

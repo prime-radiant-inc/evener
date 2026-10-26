@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/mcpconfig"
@@ -27,6 +28,13 @@ var (
 	pluginDiscoverHooks    = discoverPluginHooksDiag
 	pluginDiscoverMCP      = discoverPluginMCPConfigs
 )
+
+// SkippedComponent names a command or agent file a plugin load skipped and why.
+type SkippedComponent struct {
+	Kind   string // "command" or "agent"
+	File   string // absolute path of the skipped file
+	Reason string
+}
 
 // Manifest represents a parsed plugin.json file.
 // Fields like Author, Commands, Agents, Hooks, and MCPServers use
@@ -113,6 +121,10 @@ type Instance struct {
 	// inline mcpServers JSON, or an inline entry that fails validation): the
 	// affected layer is skipped, but the plugin's skills/agents/hooks still load.
 	MCPConfigWarnings []string
+	// SkippedComponents lists the command and agent files that could not be
+	// read or parsed. Each costs only itself: the plugin's other commands,
+	// agents, skills, hooks and MCP servers still load.
+	SkippedComponents []SkippedComponent
 
 	// UnsupportedHooks is the set of Claude-recognized events declared by this
 	// plugin that evener does not currently fire (tier: reserved-placeholder).
@@ -259,17 +271,18 @@ func Load(dir string) (Instance, error) {
 	lp := Instance{Manifest: manifest, Dir: resolved, ManifestFlavor: flavor, ManifestPath: manifestPath}
 	lp.Skills = discoverPluginSkills(resolved, manifest.Name)
 
-	agents, err := pluginDiscoverAgents(resolved, manifest.Agents, manifest.Name)
+	agents, skippedAgents, err := pluginDiscoverAgents(resolved, manifest.Agents, manifest.Name)
 	if err != nil {
 		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 	lp.Agents = agents
 
-	commands, err := pluginDiscoverCommands(resolved, manifest.Commands, manifest.Name)
+	commands, skippedCommands, err := pluginDiscoverCommands(resolved, manifest.Commands, manifest.Name)
 	if err != nil {
 		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 	lp.Commands = commands
+	lp.SkippedComponents = slices.Concat(skippedAgents, skippedCommands)
 
 	hooks, unsupportedHooks, unknownHooks, err := pluginDiscoverHooks(resolved, manifest.Hooks, manifest.Name)
 	if err != nil {

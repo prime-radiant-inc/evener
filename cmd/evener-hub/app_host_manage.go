@@ -20,11 +20,11 @@ import (
 	"github.com/BurntSushi/toml"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/fsdurability"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -1008,11 +1008,11 @@ func hubTOMLRenameCommitted(err error) bool {
 
 // hubTOMLSyncUnsupported reports whether a sync failed because the
 // filesystem cannot sync a directory at all. It delegates to the hub's one
-// canonical predicate (internal/fsdurability); hubcore's deletion store and
+// canonical predicate (execsupport/fsatomic); hubcore's deletion store and
 // the server's thread-clear journal keep matching package-private copies of
 // the same tolerance in their own modules.
 func hubTOMLSyncUnsupported(err error) bool {
-	return fsdurability.SyncUnsupported(err)
+	return fsatomic.SyncUnsupported(err)
 }
 
 // add inserts entry at the end. Callers hold hostManagerConfig.mu.

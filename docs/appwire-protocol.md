@@ -621,6 +621,7 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `status` | [appwire.AuthStatusResponse](#authstatusresponse) |  |  |
+| `restart` | bool | yes |  |
 
 
 ### `AuthLoginStartParams`

@@ -374,6 +374,32 @@ func mintRemnantID() string { return uuid.NewString() }
 // mintAttemptID mints the server-generated attempt id a claim records.
 func mintAttemptID() string { return uuid.NewString() }
 
+// hostInstant renders an instant the way every host record stores it.
+func hostInstant(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+
+// claimTeardownAttempt builds the atomic claim a teardown retry or recover
+// persists under the mutation lock: a fresh open attempt for the remnant, plus
+// the fenced-closed mark of a still-open prior attempt in the same write, so a
+// concurrent claim loses exactly one of the two. The mark is a durable claim
+// marker, not a stop signal: the fencing-epoch takeover (kill/wait plus guard
+// advance) was withdrawn with the crash-fencing program (comp08), so the prior
+// run may still be executing.
+func (m *hubHostManager) claimTeardownAttempt(remnantID string, now time.Time, priorID string, prior HostTeardownAttempt, priorOpen bool) (string, HostTeardownAttempt, hostPersistChange) {
+	attemptID := mintAttemptID()
+	attempt := HostTeardownAttempt{
+		RemnantID:         remnantID,
+		State:             hostAttemptStateOpen,
+		StartedAt:         hostInstant(now),
+		FencingEpochBoot:  m.cfg.bootID,
+		FencingEpochOpSeq: uint64(now.UnixNano()),
+	}
+	change := hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: attempt}}
+	if priorOpen {
+		change.fencedAttempt = &pendingHostAttempt{AttemptID: priorID, Attempt: fencedAttemptRecord(prior, now)}
+	}
+	return attemptID, attempt, change
+}
+
 // mintFinalizingToken mints the opaque attempt token a finalizing claim
 // carries (spec §5: "a finalizing claim carrying the same scoped key plus a
 // server-generated opaque attempt token").
@@ -426,7 +452,7 @@ func newTeardownRemnant(kind, seam string, entry hostreg.Host, mutationKey strin
 		Generation:      entry.Generation,
 		IncarnationID:   entry.IncarnationID,
 		MutationKey:     mutationKey,
-		CommittedAt:     committedAt.UTC().Format(time.RFC3339),
+		CommittedAt:     hostInstant(committedAt),
 		CleanupHandle:   cleanupHandleFor(entry),
 	}
 }
