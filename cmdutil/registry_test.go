@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/buildinfo"
-	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -134,18 +133,24 @@ func TestNewRegistryClientWiresTheProcessSeams(t *testing.T) {
 	}
 }
 
-func TestLoadRegistryWithoutStateHomeIsAnError(t *testing.T) {
+// With no state home the registry still loads for read-only use, from the
+// embedded catalog and with no state root; a caller that names its own root
+// gets it.
+func TestLoadRegistryWithoutStateHomeLoadsRootless(t *testing.T) {
 	isolateRoots(t)
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("HOME", "")
 
-	if _, _, err := LoadRegistry(registry.WithOffline(true), registry.WithoutCache()); !errors.Is(err, userdirs.ErrNoStateHome) {
-		t.Fatalf("LoadRegistry error = %v, want ErrNoStateHome", err)
+	r, _, err := LoadRegistry(registry.WithOffline(true), registry.WithoutCache())
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	if r.StateRoot() != "" {
+		t.Fatalf("StateRoot = %q, want empty", r.StateRoot())
 	}
 
-	// A caller that names its own state root needs no home.
 	chosen := t.TempDir()
-	r, _, err := LoadRegistry(registry.WithOffline(true), registry.WithoutCache(), registry.WithStateRoot(chosen))
+	r, _, err = LoadRegistry(registry.WithOffline(true), registry.WithoutCache(), registry.WithStateRoot(chosen))
 	if err != nil {
 		t.Fatalf("LoadRegistry with WithStateRoot: %v", err)
 	}

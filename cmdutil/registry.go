@@ -59,7 +59,7 @@ func (s StoreCredentialSource) Lookup(name string) (string, bool) {
 
 // LoadRegistry loads the registry the way every binary does: the
 // credentials store from CredentialsPath, the state root from
-// userdirs.DefaultStateRoot, the user layer per the tri-state, then the caller's
+// userdirs.DefaultStateRoot (empty when no state home resolves), the user layer per the tri-state, then the caller's
 // options. An old-schema providers.toml comes back as registry.ErrOldSchema
 // (wrapped); the CLI exits with it and the hub degrades (spec §10, §14.1).
 func LoadRegistry(opts ...registry.Option) (*registry.Registry, *credentials.Store, error) {
@@ -68,14 +68,14 @@ func LoadRegistry(opts ...registry.Option) (*registry.Registry, *credentials.Sto
 		return nil, nil, fmt.Errorf("credentials: %w", err)
 	}
 	// The default root comes first so a caller's WithStateRoot overrides it.
-	stateRoot, stateErr := userdirs.DefaultStateRoot()
+	// With no state home the registry loads without one (embedded catalog, no
+	// OAuth records) so read-only commands keep working; the operations that
+	// persist state resolve the root themselves and report the error.
+	stateRoot, _ := userdirs.DefaultStateRoot()
 	all := append([]registry.Option{registry.WithCredentials(StoreCredentialSource{Store: store}), registry.WithStateRoot(stateRoot)}, opts...)
 	r, err := registry.Load(all...)
 	if err != nil {
 		return nil, store, err
-	}
-	if r.StateRoot() == "" {
-		return nil, store, fmt.Errorf("state root: %w", stateErr)
 	}
 	return r, store, nil
 }

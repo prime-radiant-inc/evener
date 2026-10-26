@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -299,4 +300,24 @@ func listedRow(out, ref string) string {
 		}
 	}
 	return ""
+}
+
+// The read-only models commands need no state home: with neither XDG_STATE_HOME
+// nor HOME they list from the embedded catalog, while refresh (which writes the
+// catalog cache) reports the missing state root.
+func TestModelsReadOnlyCommandsNeedNoStateHome(t *testing.T) {
+	modelsTestEnv(t)
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "")
+
+	var stdout, stderr bytes.Buffer
+	if err := runModels([]string{"list", "--all"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("list --all: %v (%s)", err, stderr.String())
+	}
+	if stdout.Len() == 0 {
+		t.Fatal("list --all printed nothing")
+	}
+	if err := runModelsRefresh(nil, &stdout, &stderr); !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("refresh error = %v, want ErrNoStateHome", err)
+	}
 }
