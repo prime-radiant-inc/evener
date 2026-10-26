@@ -13,9 +13,8 @@ declare global {
 }
 
 // The forbid list is not a literal here: the generator
-// (scripts/build-mermaid-page.mts) imports MERMAID_FORBID_TAGS from the web
-// security module (cmd/evener-hub/frontend/src/widgets/mermaid/security.ts -
-// the one source) and substitutes it into this bundle via esbuild's define, so
+// (scripts/build-mermaid-page.mts) imports MERMAID_FORBID_TAGS from the AppWire
+// package (the one source, shared with the web sanitizer) and substitutes it into this bundle via esbuild's define, so
 // the two frontends cannot drift. Resource-bearing and navigational tags are
 // forbidden at BOTH layers here too — mermaid's own sanitize (dompurifyConfig
 // below) and this post-render pass. The render-time network fetch (mermaid's

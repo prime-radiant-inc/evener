@@ -1,9 +1,9 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import { mulberry32 } from "../../dev/mulberry32";
 import type { AnsiLine } from "./ansi";
 import { AnsiTailBuffer, parseAnsiByteRows, parseAnsiLines } from "./ansi";
+import { mulberry32 } from "./testing/tokenFlood";
 
 test("byte rows map visible UTF16 positions to original bytes across controls and malformed scalars", () => {
   const parsed = parseAnsiByteRows(

@@ -143,6 +143,8 @@ assert.equal(client.hasErrorText({ error: "  " }), false);
 assert.equal(client.isNonZeroExit({ exitCode: 0 }), false);
 assert.equal(client.isInProgressStatus("inProgress"), true);
 assert.equal(client.parseJobOutputPage(null), null);
+assert.equal(client.parseAnsiLines("\\u001b[31mred")[0][0].text, "red");
+assert.equal(client.MERMAID_FORBID_TAGS.includes("img"), true);
 assert.equal(client.SYSTEM_PRELUDE_TURN_ID, "turn_system");
 assert.equal(client.pendingTextJoined(["a", "b"]), "ab");
 assert.equal(client.notificationRoutingKey({ method: "evener/x", params: {} }), null);

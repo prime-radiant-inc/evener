@@ -5,7 +5,7 @@
 import { formatByteCount, lineCount } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import type { AnsiLine } from "../../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
+import type { AnsiLine } from "@evener/appwire-client";
 import { expandTabs, parseOutputLines } from "../ansiOutputStyles";
 import { AnsiOutputLine } from "../AnsiOutputLine";
 import { MarkdownResponse } from "../MarkdownResponse";

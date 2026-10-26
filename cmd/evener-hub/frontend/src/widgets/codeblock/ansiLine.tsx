@@ -1,6 +1,6 @@
+import type { AnsiColor, AnsiLine, AnsiRun } from "@evener/appwire-client";
 import type { CSSProperties } from "react";
 import { requireClass } from "../internal/requireClass";
-import type { AnsiColor, AnsiLine, AnsiRun } from "./ansi";
 import styles from "./codeblock.module.css";
 
 const CLASS = {

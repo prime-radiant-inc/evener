@@ -21,6 +21,7 @@
 // treatment in ToolCallItem, a distinct signal from a nonzero exit.
 
 import {
+  AnsiTailBuffer,
   parseArgs,
   shellCommand,
   shellOutput,
@@ -32,7 +33,6 @@ import { useRef } from "react";
 import { useThreadsStore } from "../../../../stores/threads";
 import { useOptionalTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { CodeBlock, ShellCommandBlock } from "../../../../widgets";
-import { AnsiTailBuffer } from "../../../../widgets/codeblock/ansi";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { TOOL_BODY_MAX_CHARS } from "./bodies";

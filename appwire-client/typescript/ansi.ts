@@ -1,5 +1,5 @@
-import { forEachJobOutputScalar } from "@evener/appwire-client";
 import Anser from "anser";
+import { forEachJobOutputScalar } from "./jobOutput";
 
 export type AnsiNamedColor =
   | "black"

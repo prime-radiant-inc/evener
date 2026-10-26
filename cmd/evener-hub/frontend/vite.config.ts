@@ -110,6 +110,8 @@ export default defineConfig({
       // tinykeys, so this alias serves only its tests.
       tinykeys: path.join(__dirname, "node_modules", "tinykeys"),
       tweetnacl: path.join(__dirname, "node_modules", "tweetnacl"),
+      // The package's ANSI parser; the package has no install of its own in the web job.
+      anser: path.join(__dirname, "node_modules", "anser"),
     },
   },
   server: {

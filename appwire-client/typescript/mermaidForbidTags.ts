@@ -1,9 +1,6 @@
-// The mermaid forbid list, as a leaf module with ZERO imports. Two consumers
-// share it across trees: the web sanitizer (security.ts re-exports it) and the
-// native page generator (mobile-native/scripts/build-mermaid-page.mts), which
-// runs from mobile-native's own install where the frontend's node_modules - and
-// therefore dompurify/mermaid - are absent. Keeping the data in a leaf lets the
-// generator import it directly without dragging in security.ts's dependencies.
+// The mermaid forbid list, owned by the package so the web sanitizer
+// (widgets/mermaid/security.ts) and the native page generator
+// (mobile-native/scripts/build-mermaid-page.mts) cannot drift.
 //
 // Resource-bearing and navigational tags are forbidden at BOTH sanitize layers
 // (mermaid's own dompurifyConfig, and the post-render pass): mermaid at
