@@ -188,7 +188,7 @@ func TestEmitWarning_ConcurrentIndependentWarningsEachFireNotificationHook(t *te
 		go func(n int) {
 			defer wg.Done()
 			<-start
-			sess.emit(events.EventWarning, events.WarningData{
+			sess.emit(events.WarningData{
 				Message: fmt.Sprintf("independent warning %d", n),
 			})
 		}(i)
@@ -294,7 +294,7 @@ func TestNotificationHook_SystemMessageOutputDoesNotRecurse(t *testing.T) {
 	drainEvents(sess)
 
 	// Fire one genuine warning; emit runs the Notification hook synchronously.
-	sess.emit(events.EventWarning, events.WarningData{Message: "trigger"})
+	sess.emit(events.WarningData{Message: "trigger"})
 
 	data, _ := os.ReadFile(counter)
 	if got := strings.Count(string(data), "x"); got != 1 {

@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
@@ -610,7 +609,7 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 			// back up.
 			s.rescheduleIdleRuntimeReleaseRetry()
 		default:
-			s.emit(events.EventWarning, warningDataFromError("idle runtime release claim failed", err))
+			s.emit(warningDataFromError("idle runtime release claim failed", err))
 		}
 		return false
 	}
@@ -674,7 +673,7 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 		unhookReclaimedRuntimeRecord(entry)
 	}
 	if err := s.delegateController.CompleteRuntimeReclamation(claim, closed); err != nil {
-		s.emit(events.EventWarning, warningDataFromError("idle runtime release completion failed", err))
+		s.emit(warningDataFromError("idle runtime release completion failed", err))
 		return false
 	}
 	completed = true

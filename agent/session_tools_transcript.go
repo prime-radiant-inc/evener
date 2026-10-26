@@ -1629,6 +1629,6 @@ func resolvedSessionMeta(deps *toolDeps, path, ref string) schema.SessionMeta {
 // session ID.
 func bucketAndSessionFromPath(path string) (bucketDir, sessionID string) {
 	bucketDir = filepath.Dir(filepath.Dir(path))
-	sessionID = strings.TrimSuffix(filepath.Base(path), ".transcript.jsonl")
+	sessionID = strings.TrimSuffix(filepath.Base(path), schema.SessionTranscriptSuffix)
 	return bucketDir, sessionID
 }

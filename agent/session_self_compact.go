@@ -70,7 +70,7 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 		raw, err = s.contextMgr.ElicitNote(ctx, foldable, skillInventorySummaries(inventory))
 	}
 	if err != nil {
-		s.emit(events.EventWarning, bareWarningDataFromError("note elicitation failed", err))
+		s.emit(bareWarningDataFromError("note elicitation failed", err))
 		return
 	}
 	// Split the selection block from the free-text note and accept both as one
@@ -84,7 +84,7 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 		note = ""
 	}
 	if _, err := s.acceptAutomaticSkillCompaction(ctx, capturedNoteGen, note, selection); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: "persisting the elicited compaction intent failed: " + err.Error()})
+		s.emit(events.WarningData{Message: "persisting the elicited compaction intent failed: " + err.Error()})
 	}
 }
 
@@ -285,7 +285,7 @@ func (s *Session) applyPendingForceCompact(ctx context.Context) {
 				// steering into a fold the transcript will refuse again.
 				reason = refusal.Error()
 			}
-			s.emit(events.EventWarning, events.WarningData{Message: "compact_context instructions were not applied — " + reason + ": " + instructions})
+			s.emit(events.WarningData{Message: "compact_context instructions were not applied — " + reason + ": " + instructions})
 		}
 		return
 	}

@@ -188,7 +188,7 @@ func (s *Session) repairOrphanedToolResults(ctx context.Context, reason string) 
 		if reason != "" {
 			msg += ": " + reason
 		}
-		s.emit(events.EventWarning, events.WarningData{Message: msg})
+		s.emit(events.WarningData{Message: msg})
 		s.maybeAutoSave()
 		s.retryPendingCallerWatchSendsAfterRepair(ctx)
 	}
@@ -197,6 +197,6 @@ func (s *Session) repairOrphanedToolResults(ctx context.Context, reason string) 
 
 func (s *Session) retryPendingCallerWatchSendsAfterRepair(ctx context.Context) {
 	if err := s.drainPendingWatchSendsAtBoundary(ctx); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: "watch send retry after history repair failed: " + err.Error()})
+		s.emit(events.WarningData{Message: "watch send retry after history repair failed: " + err.Error()})
 	}
 }

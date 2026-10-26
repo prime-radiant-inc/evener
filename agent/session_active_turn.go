@@ -131,7 +131,7 @@ func (s *Session) warnStoreUnhealthyOnce(message string) {
 	if alreadyWarned {
 		return
 	}
-	s.emit(events.EventWarning, events.WarningData{Message: message})
+	s.emit(events.WarningData{Message: message})
 }
 
 func (s *Session) clearStoreUnhealthyWarning() {
@@ -315,7 +315,7 @@ func (s *Session) scheduleRunningTurnReleaseRetry(turnID string) {
 		// process clears it. forgetRunningTurnNoOneOwns drops an ActiveTurnID no
 		// pending execution claims at daemon load, so that is the event the
 		// warning names, not a "session restart".
-		s.emit(events.EventWarning, events.WarningData{
+		s.emit(events.WarningData{
 			Message: fmt.Sprintf(
 				"running turn %s could not be released after %d attempts; this session refuses every later turn until the daemon restarts (the stale turn name is cleared at daemon load)",
 				turnID, runningTurnReleaseRetryLimit),

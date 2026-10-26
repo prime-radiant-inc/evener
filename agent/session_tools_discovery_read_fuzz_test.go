@@ -165,7 +165,7 @@ func tdrpFixture(t *testing.T, r *tdrpReader) (*toolDeps, *tool.Registry, *agent
 	currentDir := filepath.Join(root, "evener", "projects", trenderCurrentProject)
 	siblingDir := filepath.Join(root, "evener", "projects", trenderOtherProject)
 	for _, dir := range []string{currentDir, siblingDir} {
-		if err := os.MkdirAll(filepath.Join(dir, sessionsSubdir), 0o755); err != nil {
+		if err := os.MkdirAll(schema.SessionsDir(dir), 0o755); err != nil {
 			t.Fatalf("make transcript bucket %q: %v", dir, err)
 		}
 	}

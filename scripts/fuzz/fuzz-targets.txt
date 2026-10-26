@@ -136,7 +136,6 @@ native:agent:./internal/worktree:FuzzWorktreePredicatesProgram
 native:agent:./internal/worktree:FuzzSidecarLifecycleProgram
 native:agent:./command:FuzzExpandInertArgumentDirectives
 native:agent:./command:FuzzExpandTemplateProgram
-native:agent:./events:FuzzSessionEventToStreamEvent
 native:agent:./events:FuzzEventDataProgram
 native:agent:./internal/agenttest:FuzzScriptedAdapterReplay
 native:agent:./internal/agenttest:FuzzAgenttestAdaptersProgram

@@ -1286,40 +1286,18 @@ func appwireDelegateFromAgentStatus(delegate agent.DelegateStatusInfo) appwire.E
 		ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,
 		ReasoningEffort: delegate.ReasoningEffort, OriginTurnID: delegate.OriginTurnID, OriginToolCallID: delegate.OriginToolCallID,
 		OriginItemID: delegate.OriginItemID, RunStartedAt: delegate.RunStartedAt, RunEndedAt: delegate.RunEndedAt,
-		LatestActivityAt: delegate.LatestActivityAt, RunningForMS: cloneHubInt64(delegate.RunningForMS),
-		QuietForMS: cloneHubInt64(delegate.QuietForMS), DurationMS: cloneHubInt64(delegate.DurationMS), PacketKind: delegate.PacketKind,
+		LatestActivityAt: delegate.LatestActivityAt, RunningForMS: appwire.ClonePointer(delegate.RunningForMS),
+		QuietForMS: appwire.ClonePointer(delegate.QuietForMS), DurationMS: appwire.ClonePointer(delegate.DurationMS), PacketKind: delegate.PacketKind,
 		Message: append(json.RawMessage(nil), delegate.Message...), StructuredResult: append(json.RawMessage(nil), delegate.StructuredResult...),
-		StructuredValid: cloneHubBool(delegate.StructuredValid), StructuredReason: delegate.StructuredReason,
+		StructuredValid: appwire.ClonePointer(delegate.StructuredValid), StructuredReason: delegate.StructuredReason,
 		Warnings: append([]string(nil), delegate.Warnings...), Diagnostics: append([]string(nil), delegate.Diagnostics...),
 		ExhaustionBudget: delegate.ExhaustionBudget, ExhaustionLimit: delegate.ExhaustionLimit,
-		ExhaustionResumable: cloneHubBool(delegate.ExhaustionResumable), DelegationAllowance: delegate.DelegationAllowance,
+		ExhaustionResumable: appwire.ClonePointer(delegate.ExhaustionResumable), DelegationAllowance: delegate.DelegationAllowance,
 		ParentWatchGranted: delegate.ParentWatchGranted,
 	}
-	if delegate.Usage != nil {
-		usage := *delegate.Usage
-		out.Usage = &usage
-	}
-	if delegate.Worktree != nil {
-		worktree := *delegate.Worktree
-		out.Worktree = &worktree
-	}
+	out.Usage = appwire.ClonePointer(delegate.Usage)
+	out.Worktree = appwire.ClonePointer(delegate.Worktree)
 	return out
-}
-
-func cloneHubBool(value *bool) *bool {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-
-func cloneHubInt64(value *int64) *int64 {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
 }
 
 // persistedTaskAggregate returns a task count only when the session has a
@@ -1488,7 +1466,7 @@ func stampDerivedFailureCount(entry hubcore.PastEntry, thread appwire.Thread) ap
 
 // pastTranscriptPath is where a saved session's transcript lives.
 func pastTranscriptPath(entry hubcore.PastEntry) string {
-	return filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	return schema.SessionTranscriptPath(entry.StateDir, entry.Meta.ID)
 }
 
 // computePastEntryTurns projects a saved session's whole transcript into full

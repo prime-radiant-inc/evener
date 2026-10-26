@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/llm"
 )
@@ -53,28 +52,9 @@ func (r *apiLogRouteReleases) count() int {
 	return len(r.released)
 }
 
-// fakeEmit records the events forwarded through a manager's emit closure.
-type fakeEmit struct {
-	mu     sync.Mutex
-	events []events.EventKind
-}
-
-func (f *fakeEmit) emit(kind events.EventKind, _ events.EventData) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.events = append(f.events, kind)
-}
-
-func (f *fakeEmit) count() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.events)
-}
-
 func TestSubagentManager_TrackGetRemove(t *testing.T) {
 	t.Parallel()
-	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit, 0)
+	m := newSubagentManager(0)
 
 	if got := m.get("missing"); got != nil {
 		t.Fatalf("get on empty manager: got %v, want nil", got)
@@ -103,7 +83,7 @@ func TestSubagentManager_TrackGetRemove(t *testing.T) {
 
 func TestSubagentManager_BeginReconstructionWaitsForPendingBeforePublishedChild(t *testing.T) {
 	t.Parallel()
-	m := newSubagentManager(nil, 0)
+	m := newSubagentManager(0)
 	childID := "child"
 	published := &subagent{id: childID}
 	pending := &subagentReconstruction{done: make(chan struct{})}
@@ -127,8 +107,7 @@ func TestSubagentManager_BeginReconstructionWaitsForPendingBeforePublishedChild(
 
 func TestSubagentManager_DrainForCloseReturnsAllAndClears(t *testing.T) {
 	t.Parallel()
-	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit, 0)
+	m := newSubagentManager(0)
 
 	want := map[string]*subagent{
 		"a": {id: "a"},
@@ -165,17 +144,6 @@ func TestSubagentManager_DrainForCloseReturnsAllAndClears(t *testing.T) {
 	}
 	if again := m.drainForClose(); len(again) != 0 {
 		t.Fatalf("second drainForClose returned %d entries, want 0", len(again))
-	}
-}
-
-func TestSubagentManager_EmitClosureIsCaptured(t *testing.T) {
-	t.Parallel()
-	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit, 0)
-	m.emit(events.EventJobStarted, nil)
-	m.emit(events.EventJobFinished, nil)
-	if got := fe.count(); got != 2 {
-		t.Fatalf("captured emit forwarded %d events, want 2", got)
 	}
 }
 
@@ -536,11 +504,11 @@ func TestRetention_GCEvictsOldestWithinClass(t *testing.T) {
 // 2048 and the explicit-override path of the constructor.
 func TestNewSubagentManagerCapPinsDefault2048(t *testing.T) {
 	t.Parallel()
-	m := newSubagentManager(nil, 0)
+	m := newSubagentManager(0)
 	if m.maxRetainedTerminal != 2048 {
 		t.Fatalf("default cap = %d, want 2048", m.maxRetainedTerminal)
 	}
-	m = newSubagentManager(nil, 7)
+	m = newSubagentManager(7)
 	if m.maxRetainedTerminal != 7 {
 		t.Fatalf("explicit cap = %d, want 7", m.maxRetainedTerminal)
 	}
