@@ -36,7 +36,7 @@ const priorShapeStoreJSON = `{"version":1,"sequence":1,"allocatorHighWaterMark":
 // payload, and the boot pass's rewrite leaves none of the keys in the file.
 func TestPriorBuildStoreLoadsAndDropsRetiredKeys(t *testing.T) {
 	path := StorePath(t.TempDir())
-	writeRawStore(t, path, 0o600, priorShapeStoreJSON)
+	writeRawStore(t, path, 0o600, currentFixtureDates(priorShapeStoreJSON))
 	store, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open on a prior-build store: %v", err)
