@@ -40,6 +40,18 @@ func Write(path string, data []byte, perm os.FileMode) error {
 // filesystem cannot be made to fail one sync of several). A syncDir error
 // wraps ErrPublished exactly as a real sync failure does.
 func WriteWithDirSync(path string, data []byte, perm os.FileMode, syncDir func(dir string) error) error {
+	return write(path, data, perm, true, syncDir)
+}
+
+// WriteWithoutSync is Write for derived data a crash may lose because the
+// owner rebuilds or replays it (a cache, an index): the same exclusive temp
+// file, umask-proof permissions and rename, with no fsync of the file or its
+// directory.
+func WriteWithoutSync(path string, data []byte, perm os.FileMode) error {
+	return write(path, data, perm, false, nil)
+}
+
+func write(path string, data []byte, perm os.FileMode, durable bool, syncDir func(dir string) error) error {
 	dir := filepath.Dir(path)
 	temp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -60,9 +72,11 @@ func WriteWithDirSync(path string, data []byte, perm os.FileMode, syncDir func(d
 		_ = temp.Close()
 		return fmt.Errorf("chmod temp file for %s: %w", path, err)
 	}
-	if err := temp.Sync(); err != nil && !SyncUnsupported(err) {
-		_ = temp.Close()
-		return fmt.Errorf("sync temp file for %s: %w", path, err)
+	if durable {
+		if err := temp.Sync(); err != nil && !SyncUnsupported(err) {
+			_ = temp.Close()
+			return fmt.Errorf("sync temp file for %s: %w", path, err)
+		}
 	}
 	if err := temp.Close(); err != nil {
 		return fmt.Errorf("close temp file for %s: %w", path, err)
@@ -71,6 +85,9 @@ func WriteWithDirSync(path string, data []byte, perm os.FileMode, syncDir func(d
 		return fmt.Errorf("rename temp file over %s: %w", path, err)
 	}
 	published = true
+	if !durable {
+		return nil
+	}
 	if err := syncDir(dir); err != nil {
 		return fmt.Errorf("%w: %w", ErrPublished, err)
 	}
