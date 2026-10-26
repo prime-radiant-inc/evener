@@ -9,8 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
-	"sync"
 	"syscall"
 )
 
@@ -28,8 +26,9 @@ var ErrPublished = errors.New("contents published but not confirmed durable")
 // the directory so the rename itself is durable; a failure of that last step
 // wraps ErrPublished.
 //
-// The parent directory must exist (MkdirAll creates it durably); Write itself
-// syncs only the directory that holds the file. A failed write removes its
+// The parent directory must exist. Write makes the file durable in that
+// directory; it does not sync the entries of directories the caller had to
+// create to get there. A failed write removes its
 // temp file; a crash between the create and the rename leaves a stray "<name>.tmp-*" file behind, which
 // is the cost of never reusing a name another process could plant.
 func Write(path string, data []byte, perm os.FileMode) error {
@@ -68,100 +67,6 @@ func Write(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("%w: %w", ErrPublished, err)
 	}
 	return nil
-}
-
-// mkdirMu serializes MkdirAll in this process, so a caller that finds a
-// directory another caller just created sees it only after its parent entry is
-// synced (or rolled back).
-var mkdirMu sync.Mutex
-
-// stranded holds directories MkdirAll created and could neither sync nor take
-// back out (guarded by mkdirMu); the next MkdirAll that meets one syncs it
-// before accepting it. removeDir is a seam for the test that cannot make a
-// real rmdir fail.
-var (
-	stranded  = map[string]bool{}
-	removeDir = os.Remove
-)
-
-// MkdirAll creates dir and any missing ancestors like os.MkdirAll, but one
-// component at a time, syncing each new directory's parent before creating the
-// next, so the new directory entries are durable. A directory whose parent sync
-// fails is removed again, so a retry creates and syncs it afresh (one that
-// cannot be removed is remembered and synced on the next call). Directories
-// that already exist are taken as settled. dir is used as given (callers pass
-// paths cleaned by filepath.Join); a race with another process creating the
-// same directory is not covered. Write syncs only the directory that holds the
-// file, so a caller whose first save also creates the directory runs this
-// before Write.
-func MkdirAll(dir string, perm os.FileMode) error {
-	mkdirMu.Lock()
-	defer mkdirMu.Unlock()
-	var todo []string // innermost first: missing directories, then stranded ancestors
-	p := dir
-	for ; ; p = filepath.Dir(p) {
-		info, err := os.Stat(p)
-		if err == nil {
-			if !info.IsDir() {
-				return &os.PathError{Op: "mkdir", Path: p, Err: syscall.ENOTDIR}
-			}
-			break
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		todo = append(todo, p)
-		if filepath.Dir(p) == p {
-			break
-		}
-	}
-	// A stranded directory is an existing one that still needs its parent
-	// synced, wherever it sits above the first existing directory.
-	if len(stranded) > 0 {
-		for q := p; ; q = filepath.Dir(q) {
-			if stranded[dirKey(q)] {
-				todo = append(todo, q)
-			}
-			if filepath.Dir(q) == q {
-				break
-			}
-		}
-	}
-	for _, p := range slices.Backward(todo) {
-		created := true
-		if err := os.Mkdir(p, perm); err != nil {
-			if info, statErr := os.Stat(p); !errors.Is(err, os.ErrExist) || statErr != nil || !info.IsDir() {
-				return err
-			}
-			created = false
-		}
-		if err := syncDir(filepath.Dir(dirKey(p))); err != nil {
-			// Only a directory this call made is taken back out: an existing
-			// one (a stranded retry, possibly reached through a symlink) stays.
-			if created {
-				if rmErr := removeDir(p); rmErr != nil {
-					stranded[dirKey(p)] = true
-					return errors.Join(err, rmErr)
-				}
-			}
-			return err
-		}
-		delete(stranded, dirKey(p))
-	}
-	return nil
-}
-
-// dirKey names a directory the same way however the caller spelled its path:
-// absolute and cleaned, with every symlink resolved when the directory exists.
-func dirKey(dir string) string {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return filepath.Clean(dir)
-	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved
-	}
-	return abs
 }
 
 // Remove deletes the file at path and syncs its directory so the deletion is

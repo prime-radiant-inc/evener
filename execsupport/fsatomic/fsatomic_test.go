@@ -106,27 +106,3 @@ func TestRemoveDeletesFileAndToleratesMissingOnes(t *testing.T) {
 		t.Fatalf("removing under a missing directory: %v", err)
 	}
 }
-
-func TestMkdirAllCreatesMissingAncestorsAndIsIdempotent(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "a", "b", "c")
-	for range 2 {
-		if err := fsatomic.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		t.Fatalf("stat = %v, %v; want a directory", info, err)
-	}
-}
-
-func TestMkdirAllRejectsAFileInThePath(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "file")
-	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, dir := range []string{file, filepath.Join(file, "sub")} {
-		if err := fsatomic.MkdirAll(dir, 0o700); !errors.Is(err, syscall.ENOTDIR) {
-			t.Fatalf("MkdirAll(%s) = %v, want ENOTDIR", dir, err)
-		}
-	}
-}
