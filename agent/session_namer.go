@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -653,7 +652,7 @@ func (s *Session) appendSessionNamerLog(entry sessionlog.SessionLogEntry) {
 	}
 	entry.Kind = "advisory"
 	entry.Action = "session_namer"
-	logPath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".log.jsonl")
+	logPath := schema.SessionLogPath(s.stateDir, s.id)
 	log, err := sessionlog.NewSessionLog(logPath)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("session namer log open failed: %v", err)})

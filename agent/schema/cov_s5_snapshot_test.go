@@ -99,7 +99,7 @@ func TestCov_ListSessionMetasFS(t *testing.T) {
 
 func TestListSessionMetas_CleanBreakValidatesFilenameAndMetadataID(t *testing.T) {
 	dir := t.TempDir()
-	sessionsDir := filepath.Join(dir, sessionsSubdir)
+	sessionsDir := filepath.Join(dir, SessionsSubdir)
 	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

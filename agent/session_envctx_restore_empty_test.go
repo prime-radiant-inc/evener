@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -47,7 +46,7 @@ func TestRestoreEnvironmentWithNoRetainedEntriesReemitsFullBlock(t *testing.T) {
 			if err := schema.SaveSessionMeta(dir, meta); err != nil {
 				t.Fatalf("save stale metadata: %v", err)
 			}
-			transcriptPath := filepath.Join(dir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+			transcriptPath := schema.SessionTranscriptPath(dir, sess.ID())
 			writer, entries, err := transcript.OpenWriterForSession(transcriptPath, sess.ID())
 			if err != nil {
 				t.Fatalf("open setup transcript: %v", err)

@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"syscall"
@@ -13,6 +12,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // Darwin's proc_info ABI is declared in XNU's proc_info.h and
@@ -173,7 +173,7 @@ func darwinArguments(data []byte) ([]string, error) {
 }
 
 func darwinOwnsLog(pid int, t Target) (bool, error) {
-	path := filepath.Join(t.StateDir, "sessions", t.SessionID+".api.jsonl")
+	path := schema.SessionAPILogPath(t.StateDir, t.SessionID)
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return false, err
