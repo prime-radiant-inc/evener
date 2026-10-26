@@ -68,6 +68,7 @@ import {
   hasQueuedNonSend,
   type InputAttachment,
   type ResumeOnlySignals,
+  readRecoveryWithStopEpoch,
   threadsStore,
   useThreadsStore,
 } from "../../../stores/threads";
@@ -95,7 +96,7 @@ import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { STEER_RECOVERY_FENCED_REASON, steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
-import { clearDraft, clearPersistedDraft, readDraftRevision } from "./draft";
+import { clearDraft, clearPersistedDraft, readDraftRevision, readRecoverySelection } from "./draft";
 import { useNarrowComposer } from "./narrowComposer";
 import { pendingTurnEntries, QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
@@ -526,9 +527,14 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     // loads an empty composer and then resends the user's next keystrokes as a
     // turn/start -- a Stop becoming a message. QueueStrip renders it as a
     // failure with its reason instead.
-    const record = recoveryEntries.find(
+    // Prefer the row this pane selected before reload: an older rejected peer
+    // row can sit beside the pane's newer preserved row, and intent order alone
+    // would restore the peer's composition.
+    const selectedRecoveryId = readRecoverySelection(ref, source.recoverySelectionOwnerId);
+    const restorable = recoveryEntries.filter(
       (entry) => entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt" && !entry.preserveComposer,
     );
+    const record = restorable.find((entry) => entry.clientMutationId === selectedRecoveryId) ?? restorable[0];
     if (!record) return;
     const recovered = recoveryComposerDraft(record);
     const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
@@ -557,6 +563,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     scheduleCursorRestore,
     setActiveRecoveryId,
     skillNamesRef,
+    source.recoverySelectionOwnerId,
     selectionMetaRef,
     textRef,
     updateText,
@@ -989,7 +996,21 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       releaseRecoveryInFlight?.();
       releaseRecoveryInFlight = null;
     };
-    const recoveryBarrier = submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(ref);
+    const pressedRecoveryTargetRef = source.recoveryTargetRef;
+    const pressedRecoveryBarrier =
+      submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(pressedRecoveryTargetRef);
+    // The pane may still display the superseded ref after a peer retarget. A
+    // Stop on it names that ref, so the resend must fence both owners.
+    const pressedDisplayedBarrier = pressedRecoveryBarrier?.then((barrier) => ({
+      ...barrier,
+      targetRef: pressedRecoveryTargetRef,
+    }));
+    void pressedDisplayedBarrier?.catch(() => undefined);
+    // Request the durable target and its Stop epoch now, in the press's
+    // synchronous prefix. Storage orders this readonly snapshot before any
+    // Stop the user presses while the Send waits on persistence or hydration.
+    const pressedRecoveryDurable =
+      submittedRecoveryId === null ? undefined : readRecoveryWithStopEpoch(submittedRecoveryId);
     let recoveryResendRefused = false;
     let recoveryAlreadySent = false;
     const recoveryWriteRefusal = new Error("Recovery persistence was refused");
@@ -1028,6 +1049,15 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
         async () => {
           if (submittedRecoveryId !== null) {
             await source.runRecoveryOperation(async () => {
+              // The press-time snapshot dates the fence. It may already name a
+              // peer's retarget, and a Stop during the waits below must fall
+              // after this press rather than inside a later capture.
+              const pressedDurable = await pressedRecoveryDurable;
+              const durableTargetRef = pressedDurable?.record?.targetRef ?? pressedRecoveryTargetRef;
+              const travelingBarrier =
+                pressedDurable === undefined || durableTargetRef === pressedRecoveryTargetRef
+                  ? pressedRecoveryBarrier
+                  : Promise.resolve({ stopEpoch: pressedDurable.stopEpoch });
               const persisted = await queueRecoveryPersistence(
                 submittedRecoveryId,
                 submittedText,
@@ -1044,23 +1074,48 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
               if (committedRevision === undefined) {
                 throw recoveryWriteRefusal;
               }
-              const outcome = await resendRecoveryPendingTurn(
-                submittedRecoveryId,
-                ref,
-                kind,
-                submittedText,
-                payload,
-                submittedSkillNames,
-                submittedCommandNames,
-                submittedMentions,
-                recoveryBarrier,
-                { [submittedRecoveryId]: committedRevision },
-                source.compositionOwnerId,
-              );
-              if (outcome.status !== "sent") {
-                recoveryResendRefused = outcome.status === "refused";
-                recoveryAlreadySent = outcome.status === "consumed";
-                throw recoveryResendRefused ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
+              const sendTargetRef = source.recoveryTargetRef;
+              if (sendTargetRef !== durableTargetRef) {
+                // The row moved again while this Send was persisting. No fence
+                // we hold dates that destination's Stop history, so fail
+                // closed rather than let the Send cross a Stop.
+                recoveryResendRefused = true;
+                throw recoveryWriteRefusal;
+              }
+              // Destinations this tab never read need their model for
+              // expectedInstanceId and capability gates. Hold that foreground
+              // claim only for this resend.
+              let destinationClaim = false;
+              try {
+                const targetState = threadsStore.getState();
+                if (
+                  targetState.threads.get(sendTargetRef) === undefined &&
+                  targetState.watchedThreads.get(sendTargetRef) === undefined
+                ) {
+                  destinationClaim = true;
+                  await targetState.ensureThread(sendTargetRef);
+                }
+                const outcome = await resendRecoveryPendingTurn(
+                  submittedRecoveryId,
+                  sendTargetRef,
+                  kind,
+                  submittedText,
+                  payload,
+                  submittedSkillNames,
+                  submittedCommandNames,
+                  submittedMentions,
+                  travelingBarrier,
+                  { [submittedRecoveryId]: committedRevision },
+                  source.compositionOwnerId,
+                  pressedDisplayedBarrier,
+                );
+                if (outcome.status !== "sent") {
+                  recoveryResendRefused = outcome.status === "refused";
+                  recoveryAlreadySent = outcome.status === "consumed";
+                  throw recoveryResendRefused ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
+                }
+              } finally {
+                if (destinationClaim) threadsStore.getState().releaseThread(sendTargetRef);
               }
               // The resend transaction consumed the recovery row, so a remount
               // can no longer restore it. Keep the guard until here rather than

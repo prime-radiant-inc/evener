@@ -65,6 +65,72 @@ except where a line says so itself.
   measured 399/400px content boxes, a narrow desktop pane, and Send geometry
   at larger font sizes. The default browser guard includes the same checks.
 
+### Recovery selection ownership
+
+- A conversation composer's recovery selection belongs to a seat: a per-tab,
+  per-conversation identity stored with the composer drafts. The seat survives
+  a mobile route reconstruction and a desktop layout restore. A reconstructed
+  mobile route uses the conversation mapping first, never a pane-id mapping
+  left by another conversation under the same restarted id. The seat is never
+  part of shared layout geometry, so another tab cannot adopt or overwrite it.
+  A route placement does not write a pane-id mapping; those are written only
+  when a layout is saved or restored, so startup ordering cannot overwrite a
+  saved pane's seat before its layout returns. A retarget that retains a seat
+  rewrites the destination ref's mapping, so a mobile reconstruction recovers
+  that seat and its selection. Pane-id mappings store the conversation they
+  belong to; a shared layout that reuses the id for another conversation
+  falls back to this tab's mapping for the restored ref. Validated pane seats
+  are reserved across the layout before any ref fallback or fresh seat.
+- Independent panes on one conversation hold distinct seats and therefore
+  independent recovery selections. A `sessionZoom` cascade uses one tab-scoped
+  seat for its columns, with a separate selection entry per column ref.
+- Restoring a composer selects the recovery row its seat last chose, else the
+  oldest restorable rejected row. A preserved local row therefore wins over an
+  older rejected peer row after reload.
+- A resumed or retargeted conversation carries the seat's selection to the
+  resumed ref. A row preserved after the retarget lands under that ref, and an
+  already-mounted resumed view is refreshed for it even when the row that moved
+  was consumed by another tab, because the retarget destination is persisted
+  atomically with the move. Ref forwarding persists even when no recovery row
+  survives, follows repeated resumes to the latest identity, and continues
+  past a row's own recorded destination.
+- A mounted replacement composer that still owns the stale lease and has no
+  newer edits adopts the preserved composition when preservation finishes, so
+  it shows and submits the local work without a reload. Newer replacement
+  edits are not overwritten: its selection and autosaved work stay in place
+  for reload. A saved newer edit keeps that ownership even after its composer
+  unmounts, because the evidence is retained beyond the live instance. A
+  successor that activates the row has incorporated that saved edit and retires
+  the predecessor's evidence, so only later edits count as newer work. Adoption
+  clears only the exact incorporated draft revision, so a
+  newer ordinary draft from another pane or tab survives. The preserving
+  composer is excluded from its own newer-edit check, so a same-ref conflict
+  still remembers the fresh row. An explicit activation that merged a newer
+  draft into the stale row is newer work too; delayed adoption leaves the
+  merged text and attachments alone. Typing during the activation write is
+  tracked across the wait and counts as newer work.
+- When another tab retargets recovery during preservation, the adopted row's
+  resumed ref is reconciled with the originating seat: the ref mapping moves
+  with the seat and a Send targets the preserved ref, not the superseded one.
+  The destination thread model is loaded before the resend intent is built,
+  and a successful write reconciles the target and Stop barrier from the row's
+  durable ref. The press reads the durable target and its Stop epoch in one
+  storage snapshot before persistence or hydration, and the displayed ref keeps
+  its own press-time fence because a Stop pressed there names that ref. A Stop
+  on either owner during either wait still cancels the Send, and the temporary
+  destination claim is released after the resend.
+- A successful retargeting write carries the selected recovery ID to the
+  destination unless that ref already has its own selection, so reopening the
+  resumed conversation restores this pane's work rather than an older peer row.
+  If the originating pane is disposed first, preservation still records the
+  destination selection and ref-to-seat mapping unless another owner already
+  established that mapping.
+- A pane disposed while a refused recovery write awaits storage preserves the
+  newest complete composition captured at disposal: text, selections, payload
+  input and settled attachment bytes. The fresh row becomes the seat's
+  selected recovery. A destination with a newer selection keeps it, including
+  when preservation adopts its fresh row after a replacement composer chose.
+
 ### Atomic skill and command selections
 
 - Session and launcher composers share the real ProseMirror editor. Explicit

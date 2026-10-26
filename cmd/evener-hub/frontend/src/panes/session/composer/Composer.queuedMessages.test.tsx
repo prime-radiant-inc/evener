@@ -25,7 +25,14 @@ import { HeldSteerAnnouncements } from "../transcript/messages/HeldSteerAnnounce
 import { HeldSteerStack } from "../transcript/messages/HeldSteerStack";
 import { createAttachmentOperations } from "./attachments/useAttachments";
 import { Composer } from "./Composer";
-import { readComposerDraftRevisionId, readDraft, writeComposerDraft } from "./draft";
+import {
+  composerSelectionScope,
+  readComposerDraftRevisionId,
+  readDraft,
+  readRecoverySelection,
+  writeComposerDraft,
+  writeRecoverySelection,
+} from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 
@@ -339,7 +346,10 @@ test("image encoding survives a literal-marker recovery merge while storage is p
       snapshot.commandNames,
       snapshot.mentions,
     );
-    mount(fake, source);
+    await act(async () => {
+      mount(fake, source);
+    });
+    await flushPendingTurnsProjectionForTests();
     expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
 
     const deliveredInputs: InputItem[][] = [];
@@ -828,6 +838,772 @@ test("two offline edits consolidate one durable owner and preserve typing during
     expect(await storage.listRecovery("root")).toEqual([]);
   } finally {
     hold.release();
+  }
+});
+
+// Both rows are rejected for this ref. The older peer row sits beside the
+// pane's own preserved row; intent order alone would restore the peer.
+test("reload restores the selected preserved row over an older rejected peer row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  const { fake } = await setup(false, storage);
+  const peerInput = [{ type: "text" as const, text: "older peer work" }];
+  const peer = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: peerInput },
+    attachments: [],
+    composerText: "older peer work",
+    optimisticDisplay: { method: "turn/start", input: peerInput },
+  });
+  await storage.transferToRecovery(peer.clientMutationId, "rejected");
+  const localText = "local [image 1]";
+  const localInput: InputItem[] = [
+    { type: "text", text: localText },
+    { type: "image", mediaType: "image/png", data: "AQID", name: "local.png" },
+  ];
+  const preserved = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: localInput },
+    attachments: [
+      {
+        presentationId: "local-presentation",
+        marker: 1,
+        name: "local.png",
+        mediaType: "image/png",
+        blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "image/png" }),
+      },
+    ],
+    composerText: localText,
+    optimisticDisplay: { method: "turn/start", input: localInput },
+  });
+  await storage.transferToRecovery(preserved.clientMutationId, "rejected");
+  writeRecoverySelection("root", composerSelectionScope("pane-a"), preserved.clientMutationId);
+
+  const source = createTestComposerSource("root", undefined, "pane-a");
+  try {
+    mount(fake, source);
+    await waitFor(() =>
+      expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe(localText),
+    );
+    expect(screen.getByRole("button", { name: "View local.png" })).toBeTruthy();
+    expect(source.getSnapshot().activeRecoveryId).toBe(preserved.clientMutationId);
+    expect(readRecoverySelection("root", source.recoverySelectionOwnerId)).toBe(preserved.clientMutationId);
+  } finally {
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    source.dispose();
+    storage.close();
+  }
+});
+
+// A replacement composer under the resumed ref has already restored the
+// retargeted stale row's peer-updated contents when the old source's delayed
+// preservation finishes. It must adopt the preserved composition immediately,
+// not keep showing and submitting the peer's work until a reload.
+test("a delayed preservation updates an already-mounted replacement composer", async () => {
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  setMutationStorageForTests(storage);
+  const oldRef = "local:mounted-old";
+  const resumed = "local:mounted-new";
+  const original = await storage.enqueueIntent({
+    targetRef: oldRef,
+    method: "turn/start",
+    payload: { ref: oldRef, input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const oldSource = createTestComposerSource(oldRef, undefined, "pane-a");
+  const replacement = createTestComposerSource(resumed, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  let view: ReturnType<typeof render> | undefined;
+  try {
+    await oldSource.activateRecovery(recovery);
+    const localText = "local preserved composition";
+    oldSource.editText(localText);
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+    );
+
+    const saving = oldSource.queueRecoveryPersistence(original.clientMutationId, localText, [], []);
+    await storage.reached.promise;
+    await peer.retargetOutbox(oldRef, resumed, { threadId: "thread-new", instanceId: "instance-new" });
+
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref }) => ({
+      thread: { ...thread, evener: { ...thread.evener, ref: ref ?? resumed } },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc", length: 0 },
+    }));
+    connectionStore.getState().connect(fake);
+    await threadsStore.getState().ensureThread(resumed);
+    view = render(
+      <ClientProvider client={fake}>
+        <Composer ref={resumed} source={replacement} focused={false} />
+      </ClientProvider>,
+    );
+    await waitFor(() =>
+      expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe("peer composition"),
+    );
+
+    await act(async () => {
+      storage.release.resolve();
+      await saving;
+    });
+    const preserved = (await storage.listRecovery(resumed)).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    expect(preserved).toMatchObject({ targetRef: resumed, composerText: localText });
+    await waitFor(() =>
+      expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe(localText),
+    );
+    expect(replacement.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId);
+    expect(replacement.getSnapshot().text).toBe(localText);
+  } finally {
+    storage.release.resolve();
+    act(() => view?.unmount());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    oldSource.dispose();
+    replacement.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+// A same-ref conflict: the preserving composer is the only live destination,
+// and its edits since activation must not make preservation skip its own fresh
+// row. Reload must restore the local work, not the peer's composition.
+test("a same-ref conflict preserves the local work across reload", async () => {
+  // The held preservation publishes its projection between assertions; expect
+  // only React's act warnings for those updates.
+  const actWarnings = vi.spyOn(console, "error").mockImplementation(() => {});
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  const { fake } = await setup(false, storage);
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const source = createTestComposerSource("root", undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  let reloaded: ReturnType<typeof createTestComposerSource> | undefined;
+  try {
+    await act(async () => {
+      mount(fake, source);
+    });
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(source.getSnapshot().freshRecoveryRef).toBe("root"));
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+    );
+
+    const localText = "local preserved work";
+    await act(async () => {
+      source.editText(localText);
+    });
+    await storage.reached.promise;
+    await act(async () => {
+      storage.release.resolve();
+      await source.flushRecoveryWrites();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(async () => {
+      expect(
+        (await storage.listRecovery("root")).find((record) => record.clientMutationId !== original.clientMutationId),
+      ).toBeDefined();
+    });
+    const preserved = (await storage.listRecovery("root")).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    await waitFor(() =>
+      expect(readRecoverySelection("root", source.recoverySelectionOwnerId)).toBe(preserved?.clientMutationId),
+    );
+    await waitFor(() =>
+      expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe(localText),
+    );
+
+    act(() => cleanup());
+    source.dispose();
+    reloaded = createTestComposerSource("root", undefined, "pane-a");
+    await act(async () => {
+      mount(fake, reloaded);
+    });
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(reloaded?.getSnapshot().freshRecoveryRef).toBe("root"));
+    await waitFor(() =>
+      expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe(localText),
+    );
+  } finally {
+    storage.release.resolve();
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(actWarnings.mock.calls.every(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
+    actWarnings.mockRestore();
+    source.dispose();
+    reloaded?.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+// Another tab retargets the recovery while this composer is preserving. The
+// adopted row belongs to the resumed ref; Send from this still-mounted composer
+// must target it rather than the superseded ref.
+test("a peer retarget lets the original composer send the preserved row", async () => {
+  // A held preservation makes the projection publish outside act between the
+  // retarget and its release. Expect only those act warnings.
+  const actWarnings = vi.spyOn(console, "error").mockImplementation(() => {});
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  const { fake } = await setup(false, storage);
+  const resumed = "local:peer-retarget";
+  fake.on("thread/read", ({ ref }) => ({
+    thread: { ...thread, evener: { ...thread.evener, ref: ref ?? "root" } },
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc", length: 0 },
+  }));
+  const delivered: Array<Record<string, unknown>> = [];
+  fake.on("turn/start", (params) => {
+    delivered.push(params as unknown as Record<string, unknown>);
+    return {
+      turn: { id: "retarget-send", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread-a",
+        projectionState: "reflected",
+      },
+    };
+  });
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const source = createTestComposerSource("root", undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await act(async () => {
+      mount(fake, source);
+    });
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(source.getSnapshot().freshRecoveryRef).toBe("root"));
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+    );
+    await act(async () => {
+      source.editText("local preserved work");
+    });
+    await storage.reached.promise;
+    await act(async () => {
+      await peer.retargetOutbox("root", resumed, { threadId: "thread-new", instanceId: "instance-new" });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    await act(async () => {
+      storage.release.resolve();
+      await source.flushRecoveryWrites();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(async () => {
+      expect(
+        (await storage.listRecovery(resumed)).find((record) => record.clientMutationId !== original.clientMutationId),
+      ).toBeDefined();
+    });
+    const preserved = (await storage.listRecovery(resumed)).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+      await source.flushRecoveryWrites();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    await flushPendingTurnsProjectionForTests();
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(delivered).toHaveLength(1));
+    expect(delivered[0]).toMatchObject({ ref: resumed });
+    expect(typeof delivered[0]?.expectedInstanceId).toBe("string");
+    // The temporary destination claim is released after the resend, so with no
+    // reader left the model can retire.
+    act(() => cleanup());
+    await source.flushRecoveryWrites();
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(threadsStore.getState().threads.has(resumed)).toBe(false));
+  } finally {
+    storage.release.resolve();
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(actWarnings.mock.calls.every(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
+    actWarnings.mockRestore();
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+// A Stop on the destination while the Send's own persistence is in flight must
+// still cancel that Send. A barrier captured after persistence would absorb it.
+test("a stop during retargeted persistence cancels the send", async () => {
+  const actWarnings = vi.spyOn(console, "error").mockImplementation(() => {});
+  class HeldUpdateStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+    holdNextUpdate = false;
+
+    override async updateRecoveryInput(
+      ...args: Parameters<MutationOutboxIndexedDB["updateRecoveryInput"]>
+    ): ReturnType<MutationOutboxIndexedDB["updateRecoveryInput"]> {
+      const result = await super.updateRecoveryInput(...args);
+      if (this.holdNextUpdate) {
+        this.holdNextUpdate = false;
+        this.reached.resolve();
+        await this.release.promise;
+      }
+      return result;
+    }
+  }
+  const storage = new HeldUpdateStorage();
+  const { fake } = await setup(false, storage);
+  const resumed = "local:stop-persist";
+  fake.on("thread/read", ({ ref }) => ({
+    thread: { ...thread, evener: { ...thread.evener, ref: ref ?? "root" } },
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc", length: 0 },
+  }));
+  const delivered: Array<Record<string, unknown>> = [];
+  fake.on("turn/start", (params) => {
+    delivered.push(params as unknown as Record<string, unknown>);
+    return {
+      turn: { id: "stop-persist", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread-a",
+        projectionState: "reflected",
+      },
+    };
+  });
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const source = createTestComposerSource("root", undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    mount(fake, source);
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+    await peer.retargetOutbox("root", resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    storage.holdNextUpdate = true;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    await storage.reached.promise;
+    await peer.cancelUnattempted(resumed);
+    storage.release.resolve();
+    await act(async () => {
+      await source.flushRecoveryWrites();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(delivered).toHaveLength(0);
+  } finally {
+    storage.release.resolve();
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(actWarnings.mock.calls.every(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
+    actWarnings.mockRestore();
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+// The destination model load is another wait after the press. A Stop during
+// that hydration must still be in the Send's future, not its baseline.
+test("a stop during destination hydration cancels the send", async () => {
+  const actWarnings = vi.spyOn(console, "error").mockImplementation(() => {});
+  const storage = new MutationOutboxIndexedDB();
+  const { fake } = await setup(false, storage);
+  const resumed = "local:stop-hydrate";
+  const readReached = deferred<void>();
+  const releaseRead = deferred<void>();
+  fake.on("thread/read", async ({ ref }) => {
+    if (ref === resumed) {
+      readReached.resolve();
+      await releaseRead.promise;
+    }
+    return {
+      thread: { ...thread, evener: { ...thread.evener, ref: ref ?? "root" } },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc", length: 0 },
+    };
+  });
+  const delivered: Array<Record<string, unknown>> = [];
+  fake.on("turn/start", (params) => {
+    delivered.push(params as unknown as Record<string, unknown>);
+    return {
+      turn: { id: "stop-hydrate", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread-a",
+        projectionState: "reflected",
+      },
+    };
+  });
+  const queued = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(queued.clientMutationId, "rejected");
+  const source = createTestComposerSource("root", undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    mount(fake, source);
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(queued.clientMutationId));
+    await peer.retargetOutbox("root", resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    await readReached.promise;
+    await peer.cancelUnattempted(resumed);
+    releaseRead.resolve();
+    await act(async () => {
+      await source.flushRecoveryWrites();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(delivered).toHaveLength(0);
+  } finally {
+    releaseRead.resolve();
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(actWarnings.mock.calls.every(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
+    actWarnings.mockRestore();
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+type StopMatrixOrigin = "displayed" | "destination" | "both";
+type StopMatrixPhase = "persistence" | "hydration";
+
+// The pane displays the superseded ref after a peer retarget, but the Send
+// targets the destination. A Stop on either owner is a cancellation of this
+// Send, so both press-time epochs fence the resend transaction.
+async function runStopMatrixCase(stop: StopMatrixOrigin, phase: StopMatrixPhase) {
+  const actWarnings = vi.spyOn(console, "error").mockImplementation(() => {});
+  class HeldMatrixStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+    holdNextUpdate = false;
+
+    override async updateRecoveryInput(
+      ...args: Parameters<MutationOutboxIndexedDB["updateRecoveryInput"]>
+    ): ReturnType<MutationOutboxIndexedDB["updateRecoveryInput"]> {
+      const result = await super.updateRecoveryInput(...args);
+      if (this.holdNextUpdate) {
+        this.holdNextUpdate = false;
+        this.reached.resolve();
+        await this.release.promise;
+      }
+      return result;
+    }
+  }
+  const storage = new HeldMatrixStorage();
+  const { fake } = await setup(false, storage);
+  const resumed = `local:stop-matrix-${phase}-${stop}`;
+  const readReached = deferred<void>();
+  const releaseRead = deferred<void>();
+  fake.on("thread/read", async ({ ref }) => {
+    if (phase === "hydration" && ref === resumed) {
+      readReached.resolve();
+      await releaseRead.promise;
+    }
+    return {
+      thread: { ...thread, evener: { ...thread.evener, ref: ref ?? "root" } },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc", length: 0 },
+    };
+  });
+  const delivered: Array<Record<string, unknown>> = [];
+  fake.on("turn/start", (params) => {
+    delivered.push(params as unknown as Record<string, unknown>);
+    return {
+      turn: { id: `stop-matrix-${phase}-${stop}`, status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread-a",
+        projectionState: "reflected",
+      },
+    };
+  });
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const source = createTestComposerSource("root", undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    mount(fake, source);
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+    await peer.retargetOutbox("root", resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    if (phase === "persistence") storage.holdNextUpdate = true;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    if (phase === "persistence") await storage.reached.promise;
+    else await readReached.promise;
+    if (stop === "displayed" || stop === "both") await peer.cancelUnattempted("root");
+    if (stop === "destination" || stop === "both") await peer.cancelUnattempted(resumed);
+    if (phase === "persistence") storage.release.resolve();
+    else releaseRead.resolve();
+    await act(async () => {
+      await source.flushRecoveryWrites();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(delivered).toHaveLength(0);
+  } finally {
+    storage.release.resolve();
+    releaseRead.resolve();
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(actWarnings.mock.calls.every(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
+    actWarnings.mockRestore();
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+}
+
+test.each([
+  ["displayed", "persistence"],
+  ["destination", "persistence"],
+  ["both", "persistence"],
+  ["displayed", "hydration"],
+  ["destination", "hydration"],
+  ["both", "hydration"],
+] as const)("a stop on the %s ref during %s cancels the send", async (stop, phase) => {
+  await runStopMatrixCase(stop, phase);
+});
+
+// The peer's retargeted target and its Stop epoch must be read in the press's
+// own snapshot. If either read is answered only after a later Stop, that Stop
+// still belongs after the press and must cancel it.
+test("a stop while the press-time target read is delayed cancels the send", async () => {
+  const actWarnings = vi.spyOn(console, "error").mockImplementation(() => {});
+  class HeldTargetReadStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+    hold = false;
+
+    private async holdResult<T>(result: Promise<T>): Promise<T> {
+      if (this.hold) {
+        this.hold = false;
+        this.reached.resolve();
+        await this.release.promise;
+      }
+      return result;
+    }
+
+    override getRecovery(clientMutationId: string): ReturnType<MutationOutboxIndexedDB["getRecovery"]> {
+      return this.holdResult(super.getRecovery(clientMutationId));
+    }
+
+    override getRecoveryWithStopEpoch(
+      clientMutationId: string,
+    ): ReturnType<MutationOutboxIndexedDB["getRecoveryWithStopEpoch"]> {
+      return this.holdResult(super.getRecoveryWithStopEpoch(clientMutationId));
+    }
+  }
+  const storage = new HeldTargetReadStorage();
+  const { fake } = await setup(false, storage);
+  const resumed = "local:stop-read";
+  fake.on("thread/read", ({ ref }) => ({
+    thread: { ...thread, evener: { ...thread.evener, ref: ref ?? "root" } },
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc", length: 0 },
+  }));
+  const delivered: Array<Record<string, unknown>> = [];
+  fake.on("turn/start", (params) => {
+    delivered.push(params as unknown as Record<string, unknown>);
+    return {
+      turn: { id: "stop-read", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread-a",
+        projectionState: "reflected",
+      },
+    };
+  });
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const source = createTestComposerSource("root", undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    mount(fake, source);
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+    await peer.retargetOutbox("root", resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    storage.hold = true;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    await storage.reached.promise;
+    await peer.cancelUnattempted(resumed);
+    storage.release.resolve();
+    await act(async () => {
+      await source.flushRecoveryWrites();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(delivered).toHaveLength(0);
+  } finally {
+    storage.release.resolve();
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(actWarnings.mock.calls.every(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
+    actWarnings.mockRestore();
+    source.dispose();
+    peer.close();
+    storage.close();
   }
 });
 

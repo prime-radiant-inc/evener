@@ -1,3 +1,4 @@
+import { composerSelectionScope, readRecoverySelection } from "../panes/session/composer/draft";
 import { parseZoomParams } from "../panes/zoom/intent";
 import { navigate, paneToURL, refParam } from "./routing";
 import { type OpenPaneRecord, presentedPanes, recordConversationOpenParent, workspaceStore } from "./workspace";
@@ -68,8 +69,18 @@ export function openTopLevelSession(ref: string): void {
 // Keeps a nested session out of main by replacing the owner into main and then
 // opening the contextual child in secondary.
 export function openNestedSessionWithOwner(ref: string, ownerRef: string): void {
+  // Capture the outgoing selection seat before replacing the owner: promoting
+  // the owner can remove the pane that carried this conversation's choice.
+  const outgoingSeat = workspaceStore
+    .getState()
+    .panes.map((pane) => ({ pane, seat: pane.composerSeatId ?? pane.id }))
+    .filter(({ pane }) => pane.type === "session" || pane.type === "sessionZoom")
+    .map(({ seat }) => seat)
+    .find((seat) => readRecoverySelection(ref, composerSelectionScope(seat)) !== undefined);
   openTopLevelSession(ownerRef);
-  const openedId = workspaceStore.getState().openPane("session", { ref }, { slot: "secondary" });
+  const openedId = workspaceStore
+    .getState()
+    .openPane("session", { ref }, { slot: "secondary", recoverySelectionFrom: outgoingSeat });
   const opened = workspaceStore.getState().panes.find((pane) => pane.id === openedId);
   if (opened) recordConversationOpenParent(opened, ownerRef);
 }

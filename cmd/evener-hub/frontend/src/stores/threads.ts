@@ -96,6 +96,7 @@ import {
   type MutationStopBarrier,
 } from "./mutationOutbox";
 import {
+  type DisplayedRecoveryStopBarrier,
   MutationOutboxIndexedDB,
   type MutationRecoveryResendResult,
   MutationStorageError,
@@ -3533,6 +3534,20 @@ export function captureRecoveryStopBarrier(targetRef: string): Promise<MutationS
   return barrier;
 }
 
+/** Capture a recovery row's durable target and that target's Stop epoch in one
+ * storage snapshot. Composer requests this from the Send press's synchronous
+ * prefix so a later Stop, during persistence or hydration, stays after the
+ * fence even when a peer retargeted the row. */
+export function readRecoveryWithStopEpoch(
+  clientMutationId: string,
+): Promise<{ record: MutationRecoveryRecord | undefined; stopEpoch: number }> {
+  const capture = requireMutationRuntime().storage.getRecoveryWithStopEpoch(clientMutationId);
+  // The press can still refuse before awaiting this read (capability gates).
+  // Keep the rejection for the sender without an unhandled interim promise.
+  void capture.catch(() => undefined);
+  return capture;
+}
+
 export async function updateRecoveryMutation(
   clientMutationId: string,
   targetRef: string,
@@ -3563,7 +3578,9 @@ export async function updateRecoveryMutation(
     compositionOwnerId,
   );
   if (!record) return undefined;
-  notifyMutationPersistence([targetRef]);
+  // A row retargeted while this write was in flight now belongs to the resumed
+  // ref; listeners for that ref must see the update too.
+  notifyMutationPersistence(record.targetRef === targetRef ? [targetRef] : [targetRef, record.targetRef]);
   return record;
 }
 
@@ -3593,7 +3610,9 @@ export async function preserveRecoveryMutation(
     localDraftRevisionId,
   );
   if (!record) return undefined;
-  notifyMutationPersistence([targetRef]);
+  // retargetOutbox may have moved the source row, in which case the fresh
+  // owner belongs to the resumed ref rather than the caller's captured one.
+  notifyMutationPersistence(record.targetRef === targetRef ? [targetRef] : [targetRef, record.targetRef]);
   return record;
 }
 
@@ -3629,11 +3648,13 @@ export async function resendRecoveryMutation(
   barrierRead = captureRecoveryStopBarrier(targetRef),
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
+  displayedBarrierRead?: Promise<DisplayedRecoveryStopBarrier>,
 ): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;
   const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames, commandNames, mentions);
   const barrier = await barrierRead;
+  const displayedBarrier = await displayedBarrierRead;
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
   const result = await trackOutboxWrite(
@@ -3645,6 +3666,7 @@ export async function resendRecoveryMutation(
         barrier,
         expectedRecoveryRevisions,
         compositionOwnerId,
+        displayedBarrier,
       ),
     (outcome) =>
       outcome.status !== "sent"
