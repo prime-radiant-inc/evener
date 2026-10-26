@@ -17,26 +17,28 @@ import (
 // carrying an orphan boundary, a resolved marker and an open pending-spawn
 // intent set, one resolved interrupted record carrying the attestation, and a
 // per-host fencing-quarantine marker at the top level.
+// Its timestamps sit far in the future so the retention horizon never compacts
+// a terminal record out from under the assertions.
 const priorShapeStoreJSON = `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
 	`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending",` +
 	`"generation":7,"incarnationId":"inc-h1","fencingEpoch":{"bootId":"boot-1","opSeq":3},` +
 	`"orphanBoundary":[{"kind":"local-markerless","platform":"linux","nonce":"nonce-h1"}],` +
 	`"pendingSpawns":[{"nonce":"nonce-h1","platform":"linux","cgroupId":"/cg/h1"}],` +
-	`"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
+	`"createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false},` +
 	`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"deploy","state":"interrupted",` +
 	`"generation":7,"incarnationId":"inc-h2","orphanResolved":true,` +
 	`"attestation":{"operator":"operator-alpha","statement":"orphan-verified-absent",` +
-	`"recordId":"00000000000000000002","observedAt":"2026-09-26T00:00:00Z"},` +
+	`"recordId":"00000000000000000002","observedAt":"2099-01-01T00:00:00Z"},` +
 	`"result":{"ok":false,"message":"interrupted"},"sequence":1,` +
-	`"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}],` +
-	`"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2026-09-26T00:00:00Z"}}}`
+	`"createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false}],` +
+	`"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2099-01-01T00:00:00Z"}}}`
 
 // TestPriorBuildStoreLoadsAndDropsRetiredKeys pins the normal open: the retired
 // keys decode (never a refusal), the served records carry none of the retired
 // payload, and the boot pass's rewrite leaves none of the keys in the file.
 func TestPriorBuildStoreLoadsAndDropsRetiredKeys(t *testing.T) {
 	path := StorePath(t.TempDir())
-	writeRawStore(t, path, 0o600, priorShapeStoreJSON)
+	writeRawStore(t, path, 0o600, currentFixtureDates(priorShapeStoreJSON))
 	store, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open on a prior-build store: %v", err)
@@ -76,11 +78,11 @@ func TestPriorBuildStoreLoadsAndDropsRetiredKeys(t *testing.T) {
 const priorShapeCorruptStoreJSON = `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
 	`{"id":"00000000000000000001","clientOperationId":"op-h1","host":"h1","kind":"restart","state":"orphan-unverified",` +
 	`"generation":3,"incarnationId":"inc-h1","orphanBoundary":[{"kind":"local-markerless","platform":"linux","nonce":"nonce-h1"}],` +
-	`"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
+	`"createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false},` +
 	`{"id":"00000000000000000002","clientOperationId":"op-h2","host":"h2","kind":"deploy","state":"complete",` +
-	`"generation":7,"incarnationId":"inc-h2","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z",` +
+	`"generation":7,"incarnationId":"inc-h2","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z",` +
 	`"hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":2}],` +
-	`"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2026-09-26T00:00:00Z"}}}`
+	`"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2099-01-01T00:00:00Z"}}}`
 
 // TestPriorBuildCorruptStoreStillQuarantinesAndWritesNoRetiredKeys pins the
 // custody path's tolerance: the §9 boundary schema is gone, so the corrupt
@@ -131,9 +133,9 @@ func TestPriorBuildMalformedBoundaryStillLoadsAndQuarantines(t *testing.T) {
 	malformed := `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
 		`{"id":"00000000000000000001","clientOperationId":"op-h1","host":"h1","kind":"restart","state":"orphan-unverified",` +
 		`"generation":3,"incarnationId":"inc-h1","orphanBoundary":[{"kind":"local-linux"}],` +
-		`"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
+		`"createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z","hostRemoved":false},` +
 		`{"id":"00000000000000000002","clientOperationId":"op-h2","host":"h2","kind":"deploy","state":"complete",` +
-		`"generation":7,"incarnationId":"inc-h2","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z",` +
+		`"generation":7,"incarnationId":"inc-h2","createdAt":"2099-01-01T00:00:00Z","updatedAt":"2099-01-01T00:00:00Z",` +
 		`"hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":2}]}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, malformed)
