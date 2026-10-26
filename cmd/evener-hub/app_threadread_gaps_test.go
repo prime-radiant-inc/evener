@@ -112,8 +112,8 @@ func TestAppwireDelegateFromAgentStatusCarriesEveryAgentField(t *testing.T) {
 	appwiretest.FillNonZero(&in)
 	got := reflect.ValueOf(appwireDelegateFromAgentStatus(in))
 	src := reflect.TypeOf(in)
-	for i := range src.NumField() {
-		name := src.Field(i).Name
+	for f := range src.Fields() {
+		name := f.Name
 		field := got.FieldByName(name)
 		if !field.IsValid() {
 			t.Fatalf("EvenerDelegateInfo has no field %s for the agent status field", name)

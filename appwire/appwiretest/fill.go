@@ -42,7 +42,7 @@ func fill(v reflect.Value, name string) {
 		v.Set(reflect.New(v.Type().Elem()))
 		fill(v.Elem(), name)
 	case reflect.Slice:
-		if v.Type() == reflect.TypeOf(json.RawMessage(nil)) {
+		if v.Type() == reflect.TypeFor[json.RawMessage]() {
 			v.Set(reflect.ValueOf(json.RawMessage(`{"k":1}`)))
 			return
 		}

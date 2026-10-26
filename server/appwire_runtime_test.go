@@ -897,8 +897,8 @@ func TestAppDelegateFromDetailedStatusCarriesEveryAgentField(t *testing.T) {
 	got := appDelegateFromDetailedStatus(in)
 	want := reflect.ValueOf(got)
 	src := reflect.TypeOf(in)
-	for i := range src.NumField() {
-		name := src.Field(i).Name
+	for f := range src.Fields() {
+		name := f.Name
 		field := want.FieldByName(name)
 		if !field.IsValid() {
 			t.Fatalf("EvenerDelegateInfo has no field %s for the agent status field", name)
