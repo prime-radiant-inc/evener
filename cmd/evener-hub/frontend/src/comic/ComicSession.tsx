@@ -10,6 +10,7 @@ import { useThreadsStore } from "../stores/threads";
 import { useThreadModel } from "../stores/useThreadModel";
 import { Button, Select } from "../widgets";
 import { ComicComposer } from "./ComicComposer";
+import { ComicInteractions } from "./ComicInteractions";
 import { ComicTranscript } from "./ComicTranscript";
 import styles from "./comic.module.css";
 import { projectComicConversation } from "./projection";
@@ -92,7 +93,12 @@ export function ComicSession({
           onOpen={onSelectRef}
         />
       )}
-      {source?.ref === sessionRef && source.alive && <ComicComposer source={source} />}
+      {source?.ref === sessionRef && source.alive && (
+        <>
+          <ComicInteractions sessionRef={sessionRef} />
+          <ComicComposer key={sessionRef} source={source} />
+        </>
+      )}
     </section>
   );
 }

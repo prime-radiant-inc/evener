@@ -165,12 +165,34 @@ async function journey(page, fixture) {
     const Native = window.WebSocket;
     window.__comicSockets = [];
     window.WebSocket = class extends Native {
-      constructor(...args) { super(...args); window.__comicSockets.push(this); }
+      constructor(...args) {
+        super(...args); window.__comicSockets.push(this);
+        this.addEventListener('message', event => {
+          if (this.comicHeldId !== undefined && JSON.parse(event.data).id === this.comicHeldId) {
+            event.stopImmediatePropagation();
+            const data = event.data;
+            window.__comicReleaseApproval = () => { this.comicHeldId = undefined; this.dispatchEvent(new MessageEvent('message', {data})); };
+          }
+        });
+      }
       send(data) {
         if (window.__comicFailHistory && JSON.parse(data).method === 'thread/turns/list') {
           window.__comicFailHistory = false;
           this.close(4000, 'comic history transport failure');
           return;
+        }
+        const request = JSON.parse(data);
+        if (request.method === 'evener/sandbox/escalation/resolve') {
+          if (window.__comicFailApproval) {
+            window.__comicFailApproval = false;
+            window.__comicFailedApproval = request;
+            this.close(4000, 'comic approval transport failure');
+            return;
+          }
+          if (window.__comicHoldApproval) {
+            window.__comicHoldApproval = false;
+            this.comicHeldId = request.id;
+          }
         }
         super.send(data);
       }
@@ -423,6 +445,7 @@ async function journey(page, fixture) {
     await remoteJourney(page, fixture, { incoming, outgoing, screenshot });
     await authorshipJourney(page, fixture, { incoming, outgoing, screenshot });
     await composerJourney(page, fixture, { command, wireTrace, screenshot });
+    await interactionJourney(page, fixture, { command, wireTrace, screenshot });
   }
   catch (error) {
     await screenshot('child-failure');
@@ -486,6 +509,91 @@ async function composerJourney(page, fixture, { command, wireTrace, screenshot }
   writeFileSync(`${fixture.evidenceDir}/composer.json`, JSON.stringify({ref:fixture.refs.live, pairs, provider:[sent, queued], wireTrace:wireTrace.slice(start)}, null, 2));
   await screenshot('composer-stopped');
   console.log('Comic composer: literal Send, live partial reply, Queue consumed by provider, Stop receipt and provider cancellation');
+}
+
+async function interactionJourney(page, fixture, { command, wireTrace, screenshot }) {
+  const start = wireTrace.length;
+  const evaluateHere = expression => evaluate(page.send, expression);
+  const records = () => readFileSync(fixture.requestLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  const method = 'evener/sandbox/escalation/resolve';
+  const pairs = () => repliesSince(wireTrace, start, request => request.method === method);
+  const frames = () => wireTrace.slice(start).filter(row => row.frame).map(row => JSON.parse(row.frame));
+  const snapshot = () => evaluateHere(`(() => {
+    const editor = document.querySelector('[role="textbox"][aria-label="Message"]');
+    return {ref:document.querySelector('main')?.dataset.sessionRef, text:editor?.textContent, focused:document.activeElement===editor, selected:document.getSelection()?.toString(), controls:[...document.querySelectorAll('[data-comic-composer] button')].map(button=>({text:button.textContent,disabled:button.disabled})), questions:document.querySelectorAll('[role="tab"]').length, approvals:document.querySelectorAll('[aria-label="Sandbox approval"]').length};
+  })()`);
+  const button = async selector => until('interaction control ' + selector, () => evaluateHere(`(() => {const button=document.querySelector(${JSON.stringify(selector)});if(!button||button.disabled)return false;button.click();return true;})()`));
+  const visibleButton = async pattern => until('interaction action ' + pattern, () => evaluateHere(`(() => {const button=[...document.querySelectorAll('button')].find(button=>new RegExp(${JSON.stringify(pattern)},'i').test(button.textContent)&&!button.disabled);if(!button)return false;button.click();return true;})()`));
+  const type = async text => {
+    await until('interactive root composer', () => evaluateHere(`(() => {const editor=document.querySelector('[role="textbox"][aria-label="Message"]');if(!editor||editor.closest('[inert]'))return false;editor.focus();return document.activeElement===editor;})()`));
+    await page.send('Input.insertText', {text});
+    await until('interaction draft', snapshot, value => value.text === text);
+  };
+  const send = async marker => { await type(marker); await button('[data-testid="composer-submit"]'); };
+  command('background-role', 'comic-interactions');
+  command('background-phase', 'comic-interactions-ready');
+  await until('interaction provider configured', () => records().some(row => row.event === 'background-phase-ack' && row.phase === 'comic-interactions-ready'));
+  await send('COMIC_INTERACTION_ASK');
+  await until('real multi-question ask', () => evaluateHere(`document.querySelector('[role="tabpanel"]')?.textContent.includes('COMIC_QUESTION_SINGLE')`));
+  if (!await evaluateHere(`document.querySelector('[data-comic-composer] form')?.hasAttribute('inert')`)) throw Error('ordinary input active while answering');
+  await screenshot('interactions-question');
+  const option = async text => until('fixture option ' + text, () => evaluateHere(`(() => {const option=[...document.querySelectorAll('label')].find(node=>node.textContent.includes(${JSON.stringify(text)}));if(!option)return false;option.click();return true;})()`));
+  await option('COMIC_SINGLE_B');
+  await option('COMIC_MULTI_A');
+  await option('COMIC_MULTI_B');
+  await visibleButton('send answers');
+  const answered = await until('actual provider receives both answers', () => records().find(row => row.event === 'request' && row.kind === 'turn' && row.request.messages.some(message => message.role === 'user' && ['COMIC_SINGLE_B','COMIC_MULTI_A','COMIC_MULTI_B'].every(text => JSON.stringify(message.content).includes(text)))));
+  await until('question surface settled', snapshot, value => value.questions === 0);
+  await until('answer restores composer focus', snapshot, value => value.focused);
+  await screenshot('interactions-answered');
+  const decisions = [];
+  for (const [marker, approve] of [['APPROVE',true],['DENY',false],['LATE',true]]) {
+    await send('COMIC_INTERACTION_' + marker);
+    const pending = await until('runtime sandbox request ' + marker, () => frames().find(frame => frame.method === 'evener/sandbox/escalation/requested' && frame.params?.deniedPath?.endsWith('COMIC_INTERACTION_' + marker)));
+    const params = pending.params;
+    const group = '[role="group"][aria-label="Sandbox approval"]';
+    await until('actual requested scope', () => evaluateHere(`document.querySelector(${JSON.stringify(group)})?.textContent`), text => text?.includes(params.deniedPath) && text.includes('write_file') && text.includes('workspace-write'));
+    if (pairs().some(pair => pair.request.params.escalationId === params.escalationId)) throw Error('approval submitted before explicit choice');
+    if (marker === 'APPROVE') {
+      await screenshot('interactions-approval');
+      await evaluateHere('window.__comicFailApproval = true');
+      await button(`${group} [data-sandbox-escalation-allow]`);
+      await until('approval transport error and retry enabled', () => evaluateHere(`(() => {const group=document.querySelector(${JSON.stringify(group)});return !!group?.textContent.includes('Failed')&&!group.querySelector('button').disabled;})()`));
+      await until('native transport reconnected', () => evaluateHere('window.__comicSockets.some(socket=>socket.readyState===WebSocket.OPEN)'));
+    }
+    if (marker === 'LATE') await evaluateHere('window.__comicHoldApproval = true');
+    if (approve) await button(`${group} [data-sandbox-escalation-allow]`);
+    else await visibleButton('^Deny$');
+    const pair = await until('correlated decision ' + marker, () => pairs().find(pair => pair.request.params.escalationId === params.escalationId));
+    if (pair.request.params.ref !== fixture.refs.live || pair.request.params.approve !== approve || pair.response.error) throw Error('decision mismatch ' + JSON.stringify(pair));
+    decisions.push({marker, pending, pair});
+    if (marker === 'LATE') {
+      await until('actual response withheld', () => evaluateHere('typeof window.__comicReleaseApproval === "function"'));
+      if (!await evaluateHere(`[...document.querySelectorAll(${JSON.stringify(group + ' button')})].every(button=>button.disabled)`)) throw Error('pending approval controls not busy');
+      await evaluateHere(`history.pushState(null,'','/comic/s/'+encodeURIComponent(${JSON.stringify(fixture.authorshipRef)})); window.dispatchEvent(new PopStateEvent('popstate'));`);
+      await until('second actual root selected', snapshot, value => value.ref === fixture.authorshipRef);
+      await type('COMIC_SECOND_ROOT_DRAFT');
+      // Hydration and the editor's draft projection must settle before the
+      // baseline, otherwise B's own readiness looks like an A response effect.
+      await until('second root send ready before A settlement', () => evaluateHere('document.querySelector("[data-testid=composer-submit]")?.disabled === false'));
+      await evaluateHere(`(() => {const editor=document.querySelector('[role="textbox"][aria-label="Message"]');const range=document.createRange();range.setStart(editor.firstChild,1);range.setEnd(editor.firstChild,5);const selection=document.getSelection();selection.removeAllRanges();selection.addRange(range);})()`);
+      const before = await snapshot();
+      await evaluateHere('window.__comicReleaseApproval(); window.__comicReleaseApproval = undefined');
+      await evaluateHere('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      const after = await snapshot();
+      if (JSON.stringify(before) !== JSON.stringify(after)) throw Error('late original-ref approval changed B ' + JSON.stringify({before,after}));
+      decisions.at(-1).secondRoot = {before,after};
+      await screenshot('interactions-late-second-root');
+    } else await until('decision surface settled', snapshot, value => value.approvals === 0);
+    // Real tool follow-up, not a DOM-only disappearance, proves runtime progress.
+    await until('tool result reaches provider ' + marker, () => records().some(row => row.event === 'request' && row.kind === 'turn' && row.request.messages.some(message => message.content.some(part => part.tool_result?.tool_call_id === 'comic_interaction_COMIC_INTERACTION_' + marker))));
+  }
+  const actual = frames().filter(frame => frame.method === method);
+  if (actual.length !== 3 || new Set(actual.map(frame=>frame.params.escalationId)).size !== 3 || actual.some(frame=>frame.params.ref!==fixture.refs.live)) throw Error('approval replay or wrong root ' + JSON.stringify(actual));
+  const failed = await evaluateHere('window.__comicFailedApproval');
+  if (failed.params.escalationId !== decisions[0].pending.params.escalationId || failed.params.ref !== fixture.refs.live || failed.params.approve !== true) throw Error('retry changed original request identity');
+  writeFileSync(`${fixture.evidenceDir}/interactions.json`, JSON.stringify({answered,decisions,failed,wireTrace:wireTrace.slice(start)},null,2));
+  console.log('Comic root interactions: real batch answered, explicit approve after transport failure, explicit decline, original-ref late approval leaves second root unchanged, no replay');
 }
 
 function readGeometry(point, ref) {

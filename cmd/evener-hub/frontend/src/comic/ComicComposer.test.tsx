@@ -129,6 +129,8 @@ test.each([
   connectionStore.setState({ state: "idle" });
   replaceEditorText(editor(), "/settings literal message");
   expect(source.getSnapshot().text).toBe("/settings literal message");
+  const submit = screen.getByTestId("composer-submit");
+  expect(screen.getByRole("button", { name: submit.textContent ?? "" })).toBe(submit);
   fireEvent.click(screen.getByTestId("composer-submit"));
   await waitFor(async () => expect(await storage.listOutbox(ref)).toHaveLength(1));
   expect(await storage.listOutbox(ref)).toMatchObject([

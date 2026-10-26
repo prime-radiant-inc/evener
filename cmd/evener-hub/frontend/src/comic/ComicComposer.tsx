@@ -8,7 +8,9 @@ import {
   useSyncExternalStore,
 } from "react";
 import { AttachmentTile } from "../panes/session/composer/AttachmentTile";
+import { askDockStore, useAskDockPending } from "../panes/session/composer/askDock/askDockStore";
 import { type TextEditor, useAttachments } from "../panes/session/composer/attachments/useAttachments";
+import { consumeComposerFocus, useComposerFocusRequest } from "../panes/session/composer/composerFocus";
 import { readDraftRevision } from "../panes/session/composer/draft";
 import { QueueStrip } from "../panes/session/composer/queue";
 import { SkillEditor, type SkillEditorHandle } from "../panes/session/composer/SkillEditor";
@@ -25,6 +27,8 @@ export function ComicComposer({ source }: { source: ComposerSourceState }): Reac
   const snapshot = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   const { text, skillNames, commandNames, mentions, restoreEpoch, activeRecoveryId } = snapshot;
   const actions = useComposerActions(source);
+  const askPending = useAskDockPending(source.ref);
+  const focusRequest = useComposerFocusRequest(source.ref);
   const attachments = useAttachments(source.editor, source.attachments);
   const editor = useRef<SkillEditorHandle>(null);
   const mounted = useRef(false);
@@ -65,6 +69,11 @@ export function ComicComposer({ source }: { source: ComposerSourceState }): Reac
       unbind();
     };
   }, [source, binding]);
+  useLayoutEffect(() => {
+    if (!focusRequest || askPending || !source.alive || !editor.current) return;
+    editor.current.focus();
+    consumeComposerFocus(source.ref);
+  }, [focusRequest, askPending, source]);
   const previousRecovery = useRef(activeRecoveryId);
   useLayoutEffect(() => {
     const activating = previousRecovery.current === null && activeRecoveryId !== null;
@@ -92,8 +101,12 @@ export function ComicComposer({ source }: { source: ComposerSourceState }): Reac
     if (event.key !== "Enter" || event.nativeEvent.isComposing || composing.current) return;
     if (event.metaKey || event.ctrlKey || (!event.shiftKey && !event.altKey && prefsStore.getState().enterToSend)) {
       event.preventDefault();
-      void actions.submitFromLiveState();
+      submit();
     }
+  }
+  function submit() {
+    if ((askDockStore.getState().byRef.get(source.ref)?.batches.length ?? 0) > 0) return;
+    void actions.submitFromLiveState();
   }
   return (
     <section className={styles.interaction} aria-label="Your message" data-comic-composer={source.ref}>
@@ -121,9 +134,11 @@ export function ComicComposer({ source }: { source: ComposerSourceState }): Reac
         </div>
       )}
       <form
+        hidden={askPending}
+        inert={askPending}
         onSubmit={(event) => {
           event.preventDefault();
-          if (!composing.current) void actions.submitFromLiveState();
+          if (!composing.current) submit();
         }}
         onCompositionStart={() => {
           composing.current = true;
@@ -161,7 +176,6 @@ export function ComicComposer({ source }: { source: ComposerSourceState }): Reac
                 key="send"
                 type="submit"
                 data-testid="composer-submit"
-                aria-label="Send"
                 icon={<SendIcon />}
                 disabled={
                   actions.busy || !hasContent || !(actions.availability.canSend || actions.availability.canQueue)

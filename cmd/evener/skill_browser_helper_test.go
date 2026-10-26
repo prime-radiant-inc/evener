@@ -131,6 +131,18 @@ func TestSkillBrowserDaemonHelper(t *testing.T) {
 		"--run-dir", cfg.RunDir,
 		"--plugin-root", filepath.Join(cfg.StateDir, "plugin-store"),
 	}
+	// Comic-only fixture configuration at the external CLI/provider boundary.
+	// Other guards keep their original five-field config and unsandboxed daemon.
+	if raw, err := os.ReadFile(filepath.Join(cfg.WorkDir, "comic-interactions.json")); err == nil {
+		var config struct{ OutsideDir string }
+		if err := json.Unmarshal(raw, &config); err != nil {
+			t.Fatal(err)
+		}
+		adapter.comicOutsideDir = config.OutsideDir
+		args = append(args, "--sandbox", "workspace-write")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 	pluginDir := filepath.Join(cfg.WorkDir, skillBrowserFixturePluginDir)
 	if info, statErr := os.Stat(filepath.Join(pluginDir, ".claude-plugin", "plugin.json")); statErr == nil && !info.IsDir() {
 		args = append(args,
@@ -437,7 +449,8 @@ type skillBrowserAdapter struct {
 	// autoPhases, when set, releases every background phase immediately, so
 	// history and gap turns complete without the driver gating each one. The
 	// batching scenario leaves it off and uses acknowledged held phases.
-	autoPhases bool
+	autoPhases      bool
+	comicOutsideDir string
 }
 
 // Fixture sentinels scripted across the provider boundary by the whole-journey
@@ -601,6 +614,10 @@ func (a *skillBrowserAdapter) scriptBackgroundStream(ctx context.Context, st *ll
 		a.scriptComicAuthorship(st, req)
 		return
 	}
+	if role == "comic-interactions" {
+		a.scriptComicInteractions(st, req)
+		return
+	}
 	if role == "comic-composer" {
 		queued := false
 		for _, message := range req.Messages {
@@ -663,6 +680,44 @@ func (a *skillBrowserAdapter) scriptBackgroundStream(ctx context.Context, st *ll
 		Arguments: json.RawMessage(`{"command":"` + backgroundToolCommand + `","mode":"foreground"}`),
 		Type:      "function",
 	}
+	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &call})
+	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+	st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})
+}
+
+func (a *skillBrowserAdapter) scriptComicInteractions(st *llm.ChanStream, req llm.Request) {
+	marker := ""
+	for _, message := range req.Messages {
+		for _, part := range message.Content {
+			if message.Role == llm.RoleUser && strings.HasPrefix(part.Text, "COMIC_INTERACTION_") {
+				marker = part.Text
+			}
+		}
+	}
+	id := "comic_interaction_" + marker
+	for _, message := range req.Messages {
+		for _, part := range message.Content {
+			if part.ToolCall != nil && part.ToolCall.ID == id {
+				st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: marker + " completed"})
+				sendScriptedCommunicate(st)
+				return
+			}
+		}
+	}
+	name := "write_file"
+	args := map[string]any{"file_path": filepath.Join(a.comicOutsideDir, marker), "content": marker, "intent": "Testing an explicit one-action sandbox decision"}
+	if marker == "COMIC_INTERACTION_ASK" {
+		name = "ask_user"
+		args = map[string]any{"questions": []any{
+			map[string]any{"question": "COMIC_QUESTION_SINGLE", "options": []any{map[string]string{"label": "COMIC_SINGLE_A", "detail": "first"}, map[string]string{"label": "COMIC_SINGLE_B", "detail": "second"}}},
+			map[string]any{"question": "COMIC_QUESTION_MULTI", "options": []any{map[string]string{"label": "COMIC_MULTI_A", "detail": "first"}, map[string]string{"label": "COMIC_MULTI_B", "detail": "second"}}, "multi_select": true},
+		}}
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		panic(err)
+	}
+	call := llm.ToolCallData{ID: id, Name: name, Arguments: raw, Type: "function"}
 	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &call})
 	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
 	st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})

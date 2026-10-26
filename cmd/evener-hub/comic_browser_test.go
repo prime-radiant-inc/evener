@@ -36,6 +36,17 @@ func TestComicChatBrowser(t *testing.T) {
 	}
 	requireFreshDist(t)
 	fixture := skillGuardSetup(t)
+	outside := filepath.Join(fixture.root, "comic-outside-workspace")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	interactionConfig, err := json.Marshal(map[string]string{"OutsideDir": outside})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.workDir[0], "comic-interactions.json"), interactionConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	entry := skillGuardStartHelper(t, fixture, 0)
 	ref := skillGuardSessionRef(entry)
 	authorRoot := skillGuardStartHelper(t, fixture, 1)
@@ -152,7 +163,75 @@ func TestComicChatBrowser(t *testing.T) {
 	comicGuardCheckRoster(t, fixture.stateDir[0], evidence)
 	comicGuardCheckAuthorship(t, fixture.stateDir[1], evidence)
 	comicGuardCheckComposer(t, fixture.stateDir[0], entry.SessionID, evidence)
+	comicGuardCheckInteractions(t, fixture.stateDir[0], entry.SessionID, outside, evidence)
 	t.Logf("Comic Chat real reader evidence: %s", evidence)
+}
+
+func comicGuardCheckInteractions(t *testing.T, stateDir, sessionID, outside, evidence string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, results := map[string]int{}, map[string]int{}
+	decisions := map[string][]schema.ApprovalDecisionNotice{}
+	answers := 0
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var record struct{ Turn schema.Turn }
+		if err := decoder.Decode(&record); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if notice := record.Turn.Notice; notice != nil && notice.ApprovalDecision != nil {
+			decision := *notice.ApprovalDecision
+			decisions[decision.DeniedPath] = append(decisions[decision.DeniedPath], decision)
+		}
+		for _, part := range record.Turn.Message.Content {
+			if record.Turn.Kind == schema.TurnUserInput && strings.Contains(part.Text, "COMIC_SINGLE_B") && strings.Contains(part.Text, "COMIC_MULTI_A") && strings.Contains(part.Text, "COMIC_MULTI_B") {
+				answers++
+			}
+			if call := part.ToolCall; call != nil && strings.HasPrefix(call.ID, "comic_interaction_") {
+				calls[call.ID]++
+			}
+			if result := part.ToolResult; result != nil && strings.HasPrefix(result.ToolCallID, "comic_interaction_") {
+				results[result.ToolCallID]++
+			}
+		}
+	}
+	if answers != 1 {
+		t.Fatalf("durable human answer count = %d, want 1", answers)
+	}
+	for _, marker := range []string{"ASK", "APPROVE", "DENY", "LATE"} {
+		id := "comic_interaction_COMIC_INTERACTION_" + marker
+		if calls[id] != 1 || results[id] != 1 {
+			t.Fatalf("durable interaction %s calls/results=%d/%d, want 1/1", marker, calls[id], results[id])
+		}
+		if marker == "ASK" {
+			continue
+		}
+		path := filepath.Join(outside, "COMIC_INTERACTION_"+marker)
+		if got := decisions[path]; len(got) != 1 || got[0].Approved != (marker != "DENY") || got[0].Tool != "write_file" || got[0].EscalationID == "" {
+			t.Fatalf("durable decision %s = %+v", marker, got)
+		}
+		body, err := os.ReadFile(path)
+		if marker == "DENY" {
+			if !os.IsNotExist(err) {
+				t.Fatalf("declined write executed: %q, %v", body, err)
+			}
+		} else if err != nil || string(body) != "COMIC_INTERACTION_"+marker {
+			t.Fatalf("approved write %s: %q, %v", marker, body, err)
+		}
+	}
+	data, err = json.MarshalIndent(map[string]any{"answers": answers, "calls": calls, "results": results, "decisions": decisions, "approvedFiles": []string{"APPROVE", "LATE"}, "deniedFileAbsent": true}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(evidence, "interactions-durable.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Log("Durable root interactions: one ask and three sandbox tool exchanges, two approved writes, declined write absent")
 }
 
 func comicGuardCheckComposer(t *testing.T, stateDir, sessionID, evidence string) {
