@@ -24,7 +24,7 @@ const w3oversizeScanLimit = 1024
 // otherwise a small header precedes the oversize entry line.
 func w3init_writeOversizeLine(t *testing.T, stateDir, id, headerLine string) {
 	t.Helper()
-	dir := filepath.Join(stateDir, sessionsSubdir)
+	dir := schema.SessionsDir(stateDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestW3Init_ForkSession_NewWriterError(t *testing.T) {
 	id := "01W3FORKNEWWRITER00000001"
 	lines := []string{s2cov_entryLine(t, schema.TurnUserInput, "task")}
 	base := afero.NewMemMapFs()
-	parentPath := filepath.Join(stateDir, sessionsSubdir, id+".transcript.jsonl")
+	parentPath := schema.SessionTranscriptPath(stateDir, id)
 	parentBody := s2cov_headerLine(t, id) + "\n" + strings.Join(lines, "\n") + "\n"
 	if err := afero.WriteFile(base, parentPath, []byte(parentBody), 0o644); err != nil {
 		t.Fatalf("write parent transcript: %v", err)
@@ -151,7 +151,7 @@ func TestW3Init_ForkSession_ParentMetaSaveError(t *testing.T) {
 	// SaveSessionMeta writes <id>.meta.json.tmp then renames. Planting a directory
 	// there makes the parent's temp write fail while the child save (a different
 	// id) succeeds.
-	tmp := filepath.Join(stateDir, sessionsSubdir, id+".meta.json.tmp")
+	tmp := filepath.Join(stateDir, schema.SessionsSubdir, id+".meta.json.tmp")
 	if err := os.Mkdir(tmp, 0o755); err != nil {
 		t.Fatalf("mkdir tmp block: %v", err)
 	}

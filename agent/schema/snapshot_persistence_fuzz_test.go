@@ -171,7 +171,7 @@ func requireMetaErrParity(t *testing.T, op string, errOS, errMem error) {
 // the leading slash).
 func requireSameFileTree(t *testing.T, osFs, memFs afero.Fs) {
 	t.Helper()
-	root := "/" + sessionsSubdir
+	root := "/" + SessionsSubdir
 	osTree := readTree(t, osFs, root)
 	memTree := readTree(t, memFs, root)
 	if !sameTree(osTree, memTree) {

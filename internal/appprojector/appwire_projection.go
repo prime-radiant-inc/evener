@@ -204,17 +204,17 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		return []AppNotification{p.notification(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
-			Queue: appwire.QueueState{
+			Queue: appwire.CloneQueueState(appwire.QueueState{
 				Depth:             data.Depth,
 				Revision:          data.Revision,
-				Preview:           append([]string(nil), data.Preview...),
-				IDs:               append([]string(nil), data.IDs...),
-				ClientMutationIDs: append([]string(nil), data.ClientMutationIDs...),
-				Texts:             append([]string(nil), data.Texts...),
-				SkillNames:        cloneSkillNames(data.SkillNames),
-				CommandNames:      cloneSkillNames(data.CommandNames),
-				Mentions:          appwire.CloneInputMentions(data.Mentions),
-			},
+				Preview:           data.Preview,
+				IDs:               data.IDs,
+				ClientMutationIDs: data.ClientMutationIDs,
+				Texts:             data.Texts,
+				SkillNames:        data.SkillNames,
+				CommandNames:      data.CommandNames,
+				Mentions:          data.Mentions,
+			}),
 			ConsumedClientMutationIDs: append([]string(nil), data.ConsumedClientMutationIDs...),
 		})}
 	case events.EventTaskUpdated:
@@ -395,11 +395,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if !changed {
 			return nil
 		}
-		p.delegates[data.DelegateID] = cloneAppwireDelegateInfo(merged)
+		p.delegates[data.DelegateID] = appwire.CloneDelegateInfo(merged)
 		return []AppNotification{p.notification(appwire.NotifyEvenerDelegateUpdated, appwire.EvenerDelegateParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
-			Delegate: cloneAppwireDelegateInfo(merged),
+			Delegate: appwire.CloneDelegateInfo(merged),
 		})}
 	case events.EventSessionEnd:
 		data := eventData[events.SessionEndData](event.Data)
@@ -481,14 +481,14 @@ func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegate
 		RequestedModel: data.RequestedModel, ResolvedProfileID: data.ResolvedProfileID, ResolvedModel: data.ResolvedModel,
 		Model: activitybound.Truncate(data.Model, activitybound.MaxLabelRunes), ReasoningEffort: data.ReasoningEffort, OriginTurnID: data.OriginTurnID,
 		OriginToolCallID: data.OriginToolCallID, OriginItemID: data.OriginItemID, RunStartedAt: data.RunStartedAt,
-		RunEndedAt: data.RunEndedAt, LatestActivityAt: data.LatestActivityAt, RunningForMS: cloneInt64Pointer(data.RunningForMS),
+		RunEndedAt: data.RunEndedAt, LatestActivityAt: data.LatestActivityAt, RunningForMS: appwire.ClonePointer(data.RunningForMS),
 		LatestIntent: appwire.Excerpt(data.LatestIntent, appwire.MaxIntentRunes),
-		QuietForMS:   cloneInt64Pointer(data.QuietForMS), DurationMS: cloneInt64Pointer(data.DurationMS), PacketKind: data.PacketKind,
+		QuietForMS:   appwire.ClonePointer(data.QuietForMS), DurationMS: appwire.ClonePointer(data.DurationMS), PacketKind: data.PacketKind,
 		Message: append(json.RawMessage(nil), data.Message...), StructuredResult: append(json.RawMessage(nil), data.StructuredResult...),
-		StructuredValid: cloneBoolPointer(data.StructuredValid), StructuredReason: data.StructuredReason,
+		StructuredValid: appwire.ClonePointer(data.StructuredValid), StructuredReason: data.StructuredReason,
 		Warnings: append([]string(nil), data.Warnings...), Diagnostics: append([]string(nil), data.Diagnostics...),
 		ExhaustionBudget: data.ExhaustionBudget, ExhaustionLimit: data.ExhaustionLimit,
-		ExhaustionResumable: cloneBoolPointer(data.ExhaustionResumable), DelegationAllowance: data.DelegationAllowance,
+		ExhaustionResumable: appwire.ClonePointer(data.ExhaustionResumable), DelegationAllowance: data.DelegationAllowance,
 		ParentWatchGranted: data.ParentWatchGranted,
 	}
 	// The logical owner is the nearest ancestor session when there is one, else
@@ -523,14 +523,14 @@ func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegate
 
 func mergeAppwireDelegateInfo(current, incoming appwire.EvenerDelegateInfo) (appwire.EvenerDelegateInfo, bool) {
 	if current.DelegateID == "" || incoming.ProjectionRevision > current.ProjectionRevision {
-		merged := cloneAppwireDelegateInfo(incoming)
+		merged := appwire.CloneDelegateInfo(incoming)
 		if delegateActivityAfter(current.LatestActivityAt, merged.LatestActivityAt) {
 			merged.LatestActivityAt = current.LatestActivityAt
 		}
 		return merged, true
 	}
 	if delegateActivityAfter(incoming.LatestActivityAt, current.LatestActivityAt) {
-		merged := cloneAppwireDelegateInfo(current)
+		merged := appwire.CloneDelegateInfo(current)
 		merged.LatestActivityAt = incoming.LatestActivityAt
 		return merged, true
 	}
@@ -547,43 +547,6 @@ func delegateActivityAfter(candidate, current string) bool {
 	candidateAt, candidateErr := time.Parse(time.RFC3339Nano, candidate)
 	currentAt, currentErr := time.Parse(time.RFC3339Nano, current)
 	return candidateErr == nil && currentErr == nil && candidateAt.After(currentAt)
-}
-
-func cloneAppwireDelegateInfo(value appwire.EvenerDelegateInfo) appwire.EvenerDelegateInfo {
-	value.Message = append(json.RawMessage(nil), value.Message...)
-	value.StructuredResult = append(json.RawMessage(nil), value.StructuredResult...)
-	value.StructuredValid = cloneBoolPointer(value.StructuredValid)
-	value.ExhaustionResumable = cloneBoolPointer(value.ExhaustionResumable)
-	value.RunningForMS = cloneInt64Pointer(value.RunningForMS)
-	value.QuietForMS = cloneInt64Pointer(value.QuietForMS)
-	value.DurationMS = cloneInt64Pointer(value.DurationMS)
-	value.Warnings = append([]string(nil), value.Warnings...)
-	value.Diagnostics = append([]string(nil), value.Diagnostics...)
-	if value.Usage != nil {
-		usage := *value.Usage
-		value.Usage = &usage
-	}
-	if value.Worktree != nil {
-		worktree := *value.Worktree
-		value.Worktree = &worktree
-	}
-	return value
-}
-
-func cloneBoolPointer(value *bool) *bool {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-
-func cloneInt64Pointer(value *int64) *int64 {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
 }
 
 func (p *AppEventProjector) notification(method string, params any) AppNotification {
@@ -635,18 +598,4 @@ func (p *AppEventProjector) threadStatus(status string) AppNotification {
 func eventData[T events.EventData](data events.EventData) T {
 	typed, _ := data.(T)
 	return typed
-}
-
-// cloneSkillNames deep-copies the per-entry skill-name lists a
-// QueueChangedData snapshot carries, so the wire projection never aliases
-// the daemon's queue state.
-func cloneSkillNames(names [][]string) [][]string {
-	if names == nil {
-		return nil
-	}
-	out := make([][]string, len(names))
-	for i, entry := range names {
-		out[i] = append([]string(nil), entry...)
-	}
-	return out
 }

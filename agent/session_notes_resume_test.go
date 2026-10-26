@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +44,7 @@ func TestRestoredNotesContextNeverReachesModelUnescaped(t *testing.T) {
 	// The durable transcript keeps the raw text: the app renderers and the
 	// notes_read tool show the note as written, and entities only ever protect
 	// the model-facing copy. The JSONL stores the text JSON-escaped, so decode.
-	tw, entries, err := transcript.OpenWriterForSession(filepath.Join(stateDir, sessionsSubdir, meta.ID+".transcript.jsonl"), meta.ID)
+	tw, entries, err := transcript.OpenWriterForSession(schema.SessionTranscriptPath(stateDir, meta.ID), meta.ID)
 	if err != nil {
 		t.Fatalf("open transcript: %v", err)
 	}

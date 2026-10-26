@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 )
 
@@ -548,7 +547,7 @@ func attachNestedWatchHolder(t *testing.T, f *stableWatchRuntimeFixture, parent 
 		state:                 SessionIdle,
 	}
 	if parent.subagents == nil {
-		parent.subagents = newSubagentManager(func(events.EventKind, events.EventData) {}, 4)
+		parent.subagents = newSubagentManager(4)
 	}
 	parent.subagents.mu.Lock()
 	parent.subagents.subs[sessionID] = &subagent{id: sessionID, sess: nested, running: true}

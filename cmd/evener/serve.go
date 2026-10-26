@@ -1365,7 +1365,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// its first observation on (ledger #110/#111).
 		stateDir := s.StateDir()
 		srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
-			return filepath.Join(stateDir, "sessions", threadID+".transcript.jsonl")
+			return schema.SessionTranscriptPath(stateDir, threadID)
 		})
 		// A descendant session's own watches live in that child's job manager and
 		// appear on no row today, because only the root's status is projected. The
@@ -2322,15 +2322,15 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 			ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,
 			ReasoningEffort: delegate.ReasoningEffort, OriginTurnID: delegate.OriginTurnID, OriginToolCallID: delegate.OriginToolCallID,
 			OriginItemID: delegate.OriginItemID, RunStartedAt: delegate.RunStartedAt, RunEndedAt: delegate.RunEndedAt,
-			LatestActivityAt: delegate.LatestActivityAt, RunningForMS: cloneServeInt64(delegate.RunningForMS),
-			QuietForMS: cloneServeInt64(delegate.QuietForMS), DurationMS: cloneServeInt64(delegate.DurationMS),
+			LatestActivityAt: delegate.LatestActivityAt, RunningForMS: appwire.ClonePointer(delegate.RunningForMS),
+			QuietForMS: appwire.ClonePointer(delegate.QuietForMS), DurationMS: appwire.ClonePointer(delegate.DurationMS),
 			PacketKind: delegate.PacketKind, Message: append(json.RawMessage(nil), delegate.Message...),
-			StructuredResult: append(json.RawMessage(nil), delegate.StructuredResult...), StructuredValid: cloneServeBool(delegate.StructuredValid),
+			StructuredResult: append(json.RawMessage(nil), delegate.StructuredResult...), StructuredValid: appwire.ClonePointer(delegate.StructuredValid),
 			StructuredReason: delegate.StructuredReason, Warnings: append([]string(nil), delegate.Warnings...),
 			Diagnostics: append([]string(nil), delegate.Diagnostics...), ExhaustionBudget: delegate.ExhaustionBudget,
-			ExhaustionLimit: delegate.ExhaustionLimit, ExhaustionResumable: cloneServeBool(delegate.ExhaustionResumable),
+			ExhaustionLimit: delegate.ExhaustionLimit, ExhaustionResumable: appwire.ClonePointer(delegate.ExhaustionResumable),
 			DelegationAllowance: delegate.DelegationAllowance, ParentWatchGranted: delegate.ParentWatchGranted,
-			Usage: cloneServeUsage(delegate.Usage), Worktree: cloneServeWorktree(delegate.Worktree),
+			Usage: appwire.ClonePointer(delegate.Usage), Worktree: appwire.ClonePointer(delegate.Worktree),
 		})
 	}
 	out.Watches = cloneServeWatches(ds.Watches)
@@ -2342,38 +2342,6 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 	out.Agents = ds.Agents
 
 	return out
-}
-
-func cloneServeBool(value *bool) *bool {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-
-func cloneServeInt64(value *int64) *int64 {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-
-func cloneServeUsage(value *appwire.EvenerUsage) *appwire.EvenerUsage {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-
-func cloneServeWorktree(value *appwire.JobActivityWorktree) *appwire.JobActivityWorktree {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
 }
 
 // cloneServeWatches returns a defensive copy of the watch diagnostics in a
