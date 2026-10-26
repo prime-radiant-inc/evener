@@ -3652,6 +3652,82 @@ test.each(["automatic", "Edit message"] as const)(
   },
 );
 
+test("background recovery ownership rollover preserves the editor selection", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecoveryWithAttachment(storage, "ref_a");
+  const source = createTestComposerSource("ref_a");
+  await mountComposerWithHandle(
+    "ref_a",
+    {
+      status: { type: "idle" },
+      evener: {
+        ref: "ref_a",
+        capabilities: FULL_CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 0 },
+      },
+    },
+    { source },
+  );
+  const editor = textarea();
+  expect(source.getSnapshot().activeRecoveryId).toBe(recovered.clientMutationId);
+  expect(editor.textContent).toBe("edit me [image 1]");
+  const currentRecovery = await storage.getRecovery(recovered.clientMutationId);
+  if (!currentRecovery) throw new Error("recovery fixture missing");
+  const otherTab = new MutationOutboxIndexedDB();
+  try {
+    const peerResend = await otherTab.resendRecovery(
+      recovered.clientMutationId,
+      {
+        targetRef: "ref_a",
+        threadId: "thread_a",
+        method: currentRecovery.method,
+        payload: currentRecovery.payload,
+        attachments: currentRecovery.attachments,
+        optimisticDisplay: currentRecovery.optimisticDisplay,
+      },
+      undefined,
+      { [recovered.clientMutationId]: recoveryCompositionRevision(currentRecovery) },
+    );
+    expect(peerResend).toBeDefined();
+    expect(await otherTab.getRecovery(recovered.clientMutationId)).toBeUndefined();
+
+    // Editing starts the real autosave against the consumed owner. Hold a
+    // middle-of-text selection before its preservation write finishes.
+    const editedText = "edit my [image 1]";
+    replaceEditorText(editor, editedText);
+    selectEditorText(editor, 2, 6);
+    expect(editorCursor(editor)).toBe(6);
+    expect(document.getSelection()?.toString()).toBe(editedText.slice(2, 6));
+    await act(async () => {
+      await source.flushRecoveryWrites();
+      await flushPendingTurnsProjectionForTests();
+      await source.flushRecoveryWrites();
+    });
+
+    const preservedId = source.getSnapshot().activeRecoveryId;
+    expect(preservedId).not.toBeNull();
+    expect(preservedId).not.toBe(recovered.clientMutationId);
+    if (preservedId === null) throw new Error("preservation did not establish a recovery owner");
+    const preserved = await storage.getRecovery(preservedId);
+    expect(preserved).toMatchObject({ composerText: editedText, recoveryKind: "rejected" });
+    expect(preserved?.attachments).toHaveLength(1);
+    expect(preserved?.attachments[0]).toMatchObject({ marker: 1, name: "proof.png", mediaType: "image/png" });
+    expect(source.attachments.getState().items).toMatchObject([
+      { marker: 1, name: "proof.png", mediaType: "image/png", data: "AQID" },
+    ]);
+    expect(await storage.getOutbox(preservedId)).toBeUndefined();
+    expect(source.getSnapshot().text).toBe(editedText);
+    expect(editor.textContent).toBe(editedText);
+    expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
+    expect(editorCursor(editor)).toBe(6);
+    expect(document.getSelection()?.toString()).toBe(editedText.slice(2, 6));
+  } finally {
+    otherTab.close();
+  }
+});
+
 test("a losing cross-tab recovered send does not issue a second request", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

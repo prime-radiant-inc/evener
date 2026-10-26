@@ -203,8 +203,12 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   const restoredRecoveryRef = useRef(activeRecoveryId);
   useLayoutEffect(() => {
     if (restoredRecoveryRef.current === activeRecoveryId) return;
+    const activating = restoredRecoveryRef.current === null;
     restoredRecoveryRef.current = activeRecoveryId;
-    if (activeRecoveryId !== null) scheduleCursorRestore(source.getSnapshot().text.length);
+    // Automatic restoration starts without an owner. Replacing an existing
+    // owner after peer consumption preserves the editor, including selection.
+    // Explicit recovery Edit restores its caret in the QueueStrip callback.
+    if (activating && activeRecoveryId !== null) scheduleCursorRestore(source.getSnapshot().text.length);
   }, [activeRecoveryId, scheduleCursorRestore, source]);
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
   const {
