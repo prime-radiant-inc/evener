@@ -1470,7 +1470,7 @@ describe("ConversationService", () => {
 		});
 	});
 
-	describe("open/readProjection epoch pair (I1)", () => {
+	describe("open/readProjection epoch pair", () => {
 		it("starting a new open invalidates prior epoch — pending B mutation denied (fail-closed before await)", async () => {
 			// I1: starting open("ref-B") clears ref+capabilities before the
 			// await, so a mutation issued while B's read is in flight is denied
@@ -1600,7 +1600,7 @@ describe("ConversationService", () => {
 		});
 	});
 
-	describe("LiveConversationService interface (F1)", () => {
+	describe("LiveConversationService interface", () => {
 		it("createConversationService returns LiveConversationService", () => {
 			const { service } = setup();
 			// Must have readProjection as a required method
@@ -1642,7 +1642,7 @@ describe("ConversationService", () => {
 	// setReasoningEffort, cancelQueued, loadOlder, and every requireRef-only/gated
 	// operation fail before any wire call. A refresh started while pending/closed
 	// may never activate the pending/failed ref.
-	describe("pending/failed fail-closed for requireRef-only operations (R3)", () => {
+	describe("pending/failed fail-closed for requireRef-only operations", () => {
 		it("pending open B denies setReasoningEffort before any wire call", async () => {
 			const { client, service } = setup();
 			const threadA = makeThread({
@@ -1881,7 +1881,7 @@ describe("ConversationService", () => {
 	// then, if epoch current, atomically commit ref+caps. Any malformed
 	// response/projectConversation/activity projection throw leaves pair null/fail-closed.
 	// Stale successful result may return without committing.
-	describe("projection throw leaves pair fail-closed (R4-Important)", () => {
+	describe("projection throw leaves pair fail-closed", () => {
 		it("open: projectConversation throw leaves pair null — all operations fail before wire", async () => {
 			const { client, service } = setup();
 			await service.open("ref-1"); // initial valid open
@@ -2161,7 +2161,7 @@ describe("ConversationService", () => {
 	// be booleans; allow future extra keys but never retain the response object
 	// or getters. Null/missing/nonobject/wrong-field/throwing-getter must reject
 	// before commit and leave the pair null.
-	describe("capability extraction validation (R5)", () => {
+	describe("capability extraction validation", () => {
 		// Helper: make a thread with custom capabilities that may be malformed.
 		function makeThreadWithCaps(caps: unknown): Thread {
 			return makeThread({
