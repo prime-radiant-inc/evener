@@ -14,7 +14,7 @@ import (
 
 // serveSession marks the session as one a daemon is actually draining, which
 // is what makes its turns addressable by a client. ConsumeEventsLossless is
-// deliberately the only writer of authoritativeConsumer (session.go:109-123),
+// deliberately the only writer of authoritativeConsumer,
 // so tests register a real drain rather than setting the flag.
 func serveSession(t *testing.T, s *Session) {
 	t.Helper()
@@ -218,8 +218,7 @@ func TestMintRunningTurnIDRefusesUnderAnInterruptFence(t *testing.T) {
 // TestLoadClearsARunningTurnNoPendingExecutionOwns is the crash guard: an
 // ungraceful exit mid-turn must not brick every future turn/start. Without
 // it a record-less ActiveTurnID survives restart with nothing left that can
-// clear it, and AcceptClientMutationStart's "turn is already active" guard
-// (session_client_mutation.go:206) rejects every later turn forever.
+// clear it, and AcceptClientMutationStart's "turn is already active" guard rejects every later turn forever.
 func TestLoadClearsARunningTurnNoPendingExecutionOwns(t *testing.T) {
 	t.Parallel()
 	const sessionID = "sess-crash"

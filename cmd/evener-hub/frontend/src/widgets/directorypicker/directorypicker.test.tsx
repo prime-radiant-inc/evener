@@ -294,6 +294,41 @@ test.each(["Enter", "Go"])(
   },
 );
 
+// React flushes a validation result on a later task. These tests receive the
+// result outside act so that window is observable.
+async function receiveInitialResultWithoutRendering(
+  resolveInitial: () => void,
+  whileUnrendered: () => void,
+  renderedRow: string,
+) {
+  const env = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+  const actEnvironment = env.IS_REACT_ACT_ENVIRONMENT;
+  env.IS_REACT_ACT_ENVIRONMENT = false;
+  try {
+    resolveInitial();
+    for (let tick = 0; tick < 10; tick++) await Promise.resolve();
+    whileUnrendered();
+    await screen.findByRole("button", { name: renderedRow });
+  } finally {
+    env.IS_REACT_ACT_ENVIRONMENT = actEnvironment;
+  }
+}
+
+test("focus taken while the initial validation result is waiting to render keeps its selection", async () => {
+  const { resolveInitial } = setupPendingInitialValidation();
+  const input = screen.getByRole<HTMLInputElement>("textbox", { name: "Path" });
+  await receiveInitialResultWithoutRendering(
+    resolveInitial,
+    () => {
+      input.focus();
+      input.select();
+    },
+    "Open /home/test/child",
+  );
+  expect(input.value).toBe("~");
+  expect([input.selectionStart, input.selectionEnd]).toEqual([0, 1]);
+});
+
 test.each(["confirm", "blur"])(
   "an untouched focused validated draft supports %s without revalidation",
   async (action) => {

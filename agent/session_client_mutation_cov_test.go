@@ -8,7 +8,7 @@ import (
 )
 
 // TestNormalizeClientMutationError covers all branches of
-// NormalizeClientMutationError (session_client_mutation.go:29-51).
+// NormalizeClientMutationError.
 func TestNormalizeClientMutationError(t *testing.T) {
 	t.Parallel()
 	// nil error -> nil.
@@ -48,8 +48,7 @@ func TestNormalizeClientMutationError(t *testing.T) {
 	}
 }
 
-// TestSessionIsQuiesced covers sessionIsQuiesced
-// (session_client_mutation.go:496-498).
+// TestSessionIsQuiesced covers sessionIsQuiesced.
 func TestSessionIsQuiesced(t *testing.T) {
 	t.Parallel()
 	// Not running and no claimed turn -> quiesced.
@@ -74,8 +73,7 @@ func TestSessionIsQuiesced(t *testing.T) {
 	}
 }
 
-// TestNewClientMutationRequest covers all branches of newClientMutationRequest
-// (session_client_mutation.go:225-243).
+// TestNewClientMutationRequest covers all branches of newClientMutationRequest.
 func TestNewClientMutationRequest(t *testing.T) {
 	t.Parallel()
 	// Empty method -> error.

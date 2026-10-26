@@ -17,7 +17,7 @@ type covWSTransportPingError struct{}
 
 func (*covWSTransportPingError) Error() string { return "ping failed" }
 
-// TestClientMutationTurnID covers ClientMutationTurnID (types.go:696), a pure
+// TestClientMutationTurnID covers ClientMutationTurnID, a pure
 // format function with no existing test in the default build.
 func TestCovClientMutationTurnID(t *testing.T) {
 	cases := []struct {
@@ -81,7 +81,7 @@ func TestCovWSTransportPing(t *testing.T) {
 }
 
 // TestCovRecorderStateRootFallback covers the third branch of
-// recorderStateRoot (frame_recorder.go:94) where XDG_STATE_HOME is empty and
+// recorderStateRoot where XDG_STATE_HOME is empty and
 // frameRecorderHomeDir returns an error, falling through to the
 // ./.local/state/evener relative path.
 func TestCovRecorderStateRootFallback(t *testing.T) {

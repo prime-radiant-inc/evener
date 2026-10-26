@@ -403,9 +403,6 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 	if rel, ok := relUnderRealAncestor(aliasRoot, realRoot); !ok || rel != "." {
 		t.Fatalf("exact ancestor alias relation = (%q,%t), want (.,true)", rel, ok)
 	}
-	if !pathUnder(filepath.Join(worktree, "inside"), worktree) || pathUnder(filepath.Join(base, "outside"), worktree) || !pathUnder(worktree, worktree) {
-		t.Fatal("pathUnder containment contract failed")
-	}
 	if dir, leaf := splitLeaf("nested/file.txt"); dir != "nested" || leaf != "file.txt" {
 		t.Fatalf("splitLeaf = (%q,%q)", dir, leaf)
 	}
@@ -414,9 +411,6 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 	}
 	if _, _, ok := containingRoot([]string{"relative/root"}, filepath.Join(base, "absolute")); ok {
 		t.Fatal("mixed relative/absolute roots unexpectedly matched")
-	}
-	if pathUnder(filepath.Join(base, "absolute"), "relative/root") {
-		t.Fatal("mixed relative/absolute pathUnder unexpectedly matched")
 	}
 	if _, ok := relUnderRealAncestor(filepath.Join(base, "missing-real-root"), worktree); ok {
 		t.Fatal("missing real ancestor unexpectedly matched")

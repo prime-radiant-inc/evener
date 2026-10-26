@@ -15,12 +15,12 @@ import (
 	"primeradiant.com/evener/internal/remoteinstall"
 )
 
-// TestRound10PushVerifiesByteCount pins the round-ten Medium that the push had
+// TestPushVerifiesByteCount pins the round-ten Medium that the push had
 // no integrity check: ssh reports a truncated stream as a successful EOF, so
 // `cat > "$tmp"` exits 0 on a partial transfer and the mv would install a
 // truncated binary over a working one. The remote command must compare the
 // streamed temp file's size to the staged file's size before the mv.
-func TestRound10PushVerifiesByteCount(t *testing.T) {
+func TestPushVerifiesByteCount(t *testing.T) {
 	const staged = "staged-binary" // 13 bytes
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	var pushJoined string
@@ -92,13 +92,13 @@ func TestInstallerScriptChecksTheWriteBeforeExecuting(t *testing.T) {
 	}
 }
 
-// TestRound10PreflightDiscoversInstallerDefault pins the first half of the
+// TestPreflightDiscoversInstallerDefault pins the first half of the
 // round-ten Medium: preflight probed only the literal `evener`, so a host whose
 // binary lives at the installer default ~/.local/bin/evener (off the
 // non-interactive PATH) reported an unknown launch contract and was re-deployed
 // on every reconnect. Preflight must fall back to the same default deployTarget
 // uses and read the matching contract.
-func TestRound10PreflightDiscoversInstallerDefault(t *testing.T) {
+func TestPreflightDiscoversInstallerDefault(t *testing.T) {
 	const resolved = "/home/dev/.local/bin/evener"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"} // no evener_path
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
@@ -140,12 +140,12 @@ func TestRound10PreflightDiscoversInstallerDefault(t *testing.T) {
 	}
 }
 
-// TestRound10ResolvedTargetAvoidsRedeploy pins the second half of the round-ten
+// TestResolvedTargetAvoidsRedeploy pins the second half of the round-ten
 // Medium: the resolved target was recorded only in a local host copy, so the
 // next attempt started from the original registry host with an empty
 // EvenerPath, failed preflight again, and re-ran a full cross-compile deploy.
 // Two attempts must build once.
-func TestRound10ResolvedTargetAvoidsRedeploy(t *testing.T) {
+func TestResolvedTargetAvoidsRedeploy(t *testing.T) {
 	const resolved = "/home/dev/.local/bin/evener"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"} // no evener_path
 	installed, launched := false, false
@@ -245,12 +245,12 @@ func TestRound10ResolvedTargetAvoidsRedeploy(t *testing.T) {
 	}
 }
 
-// TestRound10CreateTargetErrorSurfaced pins the round-ten Low that
+// TestCreateTargetErrorSurfaced pins the round-ten Low that
 // resolveDeployOrCreateTarget discarded the create command's error and returned
 // the original resolve error, so a missing parent directory or permission
 // refusal surfaced as "does not resolve to a real file" with no create
 // diagnostic.
-func TestRound10CreateTargetErrorSurfaced(t *testing.T) {
+func TestCreateTargetErrorSurfaced(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")

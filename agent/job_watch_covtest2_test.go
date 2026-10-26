@@ -799,7 +799,7 @@ func (c waitStartedClock) NewTimer(d time.Duration) clockpkg.Timer {
 	return c.Clock.NewTimer(d)
 }
 
-// TestCovWaitForJobDone covers waitForJobDone (session_tools_jobs.go lines 1902-1917).
+// TestCovWaitForJobDone covers waitForJobDone.
 // It synchronizes on timer creation to prove the wait begins before completion.
 func TestCovWaitForJobDone(t *testing.T) {
 	t.Parallel()
@@ -865,7 +865,7 @@ func TestCovWaitForJobDone_ContextCancel(t *testing.T) {
 	}
 }
 
-// TestCovProjectJobRecord covers projectJobRecord (session_tools_jobs.go lines 1930-1932).
+// TestCovProjectJobRecord covers projectJobRecord.
 func TestCovProjectJobRecord(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -884,8 +884,7 @@ func TestCovProjectJobRecord(t *testing.T) {
 	}
 }
 
-// TestCovJobToolRegisterFuncRegister covers jobToolRegisterFunc.Register
-// (session_tools_jobs.go lines 69-70).
+// TestCovJobToolRegisterFuncRegister covers jobToolRegisterFunc.Register.
 func TestCovJobToolRegisterFuncRegister(t *testing.T) {
 	t.Parallel()
 	called := false

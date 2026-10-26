@@ -63,7 +63,7 @@ type contextFacetFixtureRequest struct {
 // contextFacetScriptedAdapter is the LLM boundary. It records every request and
 // returns one fixed assistant message with zero usage. The message carries a
 // fixed 1024-char text part plus one communicate call: production retries bare
-// text until the result tool is called (agent/session_tool_round.go:109-123), so
+// text until the result tool is called, so
 // the result call is forced by the production contract and is not a fixture
 // choice. The round then appends the assistant turn and one tool-result turn.
 type contextFacetScriptedAdapter struct {

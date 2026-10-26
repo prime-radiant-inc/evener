@@ -6246,6 +6246,87 @@ test("re-enables the Spawn button after a successful start (post-success state h
   expect(button.disabled).toBe(false);
 });
 
+// Every exit from a launch attempt hands Start back: a path that leaves the
+// busy flag set strands the button disabled on a pane that stays mounted.
+function expectStartUsable(): void {
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  expect(within(button).queryByRole("status")).toBeNull();
+}
+
+test("a rejected thread/start toasts and leaves Start usable for a retry that starts", async () => {
+  const user = setupUser();
+  let attempts = 0;
+  const fake = readyClient((f) => {
+    f.on("thread/start", () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("start refused");
+      return startResponse("local:abc123");
+    });
+  });
+  window.history.pushState({}, "", "/new");
+  renderSpawn(fake);
+  await settled();
+
+  await fillPrompt(user, "do the thing");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(toastKinds()).toContain("error"));
+  expect(window.location.pathname).not.toBe("/s/local%3Aabc123");
+  expectStartUsable();
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  expect(attempts).toBe(2);
+});
+
+test("a failed directory creation toasts, closes the dialog and leaves Start usable", async () => {
+  const user = setupUser();
+  const fake = readyClient((f) => {
+    f.on("evener/path/validate", () => ({
+      path: "/tmp/new",
+      valid: false,
+      error: "stat /tmp/new: no such file or directory",
+    }));
+    f.on("evener/dirs/create", () => {
+      throw new Error("create refused");
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/new");
+  renderSpawn(fake);
+  await settled();
+
+  await fillPrompt(user, "go");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await user.click(await screen.findByRole("button", { name: "Create & start" }));
+
+  await waitFor(() => expect(toastKinds()).toContain("error"));
+  expect(screen.queryByRole("button", { name: "Create & start" })).toBeNull();
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  expectStartUsable();
+});
+
+test("a remote /model value without a provider leaves Start usable", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-bare-model");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await user.type(promptField(), "/model foo");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(toastKinds()).toContain("error"));
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+  expectStartUsable();
+});
+
 // --- staged attachments are tiles, not text chips (kata kbg7) --------------
 //
 // Spawn stages images through the composer's own useAttachments pipeline, and

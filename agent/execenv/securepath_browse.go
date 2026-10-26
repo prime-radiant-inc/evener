@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/searchresult"
+	"primeradiant.com/evener/identifier"
 )
 
 // This file holds the platform-independent browse logic (the writability
@@ -628,7 +629,7 @@ var pseudoFsRoots = []string{"/proc", "/sys", "/dev"}
 // resolved root passes the ORIGINAL root here, so a stubbed root list (the
 // tests' own names) never has the /dev carve applied.
 func pseudoRootCovers(carveName, root, path string) bool {
-	if path != root && !strings.HasPrefix(path, root+string(filepath.Separator)) {
+	if !identifier.PathUnder(path, root) {
 		return false
 	}
 	if carveName == "/dev" && isDevShm(path) {

@@ -1,4 +1,5 @@
 import type { HostRow } from "@evener/appwire-client";
+import { HOST_POLL_MS } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -8,7 +9,6 @@ import { LOCAL_HOST } from "../../stores/hostRouting";
 import { hostsStore } from "../../stores/hosts";
 import { resetSettingsHostForTests, settingsHostStore } from "../../stores/settingsHost";
 import { HostPicker } from "./HostPicker";
-import { HOST_POLL_MS } from "./sections/hosts";
 
 // The shared picker on the settings route: the local hub plus every configured
 // remote host, writing the one shared selection and the URL.

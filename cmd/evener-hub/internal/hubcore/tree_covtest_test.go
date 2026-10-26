@@ -19,8 +19,7 @@ var errCovBoom = errors.New("boom")
 
 // --- tree.go: Page ---
 
-// TestCovTreePageInvalidOffsetLimit covers the invalid offset/limit guard
-// (tree.go:254-255) and the default tier branch (tree.go:274-275).
+// TestCovTreePageInvalidOffsetLimit covers the invalid offset/limit guard and the default tier branch (tree.go:274-275).
 func TestCovTreePageInvalidOffsetLimit(t *testing.T) {
 	p := TreeProject{Current: []TreeNode{{ID: "s1"}}}
 	if rows, rem, ok := p.Page("current", -1, 10); ok || rows != nil || rem != 0 {
@@ -34,7 +33,7 @@ func TestCovTreePageInvalidOffsetLimit(t *testing.T) {
 	}
 }
 
-// TestCovTreePageOffsetBeyondEnd covers offset >= len(rows) (tree.go:277-278).
+// TestCovTreePageOffsetBeyondEnd covers offset >= len(rows).
 func TestCovTreePageOffsetBeyondEnd(t *testing.T) {
 	p := TreeProject{Current: []TreeNode{{ID: "s1"}}}
 	rows, rem, ok := p.Page("current", 5, 10)
@@ -43,7 +42,7 @@ func TestCovTreePageOffsetBeyondEnd(t *testing.T) {
 	}
 }
 
-// TestCovTreePageRecentTier covers the recent tier path (tree.go:265-267).
+// TestCovTreePageRecentTier covers the recent tier path.
 func TestCovTreePageRecentTier(t *testing.T) {
 	p := TreeProject{
 		allRecent: []TreeNode{{ID: "s1"}, {ID: "s2"}, {ID: "s3"}},
@@ -60,7 +59,7 @@ func TestCovTreePageRecentTier(t *testing.T) {
 	}
 }
 
-// TestCovTreePageArchivedTier covers the archived tier (tree.go:269-271).
+// TestCovTreePageArchivedTier covers the archived tier.
 func TestCovTreePageArchivedTier(t *testing.T) {
 	p := TreeProject{
 		Archived: []TreeNode{{ID: "s1"}, {ID: "s2"}},
@@ -72,8 +71,7 @@ func TestCovTreePageArchivedTier(t *testing.T) {
 	}
 }
 
-// TestCovTreePageCurrentFallback covers the nil allCurrent → Current fallback
-// (tree.go:261-262).
+// TestCovTreePageCurrentFallback covers the nil allCurrent → Current fallback.
 func TestCovTreePageCurrentFallback(t *testing.T) {
 	p := TreeProject{Current: []TreeNode{{ID: "s1"}}}
 	rows, rem, ok := p.Page("current", 0, 10)
@@ -83,8 +81,7 @@ func TestCovTreePageCurrentFallback(t *testing.T) {
 	}
 }
 
-// TestCovTreePageRecentFallback covers the nil allRecent → Recent fallback
-// (tree.go:266-267).
+// TestCovTreePageRecentFallback covers the nil allRecent → Recent fallback.
 func TestCovTreePageRecentFallback(t *testing.T) {
 	p := TreeProject{Recent: []TreeNode{{ID: "s1"}}}
 	rows, rem, ok := p.Page("recent", 0, 10)
@@ -95,7 +92,7 @@ func TestCovTreePageRecentFallback(t *testing.T) {
 }
 
 // TestCovTreePageArchivedFallback covers the nil allArchived → Archived
-// fallback (tree.go:271-272).
+// fallback.
 func TestCovTreePageArchivedFallback(t *testing.T) {
 	p := TreeProject{Archived: []TreeNode{{ID: "s1"}}}
 	rows, rem, ok := p.Page("archived", 0, 10)
@@ -107,8 +104,7 @@ func TestCovTreePageArchivedFallback(t *testing.T) {
 
 // --- tree.go: resolveProjectMap ---
 
-// TestCovResolveProjectMapStrictError covers the strict error branch
-// (tree.go:582-583) — a meta with a path that fails project resolution
+// TestCovResolveProjectMapStrictError covers the strict error branch — a meta with a path that fails project resolution
 // produces an error.
 func TestCovResolveProjectMapStrictError(t *testing.T) {
 	missingPath := filepath.Join(t.TempDir(), "missing", "project")
@@ -125,7 +121,7 @@ func TestCovResolveProjectMapStrictError(t *testing.T) {
 }
 
 // TestCovResolveProjectMapStrictLiveError covers the strict error branch for
-// live entries (tree.go:602-603).
+// live entries.
 func TestCovResolveProjectMapStrictLiveError(t *testing.T) {
 	missingPath := filepath.Join(t.TempDir(), "missing", "project")
 	live := []LiveEntry{
@@ -141,7 +137,7 @@ func TestCovResolveProjectMapStrictLiveError(t *testing.T) {
 }
 
 // TestCovResolveProjectMapNonStrictSkipsErrors covers the non-strict
-// continue path (tree.go:584-585) for metas and (tree.go:604-605) for live.
+// continue path for metas and for live.
 func TestCovResolveProjectMapNonStrictSkipsErrors(t *testing.T) {
 	missingPath := filepath.Join(t.TempDir(), "missing", "project")
 	metas := []schema.SessionMeta{
@@ -160,7 +156,7 @@ func TestCovResolveProjectMapNonStrictSkipsErrors(t *testing.T) {
 }
 
 // TestCovResolveProjectMapLiveWithProjectID covers the live entry path where
-// le.Project.ID is already set (tree.go:597-598).
+// le.Project.ID is already set.
 func TestCovResolveProjectMapLiveWithProjectID(t *testing.T) {
 	proj := identifier.Project{ID: "test-project", CanonicalPath: "/tmp/test"}
 	live := []LiveEntry{
@@ -322,8 +318,7 @@ func TestResolveProjectMapStrictStillRejectsBeforeCarriedIdentity(t *testing.T) 
 
 // --- past.go ---
 
-// TestCovPastRebuildEmptyGlob covers Rebuild with an empty stateGlob
-// (past.go:134-135).
+// TestCovPastRebuildEmptyGlob covers Rebuild with an empty stateGlob.
 func TestCovPastRebuildEmptyGlob(t *testing.T) {
 	idx := NewPastIndex("")
 	changed, err := idx.Rebuild()
@@ -335,8 +330,7 @@ func TestCovPastRebuildEmptyGlob(t *testing.T) {
 	}
 }
 
-// TestCovPastRebuildGlobError covers Rebuild with a malformed glob pattern
-// (past.go:137-138).
+// TestCovPastRebuildGlobError covers Rebuild with a malformed glob pattern.
 func TestCovPastRebuildGlobError(t *testing.T) {
 	idx := NewPastIndex("[").SetFs(afero.NewMemMapFs())
 	changed, err := idx.Rebuild()
@@ -348,8 +342,7 @@ func TestCovPastRebuildGlobError(t *testing.T) {
 	}
 }
 
-// TestCovPastFindInvalidID covers Find with an invalid session ID
-// (past.go:713-714).
+// TestCovPastFindInvalidID covers Find with an invalid session ID.
 func TestCovPastFindInvalidID(t *testing.T) {
 	idx := NewPastIndex("")
 	// Seed the cache with the invalid key. If validation moves behind the cache
@@ -362,7 +355,7 @@ func TestCovPastFindInvalidID(t *testing.T) {
 }
 
 // TestCovPastFindEmptyStateGlob covers Find with a valid ID but empty
-// stateGlob (past.go:719-720).
+// stateGlob.
 func TestCovPastFindEmptyStateGlob(t *testing.T) {
 	idx := NewPastIndex("")
 	if _, ok := idx.Find(hubtest.SessionID(t)); ok {
@@ -371,7 +364,7 @@ func TestCovPastFindEmptyStateGlob(t *testing.T) {
 }
 
 // TestCovReportUnlistedMetas covers reportUnlistedMetas with an empty
-// sessions directory (past.go:236-260).
+// sessions directory.
 func TestCovReportUnlistedMetas(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	projectDir := "/project"
@@ -388,8 +381,7 @@ func TestCovReportUnlistedMetas(t *testing.T) {
 // --- remotecache.go ---
 
 // TestCovInferRemoteSourcesEmptySourceID covers inferRemoteSources with a
-// thread whose Source is empty and Evener.Ref also yields an empty sourceID
-// (remotecache.go:76-82).
+// thread whose Source is empty and Evener.Ref also yields an empty sourceID.
 func TestCovInferRemoteSourcesEmptySourceID(t *testing.T) {
 	threads := []appwire.Thread{
 		{ID: "t1", Source: "", Evener: appwire.EvenerThread{Ref: ""}},
@@ -401,7 +393,7 @@ func TestCovInferRemoteSourcesEmptySourceID(t *testing.T) {
 }
 
 // TestCovInferRemoteSourcesFromRef covers the fallback where Source is empty
-// but the Evener.Ref parses to a sourceID (remotecache.go:77-79).
+// but the Evener.Ref parses to a sourceID.
 func TestCovInferRemoteSourcesFromRef(t *testing.T) {
 	threads := []appwire.Thread{
 		{ID: "t1", Source: "", Evener: appwire.EvenerThread{Ref: "remote1:s1"}},
@@ -429,7 +421,7 @@ func TestCovInferRemoteSourcesFromRef(t *testing.T) {
 // --- favorite_authority.go ---
 
 // TestCovClassifyFavoriteProjectNoAuthorities covers classifyFavoriteProject
-// with zero authorities (favorite_authority.go:327).
+// with zero authorities.
 func TestCovClassifyFavoriteProjectNoAuthorities(t *testing.T) {
 	projects := favoriteProjectIndex{
 		byKey: map[projectDecisionKey][]FavoriteProjectAuthority{},
@@ -441,7 +433,7 @@ func TestCovClassifyFavoriteProjectNoAuthorities(t *testing.T) {
 }
 
 // TestCovClassifyFavoriteProjectAmbiguous covers classifyFavoriteProject with
-// ambiguous IDs (favorite_authority.go:327).
+// ambiguous IDs.
 func TestCovClassifyFavoriteProjectAmbiguous(t *testing.T) {
 	projects := favoriteProjectIndex{
 		byKey: map[projectDecisionKey][]FavoriteProjectAuthority{
@@ -456,7 +448,7 @@ func TestCovClassifyFavoriteProjectAmbiguous(t *testing.T) {
 }
 
 // TestCovClassifyFavoriteProjectIncompleteQuality covers the incomplete
-// quality branch (favorite_authority.go:330-331).
+// quality branch.
 func TestCovClassifyFavoriteProjectIncompleteQuality(t *testing.T) {
 	projects := favoriteProjectIndex{
 		byKey: map[projectDecisionKey][]FavoriteProjectAuthority{
@@ -469,8 +461,7 @@ func TestCovClassifyFavoriteProjectIncompleteQuality(t *testing.T) {
 	}
 }
 
-// TestCovClassifyFavoriteProjectValid covers the valid path
-// (favorite_authority.go:333).
+// TestCovClassifyFavoriteProjectValid covers the valid path.
 func TestCovClassifyFavoriteProjectValid(t *testing.T) {
 	projects := favoriteProjectIndex{
 		byKey: map[projectDecisionKey][]FavoriteProjectAuthority{
@@ -483,8 +474,7 @@ func TestCovClassifyFavoriteProjectValid(t *testing.T) {
 	}
 }
 
-// TestCovClassifyFavoriteSessionAmbiguousAlias covers the ambiguousAlias branch
-// (favorite_authority.go:290-291).
+// TestCovClassifyFavoriteSessionAmbiguousAlias covers the ambiguousAlias branch.
 func TestCovClassifyFavoriteSessionAmbiguousAlias(t *testing.T) {
 	sessions := favoriteSessionIndex{
 		ambiguousAlias: map[string]bool{"s1": true},
@@ -496,7 +486,7 @@ func TestCovClassifyFavoriteSessionAmbiguousAlias(t *testing.T) {
 }
 
 // TestCovClassifyFavoriteSessionNoIDsNoRef covers the zero-ids, unparseable ref
-// path (favorite_authority.go:294-302).
+// path.
 func TestCovClassifyFavoriteSessionNoIDsNoRef(t *testing.T) {
 	sessions := favoriteSessionIndex{
 		byAlias: map[string][]string{},
@@ -508,7 +498,7 @@ func TestCovClassifyFavoriteSessionNoIDsNoRef(t *testing.T) {
 }
 
 // TestCovClassifyFavoriteSessionLocalRefDormant covers the local-ref parse
-// path where the session ID validates (favorite_authority.go:295-300).
+// path where the session ID validates.
 func TestCovClassifyFavoriteSessionLocalRefDormant(t *testing.T) {
 	sessions := favoriteSessionIndex{
 		byAlias: map[string][]string{},
@@ -522,8 +512,7 @@ func TestCovClassifyFavoriteSessionLocalRefDormant(t *testing.T) {
 	}
 }
 
-// TestCovClassifyFavoriteSessionMultipleIDs covers the len(ids) != 1 branch
-// (favorite_authority.go:304-305).
+// TestCovClassifyFavoriteSessionMultipleIDs covers the len(ids) != 1 branch.
 func TestCovClassifyFavoriteSessionMultipleIDs(t *testing.T) {
 	sessions := favoriteSessionIndex{
 		byAlias: map[string][]string{"s1": {"a", "b"}},
@@ -534,8 +523,7 @@ func TestCovClassifyFavoriteSessionMultipleIDs(t *testing.T) {
 	}
 }
 
-// TestCovClassifyFavoriteSessionAmbiguousID covers the ambiguousIDs branch
-// (favorite_authority.go:304-305).
+// TestCovClassifyFavoriteSessionAmbiguousID covers the ambiguousIDs branch.
 func TestCovClassifyFavoriteSessionAmbiguousID(t *testing.T) {
 	sessions := favoriteSessionIndex{
 		byAlias:      map[string][]string{"s1": {"a"}},
@@ -548,7 +536,7 @@ func TestCovClassifyFavoriteSessionAmbiguousID(t *testing.T) {
 }
 
 // TestCovClassifyFavoriteSessionMultipleAuthorities covers the
-// len(authorities) != 1 branch (favorite_authority.go:308-309).
+// len(authorities) != 1 branch.
 func TestCovClassifyFavoriteSessionMultipleAuthorities(t *testing.T) {
 	sessions := favoriteSessionIndex{
 		byAlias: map[string][]string{"s1": {"a"}},
@@ -566,7 +554,7 @@ func TestCovClassifyFavoriteSessionMultipleAuthorities(t *testing.T) {
 }
 
 // TestCovClassifyFavoriteSessionIncompleteLineage covers the incomplete
-// lineage branch (favorite_authority.go:316-317).
+// lineage branch.
 func TestCovClassifyFavoriteSessionIncompleteLineage(t *testing.T) {
 	sessions := favoriteSessionIndex{
 		byAlias: map[string][]string{"s1": {"a"}},
@@ -584,7 +572,7 @@ func TestCovClassifyFavoriteSessionIncompleteLineage(t *testing.T) {
 }
 
 // TestCovClassifyFavoriteSessionIncompleteSource covers the incomplete
-// source branch (favorite_authority.go:316-317).
+// source branch.
 func TestCovClassifyFavoriteSessionIncompleteSource(t *testing.T) {
 	sessions := favoriteSessionIndex{
 		byAlias: map[string][]string{"s1": {"a"}},
@@ -598,8 +586,7 @@ func TestCovClassifyFavoriteSessionIncompleteSource(t *testing.T) {
 	}
 }
 
-// TestCovClassifyFavoriteSessionNotTopLevel covers the not-top-level branch
-// (favorite_authority.go:319-320).
+// TestCovClassifyFavoriteSessionNotTopLevel covers the not-top-level branch.
 func TestCovClassifyFavoriteSessionNotTopLevel(t *testing.T) {
 	sessions := favoriteSessionIndex{
 		byAlias: map[string][]string{"s1": {"a"}},
@@ -613,8 +600,7 @@ func TestCovClassifyFavoriteSessionNotTopLevel(t *testing.T) {
 	}
 }
 
-// TestCovClassifyFavoriteSessionValid covers the valid branch
-// (favorite_authority.go:322).
+// TestCovClassifyFavoriteSessionValid covers the valid branch.
 func TestCovClassifyFavoriteSessionValid(t *testing.T) {
 	sessions := favoriteSessionIndex{
 		byAlias: map[string][]string{"s1": {"a"}},
@@ -631,7 +617,7 @@ func TestCovClassifyFavoriteSessionValid(t *testing.T) {
 // --- roster.go: SubagentState ---
 
 // TestCovRosterSubagentStateNotFound covers Roster.SubagentState for a
-// session that is not in the roster (roster.go:434-445).
+// session that is not in the roster.
 func TestCovRosterSubagentStateNotFound(t *testing.T) {
 	r := NewRoster("", nil)
 	if state, ok := r.SubagentState("nonexistent"); ok || state != "" {
@@ -639,8 +625,7 @@ func TestCovRosterSubagentStateNotFound(t *testing.T) {
 	}
 }
 
-// TestCovRosterSubagentStateEmptyID covers the empty sessionID guard
-// (roster.go:435-436).
+// TestCovRosterSubagentStateEmptyID covers the empty sessionID guard.
 func TestCovRosterSubagentStateEmptyID(t *testing.T) {
 	r := NewRoster("", nil)
 	if state, ok := r.SubagentState(""); ok || state != "" {
@@ -651,7 +636,7 @@ func TestCovRosterSubagentStateEmptyID(t *testing.T) {
 // --- deletion_store.go ---
 
 // TestCovSaveDeletionSnapshotFSError covers saveDeletionSnapshotFS with a
-// failing filesystem (deletion_store.go:304-305).
+// failing filesystem.
 func TestCovSaveDeletionSnapshotFSError(t *testing.T) {
 	fs := failingFs{Fs: afero.NewMemMapFs(), mkdirErr: errCovBoom}
 	_, err := saveDeletionSnapshotFS(fs, "/nonexistent", deletionSnapshot{Version: deletionSnapshotVersion}, deletionStoreFaults{})
@@ -660,8 +645,7 @@ func TestCovSaveDeletionSnapshotFSError(t *testing.T) {
 	}
 }
 
-// TestCovSaveDeletionSnapshotFSEmptyRoot covers the empty stateRoot branch
-// (deletion_store.go:292-293).
+// TestCovSaveDeletionSnapshotFSEmptyRoot covers the empty stateRoot branch.
 func TestCovSaveDeletionSnapshotFSEmptyRoot(t *testing.T) {
 	ok, err := saveDeletionSnapshotFS(afero.NewMemMapFs(), "", deletionSnapshot{}, deletionStoreFaults{})
 	if err != nil || !ok {
@@ -670,7 +654,7 @@ func TestCovSaveDeletionSnapshotFSEmptyRoot(t *testing.T) {
 }
 
 // TestCovLoadDeletionSnapshotFSDecodeError covers loadDeletionSnapshotFS with
-// invalid JSON content (deletion_store.go:270-271).
+// invalid JSON content.
 func TestCovLoadDeletionSnapshotFSDecodeError(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	stateRoot := "/state"
@@ -682,8 +666,7 @@ func TestCovLoadDeletionSnapshotFSDecodeError(t *testing.T) {
 	}
 }
 
-// TestCovLoadDeletionSnapshotFSEmptyRoot covers the empty stateRoot branch
-// (deletion_store.go:257-258).
+// TestCovLoadDeletionSnapshotFSEmptyRoot covers the empty stateRoot branch.
 func TestCovLoadDeletionSnapshotFSEmptyRoot(t *testing.T) {
 	state, err := loadDeletionSnapshotFS(afero.NewMemMapFs(), "")
 	if err != nil {
@@ -695,7 +678,7 @@ func TestCovLoadDeletionSnapshotFSEmptyRoot(t *testing.T) {
 }
 
 // TestCovNormalizeDeletionTargetsDedup covers normalizeDeletionTargets with
-// duplicate thread IDs (deletion_store.go:215-240).
+// duplicate thread IDs.
 func TestCovNormalizeDeletionTargetsDedup(t *testing.T) {
 	firstID := hubtest.SessionID(t)
 	secondID := hubtest.SessionID(t)
@@ -720,8 +703,7 @@ func TestCovNormalizeDeletionTargetsDedup(t *testing.T) {
 	}
 }
 
-// TestCovMarkDeletedNotFound covers MarkDeleted with a non-existent generation
-// (deletion_store.go:155).
+// TestCovMarkDeletedNotFound covers MarkDeleted with a non-existent generation.
 func TestCovMarkDeletedNotFound(t *testing.T) {
 	store, err := NewDeletionStore(t.TempDir())
 	if err != nil {
@@ -734,7 +716,7 @@ func TestCovMarkDeletedNotFound(t *testing.T) {
 }
 
 // TestCovMarkDeletedAlreadyDeleted covers MarkDeleted when the record is
-// already deleted (deletion_store.go:149-150).
+// already deleted.
 func TestCovMarkDeletedAlreadyDeleted(t *testing.T) {
 	store, err := NewDeletionStore(t.TempDir())
 	if err != nil {
@@ -763,7 +745,7 @@ func TestCovMarkDeletedAlreadyDeleted(t *testing.T) {
 // --- pin_section.go: openWithImmediateTransaction ---
 
 // TestCovPinSectionOpenWithImmediateTransactionMkdirError covers the
-// MkdirAll error branch (pin_section.go:112-113).
+// MkdirAll error branch.
 func TestCovPinSectionOpenWithImmediateTransactionMkdirError(t *testing.T) {
 	store := NewPinSectionStore("/nonexistent-root/index.db")
 	store.fs = failingFs{Fs: afero.NewMemMapFs(), mkdirErr: errCovBoom}

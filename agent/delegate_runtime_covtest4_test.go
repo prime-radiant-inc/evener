@@ -22,8 +22,7 @@ type covStableDelegateResultError struct{}
 
 func (*covStableDelegateResultError) Error() string { return "fail" }
 
-// TestCovAbortOwedDelegateBootstrap covers abortOwedDelegateBootstrap
-// (delegate_runtime.go lines 617-626): the error-cleanup path that iterates
+// TestCovAbortOwedDelegateBootstrap covers abortOwedDelegateBootstrap: the error-cleanup path that iterates
 // restored candidates in reverse, calling prepareDeferredOwedStart for each
 // not-done entry.
 func TestCovAbortOwedDelegateBootstrap(t *testing.T) {
@@ -147,8 +146,7 @@ func TestCovDelegatePermanentStartFailurePacket(t *testing.T) {
 	}
 }
 
-// TestCovSandboxPolicyFromStableSnapshot covers sandboxPolicyFromStableSnapshot
-// (delegate_runtime.go lines 1646-1666): nil snapshot, invalid mode, valid
+// TestCovSandboxPolicyFromStableSnapshot covers sandboxPolicyFromStableSnapshot: nil snapshot, invalid mode, valid
 // with/without network.
 func TestCovSandboxPolicyFromStableSnapshot(t *testing.T) {
 	t.Parallel()
@@ -247,8 +245,7 @@ func TestCovSandboxPolicyFromStableSnapshot(t *testing.T) {
 	}
 }
 
-// TestCovRestoreColdDelegateOwnerRuntime covers restoreColdDelegateOwnerRuntime
-// (delegate_runtime.go lines 520-535): empty parentID path.
+// TestCovRestoreColdDelegateOwnerRuntime covers restoreColdDelegateOwnerRuntime: empty parentID path.
 func TestCovRestoreColdDelegateOwnerRuntime_EmptyParentID(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -262,8 +259,7 @@ func TestCovRestoreColdDelegateOwnerRuntime_EmptyParentID(t *testing.T) {
 	}
 }
 
-// TestCovDelegateInputWasPreseeded covers delegateInputWasPreseeded
-// (delegate_runtime.go lines 767-769).
+// TestCovDelegateInputWasPreseeded covers delegateInputWasPreseeded.
 func TestCovDelegateInputWasPreseeded(t *testing.T) {
 	t.Parallel()
 	// No context value — false.
@@ -291,8 +287,7 @@ func TestCovDelegateInputWasPreseeded(t *testing.T) {
 	}
 }
 
-// TestCovStableDelegateOutcomeJobStatus covers stableDelegateOutcomeJobStatus
-// (delegate_runtime.go lines 996-1009): all outcome branches.
+// TestCovStableDelegateOutcomeJobStatus covers stableDelegateOutcomeJobStatus: all outcome branches.
 func TestCovStableDelegateOutcomeJobStatus(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -314,8 +309,7 @@ func TestCovStableDelegateOutcomeJobStatus(t *testing.T) {
 	}
 }
 
-// TestCovDescriptorProvenance covers descriptorProvenance
-// (delegate_runtime.go lines 1011-1013).
+// TestCovDescriptorProvenance covers descriptorProvenance.
 func TestCovDescriptorProvenance(t *testing.T) {
 	t.Parallel()
 	// nil provenance — returns nil (Clone nil-safety).
@@ -342,8 +336,7 @@ func TestCovDescriptorProvenance(t *testing.T) {
 	}
 }
 
-// TestCovStableDelegateResult covers stableDelegateResult
-// (delegate_runtime.go lines 1818-1847): the result construction.
+// TestCovStableDelegateResult covers stableDelegateResult: the result construction.
 func TestCovStableDelegateResult(t *testing.T) {
 	t.Parallel()
 	desc := delegatestore.Descriptor{
@@ -412,8 +405,7 @@ func TestCovStableDelegateResult(t *testing.T) {
 	}
 }
 
-// TestCovLatestDelegateMutationSnapshot covers latestDelegateMutationSnapshot
-// (delegate_runtime.go lines 1849-1867): finding the latest snapshot for a
+// TestCovLatestDelegateMutationSnapshot covers latestDelegateMutationSnapshot: finding the latest snapshot for a
 // delegate ID from committed rows and plan updates.
 func TestCovLatestDelegateMutationSnapshot(t *testing.T) {
 	t.Parallel()
@@ -459,8 +451,7 @@ func TestCovLatestDelegateMutationSnapshot(t *testing.T) {
 	}
 }
 
-// TestCovResolveStableSharedTaskStore covers resolveStableSharedTaskStore
-// (delegate_runtime.go lines 1668-1691): nil/empty guards.
+// TestCovResolveStableSharedTaskStore covers resolveStableSharedTaskStore: nil/empty guards.
 func TestCovResolveStableSharedTaskStore(t *testing.T) {
 	t.Parallel()
 	// nil session — error.
@@ -495,7 +486,7 @@ func TestCovResolveStableSharedTaskStore(t *testing.T) {
 }
 
 // TestCovDriveStableDelegateAttention_NilSession covers
-// driveStableDelegateAttention (delegate_runtime.go lines 310-368) nil guard.
+// driveStableDelegateAttention nil guard.
 func TestCovDriveStableDelegateAttention_NilSession(t *testing.T) {
 	t.Parallel()
 	var s *Session
@@ -524,7 +515,7 @@ func TestCovDriveStableDelegateAttention_NilSubSession(t *testing.T) {
 }
 
 // TestCovRestoreColdDelegateAttentionRuntime_NilSession covers
-// restoreColdDelegateAttentionRuntime (delegate_runtime.go lines 394-409)
+// restoreColdDelegateAttentionRuntime
 // nil/empty guards.
 func TestCovRestoreColdDelegateAttentionRuntime_NilSession(t *testing.T) {
 	t.Parallel()
@@ -547,7 +538,7 @@ func TestCovRestoreColdDelegateAttentionRuntime_EmptyDelegateID(t *testing.T) {
 }
 
 // TestCovAdmitOwedDelegateAttentionStarts_NilSession covers
-// admitOwedDelegateAttentionStarts (delegate_runtime.go lines 543-597)
+// admitOwedDelegateAttentionStarts
 // nil guard.
 func TestCovAdmitOwedDelegateAttentionStarts_NilSession(t *testing.T) {
 	t.Parallel()
@@ -577,8 +568,7 @@ func TestCovAdmitOwedDelegateAttentionStarts_EmptyStateDir(t *testing.T) {
 	}
 }
 
-// TestCovOwedBootstrapRestoreOpen covers owedBootstrapRestore.open
-// (delegate_runtime.go lines 452-463).
+// TestCovOwedBootstrapRestoreOpen covers owedBootstrapRestore.open.
 func TestCovOwedBootstrapRestoreOpen(t *testing.T) {
 	t.Parallel()
 	gate := &owedBootstrapRestore{
@@ -615,8 +605,7 @@ func TestCovOwedBootstrapRestoreOpen(t *testing.T) {
 	}
 }
 
-// TestCovOwedBootstrapRestoreAdd covers owedBootstrapRestore.add
-// (delegate_runtime.go lines 429-451): nil notify callback.
+// TestCovOwedBootstrapRestoreAdd covers owedBootstrapRestore.add: nil notify callback.
 func TestCovOwedBootstrapRestoreAdd_NilNotify(t *testing.T) {
 	t.Parallel()
 	gate := &owedBootstrapRestore{held: true, pending: make(map[*Session]func()), done: make(map[*subagent]bool)}
@@ -702,8 +691,7 @@ func TestCovEmitStableDelegateUpdate_WithRows(t *testing.T) {
 	}
 }
 
-// TestCovDelegateRestoreStat covers delegateRestoreStat
-// (delegate_runtime.go lines 2113-2118): a method on Session.
+// TestCovDelegateRestoreStat covers delegateRestoreStat: a method on Session.
 func TestCovDelegateRestoreStat(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -714,8 +702,7 @@ func TestCovDelegateRestoreStat(t *testing.T) {
 	}
 }
 
-// TestCovDelegateRestoreReadFile covers delegateRestoreReadFile
-// (delegate_runtime.go lines 2120-2125): a method on Session.
+// TestCovDelegateRestoreReadFile covers delegateRestoreReadFile: a method on Session.
 func TestCovDelegateRestoreReadFile(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -727,8 +714,7 @@ func TestCovDelegateRestoreReadFile(t *testing.T) {
 }
 
 // TestCovDelegateRestoreOperationalIOError covers
-// delegateRestoreOperationalIOError
-// (delegate_runtime.go lines 2127-2139): classifies whether an error
+// delegateRestoreOperationalIOError: classifies whether an error
 // is operational (retryable) vs a permanent missing-file condition.
 func TestCovDelegateRestoreOperationalIOError(t *testing.T) {
 	t.Parallel()
@@ -752,7 +738,7 @@ func TestCovDelegateRestoreOperationalIOError(t *testing.T) {
 }
 
 // TestCovMissingDelegateRestoreInputReason covers
-// missingDelegateRestoreInputReason (delegate_runtime.go lines 2051+).
+// missingDelegateRestoreInputReason.
 func TestCovMissingDelegateRestoreInputReason(t *testing.T) {
 	t.Parallel()
 	// Empty descriptor — missing metadata.

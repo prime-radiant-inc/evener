@@ -33,10 +33,12 @@ import {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
   errorText,
+  filterModels,
   friendlyErrorMessage,
   fromEnvironment,
   isEndpointConflict,
   isInstanceRenamePersisted,
+  MODEL_LIST_CAP,
   renameLeavesEnvironmentRow,
   safeCredentialTestMessage,
   safeCredentialTestResult,
@@ -76,11 +78,6 @@ const CLASS = {
 
 const LITERAL_HEADER_ERROR =
   "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.";
-// A provider such as OpenRouter lists hundreds of models. The sheet mounts at
-// most this many switches at once and offers a search to reach the rest; the
-// phone makes the same decision (ProvidersPage's MODEL_LIST_CAP), so one long
-// list is handled the same way on both clients (issue #3279).
-const MODEL_LIST_CAP = 50;
 const EMPTY_NAME_ERROR = "Name cannot be empty.";
 // The save landed, but its response was superseded, so nothing reseeded the
 // form: the toast says what the sheet is showing - the user's own draft - and
@@ -718,8 +715,8 @@ export function InstanceSheet({
   // Filter by substring, then cap what is mounted; the search field below
   // appears only when the list is long enough to need it, so a short list is
   // unchanged.
-  const modelQuery = modelSearch.trim().toLowerCase();
-  const matchingModels = modelQuery ? models.filter((row) => row.id.toLowerCase().includes(modelQuery)) : models;
+  const modelQuery = modelSearch.trim();
+  const matchingModels = filterModels(models, modelQuery);
   const shownModels = matchingModels.slice(0, MODEL_LIST_CAP);
   const safeTestResult = testCredentialsResult
     ? safeCredentialTestResult(name ?? "", testCredentialsResult)

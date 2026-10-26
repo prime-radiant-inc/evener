@@ -42,12 +42,13 @@ import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../acti
 import { ClientProvider } from "../clientContext";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { adaptNavigationResources, archiveSessionIdentity, Rail } from "./Rail";
+import { archiveSessionIdentity, Rail } from "./Rail";
 import railStyles from "./Rail.module.css";
 import { EXPANSION_STORAGE_KEY } from "./railExpansion";
 import * as railNodeExports from "./railNodes";
 import { projectNodes } from "./railNodes";
 import { RailRenderObserver } from "./railRenderObserver";
+import { adaptNavigationResources } from "./railResources";
 
 function summary(overrides: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary {
   return {

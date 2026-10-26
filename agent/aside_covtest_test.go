@@ -12,8 +12,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestAsideSession_LoadMetaError covers the error path in asideSessionFS
-// (aside.go lines 34-35) when LoadSessionMetaWithFS fails because the
+// TestAsideSession_LoadMetaError covers the error path in asideSessionFS when LoadSessionMetaWithFS fails because the
 // parent session meta file is corrupt.
 func TestAsideSession_LoadMetaError(t *testing.T) {
 	t.Parallel()
@@ -54,7 +53,7 @@ func TestAsideSession_LoadMetaError(t *testing.T) {
 }
 
 // TestForkSessionAtUserTurn_LoadMetaError covers the error path in
-// forkSessionAtUserTurnFS (fork.go lines 72-74) when LoadSessionMetaWithFS fails.
+// forkSessionAtUserTurnFS when LoadSessionMetaWithFS fails.
 func TestForkSessionAtUserTurn_LoadMetaError(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
@@ -95,7 +94,7 @@ func TestForkSessionAtUserTurn_LoadMetaError(t *testing.T) {
 }
 
 // TestForkSessionAtUserTurn_NotUserInput covers the error path where the
-// divergence turn is not a USER_INPUT turn (fork.go lines 67-68).
+// divergence turn is not a USER_INPUT turn.
 func TestForkSessionAtUserTurn_NotUserInput(t *testing.T) {
 	t.Parallel()
 	stateDir, parentID := buildParentSession(t)
@@ -108,7 +107,7 @@ func TestForkSessionAtUserTurn_NotUserInput(t *testing.T) {
 }
 
 // TestForkSessionAtUserTurn_DivergenceExceedsParent covers the error path
-// where divergenceTurn exceeds the parent's turn count (fork.go lines 60-61).
+// where divergenceTurn exceeds the parent's turn count.
 func TestForkSessionAtUserTurn_DivergenceExceedsParent(t *testing.T) {
 	t.Parallel()
 	stateDir, parentID := buildParentSession(t)
@@ -120,8 +119,7 @@ func TestForkSessionAtUserTurn_DivergenceExceedsParent(t *testing.T) {
 	}
 }
 
-// TestForkSessionAtUserTurn_DivergenceZero covers the < 1 guard
-// (fork.go lines 50-51).
+// TestForkSessionAtUserTurn_DivergenceZero covers the < 1 guard.
 func TestForkSessionAtUserTurn_DivergenceZero(t *testing.T) {
 	t.Parallel()
 	stateDir, parentID := buildParentSession(t)

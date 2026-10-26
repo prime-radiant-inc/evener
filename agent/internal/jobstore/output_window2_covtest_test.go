@@ -52,8 +52,7 @@ func TestOutputStoreWindowNegativeMaxBytes(t *testing.T) {
 	}
 }
 
-// TestLstatOutputArtifact_NonLstater covers the non-Lstater path
-// (output.go:172-173): a filesystem that does not implement afero.Lstater
+// TestLstatOutputArtifact_NonLstater covers the non-Lstater path: a filesystem that does not implement afero.Lstater
 // returns an error.
 func TestLstatOutputArtifact_NonLstater(t *testing.T) {
 	// MemMapFs implements LstatIfPossible, so use a wrapper that doesn't.
@@ -70,8 +69,7 @@ type nonLstaterFs struct {
 	afero.Fs
 }
 
-// TestOutputStoreWindowStatError covers the stat error path in Window
-// (output.go:272-273): when the output file does not exist, stat fails.
+// TestOutputStoreWindowStatError covers the stat error path in Window: when the output file does not exist, stat fails.
 func TestOutputStoreWindowStatError(t *testing.T) {
 	o, err := OpenOutputNoSync(filepath.Join(t.TempDir(), "job.log"), 100)
 	if err != nil {
@@ -86,8 +84,7 @@ func TestOutputStoreWindowStatError(t *testing.T) {
 	}
 }
 
-// TestOutputStoreWindowOpenError covers the open error path in Window
-// (output.go:278-279): when the output file exists for stat but cannot be opened.
+// TestOutputStoreWindowOpenError covers the open error path in Window: when the output file exists for stat but cannot be opened.
 // This is hard to trigger with a real filesystem; the fault FS test above
 // covers it instead. This test documents the path.
 func TestOutputStoreWindowOpenError(t *testing.T) {

@@ -573,9 +573,9 @@ func TestRetirementDelegateReclaimOwnsExactRuntime(t *testing.T) {
 // before the target, and the read itself — and the claim can instead return
 // before it ever reads. That early return is a state this barrier must name, not
 // time out: TryClaim refuses early while a lease is held or the controller is
-// not resident (retirement.go:529,534), setRetirementFence refuses on a leftover
+// not resident, setRetirementFence refuses on a leftover
 // fence, and retirementEvidence returns early when a cold member's evidence read
-// errors (delegate_tree_retirement.go:97). At rest the read is reached in well
+// errors. At rest the read is reached in well
 // under a millisecond, so this is a hang guard, never a speed assertion, and 30s
 // matches this package's standing whole-operation tripwire for in-process work
 // (stallHandshakeTimeout, retirementCreateBarrierTripwire, stalledRefreshTripwire,

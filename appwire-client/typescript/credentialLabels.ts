@@ -277,3 +277,14 @@ export const FINGERPRINT_UNAVAILABLE_TEST_MESSAGE = endpointUncheckable("the tes
 export function fingerprintUnavailable(row: InstanceEntry | undefined): boolean {
   return row !== undefined && (row.baseUrl ?? "") !== "" && (row.endpointFingerprint ?? "") === "";
 }
+
+// A provider such as OpenRouter lists hundreds of models. Each app mounts at
+// most this many switches at once and offers a search to reach the rest.
+export const MODEL_LIST_CAP = 50;
+
+// The models whose id contains the search text, case-insensitively; a blank
+// search keeps the list as it is.
+export function filterModels<T extends { id: string }>(models: readonly T[], search: string): readonly T[] {
+  const query = search.trim().toLowerCase();
+  return query ? models.filter((model) => model.id.toLowerCase().includes(query)) : models;
+}

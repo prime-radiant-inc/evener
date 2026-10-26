@@ -15,8 +15,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestCovClearDescendantReceiverWatchByID covers clearDescendantReceiverWatchByID
-// (session_tools_jobs.go lines 298-300): a thin wrapper around
+// TestCovClearDescendantReceiverWatchByID covers clearDescendantReceiverWatchByID: a thin wrapper around
 // clearStableReceiverWatchByID.
 func TestCovClearDescendantReceiverWatchByID(t *testing.T) {
 	t.Parallel()
@@ -34,8 +33,7 @@ func TestCovClearDescendantReceiverWatchByID(t *testing.T) {
 	}
 }
 
-// TestCovLiveSteerWaitIgnoredReason covers liveSteerWaitIgnoredReason
-// (session_tools_jobs.go lines 129-134): all branches.
+// TestCovLiveSteerWaitIgnoredReason covers liveSteerWaitIgnoredReason: all branches.
 func TestCovLiveSteerWaitIgnoredReason(t *testing.T) {
 	t.Parallel()
 	const wantIgnored = "live steer returns on delivery; max_wait_ms applies only to started jobs"
@@ -65,8 +63,7 @@ func TestCovLiveSteerWaitIgnoredReason(t *testing.T) {
 	}
 }
 
-// TestCovWatchInspectFound covers watchInspectFound
-// (session_tools_jobs.go lines 336-338).
+// TestCovWatchInspectFound covers watchInspectFound.
 func TestCovWatchInspectFound(t *testing.T) {
 	t.Parallel()
 	// Empty result — not found.
@@ -90,8 +87,7 @@ func TestCovWatchInspectFound(t *testing.T) {
 	}
 }
 
-// TestCovMarshalBoundedJSON covers marshalBoundedJSON
-// (session_tools_jobs.go lines 1978-1987).
+// TestCovMarshalBoundedJSON covers marshalBoundedJSON.
 func TestCovMarshalBoundedJSON2(t *testing.T) {
 	t.Parallel()
 	// Successful marshal within bounds.
@@ -125,8 +121,7 @@ func TestCovMarshalBoundedJSON2(t *testing.T) {
 	}
 }
 
-// TestCovMarshalBoundedJSONWithFit covers marshalBoundedJSONWithFit
-// (session_tools_jobs.go lines 1992-2001).
+// TestCovMarshalBoundedJSONWithFit covers marshalBoundedJSONWithFit.
 func TestCovMarshalBoundedJSONWithFit2(t *testing.T) {
 	t.Parallel()
 	// Fits within bounds.
@@ -154,8 +149,7 @@ func TestCovMarshalBoundedJSONWithFit2(t *testing.T) {
 	}
 }
 
-// TestCovSessionJobManager covers sessionJobManager
-// (session_tools_jobs.go lines 1637-1642).
+// TestCovSessionJobManager covers sessionJobManager.
 func TestCovSessionJobManager(t *testing.T) {
 	t.Parallel()
 	// nil session — error.
@@ -180,8 +174,7 @@ func TestCovSessionJobManager(t *testing.T) {
 	}
 }
 
-// TestCovSessionRunningJobIDs covers sessionRunningJobIDs
-// (session_tools_jobs.go lines 1648-1662).
+// TestCovSessionRunningJobIDs covers sessionRunningJobIDs.
 func TestCovSessionRunningJobIDs(t *testing.T) {
 	t.Parallel()
 	// nil session — nil.
@@ -213,8 +206,7 @@ func TestCovSessionRunningJobIDs(t *testing.T) {
 	}
 }
 
-// TestCovJobStatusArrayArg covers jobStatusArrayArg
-// (session_tools_jobs.go lines 1701-1723): all valid/invalid statuses.
+// TestCovJobStatusArrayArg covers jobStatusArrayArg: all valid/invalid statuses.
 func TestCovJobStatusArrayArg2(t *testing.T) {
 	t.Parallel()
 	// Not present — nil, no error.
@@ -274,8 +266,7 @@ func TestCovJobStatusArrayArg2(t *testing.T) {
 	}
 }
 
-// TestCovJobTypeArrayArg covers jobTypeArrayArg
-// (session_tools_jobs.go lines 1867-1887).
+// TestCovJobTypeArrayArg covers jobTypeArrayArg.
 func TestCovJobTypeArrayArg2(t *testing.T) {
 	t.Parallel()
 	// Not present — nil.
@@ -314,8 +305,7 @@ func TestCovJobTypeArrayArg2(t *testing.T) {
 	}
 }
 
-// TestCovWatchArgsFromToolArgs covers watchArgsFromToolArgs
-// (session_tools_jobs.go lines 1725-1784): validation branches.
+// TestCovWatchArgsFromToolArgs covers watchArgsFromToolArgs: validation branches.
 func TestCovWatchArgsFromToolArgs2(t *testing.T) {
 	t.Parallel()
 	// Missing operation.
@@ -435,8 +425,7 @@ func TestCovWatchArgsFromToolArgs2(t *testing.T) {
 	}
 }
 
-// TestCovWatchEventFilterArg covers watchEventFilterArg
-// (session_tools_jobs.go lines 1786-1814).
+// TestCovWatchEventFilterArg covers watchEventFilterArg.
 func TestCovWatchEventFilterArg2(t *testing.T) {
 	t.Parallel()
 	// Not present — nil.
@@ -497,8 +486,7 @@ func TestCovWatchEventFilterArg2(t *testing.T) {
 	}
 }
 
-// TestCovStringArrayArg covers stringArrayArg
-// (session_tools_jobs.go lines 1816-1834).
+// TestCovStringArrayArg covers stringArrayArg.
 func TestCovStringArrayArg2(t *testing.T) {
 	t.Parallel()
 	// Not present — nil.
@@ -526,8 +514,7 @@ func TestCovStringArrayArg2(t *testing.T) {
 	}
 }
 
-// TestCovWatchSendArg covers watchSendArg
-// (session_tools_jobs.go lines 1837-1858).
+// TestCovWatchSendArg covers watchSendArg.
 func TestCovWatchSendArg(t *testing.T) {
 	t.Parallel()
 	// Not present — nil.
@@ -573,8 +560,7 @@ func TestCovWatchSendArg(t *testing.T) {
 	}
 }
 
-// TestCovIsEmptyWatchSend covers isEmptyWatchSend
-// (session_tools_jobs.go lines 1861-1865).
+// TestCovIsEmptyWatchSend covers isEmptyWatchSend.
 func TestCovIsEmptyWatchSend(t *testing.T) {
 	t.Parallel()
 	// All empty — true.
@@ -600,7 +586,7 @@ func TestCovIsEmptyWatchSend(t *testing.T) {
 
 // ---- session_queue.go pure functions ----
 
-// TestCovFirstQueueLine covers firstQueueLine (session_queue.go lines 544-549).
+// TestCovFirstQueueLine covers firstQueueLine.
 func TestCovFirstQueueLine(t *testing.T) {
 	t.Parallel()
 	// No newline — returns full string with trailing CR trimmed.
@@ -634,8 +620,7 @@ func TestCovFirstQueueLine(t *testing.T) {
 	}
 }
 
-// TestCovQueuedEntryPreviewLine covers queuedEntryPreviewLine
-// (session_queue.go lines 555-566).
+// TestCovQueuedEntryPreviewLine covers queuedEntryPreviewLine.
 func TestCovQueuedEntryPreviewLine(t *testing.T) {
 	t.Parallel()
 	// Text present — returns first line.
@@ -675,8 +660,7 @@ func TestCovQueuedEntryPreviewLine(t *testing.T) {
 	}
 }
 
-// TestCovSteeringMessageToLLM covers steeringMessageToLLM
-// (session_queue.go lines 1033-1038).
+// TestCovSteeringMessageToLLM covers steeringMessageToLLM.
 func TestCovSteeringMessageToLLM(t *testing.T) {
 	t.Parallel()
 	// Text-only — llm.User(text).
@@ -705,8 +689,7 @@ func TestCovSteeringMessageToLLM(t *testing.T) {
 	}
 }
 
-// TestCovRouteSystemNotification covers routeSystemNotification
-// (session_queue.go lines 128-144).
+// TestCovRouteSystemNotification covers routeSystemNotification.
 func TestCovRouteSystemNotification(t *testing.T) {
 	t.Parallel()
 	// nil session — false.
@@ -753,7 +736,7 @@ func TestCovRouteSystemNotification(t *testing.T) {
 	}
 }
 
-// TestCovWrapHookContext covers wrapHookContext (session_queue.go lines 279-281).
+// TestCovWrapHookContext covers wrapHookContext.
 func TestCovWrapHookContext2(t *testing.T) {
 	t.Parallel()
 	got := wrapHookContext("additional context")
@@ -765,8 +748,7 @@ func TestCovWrapHookContext2(t *testing.T) {
 	}
 }
 
-// TestCovSteeringInjectedDataFromMessage covers steeringInjectedDataFromMessage
-// (session_queue.go lines 98-107).
+// TestCovSteeringInjectedDataFromMessage covers steeringInjectedDataFromMessage.
 func TestCovSteeringInjectedDataFromMessage(t *testing.T) {
 	t.Parallel()
 	msg := steeringMessage{
@@ -786,7 +768,7 @@ func TestCovSteeringInjectedDataFromMessage(t *testing.T) {
 }
 
 // TestCovWithQueuedClientMutation covers withQueuedClientMutation and
-// queuedClientMutationFromContext (session_queue.go lines 29-40).
+// queuedClientMutationFromContext.
 func TestCovWithQueuedClientMutation(t *testing.T) {
 	t.Parallel()
 	queued := queuedInput{
@@ -807,8 +789,7 @@ func TestCovWithQueuedClientMutation(t *testing.T) {
 	}
 }
 
-// TestCovInterruptDrainConfig covers interruptDrainConfig
-// (session_queue.go lines 748-768): the pure function that decides whether
+// TestCovInterruptDrainConfig covers interruptDrainConfig: the pure function that decides whether
 // an interrupted turn may drain the queue head.
 func TestCovInterruptDrainConfig(t *testing.T) {
 	t.Parallel()
@@ -849,8 +830,7 @@ func TestCovInterruptDrainConfig(t *testing.T) {
 	}
 }
 
-// TestCovNextTurnContext covers queuedInputDrainConfig.nextTurnContext
-// (session_queue.go lines 781-790).
+// TestCovNextTurnContext covers queuedInputDrainConfig.nextTurnContext.
 func TestCovNextTurnContext2(t *testing.T) {
 	t.Parallel()
 	rootCtx := context.Background()
@@ -883,7 +863,7 @@ func TestCovNextTurnContext2(t *testing.T) {
 	childCancel()
 }
 
-// TestCovPopFollowUp covers popFollowUp (session_queue.go lines 1040-1049).
+// TestCovPopFollowUp covers popFollowUp.
 func TestCovPopFollowUp(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -911,8 +891,7 @@ func TestCovPopFollowUp(t *testing.T) {
 	}
 }
 
-// TestCovHasPendingSteering covers hasPendingSteering
-// (session_queue.go lines 969-973).
+// TestCovHasPendingSteering covers hasPendingSteering.
 func TestCovHasPendingSteering(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -929,8 +908,7 @@ func TestCovHasPendingSteering(t *testing.T) {
 	}
 }
 
-// TestCovHasPendingUserSteering covers hasPendingUserSteering
-// (session_queue.go lines 981-990).
+// TestCovHasPendingUserSteering covers hasPendingUserSteering.
 func TestCovHasPendingUserSteering(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -956,8 +934,7 @@ func TestCovHasPendingUserSteering(t *testing.T) {
 	}
 }
 
-// TestCovPrependSteering covers prependSteering
-// (session_queue.go lines 992-1000).
+// TestCovPrependSteering covers prependSteering.
 func TestCovPrependSteering(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -980,8 +957,7 @@ func TestCovPrependSteering(t *testing.T) {
 	s.mu.Unlock()
 }
 
-// TestCovSteeringQueueSnapshot covers SteeringQueueSnapshot
-// (session_queue.go lines 1015-1027).
+// TestCovSteeringQueueSnapshot covers SteeringQueueSnapshot.
 func TestCovSteeringQueueSnapshot(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -1018,7 +994,7 @@ func TestCovSteeringQueueSnapshot(t *testing.T) {
 	s.mu.Unlock()
 }
 
-// TestCovFollowUp covers FollowUp (session_queue.go lines 303-313).
+// TestCovFollowUp covers FollowUp.
 func TestCovFollowUp(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -1047,8 +1023,7 @@ func TestCovFollowUp(t *testing.T) {
 	s.mu.Unlock()
 }
 
-// TestCovPendingQueueDepth covers pendingQueueDepth
-// (session_queue.go lines 514-519).
+// TestCovPendingQueueDepth covers pendingQueueDepth.
 func TestCovPendingQueueDepth(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -1066,7 +1041,7 @@ func TestCovPendingQueueDepth(t *testing.T) {
 	}
 }
 
-// TestCovQueueDepth covers QueueDepth (session_queue.go lines 500-504).
+// TestCovQueueDepth covers QueueDepth.
 func TestCovQueueDepth(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -1082,8 +1057,7 @@ func TestCovQueueDepth(t *testing.T) {
 	}
 }
 
-// TestCovDelegateSendResultFormat covers formatDelegateSend
-// (session_tools_jobs.go lines 1428-1470).
+// TestCovDelegateSendResultFormat covers formatDelegateSend.
 func TestCovDelegateSendResultFormat(t *testing.T) {
 	t.Parallel()
 	output := "hello"
@@ -1124,8 +1098,7 @@ func TestCovDelegateSendResultFormat(t *testing.T) {
 	}
 }
 
-// TestCovDelegateWorktreeToolResultFrom covers delegateWorktreeToolResultFrom
-// (session_tools_jobs.go lines 1364-1369).
+// TestCovDelegateWorktreeToolResultFrom covers delegateWorktreeToolResultFrom.
 func TestCovDelegateWorktreeToolResultFrom(t *testing.T) {
 	t.Parallel()
 	// nil — returns nil.
@@ -1157,8 +1130,7 @@ func TestCovDelegateWorktreeToolResultFrom(t *testing.T) {
 	}
 }
 
-// TestCovDelegateSandboxToolResultFrom covers delegateSandboxToolResultFrom
-// (session_tools_jobs.go lines 1376-1381).
+// TestCovDelegateSandboxToolResultFrom covers delegateSandboxToolResultFrom.
 func TestCovDelegateSandboxToolResultFrom(t *testing.T) {
 	t.Parallel()
 	// nil — returns nil.
@@ -1177,8 +1149,7 @@ func TestCovDelegateSandboxToolResultFrom(t *testing.T) {
 	}
 }
 
-// TestCovDecodeDelegateArgs covers decodeDelegateArgs
-// (session_tools_jobs.go lines 345-382): validation branches.
+// TestCovDecodeDelegateArgs covers decodeDelegateArgs: validation branches.
 func TestCovDecodeDelegateArgs2(t *testing.T) {
 	t.Parallel()
 	// Valid minimal.
@@ -1279,8 +1250,7 @@ func TestCovDecodeDelegateArgs2(t *testing.T) {
 	}
 }
 
-// TestCovConsumeTerminalJobNotification covers consumeTerminalJobNotification
-// (session_tools_jobs.go lines 446-480): the nil/empty guards.
+// TestCovConsumeTerminalJobNotification covers consumeTerminalJobNotification: the nil/empty guards.
 func TestCovConsumeTerminalJobNotification(t *testing.T) {
 	t.Parallel()
 	// nil jm — no-op.
@@ -1385,8 +1355,7 @@ func TestCovProjectStableDelegateListItem(t *testing.T) {
 	}
 }
 
-// TestCovWithQueuedInputDrainOnInterrupt covers WithQueuedInputDrainOnInterrupt
-// (session_queue.go lines 49-51).
+// TestCovWithQueuedInputDrainOnInterrupt covers WithQueuedInputDrainOnInterrupt.
 func TestCovWithQueuedInputDrainOnInterrupt(t *testing.T) {
 	t.Parallel()
 	rootCtx := context.Background()
@@ -1408,7 +1377,7 @@ func TestCovWithQueuedInputDrainOnInterrupt(t *testing.T) {
 }
 
 // TestCovWithQueuedInputDrainOnInterruptHandler covers
-// WithQueuedInputDrainOnInterruptHandler (session_queue.go lines 64-72).
+// WithQueuedInputDrainOnInterruptHandler.
 func TestCovWithQueuedInputDrainOnInterruptHandler(t *testing.T) {
 	t.Parallel()
 	rootCtx := context.Background()
@@ -1436,8 +1405,7 @@ func TestCovWithQueuedInputDrainOnInterruptHandler(t *testing.T) {
 	}
 }
 
-// TestCovDeliverHookContext covers deliverHookContext
-// (session_queue.go lines 285-290).
+// TestCovDeliverHookContext covers deliverHookContext.
 func TestCovDeliverHookContext(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
@@ -1459,8 +1427,7 @@ func TestCovDeliverHookContext(t *testing.T) {
 	s.mu.Unlock()
 }
 
-// TestCovAppendSteeringTurn covers appendSteeringTurn
-// (session_queue.go lines 942-947).
+// TestCovAppendSteeringTurn covers appendSteeringTurn.
 func TestCovAppendSteeringTurn(t *testing.T) {
 	t.Parallel()
 	s := &Session{id: "session_1", events: make(chan events.SessionEvent, 2)}
@@ -1478,8 +1445,7 @@ func TestCovAppendSteeringTurn(t *testing.T) {
 	}
 }
 
-// TestCovAppendSteeringTurnDurably covers appendSteeringTurnDurably
-// (session_queue.go lines 956-967): durable persistence and failure ordering.
+// TestCovAppendSteeringTurnDurably covers appendSteeringTurnDurably: durable persistence and failure ordering.
 func TestCovAppendSteeringTurnDurably(t *testing.T) {
 	t.Run("persists before history", func(t *testing.T) {
 		path := t.TempDir() + "/session.transcript.jsonl"

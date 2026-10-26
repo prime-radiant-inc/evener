@@ -21,6 +21,7 @@ import type {
 	MutationRecoveryKind,
 	MutationRecoveryRecord,
 } from "@evener/appwire-client/state/mutation";
+import { COMPOSER_METHODS } from "@evener/appwire-client/state/mutation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
@@ -105,7 +106,7 @@ function inputText(input: unknown): string {
 // A promote or drain from the queue steers with messages the hub holds; its
 // ghost shows them from the record's display.
 function queuedSteerText(record: MutationRecoveryRecord<MutationAttachmentRef>): string | undefined {
-	if (record.method !== "turn/promoteQueuedAsSteer" && record.method !== "turn/drainAsSteer") return undefined;
+	if (record.method !== COMPOSER_METHODS.promote && record.method !== COMPOSER_METHODS.drain) return undefined;
 	return inputText((record.optimisticDisplay as { input?: unknown } | null)?.input);
 }
 

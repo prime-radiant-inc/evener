@@ -1681,7 +1681,7 @@ func TestDevControllerPreservesCompatibleBuildButExplicitDeployWorks(t *testing.
 // through Options.DeployHelp. The controller's own executable is the case that
 // does not refuse (TestDirtyControllerDeploysItsOwnExecutable). The refusal's
 // type and terminality are pinned by
-// TestRound13DirtyControllerDeployRefusalIsTerminal; this adds the remedy
+// TestDirtyControllerDeployRefusalIsTerminal; this adds the remedy
 // clauses, which is the half the criterion names.
 func TestDirtyControllerRefusalsNameTheRemedy(t *testing.T) {
 	const dirty = "abc1234-dirty"

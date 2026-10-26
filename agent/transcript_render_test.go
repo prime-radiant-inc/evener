@@ -2396,7 +2396,7 @@ func TestRenderMarkdown_OversizedValidJSONSuppressesIntent(t *testing.T) {
 // Finding 3: a communicate that executes and fails at runtime
 // (IsError=true, PrevalOnly=false) with malformed raw args must render
 // NOTHING in the markdown — matching the app thread, which creates no
-// item for runtime failures (apptranscript.go:714-742). Before the fix,
+// item for runtime failures. Before the fix,
 // writeResultToolMessage's healed flag was hasResult && !IsError, which
 // treated every errored result as a pre-validation rejection. The raw
 // fallback then surfaced the malformed bytes even though they were never
@@ -2438,7 +2438,7 @@ func TestRenderMarkdown_RuntimeFailedCommunicateRendersNothing(t *testing.T) {
 // TestRenderMarkdown_PrevalOnlyRejectedCommunicateStillSurfaces verifies
 // the companion to Finding 3: a PrevalOnly-rejected communicate
 // (IsError=true, PrevalOnly=true) still surfaces its raw bytes in the
-// markdown, matching the app thread (apptranscript.go:714-732). Only
+// markdown, matching the app thread. Only
 // runtime failures are suppressed — pre-validation rejections still
 // show the raw bytes the model sent.
 func TestRenderMarkdown_PrevalOnlyRejectedCommunicateStillSurfaces(t *testing.T) {

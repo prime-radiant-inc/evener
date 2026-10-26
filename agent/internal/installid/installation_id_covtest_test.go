@@ -31,8 +31,7 @@ func (fs *failingSyncFs) OpenFile(name string, flag int, perm os.FileMode) (afer
 	return &failingSyncFile{File: f}, nil
 }
 
-// TestAcquireInstallationIDSentinelLock_SyncError covers the Sync error path
-// (installation_id.go:107-110): a filesystem whose file Sync fails returns an
+// TestAcquireInstallationIDSentinelLock_SyncError covers the Sync error path: a filesystem whose file Sync fails returns an
 // error and cleans up the lock file.
 func TestAcquireInstallationIDSentinelLock_SyncError(t *testing.T) {
 	dir := t.TempDir()
@@ -80,8 +79,7 @@ func (fs *failingCloseFs) OpenFile(name string, flag int, perm os.FileMode) (afe
 	return &failingCloseFile{File: f}, nil
 }
 
-// TestAcquireInstallationIDSentinelLock_CloseError covers the Close error path
-// (installation_id.go:112-114): a filesystem whose file Close fails after a
+// TestAcquireInstallationIDSentinelLock_CloseError covers the Close error path: a filesystem whose file Close fails after a
 // successful Sync returns an error and cleans up the lock file.
 func TestAcquireInstallationIDSentinelLock_CloseError(t *testing.T) {
 	dir := t.TempDir()
@@ -109,8 +107,7 @@ func (fs *erroringStatFs) Stat(name string) (os.FileInfo, error) {
 	return nil, errors.New("injected stat failure")
 }
 
-// TestCreateInstallationIDWhileLocked_StatError covers the stat error path
-// (installation_id.go:142-143): a Stat error that is not IsNotExist causes
+// TestCreateInstallationIDWhileLocked_StatError covers the stat error path: a Stat error that is not IsNotExist causes
 // the function to return "".
 func TestCreateInstallationIDWhileLocked_StatError(t *testing.T) {
 	dir := t.TempDir()
@@ -127,7 +124,7 @@ func TestCreateInstallationIDWhileLocked_StatError(t *testing.T) {
 }
 
 // TestLoadOrCreateInstallationID_LockReleaseError covers the lock.Release error
-// path (installation_id.go:89-90): when lock.Release fails, the function
+// path: when lock.Release fails, the function
 // returns "".
 func TestLoadOrCreateInstallationID_LockReleaseError(t *testing.T) {
 	dir := t.TempDir()
@@ -154,6 +151,6 @@ func (l *failingReleaseLock) Release() error {
 }
 
 // TestInstallationIDContentionWait_Default previously exercised the default
-// installationIDContentionWait function (installation_id.go:23-25), which
+// installationIDContentionWait function, which
 // only calls time.Sleep(5ms). Removed: the test had zero assertions and could
 // never fail regardless of production behavior.

@@ -64,9 +64,9 @@ func GitEntryResolvesToCommon(candidate, common string) bool {
 	if err != nil {
 		return false
 	}
-	common = resolveClean(common)
+	common = ResolveClean(common)
 	if info.IsDir() {
-		return resolveClean(gitPath) == common
+		return ResolveClean(gitPath) == common
 	}
 	content, err := os.ReadFile(gitPath)
 	if err != nil {
@@ -79,10 +79,12 @@ func GitEntryResolvesToCommon(candidate, common string) bool {
 	if !filepath.IsAbs(gitdir) {
 		gitdir = filepath.Join(candidate, gitdir)
 	}
-	return resolveClean(filepath.Dir(filepath.Dir(gitdir))) == common
+	return ResolveClean(filepath.Dir(filepath.Dir(gitdir))) == common
 }
 
-func resolveClean(path string) string {
+// ResolveClean returns the symlink-resolved, cleaned form of path, falling back
+// to a plain Clean when the path cannot be resolved (e.g. it does not exist).
+func ResolveClean(path string) string {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		return filepath.Clean(resolved)
 	}
@@ -103,7 +105,7 @@ func mainCheckoutLocal(cwd string) (string, bool, error) {
 				return "", true, fmt.Errorf("read Git pointer %q: %w", gitPath, readErr)
 			}
 			if root, ok := MainRootFromGitdirPointer(string(content), dir); ok {
-				if err := validateLinkedWorktreePointer(string(content), dir, root); err != nil {
+				if err := ValidateLinkedWorktreePointer(string(content), dir, root); err != nil {
 					return "", true, err
 				}
 				return root, true, nil
@@ -111,7 +113,7 @@ func mainCheckoutLocal(cwd string) (string, bool, error) {
 			if _, ok := ParseGitdirPointer(string(content)); !ok {
 				return "", true, errors.New("malformed Git worktree pointer")
 			}
-			if err := validateSubmodulePointer(string(content), dir); err != nil {
+			if err := ValidateSubmodulePointer(string(content), dir); err != nil {
 				return "", true, err
 			}
 			return gitBinaryMainRootLocal(cwd)
@@ -124,7 +126,9 @@ func mainCheckoutLocal(cwd string) (string, bool, error) {
 	}
 }
 
-func pointerTarget(content, ancestor string) (string, bool) {
+// PointerTarget resolves the gitdir a ".git" pointer file names, joining a
+// relative target onto ancestor (the directory holding the file).
+func PointerTarget(content, ancestor string) (string, bool) {
 	gitdir, ok := ParseGitdirPointer(content)
 	if !ok {
 		return "", false
@@ -135,8 +139,10 @@ func pointerTarget(content, ancestor string) (string, bool) {
 	return filepath.Clean(gitdir), true
 }
 
-func validateLinkedWorktreePointer(content, ancestor, root string) error {
-	target, ok := pointerTarget(content, ancestor)
+// ValidateLinkedWorktreePointer checks that a linked worktree pointer names a
+// real ".git/worktrees/<id>" directory belonging to the main checkout at root.
+func ValidateLinkedWorktreePointer(content, ancestor, root string) error {
+	target, ok := PointerTarget(content, ancestor)
 	if !ok {
 		return errors.New("malformed Git worktree pointer")
 	}
@@ -153,14 +159,16 @@ func validateLinkedWorktreePointer(content, ancestor, root string) error {
 	if err != nil {
 		return fmt.Errorf("main checkout Git directory %q: %w", mainGit, err)
 	}
-	if !mainInfo.IsDir() || resolveClean(mainGit) != resolveClean(common) {
+	if !mainInfo.IsDir() || ResolveClean(mainGit) != ResolveClean(common) {
 		return fmt.Errorf("linked worktree Git directory %q does not match main checkout %q", target, mainGit)
 	}
 	return nil
 }
 
-func validateSubmodulePointer(content, ancestor string) error {
-	target, ok := pointerTarget(content, ancestor)
+// ValidateSubmodulePointer checks that a pointer file names a real submodule
+// Git directory (".git/modules/..." shape).
+func ValidateSubmodulePointer(content, ancestor string) error {
+	target, ok := PointerTarget(content, ancestor)
 	if !ok {
 		return errors.New("malformed Git pointer")
 	}
@@ -171,13 +179,15 @@ func validateSubmodulePointer(content, ancestor string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("git pointer target %q is not a directory", target)
 	}
-	if !isSubmoduleGitDirShape(target) {
+	if !IsSubmoduleGitDirShape(target) {
 		return fmt.Errorf("git pointer target %q is not a submodule Git directory", target)
 	}
 	return nil
 }
 
-func isSubmoduleGitDirShape(target string) bool {
+// IsSubmoduleGitDirShape reports whether target sits under a ".git/modules"
+// directory at any depth.
+func IsSubmoduleGitDirShape(target string) bool {
 	for current := filepath.Clean(target); ; current = filepath.Dir(current) {
 		parent := filepath.Dir(current)
 		if filepath.Base(parent) == "modules" && filepath.Base(filepath.Dir(parent)) == ".git" {
@@ -204,7 +214,7 @@ func gitBinaryMainRootLocal(cwd string) (string, bool, error) {
 	if !ok || top == "" {
 		return "", true, errors.New("git checkout root could not be resolved")
 	}
-	return resolveClean(top), true, nil
+	return ResolveClean(top), true, nil
 }
 
 func runGitCmd(ctx context.Context, dir string, args ...string) (string, bool) {

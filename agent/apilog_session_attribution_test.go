@@ -507,8 +507,8 @@ func newModelSwitchAttributionSession(t *testing.T, client *llm.Client, stateDir
 // TestModelSwitchLiveListingAttribution pins issue #754: resolveModelSwitchTarget
 // (agent/session_set_model.go), used by SetModel and by both
 // resolveModelSwitchTarget call sites inside selectSubagentModel — the plain
-// explicit-override path (subagent_model_selection.go:117) and the
-// plugin-agent-resolution-failed fallback path (subagent_model_selection.go:74)
+// explicit-override path and the
+// plugin-agent-resolution-failed fallback path
 // — lists the switch target's instance with a bare context.Background() even
 // though every call site runs on an already-existing session with a real
 // s.id in scope. Same unattributed-API-log defect

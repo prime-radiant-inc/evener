@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/identifier"
 )
 
 // nonTmpMainAndLanes materializes a main repo and n linked worktree lanes under
@@ -34,13 +36,13 @@ func nonTmpMainAndLanes(t *testing.T, n int) (string, []string) {
 	for i := range lanes {
 		lane := filepath.Join(base, "lane"+string(rune('a'+i)))
 		gitHarness(t, main, "worktree", "add", "-q", lane, "-b", "feat"+string(rune('a'+i)))
-		lane = resolveCleanPath(lane)
+		lane = identifier.ResolveClean(lane)
 		if err := os.WriteFile(filepath.Join(lane, "secret.txt"), []byte("LANE-SECRET-"+filepath.Base(lane)), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		lanes[i] = lane
 	}
-	return resolveCleanPath(main), lanes
+	return identifier.ResolveClean(main), lanes
 }
 
 // runArgv runs a wrapped argv with the sandbox env floor applied and returns the
@@ -382,12 +384,12 @@ func TestReRootNetOffInherited(t *testing.T) {
 func twoLinkedLanesInline(t *testing.T) (string, []string) {
 	t.Helper()
 	requireGitHarness(t)
-	main := resolveCleanPath(t.TempDir())
+	main := identifier.ResolveClean(t.TempDir())
 	gitHarness(t, main, "init", "-q")
 	gitHarness(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 	a := main + "-a"
 	b := main + "-b"
 	gitHarness(t, main, "worktree", "add", "-q", a)
 	gitHarness(t, main, "worktree", "add", "-q", b)
-	return main, []string{resolveCleanPath(a), resolveCleanPath(b)}
+	return main, []string{identifier.ResolveClean(a), identifier.ResolveClean(b)}
 }

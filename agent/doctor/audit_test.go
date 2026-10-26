@@ -2293,7 +2293,7 @@ func TestRunAudit_R13F4_OmissionWordingMatchesNonReproDesc(t *testing.T) {
 
 // TestRunAudit_R14F2_NoDoubleReportReproducibleOmission is the round 14
 // finding-2 RED case: when reproCount > evidenceSessionRefCap and there are
-// zero non-reproducible sessions, the cmdOmitted clause (audit.go:1029-1035)
+// zero non-reproducible sessions, the cmdOmitted clause
 // reports "N sessions omitted from command (cap X)" for the same N = reproCount
 // - cap already disclosed by joinSessionRefs' "…and N more" marker. A consumer
 // tallying omissions double-counts (2N instead of N). Fix: remove the

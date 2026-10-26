@@ -40,7 +40,7 @@ agent/execenv/cov_s4_local_test.go	5
 agent/execenv/local_operations_program_fuzz_test.go	5
 agent/execenv/local_test.go	3
 agent/execenv/open_beneath_root_unix_test.go	3
-agent/execenv/project_resolver_covtest_test.go	7
+agent/execenv/project_resolver_covtest_test.go	4
 agent/execenv/project_resolver_test.go	4
 agent/final_fix_warning_test.go	5
 agent/fork_at_test.go	1
@@ -197,13 +197,13 @@ cmd/evener-hub/internal/hubedge/auth_token_test.go	2
 cmd/evener-hub/internal/launchconfig/coverage_test.go	2
 cmd/evener-hub/internal/launchconfig/io_test.go	4
 cmd/evener-hub/internal/launchconfig/merge_test.go	3
+cmd/evener-hub/internal/sshconn/deploy_byte_count_test.go	2
+cmd/evener-hub/internal/sshconn/deploy_dirty_controller_test.go	1
 cmd/evener-hub/internal/sshconn/deploy_help_test.go	4
+cmd/evener-hub/internal/sshconn/deploy_resolved_target_test.go	1
 cmd/evener-hub/internal/sshconn/deploy_retained_target_test.go	2
-cmd/evener-hub/internal/sshconn/deploy_round10_test.go	2
-cmd/evener-hub/internal/sshconn/deploy_round8_test.go	1
 cmd/evener-hub/internal/sshconn/deploy_test.go	11
 cmd/evener-hub/internal/sshconn/gate_test.go	4
-cmd/evener-hub/internal/sshconn/round13_test.go	1
 cmd/evener-hub/internal/sshconn/version_test.go	1
 cmd/evener-hub/spawn_test.go	1
 cmd/evener-internalcheck/coverage_test.go	1

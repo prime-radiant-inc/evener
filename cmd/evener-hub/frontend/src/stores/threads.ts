@@ -67,8 +67,10 @@ import {
   WireError,
 } from "@evener/appwire-client";
 import {
+  COMPOSER_METHODS,
   canEditQueuedMessage,
   canRemoveQueuedMessage,
+  DIRECT_FALLBACK_METHODS,
   notificationMutationIdentities,
   type PendingTurnEntry,
 } from "@evener/appwire-client/state/mutation";
@@ -4094,18 +4096,6 @@ function threadInstanceID(model: ThreadModel | undefined): string | undefined {
   return model?.instanceId ?? model?.threadId;
 }
 
-// The composer's routes and the wire methods they build, in ONE place: both
-// composerMutationIntent and DIRECT_FALLBACK_METHODS read this map, so a route
-// added here (or a method changed) cannot leave the fallback set silently
-// behind. The Record<ComposerMutationRoute, string> annotation makes the map
-// exhaustive over the route union at compile time.
-const COMPOSER_ROUTE_METHODS: Record<ComposerMutationRoute, string> = {
-  send: "turn/start",
-  queue: "turn/queue",
-  steer: "turn/steer",
-  drain: "turn/drainAsSteer",
-};
-
 async function sendMutationIntent(intent: MutationIntent): Promise<void> {
   // The recovery fence is enforced at the shared admission every durable
   // action funnels through (enqueueMutationIntent's central check), so the
@@ -4187,13 +4177,13 @@ function composerMutationIntent(
   if (route === "send") {
     return {
       ...base,
-      method: COMPOSER_ROUTE_METHODS.send,
+      method: COMPOSER_METHODS.send,
       payload: { ref, expectedInstanceId, input },
-      optimisticDisplay: { method: COMPOSER_ROUTE_METHODS.send, input },
+      optimisticDisplay: { method: COMPOSER_METHODS.send, input },
     };
   }
   if (route === "queue" || route === "steer") {
-    const method = COMPOSER_ROUTE_METHODS[route];
+    const method = COMPOSER_METHODS[route];
     return {
       ...base,
       method,
@@ -4207,9 +4197,9 @@ function composerMutationIntent(
   const expectedQueueRevision = model?.queue?.revision ?? 0;
   return {
     ...base,
-    method: COMPOSER_ROUTE_METHODS.drain,
+    method: COMPOSER_METHODS.drain,
     payload: { ref, expectedInstanceId, expectedQueueRevision, input },
-    optimisticDisplay: { method: COMPOSER_ROUTE_METHODS.drain, input },
+    optimisticDisplay: { method: COMPOSER_METHODS.drain, input },
   };
 }
 
@@ -4566,15 +4556,12 @@ const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
   "notes/human/set": "Notes aren't available until this session is resumed",
 };
 
-// The composer's four send verbs, DERIVED from COMPOSER_ROUTE_METHODS so the
-// builder and this set cannot drift. These are the only mutations the direct
-// fallback answers when storage fails their durable write (isStorageFailure):
-// each has no response-side local commit beyond the wire call itself, so a
-// plain RPC looks to the rest of the store exactly like the dispatched row
-// would have. Every
-// other durable write keeps its own contract and stays fail-closed - see the
-// catch in enqueueMutationIntent.
-const DIRECT_FALLBACK_METHODS: ReadonlySet<string> = new Set(Object.values(COMPOSER_ROUTE_METHODS));
+// DIRECT_FALLBACK_METHODS (the package's composer-verb map) holds the only
+// mutations the direct fallback answers when storage fails their durable write
+// (isStorageFailure): each has no response-side local commit beyond the wire
+// call itself, so a plain RPC looks to the rest of the store exactly like the
+// dispatched row would have. Every other durable write keeps its own contract
+// and stays fail-closed - see the catch in enqueueMutationIntent.
 
 // The one eligibility rule for a send that may take the direct path with no
 // durable row: an ordinary enqueue of one of the four composer send verbs.
@@ -7928,10 +7915,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // turn id that would only add a second way to fail.
     await enqueueMutation(
       ref,
-      "turn/promoteQueuedAsSteer",
+      COMPOSER_METHODS.promote,
       { ref, index, expectedInstanceId: expectedInstanceID(ref), expectedEntryId },
       {
-        method: "turn/promoteQueuedAsSteer",
+        method: COMPOSER_METHODS.promote,
         input: [
           ...(display.text !== "" ? [{ type: "text", text: display.text }] : []),
           ...(display.skillNames ?? []).map((name) => ({ type: "skill", name })),

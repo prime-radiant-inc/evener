@@ -13,6 +13,8 @@ import {
 	CONNECTION_REPLACED_ERROR,
 	credentialLayers,
 	fromEnvironment,
+	filterModels,
+	MODEL_LIST_CAP,
 	ENDPOINT_CHANGED_TEST_MESSAGE,
 	FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
 	fingerprintUnavailable,
@@ -63,11 +65,6 @@ import {
 // flow, the credential store with its last listing - belongs to the hub it
 // was built for, and a re-key remounts the body whole (the keyed wrapper's
 // own rationale: useRetainedScreenConnection's doc).
-// A provider such as OpenRouter lists hundreds of models. The detail mounts at
-// most this many switches at once and offers a search to reach the rest (issue
-// #3279); the web sheet caps at the same number.
-const MODEL_LIST_CAP = 50;
-
 /** Why an action on a provider didn't land, and what the page says about it. */
 const PROVIDER_PROBLEMS = {
 	unconfirmed: UNCONFIRMED_CHANGE,
@@ -872,13 +869,9 @@ function ProviderFacts({
 	const status = statusOf(instance, auth);
 	const defaultTag = instance.isDefault ? ({ text: "Default", tone: "gray" } as const) : null;
 	const models = instance.models ?? [];
-	// A provider such as OpenRouter lists hundreds of models. The detail mounts
-	// at most this many switches at once and offers a search to reach the rest;
-	// the web sheet makes the same decision (InstanceSheet's MODEL_LIST_CAP), so
-	// one long list is handled the same way on both clients (issue #3279).
 	const [modelSearch, setModelSearch] = useState("");
-	const modelQuery = modelSearch.trim().toLowerCase();
-	const matchingModels = modelQuery ? models.filter((model) => model.id.toLowerCase().includes(modelQuery)) : models;
+	const modelQuery = modelSearch.trim();
+	const matchingModels = filterModels(models, modelQuery);
 	const shownModels = matchingModels.slice(0, MODEL_LIST_CAP);
 	return (
 		<>

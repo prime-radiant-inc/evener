@@ -1,6 +1,6 @@
 import type { InputItem } from "../../types.gen";
+import { COMPOSER_METHODS, PENDING_TURN_METHODS } from "./composerMethods";
 import type { MutationStopBarrier } from "./outbox";
-import { PENDING_TURN_METHODS } from "./pendingEntries";
 import type { MutationAttachmentRef, MutationIntent, MutationOutboxRecord, MutationRecoveryRecord } from "./records";
 
 // Optional composition ownership actions, separate from the dispatcher's port.
@@ -61,8 +61,13 @@ function hasComposerInput(record: MutationOutboxRecord): boolean {
 
 export function canEditQueuedMessage(record: MutationOutboxRecord): boolean {
   if (!isSafelyWaiting(record)) return false;
-  if (record.method === "turn/start" || record.method === "turn/queue" || record.method === "turn/steer") return true;
-  return record.method === "turn/drainAsSteer" && hasComposerInput(record);
+  if (
+    record.method === COMPOSER_METHODS.send ||
+    record.method === COMPOSER_METHODS.queue ||
+    record.method === COMPOSER_METHODS.steer
+  )
+    return true;
+  return record.method === COMPOSER_METHODS.drain && hasComposerInput(record);
 }
 
 export function canRemoveQueuedMessage(record: MutationOutboxRecord): boolean {

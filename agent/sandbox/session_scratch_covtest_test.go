@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"path/filepath"
 	"testing"
 )
 
@@ -42,30 +41,6 @@ func TestCanonicalScratchRoot_Valid(t *testing.T) {
 	// The result should be the canonical (EvalSymlinks) form of root.
 	if got == "" {
 		t.Error("canonicalScratchRoot returned empty for a valid root")
-	}
-}
-
-// TestPathWithin covers all branches of pathWithin.
-func TestPathWithin(t *testing.T) {
-	root := "/foo/bar"
-	cases := []struct {
-		name string
-		path string
-		root string
-		want bool
-	}{
-		{"same path", root, root, true},
-		{"child", filepath.Join(root, "child"), root, true},
-		{"sibling", "/foo/baz", root, false},
-		{"parent", "/foo", root, false},
-		{"empty root", root, "", false},
-		{"relative", "foo/bar", root, false},
-	}
-	for _, tc := range cases {
-		got := pathWithin(tc.path, tc.root)
-		if got != tc.want {
-			t.Errorf("%s: pathWithin(%q, %q) = %v, want %v", tc.name, tc.path, tc.root, got, tc.want)
-		}
 	}
 }
 

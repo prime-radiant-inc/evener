@@ -2,30 +2,9 @@ package hub
 
 import (
 	"context"
-	"sync"
 
 	"primeradiant.com/evener/appwire"
 )
-
-// hubRelay owns the relay bookkeeping: which handles are published, pending
-// or canonical for a relay key. Only this file touches the maps; callers hold
-// mu around the *Locked methods.
-type hubRelay struct {
-	mu          sync.Mutex
-	relayed     map[string]*hubRelayHandle
-	pending     map[string]map[*relayKeyState]*hubRelayHandle
-	canonical   map[appwire.Ref]*hubRelayHandle
-	generations map[string]uint64
-}
-
-func newHubRelay() *hubRelay {
-	return &hubRelay{
-		relayed:     map[string]*hubRelayHandle{},
-		pending:     map[string]map[*relayKeyState]*hubRelayHandle{},
-		canonical:   map[appwire.Ref]*hubRelayHandle{},
-		generations: map[string]uint64{},
-	}
-}
 
 func (r *hubRelay) removeStateRoutesLocked(handle *hubRelayHandle, state *relayKeyState) {
 	if state == nil {

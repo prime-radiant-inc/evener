@@ -804,6 +804,7 @@ const outboxState: MutationOutboxState = outboxRecord.state;
 const recoveryKind: MutationRecoveryKind = recoveryRecord.recoveryKind;
 const storage: ClientIdentityStorage = { getItem: () => null, setItem: () => undefined };
 const pendingMethod: PendingMethod = "send";
+const pendingVerb: ComposerVerb = pendingMethod;
 const pendingState: PendingTurnState = "submitting";
 const pendingEntry: PendingTurnEntry = { id: "cmid", ref: "ref", method: pendingMethod, text: "hi", imageCount: 0, skillNames: [], state: pendingState, source: "outbox", fromThisClient: true };
 const secureRandomSource: SecureRandomSource = { getRandomValues: (array) => array };
@@ -848,7 +849,7 @@ const dispatcherOptions: MutationDispatcherOptions = { getClient: () => null };
 const requiredRefDispatcherOptions: MutationDispatcherOptions = { getClient: (targetRef: string) => { void targetRef; return null; } };
 const dispatcher: MutationDispatcher = new MutationDispatcher(outboxStorage, dispatcherOptions);
 void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;
-void pendingEntry; void identity; void pendingTurnsState; void submittedDraft; void secureRandomSource; void outbox; void reason; void dispatcher; void requiredRefDispatcherOptions; void readyClient;`,
+void pendingVerb; void pendingEntry; void identity; void pendingTurnsState; void submittedDraft; void secureRandomSource; void outbox; void reason; void dispatcher; void requiredRefDispatcherOptions; void readyClient;`,
       cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
 const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;
 const secureRandomSource: client.SecureRandomSource = { getRandomValues: (array) => array }; void secureRandomSource;
@@ -889,6 +890,9 @@ assert.notEqual(identityB.ownClientId(), firstId);
 assert.equal(identityA.isOwnMutationRecord({ originClientId: firstId }), true);
 assert.equal(identityA.isOwnMutationRecord({ originClientId: "someone-else" }), false);
 assert.equal(identityA.isOwnMutationRecord({}), true);
+assert.equal(client.composerVerb(client.COMPOSER_METHODS.drain), "drain");
+assert.equal(client.DIRECT_FALLBACK_METHODS.has(client.COMPOSER_METHODS.promote), false);
+assert.equal(client.PENDING_TURN_METHODS.length, Object.keys(client.COMPOSER_METHODS).length);
 const noRandomSourceIdentity = client.createClientIdentity({ getItem: () => null, setItem: () => undefined }, {});
 assert.equal(typeof noRandomSourceIdentity.ownClientId(), "string");
 assert.equal(client.createSecureUUID({ randomUUID: () => "native-id", getRandomValues: (array) => array }), "native-id");

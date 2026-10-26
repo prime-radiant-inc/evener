@@ -1005,7 +1005,7 @@ func (s *Session) liveWorkUnderExceptIdleDelegate(path, ignoredDelegateID string
 
 	if s.jobManager != nil {
 		for _, h := range s.jobManager.liveShellHandles() {
-			if pathEqualOrUnder(canonicalOrClean(h.dir), target) {
+			if identifier.PathUnder(canonicalOrClean(h.dir), target) {
 				live = append(live, h.handle)
 			}
 		}
@@ -1021,7 +1021,7 @@ func (s *Session) liveWorkUnderExceptIdleDelegate(path, ignoredDelegateID string
 				continue
 			}
 			stableByChild[childID] = row
-			if !pathEqualOrUnder(canonicalOrClean(lanePath), target) {
+			if !identifier.PathUnder(canonicalOrClean(lanePath), target) {
 				continue
 			}
 			if row.delegateID == ignoredDelegateID && !row.active {
@@ -1055,7 +1055,7 @@ func (s *Session) liveWorkUnderExceptIdleDelegate(path, ignoredDelegateID string
 			if wd == "" {
 				continue
 			}
-			if !pathEqualOrUnder(canonicalOrClean(wd), target) {
+			if !identifier.PathUnder(canonicalOrClean(wd), target) {
 				continue
 			}
 			if stable, ok := stableByChild[child.id]; ok {
@@ -1159,19 +1159,6 @@ func (s *Session) disposeHintForRetainedIdle(handles []string) string {
 		suggestions = append(suggestions, "manage_worktree op=dispose id="+dlg)
 	}
 	return "All blockers are retained, idle delegate(s) holding no live work; dispose them to proceed, or pass force to remove to have it dispose them automatically: " + strings.Join(suggestions, "; ")
-}
-
-// pathEqualOrUnder reports whether candidate is target itself or nested under
-// it, both already canonicalized by the caller (canonicalOrClean). This is
-// liveWorkUnder's "equal to path or under it" (spec §7) — the one case
-// relPathUnderManagedDir's "strictly under" deliberately excludes, since a
-// child rooted exactly at the worktree being removed must also refuse.
-func pathEqualOrUnder(candidate, target string) bool {
-	if candidate == target {
-		return true
-	}
-	rel, err := filepath.Rel(target, candidate)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // metaDirForProject returns the sidecar directory for a project's managed
@@ -1667,13 +1654,7 @@ func (s *Session) occupiesManagedLane(path string) bool {
 	if current != "" && canonicalOrClean(current) == target {
 		return true
 	}
-	return local != nil && pathWithin(canonicalOrClean(local.WorkingDirectory()), target)
-}
-
-// pathWithin reports whether path is dir or lies beneath it.
-func pathWithin(path, dir string) bool {
-	rel, err := filepath.Rel(dir, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return local != nil && identifier.PathUnder(canonicalOrClean(local.WorkingDirectory()), target)
 }
 
 // lockStateOf reports whether the worktree at path is locked and, if so, its
@@ -2635,7 +2616,7 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 		}
 		if targetIsCascadeLane {
 			// A retained delegate whose own lane IS the worktree being
-			// removed sits exactly at target (pathEqualOrUnder's "equal"
+			// removed sits exactly at target (identifier.PathUnder's "equal"
 			// case). Its dispose call above already ran the full removal
 			// sequence — unlock, `git worktree remove`, mark disposed,
 			// `branch -D`, delete sidecar — against the very same meta dir
