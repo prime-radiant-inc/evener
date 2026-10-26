@@ -10,7 +10,14 @@
 // counters. Archived lists separately retain fork-original conversations as
 // nested session rows; delegate/job/watch detail belongs to session activity.
 
-import { approvalWaiting, type NavigationSessionSummary, type SessionWatch, type Source } from "@evener/appwire-client";
+import {
+  approvalWaiting,
+  attentionNeedsYou,
+  attentionState,
+  type NavigationSessionSummary,
+  type SessionWatch,
+  type Source,
+} from "@evener/appwire-client";
 import {
   canonicalHostId,
   orderedHosts,
@@ -368,10 +375,8 @@ export function pinSectionDisclosureID(sectionID: string): string {
   return `pinsection:${sectionID}`;
 }
 
-// The data projection uses the same needs-you family as
-// shell/sessionStatus.ts's cadenceStateFor.
 function stateNeedsYou(state: string): boolean {
-  return state === "awaiting" || state === "warning" || state === "restartRequired";
+  return attentionNeedsYou(attentionState(state));
 }
 
 // The state a row PRESENTS, which is not always the wire state. A row waiting

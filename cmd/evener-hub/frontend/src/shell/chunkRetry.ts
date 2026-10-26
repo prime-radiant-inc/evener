@@ -1,18 +1,17 @@
 // The shared machinery behind the shell's lazily-fetched chunks: the rail
-// host (shell/rail/railHostChunk.ts) and the spawn pane's connect-provider
-// dialog (panes/spawn/connectDialogChunk.ts) fetch their chunk over a
-// separate network request from index.html that can fail on its own - a hub
-// restarting mid-load, a slow link, or a deploy that replaced the hashed
-// filename. Both loaders keep the same shape - remember the hashed JS/CSS
-// URLs Vite exposed, retry over a cache-busted URL (Chrome retains a failed
-// module fetch by URL, so a same-URL retry would replay the cached failure),
-// and classify stale hashed-asset URLs back out of errors - differing only in
-// the chunk's path regexes, the retry query-param token, and the label their
-// CSS-preload failure carries. Those three live in ChunkRetryOptions; the
-// per-chunk module keeps only its options plus the thin typed wrapper its
-// importers already call. DockRegion's own dockHostChunk.ts keeps its private
-// copy: it is the read-only reference the rail and dialog mirrors were built
-// from, and unifying it too would touch files outside this helper's lane.
+// host (shell/rail/railHostChunk.ts), the dock host (shell/dockHostChunk.ts)
+// and the spawn pane's connect-provider dialog
+// (panes/spawn/connectDialogChunk.ts) each fetch their chunk over a separate
+// network request from index.html that can fail on its own - a hub restarting
+// mid-load, a slow link, or a deploy that replaced the hashed filename. The
+// loaders keep the same shape - remember the hashed JS/CSS URLs Vite exposed,
+// retry over a cache-busted URL (Chrome retains a failed module fetch by URL,
+// so a same-URL retry would replay the cached failure), and classify stale
+// hashed-asset URLs back out of errors - differing only in the chunk's path
+// regexes, the retry query-param token, and the label their CSS-preload
+// failure carries. Those three live in ChunkRetryOptions; the per-chunk module
+// keeps only its options plus the thin typed wrapper its importers already
+// call.
 //
 // `typeof import(...)` references stay in the per-chunk modules as type-only
 // aliases (erased at build time), so this helper never pulls a chunk back

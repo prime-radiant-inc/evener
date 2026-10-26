@@ -1,19 +1,20 @@
+import { attentionNeedsYou, attentionState, normalizeWireState } from "@evener/appwire-client";
 import type { CadenceState } from "../widgets";
 
-// Navigation summaries carry NormalizeState's values, not raw ThreadStatus.type.
+// Cadence's family for a wire state: the raw ThreadStatus.type or a navigation
+// summary's NormalizeState value (attentionState reads both).
 export function cadenceStateFor(wireState: string): CadenceState {
-  switch (wireState) {
-    case "errored":
+  const attention = attentionState(wireState);
+  if (attentionNeedsYou(attention)) return "needs-you";
+  switch (attention) {
+    case "failed":
       return "failed";
-    case "awaiting":
-    case "warning":
-    case "restartRequired":
-      return "needs-you";
-    case "active":
+    case "working":
       return "working";
-    case "ended":
-      return "ended";
-    default: // "idle", "notLoaded", "", and any future/unknown value
+    case "shutDown":
+      // notLoaded has no session to end: it rests like idle.
+      return normalizeWireState(wireState) === "ended" ? "ended" : "idle";
+    default:
       return "idle";
   }
 }
