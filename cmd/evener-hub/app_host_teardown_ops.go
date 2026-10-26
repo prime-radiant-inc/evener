@@ -132,15 +132,7 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 	// prior timed-out (or previous-boot) attempt and writes this attempt's
 	// durable record.
 	priorAttemptID, priorAttempt, priorOpen := m.cfg.store.openAttemptFor(remnantID)
-	attemptID := mintAttemptID()
-	now := m.nowTime()
-	attempt := HostTeardownAttempt{
-		RemnantID:         remnantID,
-		State:             hostAttemptStateOpen,
-		StartedAt:         now.UTC().Format(time.RFC3339),
-		FencingEpochBoot:  m.cfg.bootID,
-		FencingEpochOpSeq: uint64(now.UnixNano()),
-	}
+	attemptID, attempt, change := m.claimTeardownAttempt(remnantID, m.nowTime(), priorAttemptID, priorAttempt, priorOpen)
 	m.cfg.mu.Lock()
 	// Re-read under the lock: a concurrent retry may have resolved the remnant
 	// or claims may have moved since the gate-free read above.
@@ -154,19 +146,6 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 		return m.alreadyClearedArm(current), nil
 	}
 	remnant = current
-	change := hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: attempt}}
-	if priorOpen {
-		// The attempt fence: "marks the prior attempt record fenced-closed in the
-		// same atomic `hub.toml` write that claims the remnant under a fresh
-		// attempt record". The mark is a durable claim marker, not a stop signal:
-		// the fencing-epoch takeover (kill/wait plus guard advance) was withdrawn
-		// with the crash-fencing program (comp08), so the prior run may still be
-		// executing.
-		fenced := priorAttempt
-		fenced.State = hostAttemptStateFencedClosed
-		fenced.FencedAt = now.UTC().Format(time.RFC3339)
-		change.fencedAttempt = &pendingHostAttempt{AttemptID: priorAttemptID, Attempt: fenced}
-	}
 	entries := m.cfg.store.snapshot()
 	if err := m.persistHosts(entries, entries, change); err != nil {
 		m.cfg.mu.Unlock()
@@ -217,7 +196,7 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 			return appwire.HostTeardownRetryResult{}, runErr
 		}
 		timedOut := attempt
-		timedOut.TimedOutAt = m.nowTime().UTC().Format(time.RFC3339)
+		timedOut.TimedOutAt = hostInstant(m.nowTime())
 		if err := m.persistHosts(entries, entries, hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: timedOut}}); err != nil {
 			return appwire.HostTeardownRetryResult{}, err
 		}
@@ -229,16 +208,14 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 	// attempt.
 	clearedAt := m.nowTime()
 	resolved := HostResolvedRemnant{
-		ClearedAt:      clearedAt.UTC().Format(time.RFC3339),
+		ClearedAt:      hostInstant(clearedAt),
 		ResolutionKind: hostRemnantResolutionRetry,
 		HostKind:       hostKindOf(remnant.Kind),
 		MutationKey:    remnant.MutationKey,
 	}
 	stored := remnant
 	stored.Resolved = &resolved
-	closed := attempt
-	closed.State = hostAttemptStateFencedClosed
-	closed.FencedAt = clearedAt.UTC().Format(time.RFC3339)
+	closed := fencedAttemptRecord(attempt, clearedAt)
 	entries = m.cfg.store.snapshot()
 	finalize := hostPersistChange{
 		resolved: &pendingHostRemnant{RemnantID: remnantID, Remnant: stored},
@@ -313,8 +290,7 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 		return appwire.HostTeardownRecoverResult{}, attemptBusyRefusal(name, remnantID, liveID)
 	}
 	priorAttemptID, priorAttempt, priorOpen := m.cfg.store.openAttemptFor(remnantID)
-	attemptID := mintAttemptID()
-	now := m.nowTime()
+	attemptID, attempt, change := m.claimTeardownAttempt(remnantID, m.nowTime(), priorAttemptID, priorAttempt, priorOpen)
 
 	m.cfg.mu.Lock()
 	current, ok := m.cfg.store.remnantByID(remnantID)
@@ -327,26 +303,6 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 		return recoveredClearedResult(current), nil
 	}
 	remnant = current
-	// The claim: "claims the remnant atomically (claim under the mutation lock
-	// with an attempt token, so a concurrent retry racing the claim loses
-	// exactly one of the two)".
-	attempt := HostTeardownAttempt{
-		RemnantID:         remnantID,
-		State:             hostAttemptStateOpen,
-		StartedAt:         now.UTC().Format(time.RFC3339),
-		FencingEpochBoot:  m.cfg.bootID,
-		FencingEpochOpSeq: uint64(now.UnixNano()),
-	}
-	change := hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: attempt}}
-	if priorOpen {
-		// "When a timed-out-but-open attempt record stands (gate free, attempt
-		// fence open), the recover fences it first ... before the safety checks
-		// below, so the clearance never lands past possibly-live cleanup."
-		fenced := priorAttempt
-		fenced.State = hostAttemptStateFencedClosed
-		fenced.FencedAt = now.UTC().Format(time.RFC3339)
-		change.fencedAttempt = &pendingHostAttempt{AttemptID: priorAttemptID, Attempt: fenced}
-	}
 	entries := m.cfg.store.snapshot()
 	if err := m.persistHosts(entries, entries, change); err != nil {
 		m.cfg.mu.Unlock()
@@ -394,7 +350,7 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 		return appwire.HostTeardownRecoverResult{}, blocking
 	}
 	resolved := HostResolvedRemnant{
-		ClearedAt:      clearedAt.UTC().Format(time.RFC3339),
+		ClearedAt:      hostInstant(clearedAt),
 		ResolutionKind: hostRemnantResolutionRecover,
 		HostKind:       hostKindOf(remnant.Kind),
 		MutationKey:    remnant.MutationKey,
@@ -402,9 +358,7 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 	}
 	stored := remnant
 	stored.Resolved = &resolved
-	closed := attempt
-	closed.State = hostAttemptStateFencedClosed
-	closed.FencedAt = clearedAt.UTC().Format(time.RFC3339)
+	closed := fencedAttemptRecord(attempt, clearedAt)
 	entries = m.cfg.store.snapshot()
 	finalize := hostPersistChange{
 		resolved: &pendingHostRemnant{RemnantID: remnantID, Remnant: stored},
@@ -469,7 +423,7 @@ func attemptBusyRefusal(name, remnantID, attemptID string) error {
 // ran.
 func fencedAttemptRecord(attempt HostTeardownAttempt, now time.Time) HostTeardownAttempt {
 	attempt.State = hostAttemptStateFencedClosed
-	attempt.FencedAt = now.UTC().Format(time.RFC3339)
+	attempt.FencedAt = hostInstant(now)
 	return attempt
 }
 
@@ -938,7 +892,7 @@ func (m *hubHostManager) resolvedReceipt(remnant HostTeardownRemnant, clearedAt 
 	}
 	receipt.Outcome = hostReceiptOutcomeCommitted
 	receipt.RemnantID = remnantIDFor(remnant)
-	receipt.RemnantResolvedAt = clearedAt.UTC().Format(time.RFC3339)
+	receipt.RemnantResolvedAt = hostInstant(clearedAt)
 	receipt.RecoveryAttestation = attestation
 	return receipt, true
 }

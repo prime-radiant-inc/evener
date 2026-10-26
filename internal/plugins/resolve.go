@@ -220,6 +220,11 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 		}
 
 		name := instance.Manifest.Name
+		for _, skipped := range instance.SkippedComponents {
+			resolution.Diagnostics = append(resolution.Diagnostics, LaunchPluginDiagnostic{
+				Name: name, Path: skipped.File, Message: skipped.Kind + " skipped: " + skipped.Reason, Source: source,
+			})
+		}
 		if prior := competing[name]; len(prior) > 0 {
 			paths := append(slices.Clone(prior), path)
 			competing[name] = paths

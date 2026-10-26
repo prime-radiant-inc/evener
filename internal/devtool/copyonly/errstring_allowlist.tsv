@@ -12,13 +12,12 @@ agent/cov_s2_strategy_test.go	1
 agent/cov_w2conc_processoneinput_test.go	1
 agent/cov_w2tail_namer_test.go	1
 agent/cov_w3init_fork_test.go	3
-agent/cov_w3init_restore_test.go	3
+agent/cov_w3init_restore_test.go	2
 agent/cov_w3init_session_test.go	5
 agent/cov_w3init_subagents_test.go	1
 agent/delegate_delivery_branches_test.go	2
 agent/delegate_effort_alias_test.go	1
 agent/delegate_lane_branch_disposal_test.go	2
-agent/delegate_resource_bootstrap_test.go	2
 agent/delegate_resource_create_test.go	3
 agent/delegate_resource_runtime_test.go	1
 agent/delegate_resource_supervision_test.go	3
@@ -137,7 +136,6 @@ agent/session_notes_outer_journal_test.go	1
 agent/session_orphaned_tool_repair_test.go	1
 agent/session_poisoned_wake_gate_test.go	1
 agent/session_queue_cancel_test.go	1
-agent/session_queue_persist_covtest2_test.go	4
 agent/session_queue_promote_test.go	2
 agent/session_resolve_profile_test.go	1
 agent/session_surface_behavior_test.go	1
@@ -175,7 +173,7 @@ agent/transcript/open_unix_covtest_test.go	1
 agent/transcript/read_header_test.go	1
 agent/transcript_lookup_covtest_test.go	3
 agent/transcript_lookup_test.go	4
-agent/transcript_test.go	9
+agent/transcript_test.go	7
 agent/transcript_tools_test.go	2
 agent/watch_pure_covtest_test.go	5
 agent/worktree_scripted_failures_test.go	3
@@ -200,7 +198,7 @@ cmd/evener-hub/internal/hostops/retention_test.go	1
 cmd/evener-hub/internal/hubcore/pin_section_retry_test.go	5
 cmd/evener-hub/internal/hubedge/auth_token_test.go	2
 cmd/evener-hub/internal/launchconfig/coverage_test.go	2
-cmd/evener-hub/internal/launchconfig/io_test.go	10
+cmd/evener-hub/internal/launchconfig/io_test.go	4
 cmd/evener-hub/internal/launchconfig/merge_test.go	3
 cmd/evener-hub/internal/sshconn/deploy_help_test.go	4
 cmd/evener-hub/internal/sshconn/deploy_retained_target_test.go	2
@@ -236,8 +234,8 @@ internal/transcriptindex/new_format_test.go	2
 invariant/invariant_evenerfuzz_test.go	1
 llm/providers/responses/transport_test.go	1
 llm/usagelimit_test.go	1
-rendezvous/rendezvous_persistence_fuzz_test.go	3
-rendezvous/rendezvous_test.go	2
+rendezvous/rendezvous_persistence_fuzz_test.go	2
+rendezvous/rendezvous_test.go	1
 server/appwire_server_test.go	1
 server/appwire_skillinput_test.go	1
 server/image_attachments_test.go	1

@@ -14,8 +14,8 @@ import (
 
 // Legacy-retirement allowlist:
 //   - this file and delegate_resource_bootstrap_test.go may construct literal
-//     legacy delegate lifecycle/watch rows only to prove provider-free,
-//     read-only fail-closed behavior;
+//     legacy delegate lifecycle/watch rows only to prove they are ignored and
+//     kept in the journal;
 //   - session_outline.go, transcript_render_job_test.go, and
 //     delegate_resource_readonly_test.go may decode historical activation IDs
 //     only to keep old transcripts readable;
@@ -120,7 +120,6 @@ func TestDelegateLegacyDormancy_HistoricalSendStillRendersReadOnly(t *testing.T)
 	TestStableDelegateReadOnly_HistoricalSendRendersWithoutLiveAlias(t)
 }
 
-func TestDelegateLegacyDormancy_LegacyLifecycleAndWatchRowsFailClosed(t *testing.T) {
-	TestDelegateResourceBootstrap_LegacyDelegateStateFailsClosed(t)
-	TestDelegateResourceBootstrap_LegacyDelegateWatchStateFailsClosed(t)
+func TestDelegateLegacyDormancy_LegacyLifecycleAndWatchRowsAreIgnored(t *testing.T) {
+	TestDelegateResourceBootstrap_LegacyDelegateStateIsIgnoredAndStartupProceeds(t)
 }

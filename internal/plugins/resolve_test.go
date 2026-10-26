@@ -237,7 +237,7 @@ func TestResolveForLaunch_Contract(t *testing.T) {
 				valid := filepath.Join(root, "valid")
 				invalid := filepath.Join(root, "invalid")
 				writePlugin(t, valid, "valid", nil)
-				writePlugin(t, invalid, "selected", map[string]string{"agents/broken.md": "not frontmatter"})
+				writePlugin(t, invalid, "selected", map[string]string{"hooks/hooks.json": "{not json"})
 				names := []string{"unknown", "selected", "valid"}
 				got, err := m.ResolveForLaunch(context.Background(), []string{valid, invalid}, &names)
 				if err != nil {
@@ -1784,3 +1784,27 @@ func (f *shortReadFile) Read(p []byte) (int, error) {
 }
 
 func (f *shortReadFile) Close() error { return nil }
+
+// A plugin with one malformed component file is still launched with its healthy
+// parts; the skipped file is reported as a diagnostic against the plugin.
+func TestResolveForLaunch_SkippedComponentFileIsADiagnosticNotAnExclusion(t *testing.T) {
+	root := t.TempDir()
+	partial := filepath.Join(root, "partial")
+	writePlugin(t, partial, "partial", map[string]string{"agents/broken.md": "not frontmatter"})
+	m := NewManager(t.TempDir())
+
+	got, err := m.ResolveForLaunch(context.Background(), []string{partial}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertStrings(t, got.SelectedDirs, []string{partial})
+	var named bool
+	for _, diagnostic := range got.Diagnostics {
+		if diagnostic.Name == "partial" && filepath.Base(diagnostic.Path) == "broken.md" {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("diagnostics = %+v, want one naming the skipped file", got.Diagnostics)
+	}
+}

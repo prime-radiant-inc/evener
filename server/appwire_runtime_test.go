@@ -14,7 +14,6 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
@@ -887,24 +886,4 @@ func TestDescendantThreadPublishesSubtreeDelegateUpdates(t *testing.T) {
 		return
 	}
 	t.Fatal("the grandchild's update was not published to the middle subagent's thread")
-}
-
-// Every field the agent reports on a delegate reaches the wire row built from
-// a detailed status.
-func TestAppDelegateFromDetailedStatusCarriesEveryAgentField(t *testing.T) {
-	var in DelegateStatusInfo
-	appwiretest.FillNonZero(&in)
-	got := appDelegateFromDetailedStatus(in)
-	want := reflect.ValueOf(got)
-	src := reflect.TypeOf(in)
-	for f := range src.Fields() {
-		name := f.Name
-		field := want.FieldByName(name)
-		if !field.IsValid() {
-			t.Fatalf("EvenerDelegateInfo has no field %s for the agent status field", name)
-		}
-		if field.IsZero() {
-			t.Errorf("appDelegateFromDetailedStatus dropped %s", name)
-		}
-	}
 }

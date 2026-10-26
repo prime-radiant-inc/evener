@@ -33,7 +33,7 @@
 //    can land while a loadOlder request is still in flight, and diffing the
 //    data's own shape stays correct regardless of that interleaving.
 
-import type { ThreadModel, TurnModel } from "@evener/appwire-client";
+import type { ThreadModel } from "@evener/appwire-client";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { isEditableTarget, isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
@@ -53,12 +53,38 @@ import {
   shouldAutoLoadOlder,
 } from "./scrollMetrics";
 import {
+  DRAG_BUTTON_BITS,
+  failedTurnCount,
+  isAttentionWorthy,
+  isFailedTurn,
+  MIDDLE_BUTTON_BIT,
+  totalItemCount,
+  verticalInputCanMovePort,
+} from "./scrollPredicates";
+import {
   type CapturedTranscriptView,
   completeTranscriptViewRestore,
   registerTranscriptView,
   retainedTranscriptCapture,
   retainTranscriptView,
 } from "./transcriptViewRegistry";
+import {
+  anchorFromCapture,
+  captureTopAnchor,
+  captureTranscriptFocus,
+  captureTranscriptView,
+  focusCapturedEntry,
+  type PendingTranscriptViewRestore,
+  positionForAnchor,
+  type RestoredViewAnchor,
+  readAnchorPositions,
+  readingPointOffset,
+  restoreTopAnchor,
+  retainedPlacements,
+  topVisiblePosition,
+  type ViewAnchor,
+  type ViewAnchorPosition,
+} from "./viewAnchor";
 
 export interface UseTranscriptScrollOptions {
   ref: string;
@@ -122,369 +148,11 @@ export interface UseTranscriptScrollOptions {
   heldEpoch?: number;
 }
 
-export interface ViewAnchorPosition {
-  id: string;
-  /** Item position in the unfiltered transcript; shared across every representation. */
-  sourceIndex: number;
-  /** VirtualList row containing this entry. */
-  index: number;
-  /** Row top relative to the scroll viewport top. */
-  offset: number;
-  /** Measured entry height; used to identify content crossing the viewport top. */
-  height?: number;
-  /** User/agent content survives every focused representation. */
-  isMessage: boolean;
-  /** For a folded tool run (toolRuns.ts): the entry ids it stands in for. A
-   * capture on any of them resolves to this anchor. */
-  members?: readonly string[];
-}
-
-export interface ViewAnchor {
-  id: string;
-  sourceIndex: number;
-  offset: number;
-  isMessage: boolean;
-}
-
-export interface RestoredViewAnchor {
-  id: string;
-  index: number;
-  offset: number;
-}
-
 // The end-anchored VirtualList owns the transcript's position; this is the one
 // call that tells it "the end". The mount landing, an append's follow, and a
 // leading-edge change's re-target all make exactly this request.
 function scrollToLastRow(listRef: RefObject<VirtualListHandle | null>, count: number): void {
   if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
-}
-
-export function captureTopAnchor(position: ViewAnchorPosition): ViewAnchor {
-  return {
-    id: position.id,
-    sourceIndex: position.sourceIndex,
-    offset: position.offset,
-    isMessage: position.isMessage,
-  };
-}
-
-// The rendered position that stands for a captured anchor's source item. One
-// source item wears a different id per view - intent:<id> in Intent, <id> in
-// Tools/Full, tools:<id>:… for a summary, run:<id> once it folds - so after
-// the literal id, match the source identity (sourceIdentity strips the view
-// prefixes) with the source index agreeing where the capture carries one,
-// then a folded run whose members carry the item (roborev on PR #947).
-function positionForAnchor(
-  anchor: { id: string; sourceIndex?: number },
-  positions: readonly ViewAnchorPosition[],
-): ViewAnchorPosition | undefined {
-  const exact = positions.find((position) => position.id === anchor.id);
-  if (exact) return exact;
-  const identity = sourceIdentity(anchor.id);
-  const sameSource = positions.find(
-    (position) =>
-      sourceIdentity(position.id) === identity &&
-      (anchor.sourceIndex === undefined || position.sourceIndex === anchor.sourceIndex),
-  );
-  if (sameSource) return sameSource;
-  return positions.find((position) =>
-    position.members?.some((member) => member === anchor.id || sourceIdentity(member) === identity),
-  );
-}
-
-export function restoreTopAnchor(
-  anchor: ViewAnchor,
-  positions: readonly ViewAnchorPosition[],
-): RestoredViewAnchor | undefined {
-  const same = positionForAnchor(anchor, positions);
-  if (same) return { id: same.id, index: same.index, offset: anchor.offset };
-
-  const nearest = positions
-    .filter((position) => position.isMessage)
-    .sort((a, b) => {
-      const distance = Math.abs(a.sourceIndex - anchor.sourceIndex) - Math.abs(b.sourceIndex - anchor.sourceIndex);
-      // Equal-distance ties resolve to the preceding message, keeping the
-      // content the reader just passed rather than skipping forward.
-      return distance || a.sourceIndex - b.sourceIndex;
-    })[0];
-  return nearest ? { id: nearest.id, index: nearest.index, offset: anchor.offset } : undefined;
-}
-
-function readAnchorPositions(el: HTMLElement): ViewAnchorPosition[] {
-  const viewportTop = el.getBoundingClientRect().top;
-  return Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).map((row, renderedIndex) => {
-    const rect = (closedGroupSummary(row) ?? row).getBoundingClientRect();
-    const sourceIndex = Number(row.dataset.viewAnchorSourceIndex ?? renderedIndex);
-    const members = row.dataset.viewAnchorMembers;
-    return {
-      id: row.dataset.viewAnchorId ?? "",
-      sourceIndex,
-      index: Number(row.dataset.viewAnchorIndex ?? sourceIndex),
-      offset: rect.top - viewportTop,
-      height: rect.height,
-      isMessage: row.dataset.viewAnchorMessage === "true",
-      ...(members ? { members: members.split(",") } : {}),
-    };
-  });
-}
-
-function topVisiblePosition(positions: readonly ViewAnchorPosition[]): ViewAnchorPosition | undefined {
-  // Overscan entries are rendered above the viewport. The anchor is the entry
-  // whose measured box actually crosses the viewport top, not the first DOM
-  // entry and not merely the first entry whose top happens to be nonnegative.
-  const crossing = positions
-    .filter((position) => position.offset <= 0 && position.offset + (position.height ?? 0) > 0)
-    .sort((a, b) => b.offset - a.offset)[0];
-  if (crossing) return crossing;
-  return positions.filter((position) => position.offset >= 0).sort((a, b) => a.offset - b.offset)[0];
-}
-
-interface CapturedFocusMetadata {
-  readonly anchorId: string;
-  readonly sourceIdentity: string;
-  readonly sourceIndex?: number;
-  readonly descendantPath: readonly number[];
-  readonly element: HTMLElement;
-}
-
-const capturedAnchorMetadata = new WeakMap<CapturedTranscriptView, ViewAnchor>();
-const capturedFocusMetadata = new WeakMap<CapturedTranscriptView, CapturedFocusMetadata>();
-const retainedPlacements = new WeakMap<HTMLElement, { logicalRef?: string; captured: CapturedTranscriptView }>();
-
-function sourceIdentity(id: string): string {
-  if (id.startsWith("intent:")) return id.slice("intent:".length);
-  // A folded tool run's anchor is its first entry's id under the run prefix
-  // (toolRuns.ts): a focus captured on that entry before the turn settled
-  // still resolves to the run it folded into.
-  if (id.startsWith("run:")) return id.slice("run:".length);
-  if (id.startsWith("tools:")) return id.slice("tools:".length).split(":")[0] ?? id;
-  return id;
-}
-
-function descendantPath(root: HTMLElement, element: HTMLElement): readonly number[] {
-  const path: number[] = [];
-  let current: HTMLElement = element;
-  while (current !== root) {
-    const parent = current.parentElement;
-    if (!parent) return [];
-    const index = Array.from(parent.children).indexOf(current);
-    if (index < 0) return [];
-    path.unshift(index);
-    current = parent;
-  }
-  return path;
-}
-
-function descendantAtPath(root: HTMLElement, path: readonly number[]): HTMLElement | undefined {
-  let current: HTMLElement = root;
-  for (const index of path) {
-    const next = current.children[index];
-    if (!next) return undefined;
-    if (!(next instanceof HTMLElement)) return undefined;
-    current = next;
-  }
-  return current;
-}
-
-function isFocusableDescendant(element: HTMLElement): boolean {
-  return element.matches("button, a[href], input, select, textarea, [tabindex]");
-}
-
-function sourceIndexFromDataset(element: HTMLElement): number | undefined {
-  const value = Number(element.dataset.viewAnchorSourceIndex);
-  return Number.isSafeInteger(value) ? value : undefined;
-}
-
-function focusMetadataFor(el: HTMLElement): CapturedFocusMetadata | undefined {
-  const active = el.ownerDocument.activeElement;
-  if (!(active instanceof HTMLElement)) return undefined;
-  const anchor = Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).find(
-    (candidate) => candidate === active || candidate.contains(active),
-  );
-  const anchorId = anchor?.dataset.viewAnchorId;
-  if (!anchor || !anchorId) return undefined;
-  return {
-    anchorId,
-    sourceIdentity: sourceIdentity(anchorId),
-    sourceIndex: sourceIndexFromDataset(anchor),
-    descendantPath: descendantPath(anchor, active),
-    element: active,
-  };
-}
-
-/** Capture the state that must survive a projected transcript replacement. */
-export function captureTranscriptView(
-  el: HTMLElement,
-  measure: (element: HTMLElement) => ScrollMetrics = readScrollMetrics,
-  measureAnchors: (element: HTMLElement) => ViewAnchorPosition[] = readAnchorPositions,
-  positioningRevision?: number,
-): CapturedTranscriptView {
-  const metrics = measure(el);
-  const scrollable = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
-  const firstVisible = topVisiblePosition(measureAnchors(el));
-  const focusMetadata = focusMetadataFor(el);
-  const captured: CapturedTranscriptView = {
-    anchorId: firstVisible?.id,
-    anchorOffset: firstVisible?.offset ?? 0,
-    normalizedOffset: scrollable > 0 ? metrics.scrollTop / scrollable : 0,
-    followingBottom: isAtBottom(metrics),
-    focusedEntryId: focusMetadata?.anchorId,
-    ...(positioningRevision !== undefined ? { positioningRevision } : {}),
-    ...(firstVisible?.height && firstVisible.height > 0 && el.clientWidth > 0 && el.clientHeight > 0
-      ? {
-          readingPoint: {
-            entryHeight: firstVisible.height,
-            viewportHeight: el.clientHeight,
-            viewportWidth: el.clientWidth,
-          },
-        }
-      : {}),
-  };
-  if (firstVisible) capturedAnchorMetadata.set(captured, captureTopAnchor(firstVisible));
-  if (focusMetadata) capturedFocusMetadata.set(captured, focusMetadata);
-  return captured;
-}
-
-function captureTranscriptFocus(el: HTMLElement, captured: CapturedTranscriptView): CapturedTranscriptView {
-  const focusMetadata = focusMetadataFor(el);
-  // Pending geometry preserves the reading point, but focus can move in the rendered view.
-  const next = { ...captured, focusedEntryId: focusMetadata?.anchorId };
-  const anchorMetadata = capturedAnchorMetadata.get(captured);
-  if (anchorMetadata) capturedAnchorMetadata.set(next, anchorMetadata);
-  if (focusMetadata) capturedFocusMetadata.set(next, focusMetadata);
-  return next;
-}
-
-export function readingPointOffset(
-  captured: CapturedTranscriptView,
-  entryHeight: number,
-  viewportHeight: number,
-  viewportWidth: number,
-): number {
-  const point = captured.readingPoint;
-  if (!point || captured.anchorOffset > 0) return captured.anchorOffset;
-  // A viewport-height-only change leaves the entry as it was, so the reading
-  // line stays exactly where it was. An entry that changed height at the same
-  // width (a disclosure, say) still takes the bounded rules below.
-  if (point.viewportWidth === viewportWidth && point.entryHeight === entryHeight) return captured.anchorOffset;
-  const oldDepth = Math.max(0, point.entryHeight - point.viewportHeight);
-  if (-captured.anchorOffset > oldDepth) {
-    // The entry's top is above the viewport and its tail is showing, so the
-    // reader is reading where it ends: keep that end where it was rather than
-    // filling the pane with the entry.
-    const tail = point.entryHeight + captured.anchorOffset;
-    return Math.min(0, tail - entryHeight);
-  }
-  const progress = oldDepth === 0 ? 0 : -captured.anchorOffset / oldDepth;
-  const newDepth = Math.max(0, entryHeight - viewportHeight);
-  return progress === 0 || newDepth === 0 ? 0 : -progress * newDepth;
-}
-
-function anchorFromCapture(
-  captured: CapturedTranscriptView,
-  candidates: readonly ViewAnchorPosition[],
-): ViewAnchor | undefined {
-  const metadata = capturedAnchorMetadata.get(captured);
-  if (metadata) return metadata;
-  if (captured.anchorId === undefined) return undefined;
-  const source = positionForAnchor({ id: captured.anchorId }, candidates);
-  if (!source) return undefined;
-  return captureTopAnchor({ ...source, offset: captured.anchorOffset });
-}
-
-// A folded run's anchor answers for every entry it folded (its members): a
-// focus captured on the third call of a run that has since folded restores to
-// the run - its summary when closed, the row itself when open.
-function membersMatch(members: readonly string[] | undefined, metadata: CapturedFocusMetadata): boolean {
-  return (
-    members?.some((member) => member === metadata.anchorId || sourceIdentity(member) === metadata.sourceIdentity) ??
-    false
-  );
-}
-
-function focusCandidateMatches(candidate: ViewAnchorPosition, metadata: CapturedFocusMetadata): boolean {
-  if (candidate.id === metadata.anchorId) return true;
-  if (membersMatch(candidate.members, metadata)) return true;
-  if (sourceIdentity(candidate.id) !== metadata.sourceIdentity) return false;
-  return metadata.sourceIndex === undefined || candidate.sourceIndex === metadata.sourceIndex;
-}
-
-function focusNodeMatches(candidate: HTMLElement, metadata: CapturedFocusMetadata): boolean {
-  if (candidate.dataset.viewAnchorId === metadata.anchorId) return true;
-  if (membersMatch(candidate.dataset.viewAnchorMembers?.split(","), metadata)) return true;
-  if (sourceIdentity(candidate.dataset.viewAnchorId ?? "") !== metadata.sourceIdentity) return false;
-  const sourceIndex = sourceIndexFromDataset(candidate);
-  return metadata.sourceIndex === undefined || sourceIndex === undefined || sourceIndex === metadata.sourceIndex;
-}
-
-// A closed disclosure that owns the anchor: a folded tool run and an intent
-// group each wrap their own <details> in one anchor that lists its members
-// (TurnBlock's foldedAnchorFor), and their entries mount only while open, so
-// while closed the summary is the thing to measure and focus.
-function closedGroupSummary(anchor: HTMLElement): HTMLElement | undefined {
-  const summary = anchor.querySelector(
-    ':scope > details:is([data-testid="tool-run"], [data-testid="intent-group"]):not([open]) > summary',
-  );
-  return summary instanceof HTMLElement ? summary : undefined;
-}
-
-function focusAnchor(anchor: HTMLElement, metadata: CapturedFocusMetadata): boolean {
-  const summary = closedGroupSummary(anchor);
-  if (summary) {
-    summary.focus();
-    if (summary.ownerDocument.activeElement === summary) return true;
-  }
-  if (metadata.element.isConnected && anchor.contains(metadata.element)) {
-    metadata.element.focus();
-    if (metadata.element.ownerDocument.activeElement === metadata.element) return true;
-  }
-  const descendant = descendantAtPath(anchor, metadata.descendantPath);
-  if (descendant && isFocusableDescendant(descendant)) {
-    descendant.focus();
-    if (descendant.ownerDocument.activeElement === descendant) return true;
-  }
-  // Production anchors are divs. Make only this programmatic fallback
-  // focusable; tab order remains unchanged because -1 is not tabbable.
-  anchor.tabIndex = -1;
-  anchor.focus();
-  return anchor.ownerDocument.activeElement === anchor;
-}
-
-type FocusRestoreResult = "not-focused" | "restored" | "waiting" | "missing";
-
-function focusCapturedEntry(
-  el: HTMLElement,
-  captured: CapturedTranscriptView,
-  candidates: readonly ViewAnchorPosition[],
-  listRef: RefObject<VirtualListHandle | null> | undefined,
-  pending: PendingTranscriptViewRestore,
-): FocusRestoreResult {
-  if (captured.focusedEntryId === undefined) return "not-focused";
-  const metadata =
-    capturedFocusMetadata.get(captured) ??
-    ({
-      anchorId: captured.focusedEntryId,
-      sourceIdentity: sourceIdentity(captured.focusedEntryId),
-      descendantPath: [],
-      element: el.ownerDocument.activeElement instanceof HTMLElement ? el.ownerDocument.activeElement : el,
-    } satisfies CapturedFocusMetadata);
-  const focused = Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).find((candidate) =>
-    focusNodeMatches(candidate, metadata),
-  );
-  if (focused) {
-    return focusAnchor(focused, metadata) ? "restored" : "missing";
-  }
-
-  const logicalFocus = candidates.find((candidate) => focusCandidateMatches(candidate, metadata));
-  if (logicalFocus) {
-    if (!pending.focusScrollRequested && listRef?.current) {
-      pending.focusScrollRequested = true;
-      listRef.current.scrollToIndex(logicalFocus.index, { align: "start" });
-      return "waiting";
-    }
-    return pending.focusScrollRequested ? "waiting" : "missing";
-  }
-  return "missing";
 }
 
 export interface UseTranscriptViewRegistrationOptions {
@@ -511,18 +179,6 @@ export interface UseTranscriptViewRegistrationResult {
   hasRetainedPlacement(): boolean;
   isPlacementPending(): boolean;
   restoreAfterLayout(layout: CommittedVirtualListLayout): void;
-}
-
-interface PendingTranscriptViewRestore {
-  readonly captured: CapturedTranscriptView;
-  readonly readView?: TranscriptReadView;
-  readonly positioningRevision?: number;
-  readonly restoreFocus: boolean;
-  target?: RestoredViewAnchor;
-  scrollRequested: boolean;
-  anchorRestored: boolean;
-  focusScrollRequested: boolean;
-  viewportReflow: boolean;
 }
 
 function captureIsCurrent(captured: CapturedTranscriptView, readView?: TranscriptReadView): boolean {
@@ -920,162 +576,6 @@ export interface UseTranscriptScrollResult {
   captureViewAnchor: () => void;
   /** Finish a pending restore after VirtualList reports new measurements. */
   restoreViewAnchorAfterMeasurement: (layout?: CommittedVirtualListLayout) => void;
-}
-
-function totalItemCount(model: ThreadModel | undefined): number {
-  if (!model) return 0;
-  let total = 0;
-  for (const turn of model.turns) total += turn.items.length;
-  return total;
-}
-
-// Attention follows liveness.ts's raw-status mapping to needs-you.
-// shell/sessionStatus.ts maps normalized navigation summaries.
-// askPending is independent because it need not coincide with status.type.
-function isAttentionWorthy(model: ThreadModel | undefined): boolean {
-  if (!model) return false;
-  return (
-    model.askPending ||
-    model.status.type === "awaiting" ||
-    model.status.type === "warning" ||
-    model.status.type === "restartRequired"
-  );
-}
-
-// The error-anchor's failure signal is TURN-level (this rewrite's own
-// TurnModel.status/error, stamped by turn/completed - see reducer.test.ts's
-// EventError-shape tests), not legacy's tool-call-level "did this one call
-// fail" (contracts-transcript-scroll-liveness.md §5 line 114 talks about a
-// finalized tool call; the w4 fix-round report's item-9 writeup already
-// established turn.status === "failed" as this rewrite's equivalent
-// signal, confirmed against appwire/types.go's TurnStatusFailed). error is
-// `unknown` on TurnModel, so this only ever checks presence, never shape.
-function isFailedTurn(turn: TurnModel): boolean {
-  return turn.status === "failed" || turn.error !== undefined;
-}
-
-// A COUNT (not a boolean, not "the first failed turn's index/id") - failed-
-// ness is terminal (a turn never un-fails) and turns only ever append or
-// get prepended, never removed, so this only ever goes UP. Deliberately a
-// count rather than the first-failed index: a turn's own failure can be
-// resolved (seen live at the bottom, or anchored-then-cleared) while an
-// EARLIER-index turn stays the "first" failed one by array position -
-// pinning the dependency to "the first index" would then never change
-// again and a genuinely new, later failure would never get a chance to be
-// evaluated. Recomputed every render (same O(turns) cost class as
-// totalItemCount above) but its VALUE is identical across a pure streaming
-// delta (which touches item text/pendingText, never turn.status/error), so
-// it doesn't defeat the "per-delta work never re-runs the content-changed
-// effect" property - see that effect's own dependency-array comment.
-function failedTurnCount(model: ThreadModel | undefined): number {
-  if (!model) return 0;
-  let n = 0;
-  for (const turn of model.turns) if (isFailedTurn(turn)) n++;
-  return n;
-}
-
-/**
- * The scrollTop change a vertical input asks for: 1 toward the bottom, -1 toward
- * the top. A wheel with positive deltaY and a finger moving UP both push content
- * down, so both are 1.
- */
-type ScrollDirection = 1 | -1;
-
-/** PointerEvent.buttons bits. A drag is only ever begun for these two. */
-const PRIMARY_BUTTON_BIT = 1;
-const MIDDLE_BUTTON_BIT = 4;
-const DRAG_BUTTON_BITS = PRIMARY_BUTTON_BIT | MIDDLE_BUTTON_BIT;
-
-/**
- * Can the PORT still move that way? Uses the same at-bottom band the rest of the
- * hook decides by, so this agrees with what wasAtBottom will say. The band's
- * error here is safe: a port within the band of its bottom reads as "cannot
- * move", so a downward input goes unmarked.
- */
-function portCanScroll(metrics: ScrollMetrics, direction: ScrollDirection): boolean {
-  if (direction === -1) return metrics.scrollTop > 0;
-  return !isAtBottom(metrics);
-}
-
-/**
- * Has this element any room left that way, EXACTLY - no tolerance band.
- *
- * The band's error inverts for a nested candidate: a scroller three pixels from
- * its own bottom would read as "at its limit", the walk below would let the
- * input through, the port would mark - and then that scroller would eat the
- * wheel and the port would never move. That is precisely the false veto this
- * predicate must never produce, so the nested question is asked exactly.
- */
-function hasRoomToScroll(el: Element, direction: ScrollDirection): boolean {
-  if (direction === -1) return el.scrollTop > 0;
-  return el.scrollHeight - el.scrollTop - el.clientHeight > 0;
-}
-
-/** An element that scrolls vertically on its own, independently of the port. */
-function isIndependentVerticalScroller(el: Element): boolean {
-  if (el.scrollHeight <= el.clientHeight) return false;
-  const overflowY = getComputedStyle(el).overflowY;
-  return overflowY === "auto" || overflowY === "scroll";
-}
-
-/**
- * Can a vertical input landing on `target` actually move `port`? Two ways it
- * cannot:
- *
- * The port's own geometry arrives as `portMetrics` rather than being read off
- * the element: the at-bottom decision goes through this hook's injectable
- * measurement seam everywhere else, for the reason scrollMetrics.ts states (a
- * jsdom element's layout is all zeroes, so a helper that takes the element
- * cannot be tested honestly). The nested walk below has no such seam and reads
- * the DOM directly - there is nothing it could be measured through, and its
- * answer is about elements this hook never otherwise looks at.
- *
- *   the port is already at that limit; or
- *   something between the target and the port is an independent vertical
- *   scroller with room left in that direction, so IT answers the input and the
- *   event merely bubbles past (the sandbox-escalation panel is overflow-y:auto
- *   inside the transcript).
- *
- * Both are read from state that exists BEFORE the browser scrolls, which is a
- * plain read of the present - not the after-the-fact geometry inference this
- * design replaced. A nested scroller with NO room that way passes the input on,
- * so that case still counts as a gesture.
- *
- * Marking therefore implies the port has room beyond the at-bottom band AND
- * nothing on the way to it has any room to answer the input first - so a mark
- * is a scroll the port will really feel, and being wrong costs an unmarked real
- * scroll rather than a false veto. That matters because a false veto disarms the
- * bottom-hold correction until the reader returns to the bottom, where an
- * unmarked scroll costs a single frame.
- *
- * A nested scroller with LESS room than the input's delta does not split it:
- * Chrome scrolls that element to its own limit and keeps the remainder, chaining
- * to the port only on a LATER event, which then finds no room here and marks.
- * Measured in the browser guards' own headless Chrome 153.0.8010.36 - a 120px
- * wheel over a scroller with 3px left moved the scroller 3px and the port not at
- * all - so "has any room" is the right question to ask, not "has room enough".
- * Latching is browser-defined; an engine that split the delta instead would make
- * this under-mark, which is the safe direction.
- *
- * The one band left: an ancestor with overscroll-behavior other than `auto`
- * refuses to chain the input onward when it reaches its own limit, so it can
- * swallow an input this says will reach the port. Not modelled - computing it
- * would mean reading a second property per ancestor for a case the transcript
- * does not currently build.
- */
-function verticalInputCanMovePort(
-  port: HTMLElement,
-  portMetrics: ScrollMetrics,
-  target: EventTarget | null,
-  direction: ScrollDirection,
-): boolean {
-  if (!portCanScroll(portMetrics, direction)) return false;
-  let node = target instanceof Element ? target : null;
-  while (node !== null && node !== port) {
-    if (isIndependentVerticalScroller(node) && hasRoomToScroll(node, direction)) return false;
-    node = node.parentElement;
-  }
-  return true;
 }
 
 export function useTranscriptScroll({

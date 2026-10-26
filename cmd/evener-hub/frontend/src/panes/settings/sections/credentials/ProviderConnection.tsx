@@ -1659,12 +1659,14 @@ function SelectedConnection({
   if (oauth?.kind === "oauth-redirect")
     return (
       <OAuthRedirectDialog
+        key={oauth.flowId}
         name={oauth.name}
         flowId={oauth.flowId}
         authUrl={oauth.authUrl}
         onCancel={closeOAuth}
         onAuthorized={oauthAuthorized}
         onSuccess={completeOAuth}
+        onRestart={() => void signIn()}
       />
     );
 

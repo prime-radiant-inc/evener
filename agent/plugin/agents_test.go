@@ -612,7 +612,7 @@ color: green
 # B
 `)
 
-	agents, err := discoverPluginAgents(dir, nil, "my-plugin")
+	agents, _, err := discoverPluginAgents(dir, nil, "my-plugin")
 	if err != nil {
 		t.Fatalf("discoverPluginAgents error: %v", err)
 	}
@@ -642,7 +642,7 @@ color: green
 
 func TestDiscoverPluginAgents_NoDir(t *testing.T) {
 	dir := t.TempDir()
-	agents, err := discoverPluginAgents(dir, nil, "p")
+	agents, _, err := discoverPluginAgents(dir, nil, "p")
 	if err != nil {
 		t.Fatalf("discoverPluginAgents error: %v", err)
 	}
@@ -659,8 +659,11 @@ func TestDiscoverPluginAgents_BadAgentFile(t *testing.T) {
 not yaml: [}
 ---
 `), 0644)
-	_, err := discoverPluginAgents(dir, nil, "p")
-	if err == nil {
-		t.Fatal("expected error for bad agent file")
+	agents, skipped, err := discoverPluginAgents(dir, nil, "p")
+	if err != nil {
+		t.Fatalf("a bad agent file must be skipped, not fail discovery: %v", err)
+	}
+	if len(agents) != 0 || len(skipped) != 1 || skipped[0].Kind != "agent" {
+		t.Fatalf("agents = %v, skipped = %v, want the bad file skipped", agents, skipped)
 	}
 }

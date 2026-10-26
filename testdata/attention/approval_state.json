@@ -1,0 +1,15 @@
+[
+  {"state": "active", "approval_pending": true, "want": "awaiting"},
+  {"state": "idle", "approval_pending": true, "want": "awaiting"},
+  {"state": "awaiting", "approval_pending": true, "want": "awaiting"},
+  {"state": "warning", "approval_pending": true, "want": "awaiting"},
+  {"state": "errored", "approval_pending": true, "want": "errored"},
+  {"state": "restartRequired", "approval_pending": true, "want": "restartRequired"},
+  {"state": "ended", "approval_pending": true, "want": "ended"},
+  {"state": "notLoaded", "approval_pending": true, "want": "notLoaded"},
+  {"state": "active", "approval_pending": false, "want": "active"},
+  {"state": "warning", "approval_pending": false, "want": "warning"},
+  {"state": "restartRequired", "approval_pending": false, "want": "restartRequired"},
+  {"state": "errored", "approval_pending": false, "want": "errored"},
+  {"state": "ended", "approval_pending": false, "want": "ended"}
+]

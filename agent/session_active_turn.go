@@ -163,22 +163,15 @@ func (s *Session) scheduleRunningTurnNameRetry(ceiling time.Duration) {
 		s.turnNameRetryMu.Unlock()
 		return
 	}
-	delay := s.turnNameRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
-	s.turnNameRetry.active = true
-	s.turnNameRetry.generation++
-	generation := s.turnNameRetry.generation
+	delay, generation := s.turnNameRetry.arm()
 	s.turnNameRetryMu.Unlock()
 	s.sclock().AfterFunc(delay, func() {
 		s.turnNameRetryMu.Lock()
-		if s.turnNameRetry.generation != generation {
+		if !s.turnNameRetry.fire(generation) {
 			s.turnNameRetryMu.Unlock()
 			return
 		}
-		s.turnNameRetry.active = false
-		s.turnNameRetry.delay = min(delay*2, ceiling)
+		s.turnNameRetry.settle(true, delay, ceiling)
 		s.turnNameRetryMu.Unlock()
 		s.notify()
 	})
@@ -189,9 +182,7 @@ func (s *Session) scheduleRunningTurnNameRetry(ceiling time.Duration) {
 // timer firing a wake nothing is waiting for.
 func (s *Session) resetRunningTurnNameRetry() {
 	s.turnNameRetryMu.Lock()
-	s.turnNameRetry.generation++
-	s.turnNameRetry.active = false
-	s.turnNameRetry.delay = jobNotificationRetryInitialDelay
+	s.turnNameRetry.reset()
 	s.turnNameRetryMu.Unlock()
 }
 
@@ -322,21 +313,16 @@ func (s *Session) scheduleRunningTurnReleaseRetry(turnID string) {
 		})
 		return
 	}
-	delay := s.runningTurnReleaseRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
 	s.runningTurnReleaseRetry.attempts++
-	s.runningTurnReleaseRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
-	s.runningTurnReleaseRetry.generation++
-	generation := s.runningTurnReleaseRetry.generation
+	delay, generation := s.runningTurnReleaseRetry.arm()
+	s.runningTurnReleaseRetry.settle(true, delay, jobNotificationRetryMaxDelay)
 	s.releaseRetryMu.Unlock()
 
 	s.sclock().AfterFunc(delay, func() {
 		s.releaseRetryMu.Lock()
-		superseded := s.runningTurnReleaseRetry.generation != generation
+		current := s.runningTurnReleaseRetry.fire(generation)
 		s.releaseRetryMu.Unlock()
-		if superseded {
+		if !current {
 			return
 		}
 		if s.releaseRunningTurnID(turnID) != turnNameReleased {

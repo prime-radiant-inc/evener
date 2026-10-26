@@ -296,15 +296,17 @@ field is absent.
 Write every duration as a TOML string, such as `"30s"` or `"1h"`. A bare integer
 is read by TOML as a nanosecond count, so `spawn_timeout = 30` arms 30ns rather
 than 30 seconds. Some duration fields refuse that form outright
-(`daemon_idle_timeout`, `host_probe_timeout`, and the host receipt and operation
-TTLs). Negative handling then differs by field: a negative
-`daemon_idle_timeout` is rejected, some fields fall back to their default, and
+(`daemon_idle_timeout`, `host_probe_timeout`, and `host_tombstone_retention`).
+Negative handling then differs by field: a negative `daemon_idle_timeout` is rejected, some fields fall back to their default, and
 others keep the negative value. The loader does not validate every duration
 field the same way, so assume a typo can take effect and check the resolved
 value rather than trusting a silent load.
 
-The remaining `host_*` retention and pruning keys are defined in
-`cmd/evener-hub/config.go`, which is their source of truth.
+Every other host-record bound (tombstone and receipt counts, sizes and ages,
+operation-store limits, teardown-repair timing) is a built-in default and is not
+configurable. A `hub.toml` that still sets one of the retired `host_*` retention
+or pruning keys starts normally, ignores the value, and logs a warning naming
+the key on every boot while it is present.
 
 ## Launch configuration
 
@@ -727,11 +729,11 @@ A live functional check can incur provider charges: authorize the browser, choos
 The documentation site tracks main. Release builds can lag it; snapshot builds follow ongoing development. Record the current version and installation prefix before changing channels. The installation guide owns download procedures; Settings → Hub → Updates owns an installed hub's update flow above.
 
 **Before shutting down an older daemon:** saved session trees containing legacy
-delegate lifecycle or legacy delegate-addressed watch state cannot resume on
-the current runtime. Read [the compatibility warning and fresh-root
-continuation](../UPGRADING.md#before-shutting-down-an-older-session). Preserve
-history and finish essential work first. Layout migration does not repair that
-format, and saved-history visibility is not proof of resumability.
+delegate lifecycle or legacy delegate-addressed watch state resume with that
+state ignored. Read [what is and is not
+resumed](../UPGRADING.md#before-shutting-down-an-older-session). Finish
+essential work first. Layout migration does not convert that format, and
+saved-history visibility is not proof that old delegates continue.
 
 1. Finish work that must not straddle a version change. In each session's actions menu, choose **Shut down** and confirm. This stops the agent process; the composer's **Stop** only interrupts a turn. Verify that the old daemon process has exited before copying state. A hub restart alone does not stop its session daemons.
 2. Inventory effective paths and make a private [backup](security.md#storage-and-backups). Copying live state is not guaranteed consistent.

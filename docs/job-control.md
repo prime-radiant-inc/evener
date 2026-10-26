@@ -1429,8 +1429,9 @@ reference, last outcome, and ordered owner delivery live in the root
 `delegates.jsonl` journal. The stable controller folds that journal directly;
 it never reconstructs a delegate through a job record. Receiver transcripts are
 the sole durable authority for pending delegate/watch/shell attention. Startup
-fails closed with `legacy_delegate_state` or
-`legacy_delegate_watch_state` rather than translating legacy activation rows.
+does not translate legacy activation rows: retired delegate job rows and
+job-addressed watch rows stay in the job journal, are ignored, and the session
+reports `legacy_delegate_state` as a warning.
 
 `job_list` combines the stable delegate fold with durable shell-job state and
 overlays in-memory state for currently running work.
@@ -1643,8 +1644,10 @@ This is not command failure. It is supervision loss.
 Restart loss is supervision loss, not shell command failure. A stable delegate
 remains addressable by `dlg_...`; missing or pruned retained state makes it
 non-resumable instead of triggering best-effort replay. Legacy delegate job
-rows or job-addressed watch rows fail startup with `legacy_delegate_state` or
-`legacy_delegate_watch_state` before new work is admitted.
+rows or job-addressed watch rows do not block startup: they are ignored, kept in
+the journal, and reported once per session start as a `legacy_delegate_state`
+warning. A retired delegate job that was still running ends as lost, as any job
+that did not survive the restart does.
 
 ```mermaid
 stateDiagram-v2
