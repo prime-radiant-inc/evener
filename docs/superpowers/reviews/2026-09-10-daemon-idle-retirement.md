@@ -4,7 +4,6 @@
 
 - Branch: `wip/daemon-idle-retirement`, implementation base `2664cc881`.
 - Design: `docs/superpowers/specs/2026-09-10-daemon-idle-retirement-design.md`.
-- Plan: `docs/superpowers/plans/2026-09-10-daemon-idle-retirement.md`.
 - Jesse approved the one-hour Hub policy and then the written design.
 - Subagent-driven implementation, both competing review loops, both four-angle
   simplification passes, final verification, and a PR are requested.

@@ -1200,7 +1200,7 @@ const BARE_VAR_RE = /var\(\s*(--[a-zA-Z0-9-]+)\s*\)/g;
 //   - JS writes it, as an inline style or a setProperty call, so no
 //     stylesheet ever declares it: --keyboard-inset (shell/
 //     useKeyboardInset.ts), --rail-width (shell/rail/RailResizeHandle.tsx),
-//     --fill (Meter and RecommendationCard paint their fill width).
+//     --fill (Meter paints its fill width).
 //   - A theming hook a container sets to retint the content it owns:
 //     --markdown-ink, --prose-ink. (--prose-font-size left this set when the
 //     reading-surface hosts began declaring it; the declarer guardrail test

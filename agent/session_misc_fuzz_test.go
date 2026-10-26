@@ -182,8 +182,8 @@ func FuzzSessionMetadataHelpers(f *testing.F) {
 			t.Fatalf("job projection mismatch: records=%d projected=%+v", len(kept), projected)
 		}
 
-		warning := warningHookMessage(&events.WarningData{Message: text})
-		if warning != text || warningHookMessage((*events.WarningData)(nil)) != "<nil>" {
+		warning := warningHookMessage(events.WarningData{Message: text})
+		if warning != text {
 			t.Fatalf("warning rendering mismatch: %q", warning)
 		}
 		reminder := formatCurrentTaskSteering(taskpkg.Task{ID: int(mode), Description: text, Prompt: alternate}, mode%2 == 0)

@@ -85,7 +85,7 @@ func TestWatchSendTokenResolvesAndSettlesByDurableKey(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	_, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, "frame-v2")
-	s := &Session{id: jm.sessionID, jobManager: jm, subagents: newSubagentManager(nil, 0)}
+	s := &Session{id: jm.sessionID, jobManager: jm, subagents: newSubagentManager(0)}
 
 	resolvedJM, cfg, state, ok := s.resolveWatchSendToken(&watchSendToken{Key: key, UpdateSeq: 2, DeliveryID: deliveryID})
 	if !ok || state.Frame != "frame-v2" || resolvedJM != jm {

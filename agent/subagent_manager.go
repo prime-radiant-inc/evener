@@ -6,15 +6,13 @@ import (
 	"sort"
 	"sync"
 	"time"
-
-	"primeradiant.com/evener/agent/events"
 )
 
 // subagentManager owns the parent session's child-subagent map. It exists to
 // break the subagent⇄session back-reference cycle: a subagent no longer holds a
-// back-reference to its parent *Session, it holds the parent's emit closure, and
-// the parent reaches its children only through this manager. (A subagent still
-// holds sub.sess, its own child *Session, as downward composition.)
+// back-reference to its parent *Session, and the parent reaches its children
+// only through this manager. (A subagent still holds sub.sess, its own child
+// *Session, as downward composition.)
 //
 // Lock ordering: the manager mutex is the OUTER lock and each sub.mu is the
 // INNER lock. Callers that need both must take the manager mutex first. The
@@ -30,7 +28,6 @@ type subagentManager struct {
 	// testBeforeReconstructionWait observes the exact parent-close join boundary.
 	// Nil in production.
 	testBeforeReconstructionWait func()
-	emit                         func(events.EventKind, events.EventData)
 	// maxRetainedTerminal bounds how many terminal records (completed|failed|
 	// cancelled) the manager retains per parent; a closed record still counts until
 	// reclaimed. Enforced at spawn time via reserveSlot, which GCs reclaimable
@@ -45,17 +42,14 @@ var errSubagentManagerClosing = errors.New("session is closed")
 
 var restoreSideEffectsWait = (*sync.Cond).Wait
 
-// newSubagentManager creates a manager that captures the parent session's emit
-// closure for forwarding subagent lifecycle events. limit bounds retained
-// terminal records; limit <= 0 selects the default (defaultMaxRetainedTerminal).
-func newSubagentManager(emit func(events.EventKind, events.EventData), limit int) *subagentManager {
+// newSubagentManager creates a manager. limit bounds retained terminal records; limit <= 0 selects the default (defaultMaxRetainedTerminal).
+func newSubagentManager(limit int) *subagentManager {
 	if limit <= 0 {
 		limit = defaultMaxRetainedTerminal
 	}
 	m := &subagentManager{
 		subs:                map[string]*subagent{},
 		reconstructing:      map[string]*subagentReconstruction{},
-		emit:                emit,
 		maxRetainedTerminal: limit,
 	}
 	m.restoreSideEffectsCond = sync.NewCond(&m.mu)
