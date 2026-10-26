@@ -1,7 +1,10 @@
 // @vitest-environment node
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
-import { approvalWaiting, humanizeState } from "./railSessionState";
+import { humanizeState } from "./railSessionState";
+import { approvalWaiting } from "./sessionAttention";
 
 // --- humanizeState: one lowercase word per wire state ---------------------
 // The rail's second line (web RailRow, native screens session list) leads
@@ -53,9 +56,22 @@ test("a failure outranks a pending approval", () => {
   expect(humanizeState("errored", false, true)).toBe("failed");
 });
 
-test("approvalWaiting holds for a pending approval on any state but errored", () => {
-  expect(approvalWaiting("active", true)).toBe(true);
-  expect(approvalWaiting("restartRequired", true)).toBe(true);
-  expect(approvalWaiting("errored", true)).toBe(false);
-  expect(approvalWaiting("active", false)).toBe(false);
+// The hub's hubapi.AttentionState test reads this same fixture: a state the hub
+// leaves unescalated is one approvalWaiting refuses.
+const approvalCases = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../../testdata/attention/approval_state.json", import.meta.url).href), "utf8"),
+) as { state: string; approval_pending: boolean; want: string }[];
+
+test("approvalWaiting agrees with the hub's AttentionState fixture", () => {
+  for (const c of approvalCases) {
+    expect({ state: c.state, waiting: approvalWaiting(c.state, c.approval_pending) }).toEqual({
+      state: c.state,
+      waiting: c.approval_pending && c.want === "awaiting",
+    });
+  }
+});
+
+test("a restart or an end outranks a pending approval", () => {
+  expect(humanizeState("restartRequired", false, true)).toBe("restart required");
+  expect(humanizeState("ended", false, true)).toBe("ended");
 });

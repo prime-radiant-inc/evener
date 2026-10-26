@@ -1177,7 +1177,7 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// caller that DID assert an endpoint is still refused, because the hub
 	// cannot say the name resolves where the caller was told it does.
 	if params.ExpectedEndpointFingerprint != "" {
-		if err := c.auth.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+		if err := c.auth.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 			return err
 		}
 	}
@@ -1908,7 +1908,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	// under it, or an edit to its base_url) is refused rather than having its
 	// replacement instance removed. Asked here, under the exclusive lock, so it
 	// describes the instance the cleanup below acts on.
-	if err := c.auth.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+	if err := c.auth.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 		return err
 	}
 

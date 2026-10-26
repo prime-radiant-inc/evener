@@ -1230,6 +1230,12 @@ func TestHostRestartRenewsStoppedReplacementCommand(t *testing.T) {
 }
 
 func TestHostRestartDisconnectedWithoutDeploymentDoesNotInstall(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		restartDisconnectedWithoutDeployment(t)
+	})
+}
+
+func restartDisconnectedWithoutDeployment(t *testing.T) {
 	runner := &restartRecoveryRunner{diskVersion: restartBuildA, runningVersion: restartBuildA, startedAt: restartStartA}
 	m, manager, store, host, _ := publicRecoveryHub(t, runner, restartBuildB)
 	ch, err := manager.Ensure(t.Context(), host.Name)
@@ -1247,6 +1253,9 @@ func TestHostRestartDisconnectedWithoutDeploymentDoesNotInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.cfg.opsWG.Wait()
+	// The dropped channel's supervisor takes the gate once the operation
+	// releases it; the next Restart must not race that hold.
+	synctest.Wait()
 	assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateFailed)
 	assertPublicRecoveryEffects(t, runner, 0, 0, 0, restartBuildA, restartStartA)
 	runner.mu.Lock()

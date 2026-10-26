@@ -80,6 +80,15 @@ Both reuse the [shared live tally selector](../../appwire-client/typescript/stat
 Status does not reconstruct counts from loaded child rows or acquire activity
 collection demand. Hub aggregation and domain activity authority stay independent.
 
+The attention class itself comes from one precedence order, `attentionState` in
+the [shared client](../../appwire-client/typescript/sessionAttention.ts): offline
+or ended, failed, restart needed, a blocking warning, a question, an approval,
+awaiting, working, a nonblocking warning, then idle. The phone Board marks and
+state line, Board search marks, the browser's Cadence family and the
+notification level all read it. A pending approval never masks a failure, a
+restart need, an ended or not-loaded session; the hub states the same rule in
+`hubapi.AttentionState`, and both run the cases in `testdata/attention`.
+
 ## APIs and ownership
 
 Daemon and hub AppWire expose four typed reads:
