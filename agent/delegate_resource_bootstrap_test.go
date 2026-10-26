@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -57,68 +58,73 @@ func TestDelegateResourceBootstrap_ChildInheritsControllerAndStableOwnerID(t *te
 	}
 }
 
-func TestDelegateResourceBootstrap_LegacyDelegateStateFailsClosed(t *testing.T) {
-	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
-	removeDelegateStoreIfPresent(t, stateDir, meta.ID)
-	jobPath := filepath.Join(jobsDir(stateDir, meta.ID), "jobs.jsonl")
-	appendLegacyBootstrapEvents(t, jobPath, jobstore.Event{
-		Kind:           jobstore.EventJobStarted,
-		JobID:          "job_legacy_delegate",
-		Type:           jobstore.JobType(delegateResourceType),
-		OwnerSessionID: meta.ID,
-	})
-	wantBytes, err := os.ReadFile(jobPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+// Old delegate lifecycle rows and watches addressed through legacy delegate jobs
+// are left in the journal and ignored: the session starts, reports the
+// ignored state, and goes on to create stable delegates.
+func TestDelegateResourceBootstrap_LegacyDelegateStateIsIgnoredAndStartupProceeds(t *testing.T) {
+	for name, withWatch := range map[string]bool{"lifecycle": false, "watch": true} {
+		t.Run(name, func(t *testing.T) {
+			meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
+			removeDelegateStoreIfPresent(t, stateDir, meta.ID)
+			jobPath := filepath.Join(jobsDir(stateDir, meta.ID), "jobs.jsonl")
+			rows := []jobstore.Event{{
+				Kind:           jobstore.EventJobStarted,
+				JobID:          "job_legacy_delegate",
+				Type:           jobstore.JobType(delegateResourceType),
+				OwnerSessionID: meta.ID,
+			}}
+			if withWatch {
+				rows = append(rows, jobstore.Event{
+					Kind:    jobstore.EventWatchRegistered,
+					WatchID: "watch_legacy_delegate_job",
+					Watch: &jobstore.WatchEvent{
+						Generation:       "wg_legacy",
+						OwnerSessionID:   meta.ID,
+						VisibleSessionID: meta.ID,
+						Target:           "job_legacy_delegate",
+						SendTo:           meta.ID,
+						ConfigHash:       "legacy",
+					},
+				})
+			}
+			appendLegacyBootstrapEvents(t, jobPath, rows...)
+			wantBytes, err := os.ReadFile(jobPath)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
-	if restored != nil {
-		restored.Close()
-	}
-	if err == nil || !strings.Contains(err.Error(), "legacy_delegate_state") || !strings.Contains(err.Error(), "fresh state root") {
-		t.Fatalf("restore error = %v, want legacy_delegate_state with fresh-state-root guidance", err)
-	}
-	assertBootstrapScanWasReadOnly(t, stateDir, meta.ID, jobPath, wantBytes)
-}
+			restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
+			if err != nil {
+				t.Fatalf("restore with legacy delegate state must proceed: %v", err)
+			}
+			gotBytes, err := os.ReadFile(jobPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.HasPrefix(gotBytes, wantBytes) {
+				t.Fatal("ignoring legacy delegate state rewrote the existing job journal rows")
+			}
 
-func TestDelegateResourceBootstrap_LegacyDelegateWatchStateFailsClosed(t *testing.T) {
-	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
-	removeDelegateStoreIfPresent(t, stateDir, meta.ID)
-	jobPath := filepath.Join(jobsDir(stateDir, meta.ID), "jobs.jsonl")
-	appendLegacyBootstrapEvents(t, jobPath,
-		jobstore.Event{
-			Kind:           jobstore.EventJobStarted,
-			JobID:          "job_legacy_delegate",
-			Type:           jobstore.JobType(delegateResourceType),
-			OwnerSessionID: meta.ID,
-		},
-		jobstore.Event{
-			Kind:    jobstore.EventWatchRegistered,
-			WatchID: "watch_legacy_delegate_job",
-			Watch: &jobstore.WatchEvent{
-				Generation:       "wg_legacy",
-				OwnerSessionID:   meta.ID,
-				VisibleSessionID: meta.ID,
-				Target:           "job_legacy_delegate",
-				SendTo:           meta.ID,
-				ConfigHash:       "legacy",
-			},
-		},
-	)
-	wantBytes, err := os.ReadFile(jobPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+			// Back to useful operation: the restored root admits a stable delegate.
+			result := restored.createDelegate(context.Background(), delegateArgs{
+				Task:                "report the result",
+				DelegationAllowance: new(0),
+			})
+			if result.Err != nil {
+				t.Fatalf("createDelegate after ignoring legacy state: %v", result.Err)
+			}
 
-	restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
-	if restored != nil {
-		restored.Close()
+			var reported bool
+			for _, w := range drainWarnings(t, restored) {
+				if w.Code == events.WarningCodeLegacyDelegateState {
+					reported = true
+				}
+			}
+			if !reported {
+				t.Fatal("ignored legacy delegate state was not reported")
+			}
+		})
 	}
-	if err == nil || !strings.Contains(err.Error(), "legacy_delegate_watch_state") || !strings.Contains(err.Error(), "fresh state root") {
-		t.Fatalf("restore error = %v, want legacy_delegate_watch_state with fresh-state-root guidance", err)
-	}
-	assertBootstrapScanWasReadOnly(t, stateDir, meta.ID, jobPath, wantBytes)
 }
 
 func TestDelegateResourceBootstrap_ShellOnlyAndStableWatchStateOpen(t *testing.T) {
@@ -592,18 +598,4 @@ func removeDelegateStoreIfPresent(t *testing.T, stateDir, rootSessionID string) 
 
 func delegateResourceStorePath(stateDir, rootSessionID string) string {
 	return filepath.Join(stateDir, schema.SessionsSubdir, rootSessionID, "delegates.jsonl")
-}
-
-func assertBootstrapScanWasReadOnly(t *testing.T, stateDir, rootSessionID, jobPath string, wantJobBytes []byte) {
-	t.Helper()
-	gotJobBytes, err := os.ReadFile(jobPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(gotJobBytes, wantJobBytes) {
-		t.Fatal("legacy job log changed during failed bootstrap")
-	}
-	if _, err := os.Stat(delegateResourceStorePath(stateDir, rootSessionID)); !os.IsNotExist(err) {
-		t.Fatalf("delegate store created before legacy scan failed: %v", err)
-	}
 }

@@ -69,7 +69,7 @@ There is no verified one-command, transactional backup/restore procedure documen
 For a conservative maintenance backup:
 
 1. Record the build version, selected hosts, effective config/state paths, and repository/worktree locations. Do not record secret values in the inventory.
-2. Read the [legacy compatibility warning](../UPGRADING.md#before-shutting-down-an-older-session) before shutting down an older daemon. Finish work, then use each session's **Shut down** action and confirm its process has exited; the composer's **Stop** is not enough. Check owned jobs and remote hosts too. Stop the hub through its supervisor and prevent automatic restart while copying.
+2. Read the [older-session note](../UPGRADING.md#before-shutting-down-an-older-session) before shutting down an older daemon. Finish work, then use each session's **Shut down** action and confirm its process has exited; the composer's **Stop** is not enough. Check owned jobs and remote hosts too. Stop the hub through its supervisor and prevent automatic restart while copying.
 3. Make a private, encrypted backup of configuration, durable state, referenced extension content, and repositories. Preserve permissions. Follow the backup tool's consistency procedure for SQLite files; do not copy only the main database while ignoring live sidecars.
 4. Verify the backup by restoring to an isolated location with no production listeners or provider credentials active. Check files and saved-session readability before considering a production restore.
 
