@@ -17,31 +17,31 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-type pass5ThreadSource struct {
+type threadDataSource struct {
 	*scriptedAppSource
 	listErr error
 	readErr error
 	threads []appwire.Thread
 }
 
-func (s *pass5ThreadSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+func (s *threadDataSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	if s.listErr != nil {
 		return appwire.ThreadListResponse{}, s.listErr
 	}
 	return appwire.ThreadListResponse{Data: s.threads}, nil
 }
 
-func (s *pass5ThreadSource) ReadThread(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+func (s *threadDataSource) ReadThread(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	if s.readErr != nil {
 		return appwire.ThreadReadResponse{}, s.readErr
 	}
 	return s.scriptedAppSource.ReadThread(ctx, params)
 }
 
-func pass5Past(t *testing.T) (*hubcore.PastIndex, string, string) {
+func pastIndexFixture(t *testing.T) (*hubcore.PastIndex, string, string) {
 	t.Helper()
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "project-pass5-0123456789")
+	stateDir := filepath.Join(root, "projects", "project-0123456789")
 	id := "02wMz5Txv1C3Hut0M8GCeB"
 	meta := schema.SessionMeta{
 		ID: id, Name: "Past title", ProfileID: "openai", Model: "gpt-5",
@@ -58,13 +58,13 @@ func pass5Past(t *testing.T) (*hubcore.PastIndex, string, string) {
 	return past, stateDir, id
 }
 
-func FuzzThreadDataPass5(f *testing.F) {
+func FuzzThreadData(f *testing.F) {
 	for i := range uint8(6) {
 		f.Add(i)
 	}
 	f.Fuzz(func(t *testing.T, variant uint8) {
 		ctx := context.Background()
-		past, _, id := pass5Past(t)
+		past, _, id := pastIndexFixture(t)
 		cfg := hubcore.WebConfig{Past: past}
 
 		switch variant % 6 {
@@ -120,7 +120,7 @@ func FuzzThreadDataPass5(f *testing.F) {
 		case 3:
 			root := appwire.Thread{ID: id, Source: "remote", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}
 			child := appwire.Thread{ID: "child", Source: "remote", Name: "worker", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Evener: appwire.EvenerThread{Kind: "subagent", ParentRef: "remote:" + id}}
-			source := &pass5ThreadSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: root}, threads: []appwire.Thread{root, child, child}}
+			source := &threadDataSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: root}, threads: []appwire.Thread{root, child, child}}
 			registry := appsource.NewRegistry()
 			registry.Add(source)
 			resp, err := hubThreadTranscriptList(ctx, cfg, registry, appwire.ThreadTranscriptListParams{Ref: "remote:" + id})
@@ -131,7 +131,7 @@ func FuzzThreadDataPass5(f *testing.F) {
 			_, _ = hubThreadTranscriptList(ctx, cfg, registry, appwire.ThreadTranscriptListParams{Ref: "remote:" + id})
 
 		case 4:
-			bad := &pass5ThreadSource{scriptedAppSource: &scriptedAppSource{id: "remote"}, readErr: errors.New("read failed")}
+			bad := &threadDataSource{scriptedAppSource: &scriptedAppSource{id: "remote"}, readErr: errors.New("read failed")}
 			registry := appsource.NewRegistry()
 			registry.Add(bad)
 			if _, err := hubTranscriptRoot(ctx, cfg, registry, "remote:missing"); err == nil {
@@ -148,7 +148,7 @@ func FuzzThreadDataPass5(f *testing.F) {
 		case 5:
 			live := appwire.Thread{ID: id, Preview: id, Source: "local", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}
 			registry := appsource.NewRegistry()
-			registry.Add(&pass5ThreadSource{scriptedAppSource: &scriptedAppSource{id: "local", thread: live}, threads: []appwire.Thread{live}})
+			registry.Add(&threadDataSource{scriptedAppSource: &scriptedAppSource{id: "local", thread: live}, threads: []appwire.Thread{live}})
 			resp, err := hubThreadList(ctx, cfg, registry, appwire.ThreadListParams{SearchTerm: "past", Statuses: []string{"idle"}, SourceIDs: []string{"local"}, Limit: 1})
 			if err != nil || len(resp.Data) != 1 {
 				t.Fatalf("thread list = %+v, %v", resp, err)

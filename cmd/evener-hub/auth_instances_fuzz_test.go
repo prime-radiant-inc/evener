@@ -18,7 +18,7 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-func covAIJWT(payload string) string {
+func authTestJWT(payload string) string {
 	return "x." + base64.RawURLEncoding.EncodeToString([]byte(payload)) + ".x"
 }
 
@@ -198,7 +198,7 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		}
 		_, _ = c.LoginComplete(context.Background(), appwire.AuthLoginCompleteParams{FlowID: start.FlowID, RedirectURL: "http://localhost/?code=x&state=flow"})
 		c.exchangeCode = func(context.Context, *http.Client, authopenai.Config, authopenai.TokenExchangeRequest) (authopenai.TokenSet, error) {
-			return authopenai.TokenSet{AccessToken: "access", IDToken: covAIJWT(`{"email":"e@x"}`)}, nil
+			return authopenai.TokenSet{AccessToken: "access", IDToken: authTestJWT(`{"email":"e@x"}`)}, nil
 		}
 		c.flows["save-fail"] = hubAuthFlow{Provider: "openai", State: "save-fail"}
 		realSave := c.saveAuth
@@ -213,7 +213,7 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		_, _ = c.LoginComplete(context.Background(), appwire.AuthLoginCompleteParams{FlowID: "status-fail", RedirectURL: "http://localhost/?code=x&state=status-fail"})
 		c.saveAuth, c.loadAuth = realSave, authopenai.LoadAuth
 		c.exchangeCode = func(context.Context, *http.Client, authopenai.Config, authopenai.TokenExchangeRequest) (authopenai.TokenSet, error) {
-			return authopenai.TokenSet{AccessToken: "access", IDToken: covAIJWT(`{"email":"e@x","chatgpt_account_id":"acct","chatgpt_workspace_id":"ws"}`)}, nil
+			return authopenai.TokenSet{AccessToken: "access", IDToken: authTestJWT(`{"email":"e@x","chatgpt_account_id":"acct","chatgpt_workspace_id":"ws"}`)}, nil
 		}
 		_, _ = c.LoginComplete(context.Background(), appwire.AuthLoginCompleteParams{FlowID: start.FlowID, RedirectURL: "http://localhost/?code=x&state=flow"})
 
@@ -256,7 +256,7 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		}
 		_, _ = c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{FlowID: ds.FlowID})
 		c.exchangeDevice = func(context.Context, *http.Client, authopenai.Config, string, string) (authopenai.TokenSet, error) {
-			return authopenai.TokenSet{AccessToken: "device", IDToken: covAIJWT(`{"email":"d@x"}`)}, nil
+			return authopenai.TokenSet{AccessToken: "device", IDToken: authTestJWT(`{"email":"d@x"}`)}, nil
 		}
 		_, _ = c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{FlowID: ds.FlowID})
 		c.deviceFlows["old"] = deviceFlow{StartedAt: now.Add(-15 * time.Minute)}

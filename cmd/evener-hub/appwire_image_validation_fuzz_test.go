@@ -8,7 +8,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-func FuzzCovAppWireValidation(f *testing.F) {
+func FuzzAppWireImageValidation(f *testing.F) {
 	f.Add(uint8(0), 0, "text", "")
 	f.Add(uint8(1), hubcore.SendMaxImageItems, "image", "x")
 	f.Add(uint8(2), 0, "input_image", strings.Repeat("x", hubcore.SendMaxImageBytes+1))

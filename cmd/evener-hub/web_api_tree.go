@@ -1093,23 +1093,6 @@ func (s *WebServer) apiTreeSources() []hubapi.Source {
 	return sources
 }
 
-func (s *WebServer) isLive(sessionID string) bool {
-	if !isLocalRouteID(sessionID) {
-		// A tree projection has no request context of its own; bound the
-		// ownership wait the same way the relay publication guard does, so a
-		// pending Resume cannot block the render indefinitely.
-		ctx, cancel := context.WithTimeout(context.Background(), hubTransientOwnershipBudget)
-		defer cancel()
-		_, err := sourceForThreadWithDeletionFence(ctx, s.cfg, s.sources, appRefFromRouteID(sessionID), "")
-		return err == nil
-	}
-	if s.cfg.Roster == nil {
-		return false
-	}
-	_, ok := s.cfg.Roster.Find(sessionID)
-	return ok
-}
-
 // favoriteDecisions returns the current set of user-explicit favorite
 // decisions. A store read failure is returned to the request instead of being
 // turned into an empty decision set. The returned map is computed once per

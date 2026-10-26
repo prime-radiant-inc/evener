@@ -17,21 +17,21 @@ import (
 	"primeradiant.com/evener/internal/selfupdate"
 )
 
-type covPluginTicker struct {
+type pluginTestTicker struct {
 	c       chan time.Time
 	stopped bool
 	calls   int
 	cancel  context.CancelFunc
 }
 
-func (t *covPluginTicker) Chan() <-chan time.Time {
+func (t *pluginTestTicker) Chan() <-chan time.Time {
 	t.calls++
 	if t.calls == 2 && t.cancel != nil {
 		t.cancel()
 	}
 	return t.c
 }
-func (t *covPluginTicker) Stop() { t.stopped = true }
+func (t *pluginTestTicker) Stop() { t.stopped = true }
 
 func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 	f.Add(byte(0))
@@ -184,7 +184,7 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		_, _ = runPluginAutoUpgradeTick(ctx, plugins.NewManager(t.TempDir()), os.Stderr)
 		pluginListMarketplaces, pluginRefreshMarketplace, pluginUpdateAutoUpgrade = oldList, oldRefresh, oldUpdate
 
-		ticker := &covPluginTicker{c: make(chan time.Time, 1)}
+		ticker := &pluginTestTicker{c: make(chan time.Time, 1)}
 		ticker.c <- time.Time{}
 		oldTicker := newPluginAutoUpgradeTicker
 		newPluginAutoUpgradeTicker = func(time.Duration) pluginAutoUpgradeTicker { return ticker }

@@ -11,7 +11,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-func covWebRequest(t *testing.T, web *WebServer, method, target, body string) *httptest.ResponseRecorder {
+func webCoreRequest(t *testing.T, web *WebServer, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	req.Header.Set("HX-Request", "true")
@@ -20,7 +20,7 @@ func covWebRequest(t *testing.T, web *WebServer, method, target, body string) *h
 	return rec
 }
 
-func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
+func TestWebCoreAPIHelpersAndRoutes(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{})
 	firstLock := web.lockForSession("a")
 	if firstLock != web.lockForSession("a") {
@@ -78,26 +78,6 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 		{http.MethodGet, "/manifest.webmanifest"},
 		{http.MethodPost, "/api/health"}, {http.MethodGet, "/api/health"},
 	} {
-		_ = covWebRequest(t, web, tc.method, tc.target, "")
+		_ = webCoreRequest(t, web, tc.method, tc.target, "")
 	}
-}
-
-// FuzzCovWebCoreAPI replays the deterministic core handler matrix under the
-// native fuzz runner. The byte is deliberately used only to vary execution
-// order: every input exercises the same contained filesystem and API cases.
-func FuzzCovWebCoreAPI(f *testing.F) {
-	for _, seed := range []byte{0, 1, 2} {
-		f.Add(seed)
-	}
-	f.Fuzz(func(t *testing.T, order byte) {
-		tests := []func(*testing.T){
-			TestCovWebCoreAPIHelpersAndRoutes,
-			TestProjectDeleteRemovesFilesAndScrubs,
-			TestProjectDeleteRejectsKeyWorkingDirMismatch,
-			TestProjectDeleteRefusesWhenLive,
-		}
-		for i := range tests {
-			tests[(i+int(order))%len(tests)](t)
-		}
-	})
 }

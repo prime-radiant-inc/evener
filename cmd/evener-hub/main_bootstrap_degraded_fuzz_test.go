@@ -17,7 +17,7 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-func FuzzMainBootstrapPass6(f *testing.F) {
+func FuzzMainBootstrapDegradedProviders(f *testing.F) {
 	for mode := byte(0); mode < 10; mode++ {
 		f.Add(mode)
 	}
