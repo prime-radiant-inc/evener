@@ -80,6 +80,9 @@ func TestHostRestartSettlesCompletedEffectWithUnusableContract(t *testing.T) {
 						t.Fatal(err)
 					}
 					m.cfg.opsWG.Wait()
+					// A restart that drops the channel leaves its supervisor reconnecting
+					// under the gate; the next fail-fast Restart must not race that hold.
+					synctest.Wait()
 					assertRestartRecoveryRecord(t, store, op.ID, want)
 					return op.ID
 				}
