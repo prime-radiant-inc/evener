@@ -313,7 +313,6 @@ native:llm:.:Fuzz_lcfg_ContinuationSecret
 native:llm:.:Fuzz_lcfg_Kind
 native:llm:.:Fuzz_lcfg_PriceFromCost
 native:agent:./internal/sessionlog:FuzzSessionLogPersistence
-native:.:./internal/credentials:FuzzCredentialsStorePersistence
 native:.:./cmd/evener-hub/internal/launchconfig:FuzzLaunchConfigPersistence
 native:.:./cmd/evener-hub/internal/launchconfig:FuzzLaunchConfigBehaviorProgram
 native:agent:./transcript:FuzzTranscriptWriterPersistence

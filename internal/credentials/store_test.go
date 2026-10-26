@@ -7,8 +7,6 @@ import (
 	"reflect"
 	"sync"
 	"testing"
-
-	"github.com/spf13/afero"
 )
 
 func TestStore_LoadMissingFile(t *testing.T) {
@@ -250,22 +248,21 @@ func TestStore_PermissionsEnforced(t *testing.T) {
 // the file still reads: a key remembered but not written is one the
 // credentials pane reports and no launch can resolve.
 func TestStore_SetRestoresMemoryWhenTheSaveFails(t *testing.T) {
-	const path = "/creds/credentials.toml"
-	mem := afero.NewMemMapFs()
-	s := mustLoadFS(t, mem, path)
+	path := filepath.Join(t.TempDir(), "creds", "credentials.toml")
+	s := mustLoad(t, path)
 	if err := s.Set("work", "sk-old"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	s.fs = afero.NewReadOnlyFs(mem)
+	blockSaves(t, path)
 
 	if err := s.Set("work", "sk-new"); err == nil {
-		t.Fatal("Set over a read-only filesystem returned nil")
+		t.Fatal("Set when the save cannot land returned nil")
 	}
 	if v, ok := s.Get("work"); v != "sk-old" || !ok {
 		t.Errorf("Get after a failed overwrite = %q/%v, want sk-old/true", v, ok)
 	}
 	if err := s.Set("personal", "sk-p"); err == nil {
-		t.Fatal("Set of a new name over a read-only filesystem returned nil")
+		t.Fatal("Set of a new name when the save cannot land returned nil")
 	}
 	if v, ok := s.Get("personal"); ok {
 		t.Errorf("a failed Set of a name that had no entry left %q behind", v)
@@ -273,16 +270,15 @@ func TestStore_SetRestoresMemoryWhenTheSaveFails(t *testing.T) {
 }
 
 func TestStore_ClearRestoresMemoryWhenTheSaveFails(t *testing.T) {
-	const path = "/creds/credentials.toml"
-	mem := afero.NewMemMapFs()
-	s := mustLoadFS(t, mem, path)
+	path := filepath.Join(t.TempDir(), "creds", "credentials.toml")
+	s := mustLoad(t, path)
 	if err := s.Set("work", "sk-work"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	s.fs = afero.NewReadOnlyFs(mem)
+	blockSaves(t, path)
 
 	if err := s.Clear("work"); err == nil {
-		t.Fatal("Clear over a read-only filesystem returned nil")
+		t.Fatal("Clear when the save cannot land returned nil")
 	}
 	if v, ok := s.Get("work"); v != "sk-work" || !ok {
 		t.Errorf("Get after a failed Clear = %q/%v, want sk-work/true", v, ok)
@@ -292,9 +288,8 @@ func TestStore_ClearRestoresMemoryWhenTheSaveFails(t *testing.T) {
 // Move is what a renamed instance carries its key with: one persist, so the
 // key is never briefly filed under both names or neither.
 func TestStore_MoveCarriesTheKeyToTheNewName(t *testing.T) {
-	const path = "/creds/credentials.toml"
-	mem := afero.NewMemMapFs()
-	s := mustLoadFS(t, mem, path)
+	path := filepath.Join(t.TempDir(), "creds", "credentials.toml")
+	s := mustLoad(t, path)
 	if err := s.Set("work", "sk-work"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -314,7 +309,7 @@ func TestStore_MoveCarriesTheKeyToTheNewName(t *testing.T) {
 	}
 	// The file is the layer a registry reload reads, so it has to carry the
 	// same move, and carry nothing else away with it.
-	reloaded := mustLoadFS(t, mem, path)
+	reloaded := mustLoad(t, path)
 	if v, ok := reloaded.Get("personal"); v != "sk-work" || !ok {
 		t.Errorf("reloaded Get(personal) = %q/%v, want sk-work/true", v, ok)
 	}
@@ -327,16 +322,15 @@ func TestStore_MoveCarriesTheKeyToTheNewName(t *testing.T) {
 }
 
 func TestStore_MoveRestoresBothNamesWhenTheSaveFails(t *testing.T) {
-	const path = "/creds/credentials.toml"
-	mem := afero.NewMemMapFs()
-	s := mustLoadFS(t, mem, path)
+	path := filepath.Join(t.TempDir(), "creds", "credentials.toml")
+	s := mustLoad(t, path)
 	if err := s.Set("work", "sk-work"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	s.fs = afero.NewReadOnlyFs(mem)
+	kept := blockSaves(t, path)
 
 	if err := s.Move("work", "personal"); err == nil {
-		t.Fatal("Move over a read-only filesystem returned nil")
+		t.Fatal("Move when the save cannot land returned nil")
 	}
 	if v, ok := s.Get("work"); v != "sk-work" || !ok {
 		t.Errorf("Get(work) after a failed Move = %q/%v, want sk-work/true", v, ok)
@@ -344,7 +338,7 @@ func TestStore_MoveRestoresBothNamesWhenTheSaveFails(t *testing.T) {
 	if v, ok := s.Get("personal"); ok {
 		t.Errorf("a failed Move left %q under the new name", v)
 	}
-	reloaded := mustLoadFS(t, mem, path)
+	reloaded := mustLoad(t, kept)
 	if v, ok := reloaded.Get("work"); v != "sk-work" || !ok {
 		t.Errorf("the persisted file lost the key: work = %q/%v", v, ok)
 	}
@@ -356,13 +350,12 @@ func TestStore_MoveRestoresBothNamesWhenTheSaveFails(t *testing.T) {
 // A rename of an instance that never had a stored key has nothing to move,
 // and must not report that as a failure.
 func TestStore_MoveOfAMissingNameIsANoOp(t *testing.T) {
-	const path = "/creds/credentials.toml"
-	mem := afero.NewMemMapFs()
-	s := mustLoadFS(t, mem, path)
+	path := filepath.Join(t.TempDir(), "creds", "credentials.toml")
+	s := mustLoad(t, path)
 	if err := s.Set("personal", "sk-personal"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	s.fs = afero.NewReadOnlyFs(mem)
+	blockSaves(t, path)
 
 	if err := s.Move("work", "personal"); err != nil {
 		t.Fatalf("Move of a missing name = %v, want nil", err)
@@ -375,9 +368,8 @@ func TestStore_MoveOfAMissingNameIsANoOp(t *testing.T) {
 // The store lower-cases every name, so a rename that only changes case names
 // one entry twice: moving it would delete the key it had just copied.
 func TestStore_MoveToTheSameKeyKeepsTheEntry(t *testing.T) {
-	const path = "/creds/credentials.toml"
-	mem := afero.NewMemMapFs()
-	s := mustLoadFS(t, mem, path)
+	path := filepath.Join(t.TempDir(), "creds", "credentials.toml")
+	s := mustLoad(t, path)
 	if err := s.Set("work", "sk-work"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -388,4 +380,30 @@ func TestStore_MoveToTheSameKeyKeepsTheEntry(t *testing.T) {
 	if v, ok := s.Get("work"); v != "sk-work" || !ok {
 		t.Errorf("Get(work) = %q/%v, want sk-work/true", v, ok)
 	}
+}
+
+func mustLoad(t *testing.T, path string) *Store {
+	t.Helper()
+	s, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	return s
+}
+
+// blockSaves makes every later save of the store at path fail, by moving its
+// directory aside and putting a regular file where the directory was. It
+// returns the moved credentials file's path, which still holds what the last
+// successful save wrote.
+func blockSaves(t *testing.T, path string) string {
+	t.Helper()
+	dir := filepath.Dir(path)
+	kept := dir + ".kept"
+	if err := os.Rename(dir, kept); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(kept, filepath.Base(path))
 }
