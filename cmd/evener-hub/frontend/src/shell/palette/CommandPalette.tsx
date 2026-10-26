@@ -65,6 +65,7 @@ import {
   sessionScopedHandoffMatch,
   visibleCatalogCommands,
 } from "./commands";
+import { useHelpRows } from "./helpRows";
 import { computeMode } from "./mode";
 import { buildPaletteContext, focusedModel } from "./paletteContext";
 import { closePalette, paletteStore, usePaletteStore } from "./paletteController";
@@ -101,47 +102,6 @@ const CLASS = {
 // this palette even has a "/" command mode or a "?" shortcut view.
 const SEARCH_PLACEHOLDER = "search live + past sessions · / for commands · ? for shortcuts";
 const SEARCH_DEBOUNCE_MS = 150;
-
-// UX fix: rebuilt from a stale, hand-rolled §2.8 list (search.js:697-705,
-// palette-only, whose Enter/Shift+Enter/Mod+Enter row was never accurate for
-// THIS composer's real keydown routing) into an app-wide shortcut legend,
-// rendered through the shared ShortcutList widget (Mod resolves to the reviewing
-// platform's own ⌘/Ctrl) instead of literal glyph strings.
-//
-// The palette's own rows (still accurate) come first; the composer/rail/ask-
-// dock rows this task adds follow. The same chord legitimately appears twice
-// (Mod+Enter: composer submit vs. ask dock/sandbox answer) - context-
-// dependent, not a duplicate, so both rows stay with their own label.
-const HELP_ROWS: ShortcutListItem[] = [
-  { keys: ["Mod", "K"], label: "open the command palette" },
-  {
-    keys: ["/"],
-    label:
-      "in the palette — filters app-global commands; a session command (goal, model, …) hands off to the composer instead",
-  },
-  { keys: ["/"], label: "at the start of an empty composer — opens the inline slash-command menu" },
-  { keys: ["↑"], label: "move up the results list" },
-  { keys: ["↓"], label: "move down the results list" },
-  { keys: ["Enter"], label: "run the highlighted command (or open a search result)" },
-  { keys: ["Mod", "Enter"], label: "open a search result in a new tab" },
-  { keys: ["Shift", "Enter"], label: "jump to a turn in the current session" },
-  { keys: ["Esc"], label: "close the palette (or back out of args mode)" },
-  { keys: ["Mod", "B"], label: "toggle the sidebar — inert while typing in an editable field" },
-  { keys: ["Mod", "I"], label: "focus the composer" },
-  { keys: ["Mod", "J"], label: "go to the next session needing you" },
-  { keys: ["Mod", "'"], label: "quote the selection into the composer" },
-  // Composer.tsx's own handleKeyDown: a plain Enter (or Mod+Enter, always)
-  // submits - send now, or queue when the agent is mid-turn - and Shift+
-  // Enter only steers when Enter-to-send is OFF (with it on, Shift+Enter is
-  // a literal newline instead).
-  { keys: ["Enter"], label: "send now (or queue, mid-turn) — when Enter-to-send is on" },
-  { keys: ["Shift", "Enter"], label: "steer mid-turn — when Enter-to-send is off" },
-  { keys: ["Mod", "Enter"], label: "send or queue now, regardless of the Enter-to-send setting" },
-  // AskDock.tsx's handleBatchKeyDown / sandboxEscalation.tsx's own Mod+Enter.
-  { keys: ["Mod", "Enter"], label: "answer or approve (ask dock questions, sandbox approvals)" },
-  { keys: ["←"], label: "previous ask-dock question" },
-  { keys: ["→"], label: "next ask-dock question" },
-];
 
 // Live-row status dot: the search API's normalized state (hubcore.
 // NormalizeState) mapped onto the StatusDot widget's CadenceState via the
@@ -343,6 +303,7 @@ function PaletteBody({
   onNeedsYouNext: () => void;
 }) {
   const toasts = useToasts();
+  const helpRows = useHelpRows();
   const catalogCommands = useCommandCatalog((state) => state.commands);
   const searchClient = useClient();
   const connectionState = useConnectionStore((state) => state.state);
@@ -831,6 +792,7 @@ function PaletteBody({
           query,
           view,
           showingHelp,
+          helpRows,
           selectedCommand,
           enumStatus,
           searchFailed,
@@ -964,13 +926,25 @@ function renderResults(args: {
   query: string;
   view: ResultsView;
   showingHelp: boolean;
+  helpRows: ShortcutListItem[];
   selectedCommand: Command | null;
   enumStatus: "idle" | "loading" | "loaded" | "error";
   searchFailed: boolean;
   activeIndex: number;
   onActivate: (index: number) => void;
 }) {
-  const { mode, query, view, showingHelp, selectedCommand, enumStatus, searchFailed, activeIndex, onActivate } = args;
+  const {
+    mode,
+    query,
+    view,
+    showingHelp,
+    helpRows,
+    selectedCommand,
+    enumStatus,
+    searchFailed,
+    activeIndex,
+    onActivate,
+  } = args;
 
   if (showingHelp) {
     return (
@@ -979,7 +953,7 @@ function renderResults(args: {
           <Eyebrow>Keyboard shortcuts</Eyebrow>
         </div>
         <div className={CLASS.help}>
-          <ShortcutList items={HELP_ROWS} />
+          <ShortcutList items={helpRows} />
         </div>
       </>
     );

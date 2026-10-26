@@ -4,7 +4,7 @@ import { useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import "../../panes/sessionPanels";
 import "../../panes/session";
-import { WireError } from "@evener/appwire-client";
+import { ACTIONS, rebindAction, restoreDefaultBinding, WireError } from "@evener/appwire-client";
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../../panes/session/composer/composerFocus";
 import { resetQuoteInsertStoreForTests, useQuoteInsertRequest } from "../../panes/session/composer/quoteInsert";
 import "../../panes/sessionPanels";
@@ -22,6 +22,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { manifest } from "@evener/appwire-client/testing/navigation";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { IDBFactory } from "fake-indexeddb";
+import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { Composer } from "../../panes/session/composer/Composer";
 import { refreshPendingTurnsProjection } from "../../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../../panes/session/composer/queue/testing/flushPendingTurnsProjection";
@@ -1124,6 +1125,26 @@ test("/help pairs each chord with its action as a term and its definition", asyn
   expect(terms.length).toBeGreaterThan(0);
   expect(screen.getAllByRole("definition")).toHaveLength(terms.length);
   for (const term of terms) expect(term.querySelector("kbd")).not.toBeNull();
+});
+
+test("/help shows a rebound app-global chord and drops an unbound one", async () => {
+  const user = userEvent.setup();
+  await openHelpFromCommand(user);
+  expect(chordCount(["Mod", "I"])).toBe(1);
+  expect(chordCount(["Mod", "J"])).toBe(1);
+
+  act(() => {
+    rebindAction(keybindingsRegistry, ACTIONS.composerFocus, "Control+Shift+Y");
+    rebindAction(keybindingsRegistry, ACTIONS.nextNeedsYou, null);
+  });
+
+  expect(helpChords()).toContain("Ctrl+Shift+Y");
+  expect(chordCount(["Mod", "I"])).toBe(0);
+  expect(chordCount(["Mod", "J"])).toBe(0);
+  act(() => {
+    restoreDefaultBinding(keybindingsRegistry, ACTIONS.composerFocus);
+    restoreDefaultBinding(keybindingsRegistry, ACTIONS.nextNeedsYou);
+  });
 });
 
 test("/help lists the UX-fix chords the old table never had", async () => {
