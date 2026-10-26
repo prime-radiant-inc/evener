@@ -155,7 +155,7 @@ var (
 
 	XDGCacheHome   = Var{Name: "XDG_CACHE_HOME", Summary: "Base for Evener cache data.", Visibility: Inherited}
 	XDGConfigHome  = Var{Name: "XDG_CONFIG_HOME", Summary: "Base for Evener config, skills, plugins, and MCP config discovery.", Visibility: Inherited}
-	XDGStateHome   = Var{Name: "XDG_STATE_HOME", Summary: "Base for the Evener state root ($XDG_STATE_HOME/evener); also the fallback in the per-invocation state-dir override chain when EVENER_STATE_DIR is unset.", Visibility: Inherited}
+	XDGStateHome   = Var{Name: "XDG_STATE_HOME", Summary: "Base for the Evener state root ($XDG_STATE_HOME/evener, else $HOME/.local/state/evener); also the fallback in the per-invocation state-dir override chain when EVENER_STATE_DIR is unset. With neither XDG_STATE_HOME nor a home directory there is no state root and state-writing commands fail instead of using a temporary or relative directory.", Visibility: Inherited}
 	CargoHome      = Var{Name: "CARGO_HOME", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	Display        = Var{Name: "DISPLAY", Summary: "Used to auto-detect graphical sessions for OpenAI login.", Visibility: Inherited}
 	GoCache        = Var{Name: "GOCACHE", Summary: "Inherited by core-only command environments; the sandbox overlays or redirects it with the other Go caches.", Visibility: Inherited}

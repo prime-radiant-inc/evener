@@ -1847,12 +1847,12 @@ The hub is a host singleton guarded by an exclusive flock on
 `$XDG_STATE_HOME/evener/hub.lock` (`$HOME/.local/state/evener/hub.lock` when
 `XDG_STATE_HOME` is unset), and that path is deliberately not independently
 overridable (kata av1j): the lock, the run dir, the state root, and the auth
-token all derive from `cmdutil.DefaultStateRoot()` (XDG_STATE_HOME, else
-`os.UserHomeDir()`), so they only stay coherent when they move **together**.
+token all derive from `userdirs.DefaultStateRoot()` (XDG_STATE_HOME, else
+`os.UserHomeDir()`, else an error), so they only stay coherent when they move **together**.
 The blessed way to run a second, disposable hub — an e2e harness, a scratch
 verification hub — is a fresh HOME **plus** clearing every variable that can
 redirect evener away from it. Both halves matter: `HOME=$(mktemp -d)` alone
-moves nothing when `XDG_STATE_HOME` is exported (`DefaultStateRoot` prefers it
+moves nothing when `XDG_STATE_HOME` is exported (`userdirs.DefaultStateRoot` prefers it
 over `$HOME`), so the "disposable" hub silently claims the real
 `$XDG_STATE_HOME/evener`; and `EVENER_PROVIDERS_CONFIG`/`EVENER_CREDENTIALS_CONFIG`
 outrank `$HOME/.config/evener`, so a stub `providers.toml` in the throwaway

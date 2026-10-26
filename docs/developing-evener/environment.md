@@ -115,7 +115,7 @@ process environments.
 |---|---|
 | `XDG_CACHE_HOME` | Base for Evener cache data; inherited by core-only command environments, and the sandbox overlays it alongside `~/.cache` (see [docs/sandboxing.md](../sandboxing.md#cache-isolation-and-writable-root-exceptions)). |
 | `XDG_CONFIG_HOME` | Base for Evener config, skills, plugins, and MCP config discovery; inherited by core-only command environments, so a spawned `go` finds the same go env file the sandbox read. |
-| `XDG_STATE_HOME` | Base for the Evener state root (`$XDG_STATE_HOME/evener`); also the fallback in the per-invocation state-dir override chain when `EVENER_STATE_DIR` is unset. |
+| `XDG_STATE_HOME` | Base for the Evener state root (`$XDG_STATE_HOME/evener`, else `$HOME/.local/state/evener`); also the fallback in the per-invocation state-dir override chain when `EVENER_STATE_DIR` is unset. With neither `XDG_STATE_HOME` nor a home directory there is no state root and state-writing commands fail instead of using a temporary or relative directory. |
 | `CARGO_HOME` | Inherited by core-only command environments. |
 | `DISPLAY` | Used to auto-detect graphical sessions for OpenAI login. |
 | `GOCACHE` | Inherited by core-only command environments; the sandbox overlays a configured value or, under the session-private cache strategy, redirects it into the session scratch directory (see [docs/sandboxing.md](../sandboxing.md#cache-isolation-and-writable-root-exceptions)). |

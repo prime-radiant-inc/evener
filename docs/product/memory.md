@@ -11,7 +11,8 @@ precedence.
 The session engine owns binding, native tools and index refresh:
 [`session_memory.go`](../../agent/session_memory.go) and
 [`session_tools_memory.go`](../../agent/session_tools_memory.go). The owning
-host's [`DefaultStateRoot`](../../cmdutil/statedir.go) supplies these roots:
+host's [`DefaultStateRoot`](../../envvars/userdirs/userdirs.go) supplies these
+roots:
 
 ```text
 <state-root>/memory/
@@ -19,8 +20,11 @@ host's [`DefaultStateRoot`](../../cmdutil/statedir.go) supplies these roots:
 ```
 
 The state root is `$XDG_STATE_HOME/evener`, normally
-`~/.local/state/evener`. Personal pages sit directly in `memory/`, and any
-subdirectory there is part of personal memory, so nothing else is kept in it.
+`~/.local/state/evener`. With neither a state home nor a home directory there is
+no root: launch reports that instead of rooting memory in a temporary or
+relative directory, and the next launch with a home works. Personal pages sit
+directly in `memory/`, and any subdirectory there is part of personal memory, so
+nothing else is kept in it.
 Project memory sits in the project's default state directory, beside its
 session history, under the same `Project.ID`. A history `StateDir`,
 `--state-dir` or `EVENER_STATE_DIR` override does not relocate memory, and
