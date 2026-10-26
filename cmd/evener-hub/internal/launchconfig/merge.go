@@ -3,6 +3,8 @@ package launchconfig
 import (
 	"fmt"
 	"strings"
+
+	"primeradiant.com/evener/appwire"
 )
 
 // layerOrder is the application order (least → most specific).
@@ -71,84 +73,22 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 		if !ok {
 			continue
 		}
-		nonEmpty := false
+		m := layerMerge{prov: prov, layer: name}
 
-		if l.Model != "" {
-			eff.Model = l.Model
-			prov["model"] = name
-			nonEmpty = true
-		}
-		if l.FastCheapModel != "" {
-			eff.FastCheapModel = l.FastCheapModel
-			prov["fast_cheap_model"] = name
-			nonEmpty = true
-		}
-		if l.Agent != "" {
-			eff.Agent = l.Agent
-			prov["agent"] = name
-			nonEmpty = true
-		}
-		if l.ReasoningEffort != "" {
-			eff.ReasoningEffort = l.ReasoningEffort
-			prov["reasoning_effort"] = name
-			nonEmpty = true
-		}
-		if l.ContextStrategy != "" {
-			eff.ContextStrategy = l.ContextStrategy
-			prov["context_strategy"] = name
-			nonEmpty = true
-		}
-		if l.ProviderIdleTimeout != "" {
-			eff.ProviderIdleTimeout = l.ProviderIdleTimeout
-			prov["provider_idle_timeout"] = name
-			nonEmpty = true
-		}
-		if l.OpenAIResponsesContinuation != "" {
-			eff.OpenAIResponsesContinuation = l.OpenAIResponsesContinuation
-			prov["openai_responses_continuation"] = name
-			nonEmpty = true
-		}
-		if l.Sandbox != "" {
-			eff.Sandbox = l.Sandbox
-			prov["sandbox"] = name
-			nonEmpty = true
-		}
-		if l.SandboxNet != nil {
-			v := *l.SandboxNet
-			eff.SandboxNet = &v
-			prov["sandbox_net"] = name
-			nonEmpty = true
-		}
-		if l.MaxRounds != nil {
-			v := *l.MaxRounds
-			eff.MaxRounds = &v
-			prov["max_rounds"] = name
-			nonEmpty = true
-		}
-		if l.MaxSubagentDepth != nil {
-			v := *l.MaxSubagentDepth
-			eff.MaxSubagentDepth = &v
-			prov["max_subagent_depth"] = name
-			nonEmpty = true
-		}
-		if l.MaxConcurrentDelegateTurns != nil {
-			v := *l.MaxConcurrentDelegateTurns
-			eff.MaxConcurrentDelegateTurns = &v
-			prov["max_concurrent_delegate_turns"] = name
-			nonEmpty = true
-		}
-		if l.MaxRetainedTerminal != nil {
-			v := *l.MaxRetainedTerminal
-			eff.MaxRetainedTerminal = &v
-			prov["max_retained_terminal"] = name
-			nonEmpty = true
-		}
-		if l.NonInteractive != nil {
-			v := *l.NonInteractive
-			eff.NonInteractive = &v
-			prov["non_interactive"] = name
-			nonEmpty = true
-		}
+		mergeScalar(&m, &eff.Model, l.Model, "model")
+		mergeScalar(&m, &eff.FastCheapModel, l.FastCheapModel, "fast_cheap_model")
+		mergeScalar(&m, &eff.Agent, l.Agent, "agent")
+		mergeScalar(&m, &eff.ReasoningEffort, l.ReasoningEffort, "reasoning_effort")
+		mergeScalar(&m, &eff.ContextStrategy, l.ContextStrategy, "context_strategy")
+		mergeScalar(&m, &eff.ProviderIdleTimeout, l.ProviderIdleTimeout, "provider_idle_timeout")
+		mergeScalar(&m, &eff.OpenAIResponsesContinuation, l.OpenAIResponsesContinuation, "openai_responses_continuation")
+		mergeScalar(&m, &eff.Sandbox, l.Sandbox, "sandbox")
+		mergePtr(&m, &eff.SandboxNet, l.SandboxNet, "sandbox_net")
+		mergePtr(&m, &eff.MaxRounds, l.MaxRounds, "max_rounds")
+		mergePtr(&m, &eff.MaxSubagentDepth, l.MaxSubagentDepth, "max_subagent_depth")
+		mergePtr(&m, &eff.MaxConcurrentDelegateTurns, l.MaxConcurrentDelegateTurns, "max_concurrent_delegate_turns")
+		mergePtr(&m, &eff.MaxRetainedTerminal, l.MaxRetainedTerminal, "max_retained_terminal")
+		mergePtr(&m, &eff.NonInteractive, l.NonInteractive, "non_interactive")
 		if l.AppReplaySize != nil {
 			if name != LayerGlobal {
 				diags = append(diags, Diagnostic{
@@ -156,10 +96,7 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 					Message: "app_replay_size is only honored at the global layer",
 				})
 			} else {
-				v := *l.AppReplaySize
-				eff.AppReplaySize = &v
-				prov["app_replay_size"] = name
-				nonEmpty = true
+				mergePtr(&m, &eff.AppReplaySize, l.AppReplaySize, "app_replay_size")
 			}
 		}
 		if l.SystemPromptMode != "" {
@@ -172,8 +109,7 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			if l.SystemPromptMode == "inline" {
 				eff.SystemPromptText = l.SystemPromptText
 			}
-			prov["system_prompt_mode"] = name
-			nonEmpty = true
+			m.mark("system_prompt_mode")
 		}
 		if l.SystemPromptAppendMode != "" {
 			eff.SystemPromptAppendMode = l.SystemPromptAppendMode
@@ -186,65 +122,34 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			if l.SystemPromptAppendMode == "inline" {
 				eff.SystemPromptAppendText = l.SystemPromptAppendText
 			}
-			prov["system_prompt_append_mode"] = name
-			nonEmpty = true
+			m.mark("system_prompt_append_mode")
 		}
-		if l.Verbose != nil {
-			v := *l.Verbose
-			eff.Verbose = &v
-			prov["verbose"] = name
-			nonEmpty = true
-		}
-		if l.APILog != nil {
-			v := *l.APILog
-			eff.APILog = &v
-			prov["api_log"] = name
-			nonEmpty = true
-		}
-		if l.TraceFile != "" {
-			eff.TraceFile = l.TraceFile
-			prov["trace_file"] = name
-			nonEmpty = true
-		}
-		if l.CPUProfile != "" {
-			eff.CPUProfile = l.CPUProfile
-			prov["cpu_profile"] = name
-			nonEmpty = true
-		}
-		if l.ExportATIFPath != "" {
-			eff.ExportATIFPath = l.ExportATIFPath
-			prov["export_atif_path"] = name
-			nonEmpty = true
-		}
-		if l.ExportATIFProviderHandles != "" {
-			eff.ExportATIFProviderHandles = l.ExportATIFProviderHandles
-			prov["export_atif_provider_handles"] = name
-			nonEmpty = true
-		}
+		mergePtr(&m, &eff.Verbose, l.Verbose, "verbose")
+		mergePtr(&m, &eff.APILog, l.APILog, "api_log")
+		mergeScalar(&m, &eff.TraceFile, l.TraceFile, "trace_file")
+		mergeScalar(&m, &eff.CPUProfile, l.CPUProfile, "cpu_profile")
+		mergeScalar(&m, &eff.ExportATIFPath, l.ExportATIFPath, "export_atif_path")
+		mergeScalar(&m, &eff.ExportATIFProviderHandles, l.ExportATIFProviderHandles, "export_atif_provider_handles")
 
 		// Lists: append in layer order.
 		if len(l.SkillsDirs) > 0 {
 			eff.SkillsDirs = append(eff.SkillsDirs, l.SkillsDirs...)
-			prov["skills_dirs"] = name
-			nonEmpty = true
+			m.mark("skills_dirs")
 		}
 		if len(l.PluginDirs) > 0 {
 			eff.PluginDirs = append(eff.PluginDirs, l.PluginDirs...)
-			prov["plugin_dirs"] = name
-			nonEmpty = true
+			m.mark("plugin_dirs")
 		}
 		if len(l.MCPConfigs) > 0 {
 			eff.MCPConfigs = append(eff.MCPConfigs, l.MCPConfigs...)
-			prov["mcp_configs"] = name
-			nonEmpty = true
+			m.mark("mcp_configs")
 		}
 		if len(l.SystemPromptAppend) > 0 && l.SystemPromptAppendMode == "" {
 			eff.SystemPromptAppendMode = "file"
 			eff.SystemPromptAppendFile = l.SystemPromptAppend[0]
 			eff.SystemPromptAppendText = ""
 			eff.SystemPromptAppend = nil
-			prov["system_prompt_append_mode"] = name
-			nonEmpty = true
+			m.mark("system_prompt_append_mode")
 			if len(l.SystemPromptAppend) > 1 {
 				diags = append(diags, Diagnostic{
 					Layer: name, Field: "system_prompt_append",
@@ -256,32 +161,28 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 		// A user explicitly setting a fallback chain at the launch layer means
 		// "use this exact chain", not "extend the global default chain."
 		if l.ModelFallbacks != nil {
-			cp := append([]string{}, (*l.ModelFallbacks)...)
-			eff.ModelFallbacks = &cp
-			prov["model_fallbacks"] = name
-			nonEmpty = true
+			eff.ModelFallbacks = cloneStringSlicePtr(l.ModelFallbacks)
+			m.mark("model_fallbacks")
 		}
 		// EnabledPlugins: higher-precedence layers REPLACE rather than append.
 		// A non-nil empty value intentionally clears plugin selection.
 		if l.EnabledPlugins != nil {
 			eff.EnabledPlugins = cloneStringSlicePtr(l.EnabledPlugins)
-			prov["enabled_plugins"] = name
-			nonEmpty = true
+			m.mark("enabled_plugins")
 		}
 		if len(l.MCPs) > 0 {
-			for _, m := range l.MCPs {
-				if prev, ok := mcpNames[m.Name]; ok {
+			for _, spec := range l.MCPs {
+				if prev, ok := mcpNames[spec.Name]; ok {
 					diags = append(diags, Diagnostic{
 						Layer: name, Field: "mcps",
-						Message: fmt.Sprintf("duplicate mcp name %q (previously seen at layer %q); evener launch-check will reject this", m.Name, prev),
+						Message: fmt.Sprintf("duplicate mcp name %q (previously seen at layer %q); evener launch-check will reject this", spec.Name, prev),
 					})
 				} else {
-					mcpNames[m.Name] = name
+					mcpNames[spec.Name] = name
 				}
-				eff.MCPs = append(eff.MCPs, m)
+				eff.MCPs = append(eff.MCPs, spec)
 			}
-			prov["mcps"] = name
-			nonEmpty = true
+			m.mark("mcps")
 		}
 		// Env map: last-write-wins per key, with credential blocklist.
 		for k, v := range l.Env {
@@ -295,10 +196,9 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			eff.Env[k] = v
 		}
 		if len(l.Env) > 0 {
-			prov["env"] = name
-			nonEmpty = true
+			m.mark("env")
 		}
-		if nonEmpty {
+		if m.nonEmpty {
 			contributing[name] = l
 		}
 	}
@@ -333,6 +233,38 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 		Provenance:  prov,
 		Diagnostics: diags,
 	}, diags
+}
+
+// layerMerge records what one layer contributed to the effective layer: which
+// fields it set (provenance) and whether it set any.
+type layerMerge struct {
+	prov     map[string]LayerName
+	layer    LayerName
+	nonEmpty bool
+}
+
+// mark records that the layer set the field key.
+func (m *layerMerge) mark(key string) {
+	m.prov[key] = m.layer
+	m.nonEmpty = true
+}
+
+// mergeScalar overrides *dst with v when the layer sets it (non-zero).
+func mergeScalar[T comparable](m *layerMerge, dst *T, v T, key string) {
+	var zero T
+	if v != zero {
+		*dst = v
+		m.mark(key)
+	}
+}
+
+// mergePtr overrides *dst with a copy of v when the layer sets it (non-nil), so
+// an explicit zero or false still wins over a lower layer.
+func mergePtr[T any](m *layerMerge, dst **T, v *T, key string) {
+	if v != nil {
+		*dst = appwire.ClonePointer(v)
+		m.mark(key)
+	}
 }
 
 func cloneStringSlicePtr(in *[]string) *[]string {
