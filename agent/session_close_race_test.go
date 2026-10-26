@@ -38,7 +38,7 @@ func TestSession_Close_NoRaceWithConcurrentEmit(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Go(func() {
 			for range 200 {
-				sess.emit(events.EventWarning, events.WarningData{Message: "concurrent"})
+				sess.emit(events.WarningData{Message: "concurrent"})
 			}
 		})
 		// Close concurrently with the caller-owned emits.

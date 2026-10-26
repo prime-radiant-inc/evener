@@ -54,7 +54,7 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 	}
 	dir := filepath.Join(schema.SessionsDir(s.stateDir), s.id, attachmentsSubdir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachments: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("persist input attachments: %v", err)})
 		return images
 	}
 	// MkdirAll's Stat follows a symlink planted at the final component, so
@@ -63,10 +63,10 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 	// leaf gets the same no-follow treatment as the attachment files: what
 	// sits at the path must be a real directory, not a link to one.
 	if info, err := os.Lstat(dir); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachments: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("persist input attachments: %v", err)})
 		return images
 	} else if !info.IsDir() {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachments: %q is not a directory", dir)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("persist input attachments: %q is not a directory", dir)})
 		return images
 	}
 	// MkdirAll's mode applies only at creation: an attachments directory
@@ -75,7 +75,7 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 	// user. A mode that cannot be enforced is a write failure, not a
 	// best-effort shrug.
 	if err := os.Chmod(dir, 0o700); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachments: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("persist input attachments: %v", err)})
 		return images
 	}
 	out := slices.Clone(images)
@@ -91,7 +91,7 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 		sum := sha256.Sum256(out[i].Data)
 		path := filepath.Join(dir, hex.EncodeToString(sum[:attachmentPathPrefixLen/2])+"-"+name)
 		if err := writeAttachmentFile(path, out[i].Data, writeAttachmentContents, fsyncAttachmentDir); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachment %q: %v", name, err)})
+			s.emit(events.WarningData{Message: fmt.Sprintf("persist input attachment %q: %v", name, err)})
 			continue
 		}
 		if !announceStoredPath || !s.fileToolsCanRead(path) {
