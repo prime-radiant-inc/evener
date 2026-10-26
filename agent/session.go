@@ -1129,16 +1129,15 @@ type sessionDetachedProcess struct {
 }
 
 // runningTurnReleaseRetryState paces the re-attempts of a release write the
-// client mutation store refused. It counts attempts where backoffTimer
-// does not, because this loop is finite: see runningTurnReleaseRetryLimit. It
-// needs no `active` flag for the same reason -- every re-attempt is armed by
-// the failure of the one before it, so there is never a second arrival to
+// client mutation store refused. It adds an attempt count to the backoffTimer
+// because this loop is finite: see runningTurnReleaseRetryLimit. Nothing
+// consults the timer's `active` flag -- every re-attempt is armed by the
+// failure of the one before it, so there is never a second arrival to
 // coalesce, and the generation alone strands a timer whose write has since
 // landed.
 type runningTurnReleaseRetryState struct {
-	attempts   int
-	delay      time.Duration
-	generation int
+	attempts int
+	backoffTimer
 }
 
 const (
