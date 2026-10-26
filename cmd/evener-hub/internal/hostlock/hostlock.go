@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // AcquireLock takes exclusive nonblocking ownership on path. Linux retains
@@ -17,7 +15,7 @@ import (
 // Two owners of the same state root must never run simultaneously. Separate
 // roots also need independently selected rendezvous directories and listeners.
 func AcquireLock(path string) (func(), error) {
-	if err := fsatomic.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir lock parent: %w", err)
 	}
 	if err := CheckStorage(filepath.Dir(path), nil); err != nil {

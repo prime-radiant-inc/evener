@@ -93,39 +93,6 @@ func TestSyncUnsupported(t *testing.T) {
 	}
 }
 
-func TestMkdirAllCreatesMissingAncestorsAndIsIdempotent(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "a", "b", "c")
-	for range 2 {
-		if err := fsatomic.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() {
-		t.Fatalf("stat = %v, %v; want a directory", info, err)
-	}
-}
-
-func TestMkdirAllFailsUnderAFile(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "file")
-	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := fsatomic.MkdirAll(filepath.Join(file, "sub"), 0o700); !errors.Is(err, syscall.ENOTDIR) {
-		t.Fatalf("err = %v, want ENOTDIR", err)
-	}
-}
-
-func TestMkdirAllRejectsAnExistingFile(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "file")
-	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := fsatomic.MkdirAll(file, 0o700); !errors.Is(err, syscall.ENOTDIR) {
-		t.Fatalf("err = %v, want ENOTDIR", err)
-	}
-}
-
 func TestRemoveDeletesFileAndToleratesMissingOnes(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")

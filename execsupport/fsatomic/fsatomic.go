@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sync"
 	"syscall"
 )
 
@@ -25,10 +24,13 @@ var ErrPublished = errors.New("contents published but not confirmed durable")
 // planted at a predictable name is never followed), fsyncs it, sets perm
 // outright so the process umask has no say, renames it over path, and fsyncs
 // the directory so the rename itself is durable; a failure of that last step
-// wraps ErrPublished. The parent directory must
-// exist (MkdirAll creates it durably). A failed write removes its temp file; a crash between the create and
-// the rename leaves a stray "<name>.tmp-*" file behind, which is the cost of
-// never reusing a name another process could plant.
+// wraps ErrPublished.
+//
+// The parent directory must exist. Write makes the file durable in that
+// directory; it does not sync the entries of directories the caller had to
+// create to get there. A failed write removes its temp file; a crash between
+// the create and the rename leaves a stray "<name>.tmp-*" file behind, which
+// is the cost of never reusing a name another process could plant.
 func Write(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	temp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
@@ -63,96 +65,6 @@ func Write(path string, data []byte, perm os.FileMode) error {
 	published = true
 	if err := syncDir(dir); err != nil {
 		return fmt.Errorf("%w: %w", ErrPublished, err)
-	}
-	return nil
-}
-
-// unsyncedDirs holds directories this process created whose parent entry is
-// not yet confirmed durable: a sync is in flight or failed. MkdirAll syncs them
-// again before reporting success, so neither a concurrent caller that sees the
-// directory early nor a retry after a failed sync skips the sync.
-var (
-	unsyncedMu   sync.Mutex
-	unsyncedDirs = map[string]bool{}
-)
-
-// dirKey names a directory the same way however the caller spelled its path:
-// absolute and cleaned, with symlinks resolved in the parent (which exists even
-// before the directory itself is created).
-func dirKey(dir string) string {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return filepath.Clean(dir)
-	}
-	parent, base := filepath.Split(abs)
-	if resolved, err := filepath.EvalSymlinks(parent); err == nil {
-		parent = resolved
-	}
-	return filepath.Join(parent, base)
-}
-
-func setUnsynced(dir string, unsynced bool) {
-	key := dirKey(dir)
-	unsyncedMu.Lock()
-	defer unsyncedMu.Unlock()
-	if unsynced {
-		unsyncedDirs[key] = true
-	} else {
-		delete(unsyncedDirs, key)
-	}
-}
-
-func isUnsynced(dir string) bool {
-	key := dirKey(dir)
-	unsyncedMu.Lock()
-	defer unsyncedMu.Unlock()
-	return unsyncedDirs[key]
-}
-
-// MkdirAll creates dir and any missing ancestors like os.MkdirAll, but one
-// component at a time, syncing each new directory's parent before creating the
-// next, so the new directory entries are durable. Write syncs only the
-// directory that holds the file, so a caller whose first save also creates the
-// directory runs this before Write.
-func MkdirAll(dir string, perm os.FileMode) error {
-	var todo []string // innermost first: missing, or created but not yet synced
-	for p := dir; ; p = filepath.Dir(p) {
-		info, err := os.Stat(p)
-		switch {
-		case err == nil && !info.IsDir():
-			return &os.PathError{Op: "mkdir", Path: p, Err: syscall.ENOTDIR}
-		case err == nil && !isUnsynced(p):
-			// An existing directory this process has not left unsynced:
-			// everything above it was settled when it was created.
-			return syncAll(todo, perm)
-		case err != nil && !errors.Is(err, os.ErrNotExist):
-			return err
-		}
-		todo = append(todo, p)
-		if filepath.Dir(p) == p {
-			break
-		}
-	}
-	return syncAll(todo, perm)
-}
-
-// syncAll creates (if missing) and syncs the directories in todo, outermost
-// first.
-func syncAll(todo []string, perm os.FileMode) error {
-	for i := len(todo) - 1; i >= 0; i-- {
-		p := todo[i]
-		setUnsynced(p, true)
-		if err := os.Mkdir(p, perm); err != nil {
-			info, statErr := os.Stat(p)
-			if !errors.Is(err, os.ErrExist) || statErr != nil || !info.IsDir() {
-				setUnsynced(p, false)
-				return err
-			}
-		}
-		if err := syncDir(filepath.Dir(p)); err != nil {
-			return err
-		}
-		setUnsynced(p, false)
 	}
 	return nil
 }

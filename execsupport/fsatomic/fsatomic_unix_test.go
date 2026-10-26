@@ -85,37 +85,6 @@ func TestRemoveReportsFailedDirectorySync(t *testing.T) {
 	}
 }
 
-// A parent sync that fails leaves the new directory in place, and every later
-// call must try that sync again, even once the directory holds a file, instead
-// of finding the directory and reporting durability it never got.
-func TestMkdirAllRetriesAFailedParentSyncUntilItSucceeds(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root opens any directory")
-	}
-	base := t.TempDir()
-	if err := os.Chmod(base, 0o300); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.Chmod(base, 0o700) }()
-	dir := filepath.Join(base, "a")
-
-	if err := fsatomic.MkdirAll(dir, 0o700); err == nil {
-		t.Fatal("expected the unreadable parent to fail its sync")
-	}
-	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := fsatomic.MkdirAll(dir, 0o700); err == nil {
-		t.Fatal("retry skipped the parent sync of a directory it had not confirmed")
-	}
-	if err := os.Chmod(base, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := fsatomic.MkdirAll(dir, 0o700); err != nil {
-		t.Fatalf("retry once the parent can be synced: %v", err)
-	}
-}
-
 func TestWriteSetsPerm(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	if err := fsatomic.Write(path, []byte("x"), 0o600); err != nil {
@@ -127,25 +96,5 @@ func TestWriteSetsPerm(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("perm = %v, want 0600", info.Mode().Perm())
-	}
-}
-
-// The same directory reached through a different spelling is still the
-// directory whose parent sync is outstanding.
-func TestMkdirAllRetryThroughAnotherSpellingStillSyncs(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root opens any directory")
-	}
-	base := t.TempDir()
-	if err := os.Chmod(base, 0o300); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.Chmod(base, 0o700) }()
-
-	if err := fsatomic.MkdirAll(base+"//a", 0o700); err == nil {
-		t.Fatal("expected the unreadable parent to fail its sync")
-	}
-	if err := fsatomic.MkdirAll(filepath.Join(base, ".", "a"), 0o700); err == nil {
-		t.Fatal("retry through another spelling skipped the parent sync")
 	}
 }
