@@ -1,10 +1,12 @@
 package hub
 
 import (
+	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 )
 
 // TestOutputImageDescriptorKeySHA covers the SHA path.
@@ -101,5 +103,23 @@ func TestAppwireDelegateFromAgentStatusWithWorktree(t *testing.T) {
 	info := appwireDelegateFromAgentStatus(delegate)
 	if info.Worktree == nil || info.Worktree.Branch != "test" {
 		t.Fatalf("Worktree = %+v, want Branch=test", info.Worktree)
+	}
+}
+
+// Every field the agent reports on a delegate reaches the wire row.
+func TestAppwireDelegateFromAgentStatusCarriesEveryAgentField(t *testing.T) {
+	var in agent.DelegateStatusInfo
+	appwiretest.FillNonZero(&in)
+	got := reflect.ValueOf(appwireDelegateFromAgentStatus(in))
+	src := reflect.TypeOf(in)
+	for f := range src.Fields() {
+		name := f.Name
+		field := got.FieldByName(name)
+		if !field.IsValid() {
+			t.Fatalf("EvenerDelegateInfo has no field %s for the agent status field", name)
+		}
+		if field.IsZero() {
+			t.Errorf("appwireDelegateFromAgentStatus dropped %s", name)
+		}
 	}
 }

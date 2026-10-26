@@ -230,7 +230,7 @@ test-short:
 ## fails-when: The first failing phase stops the gate and returns nonzero;
 ##   do not infer a verdict from partial logs.
 merge-approval-gate:
-	@tsv="$$(mktemp)"; trap 'rm -f "$$tsv"' EXIT INT TERM; \
+	@tsv="$$(mktemp "$${TMPDIR:-/tmp}/evener-gate-timing.XXXXXX")"; trap 'rm -f "$$tsv"' EXIT INT TERM; \
 		$(MAKE) lint && \
 		$(MAKE) build && \
 		$(MAKE) docs-check && \

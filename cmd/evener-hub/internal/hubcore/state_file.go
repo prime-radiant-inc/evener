@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/evener/cmd/evener-hub/internal/fsdurability"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // This file holds the shared writer/reader for the hub's JSON state stores
@@ -123,7 +123,7 @@ func decodeStateFileStrict(data []byte, label string, out any) error {
 }
 
 // deletionSyncUnsupported is the name the deletion store's tests use for the
-// hub's shared sync-tolerance predicate, which lives in fsdurability.
+// hub's shared sync-tolerance predicate, which lives in fsatomic.
 func deletionSyncUnsupported(err error) bool {
-	return fsdurability.SyncUnsupported(err)
+	return fsatomic.SyncUnsupported(err)
 }
