@@ -152,7 +152,7 @@ func TestClassifyLinkedWorktree(t *testing.T) {
 	// shortcut for the next missing sibling (FETCH_HEAD, …) and would hand the
 	// session create-anything rights over the shared git dir. Pinned as a negative
 	// so that widening fails loudly here instead of passing silently.
-	if underAnyRoot(commonDir, got.WritablePaths) {
+	if isUnderAnyRoot(commonDir, got.WritablePaths) {
 		t.Errorf("common dir %q must never be writable (directly or via an enclosing root)\n  WritablePaths: %v", commonDir, got.WritablePaths)
 	}
 

@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/identifier"
 )
 
 // This file holds sandboxFS's platform-independent policy logic — denial
@@ -366,7 +367,7 @@ func (s *sandboxFS) isGrantedRoot(abs string) bool {
 // the resolved policy protects (write-denied even inside a writable root).
 func (s *sandboxFS) underProtected(abs string) bool {
 	for _, p := range s.policy.Git.ProtectedPaths {
-		if abs == p || pathUnder(abs, p) {
+		if abs == p || identifier.PathUnder(abs, p) {
 			return true
 		}
 	}
@@ -409,7 +410,7 @@ func containingRoot(roots []string, abs string) (root, rel string, ok bool) {
 		if abs == r {
 			return r, ".", true
 		}
-		if pathUnder(abs, r) {
+		if identifier.PathUnder(abs, r) {
 			rl, err := securePathRel(r, abs)
 			if err != nil {
 				continue
@@ -489,18 +490,4 @@ func relComponents(rel string) []string {
 		return nil
 	}
 	return strings.Split(rel, "/")
-}
-
-// pathUnder reports whether p is strictly beneath (or equal to) dir. It mirrors
-// sandbox.pathUnder, kept local so execenv does not reach into an unexported
-// helper of another package.
-func pathUnder(p, dir string) bool {
-	rel, err := filepath.Rel(dir, p)
-	if err != nil {
-		return false
-	}
-	if rel == "." {
-		return true
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

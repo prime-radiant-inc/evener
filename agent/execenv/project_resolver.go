@@ -239,8 +239,7 @@ func pathContains(root, path string, resolveSymlinks bool) bool {
 		root = identifier.ResolveClean(root)
 		path = identifier.ResolveClean(path)
 	}
-	root, path = filepath.Clean(root), filepath.Clean(path)
-	return root == path || strings.HasPrefix(path, root+string(filepath.Separator))
+	return identifier.PathUnder(path, root)
 }
 
 func resolveCleanForEnv(env ExecutionEnvironment, path string) string {

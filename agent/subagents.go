@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/identifier"
 )
 
 const delegateSalvagedDraftNote = "partial draft salvaged in the child transcript — resume it with delegate_send rather than re-dispatching"
@@ -648,7 +649,7 @@ func (s *Session) liveShellsUnderTree(path string) []string {
 func (s *Session) collectLiveShellsUnderTree(target string, out *[]string) {
 	if s.jobManager != nil {
 		for _, h := range s.jobManager.liveShellHandles() {
-			if pathEqualOrUnder(canonicalOrClean(h.dir), target) {
+			if identifier.PathUnder(canonicalOrClean(h.dir), target) {
 				*out = append(*out, h.handle)
 			}
 		}

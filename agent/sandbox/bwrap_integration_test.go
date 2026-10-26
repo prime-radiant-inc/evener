@@ -361,7 +361,7 @@ func TestBwrapShellSeesTheScratchTreeTheFileToolsRead(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 	base = identifier.ResolveClean(base)
-	if !pathUnder(base, "/tmp") {
+	if !identifier.PathUnder(base, "/tmp") {
 		t.Skipf("/tmp resolves to %q on this host; the private /tmp shadows nothing", base)
 	}
 	cwd := MaterializeWorkspace(t, MainCheckout)

@@ -349,7 +349,7 @@ func FuzzReRoot(f *testing.F) {
 		// mode) must all fall within the RE-ROOTED worktree. A ReRoot that copied the
 		// source policy would keep granting lane A after targeting lane B or main.
 		for _, r := range rerooted.FileTool.WriteRoots {
-			if r != rerooted.Git.WorktreeRoot && !pathUnder(r, rerooted.Git.WorktreeRoot) {
+			if r != rerooted.Git.WorktreeRoot && !identifier.PathUnder(r, rerooted.Git.WorktreeRoot) {
 				t.Fatalf("re-rooted FileTool write root %q escapes the re-rooted worktree %q (copy bug?)", r, rerooted.Git.WorktreeRoot)
 			}
 		}

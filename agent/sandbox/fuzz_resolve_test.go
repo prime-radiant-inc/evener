@@ -130,7 +130,7 @@ func FuzzResolve(f *testing.F) {
 			}
 			return
 		}
-		if rp.Enforced() && !pathUnder(rp.Git.WorktreeRoot, fixture.root) {
+		if rp.Enforced() && !identifier.PathUnder(rp.Git.WorktreeRoot, fixture.root) {
 			t.Fatalf("resolved worktree %q escapes fuzz fixture %q", rp.Git.WorktreeRoot, fixture.root)
 		}
 

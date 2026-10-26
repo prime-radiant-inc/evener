@@ -278,7 +278,7 @@ func assertResolution(t TestingT, tc ContractCase, rp ResolvedPolicy, cwd, home 
 		// the worktree (the model browses only the worktree, never "/" or a parent).
 		// An exact-root check would miss a resolver returning ReadRoots ["/"].
 		for _, r := range rp.FileTool.ReadRoots {
-			if r != cwd && pathUnder(cwd, r) {
+			if r != cwd && identifier.PathUnder(cwd, r) {
 				t.Errorf("case %s: restricted FileTool.ReadRoots contains over-broad parent %q of worktree %q: %v", tc.Name, r, cwd, rp.FileTool.ReadRoots)
 			}
 		}
@@ -298,7 +298,7 @@ func assertResolution(t TestingT, tc ContractCase, rp ResolvedPolicy, cwd, home 
 // grant (e.g. WriteRoots ["/"]) is detected rather than passing unnoticed.
 func rootGrants(roots []string, target string) bool {
 	for _, r := range roots {
-		if r == target || pathUnder(target, r) {
+		if r == target || identifier.PathUnder(target, r) {
 			return true
 		}
 	}

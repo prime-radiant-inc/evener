@@ -273,7 +273,7 @@ func governingMount(mounts []bwrapMount, path string) (bwrapMount, bool) {
 	var found bwrapMount
 	ok := false
 	for _, m := range mounts {
-		if m.target == path || pathUnder(path, m.target) {
+		if m.target == path || identifier.PathUnder(path, m.target) {
 			found, ok = m, true
 		}
 	}
@@ -335,7 +335,7 @@ func TestBwrapProtectedRebindsFollowCommonDirGrant(t *testing.T) {
 	}
 	protectedInCommon := 0
 	for _, p := range rp.Git.ProtectedPaths {
-		if !pathUnder(p, cd) || p == cd {
+		if !identifier.PathUnder(p, cd) || p == cd {
 			continue
 		}
 		protectedInCommon++

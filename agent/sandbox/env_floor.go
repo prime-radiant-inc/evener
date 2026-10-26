@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/identifier"
 )
 
 // floorExactDrops are environment variables removed from every spawned process in
@@ -203,7 +204,7 @@ func servedByOverlay(roots []string, dir string) bool {
 // landsUnder reports whether dest (a resolved location) is at or under root, by
 // spelling or by the root's own resolved location.
 func landsUnder(dest, root string) bool {
-	return pathUnder(dest, root) || pathUnder(dest, resolveExistingPrefix(root))
+	return identifier.PathUnder(dest, root) || identifier.PathUnder(dest, resolveExistingPrefix(root))
 }
 
 // overlapsAnyRoot reports whether dir lies at or under one of roots, or holds
@@ -215,7 +216,7 @@ func overlapsAnyRoot(dir string, roots []string) bool {
 	rd := resolveExistingPrefix(dir)
 	return slices.ContainsFunc(roots, func(r string) bool {
 		rr := resolveExistingPrefix(r)
-		return pathUnder(dir, r) || pathUnder(r, dir) || pathUnder(rd, rr) || pathUnder(rr, rd)
+		return identifier.PathUnder(dir, r) || identifier.PathUnder(r, dir) || identifier.PathUnder(rd, rr) || identifier.PathUnder(rr, rd)
 	})
 }
 
