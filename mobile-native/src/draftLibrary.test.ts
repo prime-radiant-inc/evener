@@ -242,6 +242,52 @@ describe("drafts across navigation", () => {
 		}
 	});
 
+	it("removes a pending copy when a settled marker appears after a partial read", () => {
+		const { database, port } = openSqliteSyncDouble();
+		try {
+			const repository = new DraftRepository(port);
+			const from = { hubId: "one", sessionRef: "old" };
+			const to = { hubId: "one", sessionRef: "resumed" };
+			repository.write(from, { draft: "A draft", unconfirmed: null });
+			repository.markPendingHandoffSettled(from, to);
+			let failDraftsRead = true;
+			const storage = new Proxy(repository, {
+				get(target, property, receiver) {
+					if (property === "readPendingHandoffs" || property === "readSettledHandoffs") {
+						return () => {
+							if (failDraftsRead) throw new Error("drafts unavailable");
+							const read = Reflect.get(target, property, target) as () => unknown;
+							return read.call(target);
+						};
+					}
+					const value = Reflect.get(target, property, receiver);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const ledger = {
+				readResumeIdentities: () => [{ from, to }],
+				redirectResumeIdentity: () => {},
+				settleResumeIdentity: () => {},
+			};
+			const library = new DraftLibrary(
+				() => storage,
+				undefined,
+				() => ledger,
+			);
+			// The drafts read fails, so the ledger's A->B enters pending alone.
+			expect(library.hasPendingHandoff(to)).toBe(true);
+			failDraftsRead = false;
+			library.retryPendingHandoffs();
+			// Recovery reveals the settled marker and must drop the pending copy.
+			expect(library.hasPendingHandoff(to)).toBe(false);
+			expect(repository.read(from).draft).toBe("A draft");
+			expect(repository.read(to).draft).toBe("");
+			expect(repository.readSettledHandoffs()).toEqual([]);
+		} finally {
+			database.close();
+		}
+	});
+
 	it("retries a destination load before deferring the handoff", () => {
 		const { database: db, port } = openSqliteSyncDouble();
 		databases.push(db);

@@ -241,13 +241,10 @@ export class DraftLibrary {
 		const key = this.handoffKey(from, to);
 		this.pending.delete(key);
 		let cleanupFailed = false;
-		const hasOtherPending = this.pendingTo(to);
-		if (!hasOtherPending) {
-			try {
-				this.repository().markPendingHandoffSettled?.(from, to);
-			} catch {
-				cleanupFailed = true;
-			}
+		try {
+			this.repository().markPendingHandoffSettled?.(from, to);
+		} catch {
+			cleanupFailed = true;
 		}
 		let identitiesSettled = true;
 		try {
@@ -256,7 +253,7 @@ export class DraftLibrary {
 			identitiesSettled = false;
 			cleanupFailed = true;
 		}
-		if (!hasOtherPending && identitiesSettled) {
+		if (identitiesSettled) {
 			try {
 				this.repository().removeSettledHandoff?.(from, to);
 			} catch {
@@ -293,27 +290,42 @@ export class DraftLibrary {
 		let loaded = true;
 		const raw: { from: DraftDestination; to: DraftDestination }[] = [];
 		const settledKeys = new Set(this.stale.keys());
+		const settledSources = new Set<string>();
+		for (const edge of this.stale.values()) settledSources.add(destinationKey(edge.from));
 		try {
 			const storage = this.repository();
 			if (storage.readPendingHandoffs !== undefined && storage.writePendingHandoff !== undefined) {
-				raw.push(...storage.readPendingHandoffs());
+				const pendingRows = storage.readPendingHandoffs();
 				for (const edge of storage.readSettledHandoffs?.() ?? []) {
 					const key = this.handoffKey(edge.from, edge.to);
 					settledKeys.add(key);
+					settledSources.add(destinationKey(edge.from));
 					if (!this.stale.has(key)) this.stale.set(key, edge);
 				}
+				for (const edge of pendingRows)
+					if (!settledKeys.has(this.handoffKey(edge.from, edge.to)) && !settledSources.has(destinationKey(edge.to)))
+						raw.push(edge);
 			}
 		} catch {
 			// Storage is failing; the next open or retry looks again.
 			loaded = false;
 		}
 		try {
-			for (const edge of this.resumeIdentities?.()?.readResumeIdentities() ?? [])
-				if (!settledKeys.has(this.handoffKey(edge.from, edge.to))) raw.push(edge);
+			for (const edge of this.resumeIdentities?.()?.readResumeIdentities() ?? []) {
+				if (settledKeys.has(this.handoffKey(edge.from, edge.to))) continue;
+				// A settled edge retires its source: edges pointing at that source
+				// are provenance and must not become standalone transfers.
+				if (settledSources.has(destinationKey(edge.to))) continue;
+				raw.push(edge);
+			}
 		} catch {
 			// The mutations database is failing too; a later open looks again.
 			loaded = false;
 		}
+		// A partial load may have added a ledger edge before the drafts store
+		// revealed its settled marker. Settlement wins: never keep a transfer.
+		for (const [key, edge] of [...this.pending])
+			if (settledKeys.has(key) || settledSources.has(destinationKey(edge.to))) this.pending.delete(key);
 		// A redirect accepted by only one store leaves both the old and new
 		// mappings on disk. Attempt the redirects first: a failure keeps the raw
 		// intermediate edge and suppresses the redirected mapping from that

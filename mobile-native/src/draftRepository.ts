@@ -72,6 +72,13 @@ export class DraftRepository {
       settled INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (to_hub_id, to_session_ref)
     )`);
+		db.execSync(`CREATE TABLE IF NOT EXISTS draft_handoff_settlements (
+      from_hub_id TEXT NOT NULL,
+      from_session_ref TEXT NOT NULL,
+      to_hub_id TEXT NOT NULL,
+      to_session_ref TEXT NOT NULL,
+      PRIMARY KEY (from_hub_id, from_session_ref, to_hub_id, to_session_ref)
+    )`);
 		const handoffColumns = new Set(
 			db.getAllSync<{ name: string }>("PRAGMA table_info(pending_draft_handoffs)").map((column) => column.name),
 		);
@@ -342,7 +349,9 @@ export class DraftRepository {
 			from_session_ref: string;
 			to_hub_id: string;
 			to_session_ref: string;
-		}>("SELECT from_hub_id, from_session_ref, to_hub_id, to_session_ref FROM pending_draft_handoffs WHERE settled = 1");
+		}>(`SELECT from_hub_id, from_session_ref, to_hub_id, to_session_ref FROM draft_handoff_settlements
+		    UNION
+		    SELECT from_hub_id, from_session_ref, to_hub_id, to_session_ref FROM pending_draft_handoffs WHERE settled = 1`);
 		return rows.map((row) => ({
 			from: { hubId: row.from_hub_id, sessionRef: row.from_session_ref },
 			to: { hubId: row.to_hub_id, sessionRef: row.to_session_ref },
@@ -390,30 +399,51 @@ export class DraftRepository {
 	/** Mark a settled transfer's mapping for cleanup. Called only when the
 	 * normal delete failed, so a restart cannot mistake it for a pending one. */
 	markPendingHandoffSettled(from: DraftDestination, to: DraftDestination): void {
+		// Settlement is per edge, not per destination: another transfer may still
+		// be pending to the same destination. Write it independently of the
+		// drafts-row cleanup; the settlement table is authoritative on load.
 		this.db.runSync(
-			`INSERT INTO pending_draft_handoffs
-			 (from_hub_id, from_session_ref, to_hub_id, to_session_ref, settled)
-			 VALUES (?, ?, ?, ?, 1)
-			 ON CONFLICT (to_hub_id, to_session_ref) DO UPDATE SET
-			 from_hub_id = excluded.from_hub_id,
-			 from_session_ref = excluded.from_session_ref,
-			 settled = 1`,
+			`INSERT OR IGNORE INTO draft_handoff_settlements
+			 (from_hub_id, from_session_ref, to_hub_id, to_session_ref)
+			 VALUES (?, ?, ?, ?)`,
 			from.hubId,
 			from.sessionRef,
 			to.hubId,
 			to.sessionRef,
 		);
+		try {
+			this.db.runSync(
+				`DELETE FROM pending_draft_handoffs
+				 WHERE from_hub_id = ? AND from_session_ref = ? AND to_hub_id = ? AND to_session_ref = ?`,
+				from.hubId,
+				from.sessionRef,
+				to.hubId,
+				to.sessionRef,
+			);
+		} catch {
+			// A leftover pending row is filtered by the settlement on load.
+		}
 	}
 
 	removeSettledHandoff(from: DraftDestination, to: DraftDestination): void {
-		this.db.runSync(
-			`DELETE FROM pending_draft_handoffs
-			 WHERE settled = 1 AND from_hub_id = ? AND from_session_ref = ? AND to_hub_id = ? AND to_session_ref = ?`,
-			from.hubId,
-			from.sessionRef,
-			to.hubId,
-			to.sessionRef,
-		);
+		withSavepoint(this.db, "draft_handoff_settle_remove", () => {
+			this.db.runSync(
+				`DELETE FROM draft_handoff_settlements
+				 WHERE from_hub_id = ? AND from_session_ref = ? AND to_hub_id = ? AND to_session_ref = ?`,
+				from.hubId,
+				from.sessionRef,
+				to.hubId,
+				to.sessionRef,
+			);
+			this.db.runSync(
+				`DELETE FROM pending_draft_handoffs
+				 WHERE from_hub_id = ? AND from_session_ref = ? AND to_hub_id = ? AND to_session_ref = ?`,
+				from.hubId,
+				from.sessionRef,
+				to.hubId,
+				to.sessionRef,
+			);
+		});
 	}
 
 	remove(destination: DraftDestination): void {
@@ -503,6 +533,7 @@ export class DraftRepository {
 	removeHub(hubId: string): void {
 		this.creation.clear(hubId);
 		this.db.runSync("DELETE FROM pending_draft_handoffs WHERE from_hub_id = ? OR to_hub_id = ?", hubId, hubId);
+		this.db.runSync("DELETE FROM draft_handoff_settlements WHERE from_hub_id = ? OR to_hub_id = ?", hubId, hubId);
 		this.db.runSync("DELETE FROM draft_image_sets WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM draft_images WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM drafts WHERE hub_id = ?", hubId);
