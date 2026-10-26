@@ -36,6 +36,31 @@ func withQueuedClientMutation(ctx context.Context, queued queuedInput) context.C
 	return context.WithValue(ctx, queuedClientMutationContextKey{}, queuedClientMutationIdentityOf(queued))
 }
 
+// claimedInputContext is the context a claimed input runs under: its durable
+// identity, plus its skill and command selection prepared at actual
+// consumption as one atomic group tied to that identity, all-or-nothing before
+// any dependent work dispatches.
+func (s *Session) claimedInputContext(ctx context.Context, claimed queuedInput) context.Context {
+	return s.contextWithSelectedSkills(withQueuedClientMutation(ctx, claimed), claimed)
+}
+
+// announceClaimedInput publishes a committed claim under the transcript's
+// write door. A poisoning append records the poison while holding that door,
+// so the announce is ordered against every poisoning: either the poison is
+// already visible and nothing is announced, or it lands after the announce and
+// the turn meets the ordinary mid-run refusal. On refusal the claim goes back
+// through giveBack, whose own failure rides along with the refusal.
+func (s *Session) announceClaimedInput(announce func(), giveBack func() error) error {
+	refusal := s.attachedTranscript().WhileHealthy(announce)
+	if refusal == nil {
+		return nil
+	}
+	if giveBackErr := giveBack(); giveBackErr != nil {
+		return errors.Join(errWhileHealthyRefuses(refusal), fmt.Errorf("return claimed input: %w", giveBackErr))
+	}
+	return errWhileHealthyRefuses(refusal)
+}
+
 // queuedClientMutationIdentityOf is withQueuedClientMutation's identity for a
 // queued input, for a caller that holds the input rather than the context.
 func queuedClientMutationIdentityOf(queued queuedInput) queuedClientMutationIdentity {
@@ -278,7 +303,7 @@ func (s *Session) SteerFromUserWithImages(msg string, images []ImageAttachment) 
 	if strings.TrimSpace(msg) == "" && len(images) == 0 {
 		return nil
 	}
-	_, err := s.clientMutationSteer(appwire.TurnSteerParams{
+	_, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		Ref:              s.ID(),
 		ClientMutationID: "legacy_" + newQueueEntryID(),
 		Input:            clientMutationInput(msg, images, nil),
@@ -488,7 +513,7 @@ func (s *Session) EnqueueWithImages(ctx context.Context, text string, images []I
 		return errors.New("queue: session is closed")
 	}
 	s.mu.Unlock()
-	_, err := s.clientMutationQueue(appwire.TurnQueueParams{
+	_, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{
 		Ref:              s.ID(),
 		ClientMutationID: "legacy_" + newQueueEntryID(),
 		Input:            clientMutationInput(text, images, nil),
@@ -536,7 +561,7 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 	if len(snapshot.InputQueue) == 0 && strings.TrimSpace(text) == "" && len(images) == 0 {
 		return errors.New("drain: queue is empty")
 	}
-	_, err := s.clientMutationDrain(appwire.TurnDrainAsSteerParams{
+	_, err := s.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
 		Ref:                   s.ID(),
 		ClientMutationID:      "legacy_" + newQueueEntryID(),
 		ExpectedQueueRevision: snapshot.QueueRevision,
@@ -578,7 +603,7 @@ func (s *Session) PromoteQueuedAsSteer(ctx context.Context, index int, expectedI
 		return errors.New("promote: session is closed")
 	}
 	s.mu.Unlock()
-	_, err := s.clientMutationPromote(appwire.TurnPromoteQueuedAsSteerParams{
+	_, err := s.AcceptClientMutationPromoteQueuedAsSteer(appwire.TurnPromoteQueuedAsSteerParams{
 		Ref:              s.ID(),
 		Index:            index,
 		ClientMutationID: "legacy_" + newQueueEntryID(),
@@ -617,7 +642,7 @@ func (s *Session) CancelQueued(ctx context.Context, index int, expectedID string
 		return "", 0, errors.New("cancel: session is closed")
 	}
 	s.mu.Unlock()
-	response, err := s.clientMutationCancel(appwire.TurnCancelQueuedParams{
+	response, err := s.AcceptClientMutationCancelQueued(appwire.TurnCancelQueuedParams{
 		Ref:              s.ID(),
 		Index:            index,
 		ClientMutationID: "legacy_" + newQueueEntryID(),

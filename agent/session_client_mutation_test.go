@@ -699,8 +699,8 @@ func TestClientMutation_QueueHeadReclaimAfterReturnStaysPending(t *testing.T) {
 		ClientMutationID: "queue-head-reclaim",
 		Input:            []appwire.InputItem{{Type: "text", Text: "run me"}},
 	}
-	if _, err := sess.clientMutationQueue(params); err != nil {
-		t.Fatalf("clientMutationQueue: %v", err)
+	if _, err := sess.AcceptClientMutationQueue(params); err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}
 	claimed := sess.popQueueHead()
 	if claimed.ClientMutationID != params.ClientMutationID {
@@ -1311,7 +1311,7 @@ func TestClientMutation_InterruptWaitReleasesSerializerAndRunnerTerminalizesFenc
 		ClientMutationID: "queue-during-interrupt-fence",
 		Input:            []appwire.InputItem{{Type: "text", Text: "must not pass fence"}},
 	}
-	if _, err := sess.clientMutationQueue(queuedDuringFence); err == nil {
+	if _, err := sess.AcceptClientMutationQueue(queuedDuringFence); err == nil {
 		t.Fatal("queue mutation passed an active interrupt fence")
 	}
 	if err := sess.completeClientMutationInterruptedTurn(params.ClientMutationID); err != nil {

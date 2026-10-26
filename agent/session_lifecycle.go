@@ -1407,7 +1407,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 						} else if inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) {
 							next = queued.Text
 							nextImages = queued.Images
-							processCtx = s.contextWithSelectedSkills(withQueuedClientMutation(cfg.nextTurnContext(), queued), queued)
+							processCtx = s.claimedInputContext(cfg.nextTurnContext(), queued)
 							s.mu.Lock()
 							s.sessionEndEmitted = false
 							s.mu.Unlock()
@@ -1581,7 +1581,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		case runQueued:
 			next = queued.Text
 			nextImages = queued.Images
-			processCtx = s.contextWithSelectedSkills(withQueuedClientMutation(processCtx, queued), queued)
+			processCtx = s.claimedInputContext(processCtx, queued)
 			s.mu.Lock()
 			s.sessionEndEmitted = false
 			s.mu.Unlock()

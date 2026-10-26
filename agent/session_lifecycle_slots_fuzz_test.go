@@ -155,7 +155,7 @@ func lcycRunDrain(t *testing.T, sess *Session, ops []lcycDrainOp) string {
 			// append went around it, so an image-only entry is still reachable.
 			// A blank-or-whitespace-only, image-less entry has no representation
 			// at this layer either: appwire.NormalizeMutationInput drops a
-			// text item whose TrimSpace is empty, and clientMutationQueue then
+			// text item whose TrimSpace is empty, and AcceptClientMutationQueue then
 			// rejects the resulting empty input exactly as EnqueueWithImages
 			// does ("input is required") — so it is skipped, matching
 			// lcycCheckDrain's own driveAdded predicate below.
@@ -164,7 +164,7 @@ func lcycRunDrain(t *testing.T, sess *Session, ops []lcycDrainOp) string {
 				closing := sess.closingOrClosedLocked()
 				sess.mu.Unlock()
 				if !closing {
-					if _, err := sess.clientMutationQueue(appwire.TurnQueueParams{
+					if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 						Ref:              sess.ID(),
 						ClientMutationID: "lcyc_" + newQueueEntryID(),
 						Input:            clientMutationInput(op.text, lcycImages(op.images), nil),
