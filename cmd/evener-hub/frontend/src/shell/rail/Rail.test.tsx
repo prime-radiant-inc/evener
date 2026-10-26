@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type {
   NavigationManifest,
   NavigationProjectResource,
+  NavigationReadParams,
   NavigationSessionSummary,
   NavigationSnapshot,
 } from "@evener/appwire-client";
@@ -81,7 +82,74 @@ function emptyManifest(): NavigationManifest {
     catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
   });
 }
+// The read parameters that address `key`, so wireSnapshot can build the graph
+// the hub would have sent for it.
+function readParamsFor(key: ResourceKey): NavigationReadParams {
+  const v3 = { representationVersion: 3 as const };
+  switch (key.kind) {
+    case "manifest":
+      return { resource: "manifest", ...v3 };
+    case "section":
+      return { resource: "section", ...v3, section: key.section, offset: key.offset, limit: key.limit };
+    case "pin_catalog":
+      return { resource: "pin_catalog", ...v3, offset: key.offset, limit: key.limit };
+    case "pin_section":
+      return { resource: "pin_section", ...v3, sectionId: key.sectionId, offset: key.offset, limit: key.limit };
+    case "catalog":
+      return { resource: "catalog", ...v3, catalog: key.catalog, offset: key.offset, limit: key.limit };
+    case "project":
+      return {
+        resource: "project",
+        ...v3,
+        projectKey: key.projectKey,
+        ...(key.catalog ? { catalog: key.catalog } : {}),
+      };
+    case "project_page":
+      return {
+        resource: "project_page",
+        projectKey: key.projectKey,
+        ...(key.catalog ? { catalog: key.catalog } : {}),
+        tier: key.tier,
+        offset: key.offset,
+        limit: key.limit,
+        ...v3,
+      };
+    case "location":
+      return { resource: "location", ...v3, ref: key.ref };
+  }
+}
+
+// wireSnapshot leaves a project's per-tier remaining counts at zero; the seeded
+// data's counts are what the hub would have sent.
+function projectRemaining(metadata: NavigationSnapshot["metadata"], data: unknown): NavigationSnapshot["metadata"] {
+  const tiers = data as Partial<Record<"current" | "recent" | "archived", { remaining?: number }>>;
+  return {
+    ...(metadata as Record<string, unknown>),
+    current_remaining: tiers.current?.remaining ?? 0,
+    recent_remaining: tiers.recent?.remaining ?? 0,
+    archived_remaining: tiers.archived?.remaining ?? 0,
+  };
+}
+
+// A resource as the navigation store holds it after a decoded snapshot: the
+// seeded data plus the normalized graph the rail reads.
 function resource<T>(key: ResourceKey, data: T): ResourceState<T> {
+  const state = rawResource(key, data);
+  // A failed or gone read carries no data and, as in the store, no graph.
+  if (key.kind === "manifest" || data === null) return state;
+  const wire = wireSnapshot(readParamsFor(key), data).data as NavigationSnapshot;
+  const snapshot = key.kind === "project" ? { ...wire, metadata: projectRemaining(wire.metadata, data) } : wire;
+  return {
+    ...state,
+    normalized: {
+      key,
+      graph: normalizedGraphFromSnapshot(snapshot),
+      version: { generationId: "g1", revision: 1, etag: "e" },
+      presence: "present",
+    },
+  };
+}
+function rawResource<T>(key: ResourceKey, data: T): ResourceState<T> {
   return {
     key,
     data,
@@ -2488,7 +2556,10 @@ describe("resource-backed Rail", () => {
       navigationStore.setState({ resources });
     });
 
-    expect(observer).toHaveBeenCalledWith("navigation:live:local:sibling");
+    // A graph-backed row is identified by its entity key, so the sibling is
+    // found by what it shows rather than by a row id.
+    expect(screen.getByText("Sibling session")).toBeTruthy();
+    expect(observer).toHaveBeenCalled();
     expect(observer).not.toHaveBeenCalledWith("projectnode:p");
   });
 });
