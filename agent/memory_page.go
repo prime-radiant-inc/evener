@@ -265,17 +265,12 @@ func memoryStampDate(v any) string {
 	return ""
 }
 
-// listMemoryPages reads every page of env's scope. Only regular files on
-// page paths are listed; a page removed since the listing is skipped,
-// and one that cannot be read is listed by its filename. The walk never
-// enters a dot directory, which holds no pages, so a .git in the scope does
-// not slow the listing.
-func listMemoryPages(env *execenv.LocalExecutionEnvironment) ([]memoryPage, error) {
-	return listMemoryPagesCtx(context.Background(), env)
-}
-
-// listMemoryPagesCtx is listMemoryPages with the caller's context threaded to
-// each page read, so a cancelled memory read ends a read parked on a stream.
+// listMemoryPagesCtx reads every page of env's scope, with the caller's context
+// threaded to each page read, so a cancelled memory read ends a read parked on
+// a stream. Only regular files on page paths are listed; a page removed since
+// the listing is skipped, and one that cannot be read is listed by its
+// filename. The walk never enters a dot directory, which holds no pages, so a
+// .git in the scope does not slow the listing.
 func listMemoryPagesCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment) ([]memoryPage, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
