@@ -367,10 +367,7 @@ func TestHostTombstoneGlobalCapEviction(t *testing.T) {
 	f2 := newUpdateFixture(t, hostreg.Host{Name: "b", SSH: "b.example"}, hostreg.Host{Name: "c", SSH: "c.example"})
 	f2.m.cfg.policy.tombstoneMaxCount = 2
 	f2.m.cfg.now = func() time.Time { return base }
-	if _, err := f2.m.Remove(context.Background(), removeRequest(t, f2.m, "side")); err != nil {
-		t.Fatalf("Remove(side): %v", err)
-	}
-	f2.m.testOnlyRemnantGated = func(name string) bool { return name == "side" }
+	removeLeavingRemnant(t, f2.m, "side")
 	f2.m.cfg.now = func() time.Time { return base.Add(time.Hour) }
 	if _, err := f2.m.Remove(context.Background(), removeRequest(t, f2.m, "b")); err != nil {
 		t.Fatalf("Remove(b): %v", err)
@@ -391,6 +388,24 @@ func TestHostTombstoneGlobalCapEviction(t *testing.T) {
 	}
 }
 
+// removeLeavingRemnant removes name with a failing teardown, so the committed
+// removal leaves its tombstone and an open teardown remnant fencing the name.
+func removeLeavingRemnant(t *testing.T, m *hubHostManager, name string) {
+	t.Helper()
+	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected teardown failure") }
+	defer func() { m.testOnlyTeardown = nil }()
+	result, err := m.RemoveResult(context.Background(), removeRequest(t, m, name))
+	if err != nil {
+		t.Fatalf("Remove(%s): %v", name, err)
+	}
+	if result.HostMutationTeardownFailureRemoved == nil {
+		t.Fatalf("Remove(%s) = %+v, want the teardown-failure arm", name, result)
+	}
+	if _, open := m.openRemnantID(name); !open {
+		t.Fatalf("Remove(%s) left no open remnant", name)
+	}
+}
+
 // tombstoneNames sorts a tombstone set's names for readable failures.
 func tombstoneNames[T any](set map[string]T) []string {
 	names := make([]string, 0, len(set))
@@ -404,22 +419,15 @@ func tombstoneNames[T any](set map[string]T) []string {
 // TestHostTombstoneCapacityRefusal pins spec §15/§12's typed refusal: a persist
 // that would exceed a global bound and can only do so by evicting a
 // remnant-gated tombstone refuses with `tombstone-capacity`, naming the bound
-// and the blocking names — via the test-only gated seam the S10
-// testOnlyParkPostCommit precedent established.
+// and the blocking names.
 func TestHostTombstoneCapacityRefusal(t *testing.T) {
 	f := newUpdateFixture(t, hostreg.Host{Name: "b", SSH: "b.example"}, hostreg.Host{Name: "c", SSH: "c.example"})
 	f.m.cfg.policy.tombstoneMaxCount = 2
 	base := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
 	f.m.cfg.now = func() time.Time { return base }
-	if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side")); err != nil {
-		t.Fatalf("Remove(side): %v", err)
-	}
-	f.m.testOnlyRemnantGated = func(name string) bool { return name == "side" }
+	removeLeavingRemnant(t, f.m, "side")
 	f.m.cfg.now = func() time.Time { return base.Add(time.Hour) }
-	if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "b")); err != nil {
-		t.Fatalf("Remove(b): %v", err)
-	}
-	f.m.testOnlyRemnantGated = func(name string) bool { return name == "side" || name == "b" }
+	removeLeavingRemnant(t, f.m, "b")
 	// The next removal fits only by evicting a gated tombstone: every candidate
 	// is gated, so it refuses typed and commits nothing.
 	before := readHubTOMLBytes(t, f.configPath)
@@ -637,15 +645,12 @@ func TestHostTombstoneBootPrune(t *testing.T) {
 
 // TestHostTombstoneExpirySkipsGatedNames pins spec §15/§6: expiry never purges
 // a tombstone whose name still holds an open teardown remnant, and the
-// in-memory filter keeps rendering it (via the test-only gated seam).
+// in-memory filter keeps rendering it.
 func TestHostTombstoneExpirySkipsGatedNames(t *testing.T) {
 	f := newUpdateFixture(t)
 	removedAt := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
 	f.m.cfg.now = func() time.Time { return removedAt }
-	if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side")); err != nil {
-		t.Fatalf("Remove: %v", err)
-	}
-	f.m.testOnlyRemnantGated = func(name string) bool { return name == "side" }
+	removeLeavingRemnant(t, f.m, "side")
 	f.m.cfg.now = func() time.Time { return removedAt.Add(DefaultHostTombstoneRetention + time.Hour) }
 	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "later", Address: "later.example"}}); err != nil {
 		t.Fatalf("Add(later): %v", err)
@@ -653,9 +658,14 @@ func TestHostTombstoneExpirySkipsGatedNames(t *testing.T) {
 	if _, still := f.m.cfg.store.tombstoneSnapshot()["side"]; !still {
 		t.Fatal("the mutation-path prune dropped a remnant-gated tombstone")
 	}
-	row := rowFor(t, f.m, "side")
-	if !row.Removed {
-		t.Fatalf("gated expired tombstone is not rendered: %+v", row)
+	remnantID, _ := f.m.openRemnantID("side")
+	// Boot from the persisted records: the failed teardown left the name live
+	// in this process, and the restart is what renders the retained tombstone.
+	rebooted := bootHostManager(t, f.configPath)
+	rebooted.cfg.now = f.m.cfg.now
+	row := rowFor(t, rebooted, "side")
+	if !row.Removed || row.OpenRemnantID != remnantID {
+		t.Fatalf("gated expired tombstone row = %+v, want it rendered removed and naming remnant %q", row, remnantID)
 	}
 }
 
