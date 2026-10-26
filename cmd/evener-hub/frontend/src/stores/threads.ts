@@ -1348,6 +1348,7 @@ function createEntryTranscriptRepository(
     mayPersist: () =>
       !fixture.cachedUnverified &&
       (!productionRoute || threadsStore.getState().cacheLifetimes.get(ref)?.suppressed !== true),
+    onHistoryReadAccepted: (response, model) => reconcileAcceptedReadRecovery(ref, response, model),
     readHistory: (held, signal) =>
       runEntryHistoryRequest(fixture, signal, () => {
         const client = wiredClient;
@@ -5667,6 +5668,23 @@ function publishThreadHydration(
   return backgroundModel;
 }
 
+// Admission comes from a fresh accepted server read, not generic model publication.
+// Clearing an obligation still requires tracked mutation reconciliation below;
+// a repository end/final read cannot prove uncertain outbox rows absent.
+function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse, model: ThreadModel): void {
+  threadsStore.setState((state) => {
+    const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
+    if (response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(ref);
+    else mutationAuthorityRefs.delete(ref);
+    return { mutationAuthorityRefs };
+  });
+  if (model.status.type === "restartRequired" || response.thread.evener.resumeRequired === true) {
+    threadsStore.setState((state) => ({
+      restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+    }));
+  }
+}
+
 async function publishAndReconcileThreadHydration(
   ref: string,
   pending: PendingThreadHydration,
@@ -5681,17 +5699,7 @@ async function publishAndReconcileThreadHydration(
   const adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
   const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
   if (!published) return null;
-  threadsStore.setState((state) => {
-    const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
-    if (hydration.response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(ref);
-    else mutationAuthorityRefs.delete(ref);
-    return { mutationAuthorityRefs };
-  });
-  if (published.status.type === "restartRequired" || hydration.response.thread.evener.resumeRequired === true) {
-    threadsStore.setState((state) => ({
-      restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
-    }));
-  }
+  reconcileAcceptedReadRecovery(ref, hydration.response, published);
   const blockingObligation = threadsStore.getState().restartBlockingObligations.get(ref);
   if (intent === "background" || intent === "final") return published;
   // The authoritative read has succeeded, so the replay gate opens HERE — in

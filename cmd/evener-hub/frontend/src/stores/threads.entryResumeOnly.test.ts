@@ -8,7 +8,15 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { connectionStore } from "./connection";
-import { isResumeOnly, productionEntryTranscriptForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
+import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import {
+  isResumeOnly,
+  productionEntryTranscriptForTests,
+  resetThreadsStoreForTests,
+  setMutationStorageForTests,
+  settleEntryTranscriptForTests,
+  threadsStore,
+} from "./threads";
 
 const cleanupStops: Array<() => Promise<void>> = [];
 beforeEach(() => {
@@ -60,6 +68,27 @@ function publishAgain(fake: FakeClient, ref: string): void {
   fake.emitNotification({
     method: "evener/jobs/treeUpdated",
     params: { threadId: `thr_${ref}`, ref, revision: 7 },
+  });
+}
+
+function endRound(fake: FakeClient, ref: string): void {
+  act(() => {
+    fake.emitNotification({
+      method: "overlay/upserted",
+      params: {
+        ref,
+        threadId: `thr_${ref}`,
+        item: {
+          key: "ending",
+          kind: "stream",
+          streamId: "ending",
+          roundId: "ending",
+          turnId: "turn_1",
+          item: { id: "ending", type: "agentMessage", text: "ending" },
+        },
+      },
+    });
+    fake.emitNotification({ method: "overlay/end", params: { ref, threadId: `thr_${ref}`, roundId: "ending" } });
   });
 }
 
@@ -157,4 +186,127 @@ test("an authoritative live foldable snapshot remains foldable without an off-sh
   act(() => fake.emitNotification(status(ref, "notLoaded")));
   expect(isResumeOnly(model(ref))).toBe(true);
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+});
+
+test.each([false, true])(
+  "accepted end-read recovery parks Send before resume, changed identity=%s",
+  async (changed) => {
+    const ref = "local:end-read-recovery";
+    const destination = changed ? "local:end-read-resumed" : ref;
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient();
+    const live = (target: string) => {
+      const response = currentRead(target);
+      response.thread.evener.instanceId = `instance-${target}`;
+      response.thread.evener.mutationStateAuthoritative = true;
+      response.overlay = [];
+      return response;
+    };
+    fake.on("thread/read", (params) => ({ ...live(ref), requestGeneration: params.requestGeneration }));
+    await threadsStore.getState().ensureThread(ref);
+    await settleEntryTranscriptForTests(ref);
+    const repository = productionEntryTranscriptForTests(ref).repository;
+    expect(repository).toBeDefined();
+    expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+
+    const entered = deferred<void>();
+    const endRead = deferred<ThreadReadResponse>();
+    fake.on("thread/read", async (params) => {
+      entered.resolve();
+      return { ...(await endRead.promise), requestGeneration: params.requestGeneration };
+    });
+    endRound(fake, ref);
+    await entered.promise;
+    const recovery = live(ref);
+    recovery.thread.status = { type: "notLoaded" };
+    recovery.thread.evener.resumeRequired = true;
+    recovery.thread.evener.mutationStateAuthoritative = false;
+    recovery.thread.evener.capabilities.send = false;
+    endRead.resolve(recovery);
+    await settleEntryTranscriptForTests(ref);
+    expect(productionEntryTranscriptForTests(ref).repository).toBe(repository);
+    expect(model(ref).resumeRequired).toBe(true);
+    expect(model(ref).capabilities?.send).toBe(false);
+    expect(isResumeOnly(model(ref))).toBe(false);
+    // Acceptance has happened through the repository's end-read, not ensure/refresh.
+    expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+    expect(threadsStore.getState().mutationAuthorityRefs.has(ref)).toBe(false);
+    const obligation = threadsStore.getState().restartBlockingObligations.get(ref);
+    act(() => publishAgain(fake, ref));
+    expect(threadsStore.getState().restartBlockingObligations.get(ref)).toBe(obligation);
+    expect(fake.calls.filter(({ method }) => method === "thread/resume" || method === "turn/start")).toEqual([]);
+
+    const resume = deferred<ThreadReadResponse>();
+    fake.on("thread/resume", () => resume.promise);
+    fake.on("turn/start", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        threadId: `thr_${destination}`,
+        disposition: "applied",
+        projectionState: "notProjected",
+      },
+      turn: { id: "sent", status: "inProgress", itemsView: "full" },
+    }));
+    await threadsStore.getState().send(ref, "durable recovery input");
+    expect(fake.calls.filter(({ method }) => method === "thread/resume")).toHaveLength(1);
+    expect(fake.calls.filter(({ method }) => method === "turn/start")).toEqual([]);
+    const parked = await storage.listOutbox(ref);
+    expect(parked).toHaveLength(1);
+    expect(parked[0]).toMatchObject({
+      method: "turn/start",
+      payload: { expectedInstanceId: `instance-${ref}`, input: [{ type: "text", text: "durable recovery input" }] },
+    });
+    fake.on("thread/read", (params) => ({
+      ...live(params.ref ?? destination),
+      requestGeneration: params.requestGeneration,
+    }));
+    resume.resolve(live(destination));
+    await vi.waitFor(async () => {
+      expect(fake.calls.filter(({ method }) => method === "turn/start")).toHaveLength(1);
+      expect(await storage.listOutbox(ref)).toEqual([]);
+      expect(await storage.listOutbox(destination)).toEqual([]);
+    });
+    expect(fake.calls.find(({ method }) => method === "turn/start")?.params).toMatchObject({
+      ref: destination,
+      expectedInstanceId: `instance-${destination}`,
+      clientMutationId: parked[0]?.clientMutationId,
+      input: [{ type: "text", text: "durable recovery input" }],
+    });
+  },
+);
+
+test("an accepted live end-read does not clear the Stop-owned obligation", async () => {
+  const ref = "local:end-read-stop";
+  const fake = connectFakeClient();
+  fake.on("thread/read", (params) => ({ ...resumeOnlySnapshot(ref), requestGeneration: params.requestGeneration }));
+  await threadsStore.getState().ensureThread(ref);
+  const stop = deferred<void>();
+  fake.on("evener/thread/forceStop", () => stop.promise);
+  const pending = threadsStore.getState().forceStop(ref);
+  cleanupStops.push(async () => {
+    stop.resolve();
+    await pending;
+  });
+  await flushUntil(() => threadsStore.getState().stoppingRefs.has(ref));
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  const obligation = threadsStore.getState().restartBlockingObligations.get(ref);
+  expect(obligation).toBeDefined();
+  const entered = deferred<void>();
+  fake.on("thread/read", (params) => {
+    entered.resolve();
+    const response = currentRead(ref);
+    response.overlay = [];
+    delete response.olderCursor;
+    response.thread.evener.mutationStateAuthoritative = true;
+    return { ...response, requestGeneration: params.requestGeneration };
+  });
+  endRound(fake, ref);
+  await entered.promise;
+  await settleEntryTranscriptForTests(ref);
+  expect(model(ref).resumeRequired).toBe(false);
+  expect(threadsStore.getState().mutationAuthorityRefs.has(ref)).toBe(true);
+  expect(threadsStore.getState().restartBlockingObligations.get(ref)).toBe(obligation);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  expect(fake.calls.filter(({ method }) => method === "thread/resume" || method === "turn/start")).toEqual([]);
 });
