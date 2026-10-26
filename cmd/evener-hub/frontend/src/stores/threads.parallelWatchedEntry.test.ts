@@ -8,7 +8,7 @@ import type {
   ThreadReadResponse,
   ThreadSubscriptionLease,
 } from "@evener/appwire-client";
-import { acquireThreadSubscription, RequestTimeoutError } from "@evener/appwire-client";
+import { acquireThreadSubscription, RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, renderHook } from "@testing-library/react";
@@ -281,6 +281,26 @@ describe("useThreadsStore.watchThread", () => {
     await watching;
 
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
+  });
+
+  test("a watched refresh answered history-failed marks the watched model failed and arms no retry", async () => {
+    const a = connectFakeClient();
+    a.on("thread/read", () => readResponse("ref_a", { name: "Held" }));
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+
+    const b = new FakeClient("ready");
+    b.on("thread/read", () => {
+      throw new WireError("thread history failed at entry 3", -32000, { evenerErrorInfo: "transcriptHistoryFailed" });
+    });
+    connectionStore.getState().connect(b);
+    await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.history?.failed !== undefined);
+
+    // The failure rides the watched model, keeps the content already held, and
+    // is not a transport hiccup: no retry is armed and no pane model appears.
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.name).toBe("Held");
+    expect(scheduledHydrationRetries).toHaveLength(0);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    threadsStore.getState().releaseWatchedThread("ref_a");
   });
 
   test("a watched refresh preserves a live active turn omitted by the snapshot cut", async () => {

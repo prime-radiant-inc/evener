@@ -297,7 +297,7 @@ export interface ThreadsStoreState {
   watchedThreads: Map<string, ThreadModel>;
   // Refs whose hydration has been durably rejected by the hub's own
   // deletion fence (data.mutationOutcome === "targetDeleted" - see
-  // hydrateAndSubscribe's catch below and cmd/evener-hub/app_sources.go's
+  // readThreadHydration's catch below and cmd/evener-hub/app_sources.go's
   // deletionFenceError). That fence never clears once set, so once a ref
   // lands here it stays - unlike `threads`, this is not cleared on a
   // re-hydration attempt, because a deleted ref never gets one that
@@ -657,9 +657,56 @@ function invalidateNotesResponseFallback(ref: string): void {
 function isFallbackInvalidatingPush(method: string): boolean {
   return method === "evener/goal/updated" || method === "evener/notes/updated";
 }
-const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
-const inflightHydrateClients = new Map<string, AppwireClientLike>();
-const inflightHydrateEpochs = new Map<string, number>();
+// A ref's in-flight hydration read with the client and ready epoch it was
+// issued under, so a waiter can tell a failure on the current connection from
+// one that outlived it. includeTurns is meaningful for watched reads only: a
+// rich caller cannot share a lean read in flight, a lean caller may share a
+// rich one.
+class InflightHydrations {
+  readonly #entries = new Map<
+    string,
+    { promise: Promise<ThreadModel | null>; client: AppwireClientLike; epoch: number; includeTurns: boolean }
+  >();
+
+  get(ref: string): Promise<ThreadModel | null> | undefined {
+    return this.#entries.get(ref)?.promise;
+  }
+  has(ref: string): boolean {
+    return this.#entries.has(ref);
+  }
+  client(ref: string): AppwireClientLike | undefined {
+    return this.#entries.get(ref)?.client;
+  }
+  epoch(ref: string): number | undefined {
+    return this.#entries.get(ref)?.epoch;
+  }
+  includeTurns(ref: string): boolean {
+    return this.#entries.get(ref)?.includeTurns ?? false;
+  }
+  // The entry leaves when its own read settles, unless a newer read has
+  // replaced it since.
+  start(
+    ref: string,
+    promise: Promise<ThreadModel | null>,
+    client: AppwireClientLike,
+    epoch: number,
+    includeTurns = false,
+  ): void {
+    this.#entries.set(ref, { promise, client, epoch, includeTurns });
+    void promise
+      .finally(() => {
+        if (this.#entries.get(ref)?.promise === promise) this.#entries.delete(ref);
+      })
+      .catch(() => {});
+  }
+  delete(ref: string): void {
+    this.#entries.delete(ref);
+  }
+  clear(): void {
+    this.#entries.clear();
+  }
+}
+const inflightHydrates = new InflightHydrations();
 
 // The entry cache is the tab's only transcript cache (6d removed the legacy
 // adapter). Lazy so the ordinary browser captures its actual storage
@@ -2383,8 +2430,6 @@ function dropUnpinnedModel(ref: string, flush = true): void {
   // schedule a retry.
   pendingThreadHydrations.delete(ref);
   inflightHydrates.delete(ref);
-  inflightHydrateClients.delete(ref);
-  inflightHydrateEpochs.delete(ref);
   // The model is leaving `threads` here, so its index membership leaves with
   // it (see putThreadModel/removeThreadModel — the membership paths).
   const dropped = threadsStore.getState().threads.get(ref);
@@ -3666,10 +3711,7 @@ let inflightModelsListIsRefresh = false;
 // refCounts/inflightHydrates above, so a watch and a real pane on the
 // same ref never share (or fight over) one counter.
 const watchRefCounts = new Map<string, number>();
-const inflightWatchHydrates = new Map<string, Promise<ThreadModel | null>>();
-const inflightWatchHydrateClients = new Map<string, AppwireClientLike>();
-const inflightWatchHydrateEpochs = new Map<string, number>();
-const inflightWatchIncludeTurns = new Map<string, boolean>();
+const inflightWatchHydrates = new InflightHydrations();
 // A generation changes whenever the last watcher releases. Late responses
 // from that retired lifetime must not populate a new one.
 const watchGenerations = new Map<string, number>();
@@ -3787,17 +3829,29 @@ interface ThreadHydration {
   discardHeldHistory?: true;
 }
 
-async function hydrateAndSubscribe(
+// The two hydration lifecycles read a ref the same way and differ in these
+// explicit places. A tracked read (a pane or background owner) always asks for
+// turns, may run under a background AbortSignal with its own subscription
+// lease, starts from the entry route's cached-unverified fence, and records a
+// history failure on the entry repository. A watched read asks for turns only
+// when a watcher wants them (lean watches omit them until an expanded card
+// asks), has no signal, and records a history failure on the watched model.
+type HydrationRead = { kind: "thread"; signal?: AbortSignal } | { kind: "watched"; includeTurns: boolean };
+
+async function readThreadHydration(
   client: AppwireClientLike,
   ref: string,
   now: number,
   pending: PendingThreadHydration,
-  signal?: AbortSignal,
+  read: HydrationRead,
 ): Promise<ThreadHydration> {
+  const tracked = read.kind === "thread";
+  const signal = tracked ? read.signal : undefined;
+  const includeTurns = tracked || read.includeTurns;
   let response: ThreadReadResponse;
   // Cached display is not a source baseline. Its generations, epoch and length
   // cannot fence the first successful read or ask the source for a delta.
-  let discardHeldHistory = productionEntryRoutes.get(ref)?.cachedUnverified === true;
+  let discardHeldHistory = tracked && productionEntryRoutes.get(ref)?.cachedUnverified === true;
   const ownerLease = syncThreadSubscription(ref, client);
   if (!ownerLease) throw new Error("Thread hydration has no subscription holder");
   // A background attempt gets its own lease so retirement can invalidate a
@@ -3810,14 +3864,14 @@ async function hydrateAndSubscribe(
   try {
     try {
       if (signal?.aborted) throw new Error("Thread hydration attempt was retired");
-      response = await lease.read(threadReadParams(true, pending.requestGeneration, held));
+      response = await lease.read(threadReadParams(includeTurns, pending.requestGeneration, held));
     } catch (err) {
       if (signal?.aborted) throw err;
       if (!shouldRetryWithoutHeldSnapshot(held, err)) throw err;
       // Logical retirement removes this operation before its issued request's
       // physical slot settles. Its still-live signal cannot authorize a retry.
-      if (signal?.aborted || pendingThreadHydrations.get(ref) !== pending) throw err;
-      response = await lease.read(threadReadParams(true, pending.requestGeneration, undefined));
+      if (signal?.aborted || (tracked && pendingThreadHydrations.get(ref) !== pending)) throw err;
+      response = await lease.read(threadReadParams(includeTurns, pending.requestGeneration, undefined));
       discardHeldHistory = true;
     }
   } catch (err) {
@@ -3830,15 +3884,24 @@ async function hydrateAndSubscribe(
     // it for the loading surface (set on this code, cleared by any other
     // outcome of this attempt's read, the success path below included; the
     // publishThreadRepairing fence drops a superseded attempt's late say).
-    publishThreadRepairing("thread", ref, pending, isTranscriptIndexRebuildingError(err));
+    // A lean watched read publishes only an explicit rebuilding answer it
+    // received itself: its ordinary rejection says nothing about the
+    // transcript index, so it must not replace a tracked read's repair status
+    // (the rejection-side twin of the success gate below).
+    if (includeTurns || isTranscriptIndexRebuildingError(err)) {
+      publishThreadRepairing(read.kind, ref, pending, isTranscriptIndexRebuildingError(err));
+    }
     // A structured "history failed" response is not a transport hiccup: the
     // spec says the client shows one visible diagnostic and waits for a later
     // read to succeed, never auto-retrying in a loop. Applied only against
     // this hydration's own base model (superseded generations are ignored by
     // applyHistoryReadFailure itself).
     if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
-      const entry = productionEntryRoutes.get(ref);
-      if (entry?.repository) {
+      const failedModel = applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0);
+      const entry = tracked ? productionEntryRoutes.get(ref) : undefined;
+      if (!tracked) {
+        putWatchedThreadModel(ref, failedModel);
+      } else if (entry?.repository) {
         if (
           pending.client === wiredClient &&
           pending.epoch === readyEpoch &&
@@ -3849,10 +3912,10 @@ async function hydrateAndSubscribe(
           });
         }
       } else {
-        putThreadModel(ref, applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0));
+        putThreadModel(ref, failedModel);
       }
     } else {
-      scheduleOwnedHydrationRetry("thread", ref, pending);
+      scheduleOwnedHydrationRetry(read.kind, ref, pending);
     }
     throw err;
   } finally {
@@ -3862,7 +3925,10 @@ async function hydrateAndSubscribe(
   if (signal?.aborted) throw new Error("Thread hydration attempt was retired");
   // The read succeeded: any repairing status from this attempt's earlier
   // read is over — a superseded attempt leaves the newer one's say standing.
-  publishThreadRepairing("thread", ref, pending, false);
+  // Only a history-requesting read observed the index: a lean watch the hub
+  // can answer without touching it saw nothing about the repair, so its
+  // success must not clear a status a tracked read owns.
+  if (includeTurns) publishThreadRepairing(read.kind, ref, pending, false);
   // A retry that dropped the held snapshot asked for, and must be treated
   // as, a full latest-window replacement: applyReadResponse would still
   // merge it (same incarnation/epoch, length >= held's), leaving every held
@@ -3872,7 +3938,9 @@ async function hydrateAndSubscribe(
   // instead, matching the hub's intent.
   const model =
     !discardHeldHistory && pending.baseModel?.history !== undefined
-      ? applyCacheGapRule(ref, pending.baseModel, response, now)
+      ? tracked
+        ? applyCacheGapRule(ref, pending.baseModel, response, now)
+        : applyReadResponse(pending.baseModel, response, now)
       : hydrateThread(response, ref, now);
   // The response cut retires buffered input from the legacy hydrator because
   // its snapshot is authoritative for that route. The entry repository also
@@ -3974,69 +4042,6 @@ async function cancelUnattemptedMutations(ref: string): Promise<void> {
   // than at the next discovery scan. The discard paths carry the same
   // zero-included rule.
   notifyMutationPersistence([ref]);
-}
-
-// Lean watches omit turns until an expanded card asks for them; the shared
-// threadReadParams carries the rest (subscribe:false for a ref this
-// connection generation already subscribes — the read still refreshes the
-// snapshot).
-async function hydrateAndSubscribeWatch(
-  client: AppwireClientLike,
-  ref: string,
-  now: number,
-  pending: PendingThreadHydration,
-  includeTurns = false,
-): Promise<ThreadModel> {
-  let resp: ThreadReadResponse;
-  let discardHeldHistory = false;
-  const lease = syncThreadSubscription(ref, client);
-  if (!lease) throw new Error("Thread hydration has no subscription holder");
-  const held = heldSnapshotFor(pending.baseModel);
-  try {
-    try {
-      resp = await lease.read(threadReadParams(includeTurns, pending.requestGeneration, held));
-    } catch (err) {
-      if (!shouldRetryWithoutHeldSnapshot(held, err)) throw err;
-      resp = await lease.read(threadReadParams(includeTurns, pending.requestGeneration, undefined));
-      discardHeldHistory = true;
-    }
-  } catch (err) {
-    markThreadDeletedIfFenced(ref, err);
-    // #4343: same per-ref recording as hydrateAndSubscribe's own catch —
-    // the watched read is this ref's latest read too, under the same
-    // ownership fence. A lean read publishes only an explicit rebuilding
-    // answer it received itself: its ordinary rejection says nothing about
-    // the transcript index, so it must not replace a tracked read's repair
-    // status (the rejection-side twin of the success gate above).
-    if (includeTurns || isTranscriptIndexRebuildingError(err)) {
-      publishThreadRepairing("watched", ref, pending, isTranscriptIndexRebuildingError(err));
-    }
-    if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
-      putWatchedThreadModel(
-        ref,
-        applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0),
-      );
-    } else {
-      scheduleOwnedHydrationRetry("watched", ref, pending);
-    }
-    throw err;
-  }
-  // The read succeeded. Only a history-requesting read observed the index:
-  // a lean watch the hub can answer without touching the transcript index
-  // saw nothing about the repair, so its success must not clear a status a
-  // tracked read owns (the lean read's own rebuilding answer still
-  // publishes in the catch above — that error the read observed itself). A
-  // superseded rich attempt leaves the newer one's say standing.
-  if (includeTurns) publishThreadRepairing("watched", ref, pending, false);
-  // See hydrateAndSubscribe's identical comment: a retry that dropped the
-  // held snapshot must fully replace history, not merge into it.
-  const model =
-    !discardHeldHistory && pending.baseModel?.history !== undefined
-      ? applyReadResponse(pending.baseModel, resp, now)
-      : hydrateThread(resp, ref, now);
-  const cutModel = withoutResolvedEscalations(ref, pending, model);
-  applyHydrationResponseCut(pending, ref, cutModel);
-  return cutModel;
 }
 
 function olderItemsParams(ref: string, cursor: string) {
@@ -6678,7 +6683,7 @@ async function refreshTrackedThreadNow(
   // `epoch`, so publishThreadHydration re-decides exactly the same thing one
   // frame later, and returning null from there reconciles nothing either. The
   // gate lives in one place.
-  const hydration = hydrateAndSubscribe(client, ref, Date.now(), pending, signal).then((result) => {
+  const hydration = readThreadHydration(client, ref, Date.now(), pending, { kind: "thread", signal }).then((result) => {
     if (signal?.aborted) return null;
     // Evaluated synchronously immediately before publication, with no await in
     // between: a canceled read never reaches putThreadModel, the
@@ -6718,18 +6723,7 @@ async function refreshTrackedThreadNow(
   // caller until a sufficient model has actually published.
   const trackForActiveLifecycle = !hasPublishedModel && (previous !== undefined || targetedResync);
   if (trackForActiveLifecycle) {
-    inflightHydrates.set(ref, hydration);
-    inflightHydrateClients.set(ref, client);
-    inflightHydrateEpochs.set(ref, epoch);
-    void hydration
-      .finally(() => {
-        if (inflightHydrates.get(ref) === hydration) {
-          inflightHydrates.delete(ref);
-          inflightHydrateClients.delete(ref);
-          inflightHydrateEpochs.delete(ref);
-        }
-      })
-      .catch(() => {});
+    inflightHydrates.start(ref, hydration, client, epoch);
   }
   try {
     const model = await hydration;
@@ -6765,10 +6759,11 @@ async function refreshWatchedThread(
     includeTurns,
   );
   // Same as refreshTrackedThread: publishWatchedHydration re-decides this.
-  const hydration = hydrateAndSubscribeWatch(client, ref, Date.now(), pending, includeTurns).then((model) =>
-    isDiscardedReadResult(pending, model)
-      ? (pending.baseModel ?? null)
-      : publishWatchedHydration(ref, pending, model, includeTurns, generation),
+  const hydration = readThreadHydration(client, ref, Date.now(), pending, { kind: "watched", includeTurns }).then(
+    ({ model }) =>
+      isDiscardedReadResult(pending, model)
+        ? (pending.baseModel ?? null)
+        : publishWatchedHydration(ref, pending, model, includeTurns, generation),
   );
   const hasPublishedModel = threadsStore.getState().watchedThreads.has(ref);
   const hasSufficientPublishedModel =
@@ -6778,20 +6773,7 @@ async function refreshWatchedThread(
   const trackForActiveLifecycle =
     (previous !== undefined && !hasPublishedModel) || (targetedResync && !hasSufficientPublishedModel);
   if (trackForActiveLifecycle) {
-    inflightWatchHydrates.set(ref, hydration);
-    inflightWatchHydrateClients.set(ref, client);
-    inflightWatchHydrateEpochs.set(ref, epoch);
-    inflightWatchIncludeTurns.set(ref, includeTurns);
-    void hydration
-      .finally(() => {
-        if (inflightWatchHydrates.get(ref) === hydration) {
-          inflightWatchHydrates.delete(ref);
-          inflightWatchHydrateClients.delete(ref);
-          inflightWatchHydrateEpochs.delete(ref);
-          inflightWatchIncludeTurns.delete(ref);
-        }
-      })
-      .catch(() => {});
+    inflightWatchHydrates.start(ref, hydration, client, epoch, includeTurns);
   }
   try {
     await hydration;
@@ -7271,7 +7253,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         cachedBase ?? threadsStore.getState().threads.get(ref),
         hydrationEpoch,
       );
-      const hydration = hydrateAndSubscribe(hydrationClient, ref, Date.now(), pending)
+      const hydration = readThreadHydration(hydrationClient, ref, Date.now(), pending, { kind: "thread" })
         .then(async (result) => {
           const model = await publishAndReconcileThreadHydration(ref, pending, result);
           // A message queued while this read was in flight found the ref not
@@ -7285,22 +7267,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         .finally(() => {
           retirePendingHydration(ref, pending, pendingThreadHydrations);
         });
-      inflightHydrates.set(ref, hydration);
-      inflightHydrateClients.set(ref, hydrationClient);
-      inflightHydrateEpochs.set(ref, hydrationEpoch);
       // .finally() re-throws inflight's own rejection on ITS OWN returned
       // promise — a separate object from `inflight` — so without a catch
       // here a failed hydrate becomes an unhandled rejection on top of the
       // one every caller already observes via `await inflight` below.
-      void hydration
-        .finally(() => {
-          if (inflightHydrates.get(ref) === hydration) {
-            inflightHydrates.delete(ref);
-            inflightHydrateClients.delete(ref);
-            inflightHydrateEpochs.delete(ref);
-          }
-        })
-        .catch(() => {});
+      inflightHydrates.start(ref, hydration, hydrationClient, hydrationEpoch);
       return hydration;
     };
 
@@ -7309,8 +7280,8 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     cachedBase = undefined; // the claim's arming consumed the shell; every re-arm reads the current model
     try {
       for (;;) {
-        const inflightClient = inflightHydrateClients.get(ref) ?? client;
-        const inflightEpoch = inflightHydrateEpochs.get(ref) ?? readyEpoch;
+        const inflightClient = inflightHydrates.client(ref) ?? client;
+        const inflightEpoch = inflightHydrates.epoch(ref) ?? readyEpoch;
         try {
           const model = await inflight;
           if (model) {
@@ -7419,8 +7390,6 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // before a new ensureThread(ref) can claim the same ref; the old promise's
     // identity-guarded finally blocks must not remove a newer hydration.
     inflightHydrates.delete(ref);
-    inflightHydrateClients.delete(ref);
-    inflightHydrateEpochs.delete(ref);
     trackedHydrationCompletions.delete(ref);
     const pending = pendingThreadHydrations.get(ref);
     if (pending) retirePendingHydration(ref, pending, pendingThreadHydrations);
@@ -7479,30 +7448,20 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         hydrationEpoch,
         needTurns,
       );
-      const hydration = hydrateAndSubscribeWatch(hydrationClient, ref, Date.now(), pending, needTurns)
-        .then((model) => publishWatchedHydration(ref, pending, model, needTurns, generation))
+      const hydration = readThreadHydration(hydrationClient, ref, Date.now(), pending, {
+        kind: "watched",
+        includeTurns: needTurns,
+      })
+        .then(({ model }) => publishWatchedHydration(ref, pending, model, needTurns, generation))
         .finally(() => {
           retirePendingHydration(ref, pending, pendingWatchedHydrations);
         });
-      inflightWatchHydrates.set(ref, hydration);
-      inflightWatchHydrateClients.set(ref, hydrationClient);
-      inflightWatchHydrateEpochs.set(ref, hydrationEpoch);
-      inflightWatchIncludeTurns.set(ref, needTurns);
-      void hydration
-        .finally(() => {
-          if (inflightWatchHydrates.get(ref) === hydration) {
-            inflightWatchHydrates.delete(ref);
-            inflightWatchHydrateClients.delete(ref);
-            inflightWatchHydrateEpochs.delete(ref);
-            inflightWatchIncludeTurns.delete(ref);
-          }
-        })
-        .catch(() => {});
+      inflightWatchHydrates.start(ref, hydration, hydrationClient, hydrationEpoch, needTurns);
       return hydration;
     };
 
     let inflight = inflightWatchHydrates.get(ref);
-    const inflightHasTurns = inflightWatchIncludeTurns.get(ref) ?? false;
+    const inflightHasTurns = inflightWatchHydrates.includeTurns(ref);
     // A rich caller cannot share a lean request already in flight: the
     // response would be structurally missing the turns it requested. A
     // lean caller may share a rich request because the richer snapshot is
@@ -7510,8 +7469,8 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     if (!inflight || (needTurns && !inflightHasTurns)) inflight = startHydration(client);
 
     for (;;) {
-      const inflightClient = inflightWatchHydrateClients.get(ref) ?? client;
-      const inflightEpoch = inflightWatchHydrateEpochs.get(ref) ?? readyEpoch;
+      const inflightClient = inflightWatchHydrates.client(ref) ?? client;
+      const inflightEpoch = inflightWatchHydrates.epoch(ref) ?? readyEpoch;
       try {
         const model = await inflight;
         if (model) return;
@@ -7559,7 +7518,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // not start another read on becoming ready.
       if (threadsStore.getState().deletedRefs.has(ref)) return;
       inflight = inflightWatchHydrates.get(ref);
-      const currentInflightHasTurns = inflightWatchIncludeTurns.get(ref) ?? false;
+      const currentInflightHasTurns = inflightWatchHydrates.includeTurns(ref);
       if (!inflight || (needTurns && !currentInflightHasTurns)) inflight = startHydration(client);
     }
   },
@@ -7579,9 +7538,6 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // The old promise may still settle, but its generation check prevents it
     // from publishing into the new lifecycle.
     inflightWatchHydrates.delete(ref);
-    inflightWatchHydrateClients.delete(ref);
-    inflightWatchHydrateEpochs.delete(ref);
-    inflightWatchIncludeTurns.delete(ref);
     const pending = pendingWatchedHydrations.get(ref);
     if (pending) retirePendingHydration(ref, pending, pendingWatchedHydrations);
     // Drop the monotonic turns flag with the last watcher so a future watch of
@@ -8766,8 +8722,6 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
         const pending = pendingThreadHydrations.get(ref);
         if (pending) retirePendingHydration(ref, pending, pendingThreadHydrations);
         inflightHydrates.delete(ref);
-        inflightHydrateClients.delete(ref);
-        inflightHydrateEpochs.delete(ref);
         trackedHydrationCompletions.delete(ref);
         releasePromise = entryRetirement;
         return releasePromise;
@@ -8782,8 +8736,6 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
         const pending = pendingThreadHydrations.get(ref);
         if (pending) retirePendingHydration(ref, pending, pendingThreadHydrations);
         inflightHydrates.delete(ref);
-        inflightHydrateClients.delete(ref);
-        inflightHydrateEpochs.delete(ref);
         trackedHydrationCompletions.delete(ref);
       }
       releasePromise = (async () => {
@@ -8880,8 +8832,6 @@ export function resetThreadsStoreForTests(): void {
   goalUpdateGenerations.clear();
   notesUpdateGenerations.clear();
   inflightHydrates.clear();
-  inflightHydrateClients.clear();
-  inflightHydrateEpochs.clear();
   // The session cache's module state: the epoch view returns to unobserved so
   // the next test observes the fresh database it just deleted.
   tabCacheEpoch = undefined;
@@ -8894,9 +8844,6 @@ export function resetThreadsStoreForTests(): void {
   pendingMutationReconciliations.clear();
   watchRefCounts.clear();
   inflightWatchHydrates.clear();
-  inflightWatchHydrateClients.clear();
-  inflightWatchHydrateEpochs.clear();
-  inflightWatchIncludeTurns.clear();
   pendingWatchedHydrations.clear();
   clearHydrationDemands.clear();
   watchGenerations.clear();
