@@ -203,6 +203,8 @@ duplicate; only a reproduced identity/projection case can establish that cause.
   Presentation filtering does not change submission routing.
 - Pane lifetime and durable recovery owner: `composer/sourceState.ts`.
 - Controls: `composer/queue/QueueStrip.tsx` and `composer/Composer.tsx`.
+- Decisions both controls share (selection capability gate, store dispatch by
+  route, changed or already-sent recovery refusals): `composer/submitProtocol.ts`.
 - End-to-end component checks: `composer/Composer.queuedMessages.test.tsx`, using
   the real composer, stores and IndexedDB adapter with external transport and
   browser-platform seams.

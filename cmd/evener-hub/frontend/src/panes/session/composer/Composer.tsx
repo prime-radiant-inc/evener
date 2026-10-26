@@ -129,6 +129,7 @@ import {
   sameSkillSelections,
 } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
+import { pushRecoveryRefusal, pushSelectionRefusal, selectionRefusal, submitDraftToStore } from "./submitProtocol";
 import { useInlineStopReady } from "./useInlineStopReady";
 
 export interface ComposerProps {
@@ -740,10 +741,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // at the press (pressRefusal), not from this render.
   const controls = controlsFor(model);
   const canSendWhenEnded = controls.send;
-  // The target's skillInput capability, same narrowing rule: submission is
-  // refused client-side (before any durable write) when a selection is staged
-  // and the target never advertised that it consumes skill items.
-  const skillInputSupported = model.capabilities.skillInput === true;
   // Tier 6: see ownPendingSend in @evener/appwire-client/state/mutation.
   const hasPendingSend = ownPendingSend(pendingSendEntries);
   // The Send/Queue availability of a model and this client's pending send,
@@ -959,7 +956,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     }
     try {
       if (!(await source.activateRecovery(record))) {
-        if (source.alive) toasts.push("info", "This message changed in another tab. Refresh and try again.");
+        if (source.alive) pushRecoveryRefusal("changed");
         return;
       }
       if (!source.alive) return;
@@ -1059,13 +1056,12 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     // is the store-side half, and Task 12 gates the hub's forwarding too): a
     // target that never advertised the capability keeps the draft and hears
     // why, instead of minting durable intent the wire would refuse.
-    if (submittedSkillNames.length > 0 && !skillInputSupported) {
-      toasts.push("error", "Skill selections aren't supported on this session yet; your draft is kept");
-      releaseRecoveryOperation();
-      return;
-    }
-    if (submittedCommandNames.length > 0 && model?.capabilities.commandInput !== true) {
-      toasts.push("error", "Command selections are not supported on this session; your draft is kept");
+    const refusal = selectionRefusal(
+      { skillNames: submittedSkillNames, commandNames: submittedCommandNames },
+      model?.capabilities,
+    );
+    if (refusal) {
+      pushSelectionRefusal(refusal);
       releaseRecoveryOperation();
       return;
     }
@@ -1131,21 +1127,13 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
             });
             return;
           }
-          if (kind === "send")
-            return threadsStore
-              .getState()
-              .send(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
-          if (kind === "queue")
-            return threadsStore
-              .getState()
-              .queue(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
-          if (kind === "steer")
-            return threadsStore
-              .getState()
-              .steer(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
-          return threadsStore
-            .getState()
-            .drainAsSteer(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
+          return submitDraftToStore(kind, ref, {
+            text: submittedText,
+            attachments: payload,
+            skillNames: submittedSkillNames,
+            commandNames: submittedCommandNames,
+            mentions: submittedMentions,
+          });
         },
       );
       if (!source.alive) return;
@@ -1186,10 +1174,8 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       submissionFailed = true;
       // The local durable write failed. The submitted composer payload stays
       // untouched and no network request was eligible to start.
-      if (source.alive && recoveryResendRefused)
-        toasts.push("info", "This message changed in another tab. Refresh and try again.");
-      else if (source.alive && recoveryAlreadySent)
-        toasts.push("info", "This message was already sent in another tab.");
+      if (source.alive && recoveryResendRefused) pushRecoveryRefusal("changed");
+      else if (source.alive && recoveryAlreadySent) pushRecoveryRefusal("consumed");
       else if (error !== recoveryWriteRefusal && error !== recoveryAlreadySentRefusal) return;
     } finally {
       if (mountedRef.current) setBusyAction(null);
