@@ -29,7 +29,11 @@ func TestMkdirAllSyncsAStrandedDirectoryOnTheNextCall(t *testing.T) {
 	if err := MkdirAll(dir, 0o700); !errors.Is(err, removeFails) {
 		t.Fatalf("err = %v, want the rollback failure reported", err)
 	}
-	for _, spelling := range []string{dir, filepath.Join(base, ".", "a"), base + "//a"} {
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(dir, alias); err != nil {
+		t.Fatal(err)
+	}
+	for _, spelling := range []string{dir, base + "//a", alias} {
 		if err := MkdirAll(spelling, 0o700); err == nil {
 			t.Fatalf("retry through %q accepted a directory whose parent sync never succeeded", spelling)
 		}
