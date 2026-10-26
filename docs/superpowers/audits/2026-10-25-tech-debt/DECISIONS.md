@@ -118,6 +118,15 @@ Yes. The ratchet also counts tests that assert on error-message text, with an al
 
 Final merges are serialized through a shared lock. The lock holder merges `origin/main`, pushes, waits for green CI on that head, then admin squash merges. No admin merge of a branch that is behind main.
 
+## Q20. `hub.toml` as machine database, and the host retention knobs
+
+- End state: `hub.toml` holds only `[[hosts]]` and scalar operator config. Every machine-managed record (`host_records`, `generations`, `mutation_receipts`, `tombstones`, staged and pruned receipts, teardown remnants and attempts) moves into the `hostops` store. `pending_store_sync` and `mirror_commits` and the two-file commit protocol go away. Existing files that carry these sections are migrated once on startup, and per Q1 that migration stays. A design record comes first, then several PRs with recovery tests (W2-13).
+- Retention knobs: nobody tunes the undocumented ones. Keep `host_probe_timeout`, `host_min_free_space_bytes` and `host_tombstone_retention`. Fold the rest into one internal defaults value that the pruning code reads. A `hub.toml` that still sets a removed key starts normally with a warning naming the key (recovery, per AGENTS.md).
+
+## `preDispatchRefusalError` not-accepted branch (hub-app-rest-5)
+
+Delete it, along with its stated invariant, its wrap sites and the parity test that reaches it only with a synthetic error. Nothing produces that error today. Routed to W1-32.
+
 ## Still open
 
-- Q20 (`hub.toml` as machine database, and the 23 undocumented retention knobs). It is a Wave 2 design discussion (W2-13).
+Nothing. Wave 2 entries still need design discussion before code.

@@ -10,7 +10,7 @@ LOC figures are net lines of change (negative means removed), prod plus tests, a
 |---|---|---|---|---|
 | 0: guardrails, defects, dead-code deletions | 27 | 28 | -12,100 | 27 entries, -12,100 (W0-01, W0-05 and W0-18 were gated on Q12, Q10 and Q17; all answered) |
 | 1: consolidations | 69 | about 98 | -46,800 | 69 entries, about -46,800. Every gate is answered in [DECISIONS.md](DECISIONS.md); the Deps: fields still order the work. The answers shrank several entries (W1-27 dedupe only, W1-56 keep-and-fix, W1-60 and W1-62..W1-64 simplify-only) |
-| 2: structural splits (all need design discussion) | 19 | about 45 | -9,300 (about 330,000 lines moved with no net change) | 1 entry, about -1,000 (W2-09 is now comment and dead-code trimming only, Q18 answered); the other 18 need design discussion, W2-13 also waits on Q20 |
+| 2: structural splits (all need design discussion) | 19 | about 45 | -9,300 (about 330,000 lines moved with no net change) | 1 entry, about -1,000 (W2-09 is now comment and dead-code trimming only, Q18 answered); the other 18 need design discussion (Q20 is answered for W2-13) |
 | Total | 115 | about 172 | about -68,000 | 96 entries, about -59,600 |
 
 Net LOC is production plus tests; markdown deleted under W1-58 (about 300,000 lines) and binaries under W0-14 (about 69 MB) are not counted. The sum is the arithmetic total of the per-PR estimates below, which come from the slice reports and verifier notes; SYNTHESIS section 1 estimated 25-35k production lines and 60-90k test lines removable, so this is consistent but not independently measured. Entries marked `~` with no audit count are rough.
@@ -71,7 +71,7 @@ Where the PRs departed from the entries:
 - Left for later, routed to Wave 1 entries:
   - agent root: the remaining `deadcode` entries reachable only through dead chains (eval, session queue and notes, subagent spawn paths, `memory_page`); `CloseResumability`, `inputPersistFailureBatch` and the reconstruction-wait barrier; `jobKindAgent` and the `_ = deps` in `registerJobToolsWithRegistrar`; the `nameSessionFromTextFunc` fold; the rest of the agent-jobs-7 list (`setParentJobID`, `feedJobOutput` and others); the `jobToolRegistrar` half of agent-session-tools-3. Goes to W1-21..W1-23.
   - agent sub-packages: `tool.ApplyPatch` test sites, `Registry.Unregister`/`Restrict`, the `truncate*` wrappers, `compileSchemaWith`, plugin manifest-probing dedup (agent-subpackages-9 steps 1, 2, 4). W1-08 takes the truncation wrappers; the rest goes to W1-07.
-  - hub: `SetFs` on the SQL stores (needs another fault seam for `project_delete_test.go`), `Store.RemovedHosts()`, `preDispatchRefusalError` (hub-app-rest-5, needs Jesse), `remoteFetchGeneration` and the nil-cache fallback in `remoteThreadFetch`, the test-only read wrappers, the optional-interface tiers (hub-root-rest-6), a duplicate-registration panic in `Router.Handle`, the `deploySelectedWith*` wrapper ladder, `cmd/evener-hub/transcript_limits.go`'s own max-line copy. Goes to W1-29..W1-35 and W1-06.
+  - hub: `SetFs` on the SQL stores (needs another fault seam for `project_delete_test.go`), `Store.RemovedHosts()`, `preDispatchRefusalError` (hub-app-rest-5; Jesse approved deletion, goes to W1-32), `remoteFetchGeneration` and the nil-cache fallback in `remoteThreadFetch`, the test-only read wrappers, the optional-interface tiers (hub-root-rest-6), a duplicate-registration panic in `Router.Handle`, the `deploySelectedWith*` wrapper ladder, `cmd/evener-hub/transcript_limits.go`'s own max-line copy. Goes to W1-29..W1-35 and W1-06.
   - appwire: `appserver.Subscribe`, `Connection.Subscribe` and `Server.SetBeforeSubscriptionGate` (about 20 tests to re-seed through the real subscribe path), `SetStatus`. Goes to W1-20.
   - docs: a docs path-resolution gate (x-docs-4), not built.
 - Process gaps, fixed in how Wave 1 runs: several admin merges landed while the branch was behind main (strict up-to-date is bypassed by `--admin`); W0-09 and W0-24 wrote the test after the change; workflow subagents have no subagent tool, so `/simplify-code`'s reviewer fan-out ran as a single self-review.
@@ -1136,7 +1136,7 @@ Rules for every item here: do not start until Jesse has discussed the seams. Ord
 - Tests: as listed; round-trip/golden for `providers.toml` output.
 - Docs: `docs/evener-hub.md`, product subsystems.
 - LOC: ~-800
-- Risk: high. Gate: Q20 (still open). Deps: none.
+- Risk: high. Gate: Q20 answered (DECISIONS.md: machine records move to the `hostops` store; undocumented knobs fold into internal defaults); still needs the design record. Deps: none.
 
 ### W2-14 Split `appwire-client` `reducer.ts` and the credentials closure (needs design discussion)
 - Findings: appwire-ts-core-1, appwire-ts-state-testing-2, appwire-ts-state-testing-4, appwire-ts-state-testing-5, appwire-ts-core-7.
@@ -1202,7 +1202,7 @@ Rules for every item here: do not start until Jesse has discussed the seams. Ord
 
 Answers so far are recorded in [DECISIONS.md](DECISIONS.md).
 
-Each is a product or policy call, not a refactor. Every item except Q20 (and the second tier of Q12) is answered, and each answer points to [DECISIONS.md](DECISIONS.md). The "Default" text on an answered item is the pre-answer assumption and no longer applies.
+Each is a product or policy call, not a refactor. Every item is answered, and each answer points to [DECISIONS.md](DECISIONS.md). The "Default" text on an answered item is the pre-answer assumption and no longer applies.
 
 1. **Q1. Version-skew and state-migration policy.** Which hub, client and daemon versions must interoperate (daemons outlive the hub that spawned them per `appwire/types.go:30-35`), and how long on-disk formats are migrated. One written window turns about 46 "older hub" fallbacks, the plugin-store and serf migrations, the MEMORY.md migration, the legacy transcript projection and checkpoint formats, and young on-device formats into keep/delete answers. Unblocks W1-59..W1-64 and part of W1-40. Default: nothing is deleted. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q1): the hub tolerates any older daemon; phone and local-hub code tolerate an older (remote) hub; state migrations stay. Shapes W1-59..W1-64 and W1-40(c).
 2. **Q2. Coverage floor as a gate.** Is `make coverage-floor` a required ratchet or an unenforced number? If it is not a gate, the coverage-wave files (about 38k lines repo-wide) and the 39-40 hub `cov_*` files can go after one before/after report. Unblocks W1-54. Default: leave them. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q2): the floor is not a protected gate; W1-54 is unblocked.
@@ -1223,7 +1223,7 @@ Each is a product or policy call, not a refactor. Every item except Q20 (and the
 17. **Q17. Behavior-visible small fixes.** Report ambiguity for plugin slash commands (W0-18) and let `latest_intent` flow on the detailed-status path (W1-10). Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q17): report ambiguity with a sentinel error (W0-18); `latest_intent` flows on the detailed-status path (W1-10).
 18. **Q18. Slimming `explain.go`.** It changes model-facing coaching text (examples validated against the schema or omitted). Unblocks W2-09. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q18): leave the coaching text; trim comments and dead code only (W2-09).
 19. **Q19. Plan and spec corpus rule.** "Delete the plan in the PR that completes it", and approval to delete plans not cited outside `docs/superpowers`. Unblocks W1-58. Answered 2026-10-25 ([DECISIONS.md](DECISIONS.md), Q19): delete merged, untouched-for-30-days plans; keep specs; delete a plan in the PR that completes it (W1-58).
-20. **Q20. `hub.toml` as machine database, and the 23 undocumented retention knobs.** One source of truth for host records is a design record first; the knobs can go if no deployed hub tunes them. Unblocks W2-13. Still open: a Wave 2 design discussion (W2-13).
+20. **Q20. `hub.toml` as machine database, and the 23 undocumented retention knobs.** One source of truth for host records is a design record first; the knobs can go if no deployed hub tunes them. Unblocks W2-13. Answered (DECISIONS.md).
 
 ## Facts re-checked while writing this plan
 
