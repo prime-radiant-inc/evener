@@ -118,7 +118,10 @@ adopts the preserved composition immediately, so it shows and submits the
 local work without a reload. A destination that already holds a newer
 selection keeps it, and newer replacement edits are never overwritten: while
 that composer still owns the stale row, preservation leaves its selection and
-autosaved work in place, so a reload restores the newer composition. Adoption
+autosaved work in place, so a reload restores the newer composition. That edit
+evidence outlives the composer that produced it: a replacement may save newer
+work and close before preservation finishes, and its selection and autosaved
+row still win. Adoption
 clears only the exact draft revision the preserved composition incorporated;
 a newer ordinary draft written by another pane or tab survives. The preserving
 composer is never treated as a newer-edit destination of its own same-ref
@@ -136,9 +139,12 @@ Before building the resend, the destination thread model is loaded if this tab
 never read it, so the instance fence and skill/command capability checks see
 the resumed target's real model. A successful recovery write also reconciles
 the target from the row's durable ref, and the resend and Stop barrier describe
-that current owner. The Stop fence is dated to the durable owner before the
-persistence and model-load waits, so a Stop during either wait still cancels
-the Send; a target that moves again during persistence fails closed. The
+that current owner. The Send press asks storage for the row's durable target
+and that target's Stop epoch in one readonly snapshot, before any awaited
+persistence or hydration work. A peer retarget visible at the press is fenced
+at the destination it names, and a Stop during either wait stays after this
+press and cancels the Send; a target that moves again during persistence fails
+closed rather than capturing a later baseline. The
 temporary model claim is released after the resend, on failure too.
 If the originating pane closes before preservation finishes, remembering the
 preserved row still records the destination selection and its ref-to-seat

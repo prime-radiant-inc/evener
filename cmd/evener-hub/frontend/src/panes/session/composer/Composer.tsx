@@ -68,7 +68,7 @@ import {
   hasQueuedNonSend,
   type InputAttachment,
   type ResumeOnlySignals,
-  readRecoveryMutation,
+  readRecoveryWithStopEpoch,
   threadsStore,
   useThreadsStore,
 } from "../../../stores/threads";
@@ -999,6 +999,11 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     const pressedRecoveryTargetRef = source.recoveryTargetRef;
     const pressedRecoveryBarrier =
       submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(pressedRecoveryTargetRef);
+    // Request the durable target and its Stop epoch now, in the press's
+    // synchronous prefix. Storage orders this readonly snapshot before any
+    // Stop the user presses while the Send waits on persistence or hydration.
+    const pressedRecoveryDurable =
+      submittedRecoveryId === null ? undefined : readRecoveryWithStopEpoch(submittedRecoveryId);
     let recoveryResendRefused = false;
     let recoveryAlreadySent = false;
     const recoveryWriteRefusal = new Error("Recovery persistence was refused");
@@ -1037,16 +1042,15 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
         async () => {
           if (submittedRecoveryId !== null) {
             await source.runRecoveryOperation(async () => {
-              // The row may already have been retargeted by a peer without
-              // this source's mirror noticing. Date the Stop fence to the
-              // owner this Send will actually target, before the write and
-              // hydration waits that a later Stop must fall after.
-              const durable = await readRecoveryMutation(submittedRecoveryId);
-              const durableTargetRef = durable?.targetRef ?? pressedRecoveryTargetRef;
+              // The press-time snapshot dates the fence. It may already name a
+              // peer's retarget, and a Stop during the waits below must fall
+              // after this press rather than inside a later capture.
+              const pressedDurable = await pressedRecoveryDurable;
+              const durableTargetRef = pressedDurable?.record?.targetRef ?? pressedRecoveryTargetRef;
               const travelingBarrier =
-                durableTargetRef === pressedRecoveryTargetRef
+                pressedDurable === undefined || durableTargetRef === pressedRecoveryTargetRef
                   ? pressedRecoveryBarrier
-                  : captureRecoveryStopBarrier(durableTargetRef);
+                  : Promise.resolve({ stopEpoch: pressedDurable.stopEpoch });
               const persisted = await queueRecoveryPersistence(
                 submittedRecoveryId,
                 submittedText,

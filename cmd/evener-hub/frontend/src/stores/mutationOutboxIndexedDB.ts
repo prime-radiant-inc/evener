@@ -391,6 +391,27 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     });
   }
 
+  // A recovery Send's atomic press-time capture: the row's durable target and
+  // that target's stop epoch from ONE readonly snapshot. The caller requests it
+  // synchronously on the press, because the row may be retargeted by a peer
+  // while the Send waits on its own persistence or destination hydration. A
+  // Stop after the press must be in the fence's future, not its baseline.
+  async getRecoveryWithStopEpoch(
+    clientMutationId: string,
+  ): Promise<{ record: MutationRecoveryRecord | undefined; stopEpoch: number }> {
+    return this.#read([RECOVERY_STORE, SEQUENCE_STORE], async (transaction) => {
+      const sequencesRequest = requestResult<TargetSequence[]>(transaction.objectStore(SEQUENCE_STORE).getAll());
+      const recordRequest = requestResult<MutationRecoveryRecord | undefined>(
+        transaction.objectStore(RECOVERY_STORE).get(clientMutationId),
+      );
+      const [record, sequences] = await Promise.all([recordRequest, sequencesRequest]);
+      const stopEpoch = record
+        ? (sequences.find((sequence) => sequence.targetRef === record.targetRef)?.stopEpoch ?? 0)
+        : 0;
+      return { record, stopEpoch };
+    });
+  }
+
   // Stop's durable write: the ref's cancelable rows turn "canceled" in the
   // same readwrite transaction that enqueues the turn/interrupt record, so
   // the user's click is the cancel moment and both land or neither does.

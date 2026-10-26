@@ -3533,12 +3533,18 @@ export function captureRecoveryStopBarrier(targetRef: string): Promise<MutationS
   return barrier;
 }
 
-/** Read a recovery row's durable target without writing it. Composer uses this
- * to date its Stop barrier to the owner the Send will actually target. */
-export async function readRecoveryMutation(clientMutationId: string): Promise<MutationRecoveryRecord | undefined> {
-  const runtime = requireMutationRuntime();
-  await runtime.start;
-  return runtime.storage.getRecovery(clientMutationId);
+/** Capture a recovery row's durable target and that target's Stop epoch in one
+ * storage snapshot. Composer requests this from the Send press's synchronous
+ * prefix so a later Stop, during persistence or hydration, stays after the
+ * fence even when a peer retargeted the row. */
+export function readRecoveryWithStopEpoch(
+  clientMutationId: string,
+): Promise<{ record: MutationRecoveryRecord | undefined; stopEpoch: number }> {
+  const capture = requireMutationRuntime().storage.getRecoveryWithStopEpoch(clientMutationId);
+  // The press can still refuse before awaiting this read (capability gates).
+  // Keep the rejection for the sender without an unhandled interim promise.
+  void capture.catch(() => undefined);
+  return capture;
 }
 
 export async function updateRecoveryMutation(

@@ -186,12 +186,46 @@ const defaultCompositionOwners = new Map<string, string>();
 // must update that composer's active recovery, not only localStorage.
 const liveComposerSources = new Map<string, Set<ComposerSourceState>>();
 
+// Edit evidence must outlive the composer that produced it. A replacement can
+// edit and save the stale recovery row, then close before a delayed
+// preservation finishes. The selection must stay on that row, so keep which
+// sources recorded newer work against it even after disposal. Source identity
+// lets the preserving source exclude its own edits.
+const sourceEditIds = new WeakMap<ComposerSourceState, number>();
+let nextSourceEditId = 1;
+const retainedNewerEdits = new Map<string, Set<number>>();
+
+function retainedEditKey(scope: string, recoveryId: string): string {
+  return `${scope}\u0000${recoveryId}`;
+}
+
+function retainNewerEdit(scope: string, recoveryId: string, from: ComposerSourceState): void {
+  let sourceIds = retainedNewerEdits.get(retainedEditKey(scope, recoveryId));
+  if (sourceIds === undefined) {
+    sourceIds = new Set();
+    retainedNewerEdits.set(retainedEditKey(scope, recoveryId), sourceIds);
+  }
+  let sourceId = sourceEditIds.get(from);
+  if (sourceId === undefined) {
+    sourceId = nextSourceEditId++;
+    sourceEditIds.set(from, sourceId);
+  }
+  sourceIds.add(sourceId);
+}
+
 function destinationHasNewerEdits(
   scope: string,
   targetRef: string,
   staleId: string,
   except?: ComposerSourceState,
 ): boolean {
+  const retained = retainedNewerEdits.get(retainedEditKey(scope, staleId));
+  if (retained !== undefined) {
+    const exceptId = except === undefined ? undefined : sourceEditIds.get(except);
+    for (const sourceId of retained) {
+      if (sourceId !== exceptId) return true;
+    }
+  }
   for (const source of liveComposerSources.get(scope) ?? []) {
     if (source === except) continue;
     if (source.ownsStaleRecoveryWithNewerEdits(targetRef, staleId)) return true;
@@ -371,7 +405,9 @@ export function createComposerSourceState(
   function markEdited(): void {
     userEditEpoch += 1;
     draftEditRevisionRef.current += 1;
-    if (currentRecoveryId() !== null) {
+    const recoveryId = currentRecoveryId();
+    if (recoveryId !== null) {
+      retainNewerEdit(recoverySelectionOwnerId, recoveryId, source);
       markDraftEdited(ref);
       ownedDraftRevisionRef.current = readDraftRevision(ref);
     }
@@ -871,6 +907,10 @@ export function createComposerSourceState(
           // Adoption uses the transaction's committed record and revision.
           setActiveRecoveryId(updated);
           activationIncorporatedWork = incorporatedLocalWork || editedDuringActivation;
+          const incorporatedRecoveryId = currentRecoveryId();
+          if (activationIncorporatedWork && incorporatedRecoveryId !== null) {
+            retainNewerEdit(recoverySelectionOwnerId, incorporatedRecoveryId, source);
+          }
           // Rehydrating an already-owned recovery draft is not a user edit.
           // Counting it as one makes a submission that began before the
           // remount look stale, so its commit observer cannot clear unchanged

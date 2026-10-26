@@ -98,7 +98,9 @@ except where a line says so itself.
   newer edits adopts the preserved composition when preservation finishes, so
   it shows and submits the local work without a reload. Newer replacement
   edits are not overwritten: its selection and autosaved work stay in place
-  for reload. Adoption clears only the exact incorporated draft revision, so a
+  for reload. A saved newer edit keeps that ownership even after its composer
+  unmounts, because the evidence is retained beyond the live instance. Adoption
+  clears only the exact incorporated draft revision, so a
   newer ordinary draft from another pane or tab survives. The preserving
   composer is excluded from its own newer-edit check, so a same-ref conflict
   still remembers the fresh row. An explicit activation that merged a newer
@@ -110,8 +112,10 @@ except where a line says so itself.
   with the seat and a Send targets the preserved ref, not the superseded one.
   The destination thread model is loaded before the resend intent is built,
   and a successful write reconciles the target and Stop barrier from the row's
-  durable ref. The Stop fence dates from before persistence and hydration, and
-  the temporary destination claim is released after the resend.
+  durable ref. The press reads the durable target and its Stop epoch in one
+  storage snapshot before persistence or hydration, so a Stop during either
+  wait still cancels the Send, and the temporary destination claim is released
+  after the resend.
 - A successful retargeting write carries the selected recovery ID to the
   destination unless that ref already has its own selection, so reopening the
   resumed conversation restores this pane's work rather than an older peer row.
