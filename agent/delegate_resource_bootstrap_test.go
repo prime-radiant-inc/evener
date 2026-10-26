@@ -137,6 +137,35 @@ func TestDelegateResourceBootstrap_LegacyDelegateStateIsIgnoredAndStartupProceed
 	}
 }
 
+// A retired delegate job is ended as lost without reading its output artifacts,
+// so unreadable output metadata left by the old runtime cannot stop a restore.
+func TestDelegateResourceBootstrap_RetiredDelegateOutputIsNotRead(t *testing.T) {
+	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
+	removeDelegateStoreIfPresent(t, stateDir, meta.ID)
+	jobPath := filepath.Join(jobsDir(stateDir, meta.ID), "jobs.jsonl")
+	outputPath := filepath.Join(t.TempDir(), "retired.log")
+	if err := os.WriteFile(outputPath, []byte("old output"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A directory where the metadata file belongs cannot be read as one.
+	if err := os.Mkdir(outputPath+".meta.json", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	appendLegacyBootstrapEvents(t, jobPath, jobstore.Event{
+		Kind:           jobstore.EventJobStarted,
+		JobID:          "job_legacy_delegate",
+		Type:           jobstore.JobType(delegateResourceType),
+		OwnerSessionID: meta.ID,
+		OutputPath:     outputPath,
+	})
+
+	restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
+	if err != nil {
+		t.Fatalf("restore with unreadable retired output: %v", err)
+	}
+	restored.Close()
+}
+
 // A pending watch frame addressed through a retired delegate job is not
 // restored into the live delivery set, while a frame on a healthy job still is.
 func TestDelegateResourceBootstrap_LegacyWatchFramesAreNotRestored(t *testing.T) {

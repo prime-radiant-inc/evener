@@ -1236,10 +1236,14 @@ func (jm *jobManager) reconcileLostJobsWithLoad(loadJobs func() (map[string]*job
 
 	for _, finished := range jobstore.Reconcile(localRecs, live, jm.now()) {
 		rec := localRecs[finished.JobID]
-		if total, _, err := jobstore.OutputFileStats(jm.outputPathForJob(rec, finished.JobID)); err == nil {
-			finished.OutputBytes = total
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
+		// A retired delegate's output belongs to the runtime that wrote it and is
+		// never read, so its unreadable artifacts cannot stop the restore.
+		if string(rec.Type) != delegateResourceType {
+			if total, _, err := jobstore.OutputFileStats(jm.outputPathForJob(rec, finished.JobID)); err == nil {
+				finished.OutputBytes = total
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
 		}
 		finished.Provenance = provenance.Clone(rec.Provenance)
 		pending := jobstore.Event{

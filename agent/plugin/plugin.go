@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/mcpconfig"
@@ -281,7 +282,7 @@ func Load(dir string) (Instance, error) {
 		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 	lp.Commands = commands
-	lp.SkippedComponents = append(skippedAgents, skippedCommands...)
+	lp.SkippedComponents = slices.Concat(skippedAgents, skippedCommands)
 
 	hooks, unsupportedHooks, unknownHooks, err := pluginDiscoverHooks(resolved, manifest.Hooks, manifest.Name)
 	if err != nil {
