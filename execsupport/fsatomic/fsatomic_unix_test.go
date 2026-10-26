@@ -98,3 +98,59 @@ func TestWriteSetsPerm(t *testing.T) {
 		t.Fatalf("perm = %v, want 0600", info.Mode().Perm())
 	}
 }
+
+func TestWriteFailureBeforeRenameKeepsExistingFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into any directory")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o700) }()
+
+	err := fsatomic.Write(path, []byte("new"), 0o600)
+	if err == nil || errors.Is(err, fsatomic.ErrPublished) {
+		t.Fatalf("err = %v, want a plain failure", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "old" {
+		t.Fatalf("contents = %q, want the old file untouched", got)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Fatalf("directory entries = %v, want no temp file left", entries)
+	}
+}
+
+// A parent sync that fails must not leave the new directory behind, or a
+// retry would find it, skip the sync, and report durability it never got.
+func TestMkdirAllRollsBackWhenTheParentSyncFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens any directory")
+	}
+	base := t.TempDir()
+	if err := os.Chmod(base, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(base, 0o700) }()
+	dir := filepath.Join(base, "a", "b")
+
+	if err := fsatomic.MkdirAll(dir, 0o700); err == nil {
+		t.Fatal("expected the unreadable parent to fail its sync")
+	}
+	if err := os.Chmod(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "a")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed MkdirAll left its directories behind: %v", err)
+	}
+	if err := fsatomic.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+}

@@ -48,7 +48,7 @@ func SaveLayer(path string, layer Layer) error {
 }
 
 func writeAtomic(path string, encode func(io.Writer) error) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := fsatomic.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("launchconfig: mkdir %s: %w", filepath.Dir(path), err)
 	}
 	var buf bytes.Buffer

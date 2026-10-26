@@ -49,29 +49,23 @@ func TestWriteDoesNotFollowPlantedTempSymlink(t *testing.T) {
 	}
 }
 
-func TestWriteFailureLeavesOldFileAndNoTemp(t *testing.T) {
+// Renaming a file over a directory fails after the temp file exists.
+func TestWriteRenameFailureLeavesNoTempAndNoPublishedMark(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
-	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// Renaming a file over a directory fails after the temp file exists.
 	target := filepath.Join(dir, "target")
 	if err := os.Mkdir(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := fsatomic.Write(target, []byte("new"), 0o600); err == nil {
-		t.Fatal("expected rename over a directory to fail")
+	err := fsatomic.Write(target, []byte("new"), 0o600)
+	if err == nil || errors.Is(err, fsatomic.ErrPublished) {
+		t.Fatalf("err = %v, want a plain failure", err)
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
+	if info, statErr := os.Stat(target); statErr != nil || !info.IsDir() {
+		t.Fatalf("target = %v, %v; want the original directory", info, statErr)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("directory has %d entries, want only state.json and target", len(entries))
-	}
-	if got, _ := os.ReadFile(path); string(got) != "old" {
-		t.Fatalf("unrelated file changed: %q", got)
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil || len(entries) != 1 {
+		t.Fatalf("directory entries = %v, %v; want only the target", entries, readErr)
 	}
 }
 
@@ -110,5 +104,29 @@ func TestRemoveDeletesFileAndToleratesMissingOnes(t *testing.T) {
 	}
 	if err := fsatomic.Remove(filepath.Join(dir, "missing-dir", "state.json")); err != nil {
 		t.Fatalf("removing under a missing directory: %v", err)
+	}
+}
+
+func TestMkdirAllCreatesMissingAncestorsAndIsIdempotent(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "a", "b", "c")
+	for range 2 {
+		if err := fsatomic.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Fatalf("stat = %v, %v; want a directory", info, err)
+	}
+}
+
+func TestMkdirAllRejectsAFileInThePath(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{file, filepath.Join(file, "sub")} {
+		if err := fsatomic.MkdirAll(dir, 0o700); !errors.Is(err, syscall.ENOTDIR) {
+			t.Fatalf("MkdirAll(%s) = %v, want ENOTDIR", dir, err)
+		}
 	}
 }
