@@ -25,7 +25,7 @@ const compactedAttentionText = `<delegate-notification delegate_id="dlg_worker" 
 func newCompactableSession(t *testing.T, configure ...func(*SessionConfig)) (*Session, *fakeAdapter) {
 	t.Helper()
 	main := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("answered the update") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("answered the update") },
 	}}
 	client := llm.NewClient()
 	client.Register(main)

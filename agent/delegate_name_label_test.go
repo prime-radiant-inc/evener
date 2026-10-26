@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
@@ -313,9 +314,9 @@ func TestDelegateName_SteeredReplyCarriesLabel(t *testing.T) {
 		func(llm.Request) llm.Response {
 			close(entered)
 			<-release
-			return finalResponse("first result")
+			return agenttest.FinalResponse("first result")
 		},
-		func(llm.Request) llm.Response { return finalResponse("continued") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("continued") },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)

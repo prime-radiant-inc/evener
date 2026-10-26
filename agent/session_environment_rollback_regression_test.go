@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -346,7 +347,7 @@ func durableEnvironmentTurnIDs(t *testing.T, sess *Session) []string {
 func TestRestoreDeferredHookWaitsForEnvironmentDurability(t *testing.T) {
 	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("ok") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}}
 	sess := restoredSessionWithResumeHook(t, adapter)
 	failure := errors.New("environment transcript durability failure")
@@ -698,7 +699,7 @@ func countingFinalResponses(requests *atomic.Int32, n int) []func(llm.Request) l
 	for i := range steps {
 		steps[i] = func(llm.Request) llm.Response {
 			requests.Add(1)
-			return finalResponse("ok")
+			return agenttest.FinalResponse("ok")
 		}
 	}
 	return steps
@@ -836,7 +837,7 @@ func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
 		// which is how a writer ends up poisoned with the drain loop still
 		// running.
 		armEnvironmentPartialWriteAfter(fs, 2)
-		return finalResponse("ok")
+		return agenttest.FinalResponse("ok")
 	}
 	sess.FollowUp("runs behind the poisoning")
 	drainPendingEvents(sess)
@@ -875,7 +876,7 @@ func TestPoisonedWriterLeavesAQueuedMessageQueued(t *testing.T) {
 		// onto the buffered tool-results one, so this turn finishes with the
 		// writer already poisoned.
 		armEnvironmentPartialWriteAfter(fs, 2)
-		return finalResponse("ok")
+		return agenttest.FinalResponse("ok")
 	}
 	if err := sess.Enqueue(t.Context(), "waits for the restart"); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -1235,7 +1236,7 @@ func TestPoisonedWriterLeavesTheInterruptDrainedMessageQueued(t *testing.T) {
 		// interrupt lets the drain claim its queued message.
 		poisonSessionTranscript(t, sess)
 		interrupt()
-		return finalResponse("ok")
+		return agenttest.FinalResponse("ok")
 	}
 	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 		ClientMutationID: "queued-behind-an-interrupt",
@@ -1492,8 +1493,8 @@ func TestPoisonedToolResultStopsTheInputBeforeTheNextRound(t *testing.T) {
 	t.Parallel()
 	var requests atomic.Int32
 	steps := make([]func(llm.Request) llm.Response, 3)
-	steps[0] = func(llm.Request) llm.Response { requests.Add(1); return finalResponse("ok") }
-	steps[2] = func(llm.Request) llm.Response { requests.Add(1); return finalResponse("must never run") }
+	steps[0] = func(llm.Request) llm.Response { requests.Add(1); return agenttest.FinalResponse("ok") }
+	steps[2] = func(llm.Request) llm.Response { requests.Add(1); return agenttest.FinalResponse("must never run") }
 	sess := newTestSessionForEnvctx(t, withSteps(steps...))
 	sendOneUserInput(t, sess, "first") // settles the environment block
 

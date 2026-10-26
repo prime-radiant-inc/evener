@@ -49,7 +49,9 @@ func TestMemoryGardeningSkill(t *testing.T) {
 			t.Fatal(err)
 		}
 		steps := []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return toolCallResponse(useSkillCall("garden-1", "gardening-memory")) },
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(useSkillCall("garden-1", "gardening-memory"))
+			},
 			func(req llm.Request) llm.Response {
 				envelopes := requestSkillEnvelopes(t, req)
 				if len(envelopes) != 1 || envelopes[0].Doc.Name != "gardening-memory" {
@@ -67,7 +69,7 @@ func TestMemoryGardeningSkill(t *testing.T) {
 			},
 			func(req llm.Request) llm.Response {
 				memoryRequireResult(t, req, "memory_read", "opaque-after-74")
-				return finalResponse("correction complete")
+				return agenttest.FinalResponse("correction complete")
 			},
 		}
 		s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}), withSteps(steps...))
@@ -97,7 +99,9 @@ func TestMemoryGardeningSkill(t *testing.T) {
 			t.Fatal(err)
 		}
 		steps := []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return toolCallResponse(useSkillCall("garden-1", "gardening-memory")) },
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(useSkillCall("garden-1", "gardening-memory"))
+			},
 			func(req llm.Request) llm.Response {
 				// The disabled session cannot follow the skill, so its body is
 				// never delivered and no memory tool appears to act with.
@@ -109,7 +113,7 @@ func TestMemoryGardeningSkill(t *testing.T) {
 						t.Fatalf("disabled skill gained %s", def.Name)
 					}
 				}
-				return finalResponse("ordinary skill refused")
+				return agenttest.FinalResponse("ordinary skill refused")
 			},
 		}
 		s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, DisableMemory: true}), withSteps(steps...))
@@ -160,12 +164,12 @@ func TestMemoryGardeningSkillGatedBySaveCapability(t *testing.T) {
 							catalogListed = true
 						}
 					}
-					return toolCallResponse(useSkillCall("garden-1", "gardening-memory"))
+					return agenttest.ToolCallResponse(useSkillCall("garden-1", "gardening-memory"))
 				},
 				func(req llm.Request) llm.Response {
 					envelopes := requestSkillEnvelopes(t, req)
 					bodyDelivered = len(envelopes) == 1 && envelopes[0].Doc.Name == "gardening-memory"
-					return finalResponse("done")
+					return agenttest.FinalResponse("done")
 				},
 			}
 			s := newSession(t, withConfig(tc.cfg), withSteps(steps...))
@@ -267,7 +271,7 @@ func TestMemoryContextProjection(t *testing.T) {
 	root, history := t.TempDir(), t.TempDir()
 	const opaque = "opaque-projection-76"
 	memorySeedPage(t, root, "memory", "fact.md", opaque)
-	s := newSession(t, withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root}), withSteps(func(llm.Request) llm.Response { return finalResponse("complete") }))
+	s := newSession(t, withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root}), withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("complete") }))
 	if _, err := s.ProcessInput(context.Background(), "opaque-input-77", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -417,14 +421,14 @@ func TestMemoryScopeRootRecovery(t *testing.T) {
 				if state != "current" || body != healthy {
 					t.Fatalf("healthy scope=%s %q", state, body)
 				}
-				return finalResponse("ordinary work completed")
+				return agenttest.FinalResponse("ordinary work completed")
 			}
 			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project"}), withSteps(append(slices.Repeat([]func(llm.Request) llm.Response{step}, 4), func(req llm.Request) llm.Response {
 				step(req)
 				return memoryCallResponse("memory_read", map[string]any{"scope": scope, "file_path": "fact.md"})
 			}, func(req llm.Request) llm.Response {
 				memoryRequireResult(t, req, "memory_read", wantRead)
-				return finalResponse("restored native read completed")
+				return agenttest.FinalResponse("restored native read completed")
 			})...))
 			run := func() {
 				t.Helper()
@@ -625,7 +629,7 @@ func TestMemoryContextTransitions(t *testing.T) {
 		if state != wantProjectState || body != wantProjectBody {
 			t.Fatalf("project state=%s body=%q want=%s %q", state, body, wantProjectState, wantProjectBody)
 		}
-		return finalResponse("ordinary result")
+		return agenttest.FinalResponse("ordinary result")
 	}
 	steps := make([]func(llm.Request) llm.Response, 9)
 	for i := range steps {
@@ -735,7 +739,7 @@ func TestMemoryContextLifecycle(t *testing.T) {
 		if state != "current" || body != wantProject {
 			t.Fatalf("root project index=%s %q", state, body)
 		}
-		return finalResponse("root observed indexes")
+		return agenttest.FinalResponse("root observed indexes")
 	}
 	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{assertIndexes, assertIndexes}})
 	if _, err := s.ProcessInput(context.Background(), "startup", nil); err != nil {
@@ -775,7 +779,7 @@ func TestMemoryContextLifecycle(t *testing.T) {
 		if state != "current" || body != wantRestored {
 			t.Fatalf("restored state=%s body=%q", state, body)
 		}
-		return finalResponse("restored result")
+		return agenttest.FinalResponse("restored result")
 	}}})
 	if _, err := r.ProcessInput(context.Background(), "resume", nil); err != nil {
 		t.Fatal(err)
@@ -800,7 +804,7 @@ func TestMemoryContextLifecycle(t *testing.T) {
 		if state != "missing" || body != "" {
 			t.Fatalf("restore after deletion state=%s body=%q", state, body)
 		}
-		return finalResponse("missing index observed")
+		return agenttest.FinalResponse("missing index observed")
 	}}})
 	if _, err := r2.ProcessInput(context.Background(), "resume missing", nil); err != nil {
 		t.Fatal(err)
@@ -857,7 +861,7 @@ func TestMemoryContextTrustAndBounds(t *testing.T) {
 			if result == nil || result.Name != "memory_read" || result.IsError {
 				t.Fatalf("full read route=%+v", result)
 			}
-			return finalResponse("read completed")
+			return agenttest.FinalResponse("read completed")
 		}))
 		if _, err := s.ProcessInput(context.Background(), "read", nil); err != nil {
 			t.Fatal(err)
@@ -885,7 +889,7 @@ func TestMemoryContextLifecycleDelegate(t *testing.T) {
 		if state != "current" || body != wantProject {
 			t.Fatalf("child project=%s %q", state, body)
 		}
-		return finalResponse("child observed indexes")
+		return agenttest.FinalResponse("child observed indexes")
 	}
 	s := newScriptedSummaryCompactSession(t, "memory-child-summary", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("## Progress\nopaque-child-summary-403")}
@@ -944,7 +948,7 @@ func TestMemoryContextForkInvalidation(t *testing.T) {
 			requests := make(chan llm.Request, 2)
 			step := func(req llm.Request) llm.Response {
 				requests <- req
-				return finalResponse("fixture completed")
+				return agenttest.FinalResponse("fixture completed")
 			}
 			var indexReads atomic.Int32
 			s := newSession(t, withDir(workspace), withConfig(SessionConfig{
@@ -1088,7 +1092,7 @@ func TestMemoryStorageWaitAndRecovery(t *testing.T) {
 				if healthy != wantHealthy {
 					t.Errorf("healthy=%q", healthy)
 				}
-				return finalResponse("ordinary work finished")
+				return agenttest.FinalResponse("ordinary work finished")
 			}
 			s := newSession(t, withConfig(cfg), withSteps(slices.Repeat([]func(llm.Request) llm.Response{step}, 4)...))
 			for i := range 3 {
@@ -1259,7 +1263,7 @@ func memoryCallResponse(name string, args map[string]any) llm.Response {
 	if err != nil {
 		panic(err)
 	}
-	return toolCallResponse(llm.ToolCallData{ID: "memory-test", Type: "function", Name: name, Arguments: raw})
+	return agenttest.ToolCallResponse(llm.ToolCallData{ID: "memory-test", Type: "function", Name: name, Arguments: raw})
 }
 
 // Catches dropped persisted opt-out/project binding and accidental host-root persistence.
@@ -1427,7 +1431,7 @@ func TestMemoryDelegateRestore(t *testing.T) {
 				return nil
 			}}
 			s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: host, MemoryProjectID: project.ID, Project: project, MaxSubagentDepth: 2,
-				AcquireSessionOwnership: func(string) error { return nil }, testOnly: testCfg}), withSteps(func(llm.Request) llm.Response { return finalResponse("child finished") }))
+				AcquireSessionOwnership: func(string) error { return nil }, testOnly: testCfg}), withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("child finished") }))
 			args := delegateArgs{Task: "fixture read-only child", AgentType: "explorer", DelegationAllowance: new(0)}
 			if mode == "worktree-binding" {
 				args.Isolation = "worktree"
@@ -1515,7 +1519,7 @@ func TestMemoryDelegateRestore(t *testing.T) {
 				refreshModelFacingCaches(r)
 			}
 			// project-adopted also spawns a fresh child, which takes the second step.
-			finished := func(llm.Request) llm.Response { return finalResponse("restored child finished") }
+			finished := func(llm.Request) llm.Response { return agenttest.FinalResponse("restored child finished") }
 			r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{finished, finished}})
 			accesses.Store(0)
 			projectAccesses.Store(0)
@@ -1607,7 +1611,7 @@ func TestMemoryDelegateFreshCeilings(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			workspace, project := memoryGitFixture(t)
 			var calls atomic.Int32
-			s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: t.TempDir(), MemoryProjectID: project.ID, DisableMemory: mode == "disabled", Project: project, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true, memoryBeforeIO: func(string, string) error { calls.Add(1); return nil }}}), withSteps(func(llm.Request) llm.Response { return finalResponse("child finished") }))
+			s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: t.TempDir(), MemoryProjectID: project.ID, DisableMemory: mode == "disabled", Project: project, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true, memoryBeforeIO: func(string, string) error { calls.Add(1); return nil }}}), withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("child finished") }))
 			if mode == "parent-read-revoked" {
 				for _, name := range nativeMemoryToolNames {
 					s.reg.Remove(name)
@@ -1675,7 +1679,7 @@ func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
 			var childTools []llm.ToolDefinition
 			s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, MemoryProjectID: project.ID, Project: project, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(func(req llm.Request) llm.Response {
 				childTools = req.Tools
-				return finalResponse("child finished")
+				return agenttest.FinalResponse("child finished")
 			}))
 			res := s.createDelegate(context.Background(), delegateArgs{Task: "fixture child", AgentType: agentType, DelegationAllowance: new(0)})
 			if res.Err != nil {
@@ -1855,7 +1859,7 @@ func TestMemoryDelegateReadCeilingNoIO(t *testing.T) {
 	host := t.TempDir()
 	memorySeedPage(t, host, "memory", "fact.md", "opaque-unread-86")
 	var calls atomic.Int32
-	s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{MemoryStateRoot: host, spawn: spawnConfig{deniedToolNames: []string{"memory_read"}}, testOnly: testConfig{memoryBeforeIO: func(string, string) error { calls.Add(1); return nil }}}), withSteps(func(llm.Request) llm.Response { return finalResponse("ordinary work") }))
+	s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{MemoryStateRoot: host, spawn: spawnConfig{deniedToolNames: []string{"memory_read"}}, testOnly: testConfig{memoryBeforeIO: func(string, string) error { calls.Add(1); return nil }}}), withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("ordinary work") }))
 	if _, err := s.ProcessInput(context.Background(), "ordinary input", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -1889,7 +1893,7 @@ func TestMemoryDisableNoIO(t *testing.T) {
 				t.Fatal("disabled projected index")
 			}
 		}
-		return finalResponse("ordinary work")
+		return agenttest.FinalResponse("ordinary work")
 	}))
 	if res := memoryExec(t, s, "write_file", map[string]any{"file_path": "ordinary.txt", "content": "opaque-ordinary-24"}); res.IsError {
 		t.Fatal(res.Output)
@@ -1966,7 +1970,7 @@ func TestMemoryDisableResumeAndCompaction(t *testing.T) {
 			if len(r.history) >= 12 {
 				t.Fatal("real compaction did not fold history")
 			}
-			r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("ordinary work") }}})
+			r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("ordinary work") }}})
 			if _, err := r.ProcessInput(context.Background(), "ordinary input", nil); err != nil {
 				t.Fatal(err)
 			}
@@ -2163,7 +2167,7 @@ func TestMemoryFreshSession(t *testing.T) {
 			}
 			return memoryCallResponse("memory_write", map[string]any{"scope": "project", "file_path": "nested/unusual name.txt", "when": "w", "body": topic, "intent": "Saving topic data"})
 		},
-		func(llm.Request) llm.Response { return finalResponse("saved") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("saved") },
 	))
 	if _, err := a.ProcessInput(context.Background(), "save", nil); err != nil {
 		t.Fatal(err)
@@ -2208,7 +2212,10 @@ func TestMemoryFreshSession(t *testing.T) {
 			assertRead(req, "opaque-lesson-71")
 			return memoryCallResponse("memory_read", map[string]any{"scope": "project", "file_path": "nested/unusual name.txt", "intent": "Reading topic data"})
 		},
-		func(req llm.Request) llm.Response { assertRead(req, "opaque-topic-83"); return finalResponse("read") },
+		func(req llm.Request) llm.Response {
+			assertRead(req, "opaque-topic-83")
+			return agenttest.FinalResponse("read")
+		},
 	))
 	if _, err := b.ProcessInput(context.Background(), "continue", nil); err != nil {
 		t.Fatal(err)
@@ -2866,7 +2873,7 @@ func TestMemoryOutputRecovery(t *testing.T) {
 				if recovered.String() != want.String() {
 					t.Fatalf("recovered bytes=%d want=%d", recovered.Len(), want.Len())
 				}
-				return finalResponse("recovered")
+				return agenttest.FinalResponse("recovered")
 			}
 			steps := make([]func(llm.Request) llm.Response, 16)
 			for i := range steps {
@@ -2951,7 +2958,7 @@ func TestMemoryGenericDelivery(t *testing.T) {
 			},
 			func(req llm.Request) llm.Response {
 				memoryRequireResult(t, req, "read_transcript", "opaque-delivery-020-")
-				return finalResponse("recovered")
+				return agenttest.FinalResponse("recovered")
 			}))
 		if _, err := s.ProcessInput(context.Background(), "opaque-delivery-input", nil); err != nil {
 			t.Fatal(err)
@@ -3013,7 +3020,7 @@ func TestMemoryDisabledAndUnbound(t *testing.T) {
 					t.Fatal("disabled context")
 				}
 			}
-			return finalResponse("ordinary work")
+			return agenttest.FinalResponse("ordinary work")
 		}))
 		if _, err := s.ProcessInput(context.Background(), "continue", nil); err != nil {
 			t.Fatal(err)
@@ -3062,7 +3069,7 @@ func TestMemoryIndexProjection(t *testing.T) {
 		if found != 1 {
 			t.Fatalf("personal contexts=%d", found)
 		}
-		return finalResponse("seen")
+		return agenttest.FinalResponse("seen")
 	}))
 	if _, err := s.ProcessInput(context.Background(), "continue", nil); err != nil {
 		t.Fatal(err)
@@ -3144,7 +3151,7 @@ func TestMemoryAutomaticSetupRecovery(t *testing.T) {
 							t.Fatalf("%s latest index=(%q, %q), want (%q, %q)", scope, gotState, got, state, body)
 						}
 					}
-					return finalResponse("seen")
+					return agenttest.FinalResponse("seen")
 				}
 				initialState := "unavailable"
 				if operation == "missing_index" {
@@ -3320,7 +3327,7 @@ func TestMemorySchemaAndOutputAliases(t *testing.T) {
 		if seen != len(pairs) {
 			t.Fatalf("advertised memory tools=%d want=%d", seen, len(pairs))
 		}
-		return finalResponse("schemas checked")
+		return agenttest.FinalResponse("schemas checked")
 	}))
 	for name, base := range pairs {
 		memory, ordinary := s.reg.Get(name), s.reg.Get(base)
@@ -3371,7 +3378,7 @@ func TestMemoryIndexQuotesOpaqueBytes(t *testing.T) {
 				if strings.Contains(text, "\n</memory>\n") {
 					t.Fatal("stored data escaped quote framing")
 				}
-				return finalResponse("quoted")
+				return agenttest.FinalResponse("quoted")
 			}
 		}
 		t.Fatal("opaque index not delivered")
@@ -3437,7 +3444,7 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 						system.WriteString(msg.Text())
 					}
 				}
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			}))
 			if tc.revoke != "" {
 				s.reg.Remove(tc.revoke)

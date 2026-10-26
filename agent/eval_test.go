@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -360,7 +361,7 @@ func TestEvalCollector_ScriptedProviderBudgetTerminationNotCompleted(t *testing.
 	t.Parallel()
 
 	loop := func(llm.Request) llm.Response {
-		return toolCallResponse(llm.ToolCallData{ID: "loop-1", Name: "eval_loop_tool", Arguments: []byte(`{}`), Type: "function"})
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "loop-1", Name: "eval_loop_tool", Arguments: []byte(`{}`), Type: "function"})
 	}
 	sess := newSession(t,
 		withDir(t.TempDir()),

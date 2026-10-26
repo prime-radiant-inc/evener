@@ -592,7 +592,7 @@ func TestForkSession_RestorePreservesAcceptedInputBudget(t *testing.T) {
 	adapter := &agenttest.ScriptedAdapter{
 		Provider: "openai",
 		Responder: func(llm.Request) llm.Response {
-			return communicateResponse(true, "done")
+			return agenttest.CommunicateResponse(true, "done")
 		},
 	}
 	client := llm.NewClient()

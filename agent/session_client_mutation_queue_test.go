@@ -2021,7 +2021,7 @@ func TestClientMutation_SkillSelectionStartConsumesAtTurnBoundary(t *testing.T) 
 	source := writeSkillMDAndReturn(t, root, "probe", body)
 	mutationID := "skill-selection-start"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 	evs, stop := captureEvents(s)
@@ -2085,7 +2085,7 @@ func TestClientMutation_InlineSkillReferencesReachProviderAndTranscript(t *testi
 	const original = "Run /skill-1 and then /skill-2"
 	const mutationID = "inline-skill-references"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-inline", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-inline", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 	evs, stop := captureEvents(s)
@@ -2150,7 +2150,7 @@ func TestClientMutation_SkillSelectionOnlyStartIsContent(t *testing.T) {
 	source := writeSkillMDAndReturn(t, root, "probe", body)
 	mutationID := "skill-selection-only-start"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 
@@ -2182,7 +2182,7 @@ func TestClientMutation_SkillSelectionQueueConsumesCurrentDiskBytes(t *testing.T
 	source := writeSkillMDAndReturn(t, root, "probe", firstBody)
 	mutationID := "skill-selection-queue"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 
@@ -2225,7 +2225,7 @@ func TestClientMutation_SkillSelectionMissingSecondNameFailsVisible(t *testing.T
 	writeSkillMDAndReturn(t, root, "probe", body)
 	mutationID := "skill-selection-missing-second"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 	evs, stop := captureEvents(s)
@@ -2298,9 +2298,9 @@ func skillSteerMidTurnSession(t *testing.T, steer func() error) (*Session, *agen
 		calls++
 		if calls == 1 {
 			steerOnce.Do(func() { _ = steer() })
-			return toolCallResponse(communicateCallArgs("hold-1", map[string]any{"message": "hold", "end_turn": false}))
+			return agenttest.ToolCallResponse(communicateCallArgs("hold-1", map[string]any{"message": "hold", "end_turn": false}))
 		}
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
@@ -2450,7 +2450,7 @@ func TestClientMutation_SkillSelectionDrainCombinesQueueAndExtraSelections(t *te
 	probeSource := writeSkillMDAndReturn(t, root, "probe", probeBody)
 	probe2Source := writeSkillMDAndReturn(t, root, "probe2", probe2Body)
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 
@@ -2517,7 +2517,7 @@ func TestClientMutation_SkillSelectionCancelThenDrainUsesRemainingSelection(t *t
 	writeSkillMDAndReturn(t, root, "probe", probeBody)
 	writeSkillMDAndReturn(t, root, "probe2", probe2Body)
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 
@@ -2582,7 +2582,7 @@ func TestClientMutation_SkillSelectionQueueReturnKeepsSelectionRunnable(t *testi
 	writeSkillMDAndReturn(t, root, "probe", body)
 	mutationID := "skill-selection-queue-return"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 
@@ -2649,7 +2649,7 @@ func TestClientMutation_SkillSelectionSurvivesRestartBeforeClaim(t *testing.T) {
 	writeSkillMDAndReturn(t, dir, "probe", body)
 	mutationID := "skill-selection-restart-before-claim"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	sess := newSkillSelectionDiskSession(t, dir, adapter)
 	response, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
@@ -2689,7 +2689,7 @@ func TestClientMutation_SkillSelectionRestartAfterClaimRequeuesSelection(t *test
 	writeSkillMDAndReturn(t, dir, "probe", body)
 	mutationID := "skill-selection-restart-after-claim"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	sess := newSkillSelectionDiskSession(t, dir, adapter)
 	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
@@ -127,7 +128,7 @@ func TestDelegateForkContext_DescendantsStartClean(t *testing.T) {
 					message.Content[0].ToolCall.Arguments = []byte(`{"prompt":"grandchild-unit-sentinel","delegation_allowance":0}`)
 					return llm.Response{Message: message}
 				},
-				func(llm.Request) llm.Response { return finalResponse("child finished") },
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("child finished") },
 			}})
 		} else {
 			client.Register(grandchild)
@@ -176,7 +177,7 @@ func TestDelegateForkContext_ColdResumePreservesSnapshot(t *testing.T) {
 	root.appendTurn(schema.TurnCheckpoint, llm.User("parent-summary-sentinel"))
 	root.appendTurn(schema.TurnUserInput, llm.User("recent-parent-sentinel"))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("child-result-sentinel") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("child-result-sentinel") },
 	}}
 	client.Register(adapter)
 	result := root.createDelegate(context.Background(), delegateArgs{Task: "child-unit-sentinel", ForkContext: true, DelegationAllowance: new(0)})

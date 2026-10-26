@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -32,7 +33,7 @@ func TestCachedToolDefs_MatchUncached(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -340,7 +341,7 @@ func TestHistoryCopyReduction_ContextAndExpansionShareCopy(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(shellCall("s1"))
+				return agenttest.ToolCallResponse(shellCall("s1"))
 			},
 			func(req llm.Request) llm.Response {
 				// Verify history has the tool result from round 0.
@@ -354,7 +355,7 @@ func TestHistoryCopyReduction_ContextAndExpansionShareCopy(t *testing.T) {
 				if !hasToolResult {
 					t.Error("round 1 should see tool result from round 0")
 				}
-				return toolCallResponse(comm)
+				return agenttest.ToolCallResponse(comm)
 			},
 		},
 	}
@@ -408,10 +409,10 @@ func TestAfterAction_ReceivesCurrentHistory(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(shellCall("s1"))
+				return agenttest.ToolCallResponse(shellCall("s1"))
 			},
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(comm)
+				return agenttest.ToolCallResponse(comm)
 			},
 		},
 	}
@@ -577,7 +578,7 @@ func TestSystemPromptConsistency_WithAndWithoutCache(t *testing.T) {
 				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
 					capturedSysPrompt = req.Messages[0].Text()
 				}
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}

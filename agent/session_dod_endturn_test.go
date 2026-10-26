@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -19,14 +20,14 @@ func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(communicateCallArgs("ask2", map[string]any{
+				return agenttest.ToolCallResponse(communicateCallArgs("ask2", map[string]any{
 					"end_turn":   true,
 					"end_reason": "needs_response",
 					"message":    "What language?",
 				}))
 			},
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(communicateCallArgs("msg2", map[string]any{
+				return agenttest.ToolCallResponse(communicateCallArgs("msg2", map[string]any{
 					"end_turn": true,
 					"message":  "Done writing Go code.",
 				}))

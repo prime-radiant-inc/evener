@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 
@@ -458,10 +459,10 @@ func newRealDelegateTree(t *testing.T, descendantEvents func(events.SessionEvent
 	workspace := t.TempDir()
 	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 2, ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(
 		func(llm.Request) llm.Response {
-			return toolCallResponse(llm.ToolCallData{ID: "spawn-grandchild", Name: "delegate", Arguments: json.RawMessage(`{"prompt":"grandchild activity task"}`), Type: "function"})
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "spawn-grandchild", Name: "delegate", Arguments: json.RawMessage(`{"prompt":"grandchild activity task"}`), Type: "function"})
 		},
-		func(llm.Request) llm.Response { return finalResponse("grandchild done") },
-		func(llm.Request) llm.Response { return finalResponse("parent done") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("grandchild done") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("parent done") },
 	))
 	if descendantEvents != nil {
 		s.SetDescendantEventFunc(descendantEvents)

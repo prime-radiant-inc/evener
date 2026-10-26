@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -61,17 +62,17 @@ func TestGoalLoopRunsContinuationToComplete(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			// Turn 1, round 0: mutate (progress) but do NOT declare complete.
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(writeFileCall("w1", "progress.txt", "work"))
+				return agenttest.ToolCallResponse(writeFileCall("w1", "progress.txt", "work"))
 			},
 			// Turn 1, round 1: end the turn via the result tool (idle). The goal
 			// is still active, so the gate injects a continuation.
-			func(req llm.Request) llm.Response { return finalResponse("did some work") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("did some work") },
 			// Turn 2 (continuation), round 0: declare the goal complete.
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(updateGoalCall("g1", "complete"))
+				return agenttest.ToolCallResponse(updateGoalCall("g1", "complete"))
 			},
 			// Turn 2, round 1: end the turn. The gate sees the terminal status and stops.
-			func(req llm.Request) llm.Response { return finalResponse("goal achieved") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("goal achieved") },
 		},
 	})
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})

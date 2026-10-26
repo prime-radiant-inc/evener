@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -31,7 +32,7 @@ var envctxFixedTime = time.Date(2026, 8, 6, 14, 0, 0, 0, time.UTC)
 func repeatFinalResponse(n int, message string) []func(req llm.Request) llm.Response {
 	steps := make([]func(req llm.Request) llm.Response, n)
 	for i := range steps {
-		steps[i] = func(llm.Request) llm.Response { return finalResponse(message) }
+		steps[i] = func(llm.Request) llm.Response { return agenttest.FinalResponse(message) }
 	}
 	return steps
 }
@@ -428,10 +429,10 @@ func TestEnvContextStatePersistsToMeta(t *testing.T) {
 // block at all — the controller ruling this test pins.
 func TestCompactionResetsEnvironmentContextTracker(t *testing.T) {
 	t.Parallel()
-	okStep := func(llm.Request) llm.Response { return finalResponse("ok") }
+	okStep := func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") }
 	steps := []func(req llm.Request) llm.Response{
 		okStep, // ProcessInput "hello"
-		func(llm.Request) llm.Response { return finalResponse("forced summary") }, // Compact's L4 summarize call
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("forced summary") }, // Compact's L4 summarize call
 		okStep, // ProcessInput "again"
 	}
 	s := newTestSessionForEnvctx(t, withSteps(steps...))

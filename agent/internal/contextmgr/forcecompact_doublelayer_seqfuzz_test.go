@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -232,7 +233,7 @@ func (m *doubleLayerModel) applyOp(rt *rapid.T, op dlOp, step int) {
 	case dlOpAddCommunicate:
 		tok := m.nextID("AGENT")
 		id := m.nextID("call")
-		cc := communicateCall(id, tok)
+		cc := agenttest.CommunicateCall(id, tok)
 		m.history = append(m.history,
 			schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
 				Role:    llm.RoleAssistant,

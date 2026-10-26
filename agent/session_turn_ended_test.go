@@ -20,7 +20,7 @@ func TestLastTurnEndedAt_StampedWhenATurnEnds(t *testing.T) {
 	sess := newSession(t, withConfig(SessionConfig{clock: clk}), withSteps(
 		func(req llm.Request) llm.Response {
 			clk.Advance(2 * time.Second)
-			return finalResponse("ok")
+			return agenttest.FinalResponse("ok")
 		},
 	))
 	if got := sess.Meta().LastTurnEndedAt; !got.IsZero() {

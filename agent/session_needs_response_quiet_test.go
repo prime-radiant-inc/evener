@@ -122,7 +122,9 @@ func TestNeedsResponseRestartInsideTheQuietPeriodNeverArms(t *testing.T) {
 // but its human partner's answer, so it rests awaiting at once.
 func TestAskRestsAwaitingWithoutAQuietPeriod(t *testing.T) {
 	t.Parallel()
-	sess, _ := newQuietPeriodSession(t, func(llm.Request) llm.Response { return toolCallResponse(askUserCall("ask1", askUserArgsValid())) })
+	sess, _ := newQuietPeriodSession(t, func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(askUserCall("ask1", askUserArgsValid()))
+	})
 	evs, mu, done := collectEvents(sess)
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -214,7 +216,9 @@ func TestNeedsResponseCloseInsideTheQuietPeriodNeverArms(t *testing.T) {
 // holds it until a reply does.
 func TestPendingQuestionRestsAwaitingWithInputQueued(t *testing.T) {
 	t.Parallel()
-	sess, _ := newQuietPeriodSession(t, func(llm.Request) llm.Response { return toolCallResponse(askUserCall("ask1", askUserArgsValid())) })
+	sess, _ := newQuietPeriodSession(t, func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(askUserCall("ask1", askUserArgsValid()))
+	})
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -239,7 +243,9 @@ func TestPendingQuestionRestsAwaitingWithInputQueued(t *testing.T) {
 // finds the session still processing, or closing, leaves that state alone.
 func TestPendingQuestionUpgradesOnlyAnOpenIdleSession(t *testing.T) {
 	t.Parallel()
-	sess, _ := newQuietPeriodSession(t, func(llm.Request) llm.Response { return toolCallResponse(askUserCall("ask1", askUserArgsValid())) })
+	sess, _ := newQuietPeriodSession(t, func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(askUserCall("ask1", askUserArgsValid()))
+	})
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

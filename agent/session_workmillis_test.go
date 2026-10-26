@@ -24,7 +24,7 @@ func TestWorkMillis_CompletedTurnCounts(t *testing.T) {
 	sess := newSession(t, withConfig(SessionConfig{clock: clk}), withSteps(
 		func(req llm.Request) llm.Response {
 			clk.Advance(delta)
-			return finalResponse("ok")
+			return agenttest.FinalResponse("ok")
 		},
 	))
 
@@ -134,11 +134,11 @@ func TestWorkMillis_MultiTurnDrainEachCounts(t *testing.T) {
 	sess := newSession(t, withConfig(SessionConfig{clock: clk}), withSteps(
 		func(req llm.Request) llm.Response {
 			clk.Advance(delta1)
-			return finalResponse("first reply")
+			return agenttest.FinalResponse("first reply")
 		},
 		func(req llm.Request) llm.Response {
 			clk.Advance(delta2)
-			return finalResponse("second reply")
+			return agenttest.FinalResponse("second reply")
 		},
 	))
 	if err := sess.FollowUp("do second"); err != nil {
@@ -308,7 +308,7 @@ func TestRestoreThenTurnAutosaveKeepsPriorTotals(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				clk.Advance(delta)
-				resp := finalResponse("ok")
+				resp := agenttest.FinalResponse("ok")
 				resp.Usage = turnUsage
 				return resp
 			},

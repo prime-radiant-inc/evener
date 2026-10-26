@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
@@ -792,7 +793,7 @@ func TestPluginAgentModelListingAttributionThroughTurn(t *testing.T) {
 		},
 		steps: []func(req llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
-				return toolCallResponse(llm.ToolCallData{
+				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "delegate_call",
 					Name:      "delegate",
 					Type:      "function",
@@ -801,7 +802,7 @@ func TestPluginAgentModelListingAttributionThroughTurn(t *testing.T) {
 			},
 			func(req llm.Request) llm.Response {
 				delegateResult = requestToolResult(req, "delegate_call")
-				return toolCallResponse(communicateCall("c1", "done"))
+				return agenttest.ToolCallResponse(communicateCall("c1", "done"))
 			},
 		},
 	}

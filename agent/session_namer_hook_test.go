@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -204,7 +205,7 @@ func TestSessionProcessInput_LaunchesInitialPromptNamerWithoutConfiguredCheapMod
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
-			return toolCallResponse(communicateCall("c1", "done"))
+			return agenttest.ToolCallResponse(communicateCall("c1", "done"))
 		},
 	}})
 	profile := NewOpenAIProfile("gpt-5.2")

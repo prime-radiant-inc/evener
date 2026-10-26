@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -20,7 +21,7 @@ func newIdentitySession(t *testing.T) *Session {
 	t.Helper()
 	steps := make([]func(llm.Request) llm.Response, 8)
 	for i := range steps {
-		steps[i] = func(llm.Request) llm.Response { return communicateResponse(true, "done") }
+		steps[i] = func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "done") }
 	}
 	return newSession(t,
 		withSteps(steps...),

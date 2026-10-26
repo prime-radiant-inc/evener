@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/llm"
@@ -54,7 +55,7 @@ func TestW3Init_DelegateCreate_SkillResolveSkipped(t *testing.T) {
 // command hook emitting the given JSON, so runSubagentStopHook can be exercised.
 func w3init_stopHookSession(t *testing.T, hookJSON string) *subagent {
 	t.Helper()
-	subSess := newSession(t, withSteps(func(llm.Request) llm.Response { return finalResponse("ok") }))
+	subSess := newSession(t, withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") }))
 	runner := hooks.NewRunner(nil, "")
 	runner.Add(plugin.HookSubagentStop, plugin.RegisteredHook{
 		Matcher: "*",

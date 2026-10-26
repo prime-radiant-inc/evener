@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -31,7 +32,7 @@ func entriesOfKind(turns []schema.Turn, kind schema.TurnKind) []schema.Turn {
 // execution and before the round's tool results.
 func TestCommunicateIsRecordedBeforeItIsAnnounced(t *testing.T) {
 	s, adapter := newExecutionSession(t)
-	adapter.script(respond(toolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "halfway", "end_turn": false}))))
+	adapter.script(respond(agenttest.ToolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "halfway", "end_turn": false}))))
 	var mu sync.Mutex
 	recordedAtEmit := map[string]bool{}
 	drained := make(chan struct{})
@@ -77,7 +78,7 @@ func TestCommunicateIsRecordedBeforeItIsAnnounced(t *testing.T) {
 // nothing.
 func TestAFailedCommunicateRecordsNothing(t *testing.T) {
 	s, adapter := newExecutionSession(t)
-	adapter.script(respond(toolCallResponse(communicateCallArgs("comm-empty", map[string]any{"message": ""}))))
+	adapter.script(respond(agenttest.ToolCallResponse(communicateCallArgs("comm-empty", map[string]any{"message": ""}))))
 	if _, err := s.ProcessInput(context.Background(), "talk", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +90,7 @@ func TestAFailedCommunicateRecordsNothing(t *testing.T) {
 
 // A session with no state directory delivers communicate exactly as before.
 func TestCommunicateWithoutATranscriptStillDelivers(t *testing.T) {
-	s := newSession(t, withSteps(func(llm.Request) llm.Response { return communicateResponse(true, "done") }))
+	s := newSession(t, withSteps(func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "done") }))
 	events := drainEvents(s)
 	if _, err := s.ProcessInput(context.Background(), "talk", nil); err != nil {
 		t.Fatal(err)
@@ -156,7 +157,7 @@ func TestCommunicateToolSucceedsWhenNotRecordedAndUnserved(t *testing.T) {
 func TestToolRepairIsRecordedAsANotice(t *testing.T) {
 	s, adapter := newExecutionSession(t)
 	s.RegisterTool("widget", "does a thing", widgetSchema(), func(context.Context, any) (any, error) { return "done", nil })
-	adapter.script(respond(toolCallResponse(llm.ToolCallData{ID: "w1", Name: "widget", Arguments: json.RawMessage(`{"path":"/x"}`)})))
+	adapter.script(respond(agenttest.ToolCallResponse(llm.ToolCallData{ID: "w1", Name: "widget", Arguments: json.RawMessage(`{"path":"/x"}`)})))
 	if _, err := s.ProcessInput(context.Background(), "call widget", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +171,7 @@ func TestTurnLimitIsRecordedAsANotice(t *testing.T) {
 	s, adapter := newExecutionSession(t)
 	s.cfg.MaxToolRoundsPerInput = 1
 	s.RegisterTool("widget", "does a thing", widgetSchema(), func(context.Context, any) (any, error) { return "done", nil })
-	adapter.script(respond(toolCallResponse(llm.ToolCallData{ID: "w1", Name: "widget", Arguments: json.RawMessage(`{"file_path":"/x"}`)})))
+	adapter.script(respond(agenttest.ToolCallResponse(llm.ToolCallData{ID: "w1", Name: "widget", Arguments: json.RawMessage(`{"file_path":"/x"}`)})))
 	if _, err := s.ProcessInput(context.Background(), "loop", nil); err == nil {
 		t.Fatal("the tool-round cap did not end the input")
 	}
@@ -185,7 +186,7 @@ func TestTurnLimitIsRecordedAsANotice(t *testing.T) {
 
 func TestTranscriptOnlyWritesNeverEnterHistory(t *testing.T) {
 	s, adapter := newExecutionSession(t)
-	adapter.script(respond(toolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "halfway", "end_turn": false}))))
+	adapter.script(respond(agenttest.ToolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "halfway", "end_turn": false}))))
 	if _, err := s.ProcessInput(context.Background(), "talk", nil); err != nil {
 		t.Fatal(err)
 	}

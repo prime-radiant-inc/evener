@@ -439,7 +439,11 @@ func TestRetirementStartReplayExecutesOnce(t *testing.T) {
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(resume) }) }
 	defer unblock()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { close(entered); <-resume; return finalResponse("opaque-result") }}}
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+		close(entered)
+		<-resume
+		return agenttest.FinalResponse("opaque-result")
+	}}}
 	root.client.Register(adapter)
 	root.profile = withTestSessionNamer(root.client, root.profile)
 	c, err := NewRetirementController(0, clock.Real())

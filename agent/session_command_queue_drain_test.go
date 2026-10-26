@@ -59,9 +59,9 @@ func TestProcessInputCompletedTurnDrainsCommandOnlyQueuedInput(t *testing.T) {
 		if calls == 1 {
 			close(started)
 			<-release
-			return toolCallResponse(communicateCall("first-3660", "FIRST_OUTPUT_3660"))
+			return agenttest.ToolCallResponse(communicateCall("first-3660", "FIRST_OUTPUT_3660"))
 		}
-		return toolCallResponse(communicateCall("queued-3660", "QUEUED_OUTPUT_3660"))
+		return agenttest.ToolCallResponse(communicateCall("queued-3660", "QUEUED_OUTPUT_3660"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root), withProfile(newAnthropicProfile("claude-test")),
 		withConfig(SessionConfig{StateDir: root, PluginDirs: []string{pluginDir}}), withoutGitSnapshot())

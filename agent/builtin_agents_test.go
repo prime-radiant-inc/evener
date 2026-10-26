@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -363,7 +364,7 @@ func TestSpawnAgent_NonBlockingSubagentSurvivesParentContextCancellation(t *test
 		startedOnce.Do(func() { close(started) })
 		select {
 		case <-release:
-			return finalResponse("child done"), nil
+			return agenttest.FinalResponse("child done"), nil
 		case <-ctx.Done():
 			return llm.Response{}, ctx.Err()
 		}
@@ -422,7 +423,7 @@ func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
 						subagentSystemPrompt = m.Text()
 					}
 				}
-				return finalResponse("exploration complete")
+				return agenttest.FinalResponse("exploration complete")
 			},
 		},
 	}
@@ -462,7 +463,7 @@ func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
 						subagentSystemPrompt = m.Text()
 					}
 				}
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -506,7 +507,7 @@ func TestSpawnAgent_SystemPromptFileDoesNotOverrideSubagentPrompt(t *testing.T) 
 						subagentSystemPrompt = m.Text()
 					}
 				}
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -573,7 +574,7 @@ func TestSpawnAgent_ReasoningEffortApplied(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				subagentReasoningEffort = req.ReasoningEffort
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -700,7 +701,7 @@ func TestSpawnAgent_TaskListPreservedForNamedAgent(t *testing.T) {
 				for _, td := range req.Tools {
 					subagentTools = append(subagentTools, td.Name)
 				}
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -740,7 +741,7 @@ func TestSpawnAgent_BuiltinSubagentKeepsDelegateSendTool(t *testing.T) {
 				for _, td := range req.Tools {
 					subagentTools = append(subagentTools, td.Name)
 				}
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -786,7 +787,7 @@ func TestSpawnAgent_AllToolsAgentStripsAgentManagementTools(t *testing.T) {
 				for _, td := range req.Tools {
 					subagentTools = append(subagentTools, td.Name)
 				}
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -826,7 +827,7 @@ func TestSpawnAgent_DirectNestedCallRejected(t *testing.T) {
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	})
 

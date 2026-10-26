@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -145,9 +146,9 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(_ llm.Request) llm.Response { return finalResponse("coordinator idle") },
+			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("coordinator idle") },
 			// A drive turn would consume step 1. At capacity it must never run.
-			func(_ llm.Request) llm.Response { return finalResponse("must not run") },
+			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("must not run") },
 		},
 	})
 	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}), withoutGitSnapshot())
@@ -377,10 +378,10 @@ func TestDriveTurnReservesFromDriveCounter(t *testing.T) {
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(_ llm.Request) llm.Response { return finalResponse("coordinator idle") },
+			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("coordinator idle") },
 			func(_ llm.Request) llm.Response {
 				<-release
-				return finalResponse("drive done")
+				return agenttest.FinalResponse("drive done")
 			},
 		},
 	})
@@ -437,7 +438,7 @@ func (a *firstCompleteThenBlockAdapter) Complete(ctx context.Context, req llm.Re
 	n := a.i
 	a.mu.Unlock()
 	if n == 1 {
-		resp := finalResponse("coordinator idle")
+		resp := agenttest.FinalResponse("coordinator idle")
 		resp.Provider = "openai"
 		resp.Model = req.Model
 		return resp, nil
@@ -499,8 +500,8 @@ func TestDriveRedriveIsPaced(t *testing.T) {
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(_ llm.Request) llm.Response { return finalResponse("coordinator idle") },
-			func(_ llm.Request) llm.Response { return finalResponse("drive done") },
+			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("coordinator idle") },
+			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("drive done") },
 		},
 	})
 	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}), withoutGitSnapshot())

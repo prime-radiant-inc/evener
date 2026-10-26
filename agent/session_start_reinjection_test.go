@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
@@ -82,7 +83,7 @@ func TestSessionStartDispatchIntoRestoredHistoryIsFlaggedAsReinjection(t *testin
 	t.Parallel()
 	stateDir := t.TempDir()
 	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("done") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}}
 	client := llm.NewClient()
 	client.Register(adapter)
@@ -141,7 +142,7 @@ func TestSessionStartDispatchAfterEmptyRestoreIsNotFlaggedAsReinjection(t *testi
 	t.Parallel()
 	stateDir := t.TempDir()
 	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("done") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}}
 	client := llm.NewClient()
 	client.Register(adapter)
@@ -213,7 +214,7 @@ func TestSessionStartDispatchOnNotesContextOnlyHistoryIsNotFlaggedAsReinjection(
 	t.Parallel()
 	stateDir := t.TempDir()
 	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("done") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}}
 	client := llm.NewClient()
 	client.Register(adapter)

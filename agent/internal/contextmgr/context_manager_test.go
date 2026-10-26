@@ -1763,8 +1763,8 @@ func TestCheckpoint_UserMessages_MarkdownRoundTrip(t *testing.T) {
 }
 
 func TestCheckpoint_ConversationInterleavesUserMessagesAndAgentResponses(t *testing.T) {
-	reply1 := communicateCall("c1", "first reply")
-	reply2 := communicateCall("c2", "second reply")
+	reply1 := agenttest.CommunicateCall("c1", "first reply")
+	reply2 := agenttest.CommunicateCall("c2", "second reply")
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("first request")},
 		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &reply1}}}},

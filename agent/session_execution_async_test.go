@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -21,7 +22,7 @@ func TestAsyncAttentionJoinsTheRunningTurnAndNeverACompletedOne(t *testing.T) {
 	adapter.script(func(context.Context) (llm.Response, error) {
 		close(inCall)
 		<-release
-		return communicateResponse(true, "done"), nil
+		return agenttest.CommunicateResponse(true, "done"), nil
 	})
 
 	var lateDone sync.WaitGroup

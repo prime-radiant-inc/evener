@@ -160,7 +160,7 @@ func TestSession_MaxToolRoundsPerInput_NegativeMeansUnlimited(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolMsg("1") },
 			func(req llm.Request) llm.Response { return toolMsg("2") },
 			func(req llm.Request) llm.Response { return toolMsg("3") },
-			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	}
 	c.Register(f)
@@ -244,7 +244,7 @@ func TestSession_EventSystem_NaturalCompletion_EmitsUserAndAssistantTextEventsIn
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("hello") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("hello") },
 		},
 	})
 
@@ -293,8 +293,8 @@ func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ok-1") },
-			func(req llm.Request) llm.Response { return finalResponse("ok-2") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok-1") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok-2") },
 		},
 	})
 
@@ -363,7 +363,7 @@ func TestSession_EventSystem_ToolCall_EmitsStartDeltaEnd(t *testing.T) {
 			func(req llm.Request) llm.Response {
 				return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
 			},
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	})
 
@@ -464,8 +464,8 @@ func TestSession_MultipleSequentialInputs_Work(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("first") },
-			func(req llm.Request) llm.Response { return finalResponse("second") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("first") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("second") },
 		},
 	}
 	c.Register(f)
@@ -518,9 +518,9 @@ func TestSession_Steer_IsInjectedAfterCurrentToolRound(t *testing.T) {
 					}
 				}
 				if !found {
-					return finalResponse("missing steering")
+					return agenttest.FinalResponse("missing steering")
 				}
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -639,7 +639,7 @@ func TestSession_ReasoningEffort_PassedThroughAndCanChange(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -706,7 +706,7 @@ func TestSession_PopulatesModelRequestMetadata(t *testing.T) {
 	stateDir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("ok") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}}
 	c.Register(f)
 
@@ -777,7 +777,7 @@ func TestSession_RetainsEncryptedReasoningAcrossToolRound(t *testing.T) {
 				},
 			}
 		},
-		func(req llm.Request) llm.Response { return finalResponse("ok") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}}
 	c.Register(f)
 
@@ -825,7 +825,7 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 	f := &fakeAdapter{
 		name: "tiny",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -877,7 +877,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) 
 	f := &fakeAdapter{
 		name: "tiny",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -912,7 +912,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnForLargeImageBytes(t *testing
 	f := &fakeAdapter{
 		name: "tiny",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -1113,7 +1113,7 @@ func TestSession_AbortThenFollowup(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("hello after interrupt")
+				return agenttest.FinalResponse("hello after interrupt")
 			},
 		},
 	}
@@ -1205,7 +1205,7 @@ func TestSession_AbortDrainsQueuedInputWithFreshContext(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("queued turn completed")
+				return agenttest.FinalResponse("queued turn completed")
 			},
 		},
 	}
@@ -1310,7 +1310,7 @@ func TestSession_AbortErrorDrainsQueuedInputWithFreshContext(t *testing.T) {
 				return llm.Response{}, llm.NewAbortError("user canceled", nil)
 			},
 			func(req llm.Request) (llm.Response, error) {
-				return finalResponse("queued turn completed after abort error"), nil
+				return agenttest.FinalResponse("queued turn completed after abort error"), nil
 			},
 		},
 	})
@@ -1778,7 +1778,7 @@ func TestSession_Subagent_AutoNudgeExplicitBuiltinSubagent(t *testing.T) {
 				mu.Lock()
 				callCount++
 				mu.Unlock()
-				return finalResponse("Explicit subagent recovered after nudge")
+				return agenttest.FinalResponse("Explicit subagent recovered after nudge")
 			},
 		},
 	}
@@ -1850,7 +1850,7 @@ func TestSession_ShellTool_UsesDefaultTimeout(t *testing.T) {
 					},
 				}
 			},
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -1893,7 +1893,7 @@ func TestSession_ShellTool_CapsTimeoutToMaxCommandTimeoutMS(t *testing.T) {
 					},
 				}
 			},
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -1938,7 +1938,7 @@ func TestSession_ShellTool_TimeoutAppendsMessageToToolResult(t *testing.T) {
 					},
 				}
 			},
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -2013,7 +2013,7 @@ func TestProcessInput_ToolChoiceIsNeverForced(t *testing.T) {
 				if req.ToolChoice.Mode != "auto" {
 					t.Fatalf("tool_choice.Mode = %q, want %q (forcing is unsafe: see doc comment)", req.ToolChoice.Mode, "auto")
 				}
-				resp := finalResponse("done")
+				resp := agenttest.FinalResponse("done")
 				resp.Finish = llm.FinishReason{Reason: "stop"}
 				return resp
 			},
@@ -2122,7 +2122,7 @@ func TestLoopDetection_PatternLength2(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolB("c4") },
 			func(req llm.Request) llm.Response { return toolA("c5") },
 			func(req llm.Request) llm.Response { return toolB("c6") },
-			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	}
 	c.Register(f)
@@ -2463,7 +2463,7 @@ func TestSession_ToolResults_AggregatedIntoSingleTurn(t *testing.T) {
 					},
 				}
 			},
-			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	}
 	c.Register(f)
@@ -2531,7 +2531,7 @@ func TestSession_ToolResults_ContainsAllCallIDs(t *testing.T) {
 					},
 				}
 			},
-			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	}
 	c.Register(f)
@@ -2601,7 +2601,7 @@ func TestSession_ToolResults_SingleCallAlsoAggregated(t *testing.T) {
 					},
 				}
 			},
-			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	}
 	c.Register(f)
@@ -2661,7 +2661,7 @@ func TestSession_ToolNameMapping_ReverseDispatch(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -2758,7 +2758,7 @@ func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -2840,7 +2840,7 @@ func TestSession_ToolIntent_IncludedInToolCallStartEvent(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -2913,7 +2913,7 @@ func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -3000,7 +3000,7 @@ func TestSession_ReadBeforeWrite_NoWarningAfterRead(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -3068,7 +3068,7 @@ func TestSession_ReadBeforeWrite_NewFileNoWarning(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -3121,7 +3121,7 @@ func TestSession_ReasoningEffort_MediumPassedThrough(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -3183,7 +3183,7 @@ func TestSession_TaskListUpdateEscalatesReasoningEffort(t *testing.T) {
 			},
 			// Step 4: done — this request should carry effort=high.
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -3245,7 +3245,7 @@ func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
 			func(req llm.Request) llm.Response {
 				return taskListCall("c2", `{"update":[{"id":1,"status":"done","notes":"reviewed specs"}]}`)
 			},
-			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	}
 	c.Register(f)
@@ -3327,7 +3327,7 @@ func TestSession_ReasoningEffort_EmptyGetsDefaultEffort(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -3371,7 +3371,7 @@ func TestSession_ReasoningEffort_DisableAliasIsExplicitOff(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -3406,7 +3406,7 @@ func TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent(t *testing.T) {
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
-			return finalResponse("done")
+			return agenttest.FinalResponse("done")
 		},
 	}}
 	c.Register(f)
@@ -3455,7 +3455,7 @@ func TestSession_Subagent_IndependentHistory(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("subagent done")
+				return agenttest.FinalResponse("subagent done")
 			},
 		},
 	}
@@ -3517,7 +3517,7 @@ func TestSession_Subagent_SharedFilesystem(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("read it")
+				return agenttest.FinalResponse("read it")
 			},
 		},
 	}
@@ -3553,7 +3553,7 @@ func TestSendInput_SteersRunningAgent(t *testing.T) {
 	// sendInput uses Steer() on running agents instead of rejecting them.
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("ok") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}}
 	c.Register(f)
 	dir := t.TempDir()
@@ -3785,7 +3785,7 @@ func TestSession_SetsIdleTimeoutWithoutTotalDeadline(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -3853,7 +3853,7 @@ func TestSession_Subagent_AutoNudgeOnEmptyResponseExhaustion(t *testing.T) {
 				mu.Lock()
 				callCount++
 				mu.Unlock()
-				return finalResponse("Recovered after nudge")
+				return agenttest.FinalResponse("Recovered after nudge")
 			},
 		},
 	}

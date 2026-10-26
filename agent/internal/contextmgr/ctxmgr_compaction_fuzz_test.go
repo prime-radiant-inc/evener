@@ -101,7 +101,7 @@ func ctxmgr_buildHistory(r *ctxmgr_reader) []schema.Turn {
 			msg := r.str(200)
 			history = append(history,
 				schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-					{Kind: llm.ContentToolCall, ToolCall: new(communicateCall(cid, msg))},
+					{Kind: llm.ContentToolCall, ToolCall: new(agenttest.CommunicateCall(cid, msg))},
 				}}),
 				schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(cid, "communicate", "ok", false)),
 			)

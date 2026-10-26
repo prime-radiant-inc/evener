@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -62,7 +63,7 @@ func TestLastMessage_RecordsTheOpeningOfTheLastAgentMessage(t *testing.T) {
 	report := "Three layouts are ready for review.\n\nI recommend B: " + strings.Repeat("it keeps the project first. ", 20)
 	sess := newSession(t, withConfig(SessionConfig{StateDir: dir}), withSteps(
 		func(llm.Request) llm.Response {
-			response := communicateResponse(true, report)
+			response := agenttest.CommunicateResponse(true, report)
 			response.Message.Content = append([]llm.ContentPart{
 				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "private reasoning"}},
 				{Kind: llm.ContentText, Text: "Writing the report now."},

@@ -667,9 +667,9 @@ func TestSkillActivation_Routes(t *testing.T) {
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 			calls++
 			if calls == 1 {
-				return toolCallResponse(useSkillCall("skill-1", "opaque"))
+				return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 			}
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
 			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -715,7 +715,7 @@ func TestSkillActivation_Routes(t *testing.T) {
 		writeSkillMD(t, root, "opaque", fixtureHeader+body)
 		source := filepath.Join(root, "skills", "opaque", "SKILL.md")
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
 			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -767,7 +767,7 @@ func TestSkillActivation_Routes(t *testing.T) {
 		writeSkillMD(t, root, "opaque", fixtureHeader+body)
 		source := filepath.Join(root, "skills", "opaque", "SKILL.md")
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root), withStateDir(t.TempDir()),
 			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -837,7 +837,7 @@ func TestSkillActivation_Failure(t *testing.T) {
 		markGitRoot(t, root)
 		writeSkillMD(t, root, "opaque", fixtureHeader+"BODY_7f2a\n")
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
 			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -879,9 +879,9 @@ func TestSkillActivation_Failure(t *testing.T) {
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 			calls++
 			if calls == 1 {
-				return toolCallResponse(useSkillCall("skill-1", "opaque"))
+				return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 			}
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
 			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -936,7 +936,7 @@ func TestSkillActivation_Failure(t *testing.T) {
 		markGitRoot(t, root)
 		writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\nuser-invocable: false\n---\nBODY_7f2a\n")
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
 			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -962,7 +962,7 @@ func TestSkillActivation_Failure(t *testing.T) {
 		root := t.TempDir()
 		markGitRoot(t, root)
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
 			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -997,9 +997,9 @@ func TestSkillActivation_Failure(t *testing.T) {
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 			calls++
 			if calls == 1 {
-				return toolCallResponse(useSkillCall("skill-1", "opaque"))
+				return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 			}
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
 			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -1071,9 +1071,9 @@ func TestSkillActivation_Resolution(t *testing.T) {
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 			calls++
 			if calls == 1 {
-				return toolCallResponse(useSkillCall("skill-1", "probe"))
+				return agenttest.ToolCallResponse(useSkillCall("skill-1", "probe"))
 			}
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
 			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
@@ -1104,9 +1104,9 @@ func TestSkillActivation_Resolution(t *testing.T) {
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 			calls++
 			if calls == 1 {
-				return toolCallResponse(useSkillCall("skill-1", "probe"))
+				return agenttest.ToolCallResponse(useSkillCall("skill-1", "probe"))
 			}
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
 			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
@@ -1146,7 +1146,7 @@ func TestSkillActivation_Resolution(t *testing.T) {
 		pluginDir := skillFixtureRoot(t)
 		writePluginSkill(t, pluginDir, "plug", "probe", "BODY_other\n")
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
 			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
@@ -1172,7 +1172,7 @@ func TestSkillActivation_Resolution(t *testing.T) {
 		markGitRoot(t, root)
 		writeSkillMD(t, root, "review", "---\nname: review\ndescription: fixture\n---\nBODY_7f2a\n")
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
 			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -1207,7 +1207,7 @@ func TestSkillActivation_Resolution(t *testing.T) {
 		writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\ndisable-model-invocation: true\n---\n"+body)
 		source := filepath.Join(root, "skills", "opaque", "SKILL.md")
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
 			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -1238,7 +1238,7 @@ func TestSkillActivation_Resolution(t *testing.T) {
 		body := strings.Repeat("BODY_7f2a\n", 64)
 		writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
 		s := newSession(t, withAdapter(adapter), withDir(root),
 			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -1300,11 +1300,11 @@ func TestSkillActivation_RawRead(t *testing.T) {
 		calls++
 		switch calls {
 		case 1:
-			return toolCallResponse(llm.ToolCallData{ID: "read-1", Name: "read_file", Arguments: readFull, Type: "function"})
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "read-1", Name: "read_file", Arguments: readFull, Type: "function"})
 		case 2:
-			return toolCallResponse(llm.ToolCallData{ID: "read-2", Name: "read_file", Arguments: readPartial, Type: "function"})
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "read-2", Name: "read_file", Arguments: readPartial, Type: "function"})
 		default:
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),

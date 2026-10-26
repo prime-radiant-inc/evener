@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -169,7 +170,7 @@ func TestMidSessionHookPersistsHookCompletedTurn(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name:  "openai",
-		steps: []func(req llm.Request) llm.Response{func(req llm.Request) llm.Response { return finalResponse("ok") }},
+		steps: []func(req llm.Request) llm.Response{func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") }},
 	})
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:   dir,
@@ -300,7 +301,7 @@ func TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest(t *testing.T) {
 		name: "anthropic",
 		steps: []func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
-				return toolCallResponse(llm.ToolCallData{
+				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        callID,
 					Name:      "hook_probe",
 					Type:      "function",
@@ -309,7 +310,7 @@ func TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest(t *testing.T) {
 			},
 			func(req llm.Request) llm.Response {
 				requestErr = validateSingleSuccessfulToolResult(req.Messages, callID)
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}

@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
@@ -418,7 +419,7 @@ func newDelegateStartupFixture(t *testing.T) (*Session, *fakeAdapter) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return finalResponse("child done") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("child done") },
 		},
 	}
 	client := llm.NewClient()

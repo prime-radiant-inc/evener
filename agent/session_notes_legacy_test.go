@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
@@ -55,7 +56,7 @@ func TestRestoredLegacyNotesCarryNoTerminalControls(t *testing.T) {
 
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("done") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}})
 	sess, err := RestoreSessionFromMetaWithConfig(
 		client,

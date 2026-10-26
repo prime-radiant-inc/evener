@@ -64,7 +64,7 @@ func holdDelegateTail(t *testing.T, at tailHoldPoint) finalizingDelegate {
 	var child *subagent
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
-		return finalResponse("done")
+		return agenttest.FinalResponse("done")
 	}})
 	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
 	pin := func() {
@@ -763,7 +763,7 @@ func TestDelegateSendReleasesAResidentReplacedAfterItsCommit(t *testing.T) {
 func TestDelegateSendStartAStopEndedIsReportedStopped(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	warmStableSupervisionDelegate(t, root, fixture)

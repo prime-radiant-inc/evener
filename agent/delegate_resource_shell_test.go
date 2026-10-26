@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -346,10 +347,10 @@ func TestStableDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testin
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(request llm.Request) llm.Response {
 			attentionSeen = requestContainsText(request, `<job-notification job_id="`+rec.JobID+`"`)
-			return communicateResponse(true, "cold shell completion handled")
+			return agenttest.CommunicateResponse(true, "cold shell completion handled")
 		},
 		func(llm.Request) llm.Response {
-			return communicateResponse(true, "root drained cold shell delegate completion")
+			return agenttest.CommunicateResponse(true, "root drained cold shell delegate completion")
 		},
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)

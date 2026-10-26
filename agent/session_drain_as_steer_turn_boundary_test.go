@@ -58,7 +58,7 @@ func (a *heldLegAdapter) Complete(_ context.Context, req llm.Request) (llm.Respo
 	if n >= 2 && n-2 < len(a.later) {
 		resp = a.later[n-2](req)
 	} else {
-		resp = finalResponse(fmt.Sprintf("leg %d done", n))
+		resp = agenttest.FinalResponse(fmt.Sprintf("leg %d done", n))
 	}
 	resp.Provider = a.Name()
 	resp.Model = req.Model
@@ -1459,8 +1459,8 @@ func TestRefusedLadderClaimRunsNoAutonomousTurnBehindIt(t *testing.T) {
 	t.Parallel()
 	adapter := newHeldLegAdapter()
 	adapter.later = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return communicateResponse(false, "looking at the job") },
-		func(llm.Request) llm.Response { return finalResponse("done") },
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(false, "looking at the job") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
 	if err := s.ensureClientMutationStore(); err != nil {

@@ -40,7 +40,7 @@ func TestSummaryFailureJourney(t *testing.T) {
 	var recovered atomic.Bool
 	adapter := &agenttest.ModelTrackingAdapter{Provider: "openai", Respond: func(req llm.Request) (llm.Response, error) {
 		if req.Model != "cheap-fixture" {
-			return finalResponse("next-turn-32b1"), nil
+			return agenttest.FinalResponse("next-turn-32b1"), nil
 		}
 		if !recovered.Load() {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 429, "private-body-a8d9", map[string]any{"prompt": "private-prompt-f6c2"}, nil)

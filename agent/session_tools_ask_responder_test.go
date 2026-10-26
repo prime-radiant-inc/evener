@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -117,7 +118,7 @@ func TestPendingAskArguments_AvailableWithNoEventConsumer(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
 		},
 	}
 	sess := newSession(t, withAdapter(f))
@@ -157,7 +158,7 @@ func TestPendingAskArguments_OneEntryPerCallInOrder(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(ask1, ask2) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1, ask2) },
 		},
 	}
 	sess := newSession(t, withAdapter(f))
@@ -202,8 +203,8 @@ func TestPendingAskArguments_ClearedByAnsweringSteeringCarrierNotStale(t *testin
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(ask1) },
-			func(req llm.Request) llm.Response { return toolCallResponse(ask2) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask2) },
 		},
 	}
 	c.Register(adapter)
@@ -267,8 +268,8 @@ func TestPendingAskArguments_ClearedWithAskPending(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
-			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
 		},
 	}
 	sess := newSession(t, withAdapter(f))

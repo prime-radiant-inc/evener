@@ -42,10 +42,10 @@ func TestDelegateMessagingGuidanceGoldens(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return delegateToolResponseWithResultSchema("create-schema", "SCHEMA-CHILD: say whether the build passes.", verdictSchema)
 		},
-		func(llm.Request) llm.Response { return finalResponse("root done") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("root done") },
 	)
-	adapter.script("GOLDEN-CHILD", func(llm.Request) llm.Response { return finalResponse("evener") })
-	adapter.script("SCHEMA-CHILD", func(llm.Request) llm.Response { return finalResponse("pass") })
+	adapter.script("GOLDEN-CHILD", func(llm.Request) llm.Response { return agenttest.FinalResponse("evener") })
+	adapter.script("SCHEMA-CHILD", func(llm.Request) llm.Response { return agenttest.FinalResponse("pass") })
 	root := newMessagingRoot(t, adapter, nil)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -101,7 +101,7 @@ func TestDelegateMessagingGuidanceGoldenRenamedResultTool(t *testing.T) {
 	t.Parallel()
 	adapter := newMessagingAdapter()
 	adapter.script("root", func(llm.Request) llm.Response {
-		resp := finalResponse("root done")
+		resp := agenttest.FinalResponse("root done")
 		resp.Message.Content[0].ToolCall.Name = "respond"
 		return resp
 	})

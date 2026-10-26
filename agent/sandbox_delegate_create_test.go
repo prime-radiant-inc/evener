@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/llm"
 )
@@ -424,7 +425,7 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 					"file_path": chosenPath,
 					"content":   "the literal delegate wrote this report\n",
 				})
-				return toolCallResponse(llm.ToolCallData{
+				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "write_scratch_report",
 					Name:      "write_file",
 					Arguments: args,

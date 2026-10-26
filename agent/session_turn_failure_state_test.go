@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appprojector"
@@ -57,7 +58,7 @@ func failingThenRecoveringSession(t *testing.T, dir string) *Session {
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "sign-in rejected", nil, nil)
 		},
-		func(llm.Request) (llm.Response, error) { return finalResponse("recovered"), nil },
+		func(llm.Request) (llm.Response, error) { return agenttest.FinalResponse("recovered"), nil },
 	}})
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, LLMRetryPolicy: &policy})
@@ -75,7 +76,7 @@ func failedCarrierWithPendingQuestion(t *testing.T, dir string, cfg SessionConfi
 	ask := askUserCall("ask1", askUserArgsValid())
 	c := llm.NewClient()
 	c.Register(&fakeErrAdapter{name: "openai", steps: []func(llm.Request) (llm.Response, error){
-		func(llm.Request) (llm.Response, error) { return toolCallResponse(ask), nil },
+		func(llm.Request) (llm.Response, error) { return agenttest.ToolCallResponse(ask), nil },
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "carrier provider failure", nil, nil)
 		},

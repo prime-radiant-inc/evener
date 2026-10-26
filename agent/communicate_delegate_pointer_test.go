@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
@@ -26,7 +27,7 @@ func TestCommunicatePointsToDelegateSendOnlyWhereOffered(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return delegateToolCall("doctor", map[string]any{"prompt": "DOCTOR-CHILD: diagnose.", "agent_type": "doctor"})
 		},
-		func(llm.Request) llm.Response { return finalResponse("root done") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("root done") },
 	)
 	root := newMessagingRoot(t, adapter, nil)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.

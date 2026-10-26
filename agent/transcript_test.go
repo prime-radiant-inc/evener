@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
@@ -1018,7 +1019,7 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("hello back")
+				return agenttest.FinalResponse("hello back")
 			},
 		},
 	})
@@ -1264,7 +1265,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 			},
 			// Round 1, after tool result: finish.
 			func(req llm.Request) llm.Response {
-				return finalResponse("finished reading")
+				return agenttest.FinalResponse("finished reading")
 			},
 			// Round 2, input 2: read again.
 			func(req llm.Request) llm.Response {
@@ -1283,12 +1284,12 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 			},
 			// Round 2, after tool result: finish.
 			func(req llm.Request) llm.Response {
-				return finalResponse("done with second read")
+				return agenttest.FinalResponse("done with second read")
 			},
 			// Some context-management paths can trigger one more completion round
 			// after compaction before returning the final answer.
 			func(req llm.Request) llm.Response {
-				return finalResponse("done with second read")
+				return agenttest.FinalResponse("done with second read")
 			},
 		},
 	})
@@ -1474,7 +1475,7 @@ func TestSession_StateDirSessionsPathConflictFailsClosedAtDelegateBootstrap(t *t
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("first")
+				return agenttest.FinalResponse("first")
 			},
 		},
 	})

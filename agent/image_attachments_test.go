@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -140,8 +141,8 @@ func TestSession_Enqueue_DrainCarriesImagesIntoUserTurn(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("first reply") },
-			func(req llm.Request) llm.Response { return finalResponse("second reply") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("first reply") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("second reply") },
 		},
 	}
 	c.Register(f)

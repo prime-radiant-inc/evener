@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -57,7 +58,7 @@ func (a *flaky429Adapter) Complete(ctx context.Context, req llm.Request) (llm.Re
 	if a.calls <= a.failCount {
 		return llm.Response{}, llm.ErrorFromHTTPStatus(a.name, 429, "rate limited", nil, nil)
 	}
-	return finalResponse("ok"), nil
+	return agenttest.FinalResponse("ok"), nil
 }
 func (a *flaky429Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	_ = ctx

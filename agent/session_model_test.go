@@ -694,7 +694,7 @@ func TestSession_CtxCancellationFlushesMeta(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("hi back") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("hi back") },
 		},
 	}
 	c.Register(f)
@@ -1224,7 +1224,7 @@ func TestSession_ContentFilterRecovery_CompactsAndRetries(t *testing.T) {
 			// Third call (after compaction): succeeds.
 			func(req llm.Request) (llm.Response, error) {
 				callCount++
-				return finalResponse("recovered after compaction"), nil
+				return agenttest.FinalResponse("recovered after compaction"), nil
 			},
 		},
 	}
@@ -1968,7 +1968,7 @@ func TestSession_StreamsCommunicateToolArgumentsAsAssistantDeltas(t *testing.T) 
 	comm := communicateCall("c1", "Hello")
 	f := &streamingAdapter{
 		name:           "openai",
-		completeResult: toolCallResponse(comm),
+		completeResult: agenttest.ToolCallResponse(comm),
 		streamScript: func(st *llm.ChanStream) {
 			st.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 			st.Send(llm.StreamEvent{
@@ -2268,7 +2268,7 @@ func TestSession_NonRetryableProviderErrorLeavesSessionIdle(t *testing.T) {
 				)
 			},
 			func(llm.Request) (llm.Response, error) {
-				return toolCallResponse(communicateCall("after_failure", "recovered")), nil
+				return agenttest.ToolCallResponse(communicateCall("after_failure", "recovered")), nil
 			},
 		},
 	}
@@ -2359,7 +2359,7 @@ func TestSession_AgentQuiescenceReturnsNilError(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(comm)
+				return agenttest.ToolCallResponse(comm)
 			},
 		},
 	}
@@ -2444,7 +2444,7 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				resp := toolCallResponse(comm)
+				resp := agenttest.ToolCallResponse(comm)
 				resp.ID = "resp_1"
 				resp.Provider = "openai"
 				resp.Model = req.Model
@@ -2538,7 +2538,7 @@ func TestSession_SanitizesCustomAdapterEndpointMetadata(t *testing.T) {
 				name: "openai",
 				steps: []func(req llm.Request) llm.Response{
 					func(llm.Request) llm.Response {
-						resp := toolCallResponse(communicateCall("c1", "ok"))
+						resp := agenttest.ToolCallResponse(communicateCall("c1", "ok"))
 						resp.Raw = map[string]any{"endpoint_url": tt.endpoint}
 						return resp
 					},

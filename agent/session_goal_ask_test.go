@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -37,7 +38,7 @@ func TestGoalHoldsAwaiting_ContinuationEndsViaAsk(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
 			func(req llm.Request) llm.Response {
 				t.Fatalf("should not reach a second LLM call: a continuation that asks must end the turn at the ask boundary, and the goal hold must not kick a further continuation")
 				return llm.Response{}
@@ -99,9 +100,9 @@ func TestGoalHoldsAwaiting_DeferredContinuationHeldPastNotificationAsk(t *testin
 			// deferring a further continuation), enqueues a notification mid-round
 			// (simulating a job finishing during this turn), and ends normally
 			// (not an ask) via communicate.
-			func(req llm.Request) llm.Response { return toolCallResponse(enqueueNotif, comm) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(enqueueNotif, comm) },
 			// Turn B: the interleaved notification's own turn asks a question.
-			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
 			func(req llm.Request) llm.Response {
 				t.Fatalf("should not reach a third LLM call: the continuation deferred before the notification interleaved must not run past the notification turn's own unanswered ask")
 				return llm.Response{}
@@ -302,9 +303,9 @@ func TestGoalHoldsAwaiting_NoProgressBreakerUnaffected(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
-			func(req llm.Request) llm.Response { return finalResponse("thanks, going with Postgres") },
-			func(req llm.Request) llm.Response { return toolCallResponse(completeGoal, comm) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("thanks, going with Postgres") },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(completeGoal, comm) },
 		},
 	}
 	sess := newSession(t, withAdapter(f))

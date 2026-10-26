@@ -22,7 +22,7 @@ func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) 
 	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
@@ -89,7 +89,7 @@ func TestStableSupervisionFailureSnapshotCapturesAttentionReservation(t *testing
 	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("no action")} },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -143,7 +143,7 @@ func TestStableSupervisionFailureSnapshotCapturesSettlementClaim(t *testing.T) {
 	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("no action")} },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -200,7 +200,7 @@ func TestStableSupervisionFailureSnapshotCapturesArmRetryIDs(t *testing.T) {
 	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("no action")} },
 	}
 	clock := agenttest.NewFakeClockAt(time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC))
@@ -273,7 +273,7 @@ func TestStableSupervisionFailureSnapshotCapturesNotificationPayload(t *testing.
 	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
 			return llm.Response{Message: llm.Assistant("notification acknowledged")}
 		},

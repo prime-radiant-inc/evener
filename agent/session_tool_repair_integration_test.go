@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/plugin"
@@ -284,8 +285,8 @@ func TestSession_RepairsAliasedArgAndEmitsEvent(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(aliasedCall) },
-			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(aliasedCall) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
 		},
 	}
 	sess := newSession(t, withAdapter(f))
@@ -334,8 +335,8 @@ func TestSession_RepairedThenDeniedCallStillEmitsRepairedEvent(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(aliasedCall) },
-			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(aliasedCall) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
 		},
 	}
 	sess := newSession(t, withAdapter(f))
@@ -419,8 +420,8 @@ func TestExecTool_RejectedCommunicateLiveVsReload(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(rejectedCall) },
-			func(req llm.Request) llm.Response { return toolCallResponse(recoveredCall) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(rejectedCall) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(recoveredCall) },
 		},
 	}
 	sess := newSession(t, withAdapter(f), withConfig(SessionConfig{

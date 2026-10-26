@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/envvars"
@@ -225,7 +226,7 @@ func TestEvenerwideCommand_LoadsWithNoPluginDirs(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	client := llm.NewClient()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("ok") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}}
 	client.Register(adapter)
 	workDir := t.TempDir()
@@ -261,7 +262,7 @@ func TestEvenerwideCommand_HermeticHidesOperatorGlobal(t *testing.T) {
 
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("ok") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}})
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
@@ -283,7 +284,7 @@ func TestEvenerwideCommand_ShadowsPluginBareName(t *testing.T) {
 	pluginDir := writePluginCommand(t, "greeter", "greet", "plugin body")
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("ok") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}})
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
 		PluginDirs: []string{pluginDir},
@@ -309,7 +310,7 @@ func TestEvenerwideCommand_DiscoveryWarningsQueued(t *testing.T) {
 	writeEvenerwideCommandFile(t, workDir, "bad name", "body") // whitespace guard fires
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("ok") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}})
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
@@ -353,7 +354,7 @@ func newTestSessionWithPlugins(t *testing.T, pluginDirs ...string) (*Session, *f
 	client := llm.NewClient()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
-			return finalResponse("captured: " + req.Messages[len(req.Messages)-1].Text())
+			return agenttest.FinalResponse("captured: " + req.Messages[len(req.Messages)-1].Text())
 		},
 	}}
 	client.Register(adapter)
@@ -451,7 +452,7 @@ func TestExpandSlashCommand_EvenerwideDoesNotExecute(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("ok") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}})
 	workDir := t.TempDir()
 	writeEvenerwideCommandFile(t, workDir, "deploy", "Deploying !`touch SHOULD_NOT_EXIST` for $1")

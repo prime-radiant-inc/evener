@@ -1188,8 +1188,8 @@ func TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish(t *testing.T) {
 		descriptor.ToolNameCeiling = append(descriptor.ToolNameCeiling, "write_file")
 	})
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("before generic Stop continuation") },
-		func(llm.Request) llm.Response { return finalResponse("after generic Stop continuation") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("before generic Stop continuation") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("after generic Stop continuation") },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "run Stop hook", 60_000)
@@ -1614,7 +1614,7 @@ func newStableStopRuntimeHarnessWithClock(t *testing.T, clock *agenttest.FakeClo
 	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 		close(entered)
 		<-releaseProvider
-		return finalResponse("provider released after stop")
+		return agenttest.FinalResponse("provider released after stop")
 	}}
 	root := restoreSupervisionRoot(t, fixture, clock)
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "block for stop", 0)
@@ -2411,7 +2411,7 @@ func newBlockingColdDelegateRuntime(t *testing.T) (*Session, coldStableDelegateF
 	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 		close(entered)
 		<-release
-		return communicateResponse(true, "done")
+		return agenttest.CommunicateResponse(true, "done")
 	}}
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {

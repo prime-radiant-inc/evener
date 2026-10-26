@@ -87,9 +87,9 @@ func subagentWireSession(t *testing.T) (*Session, string, <-chan struct{}, func(
 		// The request carries the whole history, so only the generation the
 		// question started sees it.
 		if requestContainsText(req, subagentWireQuestion) {
-			return finalResponse(subagentWireReply)
+			return agenttest.FinalResponse(subagentWireReply)
 		}
-		return finalResponse("Fixed the race between tree settle and the drain.")
+		return agenttest.FinalResponse("Fixed the race between tree settle and the drain.")
 	}})
 	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
 	workspace := realTempDirForTest(t)

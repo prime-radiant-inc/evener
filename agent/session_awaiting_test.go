@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
@@ -88,7 +89,7 @@ func endReasonResponse(message, reason string) llm.Response {
 	if reason != "" {
 		args["end_reason"] = reason
 	}
-	return toolCallResponse(communicateCallArgs("communicate_test_call", args))
+	return agenttest.ToolCallResponse(communicateCallArgs("communicate_test_call", args))
 }
 
 // A clean completion rests by the reason its communicate gave: awaiting only
@@ -150,7 +151,7 @@ func TestProcessInput_InterruptStaysIdle(t *testing.T) {
 	c := llm.NewClient()
 	blocker := make(chan struct{})
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { <-blocker; return finalResponse("late") },
+		func(req llm.Request) llm.Response { <-blocker; return agenttest.FinalResponse("late") },
 	}})
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
@@ -378,7 +379,7 @@ func TestRestore_UserLastTurnStaysIdle(t *testing.T) {
 	blocker := make(chan struct{})
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return endReasonResponse("Merge it?", "needs_response") },
-		func(req llm.Request) llm.Response { <-blocker; return finalResponse("late") },
+		func(req llm.Request) llm.Response { <-blocker; return agenttest.FinalResponse("late") },
 	}})
 	dir := t.TempDir()
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: immediateRestConfig()})
@@ -436,7 +437,7 @@ func TestSettleAndRestoreReadTheAcceptedCommunicate(t *testing.T) {
 			t.Parallel()
 			live, restored := restoreAfter(t, []func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response {
-					return toolCallResponse(
+					return agenttest.ToolCallResponse(
 						communicateCallArgs("c1", map[string]any{"message": "one", "end_reason": tc.first}),
 						communicateCallArgs("c2", map[string]any{"message": "two", "end_reason": tc.second}),
 					)

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
@@ -81,7 +82,7 @@ func TestCommunicate_ProfileOverridesPreservedByResultToolName(t *testing.T) {
 				rawArgs := mustMarshalJSON(t, args)
 				f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 					func(llm.Request) llm.Response {
-						return toolCallResponse(llm.ToolCallData{ID: "result-schema", Name: name, Arguments: rawArgs, Type: "function"})
+						return agenttest.ToolCallResponse(llm.ToolCallData{ID: "result-schema", Name: name, Arguments: rawArgs, Type: "function"})
 					},
 				}}
 				sess := newSession(t, withAdapter(f), withProfile(p), withConfig(SessionConfig{

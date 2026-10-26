@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -481,7 +482,7 @@ func TestClientMutation_StartAcceptanceOwnsRunnableInputBeforeWake(t *testing.T)
 func TestClientMutation_ProcessStartUsesDurablePayloadAndIdentity(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t,
-		withSteps(func(llm.Request) llm.Response { return finalResponse("done") }),
+		withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }),
 		withConfig(SessionConfig{
 			MaxSubagentDepth: 1,
 			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
@@ -962,7 +963,7 @@ func TestClientMutation_StartTranscriptIOFailureProcessPathRemainsRunnable(t *te
 	client.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return finalResponse("must not run") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("must not run") },
 		},
 	})
 	sess, err := NewSession(
@@ -1016,7 +1017,7 @@ func TestClientMutation_StartLifecycleTerminalizesAfterRunnerCompletion(t *testi
 	client.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return finalResponse("done") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	})
 	sess, err := NewSession(

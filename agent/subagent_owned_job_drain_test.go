@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -123,7 +124,7 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
-				return toolCallResponse(llm.ToolCallData{
+				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "owned-shell",
 					Name:      "shell",
 					Arguments: json.RawMessage(`{"command":"owned shell","mode":"background"}`),
@@ -132,15 +133,15 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 			},
 			func(llm.Request) llm.Response {
 				close(idleReported)
-				return finalResponse("waiting for owned shell")
+				return agenttest.FinalResponse("waiting for owned shell")
 			},
 			func(llm.Request) llm.Response {
 				close(shellHandled)
-				return finalResponse("owned shell handled")
+				return agenttest.FinalResponse("owned shell handled")
 			},
 			func(llm.Request) llm.Response {
 				close(freshHandled)
-				return finalResponse("fresh notification handled")
+				return agenttest.FinalResponse("fresh notification handled")
 			},
 		},
 	}
@@ -707,7 +708,7 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 		name: "openai",
 		steps: []func(llm.Request) (llm.Response, error){
 			func(llm.Request) (llm.Response, error) {
-				return toolCallResponse(llm.ToolCallData{
+				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "fatal-owned-shell",
 					Name:      "shell",
 					Arguments: json.RawMessage(`{"command":"fatal owned shell","mode":"background"}`),
@@ -720,7 +721,7 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 				return llm.Response{}, fatalErr
 			},
 			func(llm.Request) (llm.Response, error) {
-				return finalResponse("explicit resume succeeded"), nil
+				return agenttest.FinalResponse("explicit resume succeeded"), nil
 			},
 		},
 	}
@@ -864,13 +865,13 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 				return llm.Response{}, fatalErr
 			},
 			func(llm.Request) (llm.Response, error) {
-				return finalResponse("failed delegate notification handled"), nil
+				return agenttest.FinalResponse("failed delegate notification handled"), nil
 			},
 			func(llm.Request) (llm.Response, error) {
-				return finalResponse("dropped watch diagnostic handled"), nil
+				return agenttest.FinalResponse("dropped watch diagnostic handled"), nil
 			},
 			func(llm.Request) (llm.Response, error) {
-				return finalResponse("explicit recovery completed"), nil
+				return agenttest.FinalResponse("explicit recovery completed"), nil
 			},
 		},
 	}
@@ -1017,10 +1018,10 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 		name: "openai",
 		steps: []func(llm.Request) (llm.Response, error){
 			func(llm.Request) (llm.Response, error) {
-				return finalResponse("idle before notification"), nil
+				return agenttest.FinalResponse("idle before notification"), nil
 			},
 			func(llm.Request) (llm.Response, error) {
-				return toolCallResponse(llm.ToolCallData{
+				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "fatal-drive-shell",
 					Name:      "shell",
 					Arguments: json.RawMessage(`{"command":"fatal drive shell","mode":"background"}`),

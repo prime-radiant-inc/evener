@@ -14,7 +14,7 @@ func TestOpenAIPromptCacheDefaults_RequestCapture(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("ok") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}}
 	c.Register(f)
 
@@ -59,7 +59,7 @@ func TestOpenAIPromptCacheDefaults_FallbackRowDropsRetentionKeepsKey(t *testing.
 			case "gpt-5.5":
 				return llm.Response{}, permErr
 			case "gpt-4o-mini":
-				return finalResponse("fallback answered"), nil
+				return agenttest.FinalResponse("fallback answered"), nil
 			default:
 				t.Fatalf("unexpected model %q", req.Model)
 				return llm.Response{}, nil
@@ -150,7 +150,7 @@ func TestPromptCacheDefaults_AnthropicRowDropsBothFields(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "anthropic", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("ok") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}}
 	c.Register(f)
 

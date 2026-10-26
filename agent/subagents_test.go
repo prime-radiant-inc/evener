@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
@@ -302,7 +303,7 @@ func (a *cancelBlockAdapter) Complete(ctx context.Context, req llm.Request) (llm
 		<-ctx.Done()
 		return llm.Response{}, ctx.Err()
 	}
-	resp := finalResponse(a.resume)
+	resp := agenttest.FinalResponse(a.resume)
 	resp.Provider = a.name
 	resp.Model = req.Model
 	return resp, nil
@@ -539,7 +540,7 @@ func (a *resumeBlockAdapter) Complete(ctx context.Context, req llm.Request) (llm
 	a.mu.Unlock()
 
 	if step == 0 {
-		resp := finalResponse("first run")
+		resp := agenttest.FinalResponse("first run")
 		resp.Provider = a.name
 		resp.Model = req.Model
 		return resp, nil
@@ -551,7 +552,7 @@ func (a *resumeBlockAdapter) Complete(ctx context.Context, req llm.Request) (llm
 	case <-ctx.Done():
 		return llm.Response{}, ctx.Err()
 	}
-	resp := finalResponse("second run")
+	resp := agenttest.FinalResponse("second run")
 	resp.Provider = a.name
 	resp.Model = req.Model
 	return resp, nil

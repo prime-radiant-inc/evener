@@ -73,7 +73,7 @@ func TestSteeringArrivingMidTurnIsDeliveredByTheWakeAfterABareTextEnd(t *testing
 			}
 			// The redelivery turn (ProcessPendingUserInput's carrier): end
 			// cleanly so the test can inspect what it delivered.
-			return communicateResponse(true, "done")
+			return agenttest.CommunicateResponse(true, "done")
 		},
 	}
 	client := llm.NewClient()

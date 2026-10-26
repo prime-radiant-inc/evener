@@ -119,7 +119,7 @@ func TestRolePreloadDropsUnfollowableSkillForIncapableDelegate(t *testing.T) {
 	markGitRoot(t, root)
 	writePreloadSkill(t, root, followablePreloadName, followablePreloadSentinel)
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return finalResponse("done")
+		return agenttest.FinalResponse("done")
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
 		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
@@ -159,7 +159,7 @@ func TestRolePreloadDropsUnfollowableSkillForIncapableDelegate(t *testing.T) {
 func TestFrozenRolePreloadDropsUnfollowableSkillForIncapableDelegate(t *testing.T) {
 	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("done") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}}
 	root := newSession(t, withAdapter(adapter), withoutGitSnapshot(), withConfig(preloadTestConfig(t)))
 	if !root.memorySaveInstructionsEnabled() {
@@ -239,7 +239,7 @@ func TestRestoredDelegateDropsUnfollowablePreloadRecord(t *testing.T) {
 		descriptor.FrozenSkillMetadata = []schema.FrozenSkillPreload{gardenMetadata, followableMetadata}
 	})
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return toolCallResponse(communicateCall("done-1", "ok")) },
+		func(llm.Request) llm.Response { return agenttest.ToolCallResponse(communicateCall("done-1", "ok")) },
 	}
 	ordinary := schema.OrdinarySkillActivation{
 		Identity: schema.SkillContentIdentity{

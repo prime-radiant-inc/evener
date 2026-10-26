@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -51,7 +52,7 @@ func testInvalidRasterToolResultRemainsRecoverable(t *testing.T, name string, da
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
-				return toolCallResponse(llm.ToolCallData{
+				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "read_invalid_image",
 					Name:      "read_file",
 					Type:      "function",
@@ -70,7 +71,7 @@ func testInvalidRasterToolResultRemainsRecoverable(t *testing.T, name string, da
 				case !strings.Contains(fmt.Sprint(result.Content), "invalid image data"):
 					requestErr = fmt.Errorf("tool error does not explain the invalid image: %+v", result)
 				}
-				return finalResponse("recovered")
+				return agenttest.FinalResponse("recovered")
 			},
 		},
 	}

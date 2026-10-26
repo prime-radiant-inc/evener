@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
@@ -152,7 +153,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -202,7 +203,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Anthropic(t *testing.T) 
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -287,7 +288,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Gemini(t *testing.T) {
 		name: "google",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -337,7 +338,7 @@ func TestSession_SystemPromptFile_OverridesBasePrompt(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -478,9 +479,9 @@ func TestSession_ToolLoop_ExecutesToolsAndContinues(t *testing.T) {
 					}
 				}
 				if !foundTool {
-					return finalResponse("missing tool result")
+					return agenttest.FinalResponse("missing tool result")
 				}
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -553,7 +554,7 @@ func TestSession_PreCompactHookOnlyRunsWhenCompactionEmits(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("done") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -600,7 +601,7 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("done") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -820,8 +821,8 @@ func TestSession_DistinctCompactionsQueueOneTranscriptReminderEach(t *testing.T)
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("first summary") },
-		func(req llm.Request) llm.Response { return finalResponse("second summary") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("first summary") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("second summary") },
 	}})
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
@@ -998,7 +999,7 @@ func TestSession_SubagentStopHookRunsWhenSubagentFinishes(t *testing.T) {
 
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("subagent done") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("subagent done") },
 	}})
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
@@ -1046,7 +1047,7 @@ func TestSession_ToolOutputTruncation_OverridesLimitsAndKeepsShellJSONValid(t *t
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -1123,7 +1124,7 @@ func TestSession_ToolOutputTruncation_LineLimitPreservesStreamingShellJSON(t *te
 					},
 				}
 			},
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -1202,7 +1203,7 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -1290,7 +1291,7 @@ func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -1386,7 +1387,7 @@ func TestSession_UserInstructionOverride_AppendedLastToSystemPrompt(t *testing.T
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -1423,7 +1424,7 @@ func TestSession_SubagentUserInstructionOverride_AppendedLastToSystemPrompt(t *t
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -1480,7 +1481,7 @@ func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
 			if !found {
 				t.Error("custom tool not in request tools")
 			}
-			return finalResponse("done")
+			return agenttest.FinalResponse("done")
 		},
 	}}
 	c.Register(f)
@@ -1534,7 +1535,7 @@ func TestSession_ToolCallEnd_UsesOutputKeyOnSuccess(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -1615,7 +1616,7 @@ func TestSession_ToolCallEnd_UsesErrorKeyOnFailure(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -1708,7 +1709,7 @@ func TestSession_ToolCallEnd_PrevalOnlyOnUnknownTool(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	}
@@ -1768,11 +1769,11 @@ func TestSession_SetModel_TakesEffectOnNextCall(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				capturedModel = req.Model
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 			func(req llm.Request) llm.Response {
 				capturedModel = req.Model
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	}
@@ -1842,7 +1843,7 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 				})
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("ok")
+				return agenttest.FinalResponse("ok")
 			},
 		},
 	})
@@ -1885,7 +1886,7 @@ func TestSession_SystemPromptAsUser_CombinesIntoOneMessage(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -1956,7 +1957,7 @@ func TestSession_SystemPromptAsUserPreservesImageParts(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 		},
 	}
 	c.Register(f)
@@ -2044,7 +2045,7 @@ func TestSession_ProjectDocsCachedAtInit(t *testing.T) {
 			if strings.Contains(sys, "New agent instructions") {
 				t.Error("project docs should be cached at init, not reloaded per round")
 			}
-			return finalResponse("done")
+			return agenttest.FinalResponse("done")
 		},
 	}}
 	c.Register(f)

@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
@@ -1859,7 +1860,7 @@ func TestTaskListTool_UpdateIgnoresTerminalDelegates(t *testing.T) {
 				})
 			} else {
 				fixture.adapter.steps = []func(llm.Request) llm.Response{
-					func(llm.Request) llm.Response { return communicateResponse(true, "done") },
+					func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "done") },
 				}
 			}
 			root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)

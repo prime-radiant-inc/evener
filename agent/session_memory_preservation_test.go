@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -164,7 +165,7 @@ func TestMemoryPreservation(t *testing.T) {
 				}
 			}
 			if stage == len(calls) {
-				return finalResponse("correction completed")
+				return agenttest.FinalResponse("correction completed")
 			}
 			call := calls[stage]
 			stage++

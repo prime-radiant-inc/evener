@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/identifier"
@@ -85,7 +86,7 @@ func replaceRootArtifactStore(t *testing.T, root *Session, store artifactStore) 
 func newArtifactTestRoot(t *testing.T) *Session {
 	t.Helper()
 	return newSession(t,
-		withSteps(func(llm.Request) llm.Response { return finalResponse("child done") }),
+		withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("child done") }),
 		withConfig(SessionConfig{
 			MaxSubagentDepth: 1,
 			StateDir:         t.TempDir(),

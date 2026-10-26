@@ -2,7 +2,6 @@ package contextmgr
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"testing"
 
@@ -11,28 +10,6 @@ import (
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
-
-// communicateCall builds a communicate tool call carrying the given message and
-// a terminal reply, matching the wire shape the compaction code parses. It
-// mirrors the agent package's test helper; the checkpoint conversation
-// extraction reads only the message and end_turn fields.
-func communicateCall(id, message string) llm.ToolCallData {
-	raw, _ := json.Marshal(map[string]any{
-		"message":  message,
-		"end_turn": true,
-		"output": map[string]any{
-			"message":   "",
-			"data":      map[string]any{},
-			"artifacts": []string{},
-		},
-	})
-	return llm.ToolCallData{
-		ID:        id,
-		Name:      "communicate",
-		Arguments: raw,
-		Type:      "function",
-	}
-}
 
 // NewOpenAIProfile re-exports the provider constructor so tests need not qualify
 // every call, mirroring the agent package's profile test shims.

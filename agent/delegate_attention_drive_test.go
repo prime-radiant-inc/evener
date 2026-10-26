@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/llm"
 )
@@ -24,7 +25,7 @@ func TestDelegateAttentionDriveStaleSelectionPreservesNextOwnerRun(t *testing.T)
 		return llm.Response{Message: llm.Assistant("bare without communicate")}
 	}
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
 			if err := root.subagents.get(fixture.childID).sess.FollowUp("queued follow-up work"); err != nil {
 				t.Errorf("queue attention follow-up: %v", err)
@@ -32,8 +33,8 @@ func TestDelegateAttentionDriveStaleSelectionPreservesNextOwnerRun(t *testing.T)
 			return llm.Response{Message: llm.Assistant("attention requires no action")}
 		},
 		bare, bare, bare, bare,
-		func(llm.Request) llm.Response { return finalResponse("follow-up report") },
-		func(llm.Request) llm.Response { return finalResponse("next owner report") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("follow-up report") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("next owner report") },
 	}
 	root = restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
@@ -114,7 +115,7 @@ func TestDelegateAttentionDriveRetriesAcceptedMarkerGeneration(t *testing.T) {
 	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("nothing to do")} },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)

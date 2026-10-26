@@ -174,7 +174,7 @@ func hasImagePart(msg llm.Message) bool {
 }
 
 func replyStep(message string) func(req llm.Request) llm.Response {
-	return func(req llm.Request) llm.Response { return finalResponse(message) }
+	return func(req llm.Request) llm.Response { return agenttest.FinalResponse(message) }
 }
 
 // collectWarnings drains the session's event stream in the background,

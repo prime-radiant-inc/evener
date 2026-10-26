@@ -200,7 +200,7 @@ func TestRootAttentionTransientRetryAfterAPauseReadsWorking(t *testing.T) {
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil)
 		},
-		func(llm.Request) (llm.Response, error) { return finalResponse("delivered"), nil },
+		func(llm.Request) (llm.Response, error) { return agenttest.FinalResponse("delivered"), nil },
 	}}
 	c := llm.NewClient()
 	c.Register(adapter)

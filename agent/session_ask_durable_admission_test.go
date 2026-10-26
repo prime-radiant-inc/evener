@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -22,7 +23,9 @@ func newDurableAdmissionAskSessionWithAdapter(t *testing.T, cfg SessionConfig) (
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(askUserCall("ask1", askUserArgsValid())) },
+			func(req llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(askUserCall("ask1", askUserArgsValid()))
+			},
 		},
 	}
 	c.Register(adapter)

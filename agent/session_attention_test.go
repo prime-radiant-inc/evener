@@ -758,7 +758,7 @@ func TestDelegateAttention_RecoveryStopWaitsForOldRunnerBeforeReuse(t *testing.T
 			func(llm.Request) (llm.Response, error) {
 				close(successorEntered)
 				<-releaseSuccessor
-				return finalResponse("successor completed after recovery"), nil
+				return agenttest.FinalResponse("successor completed after recovery"), nil
 			},
 		},
 	}
@@ -2234,7 +2234,7 @@ func TestDelegateAttention_PostAckArmReadFailureRetriesExactID(t *testing.T) {
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, clock: clock}),
 		withSteps(func(llm.Request) llm.Response {
-			return communicateResponse(true, "retried exact attention")
+			return agenttest.CommunicateResponse(true, "retried exact attention")
 		}),
 	)
 	c := root.delegateController
@@ -2364,12 +2364,12 @@ func TestDelegateAttention_SettledResidentChildStartsExactAttentionGeneration(t 
 	attentionContent := `<job-notification event="watch_send">drive exact attention</job-notification>`
 	attentionSeen := false
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return communicateResponse(true, "initial run complete") },
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "initial run complete") },
 		func(request llm.Request) llm.Response {
 			attentionSeen = requestContainsText(request, attentionContent)
 			close(attentionEntered)
 			<-releaseAttention
-			return communicateResponse(true, "attention handled")
+			return agenttest.CommunicateResponse(true, "attention handled")
 		},
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -2947,7 +2947,7 @@ func TestRootDelegateAttention_SuccessfulNotificationConsumesExactIDs(t *testing
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(func(req llm.Request) llm.Response {
 			requestSawAttention = requestContainsText(req, content)
-			return toolCallResponse(communicateCall("root-attention-consumed", "completion received"))
+			return agenttest.ToolCallResponse(communicateCall("root-attention-consumed", "completion received"))
 		}),
 	)
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
@@ -3015,12 +3015,12 @@ func TestRootDelegateAttention_MidTurnArmedAttentionConsumedWithoutRedundantWake
 				if midTurnAppendErr == nil {
 					midTurnArmErr = root.armDelegateAttention(secondID)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(req llm.Request) llm.Response {
 				calls++
 				roundTwoSawBoth = requestContainsText(req, firstContent) && requestContainsText(req, secondContent)
-				return toolCallResponse(communicateCall("mid-turn-complete", "both deliveries handled"))
+				return agenttest.ToolCallResponse(communicateCall("mid-turn-complete", "both deliveries handled"))
 			},
 		),
 	)
@@ -3096,12 +3096,12 @@ func TestRootDelegateAttention_PostBuildArmedAttentionStaysPendingForWake(t *tes
 				if lateAppendErr == nil {
 					lateArmErr = root.armDelegateAttention(lateID)
 				}
-				return toolCallResponse(communicateCall("unseen-turn-complete", "first handled"))
+				return agenttest.ToolCallResponse(communicateCall("unseen-turn-complete", "first handled"))
 			},
 			func(req llm.Request) llm.Response {
 				calls++
 				wakeSawLate = requestContainsText(req, lateContent)
-				return toolCallResponse(communicateCall("unseen-wake-complete", "late handled"))
+				return agenttest.ToolCallResponse(communicateCall("unseen-wake-complete", "late handled"))
 			},
 		),
 	)
@@ -3178,12 +3178,12 @@ func TestRootDelegateAttention_EmptySnapshotNotificationTurnConsumesCoveredDeliv
 				if appendErr == nil {
 					armErr = root.armDelegateAttention(attentionID)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(req llm.Request) llm.Response {
 				calls++
 				roundTwoSaw = requestContainsText(req, content)
-				return toolCallResponse(communicateCall("empty-snap-complete", "steering and delivery handled"))
+				return agenttest.ToolCallResponse(communicateCall("empty-snap-complete", "steering and delivery handled"))
 			},
 		),
 	)
@@ -3244,17 +3244,17 @@ func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing
 				if appendErr == nil {
 					armErr = root.armDelegateAttention(attentionID)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(req llm.Request) llm.Response {
 				roundTwoSaw = requestContainsText(req, content)
-				return toolCallResponse(communicateCall("user-turn-complete", "question answered and delivery handled"))
+				return agenttest.ToolCallResponse(communicateCall("user-turn-complete", "question answered and delivery handled"))
 			},
 			// A third call would be the drain selector's backstop notification
 			// turn — the failure mode this test exists to rule out.
 			func(llm.Request) llm.Response {
 				thirdRan = true
-				return toolCallResponse(communicateCall("backstop-complete", "should not run"))
+				return agenttest.ToolCallResponse(communicateCall("backstop-complete", "should not run"))
 			},
 		),
 	)
@@ -3310,12 +3310,12 @@ func TestRootDelegateAttention_UserTurnConsumesAttentionArmedBeforeTurn(t *testi
 			func(req llm.Request) llm.Response {
 				requests++
 				sawIt = requestContainsText(req, content)
-				return toolCallResponse(communicateCall("user-turn-complete", "answered"))
+				return agenttest.ToolCallResponse(communicateCall("user-turn-complete", "answered"))
 			},
 			// A second request would be the notification turn #4247 removes.
 			func(llm.Request) llm.Response {
 				requests++
-				return toolCallResponse(communicateCall("notification-turn", "should not run"))
+				return agenttest.ToolCallResponse(communicateCall("notification-turn", "should not run"))
 			},
 		),
 	)
@@ -3368,12 +3368,12 @@ func TestRootDelegateAttention_PreArmedAttentionNotPresentedKeepsItsNotification
 			func(llm.Request) llm.Response {
 				requests++
 				_, appendErr = root.appendDelegateNotificationDurably(attentionID, content)
-				return toolCallResponse(communicateCall("user-turn-complete", "answered"))
+				return agenttest.ToolCallResponse(communicateCall("user-turn-complete", "answered"))
 			},
 			func(req llm.Request) llm.Response {
 				requests++
 				notificationSaw = requestContainsText(req, content)
-				return toolCallResponse(communicateCall("notification-turn", "handled"))
+				return agenttest.ToolCallResponse(communicateCall("notification-turn", "handled"))
 			},
 		),
 	)
@@ -3656,13 +3656,13 @@ func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *te
 				if err := root.armDelegateAttention(attentionID); err != nil {
 					t.Errorf("mid-turn arm: %v", err)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall("empty-fail-turn", "steering handled"))
+				return agenttest.ToolCallResponse(communicateCall("empty-fail-turn", "steering handled"))
 			},
 			func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall("empty-fail-retry", "delivery consumed by the paced retry wake"))
+				return agenttest.ToolCallResponse(communicateCall("empty-fail-retry", "delivery consumed by the paced retry wake"))
 			},
 		),
 	)
@@ -3769,16 +3769,16 @@ func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *te
 				if err := root.armDelegateAttention(attentionID); err != nil {
 					t.Errorf("mid-turn arm: %v", err)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall("resolution-failure-turn", "answer stands"))
+				return agenttest.ToolCallResponse(communicateCall("resolution-failure-turn", "answer stands"))
 			},
 			// The armed wake's follow-up notification turn, which the failed
 			// coverage resolution left the item pending for.
 			func(req llm.Request) llm.Response {
 				wakeTurnSaw = requestContainsText(req, content)
-				return toolCallResponse(communicateCall("resolution-failure-wake", "delivery consumed by the wake"))
+				return agenttest.ToolCallResponse(communicateCall("resolution-failure-wake", "delivery consumed by the wake"))
 			},
 		),
 	)
@@ -3908,12 +3908,12 @@ func TestRootDelegateAttention_FailedEmptyCoverageTurnRefiresViaArmKick(t *testi
 				if err := root.armDelegateAttention(attentionID); err != nil {
 					t.Errorf("mid-turn arm: %v", err)
 				}
-				return toolCallResponse(communicateCall("refire-covering", "covered mid-turn"))
+				return agenttest.ToolCallResponse(communicateCall("refire-covering", "covered mid-turn"))
 			},
 			// The turn driven by the arm's kick. Its begin snapshot is
 			// non-empty, so the finish path resolves and consumes.
 			func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall("refire-consumer", "consumed by the arm kick turn"))
+				return agenttest.ToolCallResponse(communicateCall("refire-consumer", "consumed by the arm kick turn"))
 			},
 		),
 	)
@@ -3968,10 +3968,10 @@ func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testi
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, clock: clock}),
 		withSteps(
 			func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall("root-attention-first", "first attempt"))
+				return agenttest.ToolCallResponse(communicateCall("root-attention-first", "first attempt"))
 			},
 			func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall("root-attention-retry", "retry complete"))
+				return agenttest.ToolCallResponse(communicateCall("root-attention-retry", "retry complete"))
 			},
 		),
 	)
@@ -4160,16 +4160,16 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 			attentionSeen = requestContainsText(request, owedContent)
 			close(attentionEntered)
 			<-releaseAttention
-			return communicateResponse(true, "recovered owed generation handled")
+			return agenttest.CommunicateResponse(true, "recovered owed generation handled")
 		},
 		func(request llm.Request) llm.Response {
 			if !requestContainsText(request, remainingContent) {
 				t.Errorf("successor attention request omitted remaining unresolved input")
 			}
-			return communicateResponse(true, "remaining attention handled")
+			return agenttest.CommunicateResponse(true, "remaining attention handled")
 		},
 		func(llm.Request) llm.Response {
-			return communicateResponse(true, "root drained recovered completions")
+			return agenttest.CommunicateResponse(true, "root drained recovered completions")
 		},
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)

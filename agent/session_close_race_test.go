@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -28,7 +29,7 @@ func TestSession_Close_NoRaceWithConcurrentEmit(t *testing.T) {
 		c.Register(&fakeAdapter{
 			name: "openai",
 			steps: []func(req llm.Request) llm.Response{
-				func(req llm.Request) llm.Response { return finalResponse("done") },
+				func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 			},
 		})
 		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})

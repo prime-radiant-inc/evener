@@ -532,7 +532,7 @@ func TestDelegateResourceStop_RootCloseAbortsUnpersistedInlineDeliveryCommit(t *
 		descriptor.Config.MaxToolRoundsPerInput = 1
 	})
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return communicateResponse(false, "continue") },
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(false, "continue") },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "exhaust", 60_000)

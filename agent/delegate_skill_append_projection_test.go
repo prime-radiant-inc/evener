@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -20,12 +21,12 @@ func TestDelegateSkillAppendProjectsBetweenSnapshotsTurnOnce(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	const marker = "between-snapshots marker for issue 4261"
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },
 		func(req llm.Request) llm.Response {
 			if got := strings.Count(requestText(req), marker); got != 1 {
 				t.Errorf("the request presented the turn that landed between the round and delegate snapshots %d times, want 1 (double projection)", got)
 			}
-			return finalResponse("merged")
+			return agenttest.FinalResponse("merged")
 		},
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)

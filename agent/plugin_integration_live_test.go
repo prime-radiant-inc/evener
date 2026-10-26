@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/mcp"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -702,12 +703,12 @@ func TestLive_Session_PluginAgentsInSystemPrompt(t *testing.T) {
 					}
 				}
 				if !strings.Contains(sysPrompt, "live-test:analyzer") {
-					return finalResponse("FAIL: missing live-test:analyzer")
+					return agenttest.FinalResponse("FAIL: missing live-test:analyzer")
 				}
 				if !strings.Contains(sysPrompt, "live-test:writer") {
-					return finalResponse("FAIL: missing live-test:writer")
+					return agenttest.FinalResponse("FAIL: missing live-test:writer")
 				}
-				return finalResponse("PASS: plugin agents in system prompt")
+				return agenttest.FinalResponse("PASS: plugin agents in system prompt")
 			},
 		},
 	}

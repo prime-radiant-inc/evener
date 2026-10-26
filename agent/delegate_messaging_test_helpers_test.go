@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -112,7 +113,7 @@ func (a *messagingAdapter) Complete(_ context.Context, req llm.Request) (llm.Res
 	case a.arrived <- struct{}{}:
 	default:
 	}
-	response := finalResponse("done")
+	response := agenttest.FinalResponse("done")
 	if step != nil {
 		response = step(req)
 	}
@@ -155,7 +156,7 @@ func delegateToolResponseWithResultSchema(id, prompt string, resultSchema map[st
 
 func delegateToolCall(id string, arguments map[string]any) llm.Response {
 	args, _ := json.Marshal(arguments)
-	return toolCallResponse(llm.ToolCallData{ID: id, Name: "delegate", Arguments: args, Type: "function"})
+	return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "delegate", Arguments: args, Type: "function"})
 }
 
 // writeToolDescriptions renders each tool's description and its parameters'
@@ -195,20 +196,20 @@ func rootAttentionFold(t *testing.T, root *Session) delegateAttentionFold {
 // updateResponse is a delegate's model turn that sends message to its parent
 // as an update: communicate(end_turn=false).
 func updateResponse(id, message string) llm.Response {
-	return toolCallResponse(communicateCallArgs(id, map[string]any{"message": message, "end_turn": false}))
+	return agenttest.ToolCallResponse(communicateCallArgs(id, map[string]any{"message": message, "end_turn": false}))
 }
 
 // delegateSendResponse is a model turn that sends message to delegateID and
 // waits up to maxWaitMS for the generation it starts.
 func delegateSendResponse(id, delegateID, message string, maxWaitMS int) llm.Response {
 	args, _ := json.Marshal(map[string]any{"to": delegateID, "message": message, "max_wait_ms": maxWaitMS})
-	return toolCallResponse(llm.ToolCallData{ID: id, Name: "delegate_send", Arguments: args, Type: "function"})
+	return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "delegate_send", Arguments: args, Type: "function"})
 }
 
 // jobListResponse is a model turn that calls job_list: a tool round that
 // changes nothing, so the request after it is the turn's next model boundary.
 func jobListResponse(id string) llm.Response {
-	return toolCallResponse(llm.ToolCallData{ID: id, Name: "job_list", Arguments: json.RawMessage(`{}`), Type: "function"})
+	return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "job_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 }
 
 // waitForSoleChildIdle waits until root has exactly one child session and it

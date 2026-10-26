@@ -680,7 +680,7 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			steps := make([]func(llm.Request) llm.Response, 6)
 			for i := range steps {
-				steps[i] = func(llm.Request) llm.Response { return finalResponse("ack") }
+				steps[i] = func(llm.Request) llm.Response { return agenttest.FinalResponse("ack") }
 			}
 			sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{}))
 			jm := sess.jobManager
@@ -725,7 +725,7 @@ func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			steps := make([]func(llm.Request) llm.Response, 6)
 			for i := range steps {
-				steps[i] = func(llm.Request) llm.Response { return finalResponse("ack") }
+				steps[i] = func(llm.Request) llm.Response { return agenttest.FinalResponse("ack") }
 			}
 			sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{}))
 			jm := sess.jobManager
@@ -798,13 +798,13 @@ func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rootSteps := make([]func(llm.Request) llm.Response, 8)
 			for i := range rootSteps {
-				rootSteps[i] = func(llm.Request) llm.Response { return finalResponse("root-ack") }
+				rootSteps[i] = func(llm.Request) llm.Response { return agenttest.FinalResponse("root-ack") }
 			}
 			root := newSession(t, withSteps(rootSteps...), withConfig(SessionConfig{}))
 
 			childSteps := make([]func(llm.Request) llm.Response, 8)
 			for i := range childSteps {
-				childSteps[i] = func(llm.Request) llm.Response { return finalResponse("child-ack") }
+				childSteps[i] = func(llm.Request) llm.Response { return agenttest.FinalResponse("child-ack") }
 			}
 			child := newSession(t, withSteps(childSteps...), withConfig(SessionConfig{}))
 			childID := child.ID()
@@ -841,7 +841,7 @@ func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return finalResponse("batch handled") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("batch handled") },
 		},
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
@@ -884,7 +884,7 @@ func TestDrainJobTreeConsumesRootDelegateAttentionBeforeCompletion(t *testing.T)
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(func(req llm.Request) llm.Response {
 			requestSawAttention = requestContainsText(req, content)
-			return toolCallResponse(communicateCall("root-attention-drain", "root attention drained"))
+			return agenttest.ToolCallResponse(communicateCall("root-attention-drain", "root attention drained"))
 		}),
 	)
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
@@ -929,7 +929,7 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 	// result-tool path rather than a bare-text turn error.
 	steps := make([]func(llm.Request) llm.Response, 12)
 	for i := range steps {
-		steps[i] = func(llm.Request) llm.Response { return finalResponse("done") }
+		steps[i] = func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }
 	}
 	stateDir := t.TempDir()
 	sess := newSession(t, withDir(stateDir), withSteps(steps...), withConfig(SessionConfig{
@@ -974,7 +974,7 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return finalResponse("foreground shell handled") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("foreground shell handled") },
 		},
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
@@ -1055,7 +1055,7 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 // tell a one-shot drain that the model explicitly awaits this job.
 func TestDrainDoesNotExcuseFiredReadinessWatch(t *testing.T) {
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("readiness acknowledged") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("readiness acknowledged") },
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{TurnEndsProcess: true}))
 	shell := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{

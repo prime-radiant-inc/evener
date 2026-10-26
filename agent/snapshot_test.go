@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -127,7 +128,7 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(comm)
+				return agenttest.ToolCallResponse(comm)
 			},
 		},
 	})
@@ -214,10 +215,10 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(blockCall)
+				return agenttest.ToolCallResponse(blockCall)
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	})

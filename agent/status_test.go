@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/plugin"
@@ -250,7 +251,7 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 					}
 					launchObserved <- err
 					<-release
-					return communicateResponse(true, "owed attention restored")
+					return agenttest.CommunicateResponse(true, "owed attention restored")
 				}}
 			}
 			restored, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)

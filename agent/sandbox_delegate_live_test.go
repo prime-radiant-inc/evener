@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/execsupport/shellquote"
@@ -88,7 +89,7 @@ func TestReadOnlyRoleDelegateUsesRealWriteBlockedBoundary(t *testing.T) {
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
-				return toolCallResponse(liveDelegateToolCall("read", "read_file", map[string]any{
+				return agenttest.ToolCallResponse(liveDelegateToolCall("read", "read_file", map[string]any{
 					"file_path": readPath,
 				}))
 			},
@@ -97,25 +98,25 @@ func TestReadOnlyRoleDelegateUsesRealWriteBlockedBoundary(t *testing.T) {
 				if !ok || result.IsError || !strings.Contains(fmt.Sprint(result.Content), "readable sentinel") {
 					record(fmt.Sprintf("read_file did not succeed: %#v", result))
 				}
-				return toolCallResponse(liveDelegateToolCall("modify", "shell", map[string]any{
+				return agenttest.ToolCallResponse(liveDelegateToolCall("modify", "shell", map[string]any{
 					"command": "printf changed > " + shellquote.Literal(modifyPath),
 				}))
 			},
 			func(req llm.Request) llm.Response {
 				expectShellFailure(req, "modify")
-				return toolCallResponse(liveDelegateToolCall("create", "shell", map[string]any{
+				return agenttest.ToolCallResponse(liveDelegateToolCall("create", "shell", map[string]any{
 					"command": "mkdir " + shellquote.Literal(createPath),
 				}))
 			},
 			func(req llm.Request) llm.Response {
 				expectShellFailure(req, "create")
-				return toolCallResponse(liveDelegateToolCall("delete", "shell", map[string]any{
+				return agenttest.ToolCallResponse(liveDelegateToolCall("delete", "shell", map[string]any{
 					"command": "rm " + shellquote.Literal(modifyPath),
 				}))
 			},
 			func(req llm.Request) llm.Response {
 				expectShellFailure(req, "delete")
-				return toolCallResponse(liveDelegateToolCall("scratch", "shell", map[string]any{
+				return agenttest.ToolCallResponse(liveDelegateToolCall("scratch", "shell", map[string]any{
 					"command": `printf scratch > "$EVENER_SCRATCH_DIR/report.txt"`,
 				}))
 			},

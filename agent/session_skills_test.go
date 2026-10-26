@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
@@ -92,8 +93,8 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 	f := &fakeAdapter{
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(skill) },
-			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skill) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
 		},
 	}
 	c.Register(f)
@@ -150,8 +151,8 @@ func TestUseSkill_InlineMentionPreservesUserInput(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(skillCall) },
-			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skillCall) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
 		},
 	}
 	c.Register(adapter)
@@ -293,8 +294,8 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 	f := &fakeAdapter{
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(skill) },
-			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skill) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
 		},
 	}
 	c.Register(f)
