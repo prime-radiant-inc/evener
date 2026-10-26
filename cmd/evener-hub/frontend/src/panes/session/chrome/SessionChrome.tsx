@@ -46,6 +46,7 @@ import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../.
 import { isConfirmedCrashedSession } from "../../../shell/rail/sessionKind";
 import { navigate, paneToURL, refParam } from "../../../shell/routing";
 import { SessionMenu, type SessionMenuProps, type SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
+import { cadenceStateFor } from "../../../shell/sessionStatus";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
 import { selectLocation } from "../../../stores/navigation/selectors";
@@ -55,7 +56,7 @@ import { useSessionActivity, useSubagentCounts } from "../../../stores/sessionAc
 import { ownerRetainedRef, threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
+import { NOW_TICK_MS, useNowTick } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
 import { ActivityPanel } from "./ActivityPanel";
@@ -331,7 +332,7 @@ export function SessionChrome({
            .right - and with it the "..." menu - always shares this one line. */
           <div className={CLASS.body} data-testid="session-chrome-body">
             <span className={CLASS.cadenceSlot} data-testid="session-chrome-cadence">
-              <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />
+              <Cadence state={cadenceStateFor(model.status.type)} frameTimes={frameTimes} now={now} />
             </span>
             <StatusRow sessionRef={sessionRef} model={model} now={now} />
           </div>
