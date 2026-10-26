@@ -880,6 +880,20 @@ function SpawnForm({
   // label, which is the honest UI reflection of `busyRef` once React catches
   // up - this ref is only the guard of record.
   const busyRef = draft.busyRef;
+  // The two edges of a launch attempt. busyRef is the synchronous re-entrancy
+  // guard, busy and busyStartedAt are the draft state the Start button renders;
+  // every exit from an attempt (success, refusal, thrown error) hands Start
+  // back through finishBusy.
+  function startBusy(): void {
+    busyRef.current = true;
+    setBusy(true);
+    setBusyStartedAt(Date.now());
+  }
+  function finishBusy(): void {
+    busyRef.current = false;
+    setBusy(false);
+    setBusyStartedAt(null);
+  }
   // Mirrors `model` for the default-provider-credential effect below: that
   // effect must read whether Model is CURRENTLY untouched without itself
   // re-running (and re-issuing evener/launch/resolve + model/list) every time
@@ -2268,9 +2282,7 @@ function SpawnForm({
 
   async function doSpawn(submittedPromptRevision: number, ownsLaunchView: () => boolean): Promise<void> {
     if (pluginSelectionBlocked) {
-      busyRef.current = false;
-      setBusy(false);
-      setBusyStartedAt(null);
+      finishBusy();
       return;
     }
     // Submit interception for the pre-session builtins (spawnSlashMenu's
@@ -2309,9 +2321,7 @@ function SpawnForm({
     // first turn is noise.
     if (builtinMatch && builtinMatch.command.id === "goal" && builtinMatch.argsText.trim() === "") {
       toasts.push("error", "/goal needs a value");
-      busyRef.current = false;
-      setBusy(false);
-      setBusyStartedAt(null);
+      finishBusy();
       return;
     }
     if (builtinMatch && (builtinMatch.command.id === "model" || builtinMatch.command.id === "reasoning-effort")) {
@@ -2338,9 +2348,7 @@ function SpawnForm({
         // not a controller-catalog judgment.
         if (value === "") {
           toasts.push("error", "/reasoning-effort needs a value");
-          busyRef.current = false;
-          setBusy(false);
-          setBusyStartedAt(null);
+          finishBusy();
           return;
         }
         if (builtinMatch.command.id === "model") {
@@ -2356,9 +2364,7 @@ function SpawnForm({
           // (round seven).
           if (provider === "" || modelId === "") {
             toasts.push("error", `/${builtinMatch.command.id}: unknown value "${value}"`);
-            busyRef.current = false;
-            setBusy(false);
-            setBusyStartedAt(null);
+            finishBusy();
             return;
           }
           slashScalars = { modelProvider: provider, model: modelId };
@@ -2418,9 +2424,7 @@ function SpawnForm({
             ? `/${builtinMatch.command.id}: unknown value "${value}"`
             : `/${builtinMatch.command.id} needs a value`;
           toasts.push("error", message);
-          busyRef.current = false;
-          setBusy(false);
-          setBusyStartedAt(null);
+          finishBusy();
           return;
         }
         if (builtinMatch.command.id === "model") {
@@ -2433,9 +2437,7 @@ function SpawnForm({
           const { provider, model: modelId } = splitModelId(matched ? matched.id : value);
           if (provider === "" || modelId === "") {
             toasts.push("error", `/${builtinMatch.command.id}: unknown value "${value}"`);
-            busyRef.current = false;
-            setBusy(false);
-            setBusyStartedAt(null);
+            finishBusy();
             return;
           }
           slashScalars = { modelProvider: provider, model: modelId };
@@ -2533,11 +2535,20 @@ function SpawnForm({
     // function but only their OWN catch blocks ever reset it back to false,
     // so a success fell through with the button stuck disabled/"Starting…"
     // forever on a pane that can outlive the navigation below.
-    busyRef.current = false;
-    setBusy(false);
-    setBusyStartedAt(null);
+    finishBusy();
     const url = paneToURL("session", { ref });
     if (url && ownsLaunchView()) navigate(url);
+  }
+
+  // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call can
+  // reject with AppwireClient's own "cannot call ... while state is closed"
+  // text if the client tears down mid-submit, which is internal wiring detail,
+  // never something to toast at a person - and when the hub answered but no
+  // agent daemon could be reached for cwd (the first-run worst moment, T3), the
+  // launch-check's own raw text is replaced with actionable copy instead.
+  function reportStartFailure(err: unknown): void {
+    toasts.push("error", `Start failed: ${friendlyLaunchErrorMessage(err)}`);
+    finishBusy();
   }
 
   async function handleSpawn(): Promise<void> {
@@ -2565,9 +2576,7 @@ function SpawnForm({
     // item, and hubThreadStart starts a turn only for a non-empty input
     // (cmd/evener-hub/app_threadlifecycle.go), so the session is created and
     // simply waits for its first prompt in the session composer.
-    busyRef.current = true;
-    setBusy(true);
-    setBusyStartedAt(Date.now());
+    startBusy();
     const submittedPromptRevision = draft.fields.getState().promptRevision;
     const ownsLaunchView = captureLaunchView();
     try {
@@ -2579,9 +2588,7 @@ function SpawnForm({
       const outcome = await preflightDir(client, cwd, submittedSource);
       if (outcome.kind === "abort") {
         toasts.push("error", outcome.message);
-        busyRef.current = false;
-        setBusy(false);
-        setBusyStartedAt(null);
+        finishBusy();
         return;
       }
       if (outcome.kind === "offer-create") {
@@ -2592,24 +2599,12 @@ function SpawnForm({
         // in flight the two differ, and the request followed submittedSource.
         setCreateDialogPath(outcome.path);
         setCreateDialogHost(submittedSource);
-        busyRef.current = false;
-        setBusy(false);
-        setBusyStartedAt(null);
+        finishBusy();
         return;
       }
       await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
-      // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
-      // can reject with AppwireClient's own "cannot call ... while state is
-      // closed" text if the client tears down mid-submit, which is internal
-      // wiring detail, never something to toast at a person - and when the
-      // hub answered but no agent daemon could be reached for cwd (the
-      // first-run worst moment, T3), the launch-check's own raw text is
-      // replaced with actionable copy instead.
-      toasts.push("error", `Start failed: ${friendlyLaunchErrorMessage(err)}`);
-      busyRef.current = false;
-      setBusy(false);
-      setBusyStartedAt(null);
+      reportStartFailure(err);
     }
   }
 
@@ -2642,26 +2637,14 @@ function SpawnForm({
     // applies (the state is already explained, and a repeating chord must not
     // stack toasts).
     if (hostCatalogPending || modelHostPending) return;
-    busyRef.current = true;
-    setBusy(true);
-    setBusyStartedAt(Date.now());
+    startBusy();
     const submittedPromptRevision = draft.fields.getState().promptRevision;
     const ownsLaunchView = captureLaunchView();
     try {
       await withLaunchConfig(submittedSource, (config) => config.createDirectory(path));
       await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
-      // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
-      // can reject with AppwireClient's own "cannot call ... while state is
-      // closed" text if the client tears down mid-submit, which is internal
-      // wiring detail, never something to toast at a person - and when the
-      // hub answered but no agent daemon could be reached for cwd (the
-      // first-run worst moment, T3), the launch-check's own raw text is
-      // replaced with actionable copy instead.
-      toasts.push("error", `Start failed: ${friendlyLaunchErrorMessage(err)}`);
-      busyRef.current = false;
-      setBusy(false);
-      setBusyStartedAt(null);
+      reportStartFailure(err);
     } finally {
       closeCreateDialog();
     }
