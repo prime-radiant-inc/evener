@@ -7,6 +7,10 @@ package hostops
 // the normal open and the corrupt-store custody path alike — while the domain
 // model never carries the retired payload and every rewrite drops it.
 
+// Fixture timestamps sit in 2099 because the store compacts terminal records
+// older than DefaultTerminalMaxAge against the real clock on load; a fixed past
+// date would age out of these fixtures as the calendar moves on.
+
 import (
 	"path/filepath"
 	"strings"
@@ -22,14 +26,14 @@ const priorShapeStoreJSON = `{"version":1,"sequence":1,"allocatorHighWaterMark":
 	`"generation":7,"incarnationId":"inc-h1","fencingEpoch":{"bootId":"boot-1","opSeq":3},` +
 	`"orphanBoundary":[{"kind":"local-markerless","platform":"linux","nonce":"nonce-h1"}],` +
 	`"pendingSpawns":[{"nonce":"nonce-h1","platform":"linux","cgroupId":"/cg/h1"}],` +
-	`"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
+	`"createdAt":"2099-09-26T00:00:00Z","updatedAt":"2099-09-26T00:00:00Z","hostRemoved":false},` +
 	`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"deploy","state":"interrupted",` +
 	`"generation":7,"incarnationId":"inc-h2","orphanResolved":true,` +
 	`"attestation":{"operator":"operator-alpha","statement":"orphan-verified-absent",` +
-	`"recordId":"00000000000000000002","observedAt":"2026-09-26T00:00:00Z"},` +
+	`"recordId":"00000000000000000002","observedAt":"2099-09-26T00:00:00Z"},` +
 	`"result":{"ok":false,"message":"interrupted"},"sequence":1,` +
-	`"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}],` +
-	`"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2026-09-26T00:00:00Z"}}}`
+	`"createdAt":"2099-09-26T00:00:00Z","updatedAt":"2099-09-26T00:00:00Z","hostRemoved":false}],` +
+	`"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2099-09-26T00:00:00Z"}}}`
 
 // TestPriorBuildStoreLoadsAndDropsRetiredKeys pins the normal open: the retired
 // keys decode (never a refusal), the served records carry none of the retired
@@ -76,11 +80,11 @@ func TestPriorBuildStoreLoadsAndDropsRetiredKeys(t *testing.T) {
 const priorShapeCorruptStoreJSON = `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
 	`{"id":"00000000000000000001","clientOperationId":"op-h1","host":"h1","kind":"restart","state":"orphan-unverified",` +
 	`"generation":3,"incarnationId":"inc-h1","orphanBoundary":[{"kind":"local-markerless","platform":"linux","nonce":"nonce-h1"}],` +
-	`"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
+	`"createdAt":"2099-09-26T00:00:00Z","updatedAt":"2099-09-26T00:00:00Z","hostRemoved":false},` +
 	`{"id":"00000000000000000002","clientOperationId":"op-h2","host":"h2","kind":"deploy","state":"complete",` +
-	`"generation":7,"incarnationId":"inc-h2","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z",` +
+	`"generation":7,"incarnationId":"inc-h2","createdAt":"2099-09-26T00:00:00Z","updatedAt":"2099-09-26T00:00:00Z",` +
 	`"hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":2}],` +
-	`"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2026-09-26T00:00:00Z"}}}`
+	`"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2099-09-26T00:00:00Z"}}}`
 
 // TestPriorBuildCorruptStoreStillQuarantinesAndWritesNoRetiredKeys pins the
 // custody path's tolerance: the §9 boundary schema is gone, so the corrupt
@@ -131,9 +135,9 @@ func TestPriorBuildMalformedBoundaryStillLoadsAndQuarantines(t *testing.T) {
 	malformed := `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
 		`{"id":"00000000000000000001","clientOperationId":"op-h1","host":"h1","kind":"restart","state":"orphan-unverified",` +
 		`"generation":3,"incarnationId":"inc-h1","orphanBoundary":[{"kind":"local-linux"}],` +
-		`"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
+		`"createdAt":"2099-09-26T00:00:00Z","updatedAt":"2099-09-26T00:00:00Z","hostRemoved":false},` +
 		`{"id":"00000000000000000002","clientOperationId":"op-h2","host":"h2","kind":"deploy","state":"complete",` +
-		`"generation":7,"incarnationId":"inc-h2","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z",` +
+		`"generation":7,"incarnationId":"inc-h2","createdAt":"2099-09-26T00:00:00Z","updatedAt":"2099-09-26T00:00:00Z",` +
 		`"hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":2}]}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, malformed)
