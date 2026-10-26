@@ -151,7 +151,60 @@ func TestComicChatBrowser(t *testing.T) {
 	comicGuardCheckChildren(t, fixture.stateDir[0], evidence)
 	comicGuardCheckRoster(t, fixture.stateDir[0], evidence)
 	comicGuardCheckAuthorship(t, fixture.stateDir[1], evidence)
+	comicGuardCheckComposer(t, fixture.stateDir[0], entry.SessionID, evidence)
 	t.Logf("Comic Chat real reader evidence: %s", evidence)
+}
+
+func comicGuardCheckComposer(t *testing.T, stateDir, sessionID, evidence string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := map[string]string{}
+	counts := map[string]int{}
+	completions := map[string]schema.TurnCompletionStatus{}
+	answerTurn := ""
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var record struct{ Turn schema.Turn }
+		if err := decoder.Decode(&record); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		turn := record.Turn
+		if turn.Completion != nil {
+			completions[turn.TurnID] = turn.Completion.Status
+		}
+		for _, part := range turn.Message.Content {
+			if turn.Kind == schema.TurnUserInput && (part.Text == "/settings COMIC_COMPOSER_SEND literal input" || part.Text == "COMIC_COMPOSER_QUEUE literal queued input") {
+				inputs[part.Text] = turn.TurnID
+				counts[part.Text]++
+			}
+			if turn.Kind == schema.TurnAssistant && part.Text == "COMIC_COMPOSER_REPLY streamed first and second" {
+				counts[part.Text]++
+				answerTurn = turn.TurnID
+			}
+		}
+	}
+	sent, queued := inputs["/settings COMIC_COMPOSER_SEND literal input"], inputs["COMIC_COMPOSER_QUEUE literal queued input"]
+	if sent == "" || queued == "" || sent == queued || answerTurn != sent || completions[sent] != schema.TurnCompleted || completions[queued] != schema.TurnInterrupted {
+		t.Fatalf("composer durable turns: sent=%q queued=%q answer=%q statuses=%v", sent, queued, answerTurn, completions)
+	}
+	for _, text := range []string{"/settings COMIC_COMPOSER_SEND literal input", "COMIC_COMPOSER_QUEUE literal queued input", "COMIC_COMPOSER_REPLY streamed first and second"} {
+		if counts[text] != 1 {
+			t.Fatalf("durable composer %q count=%d, want 1", text, counts[text])
+		}
+	}
+	data, err = json.MarshalIndent(map[string]any{"counts": counts, "sent": sent, "queued": queued, "sentStatus": completions[sent], "queuedStatus": completions[queued]}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(evidence, "composer-durable.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Log("Durable composer: one literal Send and complete streamed reply, one queued input in a distinct interrupted turn")
 }
 
 func comicGuardCheckAuthorship(t *testing.T, stateDir, evidence string) {

@@ -16,7 +16,6 @@ import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
-import { carryComposerDraft } from "./composer/draft";
 import {
   useBlockedMutationEntries,
   usePendingTurnEntries,
@@ -48,6 +47,7 @@ import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
 import type { TranscriptReadView } from "./transcript/transcriptReadView";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
+import { useConversationIdentity } from "./useConversationIdentity";
 
 // A conversation rendered in a seat. The session pane is one seat; a drilled
 // cascade column is another. The seat supplies what the conversation cannot
@@ -152,15 +152,10 @@ export function ConversationBody({
   // retained view of `ref` still has to follow: an inactive view reads the
   // surviving entry on its next mount instead of reopening on the superseded
   // identity.
-  const resumedIdentity = useThreadsStore((s) => s.resumedIdentities.get(ref));
-  useEffect(() => {
-    if (resumedIdentity === undefined) return;
-    carryComposerDraft(ref, resumedIdentity);
-    const applied = seat.onResumedIdentity?.(resumedIdentity);
-    if (applied !== false && !otherRetainedViewOf(ref, seat.viewFallbackId)) {
-      threadsStore.getState().clearResumedIdentity(ref);
-    }
-  }, [resumedIdentity, ref, seat]);
+  useConversationIdentity(ref, {
+    replace: (resumedRef) => seat.onResumedIdentity?.(resumedRef) !== false,
+    hasOtherReaders: (sourceRef) => otherRetainedViewOf(sourceRef, seat.viewFallbackId),
+  });
 
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);

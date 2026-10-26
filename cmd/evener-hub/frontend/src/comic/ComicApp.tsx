@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectionBanner } from "../shell/ConnectionBanner";
 import { ToastRegion } from "../shell/chrome/ToastRegion";
 import { ClientProvider } from "../shell/clientContext";
@@ -18,7 +18,14 @@ function currentRoute(): ComicRoute {
 export function ComicApp(): React.ReactElement {
   const { client, onClientReplaced } = useBrowserConnection({});
   const connectionState = useConnectionStore((state) => state.state);
-  const [route, setRoute] = useState(currentRoute);
+  const [selection, setSelection] = useState(() => ({ route: currentRoute(), generation: 0 }));
+  const selected = useRef(selection);
+  const { route } = selection;
+  const readSelection = useCallback(() => {
+    const next = { route: currentRoute(), generation: selected.current.generation + 1 };
+    selected.current = next;
+    setSelection(next);
+  }, []);
   const [fontStatus, setFontStatus] = useState<"loading" | "ready" | "unavailable">("loading");
   useEffect(() => {
     let active = true;
@@ -30,19 +37,28 @@ export function ComicApp(): React.ReactElement {
     };
   }, []);
   useEffect(() => {
-    const onPopState = () => setRoute(currentRoute());
+    const onPopState = readSelection;
     window.addEventListener("popstate", onPopState);
     onPopState();
     return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+  }, [readSelection]);
 
   const selectRef = (ref: string) => {
     window.history.pushState(null, "", ref ? comicSessionURL(ref) : "/comic");
-    setRoute(currentRoute());
+    readSelection();
   };
   const replaceRef = (ref: string) => {
+    const current = currentRoute();
+    if (
+      selected.current !== selection ||
+      route.kind !== "session" ||
+      current.kind !== "session" ||
+      current.ref !== route.ref
+    )
+      return false;
     window.history.replaceState(null, "", comicSessionURL(ref));
-    setRoute(currentRoute());
+    readSelection();
+    return true;
   };
 
   return (
@@ -67,7 +83,12 @@ export function ComicApp(): React.ReactElement {
         ) : route.kind === "picker" ? (
           <ComicPicker onSelect={selectRef} />
         ) : (
-          <ComicSession key={route.ref} sessionRef={route.ref} onSelectRef={selectRef} onReplaceRef={replaceRef} />
+          <ComicSession
+            key={`${selection.generation}:${route.ref}`}
+            sessionRef={route.ref}
+            onSelectRef={selectRef}
+            onReplaceRef={replaceRef}
+          />
         )}
       </main>
     </ClientProvider>

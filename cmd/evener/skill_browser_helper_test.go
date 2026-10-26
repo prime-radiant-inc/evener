@@ -601,6 +601,30 @@ func (a *skillBrowserAdapter) scriptBackgroundStream(ctx context.Context, st *ll
 		a.scriptComicAuthorship(st, req)
 		return
 	}
+	if role == "comic-composer" {
+		queued := false
+		for _, message := range req.Messages {
+			for _, part := range message.Content {
+				if message.Role == llm.RoleUser && strings.TrimSpace(part.Text) == "COMIC_COMPOSER_QUEUE literal queued input" {
+					queued = true
+				}
+			}
+		}
+		if queued {
+			st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: "COMIC_COMPOSER_QUEUE streaming before Stop"})
+			if !a.waitBackgroundPhase(ctx, "comic-composer-never-release") {
+				_ = a.writeEvent("comic-composer-cancelled")
+			}
+			return
+		}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: "COMIC_COMPOSER_REPLY streamed first"})
+		if !a.waitBackgroundPhase(ctx, "comic-composer-finish") {
+			return
+		}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: " and second"})
+		sendScriptedCommunicate(st)
+		return
+	}
 	if role == "history" {
 		// History turns exist to build volume and carry their own user sentinel
 		// (BACKGROUND_HISTORY_NN); their assistant text is neutral so the

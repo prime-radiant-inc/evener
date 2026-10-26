@@ -327,6 +327,16 @@ async function journey(page, fixture) {
   }
   await select("View", "comic");
   await record("away-comic", point);
+  // Switching from plain changes measured row heights. Wait for the bounded
+  // virtual range to settle before comparing a presentation-only change.
+  let previousParts;
+  let stableSamples = 0;
+  await until('comic range settled after plain view', async () => {
+    const parts = JSON.stringify((await read(point)).parts);
+    stableSamples = parts === previousParts ? stableSamples + 1 : 0;
+    previousParts = parts;
+    return stableSamples >= 3;
+  });
   const beforeStyle = await read(point);
   await select("Scene", "field");
   await select("Human expression", "happy-wave");
@@ -412,6 +422,7 @@ async function journey(page, fixture) {
     await rosterJourney(page, fixture, { command, complete, incoming, outgoing, screenshot, wireTrace });
     await remoteJourney(page, fixture, { incoming, outgoing, screenshot });
     await authorshipJourney(page, fixture, { incoming, outgoing, screenshot });
+    await composerJourney(page, fixture, { command, wireTrace, screenshot });
   }
   catch (error) {
     await screenshot('child-failure');
@@ -420,6 +431,61 @@ async function journey(page, fixture) {
     throw error;
   }
   console.log(`Comic responsive reader: ${metrics.length} measured scenarios, ${pageReads.length} history pages, max concurrent ${maxPages}, personal fonts ${fixture.requirePrivateFonts}; ${fixture.evidenceDir}`);
+}
+
+export function verifyComposerReceipts(trace, ref) {
+  const methods = ['turn/start', 'turn/queue', 'turn/interrupt'];
+  const pairs = repliesSince(trace, 0, request => methods.includes(request.method));
+  const ids = new Set();
+  for (const [index, method] of methods.entries()) {
+    const sent = trace.filter(row => row.event === 'Network.webSocketFrameSent' && row.frame && JSON.parse(row.frame).method === method);
+    const matches = pairs.filter(pair => pair.request.method === method);
+    if (sent.length !== 1 || matches.length !== 1) throw new Error(`${method}: expected one request and correlated receipt`);
+    const {request, response} = matches[0];
+    const receipt = response.result?.receipt;
+    if (request.params?.ref !== ref || !request.params.clientMutationId || ids.has(request.params.clientMutationId) || response.error || receipt?.clientMutationId !== request.params.clientMutationId || receipt.disposition !== 'applied' || !receipt.threadId) throw new Error(`${method}: invalid mutation identity or receipt`);
+    ids.add(request.params.clientMutationId);
+    if (index < 2 && JSON.stringify(request.params.input) !== JSON.stringify([{type:'text', text:index === 0 ? '/settings COMIC_COMPOSER_SEND literal input' : 'COMIC_COMPOSER_QUEUE literal queued input'}])) throw new Error(`${method}: changed literal input`);
+    if (method === 'turn/queue' && !receipt.queueEntryIds?.length) throw new Error('queue: missing durable entry identity');
+  }
+  return pairs;
+}
+
+async function composerJourney(page, fixture, { command, wireTrace, screenshot }) {
+  const start = wireTrace.length;
+  const evaluateHere = expression => evaluate(page.send, expression);
+  const records = () => readFileSync(fixture.requestLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  command('background-auto', 'off');
+  command('background-role', 'comic-composer');
+  command('background-phase', 'comic-composer-ready');
+  await until('composer provider configured', () => records().some(row => row.event === 'background-phase-ack' && row.phase === 'comic-composer-ready'));
+  await navigateTo(page, new URL('/comic/s/' + encodeURIComponent(fixture.refs.live), fixture.baseURL).href);
+  const click = async testId => until(testId, () => evaluateHere(`(() => { const button = document.querySelector('[data-testid="${testId}"]'); if (!button || button.disabled) return false; button.click(); return true; })()`));
+  const type = async text => {
+    await until('committed full-page editor', () => evaluateHere(`(() => { const editor = document.querySelector('[role="textbox"]'); if (!editor) return false; editor.focus(); return document.activeElement === editor; })()`));
+    await page.send('Input.insertText', {text});
+    await until('structured editor text', () => evaluateHere(`document.querySelector('[role="textbox"]')?.textContent`), value => value === text);
+  };
+  const receipt = method => until(`${method} real receipt`, () => repliesSince(wireTrace, start, request => request.method === method).find(pair => pair.response.result?.receipt));
+  const provider = text => until('provider received ' + text, () => records().find(row => row.event === 'request' && row.kind === 'turn' && row.request?.messages?.some(message => message.role === 'user' && message.content?.some(part => part.text === text))));
+  await type('/settings COMIC_COMPOSER_SEND literal input');
+  await click('composer-submit');
+  await receipt('turn/start');
+  const sent = await provider('/settings COMIC_COMPOSER_SEND literal input');
+  await until('first live streamed reply', () => evaluateHere(`document.querySelector('[data-comic-scroll]')?.textContent.includes('COMIC_COMPOSER_REPLY streamed first')`));
+  await type('COMIC_COMPOSER_QUEUE literal queued input');
+  await click('composer-submit');
+  await receipt('turn/queue');
+  command('background-phase', 'comic-composer-finish');
+  const queued = await provider('COMIC_COMPOSER_QUEUE literal queued input');
+  await until('queued turn live stream', () => evaluateHere(`document.querySelector('[data-comic-scroll]')?.textContent.includes('COMIC_COMPOSER_QUEUE streaming before Stop')`));
+  await click('composer-stop');
+  await receipt('turn/interrupt');
+  await until('provider cancelled by Stop', () => records().some(row => row.event === 'comic-composer-cancelled'));
+  const pairs = verifyComposerReceipts(wireTrace.slice(start), fixture.refs.live);
+  writeFileSync(`${fixture.evidenceDir}/composer.json`, JSON.stringify({ref:fixture.refs.live, pairs, provider:[sent, queued], wireTrace:wireTrace.slice(start)}, null, 2));
+  await screenshot('composer-stopped');
+  console.log('Comic composer: literal Send, live partial reply, Queue consumed by provider, Stop receipt and provider cancellation');
 }
 
 function readGeometry(point, ref) {
@@ -631,11 +697,11 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
     const geometry = await until(name, () => evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(saved)}, ${JSON.stringify(fixture.refs.live)})`), value => value?.point && Math.abs(value.point.y - saved.viewportOffset) <= 2);
     const nestedGeometry = await evaluateHere(`(() => {
       const port = document.querySelector('[data-comic-scroll]').firstElementChild;
-      return {scrollports:document.querySelectorAll('[data-comic-scroll]').length, editors:document.querySelectorAll('textarea,[contenteditable=true]').length,
+      return {scrollports:document.querySelectorAll('[data-comic-scroll]').length, editors:port.querySelectorAll('textarea,[contenteditable=true]').length, fullPageEditors:document.querySelectorAll('[data-comic-composer] [contenteditable=true]').length,
         headers:[...port.querySelectorAll('[data-comic-delegate]')].map(node => ({ref:node.dataset.comicChildRef, width:node.getBoundingClientRect().width, text:node.textContent})),
         thoughts:[...port.querySelectorAll('[data-comic-balloon=thought]')].map(node => { const text = node.querySelector('[data-comic-text]'); const box = node.getBoundingClientRect(); const inside = text.getBoundingClientRect(); return {text:node.textContent, width:node.clientWidth, height:node.clientHeight, overflow:Math.max(text.scrollWidth-text.clientWidth,text.scrollHeight-text.clientHeight), contained:inside.left >= box.left && inside.right <= box.right && inside.top >= box.top && inside.bottom <= box.bottom}; })};
     })()`);
-    if (geometry.overflow > 1 || geometry.pageOverflow > 1 || geometry.clipped.length || geometry.mounted > 35 || nestedGeometry.scrollports !== 1 || nestedGeometry.editors !== 0 || nestedGeometry.thoughts.some(thought => thought.overflow > 1 || !thought.contained)) throw Error(name + ': bad child geometry ' + JSON.stringify({geometry,nestedGeometry}));
+    if (geometry.overflow > 1 || geometry.pageOverflow > 1 || geometry.clipped.length || geometry.mounted > 35 || nestedGeometry.scrollports !== 1 || nestedGeometry.editors !== 0 || nestedGeometry.fullPageEditors !== 1 || nestedGeometry.thoughts.some(thought => thought.overflow > 1 || !thought.contained)) throw Error(name + ': bad child geometry ' + JSON.stringify({geometry,nestedGeometry}));
     if (geometry.width <= 760 && nestedGeometry.headers.some(item => item.width < geometry.portWidth - 40)) throw Error('compounded mobile indentation');
     metrics.push({name,geometry,nestedGeometry});
     writeFileSync(`${fixture.evidenceDir}/children.json`, JSON.stringify({header,grandchild,saved,metrics}, null, 2));
