@@ -157,6 +157,10 @@ export class DraftDocument {
 	// submission already in flight outlives its screen, and its completion must
 	// clear the capture at the destination that now owns the record.
 	private successor: DraftDocument | undefined;
+	/** A submission that started on a predecessor and retires into this document.
+	 * The document must not finalize work on its behalf until the completion
+	 * arrives through the handoff chain. */
+	private inheritedSubmission = false;
 	// The identity a resume resolved to. Unlike `successor`, this is published
 	// even when the handoff is refused: the mounted screen must follow the
 	// resumed ref while both this draft and the destination's stay in place.
@@ -277,6 +281,7 @@ export class DraftDocument {
 		this.forgotten = true;
 		this.retired = true;
 		this.successor = undefined;
+		this.inheritedSubmission = false;
 		this.unsavedImages.clear();
 		this.update({
 			record: { draft: "", unconfirmed: null },
@@ -290,6 +295,7 @@ export class DraftDocument {
 	 * screen renders the transferred composition without reopening storage. */
 	adopt(record: DraftRecord): void {
 		this.unsavedImages.clear();
+		this.inheritedSubmission = false;
 		this.update({ record, loaded: true, submitting: false, error: null });
 	}
 
@@ -302,10 +308,31 @@ export class DraftDocument {
 		this.resolvedDestination = successor.destination;
 		this.retired = true;
 		this.unsavedImages.clear();
+		// An edit route's submission outlives the handoff. The destination keeps
+		// tracking it so an occupied further handoff waits for the completion
+		// markers instead of settling without them.
+		if (this.snapshot.submitting) successor.inheritSubmission();
 		// A mounted screen holds this document. Notify it so it can follow the
 		// resolved identity instead of keeping a document whose edits and sends
 		// now refuse work.
 		this.update({});
+	}
+
+	private inheritSubmission(): void {
+		if (this.forgotten || this.retired) return;
+		this.inheritedSubmission = true;
+	}
+
+	/** The predecessor's submission settled without forwarding a completion
+	 * (a proven local refusal or a throw), so nothing is left to wait for. */
+	private releaseInheritedSubmission(): void {
+		this.inheritedSubmission = false;
+	}
+
+	/** True while a submission this document owns, or one it inherited through
+	 * a handoff, has not settled. */
+	hasOutstandingSubmission(): boolean {
+		return this.snapshot.submitting || this.inheritedSubmission;
 	}
 
 	/** Publish the ref a resume resolved to without retiring this draft. A
@@ -684,6 +711,7 @@ export class DraftDocument {
 			return "not-sent";
 		} finally {
 			this.update({ submitting: false });
+			this.successor?.releaseInheritedSubmission();
 		}
 	}
 
@@ -721,6 +749,7 @@ export class DraftDocument {
 		} catch {
 			/* The destination keeps its work; the composer's Retry owns the failure. */
 		}
+		this.inheritedSubmission = false;
 	}
 
 	/** Clear only the unconfirmed composition whose exact submission token a
