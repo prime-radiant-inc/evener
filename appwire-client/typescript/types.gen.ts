@@ -258,6 +258,7 @@ export interface AuthLoginCompleteParams {
 
 export interface AuthLoginCompleteResponse {
   status: AuthStatusResponse;
+  restart?: boolean;
 }
 
 export interface AuthLoginStartParams {

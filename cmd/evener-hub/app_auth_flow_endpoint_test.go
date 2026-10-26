@@ -16,6 +16,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -367,14 +369,14 @@ func TestAuth_DeviceStartRefusesACodexDestinationItCannotKey(t *testing.T) {
 	}
 }
 
-// TestAuth_LoginCompleteRefusesAnEmptyCaptureThatGainedADestination is the
-// completion half of the same rule through the real LoginComplete. The flow
-// starts while the name has no destination to name (the entry's base URL is
-// unresolvable, so the capture is empty and the start is allowed), and the
-// exchange - the browser round trip long step - is where an edit gives the
-// name a destination. The empty capture no longer means "nothing to check":
-// the record would land on an endpoint the user was never shown.
-func TestAuth_LoginCompleteRefusesAnEmptyCaptureThatGainedADestination(t *testing.T) {
+// TestAuth_LoginCompleteRestartsAnEmptyCaptureThatGainedADestination pins the
+// completion half of verifyFlowEndpoint's rule. A flow started when the name had
+// no destination carries an empty capture; the destination arrived while the
+// browser round trip was open, so the completion has nothing to compare and
+// must not file the record wherever the instance points now. The flow is
+// discarded and the client is told to start a fresh one, which captures the
+// current endpoint; that fresh flow then completes.
+func TestAuth_LoginCompleteRestartsAnEmptyCaptureThatGainedADestination(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	stateDir := t.TempDir()
@@ -392,14 +394,21 @@ func TestAuth_LoginCompleteRefusesAnEmptyCaptureThatGainedADestination(t *testin
 			Expiry:       time.Now().Add(time.Hour),
 		}, nil
 	}
+	complete := func(start appwire.AuthLoginStartResponse) (appwire.AuthLoginCompleteResponse, error) {
+		authorizeURL, err := url.Parse(start.URL)
+		if err != nil {
+			t.Fatalf("parse authorize URL: %v", err)
+		}
+		return ctrl.LoginComplete(context.Background(), appwire.AuthLoginCompleteParams{
+			Provider:    "work",
+			FlowID:      start.FlowID,
+			RedirectURL: loginCallbackURL(t, start.URL, authorizeURL.Query().Get("state")),
+		})
+	}
 
 	start, err := ctrl.LoginStart(appwire.AuthLoginStartParams{Provider: "work"})
 	if err != nil {
 		t.Fatalf("LoginStart: %v", err)
-	}
-	authorizeURL, err := url.Parse(start.URL)
-	if err != nil {
-		t.Fatalf("parse authorize URL: %v", err)
 	}
 	ctrl.mu.Lock()
 	captured := ctrl.flows[start.FlowID].EndpointFingerprint
@@ -408,14 +417,144 @@ func TestAuth_LoginCompleteRefusesAnEmptyCaptureThatGainedADestination(t *testin
 		t.Fatalf("captured endpoint = %q, want empty: the flow must start with no destination to name", captured)
 	}
 
-	_, err = ctrl.LoginComplete(context.Background(), appwire.AuthLoginCompleteParams{
-		Provider:    "work",
-		FlowID:      start.FlowID,
-		RedirectURL: loginCallbackURL(t, start.URL, authorizeURL.Query().Get("state")),
-	})
-	assertFlowEndpointRefusal(t, err)
+	resp, err := complete(start)
+	if err != nil {
+		t.Fatalf("LoginComplete = %v, want a restart answer for a flow the hub cannot check", err)
+	}
+	if !resp.Restart {
+		t.Fatalf("LoginComplete = %+v, want Restart", resp)
+	}
 	if _, err := authopenai.LoadAuth(stateDir, "work"); !errors.Is(err, authopenai.ErrAuthNotFound) {
 		t.Fatalf("LoadAuth(work) err = %v, want ErrAuthNotFound: the record must not land on the destination that arrived after the flow started", err)
+	}
+	ctrl.mu.Lock()
+	_, stillPending := ctrl.flows[start.FlowID]
+	ctrl.mu.Unlock()
+	if stillPending {
+		t.Fatal("the discarded flow is still pending")
+	}
+
+	// Back to useful operation: the fresh flow binds the current endpoint and
+	// completes.
+	fresh, err := ctrl.LoginStart(appwire.AuthLoginStartParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("LoginStart after the restart: %v", err)
+	}
+	ctrl.mu.Lock()
+	captured = ctrl.flows[fresh.FlowID].EndpointFingerprint
+	ctrl.mu.Unlock()
+	if captured == "" {
+		t.Fatal("the fresh flow did not capture the current endpoint")
+	}
+	if resp, err := complete(fresh); err != nil || resp.Restart {
+		t.Fatalf("LoginComplete of the fresh flow = %+v, %v, want it saved", resp, err)
+	}
+	if _, err := authopenai.LoadAuth(stateDir, "work"); err != nil {
+		t.Fatalf("LoadAuth(work) err = %v, want the fresh flow's record", err)
+	}
+}
+
+// TestAuth_DevicePollRestartsAnEmptyCaptureThatGainedADestination is the same
+// rule on the device flow: the poll discards the flow it cannot check rather
+// than completing it unchecked, and the restarted flow completes.
+func TestAuth_DevicePollRestartsAnEmptyCaptureThatGainedADestination(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, codexUnresolvedEndpointToml)
+	ctrl := newTestAuthController(t, dir, stateDir, tomlPath)
+	ctrl.requestDeviceCode = func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error) {
+		return authopenai.DeviceCode{UserCode: "U", VerificationURL: "https://x", DeviceAuthID: "d", Interval: time.Second}, nil
+	}
+	ctrl.pollDeviceOnce = func(context.Context, *http.Client, authopenai.Config, authopenai.DeviceCode) (authopenai.DeviceCodeSuccess, bool, error) {
+		return authopenai.DeviceCodeSuccess{AuthorizationCode: "ac", CodeVerifier: "cv"}, false, nil
+	}
+	ctrl.exchangeDevice = func(context.Context, *http.Client, authopenai.Config, string, string) (authopenai.TokenSet, error) {
+		renameProvidersEntry(t, ctrl, tomlPath, codexEndpointToml)
+		return authopenai.TokenSet{AccessToken: "at", RefreshToken: "rt", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}, nil
+	}
+
+	start, err := ctrl.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("DeviceStart: %v", err)
+	}
+	poll, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: start.FlowID})
+	if err != nil {
+		t.Fatalf("DevicePoll = %v, want a restart answer for a flow the hub cannot check", err)
+	}
+	if poll.State != "restart" || poll.Status != nil {
+		t.Fatalf("DevicePoll = %+v, want the restart state with no status", poll)
+	}
+	if _, err := authopenai.LoadAuth(stateDir, "work"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("LoadAuth(work) err = %v, want ErrAuthNotFound: the record must not land unchecked", err)
+	}
+
+	fresh, err := ctrl.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("DeviceStart after the restart: %v", err)
+	}
+	poll, err = ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: fresh.FlowID})
+	if err != nil || poll.State != "authorized" {
+		t.Fatalf("DevicePoll of the fresh flow = %+v, %v, want authorized", poll, err)
+	}
+	if _, err := authopenai.LoadAuth(stateDir, "work"); err != nil {
+		t.Fatalf("LoadAuth(work) err = %v, want the fresh flow's record", err)
+	}
+}
+
+// TestAuth_DevicePollRestartsAFlowWhoseKeyWasLost covers a flow bound under a
+// key the hub can no longer produce when the poll lands: nothing can be
+// compared, so the flow is discarded rather than completed, and once the state
+// root can be keyed again a fresh flow completes.
+func TestAuth_DevicePollRestartsAFlowWhoseKeyWasLost(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, codexEndpointToml)
+	ctrl := newTestAuthController(t, dir, stateDir, tomlPath)
+	keyPath := filepath.Join(stateDir, endpointFingerprintKeyFile)
+	ctrl.requestDeviceCode = func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error) {
+		return authopenai.DeviceCode{UserCode: "U", VerificationURL: "https://x", DeviceAuthID: "d", Interval: time.Second}, nil
+	}
+	ctrl.pollDeviceOnce = func(context.Context, *http.Client, authopenai.Config, authopenai.DeviceCode) (authopenai.DeviceCodeSuccess, bool, error) {
+		return authopenai.DeviceCodeSuccess{AuthorizationCode: "ac", CodeVerifier: "cv"}, false, nil
+	}
+	ctrl.exchangeDevice = func(context.Context, *http.Client, authopenai.Config, string, string) (authopenai.TokenSet, error) {
+		return authopenai.TokenSet{AccessToken: "at", RefreshToken: "rt", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}, nil
+	}
+
+	start, err := ctrl.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("DeviceStart: %v", err)
+	}
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatalf("remove key: %v", err)
+	}
+	unkeyableStateRoot(t, stateDir)
+
+	poll, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: start.FlowID})
+	if err != nil || poll.State != "restart" {
+		t.Fatalf("DevicePoll = %+v, %v, want the restart state", poll, err)
+	}
+	if _, err := authopenai.LoadAuth(stateDir, "work"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("LoadAuth(work) err = %v, want ErrAuthNotFound: nothing completes unchecked", err)
+	}
+
+	// While the state root still cannot be keyed the fresh flow is refused, and
+	// once it can the flow runs to completion.
+	if _, err := ctrl.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "work"}); !errors.Is(err, errEndpointUnkeyable) {
+		t.Fatalf("DeviceStart on the unkeyable root = %v, want the unkeyable refusal", err)
+	}
+	if err := os.RemoveAll(keyPath); err != nil {
+		t.Fatalf("clear the obstacle: %v", err)
+	}
+	fresh, err := ctrl.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("DeviceStart once the root can be keyed: %v", err)
+	}
+	poll, err = ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: fresh.FlowID})
+	if err != nil || poll.State != "authorized" {
+		t.Fatalf("DevicePoll of the fresh flow = %+v, %v, want authorized", poll, err)
 	}
 }
 

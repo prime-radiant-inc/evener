@@ -278,6 +278,20 @@ describe("listing reads and writes", () => {
     expect(listReads(fake)).toBe(reads + 1);
   });
 
+  test("a login completion the hub discarded unchecked wrote nothing, so it schedules no listing read", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    fake.on("evener/auth/login/complete", () => ({ status: SIGNED_IN, restart: true }));
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    const reads = listReads(fake);
+
+    await store.getState().loginComplete("work", "flow-1", "https://example.test/callback?code=fixture");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(reads);
+  });
+
   test("a write from a replaced connection's listing is refused with the shared words until this connection reads", async () => {
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     store.connectionChanged(readyClient(), "ready");

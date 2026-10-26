@@ -732,6 +732,29 @@ describe("DeviceCodeDialog", () => {
     expect(onRestart).toHaveBeenCalled();
   });
 
+  test("polling: a flow the hub discarded unchecked is restarted without a click and stops polling", async () => {
+    vi.useFakeTimers();
+    const fake = connectFakeClient();
+    fake.on("evener/auth/device/poll", () => ({ state: "restart" }));
+    const onRestart = vi.fn();
+    render(
+      <DeviceCodeDialog
+        name="work"
+        flowId="flow-2"
+        userCode="ABCD-EFGH"
+        verificationUrl="https://verify"
+        intervalSeconds={1}
+        onCancel={() => {}}
+        onSuccess={() => {}}
+        onRestart={onRestart}
+      />,
+    );
+    await advanceTime(1000);
+    expect(onRestart).toHaveBeenCalledTimes(1);
+    await advanceTime(5000);
+    expect(fake.calls.filter((call) => call.method === "evener/auth/device/poll")).toHaveLength(1);
+  });
+
   test("unmounting the dialog stops polling (no further requests after unmount)", async () => {
     vi.useFakeTimers();
     const fake = connectFakeClient();

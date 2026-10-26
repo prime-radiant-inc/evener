@@ -13,7 +13,7 @@
 
 import type { AuthDevicePollResponse } from "@evener/appwire-client";
 import { CONNECTION_REPLACED_ERROR, errorText } from "@evener/appwire-client";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { openInNewTab } from "../../../../shell/openInNewTab";
 import { credentialsStore, devicePollOnHost, fetchHost, isStaleListingRefusal } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, OpenButton, useToasts } from "../../../../widgets";
@@ -177,6 +177,11 @@ export function DeviceCodeDialog({
   const [waitingForConnection, setWaitingForConnection] = useState(false);
   const toast = useToasts();
   const active = useEditorLifetime();
+  // The poll loop restarts the flow from inside its effect, and callers pass
+  // onRestart as an inline closure: reading it through a ref keeps a parent
+  // re-render from restarting the poll timer.
+  const onRestartRef = useRef(onRestart);
+  onRestartRef.current = onRestart;
 
   useEffect(() => {
     let cancelled = false;
@@ -256,6 +261,12 @@ export function DeviceCodeDialog({
       if (resp.state === "expired") {
         setExpired(true);
         setError("Code expired — start again.");
+        return;
+      }
+      if (resp.state === "restart") {
+        // The hub could not check this flow against its endpoint and discarded
+        // it without saving anything: begin a fresh flow instead of waiting.
+        onRestartRef.current();
         return;
       }
       timer = setTimeout(() => void tick(), delayMs);

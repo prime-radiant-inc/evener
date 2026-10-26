@@ -252,6 +252,11 @@ export class ProviderSignIn {
 			} else if (response.state === "pending") {
 				this.publish({ busy: false });
 				this.schedule();
+			} else if (response.state === "restart") {
+				// The hub could not check the flow against its endpoint and
+				// discarded it without saving anything: begin a fresh one.
+				this.publish({ busy: false });
+				void this.start();
 			} else {
 				this.uncertain = true;
 				this.publish({
@@ -308,6 +313,14 @@ export class ProviderSignIn {
 		try {
 			const response = await this.store.getState().loginComplete(this.provider, flowId, redirectUrl);
 			if (this.current(generation)) {
+				if (response.restart === true) {
+					// The hub could not check the flow against its endpoint and
+					// discarded it without saving anything: begin a fresh one.
+					this.pendingOperation = null;
+					this.publish({ busy: false });
+					await this.start();
+					return;
+				}
 				if (!this.validAuthorizedStatus(response.status)) throw new Error();
 				this.pendingOperation = null;
 				this.publish({

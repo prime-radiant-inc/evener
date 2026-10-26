@@ -653,3 +653,53 @@ it("keeps the re-check prompt after a failed completion", async () => {
 	await flow.checkStatus();
 	expect(flow.getSnapshot().problem).toBe("statusUnconfirmed");
 });
+
+it("starts a fresh device flow when the hub discards one it could not check", async () => {
+	vi.useFakeTimers();
+	const { flow, calls, io } = boundary();
+	await flow.start();
+	let starts = 0;
+	io.request = async (method) => {
+		if (method === "evener/auth/device/start") {
+			starts++;
+			return { ...device, flowId: "flow-2" };
+		}
+		return { state: "restart" };
+	};
+	await vi.advanceTimersByTimeAsync(2000);
+	expect(calls.map((call) => call.method)).toEqual([
+		"evener/auth/device/start",
+		"evener/auth/device/poll",
+		"evener/auth/device/start",
+	]);
+	expect(starts).toBe(1);
+	expect(flow.getSnapshot().phase).toBe("device");
+	expect(flow.getSnapshot().device?.flowId).toBe("flow-2");
+	expect(flow.getSnapshot().problem).toBeNull();
+	flow.dispose();
+});
+
+it("starts a fresh sign-in when the hub discards a browser completion it could not check", async () => {
+	const { flow, calls, io } = boundary();
+	let browserStarts = 0;
+	io.request = async (method) => {
+		if (method === "evener/auth/device/start") return { ...device, fallback: true };
+		if (method === "evener/auth/login/start") {
+			browserStarts++;
+			return { provider: "work", flowId: `browser-${browserStarts}`, url: "https://example.test/auth" };
+		}
+		return { status: { provider: "work", supported: false, signedIn: false, activeSource: "none" }, restart: true };
+	};
+	await flow.start();
+	await flow.complete("https://example.test/callback?code=fixture");
+	expect(calls.map((call) => call.method)).toEqual([
+		"evener/auth/device/start",
+		"evener/auth/login/start",
+		"evener/auth/login/complete",
+		"evener/auth/device/start",
+		"evener/auth/login/start",
+	]);
+	expect(flow.getSnapshot().phase).toBe("browser");
+	expect(flow.getSnapshot().browser?.flowId).toBe("browser-2");
+	expect(flow.getSnapshot().problem).toBeNull();
+});
