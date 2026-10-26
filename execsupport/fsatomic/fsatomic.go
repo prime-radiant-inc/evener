@@ -75,10 +75,20 @@ func Write(path string, data []byte, perm os.FileMode) error {
 // synced (or rolled back).
 var mkdirMu sync.Mutex
 
+// stranded holds directories MkdirAll created and could neither sync nor take
+// back out (guarded by mkdirMu); the next MkdirAll that meets one syncs it
+// before accepting it. removeDir is a seam for the test that cannot make a
+// real rmdir fail.
+var (
+	stranded  = map[string]bool{}
+	removeDir = os.Remove
+)
+
 // MkdirAll creates dir and any missing ancestors like os.MkdirAll, but one
 // component at a time, syncing each new directory's parent before creating the
 // next, so the new directory entries are durable. A directory whose parent sync
-// fails is removed again, so a retry creates and syncs it afresh. Directories
+// fails is removed again, so a retry creates and syncs it afresh (one that
+// cannot be removed is remembered and synced on the next call). Directories
 // that already exist are taken as settled. dir is used as given (callers pass
 // paths cleaned by filepath.Join); a race with another process creating the
 // same directory is not covered. Write syncs only the directory that holds the
@@ -94,9 +104,10 @@ func MkdirAll(dir string, perm os.FileMode) error {
 			if !info.IsDir() {
 				return &os.PathError{Op: "mkdir", Path: p, Err: syscall.ENOTDIR}
 			}
-			break
-		}
-		if !errors.Is(err, os.ErrNotExist) {
+			if !stranded[p] {
+				break
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		missing = append(missing, p)
@@ -111,9 +122,13 @@ func MkdirAll(dir string, perm os.FileMode) error {
 			}
 		}
 		if err := syncDir(filepath.Dir(p)); err != nil {
-			_ = os.Remove(p)
+			if rmErr := removeDir(p); rmErr != nil {
+				stranded[p] = true
+				return errors.Join(err, rmErr)
+			}
 			return err
 		}
+		delete(stranded, p)
 	}
 	return nil
 }
