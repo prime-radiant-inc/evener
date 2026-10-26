@@ -649,6 +649,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 			_, _ = fmt.Fprintf(stderr, "[hub] pruned %d orphaned host-running probe file(s) under %s\n", pruned, root)
 		}
 	}
+	for _, key := range cfg.removedHostKnobs {
+		_, _ = fmt.Fprintf(stderr, "[hub] hub.toml sets %s, which is no longer tunable; the hub ignores it and uses its built-in default\n", key)
+	}
 	// The operation store opens before the hub serves anything. A corrupt store
 	// file takes §4's custody-first quarantine; a corrupt file whose custody
 	// snapshot is incomplete refuses the boot outright — the hub must never serve
@@ -718,24 +721,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		// deploy-pipeline knobs: the probe deadline the plan's gated probe
 		// uses, and the minimum free space evener/host/running's health
 		// predicate requires on each durable state root.
-		HubBootID:             hubBootID,
-		HubProcessStart:       hubProcessStart,
-		HostProbeTimeout:      cfg.HostProbeTimeout,
-		HostMinFreeSpaceBytes: cfg.HostMinFreeSpaceBytes,
-		// The host-record retention knobs (registry spec 08 §6/§11/§15): the
-		// tombstone retention and bounds and the receipt/marker/audit bounds the
-		// host-management surface prunes and evicts by.
-		HostTombstoneRetention:        cfg.HostTombstoneRetention,
-		HostTombstoneMaxRows:          cfg.HostTombstoneMaxRows,
-		HostTombstoneMaxRowBytes:      cfg.HostTombstoneMaxRowBytes,
-		HostTombstoneMaxCount:         cfg.HostTombstoneMaxCount,
-		HostTombstoneMaxBytes:         cfg.HostTombstoneMaxBytes,
-		HostSupersededReceiptMaxCount: cfg.HostSupersededReceiptMaxCount,
-		HostSupersededReceiptTTL:      cfg.HostSupersededReceiptTTL,
-		HostPrunedReceiptMaxCount:     cfg.HostPrunedReceiptMaxCount,
-		HostPrunedReceiptTTL:          cfg.HostPrunedReceiptTTL,
-		HostKeylessAuditMaxCount:      cfg.HostKeylessAuditMaxCount,
-		HostKeylessAuditTTL:           cfg.HostKeylessAuditTTL,
+		HubBootID:              hubBootID,
+		HubProcessStart:        hubProcessStart,
+		HostProbeTimeout:       cfg.HostProbeTimeout,
+		HostMinFreeSpaceBytes:  cfg.HostMinFreeSpaceBytes,
+		HostTombstoneRetention: cfg.HostTombstoneRetention,
 		RemoteHostClient: func(ctx context.Context, host string) (*appwire.Client, error) {
 			ch, err := sshManager.Ensure(ctx, host)
 			if err != nil {
@@ -1092,19 +1082,11 @@ func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.Rete
 	return store, nil
 }
 
-// hostOperationRetention maps the hub's owner knobs onto the operation store's
-// §4 retention policy: the five terminal/tombstone/store-byte/age bounds, with
-// the removed-host horizon being the tombstoneRetention knob §4 cites
-// (registry spec §15). Every zero value floors to the store's shipped default.
+// hostOperationRetention maps the hub's tombstone retention onto the operation
+// store's removed-host horizon (registry spec §15); every other bound takes the
+// store's shipped default.
 func hostOperationRetention(cfg Config) hostops.RetentionPolicy {
-	return hostops.RetentionPolicy{
-		TerminalPerHost:    cfg.HostOperationTerminalPerHost,
-		TerminalStoreWide:  cfg.HostOperationTerminalStoreWide,
-		StoreMaxBytes:      cfg.HostOperationStoreMaxBytes,
-		TerminalMaxAge:     cfg.HostOperationTerminalMaxAge,
-		TombstonesPerHost:  cfg.HostOperationTombstonesPerHost,
-		RemovedHostHorizon: cfg.HostTombstoneRetention,
-	}
+	return hostops.RetentionPolicy{RemovedHostHorizon: cfg.HostTombstoneRetention}
 }
 
 // hostRegistryEntries maps the validated [[hosts]] entries onto the host

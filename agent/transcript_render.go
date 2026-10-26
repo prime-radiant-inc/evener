@@ -1195,7 +1195,7 @@ func writeToolCardLine(b *strings.Builder, status, name string, tc *llm.ToolCall
 	// so oversized valid JSON has RawArguments="" and would otherwise show
 	// intent on reload.
 	if tc.RawArguments == "" && tool.ValidateRawArguments(tc.Arguments) == nil {
-		if intent := toolIntent(tc.Arguments); intent != "" {
+		if intent := schema.ToolIntent(tc.Arguments); intent != "" {
 			fmt.Fprintf(b, " — intent: %s", intent)
 		}
 	}
@@ -1739,29 +1739,6 @@ func indentLines(lines []string) string {
 		b.WriteString("\n")
 	}
 	return b.String()
-}
-
-// toolIntent returns the value of an explicit "intent" argument, or "" if
-// none is present. Intent is never inferred from commands or paths. Falls
-// back to "purpose" — the field's name before the 2026-08-29 rename
-// (7512a736e) — so a transcript recorded before that rename still shows its
-// intent line when read back (issue #709). Spec §Tool Call Condensation.
-func toolIntent(args json.RawMessage) string {
-	m := parseArgs(args)
-	if m == nil {
-		return ""
-	}
-	if v, ok := m["intent"]; ok {
-		if s := scalarString(v); s != "" {
-			return s
-		}
-	}
-	if v, ok := m["purpose"]; ok {
-		if s := scalarString(v); s != "" {
-			return s
-		}
-	}
-	return ""
 }
 
 // parseArgs decodes tool-call arguments into a map, or nil on any error.

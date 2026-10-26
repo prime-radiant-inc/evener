@@ -496,7 +496,7 @@ export {
 export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
 export { isPlainObject, sameJsonValue } from "./plainObject";
-export { approvalWaiting, humanizeState, needsResponseRest } from "./railSessionState";
+export { humanizeState, needsResponseRest } from "./railSessionState";
 export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
@@ -591,6 +591,8 @@ export type {
   SessionActivitySnapshot,
 } from "./sessionActivityStore";
 export { isValidActivityTimestamp, SessionActivityStore } from "./sessionActivityStore";
+export type { AttentionClass, AttentionFacts } from "./sessionAttention";
+export { approvalWaiting, attentionNeedsYou, attentionState, normalizeWireState } from "./sessionAttention";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 export type { SettingsHubGeneration } from "./settingsHubGeneration";
 export { createSettingsHubGeneration } from "./settingsHubGeneration";

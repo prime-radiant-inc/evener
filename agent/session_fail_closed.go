@@ -131,14 +131,7 @@ const (
 // durabilityRetryBackoff is attempt's backoff delay: durabilityRetryDelay,
 // doubling each attempt, capped at durabilityRetryMaxDelay.
 func durabilityRetryBackoff(attempt int) time.Duration {
-	delay := durabilityRetryDelay
-	for range attempt {
-		delay *= 2
-		if delay >= durabilityRetryMaxDelay {
-			return durabilityRetryMaxDelay
-		}
-	}
-	return delay
+	return backoffDelay(attempt, durabilityRetryDelay, durabilityRetryMaxDelay)
 }
 
 // retainedUnsyncedError extracts a *transcript.RetainedUnsyncedError from a

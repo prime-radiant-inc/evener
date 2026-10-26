@@ -8,16 +8,11 @@ package hub
 // long-running work to a worker under the controller-lifetime context, never
 // the RPC's.
 //
-// Boundary seams this slice deliberately leaves to later ones:
+// Seams:
 //
-//   - remnants (S12): the remnant fence is a seam (m.remnantOpen) consulted
-//     exactly where §6 step 2 puts it — past dedup, before any probe or
-//     acquisition — and renders the typed `remnant-open` arm. No remnant store
-//     is built here.
-//   - last-known publication (its own slice): the post-operation refresh routes
-//     its verified facts through m.cfg.lastKnownPublish, a seam that is nil in
-//     production today. The worker's success does not depend on it, and the
-//     residual is recorded where the seam is declared.
+//   - remnants: the remnant fence (m.remnantOpen) is consulted exactly where §6
+//     step 2 puts it — past dedup, before any probe or acquisition — and
+//     renders the typed `remnant-open` arm.
 //   - restart reattach: §6 seam (d) is operation-owned — the worker keeps the
 //     host's gate across the restart's channel drop, reattaches through the
 //     manager's gate-aware `attachUnderGate` primitive (which suppresses
@@ -195,18 +190,10 @@ func (m *hubHostManager) liveHost(name string) (hostreg.Host, bool) {
 	return m.cfg.hosts.Get(name)
 }
 
-// remnantOpen reports the open remnant fencing name, if one does. Remnants are
-// S12's (registry spec §6); this seam is where their fence lands — §6 step 2
-// puts the refusal past dedup and before any probe or acquisition — and it
-// answers "no remnant" until that slice ships a store.
+// remnantOpen reports the open remnant fencing name, if one does. §6 step 2
+// puts the refusal past dedup and before any probe or acquisition.
 func (m *hubHostManager) remnantOpen(name string) string {
-	if m.cfg.remnantFence == nil {
-		return ""
-	}
-	remnantID, ok := m.cfg.remnantFence(name)
-	if !ok {
-		return ""
-	}
+	remnantID, _ := m.openRemnantID(name)
 	return remnantID
 }
 
@@ -1027,7 +1014,7 @@ func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work o
 	if m.cfg.planFacts == nil {
 		return errors.New("the post-operation preflight is not wired")
 	}
-	refreshFacts, err := m.cfg.planFacts(ctx, work.entry)
+	_, err := m.cfg.planFacts(ctx, work.entry)
 	if err != nil {
 		return fmt.Errorf("the post-operation preflight failed: %w", err)
 	}
@@ -1041,14 +1028,6 @@ func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work o
 	probe, err := m.cfg.planProbe(ctx, work.entry, client, work.epoch)
 	if err != nil {
 		return fmt.Errorf("the post-operation running probe failed: %w", err)
-	}
-	// The last-known publication is its own slice's store (registry spec §10);
-	// this seam is where its verified facts land, and the residual is recorded
-	// here rather than answered as if a store existed.
-	if m.cfg.lastKnownPublish != nil {
-		if err := m.cfg.lastKnownPublish(work.entry, probe, refreshFacts); err != nil {
-			return fmt.Errorf("publishing the post-operation last-known state failed: %w", err)
-		}
 	}
 	m.recordProgress(id, fmt.Sprintf("post-operation probe: build %q healthy=%t", probe.Version, probe.RunningHealthy))
 
