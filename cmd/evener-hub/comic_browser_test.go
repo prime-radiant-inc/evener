@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +29,21 @@ import (
 
 // TestComicChatBrowser reads a durable real-daemon turn through the embedded production browser.
 func TestComicChatBrowser(t *testing.T) {
+	comicGuardBrowser(t, "")
+}
+
+// TestComicRemoteNavigationBrowser is a focused diagnostic, not the full Comic gate.
+func TestComicRemoteNavigationBrowser(t *testing.T) {
+	comicGuardBrowser(t, "remote-navigation")
+}
+
+// TestComicRecoveryBrowser qualifies recovery only, not the full Comic gate.
+func TestComicRecoveryBrowser(t *testing.T) {
+	comicGuardBrowser(t, "recovery")
+}
+
+func comicGuardBrowser(t *testing.T, scenario string) {
+	t.Helper()
 	if testing.Short() {
 		t.Fatal("browserguard requires Chrome and real daemons")
 	}
@@ -36,6 +52,14 @@ func TestComicChatBrowser(t *testing.T) {
 	}
 	requireFreshDist(t)
 	fixture := skillGuardSetup(t)
+	launchBinary := filepath.Join(fixture.root, "evener-launch")
+	if scenario == "" || scenario == "recovery" {
+		build := exec.CommandContext(t.Context(), "go", "build", "-o", launchBinary, "./cmd/evener")
+		build.Dir = skillGuardRepoRoot(t)
+		if out, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("build real launch-contract binary: %v\n%s", err, out)
+		}
+	}
 	outside := filepath.Join(fixture.root, "comic-outside-workspace")
 	if err := os.MkdirAll(outside, 0o700); err != nil {
 		t.Fatal(err)
@@ -49,7 +73,21 @@ func TestComicChatBrowser(t *testing.T) {
 	}
 	entry := skillGuardStartHelper(t, fixture, 0)
 	ref := skillGuardSessionRef(entry)
-	authorRoot := skillGuardStartHelper(t, fixture, 1)
+	authorRef := ""
+	if scenario == "" {
+		authorRef = skillGuardSessionRef(skillGuardStartHelper(t, fixture, 1))
+	}
+	var launchMu sync.Mutex
+	var launched []*skillGuardHelper
+	oldCommand := daemonProcessCommand
+	daemonProcessCommand = func(_ string, args, env []string) *exec.Cmd {
+		launchMu.Lock()
+		defer launchMu.Unlock()
+		cmd, helper := skillGuardHelperCommand(t, fixture, 0, fmt.Sprintf("comic-resume-%d", len(launched)+1), args, env)
+		launched = append(launched, helper)
+		return cmd
+	}
+	defer func() { daemonProcessCommand = oldCommand }()
 	literal := "COMIC_READ_SOURCE_3f " + strings.Repeat("Literal *asterisks*, `code`, and a source-offset reading point. ", 24)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -78,7 +116,9 @@ func TestComicChatBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := hubcore.WebConfig{AuthToken: token, HubStateRoot: hubStateRoot, RunDir: fixture.runDir, Past: past, Roster: roster, StateDir: fixture.stateRoot, PastIndexPath: filepath.Join(hubStateRoot, "index.db")}
-	origin := httptest.NewServer(newWebServer(config, nil).Handler())
+	config.Spawner = &HubSpawner{EvenerBinary: launchBinary, RunDir: fixture.runDir, NoUserLayer: true}
+	originWeb := newWebServer(config, nil)
+	origin := httptest.NewServer(originWeb.Handler())
 	defer origin.Close()
 	transport, err := appwire.DialWebSocketWithHeaders(ctx, "ws"+strings.TrimPrefix(origin.URL, "http")+"/rpc", http.DefaultClient, http.Header{"Authorization": {"Bearer " + token}})
 	if err != nil {
@@ -98,6 +138,82 @@ func TestComicChatBrowser(t *testing.T) {
 	web := newWebServer(config, nil)
 	hub := httptest.NewServer(web.Handler())
 	defer hub.Close()
+	checkpointTransport, err := appwire.DialWebSocketWithHeaders(ctx, "ws"+strings.TrimPrefix(hub.URL, "http")+"/rpc", http.DefaultClient, http.Header{"Authorization": {"Bearer " + token}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointClient := appwire.NewClient(checkpointTransport)
+	defer checkpointClient.Close()
+	checkpointClient.Start(ctx)
+	if _, err := checkpointClient.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "comic-checkpoint", Version: "test"}}); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/clear-and-crash-root" {
+			cleared, err := checkpointClient.ThreadClear(r.Context(), appwire.ThreadClearParams{Ref: ref, ExpectedInstanceID: entry.SessionID, ClientMutationID: "comic-clear-for-resume"})
+			var identity *appwire.DaemonIdentity
+			if err == nil {
+				launchMu.Lock()
+				helper := launched[len(launched)-1]
+				launchMu.Unlock()
+				var residents appwire.DaemonListResponse
+				residents, err = checkpointClient.DaemonList(r.Context(), appwire.DaemonListParams{})
+				for _, resident := range residents.Daemons {
+					if resident.Identity.PID == helper.cmd.Process.Pid {
+						captured := resident.Identity
+						identity = &captured
+					}
+				}
+				if err == nil && identity == nil {
+					err = fmt.Errorf("owned resumed process missing from actual daemon list")
+				}
+				if err == nil {
+					err = helper.cmd.Process.Kill()
+				}
+				if err == nil {
+					select {
+					case <-helper.wait():
+					case <-r.Context().Done():
+						err = r.Context().Err()
+					}
+				}
+			}
+			if err == nil {
+				var stopped json.RawMessage
+				err = checkpointClient.Request(r.Context(), appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: ref, ExpectedDaemon: identity}, &stopped)
+			}
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			// Observe the real server's authority and saved projection without
+			// changing either the browser connection or its hydration state.
+			oldState := web.cfg.ResumeLocks.RecoveryState(entry.SessionID)
+			newState := web.cfg.ResumeLocks.RecoveryState(cleared.Thread.ID)
+			t.Logf("recovery owner: same registry=%v origin old=%+v", web.cfg.ResumeLocks == originWeb.cfg.ResumeLocks, originWeb.cfg.ResumeLocks.RecoveryState(entry.SessionID))
+			saved, found, savedErr := pastThreadItemReadResponse(r.Context(), web.cfg, appwire.ThreadReadParams{Ref: ref})
+			t.Logf("after exited acknowledgement: old=%+v new=%+v saved found=%v err=%v resumeRequired=%v foldable=%v", oldState, newState, found, savedErr, saved.Thread.Evener.ResumeRequired, saved.Thread.Evener.ResumeOnlyFoldable)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"cleared": cleared, "exitedDaemon": identity, "checkpointAt": time.Now().UnixMilli(), "oldRecovery": oldState, "newRecovery": newState, "savedFound": found, "savedResumeRequired": saved.Thread.Evener.ResumeRequired, "savedResumeOnlyFoldable": saved.Thread.Evener.ResumeOnlyFoldable})
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/stop-root" {
+			http.NotFound(w, r)
+			return
+		}
+		skillGuardStopHelper(t, 0)
+		if err := roster.RefreshAndWait(r.Context()); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if _, err := past.Rebuild(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		web.navigation.Invalidate(navigationChangeHint{})
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer checkpoint.Close()
 	evidence := filepath.Join(fixture.artifact, "comic")
 	if requested := os.Getenv("COMICGUARD_EVIDENCE_DIR"); requested != "" {
 		evidence = requested
@@ -106,24 +222,26 @@ func TestComicChatBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	input := struct {
-		BaseURL string `json:"baseURL"`
-		Refs    struct {
+		Scenario string `json:"scenario,omitempty"`
+		BaseURL  string `json:"baseURL"`
+		Refs     struct {
 			Live   string `json:"live"`
 			Saved  string `json:"saved,omitempty"`
 			Remote string `json:"remote,omitempty"`
 		} `json:"refs"`
-		EvidenceDir         string   `json:"evidenceDir"`
-		RequirePrivateFonts bool     `json:"requirePrivateFonts"`
-		ExpectedSourceText  string   `json:"expectedSourceText"`
-		HistoryTexts        []string `json:"historyTexts"`
-		ControlPath         string   `json:"controlPath"`
-		RequestLog          string   `json:"requestLog"`
-		AuthorshipRef       string   `json:"authorshipRef"`
-		AuthorshipControl   string   `json:"authorshipControl"`
-		AuthorshipLog       string   `json:"authorshipLog"`
+		EvidenceDir        string   `json:"evidenceDir"`
+		RequireFonts       bool     `json:"requireFonts"`
+		ExpectedSourceText string   `json:"expectedSourceText"`
+		HistoryTexts       []string `json:"historyTexts"`
+		ControlPath        string   `json:"controlPath"`
+		RequestLog         string   `json:"requestLog"`
+		AuthorshipRef      string   `json:"authorshipRef"`
+		AuthorshipControl  string   `json:"authorshipControl"`
+		AuthorshipLog      string   `json:"authorshipLog"`
+		CheckpointURL      string   `json:"checkpointURL"`
 	}{BaseURL: hubedge.AuthURLFor(hub.URL, token), EvidenceDir: evidence, ExpectedSourceText: literal,
-		RequirePrivateFonts: os.Getenv("COMICGUARD_PRIVATE_FONTS") == "1", ControlPath: fixture.control[0], RequestLog: fixture.requestLog[0],
-		AuthorshipRef: skillGuardSessionRef(authorRoot), AuthorshipControl: fixture.control[1], AuthorshipLog: fixture.requestLog[1]}
+		RequireFonts: os.Getenv("EVENER_COMIC_BLOCK_FONTS") != "1", ControlPath: fixture.control[0], RequestLog: fixture.requestLog[0],
+		Scenario: scenario, AuthorshipRef: authorRef, AuthorshipControl: fixture.control[1], AuthorshipLog: fixture.requestLog[1], CheckpointURL: checkpoint.URL}
 	for i := range 75 {
 		text := fmt.Sprintf("COMIC_HISTORY_%02d literal history", i)
 		if i == 27 {
@@ -141,6 +259,11 @@ func TestComicChatBrowser(t *testing.T) {
 	if err := os.WriteFile(inputPath, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := os.Remove(inputPath); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove authentication-bearing Comic fixture: %v", err)
+		}
+	})
 	command := exec.CommandContext(ctx, "node", "scripts/comicguard/run.mjs", "--fixture", inputPath)
 	command.Dir = filepath.Join(skillGuardRepoRoot(t), "cmd", "evener-hub", "frontend")
 	command.Env = os.Environ()
@@ -150,13 +273,28 @@ func TestComicChatBrowser(t *testing.T) {
 		t.Fatalf("Comic Chat browser journey: %v; evidence: %s", err, evidence)
 	}
 	skillGuardStopHelper(t, 0)
-	skillGuardStopHelper(t, 1)
-	count, err := skillGuardCountTranscriptInputs(t, fixture.stateDir[0], literal)
-	if err != nil {
-		t.Fatal(err)
+	if scenario == "remote-navigation" {
+		comicGuardCheckRoster(t, fixture.stateDir[0], evidence)
+		t.Logf("Focused Comic remote navigation only, not the full gate: %s", evidence)
+		return
 	}
-	if count != 1 {
-		t.Fatalf("durable seeded source inputs = %d, want 1", count)
+	if scenario == "" {
+		skillGuardStopHelper(t, 1)
+	}
+	launchMu.Lock()
+	if len(launched) != 2 {
+		t.Errorf("real HubSpawner launches = %d, want 2", len(launched))
+	}
+	for _, helper := range launched {
+		if err := helper.stop(0); err != nil {
+			t.Error(err)
+		}
+	}
+	launchMu.Unlock()
+	comicGuardCheckRecovery(t, fixture.stateDir[0], literal)
+	if scenario == "recovery" {
+		t.Logf("Focused Comic recovery: two real HubSpawner launches, owned helpers stopped; %s", evidence)
+		return
 	}
 	comicGuardCheckProviderFailure(t, fixture.stateDir[0], evidence)
 	comicGuardCheckChildren(t, fixture.stateDir[0], evidence)
@@ -165,6 +303,24 @@ func TestComicChatBrowser(t *testing.T) {
 	comicGuardCheckComposer(t, fixture.stateDir[0], entry.SessionID, evidence)
 	comicGuardCheckInteractions(t, fixture.stateDir[0], entry.SessionID, outside, evidence)
 	t.Logf("Comic Chat real reader evidence: %s", evidence)
+}
+
+func comicGuardCheckRecovery(t *testing.T, stateDir, literal string) {
+	t.Helper()
+	count, err := skillGuardCountTranscriptInputs(t, stateDir, literal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("durable seeded source inputs = %d, want 1", count)
+	}
+	for _, marker := range []string{"COMIC_RECOVERY_before", "COMIC_RECOVERY_after", "COMIC_RESUME_SAME", "COMIC_RESUME_CHANGED"} {
+		count, err := skillGuardCountTranscriptInputs(t, stateDir, marker)
+		if err != nil || count != 1 {
+			t.Fatalf("durable recovered input %s count = %d, want 1: %v", marker, count, err)
+		}
+	}
+	t.Log("Durable recovery: exactly one literal seed and one input each for COMIC_RECOVERY_before, COMIC_RECOVERY_after, COMIC_RESUME_SAME, COMIC_RESUME_CHANGED")
 }
 
 func comicGuardCheckInteractions(t *testing.T, stateDir, sessionID, outside, evidence string) {

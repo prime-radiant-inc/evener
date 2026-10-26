@@ -7,10 +7,18 @@ import {
   chromeProfileEnvironment, chromeProfileIsolationArgs, createBrowserProcessCleanup,
   createChromeProfileDir, findChrome, parseChromeDevToolsAnnouncement, requestBrowserClose,
 } from "../browserGuardProcess.mjs";
-import { connectOnlyPage, navigateTo, evaluate, waitForHttp, devtoolsHttpURL } from "../browserGuardCdp.mjs";
+import { connectBrowser, connectPage, connectOnlyPage, navigateTo, evaluate, waitForHttp, devtoolsHttpURL } from "../browserGuardCdp.mjs";
+
+export function comicScenario(scenario) {
+  if (scenario === undefined || scenario === '') return { focused: false, rosterCount: 102 };
+  if (scenario === 'remote-navigation') return { focused: true, rosterCount: 101 };
+  if (scenario === 'recovery') return { focused: true };
+  throw new Error(`unknown Comic scenario: ${scenario}`);
+}
 
 export async function run(fixturePath) {
   const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));
+  comicScenario(fixture.scenario);
   if (!fixture.baseURL || !fixture.refs?.live || !fixture.evidenceDir || !fixture.expectedSourceText) throw new Error("incomplete real-session fixture");
   mkdirSync(fixture.evidenceDir, { recursive: true });
   const profileDir = createChromeProfileDir("comicguard-");
@@ -44,7 +52,7 @@ export async function run(fixturePath) {
     page = await connectOnlyPage(endpoint);
     await page.send("Page.enable");
     await page.send("Runtime.enable");
-    await journey(page, fixture);
+    await journey(page, fixture, endpoint);
   } finally { await stop(); }
 }
 
@@ -65,7 +73,14 @@ async function until(label, read, accept = Boolean) {
   throw new Error(`${label}: ${JSON.stringify(value)}`);
 }
 
-async function reloadPage(page) {
+async function recordOwnerTrace(page, evidenceDir, stage) {
+  const observation = await evaluate(page.send, '(() => {const trace=window.__comicOwnerTrace;if(!trace)return null;const observation={sequence:trace.sequence,dropped:trace.dropped,events:trace.events};trace.events=[];return observation;})()');
+  if (observation) writeFileSync(`${evidenceDir}/owner-${stage}-${Date.now()}.json`, JSON.stringify(observation, null, 2));
+  return observation;
+}
+
+async function reloadPage(page, evidenceDir) {
+  if (evidenceDir) await recordOwnerTrace(page, evidenceDir, 'before-reload');
   const before = await evaluate(page.send, 'performance.timeOrigin');
   await page.send('Page.reload');
   await until('new document after reload', async () => {
@@ -89,7 +104,8 @@ function repliesSince(trace, start, accept) {
   return replies;
 }
 
-async function journey(page, fixture) {
+async function journey(page, fixture, endpoint) {
+  const { focused } = comicScenario(fixture.scenario);
   const command = (command, phase = "") => appendFileSync(fixture.controlPath, `${JSON.stringify({ command, phase })}\n`);
   const complete = async (text, failed = false) => {
     command("background-start-turn", text);
@@ -102,12 +118,15 @@ async function journey(page, fixture) {
   };
   command("background-mode");
   command("background-role", "history");
-  for (const text of fixture.historyTexts) await complete(text);
+  if (!focused) for (const text of fixture.historyTexts) await complete(text);
   await complete(fixture.expectedSourceText);
+  let failedTurn;
+  if (!focused) {
   command("background-role", "precontent-error");
-  const failedTurn = await complete("COMIC_PROVIDER_FAILURE", true);
+  failedTurn = await complete("COMIC_PROVIDER_FAILURE", true);
   command("background-role", "history");
   writeFileSync(`${fixture.evidenceDir}/failed-turn.json`, JSON.stringify(failedTurn, null, 2));
+  }
 
   const metrics = [];
   const requests = new Map();
@@ -119,16 +138,22 @@ async function journey(page, fixture) {
   const incoming = [];
   const outgoing = [];
   const wireTrace = [];
+  const anonymousResponses = [];
   let canonicalFailure;
   const paused = [];
-  let holdFonts = fixture.requirePrivateFonts;
+  let holdFonts = fixture.requireFonts;
   await page.send("Network.enable");
   await page.send("DOM.enable");
   await page.send("CSS.enable");
   page.ws.addEventListener("message", event => {
     const message = JSON.parse(event.data);
-    if (["Network.webSocketFrameSent", "Network.webSocketFrameReceived", "Network.webSocketClosed"].includes(message.method)) {
-      wireTrace.push({ at: Date.now(), event: message.method, connection: message.params.requestId, frame: message.params.response?.payloadData });
+    if (message.method === 'Network.responseReceived' && message.params.type === 'Document' && new URL(message.params.response.url).pathname === '/comic') {
+      anonymousResponses.push({status:message.params.response.status});
+    }
+    if (["Network.webSocketCreated", "Network.webSocketFrameSent", "Network.webSocketFrameReceived", "Network.webSocketClosed"].includes(message.method)) {
+      const row = { at: Date.now(), event: message.method, connection: message.params.requestId, frame: message.params.response?.payloadData };
+      wireTrace.push(row);
+      appendFileSync(`${fixture.evidenceDir}/wire.jsonl`, `${JSON.stringify(row)}\n`);
     }
     if (message.method === "Network.webSocketClosed") socketsClosed++;
     if (message.method === "Fetch.requestPaused") {
@@ -168,6 +193,28 @@ async function journey(page, fixture) {
       constructor(...args) {
         super(...args); window.__comicSockets.push(this);
         this.addEventListener('message', event => {
+          if (this.comicResumeRequest && JSON.parse(event.data).id === this.comicResumeRequest.id) {
+            event.stopImmediatePropagation();
+            const hold = window.__comicResumeHold;
+            const data = event.data;
+            hold.responseBytes = data;
+            hold.heldAt = Date.now();
+            window.__comicReleaseResume = () => {
+              if (hold.releaseCount !== 0) throw Error('resume response already released');
+              this.comicResumeRequest = undefined;
+              hold.releaseCount++;
+              hold.releasedBytes = data;
+              hold.releasedAt = Date.now();
+              this.dispatchEvent(new MessageEvent('message', {data, origin:event.origin, lastEventId:event.lastEventId}));
+            };
+            return;
+          }
+          if (this.comicRecoveryRequest && JSON.parse(event.data).id === this.comicRecoveryRequest.id) {
+            event.stopImmediatePropagation();
+            window.__comicRecoveryIntercepted = {request:this.comicRecoveryRequest,response:JSON.parse(event.data)};
+            window.__comicCloseRecovery = () => this.close(4000, 'comic accepted before acknowledgement');
+            return;
+          }
           if (this.comicHeldId !== undefined && JSON.parse(event.data).id === this.comicHeldId) {
             event.stopImmediatePropagation();
             const data = event.data;
@@ -182,6 +229,25 @@ async function journey(page, fixture) {
           return;
         }
         const request = JSON.parse(data);
+        const resumeHold = window.__comicResumeHold;
+        if (resumeHold && request.method === 'turn/start') {
+          resumeHold.starts.push({socket:window.__comicSockets.indexOf(this), beforeRelease:resumeHold.releaseCount === 0, bytes:data});
+        }
+        if (resumeHold && !resumeHold.requestBytes && request.method === 'thread/resume' && request.params?.ref === resumeHold.ref) {
+          this.comicResumeRequest = request;
+          resumeHold.requestBytes = data;
+          resumeHold.socket = window.__comicSockets.indexOf(this);
+        }
+        if (request.method === 'turn/start' && window.__comicRecoveryBoundary) {
+          const boundary = window.__comicRecoveryBoundary;
+          window.__comicRecoveryBoundary = undefined;
+          if (boundary === 'before') {
+            window.__comicRecoveryIntercepted = {request};
+            window.__comicCloseRecovery = () => this.close(4000, 'comic before delivery');
+            return;
+          }
+          this.comicRecoveryRequest = request;
+        }
         if (request.method === 'evener/sandbox/escalation/resolve') {
           if (window.__comicFailApproval) {
             window.__comicFailApproval = false;
@@ -200,9 +266,13 @@ async function journey(page, fixture) {
       }
     };
   })()` });
-  if (fixture.requirePrivateFonts) await page.send("Fetch.enable", { patterns: [{ urlPattern: "*/webassets/comic-local/*" }] });
-  else await page.send("Network.setBlockedURLs", { urls: ["*/webassets/comic-local/*"] });
+  if (fixture.requireFonts) await page.send("Fetch.enable", { patterns: [{ urlPattern: "*/webassets/comic-fonts/*" }] });
+  else await page.send("Network.setBlockedURLs", { urls: ["*/webassets/comic-fonts/*"] });
   await page.send("Emulation.setDeviceMetricsOverride", { width: 1360, height: 900, deviceScaleFactor: 1, mobile: false });
+  await navigateTo(page, new URL('/comic', fixture.baseURL).href);
+  await until('unauthenticated Comic rejection', () => anonymousResponses.at(-1), response => response?.status === 401);
+  if (await evaluate(page.send, '!!document.querySelector("[data-comic-route]")')) throw Error('unauthenticated Comic mounted');
+  writeFileSync(`${fixture.evidenceDir}/authentication.json`, JSON.stringify({anonymous:anonymousResponses.at(-1),mounted:false},null,2));
   await navigateTo(page, fixture.baseURL);
   const base = new URL(fixture.baseURL).origin;
   const route = `${base}/comic/s/${encodeURIComponent(fixture.refs.live)}`;
@@ -245,6 +315,7 @@ async function journey(page, fixture) {
     return value;
   };
   await until("initial real comic", () => read(), value => value?.parts.some(part => fixture.expectedSourceText.includes(part.text) && part.text.length > 100));
+  if (!focused) {
   await record("initial-end", null, true);
   // Scroll a literal source point into view as a reader would. No model/store injection.
   const target = await evaluateHere(`(() => {
@@ -275,11 +346,11 @@ async function journey(page, fixture) {
   // A pre-content failure is NOT itemless: the runtime records both user input
   // and a positioned TURN_FAILURE. Keep that distinction, never fake an empty turn.
   await record("provider-failure-away", point);
-  if (fixture.requirePrivateFonts) {
-    await until("both personal font requests", async () => paused.length, count => count === 2);
+  if (fixture.requireFonts) {
+    await until("bundled regular font request", async () => paused.length, count => count === 1);
     holdFonts = false;
     await Promise.all(paused.map(requestId => page.send("Fetch.continueRequest", { requestId })));
-    await until("personal fonts loaded", () => read(), value => value?.font === "ready");
+    await until("bundled font loaded", () => read(), value => value?.font === "ready");
     await record("away-after-late-font", point);
   } else await until("explicit failed font state", () => read(), value => value?.font === "unavailable");
 
@@ -301,6 +372,10 @@ async function journey(page, fixture) {
         window.__comicClickListener = event => window.__comicClickEvents.push({type:event.type, trusted:event.isTrusted, pointerType:event.pointerType, scrollTop:port.scrollTop});
         port.addEventListener('pointerdown', window.__comicClickListener);
         port.addEventListener('pointerup', window.__comicClickListener);
+        window.__comicClickDiagnostics = [];
+        window.__comicClickDiagnostic = event => window.__comicClickDiagnostics.push({type:event.type, scrollTop:port.scrollTop, collapsed:document.getSelection()?.isCollapsed, selectionNode:document.getSelection()?.anchorNode?.nodeName, saved:sessionStorage.getItem('evener:comic:position:' + document.querySelector('main')?.dataset.sessionRef)});
+        document.addEventListener('selectionchange', window.__comicClickDiagnostic);
+        port.addEventListener('scroll', window.__comicClickDiagnostic);
         return {x, y, scrollTop:port.scrollTop};
       }
     }
@@ -309,6 +384,11 @@ async function journey(page, fixture) {
   await page.send("Input.dispatchMouseEvent", { type: "mousePressed", x: clickTarget.x, y: clickTarget.y, button: "left", buttons: 1, clickCount: 1 });
   await page.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: clickTarget.x, y: clickTarget.y, button: "left", buttons: 0, clickCount: 1 });
   await evaluateHere(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+  writeFileSync(`${fixture.evidenceDir}/native-click-diagnostics.json`, JSON.stringify(await evaluateHere(`(() => {
+    document.removeEventListener('selectionchange', window.__comicClickDiagnostic);
+    document.querySelector('[data-comic-scroll]').firstElementChild.removeEventListener('scroll', window.__comicClickDiagnostic);
+    return {target:${JSON.stringify(clickTarget)}, events:window.__comicClickEvents, diagnostics:window.__comicClickDiagnostics};
+  })()`), null, 2));
   const clicked = await record("native-click-without-scroll", point);
   const clickEvents = await evaluateHere(`(() => {
     const port = document.querySelector('[data-comic-scroll]').firstElementChild;
@@ -341,13 +421,13 @@ async function journey(page, fixture) {
   }
   await select("View", "plain");
   await record("away-plain", point);
-  if (fixture.requirePrivateFonts) {
+  if (fixture.requireFonts) {
     const doc = await page.send("DOM.getDocument");
     const regular = await page.send("DOM.querySelector", { nodeId: doc.result.root.nodeId, selector: '[data-comic-entry] [data-comic-text]' });
     const bold = await page.send("DOM.querySelector", { nodeId: doc.result.root.nodeId, selector: '[data-comic-entry] strong' });
     const fonts = await Promise.all([regular, bold].map(node => page.send("CSS.getPlatformFontsForNode", { nodeId: node.result.nodeId })));
     writeFileSync(`${fixture.evidenceDir}/fonts.json`, JSON.stringify(fonts.map(face => face.result), null, 2));
-    if (!fonts.every(face => face.result.fonts.some(font => font.isCustomFont && font.glyphCount > 0 && /Comic/i.test(font.familyName)))) throw new Error(`Comic Sans not actually rendering both faces: ${JSON.stringify(fonts)}`);
+    if (!fonts.every(face => face.result.fonts.some(font => font.isCustomFont && font.glyphCount > 0 && /Comic/i.test(font.familyName)))) throw new Error(`Comic Sans not actually rendering regular and synthesized-bold text: ${JSON.stringify(fonts)}`);
   }
   await select("View", "comic");
   await record("away-comic", point);
@@ -396,6 +476,10 @@ async function journey(page, fixture) {
   const captured = await until("later page anchor saved", () => read(), value => value?.saved?.entryId === olderPoint);
   point = { ...captured.saved, text: fixture.historyTexts[27] };
   await record("later-page-away", point);
+  for(const width of [320,760,1360]) {
+    await page.send('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});
+    await record(`later-page-width-${width}`,point);
+  }
   const stream = async (label, anchor) => {
     const before = incoming.length;
     command("background-role", "target");
@@ -414,7 +498,7 @@ async function journey(page, fixture) {
   await complete("COMIC_LIVE_APPEND_away");
   await record("away-live-append", point);
   const beforeReload = wireTrace.length;
-  await reloadPage(page);
+  await reloadPage(page, fixture.evidenceDir);
   const freshRoot = await until('fresh root history after reload', () => repliesSince(wireTrace, beforeReload,
     request => request.method === 'thread/read' && request.params?.ref === fixture.refs.live && request.params.includeTurns === true)
     .find(reply => reply.response.result?.thread?.turns?.length > 0));
@@ -441,21 +525,32 @@ async function journey(page, fixture) {
   }
   writeFileSync(`${fixture.evidenceDir}/root-reads.json`, JSON.stringify({ reads: outgoing.filter(frame => frame.method === 'thread/read'), maxPages, pageReads, wireTrace }, null, 2));
   if (maxPages !== 1 || pageReads.length < 6) throw new Error(`shared sequential paging not exercised: ${JSON.stringify({maxPages, pageReads})}`);
+  }
   try {
-    await childJourney(page, fixture, { command, complete, incoming, outgoing, screenshot });
+    if (!focused) await childJourney(page, fixture, { command, complete, incoming, outgoing, screenshot });
+    if (fixture.scenario !== 'recovery') {
     await rosterJourney(page, fixture, { command, complete, incoming, outgoing, screenshot, wireTrace });
-    await remoteJourney(page, fixture, { incoming, outgoing, screenshot });
+    await remoteJourney(page, fixture, { incoming, wireTrace, screenshot });
+    }
+    if (!focused) {
     await authorshipJourney(page, fixture, { incoming, outgoing, screenshot });
     await composerJourney(page, fixture, { command, wireTrace, screenshot });
     await interactionJourney(page, fixture, { command, wireTrace, screenshot });
+    }
+    if (!focused || fixture.scenario === 'recovery') {
+    await sendRecoveryJourney(page, fixture, { command, wireTrace, screenshot });
+    await resumeJourney(page, fixture, {wireTrace,screenshot,endpoint});
+    }
   }
   catch (error) {
+    await recordOwnerTrace(page, fixture.evidenceDir, 'failure');
     await screenshot('child-failure');
     writeFileSync(`${fixture.evidenceDir}/failure-wire.json`, JSON.stringify(wireTrace, null, 2));
     writeFileSync(`${fixture.evidenceDir}/child-failure.json`, JSON.stringify({error:String(error), dom:await evaluateHere('document.querySelector("main")?.outerHTML'), requests:outgoing.filter(frame => frame.method === 'thread/read'), frames:incoming.map(frame => JSON.parse(frame)).filter(frame => frame.method || frame.result?.context || frame.result?.thread || frame.result?.turns)}, null, 2));
     throw error;
   }
-  console.log(`Comic responsive reader: ${metrics.length} measured scenarios, ${pageReads.length} history pages, max concurrent ${maxPages}, personal fonts ${fixture.requirePrivateFonts}; ${fixture.evidenceDir}`);
+  if (focused) console.log(`Focused Comic ${fixture.scenario} only, not the full gate; ${fixture.evidenceDir}`);
+  else console.log(`Comic responsive reader: ${metrics.length} measured scenarios, ${pageReads.length} history pages, max concurrent ${maxPages}, bundled font ${fixture.requireFonts}; ${fixture.evidenceDir}`);
 }
 
 export function verifyComposerReceipts(trace, ref) {
@@ -522,6 +617,256 @@ export function verifyApprovalRecovery(recovery, failed) {
   if (recovery.wireTrace.some(row => row.event === 'Network.webSocketFrameSent' && JSON.parse(row.frame).method === failed.method)) throw Error('dropped approval reached the wire before explicit retry');
 }
 
+async function sendRecoveryJourney(page, fixture, {command,wireTrace,screenshot}) {
+  const evaluateHere=expression=>evaluate(page.send,expression);
+  const records=()=>readFileSync(fixture.requestLog,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  command('background-role','history');
+  command('background-phase','comic-recovery-ready');
+  await until('recovery provider configured',()=>records().some(row=>row.event==='background-phase-ack'&&row.phase==='comic-recovery-ready'));
+  await navigateTo(page,new URL('/comic/s/'+encodeURIComponent(fixture.refs.live),fixture.baseURL).href);
+  const editor='[role="textbox"][aria-label="Message"]';
+  const text=()=>evaluateHere(`document.querySelector(${JSON.stringify(editor)})?.textContent`);
+  const replace=async value=>{
+    await until('recovery editor focus',()=>evaluateHere(`(() => {const e=document.querySelector(${JSON.stringify(editor)});if(!e||e.closest('[inert]'))return false;e.focus();return document.activeElement===e;})()`));
+    await page.send('Input.dispatchKeyEvent',{type:'keyDown',key:'a',code:'KeyA',windowsVirtualKeyCode:65,modifiers:2});
+    await page.send('Input.dispatchKeyEvent',{type:'keyUp',key:'a',code:'KeyA',windowsVirtualKeyCode:65,modifiers:2});
+    await page.send('Input.insertText',{text:value});
+    await until('recovery exact editor text',text,current=>current===value);
+  };
+  const evidence=[];
+  for(const boundary of ['before','after']) {
+    const start=wireTrace.length;
+    const marker='COMIC_RECOVERY_'+boundary;
+    const newer='COMIC_NEWER_DRAFT_'+boundary;
+    await replace(marker);
+    await evaluateHere(`window.__comicRecoveryBoundary=${JSON.stringify(boundary)};window.__comicRecoveryIntercepted=undefined`);
+    await until('recovery submit',()=>evaluateHere(`(() => {const b=document.querySelector('[data-testid="composer-submit"]');if(!b||b.disabled)return false;b.click();return true;})()`));
+    const intercepted=await until('actual recovery boundary',()=>evaluateHere('window.__comicRecoveryIntercepted'));
+    if(boundary==='after' && intercepted.response?.result?.receipt?.disposition!=='applied') throw Error('missing actual pre-loss acceptance');
+    await replace(newer);
+    await evaluateHere('window.__comicCloseRecovery()');
+    await until('recovery native socket closed',()=>wireTrace.slice(start).some(row=>row.event==='Network.webSocketClosed'));
+    const reloadStart=wireTrace.length;
+    await reloadPage(page, fixture.evidenceDir);
+    await until('newer draft survives reload',text,value=>value===newer);
+    const pairs=await until('correlated recovery receipt',()=>repliesSince(wireTrace,start,request=>request.method==='turn/start'&&request.params?.clientMutationId===intercepted.request.params.clientMutationId),pairs=>pairs.some(pair=>pair.response.result?.receipt?.disposition==='applied'));
+    const canonical=await until('post-reload authoritative accepted input',()=>repliesSince(wireTrace,reloadStart,request=>request.method==='thread/read'&&request.params.ref===fixture.refs.live).flatMap(pair=>pair.response.result?.thread?.turns??[]).flatMap(turn=>turn.items??[]).find(item=>item.type==='userMessage'&&item.text===marker&&item.clientMutationId===intercepted.request.params.clientMutationId));
+    await until('real recovered provider input',()=>records().some(row=>row.event==='request'&&row.kind==='turn'&&row.request?.messages?.some(message=>message.role==='user'&&message.content?.some(part=>part.text===marker))));
+    for(const client of ['s','comic/s']) {
+      await navigateTo(page,new URL('/'+client+'/'+encodeURIComponent(fixture.refs.live),fixture.baseURL).href);
+      await until('newer draft survives '+client,text,value=>value===newer);
+    }
+    const attempts=wireTrace.slice(start).filter(row=>row.event==='Network.webSocketFrameSent').map(row=>JSON.parse(row.frame)).filter(request=>request.method==='turn/start'&&request.params.input?.some(part=>part.text===marker));
+    if(attempts.length<1||attempts.length>2||attempts.some(request=>request.params.clientMutationId!==intercepted.request.params.clientMutationId)||pairs.filter(pair=>pair.response.result?.receipt?.disposition==='applied').length!==1||pairs.some(pair=>pair.response.error))throw Error('recovery did not retain one accepted mutation '+JSON.stringify({attempts,pairs}));
+    evidence.push({boundary,marker,newer,intercepted,canonical,attempts,pairs,wireTrace:wireTrace.slice(start)});
+    writeFileSync(`${fixture.evidenceDir}/send-recovery.json`,JSON.stringify(evidence,null,2));
+    await screenshot('recovery-'+boundary);
+  }
+  console.log('Comic send recovery: native loss before delivery and after acceptance, reload/reconnect, one mutation identity and newer draft through both clients');
+}
+
+async function pendingViewportJourney(page, fixture, kind, selector, screenshot) {
+  const evaluateHere = expression => evaluate(page.send, expression);
+  const observations = [];
+  await page.send('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'reduce'}]});
+  await page.send('Emulation.setSafeAreaInsetsOverride', {insets:{bottom:34}});
+  try {
+    for (const width of [1360,760,600,390,320]) {
+      await page.send('Emulation.setDeviceMetricsOverride', {width,height:width<=390?620:900,deviceScaleFactor:1,mobile:width<=760});
+      await evaluateHere('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      const state = await evaluateHere(`(() => {
+        const root=document.querySelector(${JSON.stringify(selector)});
+        const rect=node=>{const r=node.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,bottom:r.bottom,right:r.right};};
+        const probe=document.createElement('div');probe.style.paddingBottom='env(safe-area-inset-bottom)';document.body.append(probe);
+        const inset=parseFloat(getComputedStyle(probe).paddingBottom);probe.remove();
+        return {width:innerWidth,height:innerHeight,inset,reduced:matchMedia('(prefers-reduced-motion: reduce)').matches,ref:document.querySelector('main')?.dataset.sessionRef,overflow:document.documentElement.scrollWidth-innerWidth,root:root&&rect(root),text:root?.textContent,editor:document.querySelector('[role="textbox"][aria-label="Message"]')?.textContent,controls:[...(root?.querySelectorAll('button,input')??[])].map(node=>({tag:node.tagName,type:node.type,disabled:node.disabled,checked:node.checked,value:node.value,rect:rect(node)}))};
+      })()`);
+      observations.push(state);
+      writeFileSync(`${fixture.evidenceDir}/interactions-${kind}-viewports.json`, JSON.stringify(observations,null,2));
+      if (!state.root || state.width!==width || state.inset!==34 || !state.reduced || state.ref!==fixture.refs.live || state.overflow>1 || !state.controls.length || state.controls.some(control=>control.rect.right>width+1 || control.rect.x< -1)) throw Error('pending '+kind+' geometry '+JSON.stringify(state));
+      const answers=value=>value.controls.map(({type,checked,value})=>({type,checked,value}));
+      if(state.text!==observations[0].text||JSON.stringify(answers(state))!==JSON.stringify(answers(observations[0])))throw Error('pending '+kind+' source or answers changed on reflow');
+      // Real keyboard navigation must keep an enabled answering control reachable.
+      await evaluateHere(`document.querySelector(${JSON.stringify(selector+' button')})?.focus()`);
+      const focus = await evaluateHere(`(() => {const node=document.activeElement;const r=node?.getBoundingClientRect();return {inside:!!node?.closest(${JSON.stringify(selector)}),disabled:node?.disabled,bottom:r?.bottom,top:r?.top};})()`);
+      if (!focus.inside || focus.disabled || focus.top<0 || focus.bottom>state.height-state.inset) throw Error('pending '+kind+' keyboard/safe-area '+JSON.stringify({state,focus}));
+      state.focus=focus;
+      state.reachable=[];
+      for(let step=0;step<state.controls.length+1;step++) {
+        const reachable=await evaluateHere(`(() => {const root=document.querySelector(${JSON.stringify(selector)});const node=document.activeElement;const controls=[...root.querySelectorAll('button,input')];const index=controls.indexOf(node);const r=node.getBoundingClientRect();const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return {index,type:node.type,top:r.top,bottom:r.bottom,left:r.left,right:r.right,hit:node===hit||node.contains(hit)||!!node.closest('label')?.contains(hit),last:node===[...root.querySelectorAll('button')].at(-1)};})()`);
+        if(reachable.index<0||!reachable.hit||reachable.top<0||reachable.bottom>state.height-state.inset||reachable.left<0||reachable.right>width)throw Error('pending '+kind+' unreachable keyboard control '+JSON.stringify({state,reachable}));
+        state.reachable.push(reachable);
+        if(reachable.last)break;
+        await page.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
+        await page.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
+      }
+      if(!state.reachable.at(-1)?.last || (kind.includes('question')&&!state.reachable.some(control=>control.type==='text')))throw Error('pending '+kind+' note/footer not reached '+JSON.stringify(state));
+      const after=await evaluateHere(`(() => {const root=document.querySelector(${JSON.stringify(selector)});return {text:root.textContent,controls:[...root.querySelectorAll('button,input')].map(({type,checked,value})=>({type,checked,value}))};})()`);
+      if(after.text!==state.text||JSON.stringify(after.controls)!==JSON.stringify(answers(state)))throw Error('pending '+kind+' traversal changed source or answers');
+      writeFileSync(`${fixture.evidenceDir}/interactions-${kind}-viewports.json`, JSON.stringify(observations,null,2));
+      await screenshot(`interactions-${kind}-${width}`);
+    }
+  } finally {
+    await page.send('Emulation.setSafeAreaInsetsOverride', {insets:{bottom:0}});
+    await page.send('Emulation.setEmulatedMedia', {features:[]});
+    await page.send('Emulation.setDeviceMetricsOverride', {width:1360,height:900,deviceScaleFactor:1,mobile:false});
+  }
+}
+
+async function inspectActionFonts(page,fixture,name,selectors) {
+  if(!fixture.requireFonts)return;
+  const document=await page.send('DOM.getDocument');
+  const observations=[];
+  for(const selector of selectors) {
+    const nodes=await page.send('DOM.querySelectorAll',{nodeId:document.result.root.nodeId,selector:selector+', '+selector+' *'});
+    const fonts=[];
+    for(const nodeId of nodes.result.nodeIds) {
+      const result=await page.send('CSS.getPlatformFontsForNode',{nodeId});
+      fonts.push(...result.result.fonts.filter(font=>font.glyphCount>0));
+    }
+    observations.push({selector,fonts});
+  }
+  writeFileSync(`${fixture.evidenceDir}/${name}-fonts.json`,JSON.stringify(observations,null,2));
+  if(observations.some(observation=>!observation.fonts.length||observation.fonts.some(font=>!font.isCustomFont||!/Comic/.test(font.familyName))))throw Error(name+' action text not rendered in Comic Sans '+JSON.stringify(observations));
+}
+
+export function verifyRecoveryRetirement({trace,oldRef,connection,acknowledgedAt,backIndex,documentOrigin,currentDocumentOrigin}) {
+  const retired=repliesSince(trace.slice(0,backIndex),0,request=>request.method==='thread/unsubscribe'&&request.params?.ref===oldRef).find(pair=>pair.connection===connection&&!pair.response.error);
+  const fenced=repliesSince(trace,backIndex,request=>request.method==='thread/read'&&request.params?.ref===oldRef&&request.params.includeTurns===true).find(pair=>!pair.response.error&&pair.response.result?.thread?.evener?.resumeRequired===true&&pair.response.result.thread.evener.resumeOnlyFoldable!==true);
+  const requestRow=pair=>trace.find(row=>row.event==='Network.webSocketFrameSent'&&row.connection===pair?.connection&&JSON.parse(row.frame).id===pair.request.id);
+  const retiredRequest=requestRow(retired),freshRequest=requestRow(fenced);
+  if(!retiredRequest||retiredRequest.at<acknowledgedAt||!freshRequest||freshRequest.at<acknowledgedAt||fenced.connection!==connection||documentOrigin!==currentDocumentOrigin||trace.some(row=>row.event==='Network.webSocketCreated'))throw Error('invalid completed retirement and fresh recovery read');
+  return {retired,retiredRequest,fenced,freshRequest};
+}
+
+export function verifyResumeAdmission({trace,oldRef,destination,hold,ui,releaseIndex,afterUI}) {
+  const sent=method=>trace.filter(row=>row.event==='Network.webSocketFrameSent'&&JSON.parse(row.frame).method===method);
+  const resumes=repliesSince(trace,0,request=>request.method==='thread/resume');
+  const resumed=resumes[0];
+  const thread=resumed?.response.result?.thread;
+  if(sent('thread/resume').length!==1||resumes.length!==1||resumed.response.error||resumed.request.params.ref!==oldRef||thread?.evener.ref!==destination||destination===oldRef||!thread.id)throw Error('unexpected changed identity response');
+  // Explicit resume intentionally reconnects. Only the pre-Send retirement
+  // proof belongs to the original socket, not this request and its reply.
+  const connection=resumed.connection;
+  const responseRow=trace.find(row=>row.event==='Network.webSocketFrameReceived'&&row.connection===connection&&JSON.parse(row.frame).id===resumed.request.id);
+  if(!hold||!Number.isInteger(hold.socket)||hold.socket<0||hold.requestBytes!==sent('thread/resume')[0].frame||hold.responseBytes!==responseRow?.frame)throw Error('resume hold did not capture authentic native bytes');
+  if(ui?.ref!==oldRef||ui.beforeText!=='COMIC_RESUME_CHANGED'||ui.text!==''||ui.disabled!==true)throw Error('held resume lacks the observed post-enqueue editor transition');
+  const starts=sent('turn/start');
+  if(releaseIndex===undefined) {
+    if(hold.releaseCount!==0||hold.starts.length!==0||starts.length!==0)throw Error('premature start or response delivery while resume held');
+    return {resumed};
+  }
+  const nativeStart=hold.starts[0];
+  if(hold.releaseCount!==1||hold.releasedBytes!==hold.responseBytes||hold.starts.length!==1||nativeStart.beforeRelease||nativeStart.socket!==hold.socket||starts.length!==1||trace.indexOf(starts[0])<releaseIndex||nativeStart.bytes!==starts[0].frame)throw Error('resume release did not precede exactly one native start');
+  const mutations=repliesSince(trace,0,request=>request.method==='turn/start');
+  const changed=mutations[0];
+  const params=changed?.request.params,receipt=changed?.response.result?.receipt;
+  const instance=thread.evener.instanceId??thread.id;
+  if(mutations.length!==1||changed.connection!==connection||changed.response.error||params.ref!==destination||params.expectedInstanceId!==instance||!params.clientMutationId||receipt?.clientMutationId!==params.clientMutationId||receipt.disposition!=='applied'||receipt.instanceId!==instance||receipt.threadId!==thread.id||JSON.stringify(params.input)!==JSON.stringify([{type:'text',text:'COMIC_RESUME_CHANGED'}]))throw Error('changed resume mutation lacks exact input, instance fence or correlated applied receipt');
+  if(afterUI?.ref!==destination||afterUI.text!=='COMIC_NEWER_DESTINATION_DRAFT')throw Error('resume handoff lost route or newer draft');
+  return {resumed,changed};
+}
+
+async function resumeJourney(page,fixture,{wireTrace,screenshot,endpoint}) {
+  const start=wireTrace.length;
+  const stopped=await fetch(fixture.checkpointURL+'/stop-root',{method:'POST'});
+  if(!stopped.ok)throw Error('real root shutdown failed: '+await stopped.text());
+  await navigateTo(page,new URL('/comic/s/'+encodeURIComponent(fixture.refs.live),fixture.baseURL).href);
+  const evaluateHere=expression=>evaluate(page.send,expression);
+  await until('saved root editable',()=>evaluateHere(`(() => {const e=document.querySelector('[role="textbox"][aria-label="Message"]');if(!e)return false;e.focus();return document.activeElement===e;})()`));
+  if(repliesSince(wireTrace,start,request=>request.method==='thread/resume'||request.method==='turn/start').length)throw Error('opening saved root launched a daemon');
+  await page.send('Input.dispatchKeyEvent',{type:'keyDown',key:'a',code:'KeyA',windowsVirtualKeyCode:65,modifiers:2});
+  await page.send('Input.dispatchKeyEvent',{type:'keyUp',key:'a',code:'KeyA',windowsVirtualKeyCode:65,modifiers:2});
+  await page.send('Input.insertText',{text:'COMIC_RESUME_SAME'});
+  await until('saved root Send resumes',()=>evaluateHere(`(() => {const b=document.querySelector('[data-testid="composer-submit"]');if(!b||b.disabled)return false;b.click();return true;})()`));
+  const applied=await until('resumed input receipt',()=>repliesSince(wireTrace,start,request=>request.method==='turn/start'&&request.params.input?.some(part=>part.text==='COMIC_RESUME_SAME')).find(pair=>pair.response.result?.receipt?.disposition==='applied'));
+  if(applied.request.params.ref!==fixture.refs.live||'local:'+applied.response.result.receipt.instanceId!==fixture.refs.live)throw Error('same-identity resume changed ref '+JSON.stringify(applied));
+  await until('resumed actual provider reply',()=>evaluateHere(`document.querySelector('[data-comic-scroll]')?.textContent.includes('skillguard turn complete')`));
+  writeFileSync(`${fixture.evidenceDir}/resume.json`,JSON.stringify({applied,wireTrace:wireTrace.slice(start)},null,2));
+  await screenshot('resumed-root');
+  const replaceDraft=async (target,text)=>{
+    await target.send('Page.bringToFront');
+    await until('resume composer focus',()=>evaluate(target.send,`(() => {const e=document.querySelector('[role="textbox"][aria-label="Message"]');if(!e)return false;e.focus();return document.activeElement===e;})()`));
+    await target.send('Input.dispatchKeyEvent',{type:'keyDown',key:'a',code:'KeyA',windowsVirtualKeyCode:65,modifiers:2});
+    await target.send('Input.dispatchKeyEvent',{type:'keyUp',key:'a',code:'KeyA',windowsVirtualKeyCode:65,modifiers:2});
+    await target.send('Input.insertText',{text});
+    await until('resume draft stored',()=>evaluate(target.send,`document.querySelector('[role="textbox"][aria-label="Message"]')?.textContent`),value=>value===text);
+  };
+  await replaceDraft(page,'COMIC_RESUME_CHANGED');
+  const clearResponse=await fetch(fixture.checkpointURL+'/clear-and-crash-root',{method:'POST'});
+  if(!clearResponse.ok)throw Error('real exited-process recovery acknowledgement: '+await clearResponse.text());
+  const preparation=await clearResponse.json();
+  const acknowledgedAt=Date.now();
+  const cleared=preparation.cleared;
+  const destination='local:'+cleared.thread.id;
+  if(destination===fixture.refs.live||cleared.ref!==fixture.refs.live)throw Error('clear did not retain original alias with new identity '+JSON.stringify(cleared));
+  writeFileSync(`${fixture.evidenceDir}/resume-cleared.json`,JSON.stringify(preparation,null,2));
+  // Acknowledgement is out of band. Reopen through ordinary UI instead of
+  // inventing a recovery notification or issuing a read from the driver.
+  const reopenStart=wireTrace.length;
+  const documentOrigin=await evaluateHere('performance.timeOrigin');
+  const picker=await until('Conversations control reachable',()=>evaluateHere(`(() => {const b=document.querySelector('section[aria-label="Comic conversation"] > header button');if(!b)return null;const r=b.getBoundingClientRect();const x=r.x+r.width/2,y=r.y+r.height/2;return b.contains(document.elementFromPoint(x,y))?{x,y}:null;})()`));
+  await page.send('Input.dispatchMouseEvent',{type:'mousePressed',...picker,button:'left',buttons:1,clickCount:1});
+  await page.send('Input.dispatchMouseEvent',{type:'mouseReleased',...picker,button:'left',buttons:0,clickCount:1});
+  await until('same-document picker',()=>evaluateHere(`document.querySelector('main')?.dataset.comicRoute==='picker'`));
+  // The last shared transcript/activity holder, not navigation itself, owns
+  // unsubscribe. Let its final read settle before Back can cancel retirement.
+  const retired=await until('old root final membership retired',()=>repliesSince(wireTrace,reopenStart,request=>request.method==='thread/unsubscribe'&&request.params?.ref===fixture.refs.live).find(pair=>pair.connection===applied.connection&&!pair.response.error));
+  const retiredRequest=wireTrace.slice(reopenStart).find(row=>row.event==='Network.webSocketFrameSent'&&row.connection===retired.connection&&JSON.parse(row.frame).id===retired.request.id);
+  if(!retiredRequest||retiredRequest.at<acknowledgedAt||await evaluateHere('performance.timeOrigin')!==documentOrigin||wireTrace.slice(reopenStart).some(row=>row.event==='Network.webSocketCreated'))throw Error('retirement borrowed another ref, document or connection');
+  const reacquireStart=wireTrace.length;
+  await page.send('Input.dispatchMouseEvent',{type:'mousePressed',x:10,y:10,button:'back',clickCount:1});
+  await page.send('Input.dispatchMouseEvent',{type:'mouseReleased',x:10,y:10,button:'back',clickCount:1});
+  await until('native Back reopens exact old ref',()=>evaluateHere(`document.querySelector('main')?.dataset.sessionRef`),value=>value===fixture.refs.live);
+  const fenced=await until('original connection real non-foldable recovery snapshot',()=>repliesSince(wireTrace,reacquireStart,request=>request.method==='thread/read'&&request.params.ref===fixture.refs.live&&request.params.includeTurns===true).find(pair=>pair.response.result?.thread?.evener?.resumeRequired===true&&pair.response.result.thread.evener.resumeOnlyFoldable!==true));
+  const freshRequest=wireTrace.slice(reacquireStart).find(row=>row.event==='Network.webSocketFrameSent'&&row.connection===fenced.connection&&JSON.parse(row.frame).id===fenced.request.id);
+  if(fenced.connection!==applied.connection||!freshRequest||freshRequest.at<acknowledgedAt||await evaluateHere('performance.timeOrigin')!==documentOrigin||wireTrace.slice(reopenStart).some(row=>row.event==='Network.webSocketCreated'))throw Error('recovery reopen replaced the document/connection or borrowed an earlier read');
+  const retirement={trace:wireTrace.slice(reopenStart),oldRef:fixture.refs.live,connection:applied.connection,acknowledgedAt,backIndex:reacquireStart-reopenStart,documentOrigin,currentDocumentOrigin:await evaluateHere('performance.timeOrigin')};
+  verifyRecoveryRetirement(retirement);
+  // This snapshot is a transport observation, not proof of store acceptance.
+  // The held-resume admission check below proves the application's behavior.
+  writeFileSync(`${fixture.evidenceDir}/resume-fenced.json`,JSON.stringify({retired,retiredRequest,reacquireStart,fenced,acknowledgedAt,documentOrigin,freshRequest,retirement},null,2));
+  const browser=await connectBrowser(endpoint);
+  let destinationPage,targetId;
+  try {
+    const created=await browser.send('Target.createTarget',{url:'about:blank'});
+    targetId=created.result.targetId;
+    destinationPage=await connectPage(endpoint,targetId);
+    await destinationPage.send('Page.enable');
+    await destinationPage.send('Runtime.enable');
+    await navigateTo(destinationPage,new URL('/comic/s/'+encodeURIComponent(destination),fixture.baseURL).href);
+    await replaceDraft(destinationPage,'COMIC_NEWER_DESTINATION_DRAFT');
+  } finally {
+    destinationPage?.close();
+    if(targetId)await browser.send('Target.closeTarget',{targetId});
+    browser.close();
+  }
+  await page.send('Page.bringToFront');
+  const beforeText=await evaluateHere(`document.querySelector('[role="textbox"][aria-label="Message"]')?.textContent`);
+  if(beforeText!=='COMIC_RESUME_CHANGED')throw Error('old source draft lost before explicit resume');
+  const changedStart=wireTrace.length;
+  await evaluateHere(`window.__comicResumeHold={ref:${JSON.stringify(fixture.refs.live)},releaseCount:0,starts:[]}`);
+  await until('changed alias Send enabled',()=>evaluateHere(`(() => {const b=document.querySelector('[data-testid="composer-submit"]');if(!b||b.disabled)return false;b.click();return true;})()`));
+  const held=await until('authentic client resume response held',()=>evaluateHere('window.__comicResumeHold'),value=>!!value?.responseBytes);
+  await until('client-owned changed identity resume',()=>repliesSince(wireTrace,changedStart,request=>request.method==='thread/resume').find(pair=>pair.response.result?.thread));
+  // Send resolves after durable enqueue and starts resume asynchronously. The
+  // editor clearing on the old route is actual progress, not an arbitrary delay.
+  const ui=await until('processed Send clears old editor while resume held',()=>evaluateHere(`({ref:document.querySelector('main')?.dataset.sessionRef,text:document.querySelector('[role="textbox"][aria-label="Message"]')?.textContent,disabled:document.querySelector('[data-testid="composer-submit"]')?.disabled})`),value=>value.disabled===true&&value.text==='');
+  ui.beforeText=beforeText;
+  const admission={oldRef:fixture.refs.live,destination,ui,hold:await evaluateHere('window.__comicResumeHold'),trace:wireTrace.slice(changedStart)};
+  writeFileSync(`${fixture.evidenceDir}/resume-held.json`,JSON.stringify(admission,null,2));
+  verifyResumeAdmission(admission);
+  admission.releaseIndex=wireTrace.length-changedStart;
+  await evaluateHere('window.__comicReleaseResume()');
+  await until('changed alias mutation applied',()=>repliesSince(wireTrace,changedStart,request=>request.method==='turn/start'&&request.params.input?.some(part=>part.text==='COMIC_RESUME_CHANGED')).find(pair=>pair.response.result?.receipt?.disposition==='applied'));
+  admission.afterUI=await until('changed identity route and newer destination draft',()=>evaluateHere(`({ref:document.querySelector('main')?.dataset.sessionRef,text:document.querySelector('[role="textbox"][aria-label="Message"]')?.textContent})`),value=>value.ref===destination&&value.text==='COMIC_NEWER_DESTINATION_DRAFT');
+  admission.hold=await evaluateHere('window.__comicResumeHold');
+  admission.trace=wireTrace.slice(changedStart);
+  const {resumed,changed}=verifyResumeAdmission(admission);
+  writeFileSync(`${fixture.evidenceDir}/resume-changed.json`,JSON.stringify({destination,fenced,resumed,changed,held,admission,wireTrace:admission.trace},null,2));
+  console.log('Comic changed resume: authentic response held, post-enqueue editor transition, zero premature starts, one released response and fenced applied mutation, newer destination draft retained');
+}
+
 async function interactionJourney(page, fixture, { command, wireTrace, screenshot }) {
   const start = wireTrace.length;
   const evaluateHere = expression => evaluate(page.send, expression);
@@ -544,14 +889,41 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
   command('background-role', 'comic-interactions');
   command('background-phase', 'comic-interactions-ready');
   await until('interaction provider configured', () => records().some(row => row.event === 'background-phase-ack' && row.phase === 'comic-interactions-ready'));
+  await inspectActionFonts(page,fixture,'composer-action',['[data-testid="composer-submit"]']);
   await send('COMIC_INTERACTION_ASK');
   await until('real multi-question ask', () => evaluateHere(`document.querySelector('[role="tabpanel"]')?.textContent.includes('COMIC_QUESTION_SINGLE')`));
   if (!await evaluateHere(`document.querySelector('[data-comic-composer] form')?.hasAttribute('inert')`)) throw Error('ordinary input active while answering');
   await screenshot('interactions-question');
+  await pendingViewportJourney(page, fixture, 'question', '[data-ask-response-dock]', screenshot);
+  if (fixture.requireFonts) {
+    const inspect = async () => {
+      const doc = await page.send('DOM.getDocument');
+      const fonts = [];
+      for (const selector of ['[data-ask-question] > div:nth-child(2)', '[data-ask-response-dock] button']) {
+        const node = await page.send('DOM.querySelector', {nodeId:doc.result.root.nodeId, selector});
+        const face = await page.send('CSS.getPlatformFontsForNode', {nodeId:node.result.nodeId});
+        const geometry = await evaluateHere(`(() => {const node=document.querySelector(${JSON.stringify(selector)});const rect=node.getBoundingClientRect();const style=getComputedStyle(node);return {x:rect.x,y:rect.y,width:rect.width,height:rect.height,font:style.font};})()`);
+        fonts.push({selector, geometry, ...face.result});
+      }
+      return fonts;
+    };
+    const fonts = await inspect();
+    await navigateTo(page, new URL('/s/' + encodeURIComponent(fixture.refs.live), fixture.baseURL).href);
+    await until('regular-client real question', () => evaluateHere(`document.querySelector('[data-ask-question]')?.textContent.includes('COMIC_QUESTION_SINGLE')`));
+    await evaluateHere('document.fonts.ready.then(() => true)');
+    const regular = await inspect();
+    await screenshot('interactions-question-regular');
+    writeFileSync(`${fixture.evidenceDir}/interaction-fonts.json`, JSON.stringify({comic:fonts, regular}, null, 2));
+    if (regular.some(face => face.fonts.some(font => /Comic/i.test(font.familyName)))) throw Error('Comic font leaked into regular client');
+    await navigateTo(page, new URL('/comic/s/' + encodeURIComponent(fixture.refs.live), fixture.baseURL).href);
+    await until('Comic real question restored', () => evaluateHere(`document.querySelector('[data-ask-question]')?.textContent.includes('COMIC_QUESTION_SINGLE')`));
+    if (!fonts.every(face => face.fonts.some(font => font.isCustomFont && font.glyphCount > 0 && /Comic/i.test(font.familyName)))) throw Error('question/control does not render Comic Sans: ' + JSON.stringify(fonts));
+  }
   const option = async text => until('fixture option ' + text, () => evaluateHere(`(() => {const option=[...document.querySelectorAll('label')].find(node=>node.textContent.includes(${JSON.stringify(text)}));if(!option)return false;option.click();return true;})()`));
   await option('COMIC_SINGLE_B');
   await option('COMIC_MULTI_A');
   await option('COMIC_MULTI_B');
+  await pendingViewportJourney(page, fixture, 'answered-question', '[data-ask-response-dock]', screenshot);
   await visibleButton('send answers');
   const answered = await until('actual provider receives both answers', () => records().find(row => row.event === 'request' && row.kind === 'turn' && row.request.messages.some(message => message.role === 'user' && ['COMIC_SINGLE_B','COMIC_MULTI_A','COMIC_MULTI_B'].every(text => JSON.stringify(message.content).includes(text)))));
   await until('question surface settled', snapshot, value => value.questions === 0);
@@ -568,6 +940,8 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
     if (pairs().some(pair => pair.request.params.escalationId === params.escalationId)) throw Error('approval submitted before explicit choice');
     if (marker === 'APPROVE') {
       await screenshot('interactions-approval');
+      await inspectActionFonts(page,fixture,'approval-actions',[group+' [data-sandbox-escalation-allow]',group+' button:last-child']);
+      await pendingViewportJourney(page, fixture, 'approval', group, screenshot);
       const failureStart = wireTrace.length;
       const controls = () => evaluateHere(`({ref:document.querySelector('main')?.dataset.sessionRef,disabled:[...document.querySelectorAll(${JSON.stringify(group + ' button')})].map(button=>button.disabled)})`);
       await evaluateHere('window.__comicFailApproval = true');
@@ -616,17 +990,27 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
   console.log('Comic root interactions: real batch answered, explicit approve after transport failure, explicit decline, original-ref late approval leaves second root unchanged, no replay');
 }
 
+export function savedSourcePlaced(geometry, expected) {
+  const sameSource = value => value && value.sessionRef === expected.sessionRef &&
+    JSON.stringify(value.path) === JSON.stringify(expected.path) &&
+    value.entryId === expected.entryId && value.offset === expected.offset;
+  return !!(expected?.mode === 'away' && geometry?.saved?.mode === 'away' &&
+    sameSource(geometry.saved) && geometry.saved.viewportOffset === expected.viewportOffset &&
+    sameSource(geometry.point) && Math.abs(geometry.point.y - expected.viewportOffset) <= 2);
+}
+
 function readGeometry(point, ref) {
   const port = document.querySelector('[data-comic-scroll]')?.firstElementChild;
   if (!port) return null;
   const sources = [...port.querySelectorAll('[data-comic-entry]')];
   const parts = sources.map(node => ({ sessionRef: node.dataset.comicSession, path: JSON.parse(node.dataset.comicPath ?? '[]'), entryId: node.dataset.comicEntry, start: +node.dataset.comicStart, end: +node.dataset.comicEnd, text: node.querySelector('[data-comic-text]')?.textContent ?? '' }));
-  const source = point && sources.find(node => node.dataset.comicSession === (point.sessionRef ?? ref) && node.dataset.comicPath === JSON.stringify(point.path ?? []) && node.dataset.comicEntry === point.entryId && +node.dataset.comicStart <= point.offset && +node.dataset.comicEnd > point.offset);
+  const source = point && sources.find(node => node.dataset.comicSession === (point.sessionRef ?? ref) && node.dataset.comicPath === JSON.stringify(point.path ?? []) && node.dataset.comicEntry === point.entryId && +node.dataset.comicStart <= point.offset && (+node.dataset.comicEnd > point.offset || (point.offset === 0 && +node.dataset.comicEnd === 0)));
   let selected = null;
   if (source) {
-    const text = source.querySelector('[data-comic-text]').firstChild;
-    const range = document.createRange(); range.setStart(text, point.offset - +source.dataset.comicStart); range.setEnd(text, point.offset - +source.dataset.comicStart + 1);
-    selected = { entryId: point.entryId, offset: point.offset, y: range.getBoundingClientRect().top - port.getBoundingClientRect().top, start: +source.dataset.comicStart, end: +source.dataset.comicEnd };
+    const text = source.querySelector('[data-comic-text]')?.firstChild;
+    let rect=source.getBoundingClientRect();
+    if(text){const range = document.createRange(); range.setStart(text, point.offset - +source.dataset.comicStart); range.setEnd(text, point.offset - +source.dataset.comicStart + 1);rect=range.getBoundingClientRect();}
+    selected = { sessionRef:source.dataset.comicSession, path:JSON.parse(source.dataset.comicPath), entryId: point.entryId, offset: point.offset, y: rect.top - port.getBoundingClientRect().top, start: +source.dataset.comicStart, end: +source.dataset.comicEnd };
   }
   const probe = document.querySelector('[data-comic-probe]');
   const probeText = probe?.querySelector('p');
@@ -649,9 +1033,28 @@ function readGeometry(point, ref) {
   };
 }
 
-async function remoteJourney(page, fixture, { incoming, outgoing, screenshot }) {
+export function verifyRemoteRequests(trace) {
+  const connections=new Set(trace.filter(row=>row.event==='Network.webSocketCreated').map(row=>row.connection));
+  if(!connections.size)throw Error('remote document did not open a connection');
+  const sent=trace.filter(row=>row.event==='Network.webSocketFrameSent');
+  if(sent.some(row=>['turn/start','thread/resume'].includes(JSON.parse(row.frame).method)))throw Error('remote read mutated a session');
+  const requests=sent.filter(row=>connections.has(row.connection)).map(row=>JSON.parse(row.frame));
+  if(requests.some(frame=>frame.method==='thread/read'&&!frame.params.ref.startsWith('comic-remote:')))throw Error('remote read borrowed a local session');
+  return requests;
+}
+
+// Shared by the page-evaluated driver and its decision-logic tests.
+export function delegateLookupStep({ mounted, top, height, viewport }, target, direction = -1) {
+  const index = mounted.findIndex(node => node.ref === target.ref && node.key === target.key);
+  if (index >= 0) return { index, direction, deltaY: 0 };
+  const boundary = direction < 0 ? top <= 1 : top + viewport >= height - 2;
+  if (boundary) direction *= -1;
+  return { index: -1, direction, boundary, deltaY: direction * Math.min(300, viewport * .8) };
+}
+
+async function remoteJourney(page, fixture, { incoming, wireTrace, screenshot }) {
   const evaluateHere = expression => evaluate(page.send, expression);
-  const firstRequest = outgoing.length;
+  const firstFrame = wireTrace.length;
   const remoteURL = new URL(fixture.baseURL);
   remoteURL.pathname = '/comic/s/' + encodeURIComponent(fixture.refs.remote);
   remoteURL.search = '';
@@ -677,19 +1080,35 @@ async function remoteJourney(page, fixture, { incoming, outgoing, screenshot }) 
   const local = JSON.parse(readFileSync(`${fixture.evidenceDir}/activity-roster.json`,'utf8')).observed.find(row=>row.ref.split(':').at(-1)===header.ref.split(':').at(-1));
   if (!local || local.key===header.key || !header.text.includes(fixture.refs.remote)) throw Error('remote identity borrowed local attribution');
   await screenshot('remote-inline');
-  await until('remote full-page action', async () => evaluateHere(`(() => {
-    const node=[...document.querySelectorAll('[data-comic-delegate]')].find(node=>node.dataset.comicChildRef===${JSON.stringify(header.ref)});
-    if(node){[...node.querySelectorAll('button')].find(button=>button.textContent==='Open conversation').click();return true;}
-    const port=document.querySelector('[data-comic-scroll]').firstElementChild;port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:-300}));port.scrollTop-=300;return false;
-  })()`));
+  const search = [];
+  let direction = -1;
+  try { await until('remote full-page action', async () => {
+    await evaluateHere('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    const step = await evaluateHere(`(() => {
+      const port=document.querySelector('[data-comic-scroll]').firstElementChild;
+      const headers=[...document.querySelectorAll('[data-comic-delegate]')];
+      const before={top:port.scrollTop,height:port.scrollHeight,viewport:port.clientHeight};
+      const mounted=headers.map(node=>({key:node.dataset.comicDelegate,ref:node.dataset.comicChildRef,y:node.getBoundingClientRect().top}));
+      const decision=(${delegateLookupStep.toString()})({...before,mounted},${JSON.stringify(header)},${direction});
+      const node=headers[decision.index];
+      if(node){[...node.querySelectorAll('button')].find(button=>button.textContent==='Open conversation').click();return {found:true,before,mounted,decision};}
+      port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:decision.deltaY}));port.scrollTop+=decision.deltaY;
+      return {found:false,before,mounted,decision,command:{deltaY:decision.deltaY,top:port.scrollTop}};
+    })()`);
+    search.push(step);
+    direction = step.decision.direction;
+    return step.found;
+  }); } finally {
+    writeFileSync(`${fixture.evidenceDir}/remote-route-search.json`,JSON.stringify({target:header,steps:search},null,2));
+  }
   await until('real remote direct route', () => evaluateHere('document.querySelector("main")?.dataset.sessionRef'), value=>value===header.ref);
   const direct = await until('remote direct persona', source, value=>value?.identity===inline.identity);
-  const requests=outgoing.slice(firstRequest);
-  if (requests.some(frame=>frame.method==='turn/start'||frame.method==='thread/resume'||frame.method==='thread/read'&&frame.params.ref.startsWith('local:'))) throw Error('remote read mutated or borrowed a local session');
+  const requests=verifyRemoteRequests(wireTrace.slice(firstFrame));
   writeFileSync(`${fixture.evidenceDir}/remote-identity.json`,JSON.stringify({header,local,inline,direct,requests},null,2));
 }
 
 async function rosterJourney(page, fixture, { command, complete, incoming, outgoing, screenshot, wireTrace }) {
+  const { rosterCount } = comicScenario(fixture.scenario);
   const evaluateHere = expression => evaluate(page.send, expression);
   command('background-role', 'comic-roster');
   await complete('COMIC_ROSTER_ROOT');
@@ -698,7 +1117,7 @@ async function rosterJourney(page, fixture, { command, complete, incoming, outgo
   const firstFrame = incoming.length;
   const firstTrace = wireTrace.length;
   const continuations = [];
-  await reloadPage(page);
+  await reloadPage(page, fixture.evidenceDir);
   const pages = () => incoming.slice(firstFrame).map(frame => JSON.parse(frame).result).filter(result => Array.isArray(result?.delegates) && result.page && result.context?.sessionId === fixture.refs.live.split(':').at(-1));
   await until('real first activity page', () => pages(), rows => rows.some(row => row.delegates.length === 50 && row.page.nextCursor));
   for (let index = 0; index < 2; index++) {
@@ -714,7 +1133,7 @@ async function rosterJourney(page, fixture, { command, complete, incoming, outgo
   }
   writeFileSync(`${fixture.evidenceDir}/activity-continuation-replies.json`, JSON.stringify(continuations, null, 2));
   const rows = new Map(pages().flatMap(page => page.delegates).map(row => [row.delegateId, row]));
-  if (rows.size !== 102 || !pages().some(page => page.page.complete)) throw Error('real activity pages incomplete: ' + JSON.stringify({count:rows.size,pages:pages().map(page=>({count:page.delegates.length,page:page.page}))}));
+  if (rows.size !== rosterCount || !pages().some(page => page.page.complete)) throw Error('real activity pages incomplete: ' + JSON.stringify({count:rows.size,pages:pages().map(page=>({count:page.delegates.length,page:page.page}))}));
   const observed = new Map();
   let maxMountedHeaders = 0;
   let direction = 1;
@@ -726,12 +1145,12 @@ async function rosterJourney(page, fixture, { command, complete, incoming, outgo
     for (const header of step.headers) observed.set(header.key, header);
     maxMountedHeaders = Math.max(maxMountedHeaders, step.headers.length);
     steps.push({index,direction,...step,uncommandedDelta:step.before.top-(steps.at(-1)?.command.top??0)});
-    if (observed.size === 102) break;
+    if (observed.size === rosterCount) break;
     if (step.boundary) direction *= -1;
   }
   const named = [...observed.values()].filter(header => header.name.includes('comic-same-name'));
   writeFileSync(`${fixture.evidenceDir}/activity-roster.json`, JSON.stringify({pages:pages(),observed:[...observed.values()],named,maxMountedHeaders,steps,requests:outgoing.slice(firstRequest)},null,2));
-  if (observed.size !== 102 || maxMountedHeaders > 35) throw Error('real roster virtual bounds/coverage: '+JSON.stringify({seen:observed.size,maxMountedHeaders}));
+  if (observed.size !== rosterCount || maxMountedHeaders > 35) throw Error('real roster virtual bounds/coverage: '+JSON.stringify({seen:observed.size,maxMountedHeaders}));
   if (named.length !== 2 || named[0].key === named[1].key || named[0].ref === named[1].ref || named[0].text === named[1].text) throw Error('same-named real delegates not distinctly attributed: ' + JSON.stringify(named));
   const reads = outgoing.slice(firstRequest).filter(frame => frame.method === 'thread/read');
   const leafRefs = new Set([...rows.values()].map(row => row.childRef));
@@ -743,20 +1162,25 @@ async function rosterJourney(page, fixture, { command, complete, incoming, outgo
   let namedDirection = 1;
   const namedSearch = [];
   try { await until('same-named explicit child route',async()=>{
+    await evaluateHere('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     const step = await evaluateHere(`(() => {
-    const header=[...document.querySelectorAll('[data-comic-delegate]')].find(node=>node.dataset.comicChildRef===${JSON.stringify(directChild.ref)});
-    if(header){[...header.querySelectorAll('button')].find(button=>button.textContent==='Open conversation').click();return {found:true};}
-    const port=document.querySelector('[data-comic-scroll]').firstElementChild;const before={top:port.scrollTop,height:port.scrollHeight,viewport:port.clientHeight};const boundary=${namedDirection}<0?before.top<=1:before.top+before.viewport>=before.height-2;const deltaY=${namedDirection}*300;port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY}));port.scrollTop+=deltaY;return {found:false,boundary,before,command:{deltaY,top:port.scrollTop}};
+    const headers=[...document.querySelectorAll('[data-comic-delegate]')];
+    const mounted=headers.map(node=>({key:node.dataset.comicDelegate,ref:node.dataset.comicChildRef,y:node.getBoundingClientRect().top}));
+    const port=document.querySelector('[data-comic-scroll]').firstElementChild;const before={top:port.scrollTop,height:port.scrollHeight,viewport:port.clientHeight};
+    const decision=(${delegateLookupStep.toString()})({...before,mounted},${JSON.stringify(directChild)},${namedDirection});
+    const header=headers[decision.index];
+    if(header){[...header.querySelectorAll('button')].find(button=>button.textContent==='Open conversation').click();return {found:true,before,mounted,decision};}
+    const deltaY=decision.deltaY;port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY}));port.scrollTop+=deltaY;return {found:false,before,mounted,decision,command:{deltaY,top:port.scrollTop}};
   })()`);
     namedSearch.push(step);
-    if(step.boundary)namedDirection*=-1;
+    namedDirection=step.decision.direction;
     return step.found;
   }); } finally {
     writeFileSync(`${fixture.evidenceDir}/named-route-search.json`,JSON.stringify({target:directChild.ref,steps:namedSearch},null,2));
   }
   const readNamedIdentity = () => evaluateHere(`(() => {const panel=[...document.querySelectorAll('[data-comic-entry]')].find(node=>node.dataset.comicSession===${JSON.stringify(directChild.ref)}&&node.textContent.includes('COMIC_ROSTER_LEAF literal answer'));return panel?.querySelector('[data-comic-identity]')?.textContent;})()`);
   const directIdentity = await until('named direct child identity', readNamedIdentity, value=>value===`comic-same-name · ${ownedRow.delegateId}`);
-  await reloadPage(page);
+  await reloadPage(page, fixture.evidenceDir);
   const refreshedIdentity = await until('named direct child refresh identity', readNamedIdentity, value=>value===directIdentity);
   writeFileSync(`${fixture.evidenceDir}/named-direct.json`, JSON.stringify({directChild,ownedRow,directIdentity,refreshedIdentity},null,2));
 }
@@ -778,7 +1202,7 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
       const node = [...port.querySelectorAll(${JSON.stringify(selector)})].find(node => node.textContent.includes(${JSON.stringify(text)}));
       const deltaY = node ? node.getBoundingClientRect().top - port.getBoundingClientRect().top - 24 : ${direction} * port.clientHeight * .7;
       port.dispatchEvent(new WheelEvent('wheel', {bubbles:true, deltaY})); port.scrollTop += deltaY;
-      return {found:node ? { ref:node.dataset.comicChildRef, key:node.dataset.comicDelegate } : null, boundary:${direction} < 0 ? port.scrollTop <= 1 : port.scrollTop + port.clientHeight >= port.scrollHeight - 1};
+      return {found:node ? { ref:node.dataset.comicChildRef, key:node.dataset.comicDelegate, sessionRef:node.dataset.comicSession, path:JSON.parse(node.dataset.comicPath??'[]'), entryId:node.dataset.comicEntry } : null, boundary:${direction} < 0 ? port.scrollTop <= 1 : port.scrollTop + port.clientHeight >= port.scrollHeight - 1};
     })()`);
     await evaluateHere('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     if (result?.boundary) direction *= -1;
@@ -786,6 +1210,15 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
   });
   const header = await reveal('[data-comic-delegate]');
   if (!header.ref || !header.key.includes(fixture.refs.live)) throw Error('delegate has no qualified runtime ownership ' + JSON.stringify(header));
+  const capturedSource = async (name, source, minimumOffset = 0) => {
+    const geometry = await until(name, () => evaluateHere(`(() => {
+      const saved=JSON.parse(sessionStorage.getItem('evener:comic:position:'+${JSON.stringify(fixture.refs.live)})??'null')?.position;
+      return (${readGeometry.toString()})(saved,${JSON.stringify(fixture.refs.live)});
+    })()`), value => value?.saved?.sessionRef === source.sessionRef &&
+      JSON.stringify(value.saved.path) === JSON.stringify(source.path) && value.saved.entryId === source.entryId &&
+      value.saved.offset >= minimumOffset && savedSourcePlaced(value,value.saved));
+    return geometry.saved;
+  };
   const operate = async (ref, label, keyboard = false) => {
     const found = await evaluateHere(`(() => {
     const header = [...document.querySelectorAll('[data-comic-delegate]')].find(node => node.dataset.comicChildRef === ${JSON.stringify(ref)});
@@ -819,10 +1252,11 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
   if (!grandchild.key.includes(header.ref) || grandchild.ref === header.ref) throw Error('nested identity is not independently qualified');
   if (!grandchild.unplaced) throw Error('earlier causal event was not outside loaded child history');
   if (!await operate(grandchild.ref, 'Expand conversation')) throw Error('missing grandchild expansion');
-  await reveal('[data-comic-entry]', 'COMIC_THOUGHT_GRANDCHILD', 1);
-  let saved = await until('nested source anchor', () => evaluateHere(`JSON.parse(sessionStorage.getItem('evener:comic:position:' + ${JSON.stringify(fixture.refs.live)}) ?? 'null')?.position`), value => value?.sessionRef === grandchild.ref && value.path.length === 2 && value.mode === 'away');
+  const nestedSource = await reveal('[data-comic-entry]', 'COMIC_THOUGHT_GRANDCHILD', 1);
+  if(nestedSource.sessionRef!==grandchild.ref || nestedSource.path.length!==2)throw Error('wrong nested source');
+  let saved = await capturedSource('nested source anchor',nestedSource);
   const measure = async name => {
-    const geometry = await until(name, () => evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(saved)}, ${JSON.stringify(fixture.refs.live)})`), value => value?.point && Math.abs(value.point.y - saved.viewportOffset) <= 2);
+    const geometry = await until(name, () => evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(saved)}, ${JSON.stringify(fixture.refs.live)})`), value => savedSourcePlaced(value, saved));
     const nestedGeometry = await evaluateHere(`(() => {
       const port = document.querySelector('[data-comic-scroll]').firstElementChild;
       return {scrollports:document.querySelectorAll('[data-comic-scroll]').length, editors:port.querySelectorAll('textarea,[contenteditable=true]').length, fullPageEditors:document.querySelectorAll('[data-comic-composer] [contenteditable=true]').length,
@@ -847,7 +1281,7 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
     try { const row = JSON.parse(line); return row.event === 'turn-complete' && row.prompt === 'COMIC_SUBCHAT_ROOT' && row.ok; } catch { return false; }
   }));
   await measure('nested-child-stream-finished');
-  await reloadPage(page);
+  await reloadPage(page, fixture.evidenceDir);
   await measure('nested-reload');
   // Recover only the saved branch, then expose the child's explicit full-page route.
   if (!await operate(grandchild.ref, 'Open conversation')) throw Error('missing child route');
@@ -863,14 +1297,31 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
   if (!await operate(grandchild.ref, 'Expand conversation', true)) throw Error('missing keyboard reopen');
   await until('keyboard reopened strip', () => evaluateHere(`document.activeElement?.closest('[data-comic-child-ref]')?.dataset.comicChildRef === ${JSON.stringify(grandchild.ref)} && document.activeElement?.getAttribute('aria-expanded') === 'true'`));
   writeFileSync(`${fixture.evidenceDir}/child-keyboard.json`, JSON.stringify(await evaluateHere(`({focusedRef:document.activeElement.closest('[data-comic-child-ref]').dataset.comicChildRef, expanded:document.activeElement.getAttribute('aria-expanded'), saved:JSON.parse(sessionStorage.getItem('evener:comic:position:' + ${JSON.stringify(fixture.refs.live)})).position})`), null, 2));
+  await evaluateHere(`(() => {
+    const port=document.querySelector('[data-comic-scroll]').firstElementChild;
+    window.__comicRestoreEvents=[];
+    const record=event=>{window.__comicRestoreEvents.push({at:performance.now(),type:event.type,trusted:event.isTrusted,scrollTop:port.scrollTop,focusedRef:document.activeElement?.closest('[data-comic-child-ref]')?.dataset.comicChildRef,selectionInPort:port.contains(document.getSelection()?.anchorNode),saved:JSON.parse(sessionStorage.getItem('evener:comic:position:'+${JSON.stringify(fixture.refs.live)})??'null')?.position});if(window.__comicRestoreEvents.length>100)window.__comicRestoreEvents.shift();};
+    for(const event of ['scroll','wheel','pointerdown','pointerup','pointercancel','keydown','focusin'])port.addEventListener(event,record,{passive:true});
+    document.addEventListener('selectionchange',record);
+  })()`);
+  const restoreCheckpoints=[];
+  const recordRestore=async stage=>{
+    restoreCheckpoints.push({stage,geometry:await evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(saved)},${JSON.stringify(fixture.refs.live)})`),events:await evaluateHere('window.__comicRestoreEvents')});
+    await recordOwnerTrace(page,fixture.evidenceDir,`nested-${stage}`);
+    writeFileSync(`${fixture.evidenceDir}/nested-restore-checkpoints.json`,JSON.stringify({expected:saved,header,grandchild,checkpoints:restoreCheckpoints},null,2));
+  };
   // Native Enter may scroll its focused heading into view. Reestablish an
   // inside-child source before testing collapse's retained child anchor.
   await reveal('[data-comic-entry]', 'COMIC_THOUGHT_GRANDCHILD', 1);
-  saved = await until('inside child before collapse', () => evaluateHere(`JSON.parse(sessionStorage.getItem('evener:comic:position:' + ${JSON.stringify(fixture.refs.live)})).position`), value => value?.sessionRef === grandchild.ref && value.path.length === 2 && value.mode === 'away');
+  saved = await capturedSource('inside child before collapse',nestedSource);
+  await recordRestore('before-collapse');
   if (!await operate(grandchild.ref, 'Collapse conversation')) throw Error('missing anchored collapse');
-  await until('anchored collapse settled', () => evaluateHere(`document.activeElement?.getAttribute('aria-expanded') === 'false'`));
+  const collapsedAnchor={mode:'away',sessionRef:header.ref,path:saved.path.slice(0,-1),entryId:grandchild.key,offset:0,viewportOffset:0};
+  await until('anchored collapse settled', () => evaluateHere(`({collapsed:document.activeElement?.getAttribute('aria-expanded') === 'false',geometry:(${readGeometry.toString()})(${JSON.stringify(collapsedAnchor)},${JSON.stringify(fixture.refs.live)})})`),value=>value.collapsed&&savedSourcePlaced(value.geometry,collapsedAnchor));
+  await recordRestore('after-collapse');
   if (!await operate(grandchild.ref, 'Expand conversation')) throw Error('missing anchored reopen');
-  await measure('nested-reopen');
+  await recordRestore('after-reopen');
+  try { await measure('nested-reopen'); } finally { await recordRestore('reopen-verdict'); }
   const historySelector = '[data-comic-flow="history"][data-comic-session=' + JSON.stringify(header.ref) + ']';
   const beforePaging = outgoing.length;
   for (let index = 0; index < 12; index++) {
@@ -889,17 +1340,24 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
   await reveal('[data-comic-child-ref=' + JSON.stringify(grandchild.ref) + ']', '', 1);
   const relocated = await evaluateHere(`(() => { const node = document.querySelector('[data-comic-child-ref=' + ${JSON.stringify(JSON.stringify(grandchild.ref))} + ']'); return {key:node?.dataset.comicDelegate, expanded:node?.querySelector('[aria-expanded]')?.getAttribute('aria-expanded')}; })()`);
   if (relocated.key !== grandchild.key || relocated.expanded !== 'true') throw Error('causal placement replaced expanded nested identity');
-  await reveal('[data-comic-entry][data-comic-session=' + JSON.stringify(header.ref) + ']', 'COMIC_CHILD_SOURCE_05', 1);
+  const laterSource = await reveal('[data-comic-entry][data-comic-session=' + JSON.stringify(header.ref) + ']', 'COMIC_CHILD_SOURCE_05', 1);
   await evaluateHere(`(() => { const port = document.querySelector('[data-comic-scroll]').firstElementChild; const source = [...port.querySelectorAll('[data-comic-text]')].find(node => node.textContent.startsWith('COMIC_CHILD_SOURCE_05')); const deltaY = source.getBoundingClientRect().top - port.getBoundingClientRect().top + 80; port.dispatchEvent(new WheelEvent('wheel', {bubbles:true, deltaY})); port.scrollTop += deltaY; })()`);
-  saved = await until('later child source anchor', () => evaluateHere(`JSON.parse(sessionStorage.getItem('evener:comic:position:' + ${JSON.stringify(fixture.refs.live)}) ?? 'null')?.position`), value => value?.sessionRef === header.ref && value.path.length === 1 && value.mode === 'away' && value.offset > 0);
+  if(laterSource.sessionRef!==header.ref || laterSource.path.length!==1)throw Error('wrong later child source');
+  saved = await capturedSource('later child source anchor',laterSource,1);
   await measure('later-child-page');
   await evaluateHere("window.__comicSockets.forEach(socket => socket.close(4000, 'comic child recovery'))");
   await measure('later-child-disconnected');
   await until('child socket reconnected', () => evaluateHere('window.__comicSockets.some(socket => socket.readyState === WebSocket.OPEN)'));
   await measure('later-child-reconnected');
   const beforeReload = outgoing.length;
-  await reloadPage(page);
-  await measure('later-child-reload');
+  const diagnosticScript=await page.send('Page.addScriptToEvaluateOnNewDocument',{source:`window.__comicReloadEvents=[];for(const type of ['scroll','wheel','pointerdown','pointerup','pointercancel','keydown','focusin','selectionchange'])document.addEventListener(type,event=>{const port=document.querySelector('[data-comic-scroll]')?.firstElementChild;window.__comicReloadEvents.push({at:performance.now(),type:event.type,trusted:event.isTrusted,scrollTop:port?.scrollTop,selectionInPort:!!port?.contains(document.getSelection()?.anchorNode),saved:JSON.parse(sessionStorage.getItem('evener:comic:position:'+${JSON.stringify(fixture.refs.live)})??'null')?.position});if(window.__comicReloadEvents.length>100)window.__comicReloadEvents.shift();},{capture:true,passive:true});`});
+  const reloadBefore=await until('immediate pre-reload source placement',()=>evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(saved)},${JSON.stringify(fixture.refs.live)})`),value=>savedSourcePlaced(value,saved));
+  await reloadPage(page, fixture.evidenceDir);
+  try { await measure('later-child-reload'); } finally {
+    await recordOwnerTrace(page,fixture.evidenceDir,'later-child-verdict');
+    writeFileSync(`${fixture.evidenceDir}/later-child-restore-checkpoints.json`,JSON.stringify({expected:saved,before:reloadBefore,after:await evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(saved)},${JSON.stringify(fixture.refs.live)})`),events:await evaluateHere('window.__comicReloadEvents'),requests:outgoing.slice(beforeReload)},null,2));
+    await page.send('Page.removeScriptToEvaluateOnNewDocument',{identifier:diagnosticScript.result.identifier});
+  }
   if (outgoing.slice(beforeReload).some(frame => frame.method === 'thread/read' && frame.params.ref === grandchild.ref && frame.params.includeTurns !== false)) throw Error('restoration fetched an unopened descendant');
   await page.send('Page.navigate', {url:new URL('/comic/s/' + encodeURIComponent(header.ref), fixture.baseURL).href});
   await until('later child full page', () => evaluateHere('document.querySelector("main")?.dataset.sessionRef'), value => value === header.ref);
@@ -1037,7 +1495,7 @@ async function authorshipJourney(page, fixture, { incoming, outgoing, screenshot
   await screenshot('authorship-inline');
   await navigate(leaf.ref);
   await collect('direct-leaf-original-authors');
-  await reloadPage(page);
+  await reloadPage(page, fixture.evidenceDir);
   await collect('reloaded-leaf-original-authors');
   const beforeReconnect=outgoing.length;
   await evaluateHere("window.__comicSockets.forEach(socket=>socket.close(4000,'authorship recovery'))");

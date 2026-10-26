@@ -4,7 +4,7 @@ import type { ComicEntry } from "./projection";
 
 const FONT = '"Comic Sans Comic"';
 
-/** A missing local webfont is a usable state, not a stalled reader. */
+/** A failed font request is a usable state, not a stalled reader. */
 export async function loadComicFonts(): Promise<"ready" | "unavailable"> {
   if (!document.fonts) return "unavailable";
   const faces = await Promise.allSettled([

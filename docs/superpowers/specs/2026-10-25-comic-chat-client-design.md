@@ -180,19 +180,16 @@ README, art manifest and attribution describe source material and extraction.
   widget DOM or introduce a parallel generic widget library.
 - Commit only the needed Microsoft art, extraction provenance and MIT notice.
   Retain source references and a reproducible asset verification check.
-- Deliver genuine Comic Sans regular and bold by `@font-face`, without relying
-  on fonts installed on the visitor's machine. Keep the actual font files in an
-  explicitly ignored local asset directory. Proposed private-build input:
-  `cmd/evener-hub/frontend/public/webassets/comic-local/`. Existing Vite copying
-  and the authenticated `/webassets/` route can serve this personal-build data.
-- Never commit the fonts, download them automatically during build/test, or
-  publish a font-bearing build as an Evener release. Document personal setup and
-  verify the index excludes the fonts before committing. No purchase or claim
-  of redistribution rights is part of this work.
+- Deliver the original Comic Sans font from Microsoft's explicit MIT Comic Chat
+  release through `@font-face`, independent of fonts installed on the visitor's
+  machine. Preserve its exact bytes, original MIT notice and historical provenance
+  in Git. The historical release supplies regular only; the browser synthesizes
+  bold. Do not include unrelated private font files or download fonts during
+  build/test. This follows Jesse's 2026-10-26 source and licensing direction.
 - Missing or failed fonts leave conversation controls usable and disclose the
-  setup problem. This is a degraded state, not acceptance of a substitute font.
-  Verify the personal build with the actual downloaded regular and bold faces;
-  keep ordinary CI independent of proprietary font files.
+  loading problem. This is a degraded state, not acceptance of a substitute font.
+  Verify actual regular and synthesized-bold glyphs in the ordinary build, and
+  exercise blocked-font fallback separately. CI requires no private font files.
 
 ## Proof obligations
 
@@ -214,7 +211,7 @@ components in end-to-end tests.
    input, including whitespace, long tokens, code and grapheme clusters.
 3. **Read responsively.** Inspect Chrome at 1360, 760, 600, 390 and 320 pixels.
    Require readable reflow, no horizontal overflow or missing assets, actual
-   regular/bold Comic Sans webfont use in the personal build, stable away-reading
+   regular/synthesized-bold Comic Sans use in the built client, stable away-reading
    anchors and correct end-follow during resize and font settlement.
 4. **Send and recover.** Type into the production comic composer, send through
    the real hub/daemon, see recorded input and streamed reply, queue while active,

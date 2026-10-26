@@ -3,9 +3,21 @@
 From the repository root:
 
 ```sh
-COMICGUARD_EVIDENCE_DIR="$EVENER_SCRATCH_DIR/task10-browser-fallback" \
+make build-web
+COMICGUARD_EVIDENCE_DIR="$EVENER_SCRATCH_DIR/comic-browser-fonts" \
 go test -tags browserguard ./cmd/evener-hub -run '^TestComicChatBrowser$' -count=1 -v
 ```
+
+Chrome/Chromium, Node, Go and matching frontend dependencies must already be
+installed. `make test-web-browser` registers this as `comicguard`, behind a
+successful production build, and waits for fixture cleanup on interruption.
+The driver entry point is
+`node scripts/comicguard/run.mjs --fixture <absolute-json-path>` from the frontend
+directory. Go writes that fixture with authenticated `baseURL`, qualified `refs`,
+`evidenceDir`, `requireFonts`, independent source literals and producer
+checkpoint paths. Do not publish or retain its authentication-bearing input.
+`COMICGUARD_EVIDENCE_DIR` selects the output directory; the default lives under
+the isolated test artifact directory. Keep only evidence linked by a report.
 
 Rebuild the production frontend with `npm run build` from
 `cmd/evener-hub/frontend` after inspecting `scripts/clean-dist.mjs`. The guard
@@ -17,6 +29,54 @@ up; the running preview and main hub are untouched. Skips and timeouts are failu
 The fixture runs the production roster watcher as well as its initial refresh.
 A daemonless child response is not proof that its live subscription attached.
 The complete browser journey retains the original two-minute wrapper deadline.
+
+For the independently runnable remote-navigation diagnostic only:
+
+```sh
+COMICGUARD_EVIDENCE_DIR="$EVENER_SCRATCH_DIR/comic-remote-focused" \
+go test -tags browserguard ./cmd/evener-hub -run '^TestComicRemoteNavigationBrowser$' -count=1 -v
+```
+
+This uses the same real fixture and roster/remote journeys, with an explicit
+`remote-navigation` fixture scenario. It produces 101 real roster leaves and
+checks all their durable inputs and answers. Its activity pages are 50/50/1,
+because it does not run the earlier child journey that gives the full guard its
+102nd heading and 50/50/2 pages. It retains the two-minute wrapper and 20-second
+lookup bounds. `remote-route-search.json` records the selected strip identity,
+each lookup's mounted headings and scroll geometry. This is not a full gate or
+evidence for restoration, recovery, root actions or font modes. The registered
+`TestComicChatBrowser` remains the complete default. Use
+`EVENER_COMIC_BLOCK_FONTS=1` for this focused diagnostic.
+
+For the independently runnable recovery qualification only:
+
+```sh
+COMICGUARD_EVIDENCE_DIR="$EVENER_SCRATCH_DIR/comic-recovery-focused" \
+go test -tags browserguard ./cmd/evener-hub -run '^TestComicRecoveryBrowser$' -count=1 -v
+```
+
+The explicit `recovery` scenario reuses the real fixture, native transport-loss
+and same/changed-identity resume journeys. It runs authentication and an independent
+literal seed, but skips unrelated reader, roster, authorship and interaction
+journeys. The default still runs all of them. Both modes share the same durable
+checks: one seed input, one input at each loss boundary, one same-identity input,
+one changed-identity input, two real HubSpawner launches and owned-helper shutdown.
+The original two-minute wrapper and 20-second driver waits remain unchanged.
+Use `EVENER_COMIC_BLOCK_FONTS=1` for this focused diagnostic.
+
+Changed-identity recovery acknowledges an already-exited owned process, then uses
+native Conversations navigation and Back. `resume-fenced.json` records completed
+exact-ref unsubscribe before Back and a fresh non-foldable recovery read on the
+original document/socket. These wire observations alone do not prove acceptance.
+`resume-held.json` records the actual client resume request and authentic response
+bytes held at the native WebSocket boundary, the old editor clearing after durable
+enqueue, and zero premature starts. Send drives resume asynchronously, so an
+unchanged busy draft would be the wrong UI-progress expectation. The driver releases those bytes once without changing
+them. `resume-changed.json` requires exactly one later start, the returned instance
+fence, a matching applied receipt, the destination route and its newer draft.
+`wire.jsonl` retains raw connection-scoped traffic. No product debug API or issued
+generation is treated as acceptance. This is not live-process force-stop coverage
+or a full restoration/font qualification.
 
 The root journey covers literal source, bounded history reads, available and failed
 font states, responsive layout, plain/comic switching, durable provider failure,
@@ -94,15 +154,38 @@ is the proof that all its assertions ran.
 with their request and connection after the intended reload or click boundary.
 On failure, `failure-wire.json` retains the journey's frames and connection boundaries.
 
-For authorized personal font verification add `COMICGUARD_PRIVATE_FONTS=1` and use
-a separate evidence directory. Both ignored local font files must already exist.
-The guard checks actual rendered regular and bold faces through Chrome's font
-inspection, not CSS names alone. It never downloads fonts. Do not publish its
-font-bearing build. The default run blocks the private font URLs.
+The default run checks the bundled historical Comic Sans font through Chrome's
+actual glyph inspection, including regular and browser-synthesized bold text.
+It holds and releases the real font request to exercise late-font reflow. No font
+download or private install is needed. Repeat with `EVENER_COMIC_BLOCK_FONTS=1`
+and a separate evidence directory to verify fallback and usable controls when
+the bundled font request fails.
 
 Unavailable remote children and native touch inertia remain shared-adapter or
 component evidence. Human questions and sandbox approvals remain interactive-root-only.
 The invalid delegated `ask_user` producer is absent; no child pending state is
 injected. This guard proves actual child status and navigation, reader demand
-retirement and cancellation ordering. Root question/approval journeys belong to
-their interaction tasks, not inline subchat delivery.
+retirement and cancellation ordering.
+
+Root interactions use actual `ask_user` and sandbox tool calls. The runtime sees
+the selected answers, an explicit approval and an explicit denial. A dropped
+approval send enables explicit retry; a held real response across a route switch
+does not mutate the second root or replay the decision. Durable checks count each
+exchange and inspect the approved files and denied file's absence.
+
+Pending questions, answered questions and approvals are exercised at 1360, 760,
+600, 390 and 320 CSS pixels with reduced motion and a 34px emulated bottom inset.
+Native Tab traversal and center-point hit-testing reach the note and footer, not
+merely the first visible choice. This is browser viewport and safe-area emulation,
+not physical-device or operating-system keyboard testing. `interactions-*-viewports.json`
+and matching screenshots retain geometry and focus evidence. The default run
+inspects actual question/tab, composer and approval glyphs in `interaction-fonts.json`,
+`composer-action-fonts.json` and `approval-actions-fonts.json`.
+
+`send-recovery.json` captures native transport loss before delivery and after an
+actual applied receipt has reached Chrome but before the application receives it.
+No receipt or model state is invented. Reload/reconnect resolves the same mutation
+identity, sometimes from canonical history rather than retransmission, while a
+newer draft survives navigation through both clients. Go independently counts one
+recorded input per fixture in the runtime transcript. This scenario is transport
+recovery, not proof of daemon identity-changing resume.

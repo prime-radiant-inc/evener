@@ -323,6 +323,110 @@ describe("MutationDispatcher", () => {
     expect(await outbox.listOutbox("ref-a")).toEqual([]);
   });
 
+  test.each(["before completion", "after completion"])(
+    "a readiness wake %s of a fenced drain is not lost",
+    async (timing) => {
+      const outbox = storage(new IDBFactory(), `retiring-gate-${timing}`, ["mutation-a"]);
+      const record = await outbox.enqueueIntent(queueIntent());
+      const client = new FakeClient();
+      client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId) }));
+      let gateOpen = false;
+      const getClient = vi.fn(() => (gateOpen ? client : null));
+      const dispatcher = new MutationDispatcher(outbox, { getClient });
+      const blocked = dispatcher.dispatchTargets(["ref-a"]);
+      expect(getClient).toHaveBeenCalledTimes(1);
+      expect(client.calls).toEqual([]);
+
+      // The first call synchronously observes the closed owner gate. A wake
+      // can arrive before the drain's await resumes, or in the next microtask
+      // after runTarget returns but before a separate promise.finally cleanup.
+      if (timing === "after completion") await Promise.resolve();
+      gateOpen = true;
+      const ready = dispatcher.dispatchTargets(["ref-a"]);
+      const coalesced = dispatcher.dispatchTargets(["ref-a"]);
+      await Promise.all([blocked, ready, coalesced]);
+
+      expect(queueCalls(client).map((params) => params.clientMutationId)).toEqual([record.clientMutationId]);
+      expect(await outbox.listOutbox("ref-a")).toEqual([]);
+      await outbox.close();
+    },
+  );
+
+  test.each([1, 2])("a readiness wake at method recheck %s is retained", async (blockedCheck) => {
+    const outbox = storage(new IDBFactory(), `method-gate-${blockedCheck}`, ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent());
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId) }));
+    const blocked = deferred<void>();
+    let methodChecks = 0;
+    let released = false;
+    const dispatcher = new MutationDispatcher(outbox, {
+      getClient: (_ref, method) => {
+        if (method !== undefined && !released && ++methodChecks === blockedCheck) {
+          blocked.resolve();
+          return null;
+        }
+        return client;
+      },
+    });
+    const first = dispatcher.dispatchTargets(["ref-a"]);
+    await blocked.promise;
+    expect(client.calls).toEqual([]);
+    released = true;
+    await Promise.all([first, dispatcher.dispatchTargets(["ref-a"])]);
+    expect(queueCalls(client).map((params) => params.clientMutationId)).toEqual([record.clientMutationId]);
+    expect(await outbox.listOutbox("ref-a")).toEqual([]);
+    await outbox.close();
+  });
+
+  test("coalesced wakes do not spin while readiness stays closed", async () => {
+    const outbox = storage(new IDBFactory(), "still-fenced", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent());
+    const getClient = vi.fn(() => null);
+    const dispatcher = new MutationDispatcher(outbox, { getClient });
+    await Promise.all([dispatcher.dispatchTargets(["ref-a"]), dispatcher.dispatchTargets(["ref-a"])]);
+    expect(getClient).toHaveBeenCalledTimes(2);
+    expect(await outbox.getOutbox(record.clientMutationId)).toMatchObject({ attempted: false, state: "submitting" });
+    await outbox.close();
+  });
+
+  test.each(["transient", "timeout", "blockedUnknown", "invalidReceipt"])(
+    "%s attempt outcome stops despite coalesced dispatch requests",
+    async (outcome) => {
+      const outbox = storage(new IDBFactory(), `stop-coalesced-${outcome}`, ["mutation-a"]);
+      const record = await outbox.enqueueIntent(queueIntent());
+      const client = new FakeClient();
+      const entered = deferred<void>();
+      const response = deferred<TurnQueueResponse>();
+      client.on("turn/queue", () => {
+        entered.resolve();
+        return response.promise;
+      });
+      const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+      const first = dispatcher.dispatchTargets(["ref-a"]);
+      await entered.promise;
+      const joined = dispatcher.dispatchTargets(["ref-a"]);
+      if (outcome === "invalidReceipt") response.resolve({ receipt: receipt("wrong-id") });
+      else if (outcome === "timeout") response.reject(new RequestTimeoutError("response lost"));
+      else
+        response.reject(
+          new WireError("refused", -32014, {
+            clientMutationId: record.clientMutationId,
+            mutationOutcome: outcome === "transient" ? "notAccepted" : "unknown",
+            retryDisposition: outcome === "transient" ? "automatic" : "blocked",
+            cause: outcome === "transient" ? "connectionBackpressure" : "persistenceUnavailable",
+          }),
+        );
+      await Promise.all([first, joined]);
+      expect(queueCalls(client)).toHaveLength(1);
+      expect(await outbox.getOutbox(record.clientMutationId)).toMatchObject({
+        state: outcome === "blockedUnknown" ? "blockedUnknown" : "submitting",
+        attempted: outcome !== "transient",
+      });
+      await outbox.close();
+    },
+  );
+
   test("rechecks the target gate after the extant-record read and before sending", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "gate-race", ["mutation-a"]);

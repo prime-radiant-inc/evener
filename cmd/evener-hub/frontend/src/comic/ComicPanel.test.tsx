@@ -1,5 +1,7 @@
+import { hydrateThread, type TranscriptAuthorship } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
+import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, render, screen } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import { initNavigation, resetNavigationStoreForTests } from "../stores/navigation/store";
@@ -7,7 +9,7 @@ import { ComicApp } from "./ComicApp";
 import { ComicPanel } from "./ComicPanel";
 import { composeComicRows } from "./layout";
 import { createComicMeasurer, loadComicFonts } from "./measure";
-import type { ComicEntry } from "./projection";
+import { type ComicEntry, projectComicConversation } from "./projection";
 
 const browser = vi.hoisted(() => ({ client: null as FakeClient | null }));
 vi.mock("../shell/useBrowserConnection", () => ({
@@ -24,6 +26,10 @@ function entry(fields: Partial<ComicEntry> = {}): ComicEntry {
     sourceLabel: "Human",
     text: "Original\t words\n\nremain",
     streaming: false,
+    persona:
+      fields.speaker === undefined || fields.speaker === "human"
+        ? { key: "human", character: "anna", name: "Anna", badge: "human" }
+        : undefined,
     ...fields,
   } as ComicEntry;
 }
@@ -137,6 +143,99 @@ test("complete delegate identity stays available on narrow panels", () => {
   expect(container.querySelector("[data-comic-source]")?.textContent).toContain(value.sourceLabel);
   expect(container.querySelector("[data-comic-source]")?.textContent).toContain(value.delegateResult?.status);
   expect(container.querySelector("img[src$='tiki-neutral.png']")).not.toBeNull();
+});
+
+test.each([
+  undefined,
+  { author: { kind: "unknown" }, inherited: false },
+  { author: { kind: "system" }, inherited: false },
+  { author: { kind: "agent", sessionRef: "unqualified" }, inherited: false },
+] satisfies (TranscriptAuthorship | undefined)[])(
+  "unproven reasoning author %# keeps literal caption and background without a character",
+  (authorship) => {
+    const text = "  Original thought\n\n🧭 stays literal.  ";
+    const model = hydrateThread(
+      {
+        thread: wireThread("local:root", {
+          turns: [
+            {
+              id: "turn",
+              status: "completed",
+              itemsView: "full",
+              items: [{ type: "reasoning", id: "thought", turnId: "turn", text, authorship }],
+            },
+          ],
+        }),
+      },
+      "local:root",
+      0,
+    );
+    const entries = projectComicConversation(model);
+    expect(entries).toHaveLength(1);
+    for (const value of entries) {
+      expect(value.persona).toBeUndefined();
+      const { container } = render(panel(value));
+      expect(container.querySelector("[data-comic-text]")?.textContent).toBe(text);
+      expect(container.querySelector("[data-comic-balloon]")?.getAttribute("data-comic-balloon")).toBe("caption");
+      expect(container.querySelector("[data-comic-scene]")?.getAttribute("data-comic-scene")).toBe("room");
+      expect(container.querySelectorAll("[data-comic-scene] img")).toHaveLength(0);
+    }
+  },
+);
+
+test("equal delegate names and IDs retain their distinct owners in comic panels", () => {
+  const owners = ["beta:root", "delta:root"];
+  const name = "Review";
+  const delegateId = "dlg_shared";
+  const model = hydrateThread(
+    {
+      thread: wireThread("local:root", {
+        turns: [
+          {
+            id: "turn",
+            status: "completed",
+            itemsView: "full",
+            items: owners.map((ownerRef, index) => ({
+              type: "agentMessage" as const,
+              id: `reply-${index}`,
+              turnId: "turn",
+              text: `Reply from ${ownerRef}`,
+              authorship: {
+                author: {
+                  kind: "agent" as const,
+                  sessionRef: ownerRef.replace(":root", ":child"),
+                  ownerRef,
+                  delegateId,
+                  delegateName: name,
+                },
+                inherited: true,
+              },
+            })),
+          },
+        ],
+      }),
+    },
+    "local:root",
+    0,
+  );
+  const entries = projectComicConversation(model);
+  expect(entries).toHaveLength(2);
+  expect(entries.map((value) => value.persona?.character)).toEqual(["denise", "denise"]);
+  const { container } = render(entries.map((value) => <div key={value.id}>{panel(value)}</div>));
+  const articles = [...container.querySelectorAll("article")];
+  expect(articles).toHaveLength(2);
+  articles.forEach((article, index) => {
+    for (const identity of [
+      article.getAttribute("aria-label"),
+      article.querySelector("[data-comic-identity]")?.textContent,
+    ]) {
+      expect(identity).toContain(name);
+      expect(identity).toContain(delegateId);
+      expect(identity).toContain(owners[index]);
+    }
+    expect(article.querySelector("img[src$='denise-neutral.png']")).not.toBeNull();
+    expect(article.querySelector("[data-comic-text]")?.textContent).toBe(`Reply from ${owners[index]}`);
+  });
 });
 
 test("turn-error captions keep their canonical turn anchor", () => {

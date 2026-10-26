@@ -12,6 +12,13 @@ a retry, refusal, banner, or repair action.
 Version skew between hub, daemons, clients and remote hubs follows the
 direction rules in the [compatibility policy](README.md#compatibility).
 
+The additional [Comic Chat client](comic-chat.md) at `/comic` is a browser
+presentation, not a parallel session backend. S02 owns shared composer submission
+and recovery, S05 owns canonical history, and S10 owns delegate identity/activity.
+Comic consumes those owners for literal panels and explicit child readers. Its
+root questions and approvals reuse the shared controls, while inline children
+remain readers. The regular `/s/:ref` client stays available and visually separate.
+
 ## How the product fits together
 
 ```mermaid
@@ -96,6 +103,11 @@ identity, neutral unknowns and proven inheritance labels. They do not infer
 transcript authors from the containing reader or its immediate parent.
 Human questions and sandbox approvals retain interactive-root-only admission;
 child activity status and full-page navigation do not change that policy.
+
+S02's shared explicit-resume drive fences mutation dispatch through identity and
+outbox reconciliation, independently of overlapping reconnect reads. Releasing
+that owner wakes eligible work on both identities without disabling ordinary
+folded Send or bypassing Stop and recovery fences.
 
 For original transcript authors, **S10** owns durable author snapshots, first-live
 publication, indexed/history projection and preservation through ordinary and

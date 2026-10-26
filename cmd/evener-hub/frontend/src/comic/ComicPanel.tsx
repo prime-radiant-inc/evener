@@ -28,13 +28,15 @@ export function ComicPanel({
   scene: ComicScene;
   expression: ComicExpression;
 }): React.ReactElement {
-  const character = entry.persona?.character ?? (entry.speaker === "human" ? "anna" : "xeno");
+  const character = entry.persona?.character;
   const pose = character === "anna" ? expression : character === "xeno" ? stableXenoPose(entry.id) : "neutral";
   const continuation = slice.start > 0;
   const spoken = entry.kind === "dialogue" || entry.kind === "thought";
   const source = entry.kind === "caption" || entry.kind === "images";
   const text = entry.text.slice(slice.start, slice.end);
-  const author = entry.persona ? `${entry.persona.name} · ${entry.persona.badge}` : entry.sourceLabel;
+  const author = entry.persona
+    ? `${entry.persona.name} · ${entry.persona.badge}${entry.persona.ownerRef ? ` · ${entry.persona.ownerRef}` : ""}`
+    : entry.sourceLabel;
   const identity = `${author}${entry.inherited ? " · inherited" : ""}`;
   const label = entry.kind === "thought" ? `${identity} thought` : identity;
   return (
@@ -95,7 +97,7 @@ export function ComicPanel({
         </div>
       )}
       <div className={styles.stage} data-comic-scene={scene} aria-hidden="true">
-        <img className={styles.figure} src={`${ART}${character}-${pose}.png`} alt="" />
+        {character && <img className={styles.figure} src={`${ART}${character}-${pose}.png`} alt="" />}
       </div>
     </article>
   );

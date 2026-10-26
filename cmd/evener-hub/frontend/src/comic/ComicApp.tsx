@@ -73,9 +73,8 @@ export function ComicApp(): React.ReactElement {
         data-session-ref={route.kind === "session" ? route.ref : undefined}
       >
         {fontStatus === "unavailable" && (
-          <InlineNotice live="status" aria-label="Comic font setup">
-            Comic Sans could not load. For a personal build, place Comic.TTF and Comicbd.TTF in
-            public/webassets/comic-local/. The conversation remains available in the fallback font.
+          <InlineNotice live="status" aria-label="Comic font unavailable">
+            Comic Sans could not load. The conversation remains available in the fallback font.
           </InlineNotice>
         )}
         {route.kind === "invalid" ? (

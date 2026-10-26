@@ -1,18 +1,86 @@
-# Comic Chat personal client
+# Comic Chat client
 
 `/comic` is an additional Evener web client; it does not replace the existing hub. Its comic-panel units live in `cmd/evener-hub/frontend/src/comic/`. The reader composes literal source text into measured panels in one virtual scroll flow. The picker and reader remain usable without the Comic Sans files. Comic and plain presentation share the same source identities and foreground reader.
+
+## Routes and access
+
+`/comic` opens the existing-session picker. `/comic/s/<encoded-ref>` opens a
+conversation, with the complete AppWire ref encoded as one URL component:
+`local:<session-id>` or `<host>:<session-id>`. Child conversations use the same
+route with their authoritative child ref, never a display name. Refresh and
+browser history retain the URL; the ordinary `/s/<encoded-ref>` client remains
+available. Both clients use the hub's existing authentication and `/rpc`
+connection. Reading a saved or remote conversation does not launch a daemon.
+
+## Presentation and accessibility
+
+At 760 CSS pixels and below, panels recompose into one column rather than
+shrinking a desktop strip. Literal Markdown stays source text. Available thought
+content is expanded in source order; missing or redacted content is not invented.
+Routine tool text is hidden, while tool-produced images retain source attribution.
+The surrounding interface has no desktop title bars, menu bars or beveled chrome.
+
+Comic and plain views preserve semantic reading positions through reflow. The
+root respects reduced motion and safe-area padding, and shared controls retain
+their keyboard behavior. Narrow-screen checks must reach the question choices,
+note and final action, not merely capture their container. Browser viewport and
+safe-area emulation do not establish native touch inertia or device behavior.
 
 ## Original art and offline checks
 
 The selected 12 character poses, two backgrounds and six emotion icons are in `cmd/evener-hub/frontend/public/webassets/comic/`. The original art is from Microsoft's public [Comic Chat source release](https://github.com/microsoft/comic-chat/tree/48a162249484ab8d116c243e8203b0956d350c09), pinned to `48a162249484ab8d116c243e8203b0956d350c09`. [Art attribution](../../cmd/evener-hub/frontend/public/webassets/comic/ATTRIBUTION.md), the original [MIT notice](../../cmd/evener-hub/frontend/public/webassets/comic/LICENSE), the [selected asset manifest](../../cmd/evener-hub/frontend/public/webassets/comic/manifest.json) and [extraction guide](../../cmd/evener-hub/frontend/scripts/comic-assets/README.md) document origin, chosen AVB face/torso records and native-size PNG conversion. The four original Armando, Bolo, Denise and Tiki `.avb` files, all other referenced input files, source code and the historical archived EULA remain unchanged beneath `scripts/comic-assets/source/`. Their URLs, byte counts, Git SHA-1 blob IDs and SHA-256 values are frozen in `scripts/comic-assets/source-evidence.json` for offline reproduction.
 
-Run `PYTHONDONTWRITEBYTECODE=1 python3 cmd/evener-hub/frontend/scripts/comic-assets/verify.py` from the repository root. Pillow and ImageMagick `convert` are required locally. The verifier checks independently pinned original and selected hashes, verifies the source MIT notice, checks background/icon pixels against an independent decoder, and checks AVB bitmap mask/ink operations on multiple backdrops. Three Bolo fringe pixels are nearest-alpha approximations because a standard RGBA PNG cannot encode the original background-dependent bitwise mask; original white/black output remains exact. The historical EULA differs from Microsoft's current root MIT release; approval for future distribution has not been determined.
+Run `PYTHONDONTWRITEBYTECODE=1 python3 cmd/evener-hub/frontend/scripts/comic-assets/verify.py` from the repository root. Pillow and ImageMagick `convert` are required locally. The verifier checks independently pinned original and selected hashes, verifies the source MIT notice, checks background/icon pixels against an independent decoder, and checks AVB bitmap mask/ink operations on multiple backdrops. Three Bolo fringe pixels are nearest-alpha approximations because a standard RGBA PNG cannot encode the original background-dependent bitwise mask; original white/black output remains exact. The historical EULA is retained for provenance; the included artwork uses Microsoft's root MIT source release.
 
-## Personal-only Comic Sans setup
+## Bundled Comic Sans
 
-The personal preview may use **two already-authorized local** font files, genuine Comic Sans MS Regular/Bold 2.10. They are not part of the official Comic Chat art and **must not be committed, packaged for release, or deployed in font-bearing builds**. The existing personal font source lives outside the public web tree at `.superpowers/brainstorm/3112257-1792887793/font-source/`; see its README and EULA before local use. The regular file `Comic.TTF` has SHA-256 `b82c53776058f291382ff7e008d4675839d2dc21eb295c66391f6fb0655d8fc0`; bold `Comicbd.TTF` has `873361465d994994762d0b9845c99fc7baa2a600442ea8db713a7dd19f8b0172`.
+The client includes unmodified Comic Sans MS Regular 1.20 from Microsoft's
+explicit MIT Comic Chat release at `f53e4b6e8e2bce7dbf3ddc7e8f12dd55591f7b17`.
+The font and original MIT notice live in
+`cmd/evener-hub/frontend/public/webassets/comic-fonts/`.
+[Font attribution](../../cmd/evener-hub/frontend/public/webassets/comic-fonts/ATTRIBUTION.md)
+records the exact source, hashes, removal history and older archived notices.
+Only a regular face was present; the browser synthesizes bold from that face.
+No installed or privately licensed font is needed or included.
 
-For an authorized **local personal build only**, copy the two files manually to `cmd/evener-hub/frontend/public/webassets/comic-local/Comic.TTF` and `Comicbd.TTF`. The entire directory is gitignored. `comic.module.css` defines only `/webassets/comic-local/Comic.TTF` at weight 400 and `/webassets/comic-local/Comicbd.TTF` at weight 700, without `local()` fallback or download logic. `ComicApp` asks `document.fonts` to load both faces and announces an accessible setup status when either fails while navigation controls continue working. CI deliberately runs this usable missing-font state. Never publish the font-bearing `dist` or ship a build with these private files. Do not treat the unrelated Comic Neue preview font as a licensed substitute or commit it.
+`comic.module.css` serves `/webassets/comic-fonts/comic.ttf` with `@font-face`,
+without `local()` fallback or a build-time download. `ComicApp` waits for normal
+and bold text readiness. If loading fails, it reports the failure while the
+conversation and navigation remain usable. The asset regression checks the
+actual font bytes and unchanged MIT notice independently of browser rendering.
+
+The Comic root supplies its family through the existing `--font-sans` and
+`--font-prose` tokens so shared controls and question prose use the same lettering.
+AskDock's existing tab owns the narrow `--ask-tab-font` seam, with `revert` outside
+Comic to retain the ordinary client's user-agent font. Only Comic root defines
+that token; there is no descendant override, new widget or widget prop.
+Actual glyph inspection, not computed family names, checks questions, tabs,
+approval actions and Send. The browser guard also records regular-client fonts
+and geometry to detect theme leakage. The default guard loads the bundled font;
+`EVENER_COMIC_BLOCK_FONTS=1` exercises blocked-font fallback and usable controls.
+
+## Shared input and recovery
+
+The full-page root uses the shared composer source, structured editor, attachments,
+queue and `useComposerActions` owner. Send, Queue and Stop keep ordinary-client
+admission and durable mutation identities. A transport failure does not mean an
+accepted input should be sent again: canonical transcript reconciliation can
+settle an unacknowledged mutation. Newer edits remain separately owned through
+reload and navigation between ordinary and Comic clients.
+
+An explicit Send-driven resume owns dispatch for its source and resolved
+destination until identity and outbox reconciliation finish. Reconnect reads
+cannot release that ownership, even when they permit ordinary folded Send.
+Completion wakes eligible pending mutations with their original mutation IDs;
+Stop cancellation and failed-resume recovery keep their existing owners.
+
+Pending root questions use the existing AskDock and suppress the ordinary message
+surface. Sandbox requests use the existing approval card; neither arriving at a
+request nor reconnecting approves it. A late response belongs to the original
+root, not the conversation now on screen. Inline children remain read-only.
+Comic does not add upload, voice, session creation, configuration, forks or general
+job/watch controls; those remain in the ordinary client. Existing structured
+drafts and recovery remain shared, without new attachment-lifetime guarantees.
 
 ## Inline child readers
 
@@ -76,7 +144,7 @@ for the same child.
 
 The explicit **Open conversation** action selects the child's full-page route.
 Inline readers contain no composer or approval submission. Send, Stop and approval
-controls are separate work, not features delivered by inline expansion. Human
+controls belong to the full-page interactive root, not inline expansion. Human
 questions and sandbox approvals remain interactive-root-only. Child activity
 status is not a human question or approval, and opening a child does not change
 those admission rules.

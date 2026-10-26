@@ -372,6 +372,11 @@ the current child or parent. Neither path acquires a parent activity lease. Huma
 and sandbox approvals remain interactive-root-only; model-facing delegate
 attention is not a human request. See [Comic Chat](comic-chat.md#inline-child-readers).
 
+The Comic full-page root uses the shared composer actions, AskDock and sandbox
+approval rail. Activity strips do not submit answers, grant approval or start a
+daemon. Route changes and late action settlement stay with their captured root
+ref; activity status does not transfer that ownership to a newly selected child.
+
 [`SessionActivityStore`](../../appwire-client/typescript/sessionActivityStore.ts)
 owns summary and collection demand, request coalescing, cursor recovery,
 reconnects and stale-result rejection. Opening a collection observes it; closing

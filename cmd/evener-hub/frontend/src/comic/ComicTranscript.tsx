@@ -95,6 +95,13 @@ export function ComicTranscript({
   const fitsCache = useRef(new Map<string, boolean>());
   const lastPage = useRef<string | undefined>(undefined);
   const snapshots = useMemo(() => new Map([[comicPathKey([]), root], ...subchats.readers]), [root, subchats.readers]);
+  const entriesByPath = useMemo(
+    () =>
+      new Map(
+        [...snapshots].map(([path, snapshot]) => [path, new Map(snapshot.entries.map((entry) => [entry.id, entry]))]),
+      ),
+    [snapshots],
+  );
   const retainedAnchors = useRef(new Map<string, ComicReadingPosition>());
   const revision = useRef(0);
   const priorSnapshots = useRef(snapshots);
@@ -316,7 +323,34 @@ export function ComicTranscript({
         if (list.current?.isLayoutCurrent()) captureMovement(port);
       });
     };
-    const complete = () => {
+    const complete = (preserveStationary = false) => {
+      if (preserveStationary && port.scrollTop === movementStart.current && list.current?.isLayoutCurrent()) {
+        // A restored semantic offset need not be the first visible code unit
+        // after reflow. Check its current position, not a layout object's identity:
+        // cancelling history demand can publish a new layout without movement.
+        const position = anchor.current;
+        const source =
+          position.mode === "away" &&
+          [...port.querySelectorAll<HTMLElement>("[data-comic-entry]")].find(
+            (node) =>
+              node.dataset.comicEntry === position.entryId &&
+              node.dataset.comicSession === position.sessionRef &&
+              node.dataset.comicPath === comicPathKey(position.path) &&
+              Number(node.dataset.comicStart) <= position.offset &&
+              Number(node.dataset.comicEnd) > position.offset,
+          );
+        const point = source && position.mode === "away" ? textPoint(source, position.offset) : undefined;
+        if (
+          position.mode === "end"
+            ? isAtBottom(port)
+            : point && Math.abs(point.top - port.getBoundingClientRect().top - position.viewportOffset) <= 1
+        ) {
+          cancelAnimationFrame(frame);
+          moving.current = false;
+          movementStart.current = undefined;
+          return;
+        }
+      }
       // Completion permits capture without movement. If geometry is invalid,
       // keep moving set until a valid commit captures, never place the old anchor.
       movementStart.current = undefined;
@@ -359,7 +393,7 @@ export function ComicTranscript({
         pointer.cancelled = true;
         return;
       }
-      if (!pointer.cancelled && moving.current) complete();
+      if (!pointer.cancelled && moving.current) complete(true);
       pointer = undefined;
     };
     const scroll = () => {
@@ -372,7 +406,10 @@ export function ComicTranscript({
       captureMovement(port);
     };
     const selection = () => {
-      if (port.contains(document.getSelection()?.anchorNode ?? null)) cancel();
+      const selected = document.getSelection();
+      // Focusing a disclosure can emit a collapsed selectionchange after its
+      // click. That is not a text selection and must not cancel its destination.
+      if (selected && !selected.isCollapsed && port.contains(selected.anchorNode)) cancel();
     };
     const key = (event: KeyboardEvent) => {
       if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
@@ -477,10 +514,20 @@ export function ComicTranscript({
     const path = [...flow.path, flow.strip.key];
     const key = comicPathKey(path);
     const expanded = subchats.expandedPaths.some((p) => comicPathKey(p) === key);
+    const selectPosition = (position: ComicReadingPosition) => {
+      // The click can finish while layout is invalid. Its explicit destination
+      // supersedes the pointer's deferred capture, including its queued frame.
+      revision.current += 1;
+      moving.current = false;
+      movementStart.current = undefined;
+      commanded.current = undefined;
+      restoring.current = true;
+      save(position);
+    };
     if (expanded) {
       if (comicPathContains(path, anchor.current.path)) {
         retainedAnchors.current.set(key, anchor.current);
-        save({
+        selectPosition({
           mode: "away",
           sessionRef: flow.sessionRef,
           path: flow.path,
@@ -494,8 +541,7 @@ export function ComicTranscript({
       subchats.expand(flow.path, flow.strip);
       const retained = retainedAnchors.current.get(key);
       if (retained) {
-        save(retained);
-        restoring.current = true;
+        selectPosition(retained);
       }
     }
   };
@@ -510,6 +556,7 @@ export function ComicTranscript({
     save({ mode: "end", sessionRef, path: [] });
     if (committed.current) restore(committed.current);
   };
+  const endAnchorRow = anchor.current.mode === "end" ? (findComicFlowAnchorRow(rows, anchor.current) ?? -1) : -1;
   return (
     <div className={styles.reader} data-comic-mode={mode} data-comic-font={font}>
       <div className={styles.controls}>
@@ -566,18 +613,13 @@ export function ComicTranscript({
           dynamic
           getItemKey={(index) => rows[index]?.id ?? index}
           anchorToEnd={
-            anchor.current.mode === "end" &&
-            !rows.some(
-              (row, index) => row.kind === "panels" && index > (findComicFlowAnchorRow(rows, anchor.current) ?? -1),
-            )
+            anchor.current.mode === "end" && !rows.some((row, index) => row.kind === "panels" && index > endAnchorRow)
           }
           estimateSize={() => (mode === "comic" ? 380 : 180)}
           onLayout={restore}
           renderRow={(index) => {
             const flow = rows[index];
             if (!flow) return null;
-            const snapshot = snapshots.get(comicPathKey(flow.path));
-            const byId = new Map(snapshot?.entries.map((entry) => [entry.id, entry]));
             if (flow.kind !== "panels")
               return (
                 <div
@@ -660,7 +702,8 @@ export function ComicTranscript({
                 </div>
               );
             const row = flow.row;
-            const error = row.panels.some(({ slice }) => byId.get(slice.entryId)?.sourceTurnId !== undefined);
+            const byId = entriesByPath.get(comicPathKey(flow.path));
+            const error = row.panels.some(({ slice }) => byId?.get(slice.entryId)?.sourceTurnId !== undefined);
             return (
               <section
                 className={styles.row}
@@ -671,7 +714,7 @@ export function ComicTranscript({
                 data-comic-path={comicPathKey(flow.path)}
               >
                 {row.panels.map(({ slice, composition }) => {
-                  const entry = byId.get(slice.entryId);
+                  const entry = byId?.get(slice.entryId);
                   if (!entry) return null;
                   return (
                     <div

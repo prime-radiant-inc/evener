@@ -29,6 +29,10 @@ except where a line says so itself.
 - Repository reads do not clear recovery obligations or prove uncertain outbox
   rows absent. Tracked mutation reconciliation keeps that responsibility,
   including Stop ownership, FIFO and foldable/non-foldable recovery rules.
+- A readiness wake racing a retiring gated dispatch is retained. Dispatch stays
+  serialized per ref, and a still-closed gate does not spin. This handoff does
+  not retry transient refusals or uncertain transport outcomes inside the same
+  drive; pacing and authoritative reconciliation retain ownership of those.
 - Stale, canceled, retired and suppressed responses supply no recovery
   authority. Cache opening and generic model publication alone neither arm nor
   clear recovery obligations. Existing status-fold rules remain unchanged.

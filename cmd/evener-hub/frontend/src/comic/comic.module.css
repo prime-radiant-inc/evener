@@ -1,14 +1,8 @@
 @font-face {
   font-family: "Comic Sans Comic";
-  src: url("/webassets/comic-local/Comic.TTF") format("truetype");
+  src: url("/webassets/comic-fonts/comic.ttf") format("truetype");
+  font-style: normal;
   font-weight: 400;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Comic Sans Comic";
-  src: url("/webassets/comic-local/Comicbd.TTF") format("truetype");
-  font-weight: 700;
   font-display: swap;
 }
 
@@ -17,7 +11,11 @@
   --comic-paper: var(--surface-0);
   --comic-ink: var(--ink-hi);
   --comic-yellow: color-mix(in srgb, var(--ansi-bright-yellow) 40%, var(--surface-0));
-  --comic-font: "Comic Sans Comic", var(--font-sans);
+  /* Keep the fallback concrete: aliasing font-sans here would form a cycle. */
+  --comic-font: "Comic Sans Comic", "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-sans: var(--comic-font);
+  --font-prose: var(--comic-font);
+  --ask-tab-font: var(--comic-font);
   min-height: 100vh;
   background: var(--comic-paper);
   color: var(--comic-ink);

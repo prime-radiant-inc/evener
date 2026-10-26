@@ -135,26 +135,37 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
     const existing = this.#dispatching.get(targetRef);
     if (existing) return existing;
 
-    const dispatch = this.#runTarget(targetRef).finally(() => {
-      if (this.#dispatching.get(targetRef) === dispatch) this.#dispatching.delete(targetRef);
-    });
+    const dispatch = this.#runTarget(targetRef);
     this.#dispatching.set(targetRef, dispatch);
     return dispatch;
   }
 
   async #runTarget(targetRef: string): Promise<void> {
-    let observedRun = 0;
-    do {
-      observedRun = this.#requestedRuns.get(targetRef) ?? 0;
-      const shouldContinue = await this.#drainTarget(targetRef);
-      if (!shouldContinue) return;
-    } while (observedRun !== (this.#requestedRuns.get(targetRef) ?? 0));
+    try {
+      let observedRun = 0;
+      do {
+        observedRun = this.#requestedRuns.get(targetRef) ?? 0;
+        const canRerun = await this.#drainTarget(targetRef);
+        // A transport outcome owns its stop, even if discovery requested work
+        // during the attempt. Readiness/empty exits may honor a newer wake.
+        if (!canRerun) return;
+      } while (observedRun !== (this.#requestedRuns.get(targetRef) ?? 0));
+    } finally {
+      // Retire in the same continuation as the final requested-run check.
+      // A separate promise.finally leaves a completed run registered long
+      // enough for a readiness wake to join it and disappear.
+      this.#dispatching.delete(targetRef);
+      this.#requestedRuns.delete(targetRef);
+    }
   }
 
+  // True permits another pass ONLY for a newer dispatch request. A closed
+  // readiness gate is not a failed attempt, and must not swallow its release.
+  // False preserves pacing/readback after transient or uncertain outcomes.
   async #drainTarget(targetRef: string): Promise<boolean> {
     for (;;) {
       const client = this.#getClient(targetRef);
-      if (!isClientReady(client)) return false;
+      if (!isClientReady(client)) return true;
       const loaded = await this.#storage.nextDispatchable(targetRef);
       if (!loaded) return true;
 
@@ -165,13 +176,13 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
       // The method-aware recheck: the top-of-loop lookup answered for the ref
       // alone (it runs before nextDispatchable picks a record), so a host that
       // fences one queued verb must still be able to park THIS record here.
-      if (this.#getClient(targetRef, current.method) !== client) return false;
+      if (this.#getClient(targetRef, current.method) !== client) return true;
 
       if (!(await this.#storage.markAttempted(current.clientMutationId))) continue;
       // Keep the committed attempt evidence if this client was retired: another
       // tab may have dispatched the same record, so absence of this send is not
       // proof of non-delivery. Live recovery retries the original payload.
-      if (this.#getClient(targetRef, current.method) !== client) return false;
+      if (this.#getClient(targetRef, current.method) !== client) return true;
       const outcome = await this.#attempt(client, current);
       if (outcome === "stop") return false;
     }

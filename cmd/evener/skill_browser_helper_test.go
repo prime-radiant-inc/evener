@@ -42,6 +42,10 @@ import (
 // own command line; the testing package's own flag parse then fills it.
 var skillBrowserConfigFlag = flag.String("skill-browser-config", "", "private JSON config file naming workDir/stateDir/runDir/requestLog/controlPath; without it this helper does nothing")
 
+// Preserve the process launch environment before TestMain isolates ordinary tests.
+// Only an explicit production-launch config restores it; it is never written out.
+var skillBrowserLaunchEnv = os.Environ()
+
 // skillBrowserFixturePluginDir is the plugin root the Go owner lays out under
 // each helper's workDir before launching it: a plugin named "pkg" whose
 // skills/probe/SKILL.md is the catalog skill "pkg:probe" the browser scenarios
@@ -67,11 +71,12 @@ var serveTestCommunicateSeq atomic.Int64
 // names. The Go owner (TestSkillComposerBrowser) writes it before launching
 // this binary and owns every path in it.
 type skillBrowserHelperConfig struct {
-	WorkDir     string `json:"workDir"`
-	StateDir    string `json:"stateDir"`
-	RunDir      string `json:"runDir"`
-	RequestLog  string `json:"requestLog"`
-	ControlPath string `json:"controlPath"`
+	WorkDir     string   `json:"workDir"`
+	StateDir    string   `json:"stateDir"`
+	RunDir      string   `json:"runDir"`
+	RequestLog  string   `json:"requestLog"`
+	ControlPath string   `json:"controlPath"`
+	ServeArgs   []string `json:"serveArgs,omitempty"`
 }
 
 // skillBrowserReply is the scripted model output every ordinary turn returns.
@@ -105,7 +110,17 @@ func TestSkillBrowserDaemonHelper(t *testing.T) {
 			t.Fatalf("helper config field %q is empty", name)
 		}
 	}
-	isolateSkillBrowserHelperEnv(t, cfg)
+	if len(cfg.ServeArgs) == 0 {
+		isolateSkillBrowserHelperEnv(t, cfg)
+	} else {
+		os.Clearenv()
+		for _, entry := range skillBrowserLaunchEnv {
+			key, value, _ := strings.Cut(entry, "=")
+			if err := os.Setenv(key, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 
 	adapter, err := newSkillBrowserAdapter(cfg.RequestLog)
 	if err != nil {
@@ -149,6 +164,12 @@ func TestSkillBrowserDaemonHelper(t *testing.T) {
 			"--plugin-dir", pluginDir,
 			"--enabled-plugins="+skillBrowserFixturePluginName,
 		)
+	}
+	if len(cfg.ServeArgs) > 0 {
+		if cfg.ServeArgs[0] != "serve" {
+			t.Fatalf("resolved helper launch is not serve: %q", cfg.ServeArgs[0])
+		}
+		args = append([]string(nil), cfg.ServeArgs[1:]...)
 	}
 
 	serveDone := make(chan error, 1)

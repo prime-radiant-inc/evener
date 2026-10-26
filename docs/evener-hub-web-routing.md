@@ -6,7 +6,11 @@ The [HTTP mux](../cmd/evener-hub/web.go) retains document, image, asset, auth,
 health, and subscription-debug surfaces.
 
 - Deep-linkable page routes include `/`, `/new`, `/s/:ref`, `/thread/:ref`,
-  `/settings`, `/settings/:section`, and `/credentials`.
+  `/settings`, `/settings/:section`, `/credentials`, `/comic`, and `/comic/s/:ref`.
+- Comic routes encode the complete qualified AppWire ref as one URL component.
+  `/comic` selects existing sessions; `/comic/s/:ref` is the alternate reader and
+  root composer, not a separate backend or authentication boundary. The ordinary
+  `/s/:ref` client stays available. See [Comic Chat](product/comic-chat.md).
 - `/s/:ref/images/:sha` serves session images through the
   [session route handler](../cmd/evener-hub/web_workspace.go).
 - `/doc/file` serves one session document in two representations: `format=raw`

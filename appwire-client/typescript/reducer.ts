@@ -14,6 +14,7 @@ import {
   type ThreadModel,
   type TurnModel,
 } from "./model";
+import { isValidTranscriptRef } from "./steeringNotifications";
 import type {
   AnyNotification,
   EvenerDelegateInfo,
@@ -314,8 +315,7 @@ function normalizeAuthorship(value: unknown): TranscriptAuthorship | undefined {
     }
     return { author: { kind }, inherited: value.inherited };
   }
-  const validRef = (ref: unknown): ref is string =>
-    typeof ref === "string" && /^[A-Za-z0-9._~-]+:[A-Za-z0-9._~-]+$/.test(ref) && !ref.split(":")[1]?.includes("..");
+  const validRef = (ref: unknown): ref is string => typeof ref === "string" && isValidTranscriptRef(ref);
   if (kind !== "agent" || !validRef(sessionRef)) return neutral;
   const hasOwner = ownerRef !== undefined && ownerRef !== "";
   const hasDelegate = delegateId !== undefined && delegateId !== "";

@@ -7,9 +7,12 @@ import {
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
-import { subagentOutcomesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
+import {
+  subagentOutcomesDelegatesResponse,
+  subagentOutcomesResponse,
+} from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useImperativeHandle, useRef } from "react";
+import { type ReactNode, useImperativeHandle, useRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { pagingByRef } from "../panes/session/transcript/transcriptPaging";
 import {
@@ -22,9 +25,10 @@ import { resetThreadsStoreForTests } from "../stores/threads";
 import { useThreadModel } from "../stores/useThreadModel";
 import * as widgets from "../widgets";
 import { ComicTranscript } from "./ComicTranscript";
+import * as comicRows from "./comicRows";
 import { type ComicDelegateStrip, projectComicDelegates } from "./delegates";
 import type { ComicEntry } from "./projection";
-import { readComicPosition, writeComicPosition } from "./readerPosition";
+import { type ComicReadingPosition, readComicPosition, writeComicPosition } from "./readerPosition";
 import { useComicReader } from "./useComicReader";
 import { type ComicSubchatState, useComicSubchats } from "./useComicSubchats";
 
@@ -114,6 +118,91 @@ test("uses one scroll port through view changes and cancels restoration at lates
   mounted.unmount();
   expect(document.querySelector("[data-comic-probe]")).toBeNull();
 });
+test("looks up the end anchor once per render when presentation changes without changing rows", async () => {
+  const entries = Array.from({ length: 40 }, (_, index) => ({ ...entry, id: `message-${index}`, sourceIndex: index }));
+  const lookup = vi.spyOn(comicRows, "findComicFlowAnchorRow");
+  const virtualList = vi.spyOn(widgets, "VirtualList");
+  const mounted = render(<Reader entries={entries} older={history()} />);
+  await waitFor(() => expect(mounted.container.querySelectorAll("[data-comic-row]").length).toBeGreaterThan(1));
+  lookup.mockClear();
+  virtualList.mockClear();
+
+  fireEvent.change(screen.getByRole("combobox", { name: "Scene" }), { target: { value: "field" } });
+
+  expect(virtualList).toHaveBeenCalled();
+  expect(lookup).toHaveBeenCalledTimes(virtualList.mock.calls.length);
+  expect(mounted.container.querySelectorAll("[data-comic-row]").length).toBeGreaterThan(1);
+});
+
+test("indexes each reader once and reuses its entries across visible rows and presentation changes", async () => {
+  const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+  const entities = buildEntityView({
+    sessionRef: model.ref,
+    tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  const original = projectComicDelegates(model, entities)[0];
+  if (!original) throw new Error("Fixture has no delegate");
+  const strip = { ...original, ownerRef: "local:test" };
+  const entries = [{ ...entry }, { ...entry, id: "second", sourceIndex: 1 }];
+  const childEntry = { ...entry, text: "CHILD_FIRST" };
+  const childSecond = { ...entry, id: "second", sourceIndex: 1, text: "CHILD_SECOND" };
+  const childEntries = [childEntry, childSecond];
+  const rootMap = vi.spyOn(entries, "map");
+  const childMap = vi.spyOn(childEntries, "map");
+  const child = {
+    ref: strip.childRef,
+    path: [strip.key],
+    entries: childEntries,
+    history: history(),
+    activity: { snapshot: null, entities: new Map(), strips: [], context: {}, loadMore: async () => {} },
+  };
+  const subchats = {
+    readers: new Map([[JSON.stringify(child.path), child]]),
+    expandedPaths: [child.path],
+    expand() {},
+    collapse() {},
+  };
+  const older = history();
+  const mounted = render(<Reader entries={entries} older={older} strips={[strip]} subchats={subchats} />);
+  const checkContent = (rootText: string, childText: string) => {
+    expect(
+      mounted.container.querySelector('[data-comic-session="local:test"] [data-comic-entry="m"] [data-comic-text]')
+        ?.textContent,
+    ).toBe(rootText);
+    expect(
+      mounted.container.querySelector(
+        `[data-comic-session="${strip.childRef}"] [data-comic-entry="m"] [data-comic-text]`,
+      )?.textContent,
+    ).toBe(childText);
+  };
+  await waitFor(() => checkContent(entry.text, childEntry.text));
+  expect(rootMap).toHaveBeenCalledTimes(1);
+  expect(childMap).toHaveBeenCalledTimes(1);
+  rootMap.mockClear();
+  childMap.mockClear();
+
+  fireEvent.change(screen.getByRole("combobox", { name: "Scene" }), { target: { value: "field" } });
+
+  expect(rootMap).not.toHaveBeenCalled();
+  expect(childMap).not.toHaveBeenCalled();
+  checkContent(entry.text, childEntry.text);
+
+  const updatedEntry = { ...childEntry, text: "CHILD_UPDATED" };
+  const changed = { ...child, entries: [updatedEntry, childSecond] };
+  mounted.rerender(
+    <Reader
+      entries={entries}
+      older={older}
+      strips={[strip]}
+      subchats={{ ...subchats, readers: new Map([[JSON.stringify(child.path), changed]]) }}
+    />,
+  );
+  await waitFor(() => checkContent(entry.text, updatedEntry.text));
+});
+
 test("retains an absent saved anchor while shared pages advance, and stops on failure or user movement", async () => {
   writeComicPosition("local:test", {
     mode: "away",
@@ -434,7 +523,10 @@ test.each(["invalid capture", "delayed backward key"] as const)(
   },
 );
 
-async function mountGestureReader(atTop = false) {
+async function mountGestureReader(
+  atTop = false,
+  nested?: { node: ReactNode; position: Extract<ComicReadingPosition, { mode: "away" }> },
+) {
   // Deterministic consumer-protocol geometry, not native browser layout.
   let port: HTMLDivElement;
   const geometry = { sourceY: atTop ? 24 : 120, valid: true, height: 2000 };
@@ -483,7 +575,7 @@ async function mountGestureReader(atTop = false) {
       getBoundingClientRect: () => source.getBoundingClientRect(),
     } as unknown as Range;
   });
-  const position = {
+  const position = nested?.position ?? {
     mode: "away" as const,
     sessionRef: "local:test",
     path: [],
@@ -493,9 +585,13 @@ async function mountGestureReader(atTop = false) {
   };
   writeComicPosition("local:test", position);
   const older = history();
-  const mounted = render(<Reader older={older} />);
+  const mounted = render(nested?.node ?? <Reader older={older} />);
   port = mounted.container.querySelector("[data-comic-scroll]")!.firstElementChild as HTMLDivElement;
-  await waitFor(() => expect(port.querySelector('[data-comic-entry="m"]')).not.toBeNull());
+  await waitFor(() =>
+    expect(
+      port.querySelector(`[data-comic-entry="${position.mode === "away" ? position.entryId : "m"}"]`),
+    ).not.toBeNull(),
+  );
   act(() => publish!());
   const frames = new Map<number, FrameRequestCallback>();
   let frameID = 0;
@@ -513,21 +609,29 @@ async function mountGestureReader(atTop = false) {
   return { port, geometry, publish: () => act(() => publish!()), place, frame, older, mounted, position };
 }
 
-test("settles a completed non-scrolling pointer gesture before reflow", async () => {
-  const { port, geometry, publish, frame, older, mounted, position } = await mountGestureReader();
-  expect(geometry.sourceY - port.scrollTop).toBe(position.viewportOffset);
-  expect(readComicPosition("local:test")).toEqual(position);
-  fireEvent.pointerDown(port);
-  fireEvent.pointerUp(port);
-  frame();
-  expect(older.cancelOlder).toHaveBeenCalledTimes(1);
-  expect(port.scrollTop).toBe(96);
-  geometry.valid = true;
-  geometry.sourceY = 220;
-  publish();
-  expect(geometry.sourceY - port.scrollTop).toBe(position.viewportOffset);
-  mounted.unmount();
-});
+test.each([false, true])(
+  "retains stationary pointer source across a layout publication: %s",
+  async (publishDuringClick) => {
+    const { port, geometry, publish, frame, older, mounted, position } = await mountGestureReader();
+    expect(geometry.sourceY - port.scrollTop).toBe(position.viewportOffset);
+    expect(readComicPosition("local:test")).toEqual(position);
+    // The restored semantic offset is 7, but this committed line's first visible
+    // offset is 0. A stationary gesture must retain the former, not recapture it.
+    fireEvent.pointerDown(port);
+    if (publishDuringClick) publish();
+    fireEvent.pointerUp(port);
+    frame();
+    expect(older.cancelOlder).toHaveBeenCalledTimes(1);
+    expect(port.scrollTop).toBe(96);
+    expect(readComicPosition("local:test")).toEqual(position);
+    geometry.valid = true;
+    geometry.sourceY = 220;
+    publish();
+    expect(geometry.sourceY - port.scrollTop).toBe(position.viewportOffset);
+    expect(readComicPosition("local:test")).toEqual(position);
+    mounted.unmount();
+  },
+);
 
 test("keeps touch pan cancellation pending until scrolling after an invalid-to-valid layout", async () => {
   const { port, geometry, publish, place, frame, older, mounted, position } = await mountGestureReader();
@@ -823,6 +927,199 @@ test("restores only the saved child path and pages its absent source, not the pa
   expect(readComicPosition("local:test")).toEqual(position);
   mounted.unmount();
 });
+
+test.each(["collapse", "reopen"] as const)(
+  "nested %s supersedes a pointer awaiting a valid layout",
+  async (boundary) => {
+    const fixture = subagentOutcomesDelegatesResponse();
+    const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+    const entities = buildEntityView({
+      sessionRef: model.ref,
+      tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
+      turns: [],
+      stale: false,
+      ended: false,
+    });
+    const original = projectComicDelegates(model, entities)[0]!;
+    const strip = { ...original, ownerRef: "local:test", childRef: `local:toggle-child-${boundary}` };
+    const leafRef = `local:toggle-leaf-${boundary}`;
+    const leafKey = JSON.stringify([strip.childRef, "dlg_nested"]);
+    const client = new FakeClient("ready");
+    client.on("thread/read", (p) => ({
+      thread: wireThread(p.ref, {
+        turns: [
+          {
+            id: "t",
+            status: "completed",
+            itemsView: "full",
+            items: [
+              {
+                id: p.ref === leafRef ? "leaf-answer" : "child-answer",
+                type: "agentMessage",
+                text: "LITERAL_NESTED_SOURCE",
+              },
+            ],
+          },
+        ],
+      }),
+    }));
+    client.on("thread/unsubscribe", () => ({}));
+    client.on("evener/thread/activity/read", (p) => ({
+      context: { ...fixture.context, ref: p.ref },
+      scope: "session",
+      delegates: { known: true, total: p.ref === strip.childRef ? 1 : 0, active: 0, failed: 0, completed: 0 },
+      jobs: { known: true, total: 0, active: 0, failed: 0, completed: 0 },
+      watches: { known: true, total: 0, active: 0, failed: 0, completed: 0 },
+    }));
+    client.on("evener/thread/delegates/list", (p) => ({
+      ...fixture,
+      scope: "session",
+      context: { ...fixture.context, ref: p.ref },
+      delegates:
+        p.ref === strip.childRef
+          ? [{ ...fixture.delegates[0]!, ownerRef: strip.childRef, delegateId: "dlg_nested", childRef: leafRef }]
+          : [],
+    }));
+    connectionStore.getState().connect(client);
+    let children!: ComicSubchatState;
+    const older = history();
+    function Root() {
+      const subchats = useComicSubchats("local:test", undefined);
+      children = subchats.state;
+      return (
+        <>
+          {subchats.lifetimes}
+          <Reader older={older} strips={[strip]} subchats={subchats.state} />
+        </>
+      );
+    }
+    const position = {
+      mode: "away" as const,
+      sessionRef: leafRef,
+      path: [strip.key, leafKey],
+      entryId: "leaf-answer",
+      offset: 7,
+      viewportOffset: 24,
+    };
+    const { geometry, publish, frame, port, mounted } = await mountGestureReader(false, { node: <Root />, position });
+    expect(children.readers.size).toBe(2);
+    expect(readComicPosition("local:test")).toEqual(position);
+    expect(geometry.sourceY - port.scrollTop).toBe(24);
+    const button = () =>
+      mounted.container.querySelector<HTMLButtonElement>(`[data-comic-child-ref="${leafRef}"] [aria-expanded]`)!;
+    const click = (invalid: boolean) => {
+      const target = button();
+      fireEvent.pointerDown(target, { pointerId: 7, pointerType: "mouse" });
+      geometry.valid = !invalid;
+      fireEvent.pointerUp(target, { pointerId: 7, pointerType: "mouse" });
+      fireEvent.click(target);
+      geometry.valid = true;
+      publish();
+      frame();
+    };
+    click(boundary === "collapse");
+    expect(children.readers.size).toBe(1);
+    expect(readComicPosition("local:test")).toEqual({
+      mode: "away",
+      sessionRef: strip.childRef,
+      path: [strip.key],
+      entryId: leafKey,
+      offset: 0,
+      viewportOffset: 0,
+    });
+    expect(geometry.sourceY - port.scrollTop).toBe(0);
+    click(boundary === "reopen");
+    await waitFor(() => expect(children.readers.size).toBe(2));
+    // Native focus leaves a collapsed selection in the disclosure, not selected
+    // source text. Exercise its queued notification after the explicit toggle.
+    expect(document.getSelection()?.isCollapsed).toBe(true);
+    expect(document.getSelection()?.anchorNode).toBe(button());
+    fireEvent(document, new Event("selectionchange"));
+    publish();
+    expect(readComicPosition("local:test")).toEqual(position);
+    expect(geometry.sourceY - port.scrollTop).toBe(24);
+    mounted.unmount();
+  },
+);
+
+test.each(["continue", "cancel"] as const)(
+  "saved child restoration owns the next accepted page only while active: %s",
+  async (intent) => {
+    const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+    const entities = buildEntityView({
+      sessionRef: model.ref,
+      tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
+      turns: [],
+      stale: false,
+      ended: false,
+    });
+    const strip = {
+      ...projectComicDelegates(model, entities)[0]!,
+      ownerRef: "local:test",
+      childRef: `local:continuation-${intent}`,
+    };
+    const turn = (id: string) => ({
+      id,
+      status: "completed" as const,
+      itemsView: "full" as const,
+      items: [{ id, type: "agentMessage" as const, text: `SOURCE_${id}` }],
+    });
+    const client = new FakeClient("ready");
+    client.on("thread/read", (p) => ({
+      thread: wireThread(p.ref, { turns: [turn("current")] }),
+      olderCursor: "96",
+    }));
+    client.on("thread/unsubscribe", () => ({}));
+    const requests: string[] = [];
+    let acceptFirst!: (page: ThreadTurnsListResponse) => void;
+    client.on("thread/turns/list", (p) => {
+      requests.push(p.cursor!);
+      return requests.length === 1
+        ? new Promise<ThreadTurnsListResponse>((resolve) => {
+            acceptFirst = resolve;
+          })
+        : { data: [turn("saved-child")] };
+    });
+    connectionStore.getState().connect(client);
+    const parentHistory = history();
+    let childState!: ComicSubchatState;
+    function Root() {
+      const subchats = useComicSubchats("local:test", undefined);
+      childState = subchats.state;
+      return (
+        <>
+          {subchats.lifetimes}
+          <Reader older={parentHistory} strips={[strip]} subchats={subchats.state} />
+        </>
+      );
+    }
+    const position = {
+      mode: "away" as const,
+      sessionRef: strip.childRef,
+      path: [strip.key],
+      entryId: "saved-child",
+      offset: 4,
+      viewportOffset: 24,
+    };
+    writeComicPosition("local:test", position);
+    const mounted = render(<Root />);
+    await waitFor(() => expect(requests).toEqual(["96"]));
+    await waitFor(() => expect(childState.readers.get(JSON.stringify(position.path))?.history.loadingOlder).toBe(true));
+    if (intent === "cancel")
+      fireEvent.wheel(mounted.container.querySelector("[data-comic-scroll]")!.firstElementChild!, { deltaY: -100 });
+    await act(async () => acceptFirst({ data: [turn("middle")], nextCursor: "56" }));
+    await waitFor(() =>
+      expect(childState.readers.get(JSON.stringify(position.path))?.history.loadingOlder).toBe(false),
+    );
+    expect(requests).toEqual(intent === "continue" ? ["96", "56"] : ["96"]);
+    const child = childState.readers.get(JSON.stringify(position.path))!;
+    expect(child.entries.some((value) => value.id === "middle")).toBe(true);
+    expect(child.entries.some((value) => value.id === "saved-child")).toBe(intent === "continue");
+    expect(parentHistory.loadOlderReportingError).not.toHaveBeenCalled();
+    if (intent === "continue") expect(readComicPosition("local:test")).toEqual(position);
+    mounted.unmount();
+  },
+);
 
 test.each(["failure", "success"] as const)(
   "latest retires only Comic child demand before delayed %s",
