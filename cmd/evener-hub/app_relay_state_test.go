@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 func newTestRelayHandle() (*hubRelayHandle, *bool) {
@@ -46,7 +47,7 @@ func publishState(r *hubRelay, handle *hubRelayHandle, state *relayKeyState) {
 }
 
 func TestHubRelayBindingARouteMovesItBetweenStates(t *testing.T) {
-	r := newHubRelay()
+	r := newHubRelay(nil, hubcore.WebConfig{}, nil)
 	handle, _ := newTestRelayHandle()
 	first := newTestRelayKeyState("k1")
 	second := newTestRelayKeyState("k2")
@@ -77,7 +78,7 @@ func TestHubRelayBindingARouteMovesItBetweenStates(t *testing.T) {
 }
 
 func TestHubRelayPendingStatesAreTrackedPerOwner(t *testing.T) {
-	r := newHubRelay()
+	r := newHubRelay(nil, hubcore.WebConfig{}, nil)
 	owner, _ := newTestRelayHandle()
 	other, _ := newTestRelayHandle()
 	a := newTestRelayKeyState("k")
@@ -110,7 +111,7 @@ func TestHubRelayPendingStatesAreTrackedPerOwner(t *testing.T) {
 }
 
 func TestHubRelayRemovingAKeyStateRequiresNoPublicationsAndOwnership(t *testing.T) {
-	r := newHubRelay()
+	r := newHubRelay(nil, hubcore.WebConfig{}, nil)
 	handle, _ := newTestRelayHandle()
 	other, _ := newTestRelayHandle()
 	state := newTestRelayKeyState("k")
@@ -136,7 +137,7 @@ func TestHubRelayRemovingAKeyStateRequiresNoPublicationsAndOwnership(t *testing.
 }
 
 func TestHubRelayRemovingAHandleReleasesEveryRegistration(t *testing.T) {
-	r := newHubRelay()
+	r := newHubRelay(nil, hubcore.WebConfig{}, nil)
 	handle, _ := newTestRelayHandle()
 	canonical := appwire.Ref{SourceID: "host", ThreadID: "thread"}
 	handle.canonical = canonical
@@ -170,7 +171,7 @@ func TestHubRelayRemovingAHandleReleasesEveryRegistration(t *testing.T) {
 }
 
 func TestHubRelayFinishingAHandleWaitsForInitializationAndCommands(t *testing.T) {
-	r := newHubRelay()
+	r := newHubRelay(nil, hubcore.WebConfig{}, nil)
 	handle, _ := newTestRelayHandle()
 
 	handle.initializing = true
@@ -199,7 +200,7 @@ func TestHubRelayFinishingAHandleWaitsForInitializationAndCommands(t *testing.T)
 }
 
 func TestHubRelayStoppedStatesDrainOnlyWhenIdle(t *testing.T) {
-	r := newHubRelay()
+	r := newHubRelay(nil, hubcore.WebConfig{}, nil)
 	handle, _ := newTestRelayHandle()
 	pending := newTestRelayKeyState("pending")
 	r.registerPendingStateLocked(handle, pending)
@@ -228,7 +229,7 @@ func TestHubRelayStoppedStatesDrainOnlyWhenIdle(t *testing.T) {
 }
 
 func TestHubRelayRetiringAHandleClosesItOnceIdle(t *testing.T) {
-	r := newHubRelay()
+	r := newHubRelay(nil, hubcore.WebConfig{}, nil)
 	handle, cancelled := newTestRelayHandle()
 	published := newTestRelayKeyState("published")
 	publishState(r, handle, published)
