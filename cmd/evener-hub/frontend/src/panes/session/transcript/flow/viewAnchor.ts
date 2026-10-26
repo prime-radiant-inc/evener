@@ -188,7 +188,7 @@ function focusMetadataFor(el: HTMLElement): CapturedFocusMetadata | undefined {
 }
 
 /** Capture the state that must survive a projected transcript replacement. */
-export function captureTranscriptView(
+export function captureElementView(
   el: HTMLElement,
   measure: (element: HTMLElement) => ScrollMetrics = readScrollMetrics,
   measureAnchors: (element: HTMLElement) => ViewAnchorPosition[] = readAnchorPositions,

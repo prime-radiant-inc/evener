@@ -16,7 +16,7 @@ import {
 } from "./transcriptViewRegistry";
 import { useTranscriptScroll } from "./useTranscriptScroll";
 import { useTranscriptViewRegistration } from "./useTranscriptViewRegistration";
-import { captureTopAnchor, captureTranscriptView, restoreTopAnchor, type ViewAnchorPosition } from "./viewAnchor";
+import { captureElementView, captureTopAnchor, restoreTopAnchor, type ViewAnchorPosition } from "./viewAnchor";
 
 // --- fixtures ------------------------------------------------------------
 
@@ -4288,7 +4288,7 @@ describe("registered transcript view preservation", () => {
     document.body.append(el);
     focusedDescendant.focus();
 
-    const captured = captureTranscriptView(
+    const captured = captureElementView(
       el,
       () => ({ scrollTop: 950, scrollHeight: 1000, clientHeight: 50 }),
       () => [{ id: "agent-4", sourceIndex: 4, index: 2, offset: 18, height: 96, isMessage: true }],

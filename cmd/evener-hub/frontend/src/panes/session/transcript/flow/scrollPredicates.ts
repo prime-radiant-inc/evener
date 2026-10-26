@@ -21,13 +21,12 @@ export function isAttentionWorthy(model: ThreadModel | undefined): boolean {
   );
 }
 
-// The error-anchor's failure signal is TURN-level (this rewrite's own
-// TurnModel.status/error, stamped by turn/completed - see reducer.test.ts's
-// EventError-shape tests), not legacy's tool-call-level "did this one call
-// fail" (contracts-transcript-scroll-liveness.md §5 line 114 talks about a
-// finalized tool call; the w4 fix-round report's item-9 writeup already
-// established turn.status === "failed" as this rewrite's equivalent
-// signal, confirmed against appwire/types.go's TurnStatusFailed). error is
+// The error-anchor's failure signal is TURN-level (TurnModel.status/error,
+// stamped by turn/completed - see reducer.test.ts's EventError-shape tests),
+// not a tool-call-level "did this one call fail"
+// (contracts-transcript-scroll-liveness.md §5 line 114 talks about a
+// finalized tool call; turn.status === "failed" is the equivalent signal,
+// confirmed against appwire/types.go's TurnStatusFailed). error is
 // `unknown` on TurnModel, so this only ever checks presence, never shape.
 export function isFailedTurn(turn: TurnModel): boolean {
   return turn.status === "failed" || turn.error !== undefined;

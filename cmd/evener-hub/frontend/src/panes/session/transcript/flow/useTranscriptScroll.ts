@@ -17,17 +17,17 @@
 // a freshly-opened session mid-transcript (or mis-time a yank). Doing both
 // would double-compensate every prepend.
 //
-// Design notes (see this task's report for the fuller reasoning):
+// Design notes:
 //  - "At bottom before the mutation" is measured continuously by the native
 //    scroll listener into wasAtBottomRef, NOT re-measured inside the
 //    content-changed effect (which runs AFTER the DOM already committed the
 //    new turns/items) - the ref always reflects the last REAL scroll
 //    position, which is inherently "pre-mutation" relative to whatever
 //    content change happens next.
-//  - `measure` is the injectable seam this wave's binding constraints call
-//    for (jsdom performs no real layout - see scrollMetrics.ts and
-//    VirtualList's own test suite doc comment); production defaults to
-//    reading the real DOM, tests substitute a controlled fake.
+//  - `measure` is the injectable seam for geometry (jsdom performs no real
+//    layout - see scrollMetrics.ts and VirtualList's own test suite doc
+//    comment); production defaults to reading the real DOM, tests
+//    substitute a controlled fake.
 //  - A prepend is detected by diffing the FIRST turn's id across renders,
 //    not an out-of-band "a loadOlder call is in flight" flag: a live append
 //    can land while a loadOlder request is still in flight, and diffing the

@@ -11,8 +11,8 @@ import {
 } from "./transcriptViewRegistry";
 import {
   anchorFromCapture,
+  captureElementView,
   captureTranscriptFocus,
-  captureTranscriptView,
   focusCapturedEntry,
   type PendingTranscriptViewRestore,
   positionForAnchor,
@@ -148,7 +148,7 @@ export function useTranscriptViewRegistration(
         if (focusResult === "missing") currentOptions.focusFallback?.();
       }
       pendingRef.current = null;
-      latestCaptureRef.current = captureTranscriptView(
+      latestCaptureRef.current = captureElementView(
         el,
         measure,
         measureAnchors,
@@ -218,7 +218,7 @@ export function useTranscriptViewRegistration(
       if (focusResult === "missing") currentOptions.focusFallback?.();
     }
     pendingRef.current = null;
-    latestCaptureRef.current = captureTranscriptView(
+    latestCaptureRef.current = captureElementView(
       el,
       measure,
       measureAnchors,
@@ -237,7 +237,7 @@ export function useTranscriptViewRegistration(
     const valid = !!el && !!committed?.isCurrent() && committed.virtualizer.scrollElement === el;
     if (before && (!valid || viewportChanged(before, el))) return el ? captureTranscriptFocus(el, before) : before;
     if (!el || !valid) return { anchorOffset: 0, normalizedOffset: 0, followingBottom: false };
-    const next = captureTranscriptView(
+    const next = captureElementView(
       el,
       currentOptions.measure,
       currentOptions.measureAnchors,
@@ -340,7 +340,7 @@ export function useTranscriptViewRegistration(
       ) {
         committed.syncReaderMovement(beforeOffset);
         // The reader can choose visible content before its new size is committed.
-        latestCaptureRef.current = captureTranscriptView(
+        latestCaptureRef.current = captureElementView(
           el,
           currentOptions.measure,
           currentOptions.measureAnchors,
