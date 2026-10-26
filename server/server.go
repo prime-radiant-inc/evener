@@ -102,58 +102,9 @@ type JobStatusInfo struct {
 	Task             string `json:"task,omitempty"`
 }
 
-type DelegateStatusInfo struct {
-	RunGeneration       uint64                       `json:"run_generation"`
-	DelegateID          string                       `json:"delegate_id"`
-	OwnerSessionID      string                       `json:"owner_session_id"`
-	RootSessionID       string                       `json:"root_session_id"`
-	ChildSessionID      string                       `json:"child_session_id"`
-	TranscriptRef       string                       `json:"transcript_ref"`
-	ParentDelegateID    string                       `json:"parent_delegate_id,omitempty"`
-	Type                string                       `json:"type"`
-	Lifecycle           string                       `json:"lifecycle"`
-	Phase               string                       `json:"phase"`
-	Status              string                       `json:"status"`
-	Outcome             string                       `json:"outcome,omitempty"`
-	Reason              string                       `json:"reason,omitempty"`
-	Error               string                       `json:"error,omitempty"`
-	Terminal            bool                         `json:"terminal,omitempty"`
-	Resumable           bool                         `json:"resumable"`
-	NeedsAttention      bool                         `json:"needs_attention"`
-	NotResumableReason  string                       `json:"not_resumable_reason,omitempty"`
-	ProjectionRevision  uint64                       `json:"projection_revision"`
-	Task                string                       `json:"task,omitempty"`
-	Description         string                       `json:"description,omitempty"`
-	AgentType           string                       `json:"agent_type,omitempty"`
-	RequestedModel      string                       `json:"requested_model,omitempty"`
-	ResolvedProfileID   string                       `json:"resolved_profile_id,omitempty"`
-	ResolvedModel       string                       `json:"resolved_model,omitempty"`
-	Model               string                       `json:"model,omitempty"`
-	ReasoningEffort     string                       `json:"reasoning_effort,omitempty"`
-	OriginTurnID        string                       `json:"origin_turn_id,omitempty"`
-	OriginToolCallID    string                       `json:"origin_tool_call_id,omitempty"`
-	OriginItemID        string                       `json:"origin_item_id,omitempty"`
-	RunStartedAt        string                       `json:"run_started_at,omitempty"`
-	RunEndedAt          string                       `json:"run_ended_at,omitempty"`
-	LatestActivityAt    string                       `json:"latest_activity_at,omitempty"`
-	RunningForMS        *int64                       `json:"running_for_ms,omitempty"`
-	QuietForMS          *int64                       `json:"quiet_for_ms,omitempty"`
-	DurationMS          *int64                       `json:"duration_ms,omitempty"`
-	PacketKind          string                       `json:"packet_kind,omitempty"`
-	Message             json.RawMessage              `json:"message,omitempty"`
-	StructuredResult    json.RawMessage              `json:"structured_result,omitempty"`
-	StructuredValid     *bool                        `json:"structured_result_valid,omitempty"`
-	StructuredReason    string                       `json:"structured_result_reason,omitempty"`
-	Warnings            []string                     `json:"warnings,omitempty"`
-	Diagnostics         []string                     `json:"diagnostics,omitempty"`
-	ExhaustionBudget    string                       `json:"exhaustion_budget,omitempty"`
-	ExhaustionLimit     int                          `json:"exhaustion_limit,omitempty"`
-	ExhaustionResumable *bool                        `json:"exhaustion_resumable,omitempty"`
-	DelegationAllowance int                          `json:"delegation_allowance,omitempty"`
-	ParentWatchGranted  bool                         `json:"parent_watch_granted,omitempty"`
-	Usage               *appwire.EvenerUsage         `json:"usage,omitempty"`
-	Worktree            *appwire.JobActivityWorktree `json:"worktree,omitempty"`
-}
+// DelegateStatusInfo is the agent's delegate read model, carried unchanged on
+// the daemon's detailed status.
+type DelegateStatusInfo = agent.DelegateStatusInfo
 
 type TurnSlotStatus struct {
 	InUse  int64 `json:"in_use"`

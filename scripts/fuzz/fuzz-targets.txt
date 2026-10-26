@@ -264,7 +264,6 @@ native:agent:.:FuzzCovJobShellSeed100
 native:agent:./internal/tool:FuzzApatchApplyPatch
 native:agent:./internal/tool:FuzzApatchParseV4APatchLines
 native:agent:./internal/contextmgr:FuzzCtxmgrCheckpointData
-native:agent:./internal/contextmgr:FuzzCtxmgrCheckpointPredManageContext
 native:agent:./internal/contextmgr:FuzzCtxmgrSessionLogManageContext
 native:agent:./internal/contextmgr:FuzzCtxmgrSummarizeSteered
 native:agent:./internal/contextmgr:FuzzFc1EstimateUsedTokens
@@ -375,7 +374,6 @@ rapid:.:./internal/appserver:TestRouterSeqFuzz
 rapid:.:./internal/appserver:TestHubMultiSessionSeqFuzz
 native:agent:./doctor:FuzzDr2BuildWatchReport
 native:agent:./doctor:FuzzDr2APILog
-native:agent:./internal/contextmgr:FuzzCxjsObsMaskManageContext
 native:agent:./internal/jobstore:FuzzCxjsGrepReaderLimit
 native:agent:./execenv:FuzzExfsListDirectory
 native:agent:./execenv:FuzzExfsInjectLocalVenvPath

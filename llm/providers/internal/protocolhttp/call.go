@@ -147,7 +147,7 @@ func authHeaderName(res registry.Resolved) string {
 // every value that must never reach a log: the resolved credential, the
 // credential headers, the value the authenticator wrote (a Codex or ADC
 // bearer token is not res.Credential.Value), and any userinfo the base URL
-// carries, as llm.BuildAPILogCredentialMaterial does for the adapters.
+// carries.
 func credentialMaterial(res registry.Resolved, httpReq *http.Request) llm.APILogCredentialMaterial {
 	header := authHeaderName(res)
 	names := []string{header}

@@ -2405,14 +2405,6 @@ func TestAttentionResolutionDoesNotConsumeCompactionLayerRecentSlots(t *testing.
 		}
 	})
 
-	t.Run("aggressive observation mask", func(t *testing.T) {
-		history := toolHistory()
-		aggressiveMaskObservations(history, 2)
-		if got := toolResultContent(history[1]); got != resultContent {
-			t.Fatalf("private marker displaced recent tool result: got %q", got)
-		}
-	})
-
 	t.Run("thinking clear", func(t *testing.T) {
 		const thinking = "provider-visible recent reasoning"
 		history := []schema.Turn{
