@@ -9,18 +9,17 @@
 // tab's doesn't).
 //
 // Reads status the SAME way Session.tsx's own header does: the live
-// ThreadModel in stores/threads.ts, mapped through liveness.ts's
-// cadenceStateForStatus - the one canonical wire-status -> CadenceState
+// ThreadModel in stores/threads.ts, mapped through sessionStatus.ts's
+// cadenceStateFor - the one canonical wire-status -> CadenceState
 // mapping, not a second copy of it. Subscribing via useThreadsStore (not a
 // one-time snapshot) is what makes the dot re-render live as a session's
 // status changes, exactly like the pane's own Cadence dot.
 import type { IDockviewPanelHeaderProps } from "dockview-core";
 import { DockviewDefaultTab } from "dockview-react";
-import { cadenceStateForStatus } from "../panes/session/liveness";
 import { useThreadsStore } from "../stores/threads";
 import { StatusDot } from "../widgets";
 import styles from "./PaneTab.module.css";
-import { SIGNAL_STATES } from "./sessionStatus";
+import { cadenceStateFor, SIGNAL_STATES } from "./sessionStatus";
 import type { PanePanelParams } from "./workspace";
 
 // A session pane's params carry its thread ref (SessionPaneParams, panes/
@@ -39,7 +38,7 @@ export function PaneTab(props: IDockviewPanelHeaderProps<PanePanelParams>) {
   // anywhere else in this file's neighbours (DockHost.tsx's own
   // threadName lookups).
   const statusType = useThreadsStore((s) => (ref === undefined ? undefined : s.threads.get(ref)?.status.type));
-  const state = statusType === undefined ? undefined : cadenceStateForStatus(statusType);
+  const state = statusType === undefined ? undefined : cadenceStateFor(statusType);
   return (
     // data-session-tab is the hold-hints overlay's anchor (shell/holdhints):
     // the session-cycling chip positions itself over the first session tab.

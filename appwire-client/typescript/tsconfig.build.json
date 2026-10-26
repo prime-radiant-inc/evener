@@ -86,6 +86,7 @@
     "sharedNotesAvailability.ts",
     "marketplaceSourceLabel.ts",
     "railSessionState.ts",
+    "sessionAttention.ts",
     "sessionActivity.ts",
     "sessionActivityStore.ts",
     "threadSubscription.ts",
