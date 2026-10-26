@@ -241,22 +241,27 @@ export class DraftLibrary {
 		const key = this.handoffKey(from, to);
 		this.pending.delete(key);
 		let cleanupFailed = false;
-		if (!this.pendingTo(to)) {
+		const hasOtherPending = this.pendingTo(to);
+		if (!hasOtherPending) {
 			try {
-				this.repository().removePendingHandoff?.(to);
+				this.repository().markPendingHandoffSettled?.(from, to);
 			} catch {
 				cleanupFailed = true;
-				try {
-					this.repository().markPendingHandoffSettled?.(from, to);
-				} catch {
-					// The in-memory stale entry still retries this launch.
-				}
 			}
 		}
+		let identitiesSettled = true;
 		try {
 			this.resumeIdentities?.()?.settleResumeIdentity(from, to);
 		} catch {
+			identitiesSettled = false;
 			cleanupFailed = true;
+		}
+		if (!hasOtherPending && identitiesSettled) {
+			try {
+				this.repository().removeSettledHandoff?.(from, to);
+			} catch {
+				cleanupFailed = true;
+			}
 		}
 		if (cleanupFailed) this.stale.set(key, { from, to });
 		else this.stale.delete(key);
@@ -266,15 +271,16 @@ export class DraftLibrary {
 		for (const [key, edge] of [...this.stale]) {
 			let cleaned = true;
 			try {
+				this.resumeIdentities?.()?.settleResumeIdentity(edge.from, edge.to);
+			} catch {
+				cleaned = false;
+			}
+			if (!cleaned) continue;
+			try {
 				const storage = this.repository();
 				storage.markPendingHandoffSettled?.(edge.from, edge.to);
 				if (storage.removeSettledHandoff) storage.removeSettledHandoff(edge.from, edge.to);
 				else if (!this.pendingTo(edge.to)) storage.removePendingHandoff?.(edge.to);
-			} catch {
-				cleaned = false;
-			}
-			try {
-				this.resumeIdentities?.()?.settleResumeIdentity(edge.from, edge.to);
 			} catch {
 				cleaned = false;
 			}
@@ -286,12 +292,14 @@ export class DraftLibrary {
 		if (this.pendingLoaded) return;
 		let loaded = true;
 		const raw: { from: DraftDestination; to: DraftDestination }[] = [];
+		const settledKeys = new Set(this.stale.keys());
 		try {
 			const storage = this.repository();
 			if (storage.readPendingHandoffs !== undefined && storage.writePendingHandoff !== undefined) {
 				raw.push(...storage.readPendingHandoffs());
 				for (const edge of storage.readSettledHandoffs?.() ?? []) {
 					const key = this.handoffKey(edge.from, edge.to);
+					settledKeys.add(key);
 					if (!this.stale.has(key)) this.stale.set(key, edge);
 				}
 			}
@@ -300,7 +308,8 @@ export class DraftLibrary {
 			loaded = false;
 		}
 		try {
-			raw.push(...(this.resumeIdentities?.()?.readResumeIdentities() ?? []));
+			for (const edge of this.resumeIdentities?.()?.readResumeIdentities() ?? [])
+				if (!settledKeys.has(this.handoffKey(edge.from, edge.to))) raw.push(edge);
 		} catch {
 			// The mutations database is failing too; a later open looks again.
 			loaded = false;
@@ -358,6 +367,27 @@ export class DraftLibrary {
 				});
 			else if (existing.rank === rank && dependsOn.length)
 				existing.dependsOn = uniqueDestinations([...(existing.dependsOn ?? []), ...dependsOn]);
+		}
+		// A recovered graph can reveal that an entry loaded earlier now belongs
+		// to a longer chain. Move the obsolete key onto its canonical terminal
+		// rather than leaving both the old and new transfer pending.
+		for (const [key, edge] of [...this.pending]) {
+			const terminal = followHandoffs(edge.to, raw);
+			if (sameDestination(terminal, edge.to)) continue;
+			const canonicalKey = this.handoffKey(edge.from, terminal);
+			const canonical = reconciled.get(canonicalKey);
+			const dependsOn = uniqueDestinations([
+				...(canonical?.dependsOn ?? []),
+				...(edge.dependsOn ?? []),
+				...immediateDependencies(edge.from, terminal, adjacency),
+			]);
+			reconciled.set(canonicalKey, {
+				from: edge.from,
+				to: terminal,
+				rank: Math.max(canonical?.rank ?? 0, edge.rank, handoffRank(edge.from, terminal, adjacency)),
+				...(dependsOn.length ? { dependsOn } : {}),
+			});
+			this.pending.delete(key);
 		}
 		// Downstream first, so an intermediate's composition wins the shared
 		// destination and the predecessor falls under the occupied-destination
@@ -443,15 +473,19 @@ export class DraftLibrary {
 			if (!sameDestination(edge.to, settlingFrom)) continue;
 			let cleaned = true;
 			try {
+				this.resumeIdentities?.()?.settleResumeIdentity(edge.from, edge.to);
+			} catch {
+				cleaned = false;
+			}
+			if (!cleaned) {
+				durable = false;
+				continue;
+			}
+			try {
 				const storage = this.repository();
 				storage.markPendingHandoffSettled?.(edge.from, edge.to);
 				if (storage.removeSettledHandoff) storage.removeSettledHandoff(edge.from, edge.to);
 				else if (!this.pendingTo(edge.to)) storage.removePendingHandoff?.(edge.to);
-			} catch {
-				cleaned = false;
-			}
-			try {
-				this.resumeIdentities?.()?.settleResumeIdentity(edge.from, edge.to);
 			} catch {
 				cleaned = false;
 			}

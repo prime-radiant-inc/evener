@@ -269,13 +269,18 @@ describe("submitting a message to a session", () => {
 					_hubId: string,
 					_ref: string,
 					_client: unknown,
-					options?: { onResolvedIdentity?: (ref: string) => void },
+					options: {
+						mayResumeFenced?: () => Promise<boolean>;
+						onResolvedIdentity?: (ref: string) => void;
+					} = {},
 				) => {
-					options?.onResolvedIdentity?.("local:resumed");
+					options.onResolvedIdentity?.("local:resumed");
 					return "reconciled" as const;
 				},
 			);
-			const runtime = { submit: async () => undefined, settleTarget };
+			// NativeMutationRuntime.submit now returns its admission; model it
+			// rather than returning an impossible undefined.
+			const runtime = { submit: async () => ({ clientMutationId: "admission-1" }), settleTarget };
 
 			await submitSessionMessage(
 				runtime,
