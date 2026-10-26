@@ -1317,6 +1317,58 @@ test("a ledger-cleanup failure keeps settlement across a cleared destination and
 	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
 });
 
+test("an immediate refusal persists settlement without a drafts mapping", async () => {
+	const f = fixture();
+	const completedA = await f.enqueue();
+	f.document.edit("current");
+	await editQueuedMessageIntoDraft(f.runtime, key, completedA, f.document);
+	await f.document.submitBuiltinCommand(async () => true);
+	const capturedA = await f.enqueue();
+	await editQueuedMessageIntoDraft(f.runtime, key, capturedA, f.document);
+	f.document.edit("A draft");
+	await f.enqueue();
+
+	const bRef = "session-b";
+	const bDestination = { hubId: destination.hubId, sessionRef: bRef };
+	const bKey = nativeMutationTargetKey(destination.hubId, bRef);
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: bKey,
+			wireRef: bRef,
+			threadId: "thread-b",
+			instanceId: "instance-b",
+		}),
+	).toHaveLength(1);
+	// B is occupied before the first handoff, so no drafts mapping is created.
+	f.repository.write(bDestination, { draft: "B draft", unconfirmed: null });
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	f.mutations.exec(
+		"CREATE TRIGGER reject_ledger_settle BEFORE DELETE ON resume_identity_edges WHEN OLD.from_ref = 'session' AND OLD.to_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'ledger cleanup failed'); END",
+	);
+	expect(library.handoff(destination, bDestination)).toBe(false);
+	expect(
+		f.drafts.prepare("SELECT settled FROM pending_draft_handoffs WHERE to_session_ref = 'session-b'").get(),
+	).toMatchObject({ settled: 1 });
+	f.mutations.exec("DROP TRIGGER reject_ledger_settle");
+	f.repository.remove(bDestination);
+
+	await f.reopen();
+	const recovered = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	recovered.retryPendingHandoffs();
+	expect(f.repository.read(destination).draft).toBe("A draft");
+	expect(f.repository.read(bDestination)).toEqual({ draft: "", unconfirmed: null });
+	expect(recovered.hasPendingHandoff(bDestination)).toBe(false);
+	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
+});
+
 test("ledger recovery replaces an obsolete pending destination", async () => {
 	const f = fixture();
 	const hub = destination.hubId;

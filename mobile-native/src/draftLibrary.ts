@@ -82,15 +82,15 @@ export class DraftLibrary {
 	handoff(from: DraftDestination, to: DraftDestination): boolean {
 		if (from.hubId === to.hubId && from.sessionRef === to.sessionRef) return true;
 		this.loadPendingHandoffs();
+		const source = this.open(from);
+		// The session identity changed whether or not the composition can move:
+		// a mounted screen must follow the resumed ref even while the graph is
+		// incomplete and the transfer stays deferred.
+		source.resolveIdentity(to);
 		if (this.graphIncomplete) {
 			this.deferHandoff(from, to);
 			return false;
 		}
-		const source = this.open(from);
-		// The session identity changed whether or not the composition can move:
-		// a mounted screen must follow the resumed ref even while the handoff is
-		// deferred or refused, or its sends keep addressing the retired one.
-		source.resolveIdentity(to);
 		let snapshot = source.getSnapshot();
 		if (!snapshot.loaded) {
 			source.retry();
