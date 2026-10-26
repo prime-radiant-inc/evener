@@ -86,3 +86,32 @@ func StateHomeForBucketDir(stateDir string) string {
 	}
 	return filepath.Dir(evener)
 }
+
+// HomeRootFile is one file or directory that used to live directly under a
+// legacy (~/.serf) or interim (~/.evener) home root, and the XDG root it
+// belongs under in the final layout.
+type HomeRootFile struct {
+	Name  string // basename under the home root
+	State bool   // true: XDG state root; false: XDG config root
+	Kind  string // migration report label
+}
+
+// HomeRootFiles is the complete inventory of what ~/.serf and ~/.evener held.
+// providers.toml/credentials.toml/hub.toml/launch.toml are user-editable
+// configuration and move to the XDG config root; auth-token/index.db/hub.lock/
+// run/deletions are machine-generated (or, for hub.lock and run,
+// runtime-coordination) state and move to the XDG state root. evener-migrate
+// moves these and the launch check uses the same list to decide whether a
+// home root still holds unmigrated data, so both always agree on what
+// "migrated" means.
+var HomeRootFiles = []HomeRootFile{
+	{Name: "providers.toml", Kind: "provider config"},
+	{Name: "credentials.toml", Kind: "credentials"},
+	{Name: "hub.toml", Kind: "hub config"},
+	{Name: "launch.toml", Kind: "launch config"},
+	{Name: "auth-token", State: true, Kind: "hub auth token"},
+	{Name: "index.db", State: true, Kind: "past-session index"},
+	{Name: "hub.lock", State: true, Kind: "hub lock"},
+	{Name: "run", State: true, Kind: "daemon rendezvous/log directory"},
+	{Name: "deletions", State: true, Kind: "deletion-fence state"},
+}

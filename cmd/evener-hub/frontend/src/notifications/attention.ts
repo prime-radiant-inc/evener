@@ -1,17 +1,21 @@
-import { approvalWaiting, type NavigationSessionSummary, needsResponseRest } from "@evener/appwire-client";
+import {
+  approvalWaiting,
+  attentionNeedsYou,
+  attentionState,
+  type NavigationSessionSummary,
+  needsResponseRest,
+} from "@evener/appwire-client";
 import type { NotificationsLoudScopePref } from "../stores/prefs";
 
 export type AttentionLevel = "working" | "needs_you" | "error" | "idle";
 
 export function levelFromState(state: string): AttentionLevel {
-  switch (state) {
-    case "active":
+  const attention = attentionState(state);
+  if (attentionNeedsYou(attention)) return "needs_you";
+  switch (attention) {
+    case "working":
       return "working";
-    case "awaiting":
-    case "warning":
-    case "restartRequired":
-      return "needs_you";
-    case "errored":
+    case "failed":
       return "error";
     default:
       return "idle";
