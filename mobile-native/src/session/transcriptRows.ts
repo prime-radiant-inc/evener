@@ -9,26 +9,26 @@
 //   to load), a turn that starts after ten quiet minutes, and a new day.
 import {
 	answeredAskUserSuffix,
-	type AskUserQuestion,
+	compactDuration,
 	contentVectorForConfig,
 	housekeepingAction,
 	mcpToolParts,
 	memoryMutation,
 	parseAskUserQuestions,
 	skillName,
-	type ThreadModel,
 	taskListChanges,
-	type ToolFamily,
-	type TurnModel,
-	type TranscriptDisplayConfigV1,
 	toolFamily,
+	type AskUserQuestion,
+	type ThreadModel,
+	type ToolFamily,
+	type TranscriptDisplayConfigV1,
+	type TurnModel,
 	words,
 } from "@evener/appwire-client";
 import { hubTime } from "../board/attention";
 import { readerKey } from "../readerPosition";
 import type { SessionAccounting } from "../transcriptPresentation";
 import { type RunStep, rowTurnId, type TimelineRow, timelineGap } from "../timeline";
-import { compactDuration } from "./format";
 import { type Ghost, shownGhosts } from "./ghosts";
 
 type RunRow = Extract<TimelineRow, { kind: "run" }>;

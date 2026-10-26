@@ -3,10 +3,9 @@
 // StreamRunner owns the ParseSSE call and the "stream ended without
 // completion" epilogue — the terminal-error selection, the attempt
 // bookkeeping and the final send — so the protocols cannot drift on these
-// mechanics. Each protocol still owns its per-event decode logic (and any
-// cancel()/finished bookkeeping it performs) via OnEvent, and a protocol with
-// more than one way to end without completing classifies that ending in
-// TerminalError.
+// mechanics. Each protocol still owns its per-event decode logic via OnEvent, and a
+// protocol with more than one way to end without completing classifies that
+// ending in TerminalError.
 package transport
 
 import (
@@ -42,9 +41,9 @@ type StreamRunner struct {
 	Attempt *APIAttemptCapture
 	// StatusCode is the HTTP response status for Attempt.
 	StatusCode int
-	// FinalEvent returns the terminal success event prepared by OnEvent. The
-	// runner appends Attempt before publishing this event.
-	FinalEvent func() *llm.StreamEvent
+	// Cancel stops the SSE parse once Finish has run: a provider may keep the
+	// body open after its terminal event.
+	Cancel context.CancelFunc
 	// Stream receives decoded events, including the terminal error event.
 	Stream *llm.ChanStream
 	// SSEOpts are passed through to ParseSSE (e.g. the stream-read timeout).
@@ -67,6 +66,25 @@ type StreamRunner struct {
 	// API can produce, and only the last of those says anything about whether
 	// the endpoint implements the API at all.
 	TerminalError func(parseErr error) error
+
+	// final is the terminal success event Finish held back so Run can append
+	// the attempt before publishing it.
+	final *llm.StreamEvent
+}
+
+// Finish records the decoded response as the stream's completion: it marks the
+// stream finished and cancels the parse. With an active attempt the Finish
+// event is held for Run, which publishes it after the attempt is appended;
+// otherwise it is sent immediately.
+func (r *StreamRunner) Finish(resp llm.Response) {
+	event := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &resp.Finish, Usage: &resp.Usage, Response: &resp}
+	if r.Attempt.Active() {
+		r.final = &event
+	} else {
+		r.Stream.Send(event)
+	}
+	*r.Finished = true
+	r.Cancel()
 }
 
 // incomplete builds the terminal error for a stream that ended without
@@ -78,17 +96,14 @@ func (r *StreamRunner) incomplete(parseErr error) error {
 	return llm.NewStreamError(r.Provider, r.IncompleteMsg, parseErr)
 }
 
-// Run drives the SSE decode loop. It never calls cancel(): any cancellation is
-// the adapter's responsibility inside OnEvent.
+// Run drives the SSE decode loop. It never cancels: cancellation happens in
+// Finish or in the adapter's OnEvent.
 func (r *StreamRunner) Run(ctx context.Context) {
 	parseErr := llm.ParseSSE(ctx, r.Resp.Body, func(ev llm.SSEEvent) error {
 		return r.OnEvent(ev)
 	}, r.SSEOpts...)
 
-	var terminalEvent *llm.StreamEvent
-	if r.FinalEvent != nil {
-		terminalEvent = r.FinalEvent()
-	}
+	terminalEvent := r.final
 	var terminalErr error
 	if !*r.Finished {
 		if err := ctx.Err(); err != nil {
