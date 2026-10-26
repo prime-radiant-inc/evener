@@ -39,6 +39,19 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Execute all four CLI and web tutorial scenarios
         run: node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web --out "$RUNNER_TEMP/tutorial-candidate"
+      - name: Summarize sanitized web tour failure diagnostics
+        if: failure()
+        continue-on-error: true
+        run: node docs-site/scripts/tours/diagnostics.mjs collect --out "$RUNNER_TEMP/tutorial-diagnostics"
+      - name: Retain sanitized web tour failure diagnostics
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: tutorial-failure-diagnostics
+          path: ${{ runner.temp }}/tutorial-diagnostics
+          retention-days: 7
+          if-no-files-found: ignore
       - name: Validate retained tutorial candidate
         run: node docs-site/scripts/tours/refresh.mjs validate --surfaces cli,web --out "$RUNNER_TEMP/tutorial-candidate"
       - name: Retain sanitized tutorial candidate for review
