@@ -61,78 +61,14 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if cfg.RunDir == "" || cfg.ResumeLocks == nil {
 		return appwire.Unavailable("local session ownership is not configured")
 	}
-	// A deleted target and a caller-rendered daemon identity are validated
-	// before the confirmed-stopped shortcut or any cancellation fence: a request
-	// that is going to be refused must not abort the in-flight Resume it can no
-	// longer address. confirmedStoppedWithoutClaim itself cancels active resumes
-	// on its stopResumes branch, so its validation and the caller's must both
-	// precede it. A nil identity preserves the ref-only Stop intent, which may
-	// legitimately abort a launch before an addressable claim exists.
-	if err := deletionFenceError(cfg, params.Ref, ref.ThreadID, ""); err != nil {
+	if done, err := validateForceStopRequest(ctx, cfg, params, ref); err != nil || done {
 		return err
 	}
-	if params.ExpectedDaemon != nil {
-		recoveryTarget := cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
-		if err := expectedDaemonRevalidationError(cfg, ref.ThreadID, recoveryTarget, params.ExpectedDaemon); err != nil {
-			return err
-		}
+	canceledResumes, entryResumeAliases, releaseEntryDrain, err := drainEntryResume(ctx, cfg, ref)
+	if err != nil {
+		return err
 	}
-	if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, true, params.ExpectedDaemon); err != nil {
-		return forceStopResumeStopError(err)
-	} else if stopped {
-		refreshAfterForceStop(ctx, cfg)
-		return nil
-	}
-	// A deletion record may name any alias in the ownership group of the
-	// Resume this drain would cancel, not only the requested alias. Resolve
-	// the group first and validate every alias's fence before the abort: a
-	// request a sibling-alias fence refuses must not cancel the in-flight
-	// Resume first — the ordering invariant the verified-process path keeps
-	// under its own reservations. The validation is final only while every
-	// alias's reservation stays held across the cancellation: by this
-	// request, or by an active Resume the drain is about to cancel, whose
-	// launch holds its aliases until the abort settles. A Resume between its
-	// registration and reacquiring its aliases holds nothing, so when
-	// another action holds one of the group's reservations it can release
-	// inside the check-to-cancel window and a deletion may publish after the
-	// check and before the abort — such a cancellation is deferred to the
-	// main path, which revalidates the deletion under its own reservations
-	// and complete ownership before its drain. New Resume admissions stay
-	// fenced across the drain by the stop fence itself.
-	// canceledResumes tracks whether this request actually stopped an active
-	// Resume: a refusal that follows keeps the fence's advance only when it
-	// does, because the stop attempt then already mutated the world those
-	// epochs guard.
-	var canceledResumes bool
-	// entryResumeAliases is the ownership group of the Resume that was active
-	// when the request arrived, resolved before any cancellation. The deletion
-	// validations below keep covering it whether the entry drain ran above
-	// or was deferred to the drain below.
-	var entryResumeAliases []string
-	if stopAliases := cfg.ResumeLocks.ActiveResumeStopAliases(ref.ThreadID); stopAliases != nil {
-		entryResumeAliases = stopAliases
-		reservationsHeld := tryLockForceStopReservations(cfg.ResumeLocks, stopAliases)
-		releaseReservations := func() {
-			if reservationsHeld {
-				unlockForceStopReservations(cfg.ResumeLocks, stopAliases)
-			}
-		}
-		if err := deletionFenceErrorForGroup(cfg, stopAliases); err != nil {
-			releaseReservations()
-			return err
-		}
-		if reservationsHeld || cfg.ResumeLocks.HeldByActiveResumes(stopAliases) {
-			if stop := cfg.ResumeLocks.BeginActiveResumeStop(ref.ThreadID); stop != nil {
-				canceledResumes = true
-				defer stop.Release()
-				if err := stop.Wait(ctx); err != nil {
-					releaseReservations()
-					return forceStopResumeStopError(err)
-				}
-			}
-		}
-		releaseReservations()
-	}
+	defer releaseEntryDrain()
 	recoveryTarget := cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
 	entry, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, recoveryTarget, params.ExpectedDaemon)
 	if err != nil {
@@ -172,56 +108,19 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	fenced := make(map[string]bool)
-	var descendantFences []*hubcore.ForceStopFence
-	// A refusal that has canceled nothing must not leave the descendant
-	// fences' connection sequences behind either — they advanced no
-	// admission epoch at begin, so the sequences are all a refusal gives
-	// back: existing descendant clients stay valid despite the refusal.
-	// Fences installed after the cancellation — the post-termination scan —
-	// are never rejected: termination was attempted and the stop's
-	// follow-through must stale connections admitted before it.
-	rejectDescendants := func() {
-		for _, fence := range descendantFences {
-			fence.Reject()
-		}
-	}
-	defer func() {
-		for _, fence := range descendantFences {
-			fence.Finish(false)
-		}
-	}()
-	fenceDescendants := func(scanCtx context.Context) error {
-		if entry.StateDir == "" {
-			return nil
-		}
-		ids, err := agent.SessionOwnedDelegateIDs(scanCtx, entry.StateDir, target.SessionID)
-		if err != nil {
-			return appwire.Unavailable(fmt.Sprintf("read daemon delegates: %v", err))
-		}
-		var added []string
-		for _, id := range ids {
-			if !fenced[id] {
-				fenced[id] = true
-				added = append(added, id)
-			}
-		}
-		if len(added) != 0 {
-			descendantFences = append(descendantFences, cfg.ResumeLocks.BeginForceStop(added))
-		}
-		return nil
-	}
+	descendants := &forceStopDescendants{locks: cfg.ResumeLocks, stateDir: entry.StateDir, sessionID: target.SessionID, fenced: make(map[string]bool)}
+	defer descendants.finish()
 	// These are admission fences, not aliases or durable resume targets. Hub
 	// restart drops the old connections and queued requests altogether.
-	if err := fenceDescendants(ctx); err != nil {
+	if err := descendants.scan(ctx); err != nil {
 		return err
 	}
 	// preCancellationDescendants are the descendant fences installed before
 	// the drain below: a post-drain refusal that canceled nothing rejects
 	// exactly these alongside its own recovery fence. The post-termination
-	// scan below appends to descendantFences only after termination was
+	// scan below appends to descendants.fences only after termination was
 	// attempted; its fences are never rejected.
-	preCancellationDescendants := slices.Clone(descendantFences)
+	preCancellationDescendants := slices.Clone(descendants.fences)
 	aliases := forceStopAliases(entry)
 	// The deletion fence covers the entry-active Resume's ownership group as
 	// well: a record naming one of its aliases must refuse this request the
@@ -259,7 +158,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 			// The refusal canceled nothing: the fence advanced no admission
 			// epoch at begin, so only the connection sequences — this
 			// fence's and the descendant fences' — roll back.
-			rejectDescendants()
+			descendants.reject()
 			fenceRecovery.Reject()
 			return err
 		}
@@ -282,7 +181,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 			// preserves still completes its recovery clear against the epoch
 			// it was admitted under; Reject rolls back only the connection
 			// sequences this fence — and the descendant fences — wrote.
-			rejectDescendants()
+			descendants.reject()
 			fenceRecovery.Reject()
 			return err
 		}
@@ -439,7 +338,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	// termination was in progress before releasing any recovery admission fence.
 	scanCtx, cancelScan := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancelScan()
-	if err := fenceDescendants(scanCtx); err != nil {
+	if err := descendants.scan(scanCtx); err != nil {
 		return err
 	}
 	if err := cfg.ResumeLocks.ConfirmForceStop(target.SessionID); err != nil {
@@ -447,6 +346,148 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	}
 	refreshAfterForceStop(ctx, cfg)
 	return nil
+}
+
+// forceStopDescendants holds the admission fences a force stop installs on the
+// stopped daemon's delegate sessions. Descendants share the stopped process but
+// keep independent transcript identities, so their old requests must expire
+// even after root ownership clears.
+type forceStopDescendants struct {
+	locks     *hubcore.ResumeLocks
+	stateDir  string
+	sessionID string
+	fenced    map[string]bool
+	fences    []*hubcore.ForceStopFence
+}
+
+// reject rolls back the connection sequences of every fence installed so far.
+// A refusal that has canceled nothing must not leave the descendant fences'
+// connection sequences behind — they advanced no admission epoch at begin, so
+// the sequences are all a refusal gives back: existing descendant clients stay
+// valid despite the refusal. Fences installed after the cancellation — the
+// post-termination scan — are never rejected: termination was attempted and the
+// stop's follow-through must stale connections admitted before it.
+func (d *forceStopDescendants) reject() {
+	for _, fence := range d.fences {
+		fence.Reject()
+	}
+}
+
+// finish releases every fence as an ordinary completion.
+func (d *forceStopDescendants) finish() {
+	for _, fence := range d.fences {
+		fence.Finish(false)
+	}
+}
+
+// scan fences every delegate the daemon's ownership journal lists that is not
+// fenced yet.
+func (d *forceStopDescendants) scan(scanCtx context.Context) error {
+	if d.stateDir == "" {
+		return nil
+	}
+	ids, err := agent.SessionOwnedDelegateIDs(scanCtx, d.stateDir, d.sessionID)
+	if err != nil {
+		return appwire.Unavailable(fmt.Sprintf("read daemon delegates: %v", err))
+	}
+	var added []string
+	for _, id := range ids {
+		if !d.fenced[id] {
+			d.fenced[id] = true
+			added = append(added, id)
+		}
+	}
+	if len(added) != 0 {
+		d.fences = append(d.fences, d.locks.BeginForceStop(added))
+	}
+	return nil
+}
+
+// validateForceStopRequest refuses a force stop that is going to fail before
+// any cancellation, and reports done when the session is already confirmed
+// stopped.
+func validateForceStopRequest(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadForceStopParams, ref appwire.Ref) (done bool, err error) {
+	// A deleted target and a caller-rendered daemon identity are validated
+	// before the confirmed-stopped shortcut or any cancellation fence: a request
+	// that is going to be refused must not abort the in-flight Resume it can no
+	// longer address. confirmedStoppedWithoutClaim itself cancels active resumes
+	// on its stopResumes branch, so its validation and the caller's must both
+	// precede it. A nil identity preserves the ref-only Stop intent, which may
+	// legitimately abort a launch before an addressable claim exists.
+	if err := deletionFenceError(cfg, params.Ref, ref.ThreadID, ""); err != nil {
+		return false, err
+	}
+	if params.ExpectedDaemon != nil {
+		recoveryTarget := cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
+		if err := expectedDaemonRevalidationError(cfg, ref.ThreadID, recoveryTarget, params.ExpectedDaemon); err != nil {
+			return false, err
+		}
+	}
+	if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, true, params.ExpectedDaemon); err != nil {
+		return false, forceStopResumeStopError(err)
+	} else if stopped {
+		refreshAfterForceStop(ctx, cfg)
+		return true, nil
+	}
+	return false, nil
+}
+
+// drainEntryResume cancels the Resume that was active when the force stop
+// arrived, once every alias's deletion fence is clear. It reports whether a
+// Resume was actually stopped and the Resume's ownership group; release must be
+// deferred by the caller for the life of the stop.
+func drainEntryResume(ctx context.Context, cfg hubcore.WebConfig, ref appwire.Ref) (canceledResumes bool, entryResumeAliases []string, release func(), err error) {
+	release = func() {}
+	// A deletion record may name any alias in the ownership group of the
+	// Resume this drain would cancel, not only the requested alias. Resolve
+	// the group first and validate every alias's fence before the abort: a
+	// request a sibling-alias fence refuses must not cancel the in-flight
+	// Resume first — the ordering invariant the verified-process path keeps
+	// under its own reservations. The validation is final only while every
+	// alias's reservation stays held across the cancellation: by this
+	// request, or by an active Resume the drain is about to cancel, whose
+	// launch holds its aliases until the abort settles. A Resume between its
+	// registration and reacquiring its aliases holds nothing, so when
+	// another action holds one of the group's reservations it can release
+	// inside the check-to-cancel window and a deletion may publish after the
+	// check and before the abort — such a cancellation is deferred to the
+	// main path, which revalidates the deletion under its own reservations
+	// and complete ownership before its drain. New Resume admissions stay
+	// fenced across the drain by the stop fence itself.
+	// canceledResumes tracks whether this request actually stopped an active
+	// Resume: a refusal that follows keeps the fence's advance only when it
+	// does, because the stop attempt then already mutated the world those
+	// epochs guard.
+	// entryResumeAliases is the ownership group of the Resume that was active
+	// when the request arrived, resolved before any cancellation. The deletion
+	// validations below keep covering it whether the entry drain ran above
+	// or was deferred to the drain below.
+	if stopAliases := cfg.ResumeLocks.ActiveResumeStopAliases(ref.ThreadID); stopAliases != nil {
+		entryResumeAliases = stopAliases
+		reservationsHeld := tryLockForceStopReservations(cfg.ResumeLocks, stopAliases)
+		releaseReservations := func() {
+			if reservationsHeld {
+				unlockForceStopReservations(cfg.ResumeLocks, stopAliases)
+			}
+		}
+		if err := deletionFenceErrorForGroup(cfg, stopAliases); err != nil {
+			releaseReservations()
+			return false, nil, func() {}, err
+		}
+		if reservationsHeld || cfg.ResumeLocks.HeldByActiveResumes(stopAliases) {
+			if stop := cfg.ResumeLocks.BeginActiveResumeStop(ref.ThreadID); stop != nil {
+				canceledResumes = true
+				release = stop.Release
+				if err := stop.Wait(ctx); err != nil {
+					releaseReservations()
+					stop.Release()
+					return false, nil, func() {}, forceStopResumeStopError(err)
+				}
+			}
+		}
+		releaseReservations()
+	}
+	return canceledResumes, entryResumeAliases, release, nil
 }
 
 // forceStopResumeStopError classifies a Stop wait failure at the force-stop
