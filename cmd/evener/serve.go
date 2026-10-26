@@ -1365,7 +1365,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// its first observation on (ledger #110/#111).
 		stateDir := s.StateDir()
 		srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
-			return filepath.Join(stateDir, "sessions", threadID+".transcript.jsonl")
+			return schema.SessionTranscriptPath(stateDir, threadID)
 		})
 		// A descendant session's own watches live in that child's job manager and
 		// appear on no row today, because only the root's status is projected. The

@@ -652,7 +652,7 @@ func collectCandidates(buckets []string, currentStateDir string) []findCandidate
 		// symlinked directories, so metas from outside the state root would
 		// surface in find + children_of results while read_transcript
 		// rejects them.
-		sessDir := filepath.Join(bucket, sessionsSubdir)
+		sessDir := schema.SessionsDir(bucket)
 		if err := symlinkErrorDeep(sessDir, bucket); err != nil {
 			continue
 		}

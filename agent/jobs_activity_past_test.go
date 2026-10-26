@@ -832,7 +832,7 @@ func pastStableDescriptor(ownerSessionID, childSessionID, task string) delegates
 
 func writePastStableDelegates(t *testing.T, stateDir, rootSessionID string, descriptors ...delegatestore.Descriptor) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+	if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, descriptor := range descriptors {

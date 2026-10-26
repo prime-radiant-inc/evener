@@ -531,10 +531,10 @@ func TestLoadHistoricalStableActivityWithAttention_AttentionTranscriptError(t *t
 		t.Fatal(err)
 	}
 	// Create a transcript file so the delegate is eligible.
-	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+	if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl"), []byte("{}"), 0o600); err != nil {
+	if err := os.WriteFile(schema.SessionTranscriptPath(stateDir, childID), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_ = store.Close()
