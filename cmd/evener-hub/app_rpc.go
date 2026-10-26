@@ -1849,9 +1849,7 @@ func registerThreadHandlers(
 		resp, err := withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
-				// Resolution failed before anything reached a source, so a resume
-				// retry that fails the same way proves nothing was dispatched.
-				return appwire.TurnQueueResponse{}, preDispatchRefusalError{err}
+				return appwire.TurnQueueResponse{}, err
 			}
 			if err := ensureSkillInputSupported(ctx, source, params.Ref, "", params.Input); err != nil {
 				return appwire.TurnQueueResponse{}, err
