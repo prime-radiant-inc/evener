@@ -297,6 +297,27 @@ describe("useThreadsStore.resolveEscalation", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
   });
 
+  test("a resolve before a stale-cursor retry that replaces the repository stays resolved", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const { heldSnapshot, requestGeneration } = params as { heldSnapshot?: unknown; requestGeneration?: number };
+      if (heldSnapshot !== undefined)
+        throw new WireError("stale", -32000, { evenerErrorInfo: "transcriptItemCursorStale" });
+      return { ...threadWithEscalation("ref_a", "esc_1"), requestGeneration };
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+
+    await threadsStore.getState().refreshThread("ref_a");
+
+    expect(reads).toBe(3);
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
   test("a watch read issued before the resolve and answered after it does not bring the escalation back", async () => {
     const fake = connectFakeClient();
     let answerWatchRead: (response: ThreadReadResponse) => void = () => {};

@@ -247,6 +247,15 @@ export interface TranscriptRepositoryBinding {
    */
   historyGeneration?: number;
   /**
+   * The escalation ids this client resolved, owned by whoever replaces the
+   * repository so a replacement inherits them. A resolved escalation never
+   * returns, but the resolving client learns of it from its own acknowledgment,
+   * which the daemon's snapshot cut does not order, so a read issued before the
+   * resolve can still carry the card; every read the repository adopts drops
+   * these. Absent, the repository keeps its own.
+   */
+  resolvedEscalations?: Set<string>;
+  /**
    * A browser-lifetime nonce. The baseline identity is minted from the
    * tab-local connection lifetime and source revision, but that lifetime
    * counter resets with the page: without a per-browser-lifetime nonce a
@@ -484,11 +493,7 @@ export class TranscriptRepository {
   // whose demand the eviction policy consults.
   #unregisterPreferred: (() => void) | undefined;
   readonly #endClaims = new Set<string>();
-  // A resolved escalation never returns. The resolving client learns of it from
-  // its own acknowledgment, which the daemon's snapshot cut does not order, so
-  // a read issued before the resolve can still carry the card; every read the
-  // repository adopts drops these.
-  readonly #resolvedEscalations = new Set<string>();
+  readonly #resolvedEscalations: Set<string>;
   #endWork: Promise<void> | undefined;
   #endRetryCancel: (() => void) | undefined;
   #endRetryAttempt = 0;
@@ -503,6 +508,7 @@ export class TranscriptRepository {
     this.#cache = cache;
     this.#admission = binding.admission ?? entryWriteAdmissionFor(cache);
     this.#binding = scalarBinding;
+    this.#resolvedEscalations = binding.resolvedEscalations ?? new Set();
     this.#baselineIdentity = this.#mintBaseline();
     if (binding.isPreferred) {
       this.#unregisterPreferred = cache.registerPreferredHistory(binding.historyKey, binding.isPreferred);

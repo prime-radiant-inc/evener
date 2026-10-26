@@ -740,6 +740,9 @@ interface EntryTranscriptRoute {
   identity?: TranscriptResolvedIdentity;
   cachedUnverified?: boolean;
   cachedOpening?: Promise<void>;
+  // Escalations this client resolved; shared with every repository the route
+  // installs, so a replacement keeps them.
+  resolvedEscalations?: Set<string>;
   // Local reader continuation, separate from the repository's opaque server cursor.
   localBefore?: ThreadItemPosition;
   // The status the last local open (`openEntryTranscript`) reported for this
@@ -1265,6 +1268,7 @@ function createEntryTranscriptRepository(
     identity,
     clearEpoch,
     historyGeneration,
+    resolvedEscalations: (fixture.resolvedEscalations ??= new Set()),
     lifetime: fixture.lifetime,
     seedModel,
     now: () => fixture.cache.now(),
