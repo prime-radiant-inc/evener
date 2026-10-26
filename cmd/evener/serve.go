@@ -2311,28 +2311,7 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 			Task:             job.Task,
 		})
 	}
-	for _, delegate := range ds.Delegates {
-		out.Delegates = append(out.Delegates, server.DelegateStatusInfo{
-			DelegateID: delegate.DelegateID, RunGeneration: delegate.RunGeneration, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
-			ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
-			Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,
-			Outcome: delegate.Outcome, Reason: delegate.Reason, Error: delegate.Error, Terminal: delegate.Terminal, Resumable: delegate.Resumable, NeedsAttention: delegate.NeedsAttention,
-			NotResumableReason: delegate.NotResumableReason, ProjectionRevision: delegate.ProjectionRevision,
-			Task: delegate.Task, Description: delegate.Description, AgentType: delegate.AgentType, RequestedModel: delegate.RequestedModel,
-			ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,
-			ReasoningEffort: delegate.ReasoningEffort, OriginTurnID: delegate.OriginTurnID, OriginToolCallID: delegate.OriginToolCallID,
-			OriginItemID: delegate.OriginItemID, RunStartedAt: delegate.RunStartedAt, RunEndedAt: delegate.RunEndedAt,
-			LatestActivityAt: delegate.LatestActivityAt, RunningForMS: appwire.ClonePointer(delegate.RunningForMS),
-			QuietForMS: appwire.ClonePointer(delegate.QuietForMS), DurationMS: appwire.ClonePointer(delegate.DurationMS),
-			PacketKind: delegate.PacketKind, Message: append(json.RawMessage(nil), delegate.Message...),
-			StructuredResult: append(json.RawMessage(nil), delegate.StructuredResult...), StructuredValid: appwire.ClonePointer(delegate.StructuredValid),
-			StructuredReason: delegate.StructuredReason, Warnings: append([]string(nil), delegate.Warnings...),
-			Diagnostics: append([]string(nil), delegate.Diagnostics...), ExhaustionBudget: delegate.ExhaustionBudget,
-			ExhaustionLimit: delegate.ExhaustionLimit, ExhaustionResumable: appwire.ClonePointer(delegate.ExhaustionResumable),
-			DelegationAllowance: delegate.DelegationAllowance, ParentWatchGranted: delegate.ParentWatchGranted,
-			Usage: appwire.ClonePointer(delegate.Usage), Worktree: appwire.ClonePointer(delegate.Worktree),
-		})
-	}
+	out.Delegates = slices.Clone(ds.Delegates)
 	out.Watches = cloneServeWatches(ds.Watches)
 	if ds.TurnSlots != nil {
 		out.TurnSlots = &server.TurnSlotStatus{

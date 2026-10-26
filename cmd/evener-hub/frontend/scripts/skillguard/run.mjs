@@ -826,6 +826,7 @@ export class Driver {
       const strip = header.closest("section");
       const rows = [...strip.querySelectorAll("li")].map((li) => ({
         text: li.textContent,
+        kind: li.dataset.kind ?? null,
         buttons: [...li.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? b.textContent),
       }));
       return { header: header.textContent, rows };
@@ -2020,9 +2021,12 @@ async function runScenarios(driver) {
   await driver.typeText(driver.sessionA, PROSE.queue1);
   await driver.selectSkillChip(driver.sessionA);
   await driver.clickSubmit(driver.sessionA, draft(PROSE.queue1));
+  // The strip first shows the submission's own durable "waiting" row; Edit on
+  // that row is refused once the daemon's receipt settles it into the daemon's
+  // queued row (data-kind "queued"), so the press waits for the settled row.
   let queue = await driver.waitPage(
-    `(() => { const strip = ${driver.queueStripExpr()}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.queue1)})) ? strip : null; })()`,
-    { label: "queue strip with first pass" },
+    `(() => { const strip = ${driver.queueStripExpr()}; return strip && strip.rows.some((row) => row.kind === "queued" && row.text.includes(${JSON.stringify(PROSE.queue1)})) ? strip : null; })()`,
+    { label: "queue strip with first pass settled" },
   );
   check(
     queue.rows.some((row) => row.text.includes(PROSE.queue1)),
