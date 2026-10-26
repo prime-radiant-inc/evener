@@ -111,7 +111,7 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Reque
 		title = "Context budget (estimated)"
 		hint = "The model's context window is unknown; usage is measured against a conservative assumed window. Declare context_window in the provider's model row to warn against the real size."
 	}
-	s.emit(events.EventWarning, events.WarningData{
+	s.emit(events.WarningData{
 		Message: msg,
 		// Same reasoning as warnOutputReduction: an informational context
 		// notice, with an explicit neutral title so the classifier's keyword
@@ -281,7 +281,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns)
 			commit.captured = s.capturableAutomaticCompaction()
 			if err := s.strategy.ManageContext(compactionCtx, &historyTurns, len(sys), emitFn); err != nil {
-				s.emit(events.EventWarning, bareWarningDataFromError("context strategy error", err))
+				s.emit(bareWarningDataFromError("context strategy error", err))
 			}
 			managedLen := len(historyTurns)
 			injectedTurns := foldInjectedCount()
@@ -881,7 +881,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 		// Content filter recovery: compaction often removes the offending content,
 		// allowing the next request to succeed. Try once.
 		*contentFilterRetried = true
-		s.emit(events.EventWarning, bareWarningDataFromError("Content filter hit — compacting context and retrying", err))
+		s.emit(bareWarningDataFromError("Content filter hit — compacting context and retrying", err))
 		// This can race another ForceCompact/ManageContext publisher
 		// (Compact(), applyPendingForceCompact, or the round loop's own
 		// ManageContext); forceCompactForModelRecovery publishes through the
@@ -909,7 +909,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	// bounded compaction. Retain this compatibility warning for any terminal
 	// context path that reaches this handler without that lifecycle emission.
 	if dec.EmitContextLenWarn && !contextWarningEmitted {
-		s.emit(events.EventWarning, bareWarningDataFromError("Context length exceeded", err))
+		s.emit(bareWarningDataFromError("Context length exceeded", err))
 	}
 	s.terminateGoalOnError(ctx, err)
 	s.finishProcessingAtFailureBoundary(ctx)
@@ -1032,7 +1032,7 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 	var persistErr error
 	if err := s.withResponseSideEffects(ctx, func() {
 		if !modelResp.StreamedAssistant {
-			s.emit(events.EventAssistantTextStart, events.AssistantTextStartData{
+			s.emit(events.AssistantTextStartData{
 				Model: resp.Model,
 			})
 		}
@@ -1043,7 +1043,7 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 			}
 		}
 		if !modelResp.StreamedAssistant && strings.TrimSpace(txt) != "" {
-			s.emit(events.EventAssistantTextDelta, events.AssistantTextDeltaData{Delta: txt})
+			s.emit(events.AssistantTextDeltaData{Delta: txt})
 		}
 		textEndData := events.AssistantTextEndData{
 			Text:         txt,
@@ -1055,7 +1055,7 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 		if reasoning := resp.ReasoningText(); reasoning != "" {
 			textEndData.Reasoning = reasoning
 		}
-		s.emit(events.EventAssistantTextEnd, textEndData)
+		s.emit(textEndData)
 		s.mu.Lock()
 		s.modelResponses++
 		s.mu.Unlock()
@@ -1288,7 +1288,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		// already showed. See the matching guard before the fallback loop
 		// below for the full rationale.
 		if _, from := recorder.BestSalvage(); from != nil {
-			s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
+			s.emit(events.AssistantTextResetData{})
 		}
 		s.resetCommunicatePreviews(previewCalls)
 		var recoveryRecord groupRecord
@@ -1339,7 +1339,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			// skipped so the rest of the chain still gets its turn.
 			fbProfile, _, resolveErr := s.resolveProfileForRef(profile, fbModel)
 			if resolveErr != nil {
-				s.emit(events.EventWarning, warningDataFromError(
+				s.emit(warningDataFromError(
 					fmt.Sprintf("model_fallbacks entry %q could not be resolved; skipping it", fbModel), resolveErr))
 				continue
 			}
@@ -1368,7 +1368,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			// local flag, so a later fallback that also streams and dies gets
 			// its own reset before the next one runs.
 			if _, from := recorder.BestSalvage(); from != nil {
-				s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
+				s.emit(events.AssistantTextResetData{})
 			}
 			s.resetCommunicatePreviews(previewCalls)
 			var fallbackRecord groupRecord
@@ -1417,7 +1417,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	group.SettleResult(callCtx, nil)
 	for _, warning := range modelResp.Response.Warnings {
 		if warning.Code == llm.WarningCodeImageColorUnmanaged {
-			s.emit(events.EventWarning, events.WarningData{
+			s.emit(events.WarningData{
 				Code:    warning.Code,
 				Source:  string(diagnostic.SourceProvider),
 				Message: warning.Message,
@@ -1543,7 +1543,7 @@ func (s *Session) warnOutputReduction(profile *provider.Profile, budget llm.Toke
 	// Web UI renders as an error chip for a routine clamp. FromFields
 	// preserves a supplied title/hint verbatim, so this survives every
 	// re-derivation downstream (sendEvent enrichment, projector projection).
-	s.emit(events.EventWarning, events.WarningData{
+	s.emit(events.WarningData{
 		Message: fmt.Sprintf(
 			"Output allocation reduced for %s/%s: requested=%d admitted=%d",
 			profile.ID(), profile.Model(), budget.RequestedOutput, budget.AdmittedOutput,

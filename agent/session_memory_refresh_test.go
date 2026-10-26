@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1354,6 +1356,40 @@ func TestMemoryProjectionMigratesAHandWrittenIndex(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(scope, memoryLegacyIndexBackup)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A migration that fails does not block the turn, and the failure is logged at
+// warning level so it is not silent.
+func TestMemoryProjectionLogsAFailedMigration(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("directory permissions do not bind root")
+	}
+	root := t.TempDir()
+	scope := filepath.Join(root, "memory")
+	if err := os.MkdirAll(scope, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeMemoryPage(t, root, "MEMORY.md", "- [Cents](cents.md) — opaque-migrated-description\n")
+	writeMemoryPage(t, root, "cents.md", "# Cents\n")
+	if err := os.Chmod(scope, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(scope, 0o700) })
+
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(func(llm.Request) llm.Response {
+		return finalResponse("observed")
+	}))
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), `"level":"WARN"`) {
+		t.Fatalf("no warning logged for the failed migration: %q", logs.String())
 	}
 }
 

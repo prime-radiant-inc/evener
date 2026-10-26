@@ -39,7 +39,7 @@ func (s *Session) publishSessionActivityChanged(owner string, targets []string, 
 	}
 	sessionActivityIndexes.Unlock()
 	for _, target := range targets {
-		s.sendEvent(events.EventSessionActivityChanged, events.SessionActivityChangedData{ThreadID: target, Ref: encodeRef("", target), SessionID: owner, Resources: []appwire.SessionActivityResource{appwire.SessionActivityResourceSummary, resource}}, nil)
+		s.sendEvent(events.SessionActivityChangedData{ThreadID: target, Ref: encodeRef("", target), SessionID: owner, Resources: []appwire.SessionActivityResource{appwire.SessionActivityResourceSummary, resource}}, nil)
 	}
 }
 

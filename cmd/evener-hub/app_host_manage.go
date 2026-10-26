@@ -2699,24 +2699,7 @@ func validateHostMirrorCommits(commits map[string]HostMirrorCommit) error {
 func hubTOMLStoreSyncTables(cfg Config, entries, known []hostreg.Host, intents map[string]HostStoreSyncIntent, dropped map[string]struct{}) map[string]HostStoreSyncIntent {
 	out := make(map[string]HostStoreSyncIntent, len(intents)+len(cfg.PendingStoreSync))
 	maps.Copy(out, intents)
-	owned := ownedRecordNames(entries, known)
-	if owned == nil {
-		return out
-	}
-	for name, intent := range cfg.PendingStoreSync {
-		if _, carried := out[name]; carried {
-			continue
-		}
-		if _, ok := owned[name]; ok {
-			continue
-		}
-		if _, pruned := dropped[name]; pruned {
-			// The derivation dropped this intent (a converged clear, a
-			// compensation): the file's older copy must not ride back in.
-			continue
-		}
-		out[name] = intent
-	}
+	preserveUnowned(out, cfg.PendingStoreSync, ownedRecordNames(entries, known), keyIsHost, dropped)
 	return out
 }
 

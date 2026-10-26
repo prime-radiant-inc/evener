@@ -111,6 +111,16 @@ and the reason it is kept, tab-separated. Rows are keyed by file and test name,
 not line. Each audit also fails on a row whose test is no longer flagged, so
 remove the row when you convert, delete or rename the test.
 
+A third audit covers Go tests that are not named for wording. It counts the
+checks of an error's text against a phrase from production source
+(`strings.Contains(err.Error(), "not found")`) anywhere in a test file. Its
+allowlist, `internal/devtool/copyonly/errstring_allowlist.tsv`, has one row per
+test file: the file and how many such checks it holds. A file may hold no more
+than its row, and a file with no row may hold none, so a new test matches a
+sentinel with `errors.Is`, a type with `errors.As`, or a code. The counts only
+go down: when you convert checks in a file, lower its count (delete the row at
+zero), because the audit also fails on a file that holds fewer than its row.
+
 To find what is left to convert, `go run ./cmd/evener-dev/bin dev copy-oracle`
 inventories every assertion whose oracle is production copy, per package and
 category, using the same two scanners. `--hits FILE` writes each one as TSV,
