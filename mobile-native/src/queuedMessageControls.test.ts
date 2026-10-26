@@ -13,6 +13,7 @@ import {
 	reconcileEditedResends,
 	removeQueuedMessageWithDraftCapture,
 } from "./queuedMessageControls";
+import type { ResumeIdentityLedger } from "./resumeIdentity";
 import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
@@ -2755,4 +2756,140 @@ test("retained Edit rejects missing current identity before preclear or append",
 	});
 	expect(f.document.getSnapshot().record.composer?.recoveryIds).toBeUndefined();
 	expect(await f.runtime.storage.getRecovery(id)).toMatchObject({ recoveryKind: "editing" });
+});
+
+test("a chain deferred by an unloadable destination keeps its predecessor behind it", async () => {
+	const f = fixture();
+	f.repository.write(destination, { draft: "A draft", unconfirmed: null });
+	const bDestination = { hubId: destination.hubId, sessionRef: "session-b" };
+	const cDestination = { hubId: destination.hubId, sessionRef: "session-c" };
+	const unreadable = new Set([cDestination.sessionRef]);
+	const repository = new Proxy(f.repository, {
+		get(target, property) {
+			if (property === "read")
+				return (read: DraftDestination) => {
+					if (unreadable.has(read.sessionRef)) throw new Error("drafts unavailable");
+					return target.read(read);
+				};
+			const value = Reflect.get(target, property, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	}) as unknown as DraftRepository;
+	// A->B is pending: the transfer into B fails while the mapping is recorded.
+	f.drafts.exec(
+		"CREATE TRIGGER reject_b_draft BEFORE INSERT ON drafts WHEN NEW.session_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+	);
+	const library = new DraftLibrary(
+		() => repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	expect(library.handoff(destination, bDestination)).toBe(false);
+	f.drafts.exec("DROP TRIGGER reject_b_draft");
+	// B resolves to C while C cannot load, so B->C defers. The chain
+	// dependency must exist before that early return: A->B must not retry
+	// first and move A's draft into the retired intermediate identity.
+	expect(library.handoff(bDestination, cDestination)).toBe(false);
+	library.retryPendingHandoffs();
+	expect(f.repository.read(bDestination).draft).toBe("");
+	expect(f.repository.read(destination).draft).toBe("A draft");
+
+	// C recovers occupied. B settles first and is refused; A stays at A.
+	unreadable.delete(cDestination.sessionRef);
+	f.repository.write(cDestination, { draft: "C work", unconfirmed: null });
+	library.retryPendingHandoffs();
+	expect(f.repository.read(cDestination)).toMatchObject({ draft: "C work" });
+	expect(f.repository.read(bDestination)).toEqual({ draft: "", unconfirmed: null });
+	expect(f.repository.read(destination).draft).toBe("A draft");
+	expect(library.hasPendingHandoff(cDestination)).toBe(false);
+});
+
+test("a refused handoff survives a drafts database that rejects every write", async () => {
+	const f = fixture();
+	await f.enqueue();
+	f.repository.write(destination, { draft: "A draft", unconfirmed: null });
+	const bDestination = { hubId: destination.hubId, sessionRef: "session-b" };
+	const bKey = nativeMutationTargetKey(destination.hubId, bDestination.sessionRef);
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: bKey,
+			wireRef: bDestination.sessionRef,
+			threadId: "thread-b",
+			instanceId: "instance-b",
+		}),
+	).toHaveLength(1);
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	// A->B is deferred and recorded in the drafts database.
+	f.drafts.exec(
+		"CREATE TRIGGER reject_b_draft BEFORE INSERT ON drafts WHEN NEW.session_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+	);
+	expect(library.handoff(destination, bDestination)).toBe(false);
+	f.drafts.exec("DROP TRIGGER reject_b_draft");
+	// B already owns work, so the retry is a permanent refusal. Every drafts
+	// write fails while the refusal settles.
+	f.repository.write(bDestination, { draft: "B work", unconfirmed: null });
+	f.drafts.exec("PRAGMA query_only = ON");
+	const refusing = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	expect(refusing.handoff(destination, bDestination)).toBe(false);
+	f.drafts.exec("PRAGMA query_only = OFF");
+	expect(f.repository.read(destination).draft).toBe("A draft");
+
+	// The destination is emptied, then the app restarts. Only the mutations
+	// database still records the refusal.
+	f.repository.write(bDestination, { draft: "", unconfirmed: null });
+	await f.reopen();
+	const restarted = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	restarted.retryPendingHandoffs();
+	expect(f.repository.read(bDestination)).toEqual({ draft: "", unconfirmed: null });
+	expect(f.repository.read(destination).draft).toBe("A draft");
+	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
+	expect((f.runtime.storage as unknown as ResumeIdentityLedger).readSettledResumeIdentities?.()).toEqual([]);
+});
+
+test("a built-in command completing after an occupied handoff moves its marker", async () => {
+	const f = fixture();
+	f.repository.write(destination, {
+		draft: "current",
+		unconfirmed: null,
+		composer: { recoveryIds: ["captured"] },
+	});
+	const bDestination = { hubId: destination.hubId, sessionRef: "session-b" };
+	f.repository.write(bDestination, { draft: "B work", unconfirmed: null });
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	const source = library.open(destination);
+	let finishSubmission!: () => void;
+	const submitted = source.submitBuiltinCommand(
+		() =>
+			new Promise<boolean>((resolve) => {
+				finishSubmission = () => resolve(true);
+			}),
+	);
+	expect(source.getSnapshot().submitting).toBe(true);
+	// The completion marker does not exist yet, so the refusal cannot finalize.
+	expect(library.handoff(destination, bDestination)).toBe(false);
+	expect(library.hasPendingHandoff(bDestination)).toBe(true);
+	finishSubmission();
+	await submitted;
+	library.retryPendingHandoffs();
+	expect(f.repository.read(bDestination)).toMatchObject({
+		draft: "B work",
+		completedCommandRecoveryIds: expect.arrayContaining(["captured"]),
+	});
+	expect(library.hasPendingHandoff(bDestination)).toBe(false);
 });

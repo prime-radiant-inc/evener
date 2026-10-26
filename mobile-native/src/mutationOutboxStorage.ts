@@ -234,6 +234,15 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			 created_at INTEGER NOT NULL,
 			 PRIMARY KEY (from_hub_id, from_ref, to_hub_id, to_ref))`,
 		);
+		// A settlement that outlives the drafts database's refusal to record it.
+		// The row stays until the drafts mapping is gone, so a restart retries
+		// cleanup rather than the transfer.
+		this.db.execSync(
+			`CREATE TABLE IF NOT EXISTS settled_resume_identities (
+			 from_hub_id TEXT NOT NULL, from_ref TEXT NOT NULL,
+			 to_hub_id TEXT NOT NULL, to_ref TEXT NOT NULL,
+			 PRIMARY KEY (from_hub_id, from_ref, to_hub_id, to_ref))`,
+		);
 		// Each additive column below is the whole migration for databases from
 		// before it existed: ALTER TABLE has no IF NOT EXISTS, so
 		// addColumnIfMissing checks the table's columns first, and rows written
@@ -792,6 +801,16 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 
 	settleResumeIdentity(from: ResumeIdentityEndpoint, to: ResumeIdentityEndpoint): void {
 		this.transaction("resume_identity_settle", () => {
+			// Record the settlement before the edge disappears. The marker is the
+			// only durable evidence when the drafts database refused the mapping.
+			this.db.runSync(
+				`INSERT OR IGNORE INTO settled_resume_identities
+				 (from_hub_id, from_ref, to_hub_id, to_ref) VALUES (?, ?, ?, ?)`,
+				from.hubId,
+				from.sessionRef,
+				to.hubId,
+				to.sessionRef,
+			);
 			// The settled edge and every provenance edge that pointed at its
 			// source disappear together. A crash between two transactions would
 			// leave the provenance orphaned and replayable into a retired ref.
@@ -809,6 +828,33 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				to.sessionRef,
 			);
 		});
+	}
+
+	readSettledResumeIdentities(): ResumeIdentityEdge[] {
+		const rows = this.db.getAllSync<{
+			from_hub_id: string;
+			from_ref: string;
+			to_hub_id: string;
+			to_ref: string;
+		}>(
+			`SELECT from_hub_id, from_ref, to_hub_id, to_ref FROM settled_resume_identities
+			 ORDER BY rowid`,
+		);
+		return rows.map((row) => ({
+			from: { hubId: row.from_hub_id, sessionRef: row.from_ref },
+			to: { hubId: row.to_hub_id, sessionRef: row.to_ref },
+		}));
+	}
+
+	removeResumeIdentitySettlement(from: ResumeIdentityEndpoint, to: ResumeIdentityEndpoint): void {
+		this.db.runSync(
+			`DELETE FROM settled_resume_identities
+			 WHERE from_hub_id = ? AND from_ref = ? AND to_hub_id = ? AND to_ref = ?`,
+			from.hubId,
+			from.sessionRef,
+			to.hubId,
+			to.sessionRef,
+		);
 	}
 
 	redirectResumeIdentity(
