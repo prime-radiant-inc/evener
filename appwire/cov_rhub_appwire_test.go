@@ -495,19 +495,33 @@ func TestInputParamAccessors(t *testing.T) {
 	}
 }
 
-// recorderStateRoot resolves XDG_STATE_HOME first, else the home-relative
-// default; the recorder is a low-level codec helper with no dependency on the
-// cmd layer, so this precedence must hold on its own.
-func TestRecorderStateRoot(t *testing.T) {
-	t.Setenv(envvars.XDGStateHome.Name, "/custom/state")
-	if got := recorderStateRoot(); got != "/custom/state/evener" {
-		t.Fatalf("recorderStateRoot with XDG_STATE_HOME=%q", got)
+// The env recorder writes under the Evener state root and records nothing when
+// no state root can be resolved (no XDG_STATE_HOME and no HOME).
+func TestEnvFrameRecorderStateRoot(t *testing.T) {
+	t.Setenv(envvars.EVENERRecordAppwire.Name, "1")
+	state := t.TempDir()
+	t.Setenv(envvars.XDGStateHome.Name, state)
+	if err := os.MkdirAll(filepath.Join(state, "evener"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rec := newEnvFrameRecorder()
+	if rec == nil {
+		t.Fatal("recorder not created under XDG_STATE_HOME")
+	}
+	_ = rec.Close()
+	if _, err := os.Stat(filepath.Join(state, "evener", "appwire-frames.jsonl")); err != nil {
+		t.Fatalf("recording file under the state root: %v", err)
 	}
 
 	t.Setenv(envvars.XDGStateHome.Name, "")
-	t.Setenv("HOME", "/home/tester")
-	if got := recorderStateRoot(); got != "/home/tester/.local/state/evener" {
-		t.Fatalf("recorderStateRoot home fallback=%q", got)
+	t.Setenv("HOME", "")
+	t.Chdir(t.TempDir())
+	if rec := newEnvFrameRecorder(); rec != nil {
+		_ = rec.Close()
+		t.Fatal("recorder created with no state root")
+	}
+	if _, err := os.Stat(".local"); !os.IsNotExist(err) {
+		t.Fatalf("a relative .local directory was created: %v", err)
 	}
 }
 

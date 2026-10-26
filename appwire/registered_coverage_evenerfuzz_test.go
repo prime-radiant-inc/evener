@@ -73,7 +73,7 @@ func runRegisteredCoverageSuite(t *testing.T) {
 		{"NotificationCatalog", TestNotificationCatalogWellFormed},
 		{"Notification", TestNotificationRoundTrip},
 		{"ParseRef", TestParseRefRejectsUnsafeValues},
-		{"RecorderRoot", TestRecorderStateRoot},
+		{"RecorderRoot", TestEnvFrameRecorderStateRoot},
 		{"RefRoundTrip", TestRefRoundTrip},
 		{"RefString", TestRefString},
 		{"RejectJSONRPC", TestRejectsJSONRPCField},
@@ -173,11 +173,6 @@ func coverFailureBranches(t *testing.T) {
 	_ = os.WriteFile(badRoot, []byte("x"), 0o600)
 	t.Setenv(envvars.XDGStateHome.Name, badRoot)
 	_ = newEnvFrameRecorder()
-	oldHome := frameRecorderHomeDir
-	t.Setenv(envvars.XDGStateHome.Name, "")
-	frameRecorderHomeDir = func() (string, error) { return "", errors.New("home") }
-	_ = recorderStateRoot()
-	frameRecorderHomeDir = oldHome
 
 	oldMarshal, oldUnmarshal, oldFallbacks := marshalLaunchConfig, unmarshalLaunchConfig, marshalModelFallbacks
 	marshalLaunchConfig = func(any) ([]byte, error) { return nil, errors.New("marshal") }

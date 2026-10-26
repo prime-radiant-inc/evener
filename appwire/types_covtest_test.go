@@ -2,13 +2,10 @@ package appwire
 
 import (
 	"context"
-	"errors"
 	"reflect"
 	"testing"
 
 	"github.com/coder/websocket"
-
-	"primeradiant.com/evener/envvars"
 )
 
 type covWSTransportPingContextKey struct{}
@@ -77,22 +74,5 @@ func TestCovWSTransportPing(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("ping calls = %d, want 2", calls)
-	}
-}
-
-// TestCovRecorderStateRootFallback covers the third branch of
-// recorderStateRoot (frame_recorder.go:94) where XDG_STATE_HOME is empty and
-// frameRecorderHomeDir returns an error, falling through to the
-// ./.local/state/evener relative path.
-func TestCovRecorderStateRootFallback(t *testing.T) {
-	t.Setenv(envvars.XDGStateHome.Name, "")
-	oldHome := frameRecorderHomeDir
-	t.Cleanup(func() { frameRecorderHomeDir = oldHome })
-	frameRecorderHomeDir = func() (string, error) { return "", errors.New("no home") }
-
-	got := recorderStateRoot()
-	want := ".local/state/evener"
-	if got != want {
-		t.Fatalf("recorderStateRoot error fallback = %q, want %q", got, want)
 	}
 }
