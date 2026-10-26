@@ -342,6 +342,31 @@ describe("useThreadsStore.resolveEscalation", () => {
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
   });
 
+  test("a watch-only ref's read issued before the resolve does not bring the escalation back", async () => {
+    const fake = connectFakeClient();
+    let answerUpgrade: (response: ThreadReadResponse) => void = () => {};
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        answerUpgrade = (response) => resolve({ ...response, requestGeneration });
+      });
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().watchThread("ref_a");
+
+    const upgrade = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await vi.waitFor(() => expect(reads).toBe(2));
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    answerUpgrade(threadWithEscalation("ref_a", "esc_1"));
+    await upgrade;
+
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
   test("updates BOTH threads and watchedThreads when the same ref is tracked in each", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));

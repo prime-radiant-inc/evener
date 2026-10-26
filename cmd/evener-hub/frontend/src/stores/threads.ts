@@ -8287,10 +8287,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // transcript repository republishes its own model on later frames and
     // would otherwise put the cleared card back, including after a Clear
     // window or a hydration that was in flight when the resolve landed.
-    if (model && resolvedModel !== model) {
+    const resolvedAnywhere =
+      (model !== undefined && resolvedModel !== model) ||
+      (watchedModel !== undefined && resolvedWatched !== watchedModel);
+    const threadId = (model ?? watchedModel)?.threadId;
+    if (resolvedAnywhere && threadId !== undefined) {
       handleNotification({
         method: "evener/sandbox/escalation/resolved",
-        params: { threadId: model.threadId, ref, escalationId },
+        params: { threadId, ref, escalationId },
       });
     }
   },
