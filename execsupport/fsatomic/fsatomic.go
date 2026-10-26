@@ -97,34 +97,52 @@ var (
 func MkdirAll(dir string, perm os.FileMode) error {
 	mkdirMu.Lock()
 	defer mkdirMu.Unlock()
-	var missing []string // innermost first
-	for p := dir; ; p = filepath.Dir(p) {
+	var todo []string // innermost first: missing directories, then stranded ancestors
+	p := dir
+	for ; ; p = filepath.Dir(p) {
 		info, err := os.Stat(p)
 		if err == nil {
 			if !info.IsDir() {
 				return &os.PathError{Op: "mkdir", Path: p, Err: syscall.ENOTDIR}
 			}
-			if !stranded[dirKey(p)] {
-				break
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		missing = append(missing, p)
+		todo = append(todo, p)
 		if filepath.Dir(p) == p {
 			break
 		}
 	}
-	for _, p := range slices.Backward(missing) {
+	// A stranded directory is an existing one that still needs its parent
+	// synced, wherever it sits above the first existing directory.
+	if len(stranded) > 0 {
+		for q := p; ; q = filepath.Dir(q) {
+			if stranded[dirKey(q)] {
+				todo = append(todo, q)
+			}
+			if filepath.Dir(q) == q {
+				break
+			}
+		}
+	}
+	for _, p := range slices.Backward(todo) {
+		created := true
 		if err := os.Mkdir(p, perm); err != nil {
 			if info, statErr := os.Stat(p); !errors.Is(err, os.ErrExist) || statErr != nil || !info.IsDir() {
 				return err
 			}
+			created = false
 		}
 		if err := syncDir(filepath.Dir(dirKey(p))); err != nil {
-			if rmErr := removeDir(p); rmErr != nil {
-				stranded[dirKey(p)] = true
-				return errors.Join(err, rmErr)
+			// Only a directory this call made is taken back out: an existing
+			// one (a stranded retry, possibly reached through a symlink) stays.
+			if created {
+				if rmErr := removeDir(p); rmErr != nil {
+					stranded[dirKey(p)] = true
+					return errors.Join(err, rmErr)
+				}
 			}
 			return err
 		}
