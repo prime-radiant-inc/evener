@@ -83,9 +83,14 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 		return nil, fmt.Errorf("unknown doctor command %q (one of: %s)", command, strings.Join(doctorEvenerCommandNames, ", "))
 	}
 
-	stateBase, err := doctorStateBase(deps, stringArg(args, "state_dir"))
-	if err != nil {
-		return nil, err
+	// The plugin check reads the config root, not a state root, so it runs
+	// without one.
+	stateBase := ""
+	if command != "plugins" {
+		var err error
+		if stateBase, err = doctorStateBase(deps, stringArg(args, "state_dir")); err != nil {
+			return nil, err
+		}
 	}
 	selector := stringArg(args, "selector")
 
