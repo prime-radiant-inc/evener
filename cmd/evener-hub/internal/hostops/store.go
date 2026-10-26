@@ -19,7 +19,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/evener/cmd/evener-hub/internal/fsdurability"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 const (
@@ -686,9 +686,7 @@ type compensationFile struct {
 	Generation *uint64      `json:"generation"`
 }
 
-// compensation maps the decode shape to a record, refusing every omitted field
-// and normalizing the retired `compensating-sidecar` spelling to its live
-// alias.
+// compensation maps the decode shape to a record, refusing every omitted field.
 func (f compensationFile) compensation() (Compensation, error) {
 	for _, required := range []struct {
 		present bool
@@ -1102,7 +1100,7 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 			return false, fmt.Errorf("hostops: preserve store mode: %w", err)
 		}
 	}
-	if err := temp.Sync(); err != nil && !fsdurability.SyncUnsupported(err) {
+	if err := temp.Sync(); err != nil && !fsatomic.SyncUnsupported(err) {
 		return false, fmt.Errorf("hostops: sync temp store: %w", err)
 	}
 	if err := temp.Close(); err != nil {
@@ -1230,7 +1228,7 @@ func syncDirFS(fs afero.Fs, dir string) error {
 	if err != nil {
 		return fmt.Errorf("hostops: open store directory: %w", err)
 	}
-	if err := directory.Sync(); err != nil && !fsdurability.SyncUnsupported(err) {
+	if err := directory.Sync(); err != nil && !fsatomic.SyncUnsupported(err) {
 		_ = directory.Close()
 		return fmt.Errorf("hostops: sync store directory: %w", err)
 	}

@@ -305,7 +305,7 @@ func newHostTombstone(entry hostreg.Host, presenceEpoch uint64, rows []appwire.T
 		Generation:    entry.Generation,
 		IncarnationID: entry.IncarnationID,
 		PresenceEpoch: presenceEpoch,
-		RemovedAt:     removedAt.UTC().Format(time.RFC3339),
+		RemovedAt:     hostInstant(removedAt),
 		Rows:          projected,
 		RowsTruncated: truncated,
 	}

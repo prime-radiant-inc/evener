@@ -247,14 +247,17 @@ loading them, since each opens a socket the moment its body runs.
   `make test-web` before "fixing" it). When two reviewers conflict, the
   reconciliation usually is that both are right about different cases; pin
   both cases.
-- **Merge the base before asking for approval.** If the repo dismisses stale
-  reviews, a post-approval base merge voids the approval and demands another;
-  merge `origin/main` first so the review and the approval land on the same
-  final head.
-- **Merge approval**
-  If every CI check is green and RoboRev notes only 'low' findings or findings 
-  you have conclusively refuted, you are authorized to admin squash merge to main.
-  Handle those 'low' findings immediately in a fast-follow PR.
+- **Merge through the merge queue.** If every CI check is green and RoboRev
+  notes only 'low' findings or findings you have conclusively refuted, add the
+  PR to main's merge queue: `gh pr merge <N> --repo prime-radiant-inc/evener
+  --squash`. The queue tests it on top of main and the PRs ahead of it and
+  merges it when the required checks pass there, so do not merge `origin/main`
+  into the branch just to catch up, and never use `--admin`, which skips the
+  queue. The queue checks CI only, not RoboRev (its status passes even when
+  the review lists findings), so read the review before enqueueing; never use
+  `--auto`. Pushing to a queued PR removes it from the queue. If the queue drops
+  the PR for a failing check, fix the cause and enqueue again. Handle 'low'
+  findings immediately in a fast-follow PR.
 
 - **Gates run from the repo root.** `make test-web`'s target lives in the root
   Makefile; running it from `cmd/evener-hub/frontend` dies with "No rule to

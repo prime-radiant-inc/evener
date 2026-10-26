@@ -41,37 +41,37 @@ const docFileMaxBytes = 512 * 1024
 // ~/git was 3.2 MB. A larger file is served without a revision.
 const docRevisionMaxBytes = 16 * 1024 * 1024
 
-// resolveLocalDocTarget resolves a local session id and a path to a served
-// root and a contained absolute path. It answers the request itself when it
-// cannot, so every local doc route refuses an unknown session, an escape
-// attempt and a missing path identically: 503 for a session whose folder
-// cannot be resolved, 403 for an escape, 404 otherwise.
+// errSessionFileNotFound is resolveSessionFile's answer for a path that names
+// no readable file in any root that may serve it.
+var errSessionFileNotFound = errors.New("session file not found")
+
+// resolveSessionFile resolves a local session id and a path to a served root and
+// a contained absolute path. It is the one rule behind every doc and image
+// route, local and remote; each caller maps the typed failure to its own
+// status or wire error: fspaths.ErrPathEscapesRoot for an escape,
+// errSessionFileNotFound for a miss, and otherwise the session's own error
+// (a deletion refusal, an unresolvable session folder).
 //
 // A relative path resolves against the session's cwd only. An absolute path
 // may also name a file inside the session's retained artifacts directory:
 // agents file reports there and name them by file:// URL, and the transcript
-// turns those into document-pane links, so the route has to serve them. The
-// artifacts root is one more boundary beside cwd, never a widening of it:
+// turns those into document-pane links, so the routes have to serve them.
+// The artifacts root is one more boundary beside cwd, never a widening of it:
 // both are resolved by fspaths.ResolveInRoot, and the root that accepted the
 // path is returned so the read opens through that same root.
-func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request, session, rel string) (string, string, bool) {
-	cwd, err := s.localSessionCWD(r.Context(), session)
+func resolveSessionFile(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, session, rel string) (root, abs string, err error) {
+	cwd, cwdErr := sessionCWD(ctx, cfg, sources, session)
 	absolute := filepath.IsAbs(strings.TrimSpace(rel))
 	var cwdResolveErr error
-	if err == nil {
+	if cwdErr == nil {
 		resolved, resolveErr := fspaths.ResolveInRoot(cwd, rel)
 		if resolveErr == nil {
-			return cwd, resolved, true
+			return cwd, resolved, nil
 		}
 		// A relative path can only mean the working directory, so a cwd
 		// failure is the whole answer for it.
 		if !absolute {
-			if errors.Is(resolveErr, fspaths.ErrPathEscapesRoot) {
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return "", "", false
-			}
-			http.NotFound(w, r)
-			return "", "", false
+			return "", "", sessionFileMiss(resolveErr)
 		}
 		cwdResolveErr = resolveErr
 	}
@@ -81,27 +81,48 @@ func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request
 	// worktree, or a session whose live source is momentarily unavailable).
 	// A deletion refusal is not one of those cases: it says this session's
 	// files must not be served, so it stands before anything is tried.
-	if absolute && !isTargetDeletedError(err) {
-		if root, resolved, contained, ok := artifactsDocTarget(r.Context(), s.cfg, session, rel); ok {
-			return root, resolved, true
+	if absolute && !isTargetDeletedError(cwdErr) {
+		if root, resolved, contained, ok := artifactsDocTarget(ctx, cfg, session, rel); ok {
+			return root, resolved, nil
 		} else if contained {
 			// The path belongs to the artifacts root but names no readable
 			// file there. That is a miss, not the cwd's escape refusal.
-			http.NotFound(w, r)
-			return "", "", false
+			return "", "", errSessionFileNotFound
 		}
 	}
-	if err != nil {
-		serveSessionRootError(w, r, err)
-		return "", "", false
+	if cwdErr != nil {
+		return "", "", cwdErr
 	}
 	// The cwd refused this absolute path as an escape and no served root
 	// accepted it, so the refusal stands rather than softening to a miss.
-	if errors.Is(cwdResolveErr, fspaths.ErrPathEscapesRoot) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return "", "", false
+	return "", "", sessionFileMiss(cwdResolveErr)
+}
+
+// sessionFileMiss classifies a failed ResolveInRoot as an escape or a miss.
+func sessionFileMiss(resolveErr error) error {
+	if errors.Is(resolveErr, fspaths.ErrPathEscapesRoot) {
+		return fspaths.ErrPathEscapesRoot
 	}
-	http.NotFound(w, r)
+	return errSessionFileNotFound
+}
+
+// resolveLocalDocTarget is resolveSessionFile for the local doc routes. It
+// answers the request itself when it cannot, so every local doc route refuses
+// an unknown session, an escape attempt and a missing path identically: 503
+// for a session whose folder cannot be resolved, 403 for an escape, 404
+// otherwise.
+func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request, session, rel string) (string, string, bool) {
+	root, abs, err := resolveSessionFile(r.Context(), s.cfg, s.sources, session, rel)
+	switch {
+	case err == nil:
+		return root, abs, true
+	case errors.Is(err, fspaths.ErrPathEscapesRoot):
+		http.Error(w, "forbidden", http.StatusForbidden)
+	case errors.Is(err, errSessionFileNotFound):
+		http.NotFound(w, r)
+	default:
+		serveSessionRootError(w, r, err)
+	}
 	return "", "", false
 }
 
@@ -425,52 +446,11 @@ func sessionDocumentFromHub(ctx context.Context, cfg hubcore.WebConfig, sources 
 		return appwire.SessionDocumentResponse{}, appwire.InvalidParams("sessionId and path are required")
 	}
 	session := canonicalRouteID(params.SessionID)
-	cwd, err := sessionCWD(ctx, cfg, sources, session)
-	cwdErr := err
-	var doc docFileRead
-	absolute := filepath.IsAbs(strings.TrimSpace(params.Path))
-	if err == nil {
-		doc, err = readSessionDocument(cwd, params.Path)
+	root, abs, err := resolveSessionFile(ctx, cfg, sources, session, params.Path)
+	if err != nil {
+		return appwire.SessionDocumentResponse{}, sessionDocumentWireError(err)
 	}
-	// The same rule the HTTP routes carry: an absolute path may also name a
-	// file in the retained artifacts directory, including after a worktree
-	// cleanup removed the working directory or its live source cannot be
-	// resolved right now. A relative name keeps its one meaning, so an
-	// escaping symlink in cwd is refused rather than silently served from an
-	// unrelated artifacts file of the same name.
-	// A deletion refusal stands: it is a decision about this session's files,
-	// not a cwd failure the artifacts root may work around.
-	deleted := isTargetDeletedError(cwdErr)
-	if absolute && !deleted {
-		if root, _, contained, _ := artifactsDocTarget(ctx, cfg, session, params.Path); root != "" {
-			// The artifacts attempt may fail for its own reason (no such file
-			// under that root). The refusal must still name the escape, so the
-			// original error stays unless the second root actually served it.
-			artifactsDoc, artifactsErr := readSessionDocument(root, params.Path)
-			if artifactsErr == nil {
-				doc = artifactsDoc
-				err, cwdErr = nil, nil
-			} else if contained {
-				// The path belongs to the artifacts root and is simply not
-				// there. That is a missing document, not an escape.
-				return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("document not found")
-			}
-		}
-	}
-	if deleted {
-		return appwire.SessionDocumentResponse{}, cwdErr
-	}
-	// A cwd that could not be resolved at all is reported as itself, not as a
-	// missing document, once the artifacts root has had its chance.
-	if err == nil {
-		err = cwdErr
-	}
-	if cwdErr != nil && !errors.Is(err, fspaths.ErrPathEscapesRoot) {
-		return appwire.SessionDocumentResponse{}, cwdErr
-	}
-	if errors.Is(err, fspaths.ErrPathEscapesRoot) {
-		return appwire.SessionDocumentResponse{}, appwire.PathOutsideSession("path must resolve inside the session's working directory")
-	}
+	doc, err := readDocFile(root, abs)
 	if err != nil {
 		return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("document not found")
 	}
@@ -482,16 +462,16 @@ func sessionDocumentFromHub(ctx context.Context, cfg hubcore.WebConfig, sources 
 	}, nil
 }
 
-// readSessionDocument reads the document rel names inside a session's working
-// directory cwd, for evener/session/document. It fails with
-// fspaths.ErrPathEscapesRoot when rel, or a symlink along it, leads outside cwd;
-// any other failure means the document cannot be read.
-func readSessionDocument(cwd, rel string) (docFileRead, error) {
-	abs, err := fspaths.ResolveInRoot(cwd, rel)
-	if err != nil {
-		return docFileRead{}, err
+// sessionDocumentWireError maps a resolveSessionFile failure to the wire error
+// evener/session/document answers with; a session error passes through.
+func sessionDocumentWireError(err error) error {
+	switch {
+	case errors.Is(err, fspaths.ErrPathEscapesRoot):
+		return appwire.PathOutsideSession("path must resolve inside the session's working directory")
+	case errors.Is(err, errSessionFileNotFound):
+		return appwire.ResourceNotFound("document not found")
 	}
-	return readDocFile(cwd, abs)
+	return err
 }
 
 // handleDocImage serves a validated image file inside a session's working
@@ -536,13 +516,6 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, max-age=60")
 	w.Header().Set("ETag", `"`+imageSha(data)+`"`)
 	_, _ = w.Write(data)
-}
-
-// localSessionCWD resolves a local session's current working directory from its
-// owning live source or freshly loaded archived metadata. /doc/image is
-// local-session-only; non-local refs are not found.
-func (s *WebServer) localSessionCWD(ctx context.Context, session string) (string, error) {
-	return sessionCWD(ctx, s.cfg, s.sources, session)
 }
 
 // sessionCWD resolves a session's current working directory. A roster-owned

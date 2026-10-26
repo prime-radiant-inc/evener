@@ -122,13 +122,13 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 		docOpen = func(string, string) (*os.File, error) { return os.Open(cwd) }
 		_, _ = readDocFile(cwd, filepath.Join(cwd, "note.txt"))
 		docOpen = oldOpen
-		_, _ = web.localSessionCWD(context.Background(), "remote:x")
-		_, _ = web.localSessionCWD(context.Background(), "01MISSING")
+		_, _ = sessionCWD(context.Background(), web.cfg, web.sources, "remote:x")
+		_, _ = sessionCWD(context.Background(), web.cfg, web.sources, "01MISSING")
 		past := hubcore.NewPastIndex("")
 		past.SeedForTest([]schema.SessionMeta{{ID: "01PAST", EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd}}, {ID: "01EMPTY"}})
 		pastWeb := NewWebServer(hubcore.WebConfig{Past: past})
-		_, _ = pastWeb.localSessionCWD(context.Background(), "01PAST")
-		_, _ = pastWeb.localSessionCWD(context.Background(), "01EMPTY")
+		_, _ = sessionCWD(context.Background(), pastWeb.cfg, pastWeb.sources, "01PAST")
+		_, _ = sessionCWD(context.Background(), pastWeb.cfg, pastWeb.sources, "01EMPTY")
 
 		t.Setenv(envvars.EVENERRecordHTTP.Name, "")
 		_ = newHTTPRequestRecorder(root)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))

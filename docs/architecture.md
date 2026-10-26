@@ -18,7 +18,7 @@ clients. [go.work](../go.work) is the workspace module inventory; each module's
 | LLM | [llm/](../llm/go.mod) | Provider registry, requests, streaming, retries and model metadata |
 | Authentication | [auth/](../auth/go.mod) | OAuth flows and token storage |
 | Environment | [envvars/](../envvars/go.mod) | Environment-variable definitions and user-directory resolution |
-| Execution support | [execsupport/](../execsupport/README.md) | Value expressions, process groups, pipe draining and shell quoting |
+| Execution support | [execsupport/](../execsupport/README.md) | Value expressions, process groups, pipe draining, shell quoting and durable atomic file writes |
 | Identifiers | [identifier/](../identifier/go.mod) | Session, job, mutation and other domain identities |
 | Invariants | [invariant/](../invariant/invariant.go) | Assertions enabled in fuzz builds; no-op assertions in normal builds |
 | Fuzz tooling | [fuzz/](../fuzz/README.md) | Portable generation, oracles and regression-promotion tooling |
@@ -327,7 +327,7 @@ appenders and exactly one drainer:
 - **Watch outbox** — the durable pending watch sends (jobstore `watch_send_pending`
   records). Appended by the `jobManager`'s observation paths (`onSessionEvent`,
   `feedJobOutput`, `fireProgressTick`, `armFinalizedJob`) taking only leaf locks;
-  drained by `drainPendingWatchSends` (`agent/job_watch.go`), the **sole** executor
+  drained by `drainPendingWatchSends` (`agent/session_watch_drain.go`), the **sole** executor
   of watch-send delivery.
 
 Stable delegate attention is deliberately not a fourth durable queue. Delegate,
@@ -386,7 +386,7 @@ its server drives it.
 > eventually-driven, level by level. The mailbox invariant holds at every depth.**
 
 A parent drains its own watch outbox in `drainPendingWatchSends`, and at the tail of that
-same boundary it calls `driveChildrenWithUndeliveredAttention` (`agent/job_watch.go`).
+same boundary it calls `driveChildrenWithUndeliveredAttention` (`agent/session_watch_drain.go`).
 That scan reads each direct child's mailboxes as **signal only** — a queued owner
 notification (`peekNotifications`) or pending watch sends (`hasPendingWatchSends`) — and, for
 any child with undelivered attention, calls `driveSubagentNotificationTurn`
@@ -420,7 +420,7 @@ into the whole subtree through `job_list(include_descendants=true)`, which walks
 at read time rather than pushing notifications upward. This realizes the durable principle that
 an agent is never interrupted about a *subagent's* children: attention escalates only one honest
 level (the `child unreachable:` fallback when a child cannot be driven,
-`renderUnreachableChildPendings`, `agent/job_watch.go`).
+`renderUnreachableChildPendings`, `agent/session_watch_drain.go`).
 
 **Shell forwarding is single-hop.** A shell job's events forward exactly one level: a child's `jm.forward`
 is its direct parent's `forwardEvent`, which appends the event to the parent's store and

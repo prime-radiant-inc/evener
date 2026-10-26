@@ -435,7 +435,7 @@ func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previou
 		m.logf("remove %q compensation: step %s failed; the record and its stash are left for the next boot: %v", plan.Name, step, stepErr)
 	}
 	seam := func(step string) error { return m.compensationStepFailure(plan.Name, step) }
-	switch hostops.NormalizeCompensationPhase(record.Phase) {
+	switch record.Phase {
 	case hostops.CompensationArmed:
 		// The purge never landed: the rows are untouched.
 	case hostops.CompensationHubTOML, hostops.CompensationRows:
@@ -443,7 +443,7 @@ func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previou
 		// restore is back, so the rows the restored generation revalidates are
 		// re-inserted, then the runtime step advances and the record clears. A
 		// record left in `rows` by an earlier crash resumes the same way.
-		if hostops.NormalizeCompensationPhase(record.Phase) == hostops.CompensationHubTOML {
+		if record.Phase == hostops.CompensationHubTOML {
 			if stepErr := seam("advance-rows"); stepErr != nil {
 				failStep("advance-rows", stepErr)
 				return appwire.HostMutationResult{}, err
@@ -730,14 +730,14 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 
 	m.cfg.mu.Lock()
 	m.unmarkMutating(name)
-	if stored, ok := m.cfg.hosts.Get(name); !ok && liveErr == nil {
+	stored, ok := m.cfg.hosts.Get(name)
+	if !ok && liveErr == nil {
 		// A directly driven registry dropped the name while the edit's rebind
 		// ran: the swap landed (the registry no longer carries the name, so the
 		// rebind had nothing left to retire) and the commit stands, so this is
 		// the same forward-repair state a refused rebind leaves — the committed
 		// entry plus a remnant whose retry re-applies the staged runtime set,
 		// never an un-commit of an edit the file already holds.
-		_ = stored
 		liveErr = fmt.Errorf("update host %q: the live entry vanished during the rebind", name)
 	}
 	if liveErr != nil {
@@ -769,12 +769,6 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 			return m.collisionArm(finalized), nil
 		}
 		return teardownCommittedArm(hostMutationUpdate, "update-host", remnantID, row), nil
-	}
-	stored, ok := m.cfg.hosts.Get(name)
-	if !ok {
-		// Unreachable: the vanished-entry case was folded into liveErr above.
-		m.cfg.mu.Unlock()
-		return appwire.HostMutationResult{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
 	if !slicesEqualStrs(before.Roots, stored.Roots) {
 		if m.cfg.remoteCache != nil {

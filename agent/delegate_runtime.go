@@ -3233,8 +3233,8 @@ func (s *Session) bootstrapDelegateResources() error {
 		s.owningDelegateID = s.cfg.spawn.owningDelegateID
 		return nil
 	}
-	if err := rejectLegacyDelegateState(s.stateDir, s.id); err != nil {
-		return err
+	if warning, ok := legacyDelegateStateWarning(s.stateDir, s.id); ok {
+		s.pendingHookWarnings = append(s.pendingHookWarnings, warning)
 	}
 	path := filepath.Join(jobsDir(s.stateDir, s.id), "delegates.jsonl")
 	store, err := delegatestore.Open(path)

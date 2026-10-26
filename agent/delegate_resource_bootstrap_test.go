@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -57,68 +58,160 @@ func TestDelegateResourceBootstrap_ChildInheritsControllerAndStableOwnerID(t *te
 	}
 }
 
-func TestDelegateResourceBootstrap_LegacyDelegateStateFailsClosed(t *testing.T) {
+// Old delegate lifecycle rows and watches addressed through legacy delegate jobs
+// are left in the journal and ignored: the session starts, reports the
+// ignored state, and goes on to create stable delegates.
+func TestDelegateResourceBootstrap_LegacyDelegateStateIsIgnoredAndStartupProceeds(t *testing.T) {
+	for name, withWatch := range map[string]bool{"lifecycle": false, "watch": true} {
+		t.Run(name, func(t *testing.T) {
+			meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
+			removeDelegateStoreIfPresent(t, stateDir, meta.ID)
+			jobPath := filepath.Join(jobsDir(stateDir, meta.ID), "jobs.jsonl")
+			rows := []jobstore.Event{{
+				Kind:           jobstore.EventJobStarted,
+				JobID:          "job_legacy_delegate",
+				Type:           jobstore.JobType(delegateResourceType),
+				OwnerSessionID: meta.ID,
+			}}
+			if withWatch {
+				rows = append(rows, jobstore.Event{
+					Kind:    jobstore.EventWatchRegistered,
+					WatchID: "watch_legacy_delegate_job",
+					Watch: &jobstore.WatchEvent{
+						Generation:       "wg_legacy",
+						OwnerSessionID:   meta.ID,
+						VisibleSessionID: meta.ID,
+						Target:           "job_legacy_delegate",
+						SendTo:           meta.ID,
+						ConfigHash:       "legacy",
+					},
+				})
+			}
+			appendLegacyBootstrapEvents(t, jobPath, rows...)
+			wantBytes, err := os.ReadFile(jobPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
+			if err != nil {
+				t.Fatalf("restore with legacy delegate state must proceed: %v", err)
+			}
+			gotBytes, err := os.ReadFile(jobPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.HasPrefix(gotBytes, wantBytes) {
+				t.Fatal("ignoring legacy delegate state rewrote the existing job journal rows")
+			}
+
+			// Back to useful operation: the restored root admits a stable delegate.
+			result := restored.createDelegate(context.Background(), delegateArgs{
+				Task:                "report the result",
+				DelegationAllowance: new(0),
+			})
+			if result.Err != nil {
+				t.Fatalf("createDelegate after ignoring legacy state: %v", result.Err)
+			}
+
+			var reported bool
+			for _, w := range drainWarnings(t, restored) {
+				if w.Code == events.WarningCodeLegacyDelegateState {
+					reported = true
+				}
+			}
+			if !reported {
+				t.Fatal("ignored legacy delegate state was not reported")
+			}
+
+			// The retired delegate is not resumed: like any job that did not
+			// survive the restart it ends as lost rather than staying running.
+			journal, err := jobstore.ReadEvents(jobPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if legacy := jobstore.Fold(journal)["job_legacy_delegate"]; legacy == nil || legacy.Status == jobstore.StatusRunning {
+				t.Fatalf("retired delegate job after restore = %+v, want it ended as lost", legacy)
+			}
+		})
+	}
+}
+
+// A retired delegate job is ended as lost without reading its output artifacts,
+// so unreadable output metadata left by the old runtime cannot stop a restore.
+func TestDelegateResourceBootstrap_RetiredDelegateOutputIsNotRead(t *testing.T) {
 	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
 	removeDelegateStoreIfPresent(t, stateDir, meta.ID)
 	jobPath := filepath.Join(jobsDir(stateDir, meta.ID), "jobs.jsonl")
+	outputPath := filepath.Join(t.TempDir(), "retired.log")
+	if err := os.WriteFile(outputPath, []byte("old output"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A directory where the metadata file belongs cannot be read as one.
+	if err := os.Mkdir(outputPath+".meta.json", 0o700); err != nil {
+		t.Fatal(err)
+	}
 	appendLegacyBootstrapEvents(t, jobPath, jobstore.Event{
 		Kind:           jobstore.EventJobStarted,
 		JobID:          "job_legacy_delegate",
 		Type:           jobstore.JobType(delegateResourceType),
 		OwnerSessionID: meta.ID,
+		OutputPath:     outputPath,
 	})
-	wantBytes, err := os.ReadFile(jobPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
-	if restored != nil {
-		restored.Close()
+	if err != nil {
+		t.Fatalf("restore with unreadable retired output: %v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "legacy_delegate_state") || !strings.Contains(err.Error(), "fresh state root") {
-		t.Fatalf("restore error = %v, want legacy_delegate_state with fresh-state-root guidance", err)
-	}
-	assertBootstrapScanWasReadOnly(t, stateDir, meta.ID, jobPath, wantBytes)
+	restored.Close()
 }
 
-func TestDelegateResourceBootstrap_LegacyDelegateWatchStateFailsClosed(t *testing.T) {
+// A pending watch frame addressed through a retired delegate job is not
+// restored into the live delivery set, while a frame on a healthy job still is.
+func TestDelegateResourceBootstrap_LegacyWatchFramesAreNotRestored(t *testing.T) {
 	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
 	removeDelegateStoreIfPresent(t, stateDir, meta.ID)
 	jobPath := filepath.Join(jobsDir(stateDir, meta.ID), "jobs.jsonl")
-	appendLegacyBootstrapEvents(t, jobPath,
-		jobstore.Event{
-			Kind:           jobstore.EventJobStarted,
-			JobID:          "job_legacy_delegate",
-			Type:           jobstore.JobType(delegateResourceType),
-			OwnerSessionID: meta.ID,
-		},
-		jobstore.Event{
-			Kind:    jobstore.EventWatchRegistered,
-			WatchID: "watch_legacy_delegate_job",
-			Watch: &jobstore.WatchEvent{
-				Generation:       "wg_legacy",
-				OwnerSessionID:   meta.ID,
-				VisibleSessionID: meta.ID,
-				Target:           "job_legacy_delegate",
-				SendTo:           meta.ID,
-				ConfigHash:       "legacy",
+	frame := func(deliveryID, target string) jobstore.Event {
+		return jobstore.Event{
+			Kind: jobstore.EventWatchSendPending,
+			WatchSend: &jobstore.WatchSendState{
+				Key: jobstore.WatchSendKey{
+					VisibleSessionID:        meta.ID,
+					WatchID:                 "watch_" + target,
+					WatchTarget:             target,
+					ResolvedWatchedIdentity: target,
+					ResolvedSendTo:          runtimeMessageAliasCaller,
+					WatchGeneration:         "wg_" + target,
+				},
+				DeliveryID:        deliveryID,
+				UpdateSeq:         1,
+				Frame:             "saved frame",
+				ReceiverSessionID: meta.ID,
+				CreatedAt:         time.Unix(10, 0).UTC(),
+				UpdatedAt:         time.Unix(10, 0).UTC(),
 			},
-		},
-	)
-	wantBytes, err := os.ReadFile(jobPath)
-	if err != nil {
-		t.Fatal(err)
+		}
 	}
+	appendLegacyBootstrapEvents(t, jobPath,
+		jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_legacy_delegate", Type: jobstore.JobType(delegateResourceType), OwnerSessionID: meta.ID},
+		jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_shell", Type: jobstore.JobShell, OwnerSessionID: meta.ID},
+		frame("delivery_legacy", "job_legacy_delegate"),
+		frame("delivery_shell", "job_shell"),
+	)
 
 	restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
-	if restored != nil {
-		restored.Close()
+	if err != nil {
+		t.Fatalf("restore: %v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "legacy_delegate_watch_state") || !strings.Contains(err.Error(), "fresh state root") {
-		t.Fatalf("restore error = %v, want legacy_delegate_watch_state with fresh-state-root guidance", err)
+	defer restored.Close()
+	var restoredFrames []string
+	for _, delivery := range restored.jobManager.pendingWatchSendDeliveries(nil) {
+		restoredFrames = append(restoredFrames, delivery.state.DeliveryID)
 	}
-	assertBootstrapScanWasReadOnly(t, stateDir, meta.ID, jobPath, wantBytes)
+	if !reflect.DeepEqual(restoredFrames, []string{"delivery_shell"}) {
+		t.Fatalf("restored watch frames = %v, want only the healthy job's", restoredFrames)
+	}
 }
 
 func TestDelegateResourceBootstrap_ShellOnlyAndStableWatchStateOpen(t *testing.T) {
@@ -592,18 +685,4 @@ func removeDelegateStoreIfPresent(t *testing.T, stateDir, rootSessionID string) 
 
 func delegateResourceStorePath(stateDir, rootSessionID string) string {
 	return filepath.Join(stateDir, schema.SessionsSubdir, rootSessionID, "delegates.jsonl")
-}
-
-func assertBootstrapScanWasReadOnly(t *testing.T, stateDir, rootSessionID, jobPath string, wantJobBytes []byte) {
-	t.Helper()
-	gotJobBytes, err := os.ReadFile(jobPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(gotJobBytes, wantJobBytes) {
-		t.Fatal("legacy job log changed during failed bootstrap")
-	}
-	if _, err := os.Stat(delegateResourceStorePath(stateDir, rootSessionID)); !os.IsNotExist(err) {
-		t.Fatalf("delegate store created before legacy scan failed: %v", err)
-	}
 }
