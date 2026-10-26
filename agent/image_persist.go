@@ -22,6 +22,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // attachmentsSubdir is the per-session directory, under
@@ -51,7 +52,7 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 	if s == nil || len(images) == 0 || s.stateDir == "" {
 		return images
 	}
-	dir := filepath.Join(s.stateDir, sessionsSubdir, s.id, attachmentsSubdir)
+	dir := filepath.Join(schema.SessionsDir(s.stateDir), s.id, attachmentsSubdir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachments: %v", err)})
 		return images
