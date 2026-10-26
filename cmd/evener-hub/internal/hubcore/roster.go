@@ -1132,6 +1132,7 @@ func classifyMissedProbe(prev LiveEntry, had bool, e rendezvous.Entry, identity 
 		if !sameDaemonIdentity(prev.Entry, e) {
 			resolved := prev.Entry
 			resolved.SessionID = prev.SessionID
+			outcome.kind = missRetained
 			outcome.retain = append(outcome.retain, prev.Entry, resolved, e)
 			return outcome
 		}
@@ -1147,6 +1148,7 @@ func classifyMissedProbe(prev LiveEntry, had bool, e rendezvous.Entry, identity 
 		return outcome
 	}
 	if alive {
+		outcome.kind = missRetained
 		outcome.retain = append(outcome.retain, e)
 		return outcome // ownership is unresolved; do not publish it as a live daemon
 	}
