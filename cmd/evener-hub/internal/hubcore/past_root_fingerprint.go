@@ -173,8 +173,8 @@ func writeHashValue(h hash.Hash64, v reflect.Value) {
 			binary.LittleEndian.PutUint64(b[:], uint64(t.UnixNano()))
 			break
 		}
-		for n := range v.NumField() {
-			writeHashValue(h, v.Field(n))
+		for _, field := range v.Fields() {
+			writeHashValue(h, field)
 		}
 		return
 	default:
