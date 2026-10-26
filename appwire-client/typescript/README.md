@@ -35,7 +35,11 @@ both render out of (`createTasksPanelStore(listTasks)`: the triple plus a
 coalescing `refresh` and a notification-following `watch`, over a
 `TasksListRead` port so the web's reconnect-waiting read and native's direct
 one both fit), the display formatters
-both apps render counts, durations and clock times with, the text and
+both apps render counts, durations and clock times with (every duration and
+age builds on `durationParts`, which floors to the largest whole unit:
+`compactDuration`, `spokenDuration`, the rail's `relativeAge` and the task
+list's `relativeTime` all agree that 90 minutes is 1h; `formatSpan` words a
+caller-supplied span of seconds), the text and
 argument helpers a tool call's rendering is built from, the marketplace
 source label both apps show beside a registered marketplace,
 the short lowercase session-state gloss a session row's second line leads

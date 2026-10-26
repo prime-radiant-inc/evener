@@ -167,7 +167,7 @@ func auxCommunicateExact(t *testing.T) {
 	lookup := func(name string) (skill.SkillMeta, bool) { return meta, name == "fixture" }
 	deps := &toolDeps{
 		skill: lookup,
-		emit:  func(events.EventKind, events.EventData) {},
+		emit:  func(events.EventData) {},
 		// registerSkillTool delegates use_skill executions here; an unset
 		// callback nil-derefs on the first invocation.
 		skillActivate: func(_ context.Context, name, _ string) (any, error) {

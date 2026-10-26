@@ -476,7 +476,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			_ = s.closeOwnedDelegateStore()
 		}
 	}()
-	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
+	s.subagents = newSubagentManager(cfg.MaxRetainedTerminal)
 	newJM := newJobManager
 	if cfg.testOnly.noSyncJobStore || testSpeedIO(cfg) {
 		newJM = newJobManagerNoSync
@@ -1199,7 +1199,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			_ = s.closeOwnedDelegateStore()
 		}
 	}()
-	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
+	s.subagents = newSubagentManager(cfg.MaxRetainedTerminal)
 	newJM := newJobManager
 	if cfg.testOnly.noSyncJobStore || testSpeedIO(cfg) {
 		newJM = newJobManagerNoSync
@@ -1232,7 +1232,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// restart-owned notification. Loading it later would overwrite that new
 	// notification with the pre-restart snapshot.
 	if steering, _, err := loadQueues(s.stateDir, s.id); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restore: queue reload failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("restore: queue reload failed: %v", err)})
 	} else {
 		s.steeringQueue = daemonSourcedSteering(steering)
 	}
@@ -1563,7 +1563,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// and neither may ever fail the restore.
 	restoredAskPending, isAskRound := deriveRestoredAskPending(s.history, divergenceTurn, steeringProvenance)
 	if isAskRound && len(restoredAskPending) == 0 {
-		s.emit(events.EventWarning, events.WarningData{Message: "restore: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
+		s.emit(events.WarningData{Message: "restore: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
 	}
 	s.mu.Lock()
 	s.state = restoredState
@@ -2078,7 +2078,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 			s.emitHookCompleted(end)
 			return
 		}
-		s.emit(kind, data)
+		s.emit(data)
 	})
 	s.hookRunner = runner
 	// Merge plugin agents on top of built-in agents (plugin agents win on conflict).

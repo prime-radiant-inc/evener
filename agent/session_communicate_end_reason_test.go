@@ -92,7 +92,7 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 			t.Parallel()
 			var delivered []events.CommunicateData
 			deps := &toolDeps{
-				emit: func(events.EventKind, events.EventData) {},
+				emit: func(events.EventData) {},
 				deliverCommunicate: func(data events.CommunicateData) error {
 					delivered = append(delivered, data)
 					return nil

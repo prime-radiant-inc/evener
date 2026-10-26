@@ -27,6 +27,9 @@ func TestCovNewEventPayloads(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			if got := KindOf(tc.data); got != tc.want {
+				t.Fatalf("KindOf(%T) = %v, want %v", tc.data, got, tc.want)
+			}
 			event := New(tc.data)
 			if event.Kind != tc.want {
 				t.Fatalf("New(%T).Kind = %v, want %v", tc.data, event.Kind, tc.want)
