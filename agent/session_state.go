@@ -443,9 +443,9 @@ func (s *Session) transitionProcessingAtBoundaryLocked(state SessionState) (tran
 
 func (s *Session) finishProcessingAtBoundaryEvents(ctx context.Context, transitioned bool, turnMS int64) {
 	if transitioned {
-		s.emit(events.EventTurnEnded, events.TurnEndedData{TurnDurationMS: turnMS})
+		s.emit(events.TurnEndedData{TurnDurationMS: turnMS})
 		if err := s.drainPendingWatchSendsAtBoundary(ctx); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: "watch send retry at processing boundary failed: " + err.Error()})
+			s.emit(events.WarningData{Message: "watch send retry at processing boundary failed: " + err.Error()})
 		}
 		s.finishActiveProvenance()
 	}
@@ -544,7 +544,7 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		// false. An operator hitting that on the interrupt-rejection path
 		// gets the same diagnostic a restart emits (session_init.go), and
 		// neither may ever fail the boundary.
-		s.emit(events.EventWarning, events.WarningData{Message: "interrupt boundary: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
+		s.emit(events.WarningData{Message: "interrupt boundary: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
 	}
 }
 
@@ -604,7 +604,7 @@ func (s *Session) abortResponseProcessing(ctx context.Context) error {
 		return context.Canceled
 	}
 	if err := ctx.Err(); err != nil {
-		s.emit(events.EventError, errorDataFromError(err))
+		s.emit(errorDataFromError(err))
 		return err
 	}
 	return nil
@@ -756,7 +756,7 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 			if hook := s.cfg.testOnly.needsResponseRestBeforeAnnounce; hook != nil {
 				hook()
 			}
-			s.emit(events.EventStatusSettled, events.StatusSettledData{State: string(SessionAwaiting)})
+			s.emit(events.StatusSettledData{State: string(SessionAwaiting)})
 		}
 	})
 }

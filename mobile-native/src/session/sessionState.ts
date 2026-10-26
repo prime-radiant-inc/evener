@@ -4,9 +4,9 @@
 // never unread, so one whose turn ended is Idle, with no dot.
 import { summaryTally } from "../subagents/subagentModel";
 import type { ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
-import { taskSettledCount } from "@evener/appwire-client";
+import { compactDuration, taskSettledCount } from "@evener/appwire-client";
 import { type BoardState, hubTime } from "../board/attention";
-import { compactDuration, timeAgo } from "./format";
+import { timeAgo } from "./format";
 import type { TrayLine } from "./trayLine";
 
 export interface SessionStateLine {

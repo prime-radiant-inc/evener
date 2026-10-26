@@ -1576,14 +1576,14 @@ func TestSession_ManageContext_ShrinksBaselineOnFold_WithInjectedSteering(t *tes
 }
 
 // testManageContextShrinksBaselineWithStrategy pins turnHistoryBaseline
-// through a memory-crystals-strategy ManageContext fold, parameterized over
+// through a ooda-strategy ManageContext fold, parameterized over
 // which injection sources fire on the same fold:
 //
 //   - withGoalSteering activates a goal so runPreCompactHook's
 //     goalCompactionSteering injects a turn — the hook-side contribution,
 //     counted via len(pendingSteering).
-//   - withCrystal seeds one crystal via AfterAction so the strategy's own
-//     post-fold append fires — the strategy-side contribution, counted via
+//   - withOrientation seeds one session-log entry via AfterAction so the strategy's
+//     own post-fold append fires — the strategy-side contribution, counted via
 //     contextmgr.WithPostFoldInjectionCallback (strategyInjected).
 //
 // (false, true) is the strategy-only pin
@@ -1595,7 +1595,7 @@ func TestSession_ManageContext_ShrinksBaselineOnFold_WithInjectedSteering(t *tes
 // call) silently absorbed the extra turn.
 //
 // (true, false) proves the callback no-op path composes: with a strategy
-// capable of self-injection present but not triggered (no crystal seeded),
+// capable of self-injection present but not triggered (no log entry seeded),
 // only the hook's turn should count — nothing is double-counted or dropped
 // just because a WithPostFoldInjectionCallback-aware strategy is in play.
 //
@@ -1607,29 +1607,30 @@ func TestSession_ManageContext_ShrinksBaselineOnFold_WithInjectedSteering(t *tes
 //
 // All three variants are ground-truthed against the actual post-fold
 // position of a uniquely-marked turn, not a re-derived formula.
-func testManageContextShrinksBaselineWithStrategy(t *testing.T, withGoalSteering, withCrystal bool) {
+func testManageContextShrinksBaselineWithStrategy(t *testing.T, withGoalSteering, withOrientation bool) {
 	t.Helper()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		ContextStrategy:  "memory-crystals",
+		ContextStrategy:  "ooda",
+		StateDir:         t.TempDir(),
 		testOnly:         testConfig{skipGitSnapshot: true},
 	}))
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
-	seedNumberedSessionHistory(t, s, 12) // multiple of 3 (AfterAction's crystallize cadence) and > PreserveRecentTurns(6)
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6)
 	if withGoalSteering {
 		s.getOrCreateGoalStore().Set("Ship the feature", time.Now()) // goalCompactionSteering injects 1 turn, unconsumed, every fold
 	}
 
-	mc, ok := s.strategy.(*contextmgr.MemoryCrystalsStrategy)
+	mc, ok := s.strategy.(*contextmgr.OODAStrategy)
 	if !ok {
-		t.Fatalf("expected *contextmgr.MemoryCrystalsStrategy, got %T", s.strategy)
+		t.Fatalf("expected *contextmgr.OODAStrategy, got %T", s.strategy)
 	}
-	if withCrystal {
+	if withOrientation {
 		if err := mc.AfterAction(context.Background(), currentHistory(t, s), s.client); err != nil {
 			t.Fatalf("AfterAction: %v", err)
 		}
 	}
-	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80), < SummarizeThreshold(0.95): checkpoint layer only
+	s.contextMgr.CheckpointThreshold = 0 // the ooda strategy resets the exact measurement before its layers, so only a zero threshold forces its checkpoint layer; SummarizeThreshold stays out of reach
 
 	preHistory := currentHistory(t, s)
 	baselineIdx := len(preHistory) - 3 // last 3 turns simulate the in-flight turn
@@ -1649,21 +1650,21 @@ func testManageContextShrinksBaselineWithStrategy(t *testing.T, withGoalSteering
 		t.Fatalf("test setup didn't force an actual fold: history len %d -> %d", len(preHistory), len(postHistory))
 	}
 
-	foundCrystalMarker := false
+	foundOrientationMarker := false
 	foundGoalMarker := false
 	for _, turn := range postHistory {
 		if turn.Kind != schema.TurnSteering {
 			continue
 		}
-		if strings.Contains(turn.Message.Text(), "[MEMORY CRYSTALS]") {
-			foundCrystalMarker = true
+		if strings.Contains(turn.Message.Text(), "[SESSION ORIENTATION]") {
+			foundOrientationMarker = true
 		}
 		if turn.SteeringKind == events.SteeringKindGoalObjective {
 			foundGoalMarker = true
 		}
 	}
-	if withCrystal != foundCrystalMarker {
-		t.Fatalf("memory-crystals steering turn present=%v, want %v (withCrystal) — test setup doesn't exercise what it claims", foundCrystalMarker, withCrystal)
+	if withOrientation != foundOrientationMarker {
+		t.Fatalf("ooda orientation turn present=%v, want %v (withOrientation) — test setup doesn't exercise what it claims", foundOrientationMarker, withOrientation)
 	}
 	if withGoalSteering != foundGoalMarker {
 		t.Fatalf("goal-objective steering turn present=%v, want %v (withGoalSteering) — test setup doesn't exercise what it claims", foundGoalMarker, withGoalSteering)
@@ -1690,9 +1691,9 @@ func TestSession_ManageContext_ShrinksBaselineOnFold_WithStrategyInjectedSteerin
 }
 
 // TestSession_ManageContext_ShrinksBaselineOnFold_WithGoalSteering_StrategyPresentButInactive
-// proves the callback no-op path composes: a memory-crystals strategy is
+// proves the callback no-op path composes: an ooda strategy is
 // active (so WithPostFoldInjectionCallback is wired the same way the S=2 test
-// below exercises it) but never triggers (no crystal seeded), while a goal
+// below exercises it) but never triggers (no log entry seeded), while a goal
 // injects through runPreCompactHook. The count must be exactly the hook's
 // one turn — no double-count or drop just because a
 // WithPostFoldInjectionCallback-capable strategy happens to be configured.
@@ -1714,7 +1715,7 @@ func TestSession_ManageContext_ShrinksBaselineOnFold_WithGoalAndStrategyInjected
 }
 
 // TestSession_ManageContext_ShrinksBaselineOnFold_MarkerBeforeBaseline pins
-// marker-before-baseline correction: a strategy marker (memory-crystals here)
+// marker-before-baseline correction: a strategy marker (ooda here)
 // planted in an EARLIER turn can end up sitting BEFORE turnHistoryBaseline by
 // the time a LATER turn's fold refreshes it. Removing a pre-baseline marker
 // shifts every in-flight turn left by one; the marker's own re-append (always
@@ -1724,7 +1725,7 @@ func TestSession_ManageContext_ShrinksBaselineOnFold_WithGoalAndStrategyInjected
 // -- it needs to know the removal specifically happened before the boundary,
 // not just that a removal and an append happened somewhere.
 //
-// Sequence: round 0 seeds a crystal and plants its marker at the tail, which
+// Sequence: round 0 seeds a log entry and plants its marker at the tail, which
 // becomes part of "prior" history once baseline is captured at the end of
 // round 0. Three more turns are appended directly (simulating tool-round
 // activity), landing after baseline. Pressure is then forced high enough that
@@ -1738,21 +1739,22 @@ func TestSession_ManageContext_ShrinksBaselineOnFold_MarkerBeforeBaseline(t *tes
 	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		ContextStrategy:  "memory-crystals",
+		ContextStrategy:  "ooda",
+		StateDir:         t.TempDir(),
 		testOnly:         testConfig{skipGitSnapshot: true},
 	}))
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
-	seedNumberedSessionHistory(t, s, 12) // multiple of 3 (AfterAction's crystallize cadence) and > PreserveRecentTurns(6)
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6)
 
-	mc, ok := s.strategy.(*contextmgr.MemoryCrystalsStrategy)
+	mc, ok := s.strategy.(*contextmgr.OODAStrategy)
 	if !ok {
-		t.Fatalf("expected *contextmgr.MemoryCrystalsStrategy, got %T", s.strategy)
+		t.Fatalf("expected *contextmgr.OODAStrategy, got %T", s.strategy)
 	}
 	if err := mc.AfterAction(context.Background(), currentHistory(t, s), s.client); err != nil {
 		t.Fatalf("AfterAction: %v", err)
 	}
 
-	// Round 0: plants the crystal marker (first injection, no prior marker to
+	// Round 0: plants the orientation marker (first injection, no prior marker to
 	// remove) and captures baseline immediately after -- the marker is
 	// "prior" content, exactly like production's round==0 reset.
 	var timings events.RoundTimings
@@ -1763,12 +1765,12 @@ func TestSession_ManageContext_ShrinksBaselineOnFold_MarkerBeforeBaseline(t *tes
 	afterRoundZero := currentHistory(t, s)
 	foundMarkerAfterRoundZero := false
 	for _, turn := range afterRoundZero {
-		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), "[MEMORY CRYSTALS]") {
+		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), "[SESSION ORIENTATION]") {
 			foundMarkerAfterRoundZero = true
 		}
 	}
 	if !foundMarkerAfterRoundZero {
-		t.Fatal("round 0 didn't plant a memory-crystals marker -- test setup invalid")
+		t.Fatal("round 0 didn't plant an ooda orientation marker -- test setup invalid")
 	}
 
 	// Simulate tool-round activity after round 0: turns appended directly,
@@ -1788,12 +1790,12 @@ func TestSession_ManageContext_ShrinksBaselineOnFold_MarkerBeforeBaseline(t *tes
 	if baselineIdx < 0 || baselineIdx >= len(preHistory) || preHistory[baselineIdx].Message.Text() != inFlight0 {
 		t.Fatalf("test setup invalid: turnHistoryBaseline=%d does not point at %q in %d-turn history", baselineIdx, inFlight0, len(preHistory))
 	}
-	markerIdx := indexOfSteeringMarker(preHistory, "[MEMORY CRYSTALS]")
+	markerIdx := indexOfSteeringMarker(preHistory, "[SESSION ORIENTATION]")
 	if markerIdx < 0 || markerIdx >= baselineIdx {
-		t.Fatalf("test setup invalid: crystal marker at index %d is not before baseline %d", markerIdx, baselineIdx)
+		t.Fatalf("test setup invalid: orientation marker at index %d is not before baseline %d", markerIdx, baselineIdx)
 	}
 
-	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80), < SummarizeThreshold(0.95): checkpoint layer only, small enough cutoff to preserve the marker as a distinct turn
+	s.contextMgr.CheckpointThreshold = 0 // the ooda strategy resets the exact measurement before its layers, so only a zero threshold forces its checkpoint layer; SummarizeThreshold stays out of reach
 
 	if _, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 1, &timings); err != nil {
 		t.Fatalf("prepareModelRequestWithError round 1: %v", err)

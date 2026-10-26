@@ -5,8 +5,9 @@
 // is the approval, so the transcript never shows the live one this way.
 import { SymbolView } from "expo-symbols";
 import { Text, View } from "react-native";
+import { spokenDuration } from "@evener/appwire-client";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { spokenDuration, timeAgo, wrapAfterSlashes } from "./format";
+import { timeAgo, wrapAfterSlashes } from "./format";
 import { useMinuteClock } from "./minuteClock";
 
 export function ApprovalHistory({ text, decidedAtMs }: { text: string; decidedAtMs: number | undefined }) {
