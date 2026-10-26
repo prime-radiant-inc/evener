@@ -694,7 +694,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if !resuming {
 		memoryProjectID = resolveMemoryProjectID(env, os.Stderr)
 	}
-	memoryStateRoot := memoryStateRootForLaunch(*disableMemory, os.Stderr)
+	memoryStateRoot := memoryStateRootForLaunch(*disableMemory || (resuming && resumedMeta.Config.DisableMemory), os.Stderr)
 	sessionCfg := agent.SessionConfig{
 		MemoryStateRoot: memoryStateRoot,
 		MemoryProjectID: memoryProjectID,

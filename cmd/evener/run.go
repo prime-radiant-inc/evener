@@ -363,7 +363,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		memoryProjectID = resolveMemoryProjectID(env, cfg.stderr)
 	}
 
-	memoryStateRoot := memoryStateRootForLaunch(cfg.disableMemory, cfg.stderr)
+	memoryStateRoot := memoryStateRootForLaunch(cfg.disableMemory || (meta != nil && meta.Config.DisableMemory), cfg.stderr)
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
 		MemoryStateRoot:             memoryStateRoot,

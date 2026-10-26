@@ -292,3 +292,32 @@ func TestServeWithoutStateHomeFailsBeforeConstructingASession(t *testing.T) {
 		t.Fatalf("serve with --run-dir = %v constructed=%t, want the constructor reached", err, constructed)
 	}
 }
+
+// Resuming a session that was saved with memory opted out needs no memory
+// warning when there is no state home, whether or not the flag is repeated.
+func TestResumeOfOptedOutSessionWithoutStateHomeDoesNotWarn(t *testing.T) {
+	dir := memoryLaunchFixture(t)
+	state := t.TempDir()
+	id := identifier.MustNewSessionID()
+	if err := schema.SaveSessionMeta(state, schema.SessionMeta{ID: id, ProfileID: "openai", Model: "gpt-test", Config: schema.ConfigSnapshot{DisableMemory: true}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	stop := errors.New("fixture resume reached")
+	old := runRestoreSession
+	t.Cleanup(func() { runRestoreSession = old })
+	runRestoreSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
+		defer env.Cleanup()
+		return nil, stop
+	}
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+	var stderr bytes.Buffer
+	err := run(context.Background(), runConfig{workDir: dir, stateDir: state, model: "openai/gpt-test", resume: id, stdout: io.Discard, stderr: &stderr})
+	if !errors.Is(err, stop) {
+		t.Fatalf("run = %v, want the restore reached", err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("warned about memory for an opted-out session: %s", stderr.String())
+	}
+}
