@@ -6,6 +6,7 @@ import type {
 	TranscriptDraftCheckpoint,
 	TranscriptDraftStorage,
 } from "@evener/appwire-client";
+import type { NavigationActionBackend } from "./navigationActionRepository";
 import type { SyncStringStorage } from "./syncStringStorage";
 
 /** A stored record's bytes that decode (JSON.parse succeeds) to the JSON
@@ -108,10 +109,7 @@ export function sameDraftIdentity(stored: unknown, expected: unknown): boolean {
 	return draftIdentityKey(stored) === draftIdentityKey(expected);
 }
 
-export interface NativePreferenceDraftBackend {
-	createId(): string;
-	get(key: string): unknown;
-	set(key: string, value: unknown): void;
+export interface NativePreferenceDraftBackend extends NavigationActionBackend {
 	delete(key: string): void;
 	/** Removes the record at `key` only if it is still named by `identity`;
 	 * reports whether it did. `identity` is usually a checkpoint this

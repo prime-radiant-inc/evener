@@ -212,85 +212,62 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			`CREATE TABLE IF NOT EXISTS mutation_sequence (target_ref TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL,
 			 stop_epoch INTEGER NOT NULL DEFAULT 0, recovery_resends TEXT NOT NULL DEFAULT '[]')`,
 		);
+		// Each additive column below is the whole migration for databases from
+		// before it existed: ALTER TABLE has no IF NOT EXISTS, so
+		// addColumnIfMissing checks the table's columns first, and rows written
+		// earlier read as the column's default.
+		//
 		// The ref's durable stop epoch (§4's stop barrier) rides the sequence
-		// row - the same seat the web adapter's sequences store gives it. A
-		// database created before the barrier lacks the column, and ALTER
-		// TABLE has no IF NOT EXISTS, so check the table's columns first: the
-		// additive default-0 column is the whole migration, no data rewrite,
-		// and existing rows read as "never stopped".
-		const sequenceColumns = this.db.getAllSync<{ name: string }>("PRAGMA table_info(mutation_sequence)");
-		if (!sequenceColumns.some((column) => column.name === "stop_epoch")) {
-			this.db.execSync("ALTER TABLE mutation_sequence ADD COLUMN stop_epoch INTEGER NOT NULL DEFAULT 0");
-		}
-		if (!sequenceColumns.some((column) => column.name === "recovery_resends")) {
-			this.db.execSync("ALTER TABLE mutation_sequence ADD COLUMN recovery_resends TEXT NOT NULL DEFAULT '[]'");
-		}
-		// The record tables' own additive column (the web's fused identity
-		// fix, 4059723ab4): a durable row carries its enqueue-time instance so
-		// cleanup and Retry can compare the identity the daemon actually
-		// fences with (instanceId ?? threadId). A database created before the
-		// field existed has no such column, and ALTER TABLE has no IF NOT
-		// EXISTS, so check each table's columns first - the nullable column is
-		// the whole migration, no data rewrite, and rows written before the
-		// field existed read as instanceId-undefined, their identity falling
-		// back to the threadId exactly the way the fused identity defines.
+		// row - the same seat the web adapter's sequences store gives it;
+		// existing rows read as "never stopped".
+		this.addColumnIfMissing("mutation_sequence", "stop_epoch", "INTEGER NOT NULL DEFAULT 0");
+		this.addColumnIfMissing("mutation_sequence", "recovery_resends", "TEXT NOT NULL DEFAULT '[]'");
 		for (const table of Object.values(TABLES)) {
-			const columns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
-			if (!columns.some((column) => column.name === "instance_id")) {
-				this.db.execSync(`ALTER TABLE ${table} ADD COLUMN instance_id TEXT`);
-			}
-			if (!columns.some((column) => column.name === "composer_mentions")) {
-				this.db.execSync(`ALTER TABLE ${table} ADD COLUMN composer_mentions TEXT`);
-			}
-			if (!columns.some((column) => column.name === "draft_capture_token")) {
-				this.db.execSync(`ALTER TABLE ${table} ADD COLUMN draft_capture_token TEXT`);
-			}
+			// The enqueue-time instance (the web's fused identity fix,
+			// 4059723ab4): cleanup and Retry compare the identity the daemon
+			// actually fences with (instanceId ?? threadId). Rows written before
+			// it read as instanceId-undefined, falling back to the threadId.
+			this.addColumnIfMissing(table, "instance_id", "TEXT");
+			this.addColumnIfMissing(table, "composer_mentions", "TEXT");
+			this.addColumnIfMissing(table, "draft_capture_token", "TEXT");
+			// #4342: the ref's stop epoch at enqueue time - the barrier's own
+			// read, stored, so a refusal can fence its rollback: a Stop whose
+			// cancel scan skipped the attempted row must not be outrun by the
+			// refusal's redelivery. Part of the shared insert shape, so every
+			// record table needs it. Rows written before it read as
+			// captured-at-zero, the conservative direction.
+			this.addColumnIfMissing(table, "stop_epoch_at_enqueue", "INTEGER NOT NULL DEFAULT 0");
+			// When a record was accepted. The prune asks "accepted before this
+			// read began", which enqueue time cannot answer: a replacement
+			// client's read can be out when an earlier request's receipt lands.
+			// A row written before the column existed is backfilled from its
+			// enqueue time (it was accepted before the upgrade, and leaving it
+			// at 0 would exclude exactly the records the prune exists to heal).
+			// The ALTER and its backfill commit together: a process that died
+			// between them would leave the column present and the rows
+			// unstamped, and no later start would retry the backfill.
+			this.addColumnIfMissing(
+				table,
+				"accepted_at",
+				"INTEGER NOT NULL DEFAULT 0",
+				`UPDATE ${table} SET accepted_at = created_at WHERE state = 'accepted'`,
+			);
 		}
 		// #4342: unresolved attempt counts live beside the attempted flag on
-		// the outbox table. A database created before the column existed
-		// lacks it, and ALTER TABLE has no IF NOT EXISTS, so check the
-		// columns first - the default-zero column is the whole migration, and
-		// rows written before it existed read as zero unresolved attempts.
-		const outboxColumns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${TABLES.outbox})`);
-		if (!outboxColumns.some((column) => column.name === "unresolved_attempts")) {
-			this.db.execSync(`ALTER TABLE ${TABLES.outbox} ADD COLUMN unresolved_attempts INTEGER NOT NULL DEFAULT 0`);
-		}
-		// #4342: the ref's stop epoch at enqueue time - the barrier's own
-		// read, stored, so a refusal can fence its rollback: a Stop whose
-		// cancel scan skipped the attempted row must not be outrun by the
-		// refusal's redelivery. The column is part of the shared insert
-		// shape, so every record table needs it - the instance_id loop, not an
-		// outbox-only ALTER: a database from the previous schema would
-		// otherwise throw on every optimistic and recovery write. Rows
-		// written before the column existed read as captured-at-zero, the
-		// conservative direction.
-		for (const table of Object.values(TABLES)) {
-			const columns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
-			if (!columns.some((column) => column.name === "stop_epoch_at_enqueue")) {
-				this.db.execSync(`ALTER TABLE ${table} ADD COLUMN stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0`);
-			}
-		}
-		// When a record was accepted. The prune below asks "accepted before this
-		// read began", which enqueue time cannot answer: a replacement client's
-		// read can be out when an earlier request's receipt lands, so pruning that
-		// fresh acceptance by its older enqueue time would drop a send whose
-		// snapshot never mentioned it. Shared insert shape, so every record table
-		// carries it. A row written before the column existed is backfilled from
-		// its enqueue time: it was accepted at some point before the upgrade, so
-		// any read after the upgrade began later than its acceptance - and leaving
-		// it at 0 would permanently exclude exactly the records this prune exists
-		// to heal. The ALTER and its backfill commit together: a process that died
-		// between them would leave the column present and the rows unstamped, and
-		// no later start would retry the backfill.
-		for (const table of Object.values(TABLES)) {
-			const columns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
-			if (!columns.some((column) => column.name === "accepted_at")) {
-				withSavepoint(this.db, `mutation_accepted_at_${table}`, () => {
-					this.db.execSync(`ALTER TABLE ${table} ADD COLUMN accepted_at INTEGER NOT NULL DEFAULT 0`);
-					this.db.execSync(`UPDATE ${table} SET accepted_at = created_at WHERE state = 'accepted'`);
-				});
-			}
-		}
+		// the outbox table; rows written before it read as zero unresolved
+		// attempts.
+		this.addColumnIfMissing(TABLES.outbox, "unresolved_attempts", "INTEGER NOT NULL DEFAULT 0");
+	}
+
+	// Adds `column` to `table` when a database from before it existed lacks it.
+	// A backfill statement commits together with the ALTER.
+	private addColumnIfMissing(table: string, column: string, definition: string, backfill?: string): void {
+		const columns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
+		if (columns.some((existing) => existing.name === column)) return;
+		withSavepoint(this.db, `mutation_add_${table}_${column}`, () => {
+			this.db.execSync(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+			if (backfill) this.db.execSync(backfill);
+		});
 	}
 
 	async enqueueIntent(intent: MutationIntent<A>, barrier?: MutationStopBarrier): Promise<MutationOutboxRecord<A>> {
