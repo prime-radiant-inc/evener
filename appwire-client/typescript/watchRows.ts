@@ -1,3 +1,4 @@
+import { formatSpan } from "./displayFormat";
 import type { ItemModel } from "./model";
 import { parseArgs } from "./toolCallText";
 
@@ -39,21 +40,7 @@ export function strArrayField(object: JsonObject, key: string): string[] {
 // Zero/negative never reaches here (numField filters it) — the caller falls
 // back to the raw footer text instead of inventing one.
 export function humanizeSeconds(totalSeconds: number): string {
-  const rounded = Math.round(totalSeconds);
-  if (rounded < 60) {
-    if (Number.isInteger(totalSeconds)) return `in ${rounded}s`;
-    return `in ${(Math.round(totalSeconds * 10) / 10).toString()}s`;
-  }
-  const totalMinutes = Math.floor(rounded / 60);
-  const leftoverSeconds = rounded % 60;
-  if (totalMinutes < 60) {
-    return leftoverSeconds === 0
-      ? `in ${totalMinutes}m`
-      : `in ${totalMinutes}m${String(leftoverSeconds).padStart(2, "0")}s`;
-  }
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return minutes === 0 ? `in ${hours}h` : `in ${hours}h${String(minutes).padStart(2, "0")}m`;
+  return `in ${formatSpan(totalSeconds)}`;
 }
 
 // humanizeInterval renders a caller-supplied cadence: sub-minute stays in
@@ -61,21 +48,7 @@ export function humanizeSeconds(totalSeconds: number): string {
 // ("every 2m"), leftover seconds are kept ("every 1m30s"); hours name hours
 // ("every 1h"). Same round-first carry contract as humanizeSeconds.
 export function humanizeInterval(totalSeconds: number): string {
-  const rounded = Math.round(totalSeconds);
-  if (rounded < 60) {
-    if (Number.isInteger(totalSeconds)) return `every ${rounded}s`;
-    return `every ${(Math.round(totalSeconds * 10) / 10).toString()}s`;
-  }
-  const totalMinutes = Math.floor(rounded / 60);
-  const leftoverSeconds = rounded % 60;
-  if (totalMinutes < 60) {
-    return leftoverSeconds === 0
-      ? `every ${totalMinutes}m`
-      : `every ${totalMinutes}m${String(leftoverSeconds).padStart(2, "0")}s`;
-  }
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return minutes === 0 ? `every ${hours}h` : `every ${hours}h${String(minutes).padStart(2, "0")}m`;
+  return `every ${formatSpan(totalSeconds)}`;
 }
 // A condition watch's trigger: the output pattern, the heartbeat cadence
 // (progress_interval_ms from the wire), the event list plus its every-Nth

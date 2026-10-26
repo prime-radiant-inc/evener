@@ -566,7 +566,7 @@ func TestSession_PreCompactHookOnlyRunsWhenCompactionEmits(t *testing.T) {
 
 	runner := hooks.NewRunner(nil, "")
 	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
-		sess.emit(kind, data)
+		sess.emit(data)
 	})
 	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{
 		Matcher: "*",
@@ -613,7 +613,7 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 
 	runner := hooks.NewRunner(nil, "")
 	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
-		sess.emit(kind, data)
+		sess.emit(data)
 	})
 	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{
 		Matcher: "*",
@@ -876,7 +876,7 @@ func TestSession_ObservationMaskOnlyQueuesNoTranscriptReminder(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, ContextStrategy: "obs-mask"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, ContextStrategy: "session-log"})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -969,7 +969,7 @@ func TestSession_NotificationHookRunsOnWarning(t *testing.T) {
 	})
 	sess.hookRunner = runner
 
-	sess.emit(events.EventWarning, events.WarningData{Message: "heads up"})
+	sess.emit(events.WarningData{Message: "heads up"})
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("Notification hook did not run: %v", err)
 	}

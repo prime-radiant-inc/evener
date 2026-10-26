@@ -107,10 +107,6 @@ var pifStrategies = []string{
 	"recall",
 	"session-log",
 	"ooda",
-	"obs-mask",
-	"checkpoint-pred",
-	"memory-crystals",
-	"recursive-distill",
 }
 
 type pifProgram struct {

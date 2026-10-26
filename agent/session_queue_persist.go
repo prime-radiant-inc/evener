@@ -131,7 +131,7 @@ func (s *Session) persistQueuesSnapshot() {
 	id := s.id
 	s.mu.Unlock()
 	if err := saveQueues(stateDir, id, steering, nil); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("queue persist failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("queue persist failed: %v", err)})
 	}
 }
 

@@ -94,7 +94,7 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 		s.wakeForPendingSteering()
 		if changed {
 			human, agentNote := s.notesSnapshot()
-			s.emit(events.EventNotesUpdated, notesUpdatedData(human, agentNote))
+			s.emit(notesUpdatedData(human, agentNote))
 		}
 	}
 	if err != nil {
@@ -235,7 +235,7 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 			// The removal's announcement belongs to the removal, not to the
 			// crash: re-emit the current list so the projector converges on
 			// the post-removal state the success journal records (G2).
-			s.emit(events.EventUrlsUpdated, urlsUpdatedData(s.snapshotSessionURLsLocked()))
+			s.emit(urlsUpdatedData(s.snapshotSessionURLsLocked()))
 			return s.applyUrlsRemoveResult(lookup.Lease, outerID)
 		}
 		if err := s.clientMutations.update(lookup.Lease, func(_ *clientMutationSnapshot, record *clientMutationRecord) error {
@@ -264,7 +264,7 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 	// Publish only after the save returned nil: a reader that already saw the
 	// pre-removal list must never see it retracted by a failed write.
 	s.publishCommittedNotesLocked()
-	s.emit(events.EventUrlsUpdated, urlsUpdatedData(s.snapshotSessionURLsLocked()))
+	s.emit(urlsUpdatedData(s.snapshotSessionURLsLocked()))
 	return s.applyUrlsRemoveResult(lookup.Lease, outerID)
 }
 
@@ -315,7 +315,7 @@ func (s *Session) mutateAgentNoteSerialized(note string) (stored string, changed
 		return stored, false, human, agentNote, nil
 	}
 	human, agent = s.notesSnapshot()
-	s.emit(events.EventNotesUpdated, notesUpdatedData(human, agent))
+	s.emit(notesUpdatedData(human, agent))
 	return stored, true, human, agent, nil
 }
 
@@ -345,7 +345,7 @@ func (s *Session) mutateSessionURLAddSerialized(rawURL, label string) (entry sch
 	// restores the live list without touching the published cut.
 	s.publishCommittedNotesLocked()
 	urls = s.snapshotSessionURLsLocked()
-	s.emit(events.EventUrlsUpdated, urlsUpdatedData(urls))
+	s.emit(urlsUpdatedData(urls))
 	return entry, urls, nil
 }
 
@@ -376,7 +376,7 @@ func (s *Session) mutateSessionURLRemoveSerialized(id string) (removed bool, url
 	// live list and leaves the published cut on the previous committed value.
 	s.publishCommittedNotesLocked()
 	urls = s.snapshotSessionURLsLocked()
-	s.emit(events.EventUrlsUpdated, urlsUpdatedData(urls))
+	s.emit(urlsUpdatedData(urls))
 	return true, urls, nil
 }
 

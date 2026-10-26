@@ -45,18 +45,6 @@ export function formatUsagePair(usage: ActivityUsage | undefined): string | null
   return parts.length ? parts.join(" ") : null;
 }
 
-// formatQuietAge buckets a millisecond age into the rail's compact stamps
-// ("12s", "1m", "13h", "2d"). Negative input (clock skew) clamps to 0s.
-export function formatQuietAge(ms: number): string {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
-}
-
 // quietAnchorMillis is the instant a live row's quiet clock measures from:
 // the last observed output when known, else the job's start. 0 when neither
 // parses, which renders the dishonest-huge-age case as a visible bug rather
