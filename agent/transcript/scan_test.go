@@ -87,7 +87,7 @@ func TestScanKeepsUnsupportedFormatDistinctFromMissingHeader(t *testing.T) {
 func TestScanReturnsTheVisitorsErrorUnchanged(t *testing.T) {
 	stop := errors.New("stop")
 	_, err := Scan(context.Background(), strings.NewReader(scanHeaderLine+"\n"+scanEntryLine+"\n"), 0, func([]byte, Entry) error { return stop })
-	if err != stop {
+	if !errors.Is(err, stop) {
 		t.Fatalf("err = %v, want the visitor's error", err)
 	}
 }
