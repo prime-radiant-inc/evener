@@ -1,7 +1,9 @@
 package hub
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/plugins"
 )
@@ -146,5 +149,53 @@ func TestRunMainFixesThePluginRegistryRootBeforeLaunchingChildren(t *testing.T) 
 	rootFlag := slices.Index(args, "--plugin-root")
 	if rootFlag < 0 || rootFlag+1 == len(args) || args[rootFlag+1] != wantRoot {
 		t.Fatalf("spawn args = %v, want --plugin-root %q", args, wantRoot)
+	}
+}
+
+// A hub whose config names its own hub_state_root but leaves run_dir,
+// state_glob and past_index_db to the default state root cannot start without
+// a home; it must say so on stderr rather than exit silently.
+func TestRunMainReportsDefaultPathsWithoutStateHome(t *testing.T) {
+	for name, blank := range map[string]func(*Config){
+		"run dir":    func(cfg *Config) { cfg.RunDir = "" },
+		"state glob": func(cfg *Config) { cfg.StateGlob = "" },
+		"past index": func(cfg *Config) { cfg.PastIndexDB = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("HOME", "")
+			t.Setenv("XDG_STATE_HOME", "")
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+
+			cfg := DefaultConfig()
+			cfg.Addr = "127.0.0.1:0"
+			cfg.HubStateRoot = filepath.Join(root, "state")
+			cfg.PluginAutoUpgrade = false
+			if err := os.MkdirAll(cfg.HubStateRoot, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cfg.RunDir = filepath.Join(root, "run")
+			cfg.StateGlob = filepath.Join(root, "projects", "*")
+			cfg.PastIndexDB = filepath.Join(cfg.HubStateRoot, "index.db")
+			blank(&cfg)
+
+			deps := defaultMainDeps()
+			deps.loadConfig = func(string, bool) (Config, error) { return cfg, nil }
+			deps.ensureDirs = func() error { return nil }
+			deps.acquireLock = func(string) (func(), error) { return func() {}, nil }
+			deps.loadRegistry = hermeticRegistryLoader
+			deps.newToken = func() (string, error) { return "hub-token", nil }
+			deps.loadAuthToken = func(string) (string, error) { return "auth-token", nil }
+			deps.loadCredentials = func(string) (*credentials.Store, error) { return &credentials.Store{}, nil }
+
+			var stderr bytes.Buffer
+			err := runMain(nil, &stderr, deps)
+			if !errors.Is(err, userdirs.ErrNoStateHome) {
+				t.Fatalf("runMain error = %v, want ErrNoStateHome", err)
+			}
+			if stderr.Len() == 0 {
+				t.Fatal("runMain returned the error without telling the operator")
+			}
+		})
 	}
 }
