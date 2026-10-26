@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // UpstreamURL is where the catalog comes from (spec §6.4).
@@ -45,24 +47,13 @@ func readCache(stateRoot string) ([]byte, Meta, bool) {
 	return raw, meta, true
 }
 
+// writeAtomic publishes a cache file. The cache is rebuilt from upstream, so
+// a crash that loses it costs one refetch and needs no fsync.
 func writeAtomic(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
-	if err != nil {
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmp.Name())
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmp.Name())
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return fsatomic.WriteWithoutSync(path, data, 0o600)
 }
 
 // HTTPFetcher returns a Fetcher that GETs UpstreamURL with If-None-Match.

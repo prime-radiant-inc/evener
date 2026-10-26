@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // ErrConfigUnloadable marks the refusal WriteConfigFile gives when the
@@ -188,7 +190,7 @@ func ReadConfigFile(path string) (*Layer, bool, error) {
 	return l, true, nil
 }
 
-// WriteConfigFile marshals l and writes it atomically (temp + rename, mode
+// WriteConfigFile marshals l and writes it atomically and durably (mode
 // 0644, parent directories created). It writes exactly what l holds: the
 // caller decides what a user authored (spec §10 "WriteFile keeps today's
 // scrub-and-restore" is satisfied by never putting a resolved credential
@@ -215,17 +217,8 @@ func ReadConfigFile(path string) (*Layer, bool, error) {
 // this write cannot reach: renaming over it would sever the very link the rule
 // exists to keep, so it is refused.
 //
-// The temp file is created exclusively under a random name (never a fixed
-// <target>.tmp): a planted symlink at a predictable temp name would otherwise
-// redirect the save into a file of the attacker's choosing, the same class
-// #1040 fixed for the target. The mode is set outright so the umask the
-// process runs under has no say in it.
-//
-// Because the temp name is random, a save killed between the exclusive create
-// and the rename (crash, SIGKILL, power loss) leaves a unique
-// <target>.tmp-* file behind that nothing reclaims; the old fixed-name scheme
-// revisited that one file on the next save, so this is the accepted cost of
-// never reusing a name an attacker could plant.
+// fsatomic.Write owns the temp file and sync rules (exclusive random-named
+// temp, mode set outright, file and directory fsync).
 func WriteConfigFile(path string, l *Layer) error {
 	data, err := MarshalConfig(l)
 	if err != nil {
@@ -245,30 +238,8 @@ func WriteConfigFile(path string, l *Layer) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return fmt.Errorf("providers.toml: mkdir: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+".tmp-*")
-	if err != nil {
+	if err := fsatomic.Write(target, data, 0o644); err != nil {
 		return fmt.Errorf("providers.toml: write: %w", err)
-	}
-	// A save that dies partway has already created the temp file, so clear it
-	// too: the rename takes the name with it, so this is a no-op once the save
-	// has landed.
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("providers.toml: write: %w", err)
-	}
-	// CreateTemp makes the file 0600; the config is 0644, set outright so the
-	// umask the process runs under has no say in it.
-	if err := tmp.Chmod(0o644); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("providers.toml: chmod: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("providers.toml: write: %w", err)
-	}
-	if err := os.Rename(tmpPath, target); err != nil {
-		return fmt.Errorf("providers.toml: rename: %w", err)
 	}
 	return nil
 }
