@@ -1162,6 +1162,20 @@ test("/help keeps the press boundaries of a multi-press rebinding", async () => 
   act(() => restoreDefaultBinding(keybindingsRegistry, ACTIONS.composerFocus));
 });
 
+test("/help updates a sequence with repeated presses when it is rebound live", async () => {
+  const user = userEvent.setup();
+  await openHelpFromCommand(user);
+
+  act(() => rebindAction(keybindingsRegistry, ACTIONS.composerFocus, "Control+Y Control+W Control+W"));
+  act(() => rebindAction(keybindingsRegistry, ACTIONS.composerFocus, "Control+Y Control+W Control+X"));
+
+  const term = screen.getAllByRole("term").find((el) => el.textContent === "Ctrl+Y");
+  if (term === undefined) throw new Error("first press is not the term");
+  const pressed = [...(term.nextElementSibling?.querySelectorAll("kbd") ?? [])].map((kbd) => kbd.textContent);
+  expect(pressed).toEqual(["Ctrl", "W", "Ctrl", "X"]);
+  act(() => restoreDefaultBinding(keybindingsRegistry, ACTIONS.composerFocus));
+});
+
 test("/help lists the UX-fix chords the old table never had", async () => {
   const user = userEvent.setup();
   await openHelpFromCommand(user);

@@ -62,8 +62,9 @@ function helpRowsFor(bindings: readonly Binding[]): ShortcutListItem[] {
           row.label
         ) : (
           <>
-            {rest.map((press) => (
-              <Fragment key={serializeChord([press])}>
+            {rest.map((press, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: repeated presses in a sequence ("g g g") are content-identical, so position is identity
+              <Fragment key={`${i}:${serializeChord([press])}`}>
                 <KeyHint keys={chordDisplayKeys(press)} />{" "}
               </Fragment>
             ))}
