@@ -43,6 +43,30 @@ func normalizeSessionActivity(ref string, scope appwire.SessionActivityScope, li
 	}
 	return id, scope, min(limit, 200), nil
 }
+
+// withActivityList opens one activity read for a list request, pages it and
+// releases it. The live and retained entry points differ only in how they open.
+func withActivityList[R any](
+	ctx context.Context,
+	params appwire.SessionActivityListParams,
+	open func(context.Context, appwire.SessionActivityReadParams) (*sessionActivityRead, error),
+	page func(*sessionActivityRead, context.Context, appwire.SessionActivityListParams) (R, error),
+) (R, error) {
+	var zero R
+	_, scope, limit, err := normalizeSessionActivity(params.Ref, params.Scope, params.Limit)
+	if err != nil {
+		return zero, err
+	}
+	params.Scope = scope
+	params.Limit = limit
+	read, err := open(ctx, appwire.SessionActivityReadParams{Ref: params.Ref, Scope: scope})
+	if err != nil {
+		return zero, err
+	}
+	defer read.index.release()
+	return page(read, ctx, params)
+}
+
 func (s *Session) activityRead(ctx context.Context, params appwire.SessionActivityReadParams) (*sessionActivityRead, error) {
 	id, scope, _, err := normalizeSessionActivity(params.Ref, params.Scope, 0)
 	if err != nil {

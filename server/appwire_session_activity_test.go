@@ -203,3 +203,81 @@ func TestSessionActivityIncarnationFencePreservesAddressedChild(t *testing.T) {
 		}
 	}
 }
+
+// Every session activity route answers its refusals the same way: an
+// unparseable ref is InvalidParams, a ref for another source or a route with
+// no installed read is SessionUnavailable, and an installed read receives the
+// request's own params.
+func TestSessionActivityRoutesShareRefusals(t *testing.T) {
+	routes := []struct {
+		method  string
+		install func(s *Server, seen *string)
+	}{
+		{appwire.MethodEvenerThreadActivityRead, func(s *Server, seen *string) {
+			s.SetThreadActivityReadFunc(func(_ context.Context, p appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
+				*seen = p.Ref
+				return appwire.SessionActivitySummary{}, nil
+			})
+		}},
+		{appwire.MethodEvenerThreadDelegatesList, func(s *Server, seen *string) {
+			s.SetThreadDelegatesListFunc(func(_ context.Context, p appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
+				*seen = p.Ref
+				return appwire.SessionDelegatesResponse{}, nil
+			})
+		}},
+		{appwire.MethodEvenerThreadJobsList, func(s *Server, seen *string) {
+			s.SetThreadJobsListFunc(func(_ context.Context, p appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
+				*seen = p.Ref
+				return appwire.SessionJobsResponse{}, nil
+			})
+		}},
+		{appwire.MethodEvenerThreadWatchesList, func(s *Server, seen *string) {
+			s.SetThreadWatchesListFunc(func(_ context.Context, p appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error) {
+				*seen = p.Ref
+				return appwire.SessionWatchesResponse{}, nil
+			})
+		}},
+	}
+	dispatch := func(s *Server, method, ref string) error {
+		raw, _ := json.Marshal(appwire.SessionActivityListParams{Ref: ref})
+		_, err := s.AppServer().Router().Dispatch(t.Context(), appwire.Request{Method: method, Params: raw})
+		return err
+	}
+	infoOf := func(t *testing.T, err error) (appwire.WireError, appwire.ErrorData) {
+		t.Helper()
+		wire, ok := errors.AsType[appwire.WireError](err)
+		if !ok {
+			t.Fatalf("error %v is not a WireError", err)
+		}
+		data, _ := wire.Data.(appwire.ErrorData)
+		return wire, data
+	}
+	for _, route := range routes {
+		t.Run(route.method, func(t *testing.T) {
+			s := NewServer(ServerConfig{})
+			s.SetAppIdentity("local", "root")
+
+			wire, data := infoOf(t, dispatch(s, route.method, "local:root"))
+			if wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+				t.Fatalf("unwired route = %+v", wire)
+			}
+
+			var seen string
+			route.install(s, &seen)
+			if wire, _ := infoOf(t, dispatch(s, route.method, "not a ref")); wire.Code != appwire.CodeInvalidParams {
+				t.Fatalf("malformed ref = %+v", wire)
+			}
+			wire, data = infoOf(t, dispatch(s, route.method, "elsewhere:root"))
+			if wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+				t.Fatalf("foreign source = %+v", wire)
+			}
+			if seen != "" {
+				t.Fatalf("read ran for a refused ref %q", seen)
+			}
+
+			if err := dispatch(s, route.method, "local:child"); err != nil || seen != "local:child" {
+				t.Fatalf("installed route: err=%v seen=%q", err, seen)
+			}
+		})
+	}
+}

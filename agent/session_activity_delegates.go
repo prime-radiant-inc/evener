@@ -35,34 +35,14 @@ func deriveSessionActivityDelegateKeys(state delegatestore.State) []sessionActiv
 
 // ListActivityDelegates pages stable logical delegate owners within this controller.
 func (s *Session) ListActivityDelegates(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
-	_, scope, limit, err := normalizeSessionActivity(params.Ref, params.Scope, params.Limit)
-	if err != nil {
-		return appwire.SessionDelegatesResponse{}, err
-	}
-	params.Scope = scope
-	params.Limit = limit
-	read, err := s.activityRead(ctx, appwire.SessionActivityReadParams{Ref: params.Ref, Scope: scope})
-	if err != nil {
-		return appwire.SessionDelegatesResponse{}, err
-	}
-	defer read.index.release()
-	return read.delegatesPage(ctx, params)
+	return withActivityList(ctx, params, s.activityRead, (*sessionActivityRead).delegatesPage)
 }
 
 // LoadSessionActivityDelegates advances bounded retained delegate reconstruction.
 func LoadSessionActivityDelegates(ctx context.Context, stateDir, sessionID string, params appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
-	_, scope, limit, err := normalizeSessionActivity(params.Ref, params.Scope, params.Limit)
-	if err != nil {
-		return appwire.SessionDelegatesResponse{}, err
-	}
-	params.Scope = scope
-	params.Limit = limit
-	read, err := retainedActivityRead(ctx, stateDir, sessionID, appwire.SessionActivityReadParams{Ref: params.Ref, Scope: scope})
-	if err != nil {
-		return appwire.SessionDelegatesResponse{}, err
-	}
-	defer read.index.release()
-	return read.delegatesPage(ctx, params)
+	return withActivityList(ctx, params, func(ctx context.Context, read appwire.SessionActivityReadParams) (*sessionActivityRead, error) {
+		return retainedActivityRead(ctx, stateDir, sessionID, read)
+	}, (*sessionActivityRead).delegatesPage)
 }
 func (read *sessionActivityRead) delegatesPage(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
 	result := appwire.SessionDelegatesResponse{Context: read.context, Scope: read.scope}

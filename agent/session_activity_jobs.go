@@ -15,34 +15,14 @@ import (
 
 // ListActivityJobs pages shell jobs without reading their output.
 func (s *Session) ListActivityJobs(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
-	_, scope, limit, err := normalizeSessionActivity(params.Ref, params.Scope, params.Limit)
-	if err != nil {
-		return appwire.SessionJobsResponse{}, err
-	}
-	params.Scope = scope
-	params.Limit = limit
-	read, err := s.activityRead(ctx, appwire.SessionActivityReadParams{Ref: params.Ref, Scope: scope})
-	if err != nil {
-		return appwire.SessionJobsResponse{}, err
-	}
-	defer read.index.release()
-	return read.jobsPage(ctx, params)
+	return withActivityList(ctx, params, s.activityRead, (*sessionActivityRead).jobsPage)
 }
 
 // LoadSessionActivityJobs pages fully folded retained shell state.
 func LoadSessionActivityJobs(ctx context.Context, stateDir, sessionID string, params appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
-	_, scope, limit, err := normalizeSessionActivity(params.Ref, params.Scope, params.Limit)
-	if err != nil {
-		return appwire.SessionJobsResponse{}, err
-	}
-	params.Scope = scope
-	params.Limit = limit
-	read, err := retainedActivityRead(ctx, stateDir, sessionID, appwire.SessionActivityReadParams{Ref: params.Ref, Scope: scope})
-	if err != nil {
-		return appwire.SessionJobsResponse{}, err
-	}
-	defer read.index.release()
-	return read.jobsPage(ctx, params)
+	return withActivityList(ctx, params, func(ctx context.Context, read appwire.SessionActivityReadParams) (*sessionActivityRead, error) {
+		return retainedActivityRead(ctx, stateDir, sessionID, read)
+	}, (*sessionActivityRead).jobsPage)
 }
 func (read *sessionActivityRead) runtime(id string) *Session {
 	if read.root == nil {

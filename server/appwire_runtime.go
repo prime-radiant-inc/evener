@@ -1583,20 +1583,12 @@ func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.Thre
 }
 
 func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
-	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
-	unlock, err := s.lockRetrySafeMutation(params.Ref, params.ThreadID, params.ExpectedInstanceID, params.ClientMutationID)
+	unlock, err := s.admitRetrySafeMutation(params.Ref, params.ThreadID, &params.ExpectedInstanceID, &params.ClientMutationID)
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
 	defer unlock()
-	input, err := appwire.NormalizeMutationInput(params.Input)
-	if err != nil {
-		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
-	}
-	s.mu.RLock()
-	fn := s.retrySafeTurns.Start
-	s.mu.RUnlock()
+	fn := s.retrySafeTurnFunctions().Start
 	// Skill selections are consumed at the input's actual claim: this endpoint
 	// prepares them against the durable input identity and delivers the
 	// complete bodies at dispatch. The support verdict is this endpoint's own
@@ -1605,70 +1597,25 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 	// them here with the typed unsupported-input error instead of asserting
 	// support it cannot deliver. Exact catalog identity and invocation policy
 	// remain consumption-time checks in the session.
-	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
-		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
+	if params.Input, err = gateTurnInput(params.Input, fn != nil, true); err != nil {
+		return appwire.TurnStartResponse{}, err
 	}
-	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
-		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
-	}
-	if !input.HasContent() {
-		return appwire.TurnStartResponse{}, appwire.InvalidParams("input is required")
-	}
-	params.Input = input.Items
-	if fn == nil {
-		return appwire.TurnStartResponse{}, appwire.Unavailable("turn start not available")
-	}
-	response, err := fn(params)
-	// turn/start accepts a durable mutation intent and emits NOTHING: unlike
-	// steer/queue/drain/promote/cancel, it does not reflect the durable queue, so
-	// no QUEUE_CHANGED announces the pending execution it just recorded. The
-	// serve loop's later claim does emit one, but a client reading between accept
-	// and claim would not see its own in-flight mutation -- which is the single
-	// thing the retry-safe projection exists to show a reconnecting client.
-	//
-	// Every mutation handler refreshes, not just this one. They all commit to the
-	// same store, and a uniform refresh means nobody has to re-derive which of
-	// the seven happens to emit. The sample is cheap: the store publishes its
-	// committed generation under a narrow mutex it never holds across a write.
-	s.refreshFacets(facetQueue)
-	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
+	return callRetrySafe(s, fn, params, params.ClientMutationID, "turn start not available")
 }
-
 func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
-	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
-	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
-	unlock, err := s.lockRetrySafeMutation(params.Ref, params.ThreadID, params.ExpectedInstanceID, params.ClientMutationID)
+	unlock, err := s.admitRetrySafeMutation(params.Ref, params.ThreadID, &params.ExpectedInstanceID, &params.ClientMutationID)
 	if err != nil {
 		return appwire.TurnSteerResponse{}, err
 	}
 	defer unlock()
-	input, err := appwire.NormalizeMutationInput(params.Input)
-	if err != nil {
-		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
-	}
-	s.mu.RLock()
-	fn := s.retrySafeTurns.Steer
-	s.mu.RUnlock()
+	fn := s.retrySafeTurnFunctions().Steer
 	// Skill selections are consumed at the steering's actual delivery: the
 	// support verdict is this endpoint's own wiring. See the turn/start gate.
-	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
-		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
+	if params.Input, err = gateTurnInput(params.Input, fn != nil, true); err != nil {
+		return appwire.TurnSteerResponse{}, err
 	}
-	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
-		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
-	}
-	if !input.HasContent() {
-		return appwire.TurnSteerResponse{}, appwire.InvalidParams("input is required")
-	}
-	params.Input = input.Items
-	if fn == nil {
-		return appwire.TurnSteerResponse{}, appwire.Unavailable("steer not available")
-	}
-	response, err := fn(params)
-	s.refreshFacets(facetQueue)
-	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
+	return callRetrySafe(s, fn, params, params.ClientMutationID, "steer not available")
 }
-
 func (s *Server) handleAppSandboxEscalationResolve(_ context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
 	if err := s.requireRootMutationTarget(params.Ref, params.ThreadID); err != nil {
 		return appwire.EmptyResponse{}, err
@@ -1721,147 +1668,76 @@ func (s *Server) handleAppDelegateStop(_ context.Context, params appwire.Delegat
 }
 
 func (s *Server) handleAppTurnInterrupt(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
-	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
-	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
-	unlock, err := s.lockRetrySafeMutation(params.Ref, params.ThreadID, params.ExpectedInstanceID, params.ClientMutationID)
+	unlock, err := s.admitRetrySafeMutation(params.Ref, params.ThreadID, &params.ExpectedInstanceID, &params.ClientMutationID)
 	if err != nil {
 		return appwire.TurnInterruptResponse{}, err
 	}
 	defer unlock()
-	s.mu.RLock()
-	fn := s.retrySafeTurns.Interrupt
-	s.mu.RUnlock()
-	if fn == nil {
-		return appwire.TurnInterruptResponse{}, appwire.Unavailable("interrupt not available")
+	var fn func(appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error)
+	if interrupt := s.retrySafeTurnFunctions().Interrupt; interrupt != nil {
+		fn = func(p appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) { return interrupt(ctx, p) }
 	}
-	response, err := fn(ctx, params)
-	s.refreshFacets(facetQueue)
-	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
+	return callRetrySafe(s, fn, params, params.ClientMutationID, "interrupt not available")
 }
-
 func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
-	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
-	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
-	unlock, err := s.lockRetrySafeMutation(params.Ref, "", params.ExpectedInstanceID, params.ClientMutationID)
+	unlock, err := s.admitRetrySafeMutation(params.Ref, "", &params.ExpectedInstanceID, &params.ClientMutationID)
 	if err != nil {
 		return appwire.TurnQueueResponse{}, err
 	}
 	defer unlock()
-	input, err := appwire.NormalizeMutationInput(params.Input)
-	if err != nil {
-		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
-	}
-	s.mu.RLock()
-	fn := s.retrySafeTurns.Queue
-	s.mu.RUnlock()
+	fn := s.retrySafeTurnFunctions().Queue
 	// Skill selections ride the queued entry and are consumed at its actual
 	// claim; the support verdict is this endpoint's own wiring. See the
 	// turn/start gate.
-	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
-		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
+	if params.Input, err = gateTurnInput(params.Input, fn != nil, true); err != nil {
+		return appwire.TurnQueueResponse{}, err
 	}
-	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
-		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
-	}
-	if !input.HasContent() {
-		return appwire.TurnQueueResponse{}, appwire.InvalidParams("input required")
-	}
-	params.Input = input.Items
-	if fn == nil {
-		return appwire.TurnQueueResponse{}, appwire.Unavailable("queue not available")
-	}
-	response, err := fn(params)
-	s.refreshFacets(facetQueue)
-	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
+	return callRetrySafe(s, fn, params, params.ClientMutationID, "queue not available")
 }
-
 func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
-	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
-	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
-	unlock, err := s.lockRetrySafeMutation(params.Ref, "", params.ExpectedInstanceID, params.ClientMutationID)
+	unlock, err := s.admitRetrySafeMutation(params.Ref, "", &params.ExpectedInstanceID, &params.ClientMutationID)
 	if err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, err
 	}
 	defer unlock()
-	input, err := appwire.NormalizeMutationInput(params.Input)
-	if err != nil {
-		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
-	}
-	s.mu.RLock()
-	fn := s.retrySafeTurns.Drain
-	s.mu.RUnlock()
+	fn := s.retrySafeTurnFunctions().Drain
 	// Drained entries keep their selections, consumed with the combined
 	// steering at its actual delivery; the support verdict is this endpoint's
-	// own wiring. See the turn/start gate.
-	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
-		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
+	// own wiring. See the turn/start gate. The input is optional: drain's job
+	// is to pop queued entries, with the composer payload an atomic bonus.
+	if params.Input, err = gateTurnInput(params.Input, fn != nil, false); err != nil {
+		return appwire.TurnDrainAsSteerResponse{}, err
 	}
-	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
-		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
-
-	}
-	params.Input = input.Items
-	if fn == nil {
-		return appwire.TurnDrainAsSteerResponse{}, appwire.Unavailable("drain-as-steer not available")
-	}
-	response, err := fn(params)
-	s.refreshFacets(facetQueue)
-	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
+	return callRetrySafe(s, fn, params, params.ClientMutationID, "drain-as-steer not available")
 }
 
 // handleAppTurnPromoteQueuedAsSteer validates static request shape and leaves
 // queue compare-and-commit decisions to the Session callback. No turn in
 // flight is required.
 func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
-	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
-	unlock, err := s.lockRetrySafeMutation(params.Ref, "", params.ExpectedInstanceID, params.ClientMutationID)
+	unlock, err := s.admitRetrySafeMutation(params.Ref, "", &params.ExpectedInstanceID, &params.ClientMutationID)
 	if err != nil {
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 	}
 	defer unlock()
-	if params.Index < 0 {
-		return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("index must be >= 0")
+	if err := requireQueueEntryShape(params.Index, params.ExpectedEntryID); err != nil {
+		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 	}
-	if strings.TrimSpace(params.ExpectedEntryID) == "" {
-		return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedEntryId is required")
-	}
-	s.mu.RLock()
-	fn := s.retrySafeTurns.Promote
-	s.mu.RUnlock()
-	if fn == nil {
-		return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.Unavailable("promote-queued-as-steer not available")
-	}
-	response, err := fn(params)
-	s.refreshFacets(facetQueue)
-	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
+	return callRetrySafe(s, s.retrySafeTurnFunctions().Promote, params, params.ClientMutationID, "promote-queued-as-steer not available")
 }
 
 // handleAppTurnCancelQueued validates static request shape and leaves queue
 // compare-and-commit decisions to the Session callback.
 func (s *Server) handleAppTurnCancelQueued(_ context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
-	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
-	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
-	unlock, err := s.lockRetrySafeMutation(params.Ref, "", params.ExpectedInstanceID, params.ClientMutationID)
+	unlock, err := s.admitRetrySafeMutation(params.Ref, "", &params.ExpectedInstanceID, &params.ClientMutationID)
 	if err != nil {
 		return appwire.TurnCancelQueuedResponse{}, err
 	}
 	defer unlock()
-	if params.Index < 0 {
-		return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("index must be >= 0")
+	if err := requireQueueEntryShape(params.Index, params.ExpectedEntryID); err != nil {
+		return appwire.TurnCancelQueuedResponse{}, err
 	}
-	if strings.TrimSpace(params.ExpectedEntryID) == "" {
-		return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("expectedEntryId is required")
-	}
-	s.mu.RLock()
-	fn := s.retrySafeTurns.Cancel
-	s.mu.RUnlock()
-	if fn == nil {
-		return appwire.TurnCancelQueuedResponse{}, appwire.Unavailable("cancel-queued not available")
-	}
-	response, err := fn(params)
-	s.refreshFacets(facetQueue)
-	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
+	return callRetrySafe(s, s.retrySafeTurnFunctions().Cancel, params, params.ClientMutationID, "cancel-queued not available")
 }
 
 // handleAppGoalSet handles goal/set. An empty objective clears the goal; both
@@ -1895,8 +1771,6 @@ func (s *Server) handleAppGoalSet(_ context.Context, params appwire.GoalSetParam
 // pushes directly: the callback emits EventNotesUpdated after its successful
 // store mutation, and the projector owns that event's push emission.
 func (s *Server) handleAppNotesHumanSet(_ context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
-	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
-	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
 	// The lock re-checks the root target via requireRootMutationIdentity
 	// (which calls requireRootMutationTarget), so the explicit call below is
 	// kept for the pre-lock shape errors it reports, not removed as a double
@@ -1905,7 +1779,7 @@ func (s *Server) handleAppNotesHumanSet(_ context.Context, params appwire.NotesH
 	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
 		return appwire.NotesHumanSetResponse{}, err
 	}
-	unlock, err := s.lockRetrySafeMutation(params.Ref, "", params.ExpectedInstanceID, params.ClientMutationID)
+	unlock, err := s.admitRetrySafeMutation(params.Ref, "", &params.ExpectedInstanceID, &params.ClientMutationID)
 	if err != nil {
 		return appwire.NotesHumanSetResponse{}, err
 	}
@@ -1930,15 +1804,13 @@ func (s *Server) handleAppNotesHumanSet(_ context.Context, params appwire.NotesH
 // EventUrlsUpdated after a successful removal, and the projector owns that
 // event's push emission.
 func (s *Server) handleAppUrlsRemove(_ context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
-	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
-	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
 	// Same double-check contract as handleAppNotesHumanSet: the explicit
 	// requireRootMutationTarget stays for pre-lock shape errors while the
 	// lock's own requireRootMutationIdentity recheck fences a racing clear.
 	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
 		return appwire.UrlsRemoveResponse{}, err
 	}
-	unlock, err := s.lockRetrySafeMutation(params.Ref, "", params.ExpectedInstanceID, params.ClientMutationID)
+	unlock, err := s.admitRetrySafeMutation(params.Ref, "", &params.ExpectedInstanceID, &params.ClientMutationID)
 	if err != nil {
 		return appwire.UrlsRemoveResponse{}, err
 	}
@@ -2340,22 +2212,84 @@ func (s *Server) requireRootMutationIdentity(rawRef, threadID, expectedInstanceI
 	return nil
 }
 
-// lockRetrySafeMutation admits one retry-safe turn callback only while no
-// thread/clear owns the identity gate. It validates before and after taking
-// the read lock so a clear that wins the race cannot leave an old-generation
-// callback admitted behind its replacement.
-func (s *Server) lockRetrySafeMutation(rawRef, threadID, expectedInstanceID, clientMutationID string) (func(), error) {
-	if err := s.requireRootMutationIdentity(rawRef, threadID, expectedInstanceID, clientMutationID); err != nil {
+// admitRetrySafeMutation trims the mutation identity in place, then admits one
+// retry-safe turn callback only while no thread/clear owns the identity gate.
+// It validates before and after taking the read lock so a clear that wins the
+// race cannot leave an old-generation callback admitted behind its
+// replacement.
+func (s *Server) admitRetrySafeMutation(rawRef, threadID string, expectedInstanceID, clientMutationID *string) (func(), error) {
+	*clientMutationID = strings.TrimSpace(*clientMutationID)
+	*expectedInstanceID = strings.TrimSpace(*expectedInstanceID)
+	if err := s.requireRootMutationIdentity(rawRef, threadID, *expectedInstanceID, *clientMutationID); err != nil {
 		return nil, err
 	}
 	if !s.appMutationGate.TryRLock() {
-		return nil, appwire.MutationNotAccepted(clientMutationID, "thread clear is already in progress")
+		return nil, appwire.MutationNotAccepted(*clientMutationID, "thread clear is already in progress")
 	}
-	if err := s.requireRootMutationIdentity(rawRef, threadID, expectedInstanceID, clientMutationID); err != nil {
+	if err := s.requireRootMutationIdentity(rawRef, threadID, *expectedInstanceID, *clientMutationID); err != nil {
 		s.appMutationGate.RUnlock()
 		return nil, err
 	}
 	return s.appMutationGate.RUnlock, nil
+}
+
+func (s *Server) retrySafeTurnFunctions() RetrySafeTurnFunctions {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.retrySafeTurns
+}
+
+// gateTurnInput normalizes a mutation's input and refuses selections the
+// endpoint cannot deliver. wired is the endpoint's own wiring: it is the
+// support verdict for skill and command selections.
+func gateTurnInput(items []appwire.InputItem, wired, contentRequired bool) ([]appwire.InputItem, error) {
+	input, err := appwire.NormalizeMutationInput(items)
+	if err != nil {
+		return nil, appwire.InvalidParams(err.Error())
+	}
+	if err := appwire.ValidateSkillInputSupport(input.Items, wired); err != nil {
+		return nil, appwire.InvalidParams(err.Error())
+	}
+	if err := appwire.ValidateCommandInputSupport(input.Items, wired); err != nil {
+		return nil, appwire.InvalidParams(err.Error())
+	}
+	if contentRequired && !input.HasContent() {
+		return nil, appwire.InvalidParams("input is required")
+	}
+	return input.Items, nil
+}
+
+func requireQueueEntryShape(index int, expectedEntryID string) error {
+	if index < 0 {
+		return appwire.InvalidParams("index must be >= 0")
+	}
+	if strings.TrimSpace(expectedEntryID) == "" {
+		return appwire.InvalidParams("expectedEntryId is required")
+	}
+	return nil
+}
+
+// callRetrySafe dispatches an admitted retry-safe mutation to its callback.
+//
+// A mutation accepts a durable intent and may emit NOTHING: turn/start, for
+// one, does not reflect the durable queue, so no QUEUE_CHANGED announces the
+// pending execution it just recorded. The serve loop's later claim does emit
+// one, but a client reading between accept and claim would not see its own
+// in-flight mutation -- which is the single thing the retry-safe projection
+// exists to show a reconnecting client.
+//
+// Every mutation refreshes, not just the ones that emit. They all commit to the
+// same store, and a uniform refresh means nobody has to re-derive which of
+// them happens to emit. The sample is cheap: the store publishes its committed
+// generation under a narrow mutex it never holds across a write.
+func callRetrySafe[P, R any](s *Server, fn func(P) (R, error), params P, clientMutationID, unavailable string) (R, error) {
+	if fn == nil {
+		var zero R
+		return zero, appwire.Unavailable(unavailable)
+	}
+	response, err := fn(params)
+	s.refreshFacets(facetQueue)
+	return response, agent.NormalizeClientMutationError(clientMutationID, err)
 }
 
 func (s *Server) handleAppTasksList(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
