@@ -1,4 +1,5 @@
 import type {
+  AuthDeviceStartResponse,
   AuthLogoutResponse,
   AuthStatusResponse,
   AuthTestResponse,
@@ -1335,6 +1336,45 @@ describe("OAuth start branches", () => {
     const inspector = await openSheet(user, "personal");
     await user.click(within(inspector).getByRole("button", { name: "Sign in…" }));
     await screen.findByText("ABCD-EFGH");
+  });
+
+  test("a restart the user cancels while its start is out does not reopen the editor", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    const replacement = deferred<AuthDeviceStartResponse>();
+    let starts = 0;
+    fake.on("evener/auth/device/start", async () => {
+      starts += 1;
+      if (starts > 1) return replacement.promise;
+      return {
+        provider: "personal",
+        flowId: "device-flow",
+        userCode: "ABCD-EFGH",
+        verificationUrl: "https://verify",
+        intervalSeconds: 1,
+      };
+    });
+    fake.on("evener/auth/device/poll", () => ({ state: "restart" }));
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Sign in…" }));
+    await screen.findByText("ABCD-EFGH");
+    await waitFor(() => expect(starts).toBe(2));
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Sign in to personal" })).toBeNull();
+    await act(async () => {
+      replacement.resolve({
+        provider: "personal",
+        flowId: "device-flow-2",
+        userCode: "WXYZ-1234",
+        verificationUrl: "https://verify",
+        intervalSeconds: 5,
+      });
+    });
+    expect(screen.queryByText("WXYZ-1234")).toBeNull();
   });
 
   test("a deviceStart failure toasts 'Sign-in failed' and opens no editor", async () => {

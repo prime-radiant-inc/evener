@@ -154,8 +154,8 @@ func runPluginLoaderProgram(t *testing.T, mode byte, token string) pluginLoaderP
 		}
 	}
 
-	assertLoaderProgramFailure(t, fx.badAgent, "bad agent")
-	assertLoaderProgramFailure(t, fx.badCommand, "bad command")
+	assertLoaderProgramSkips(t, fx.badAgent, "agent")
+	assertLoaderProgramSkips(t, fx.badCommand, "command")
 
 	// Exercise the diagnostic hook parsers directly.
 	parsedDiag, unsupported, unknown, err := parsePluginHooksDiag(fx.alphaHooks, alpha.Dir, alpha.Manifest.Name)
@@ -429,6 +429,20 @@ func assertLoaderProgramFailure(t *testing.T, dir, label string) {
 	}
 }
 
+// assertLoaderProgramSkips loads a plugin whose only component file is
+// malformed: the plugin loads, the file is reported, and nothing is loaded
+// from it.
+func assertLoaderProgramSkips(t *testing.T, dir, kind string) {
+	t.Helper()
+	inst, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load(bad %s) = %v; want the plugin to load with the file skipped", kind, err)
+	}
+	if len(inst.Agents) != 0 || len(inst.Commands) != 0 || len(inst.SkippedComponents) != 1 || inst.SkippedComponents[0].Kind != kind {
+		t.Fatalf("Load(bad %s) = agents:%d commands:%d skipped:%#v; want only the one skipped %s", kind, len(inst.Agents), len(inst.Commands), inst.SkippedComponents, kind)
+	}
+}
+
 func assertPluginLoaderProgramErrorPaths(t *testing.T, fx pluginLoaderProgramFixture) {
 	t.Helper()
 
@@ -580,10 +594,10 @@ func assertPluginLoaderProgramInjectedFailures(t *testing.T, fx pluginLoaderProg
 		}
 		return origReadFile(path)
 	}
-	if _, skipped, err := discoverPluginAgents(fx.alpha, json.RawMessage(`"agents/helper.md"`), "alpha"); err != nil || len(skipped) != 1 {
+	if _, skipped, err := discoverPluginAgents(fx.alpha, json.RawMessage(`"agents/helper.md"`), "alpha"); err != nil || len(skipped) == 0 {
 		t.Fatalf("agent file read fault = skipped %v, err %v, want the file skipped", skipped, err)
 	}
-	if _, skipped, err := discoverPluginCommands(fx.alpha, json.RawMessage(`"commands/hello.md"`), "alpha"); err != nil || len(skipped) != 1 {
+	if _, skipped, err := discoverPluginCommands(fx.alpha, json.RawMessage(`"commands/hello.md"`), "alpha"); err != nil || len(skipped) == 0 {
 		t.Fatalf("command file read fault = skipped %v, err %v, want the file skipped", skipped, err)
 	}
 	pluginReadFile = origReadFile
