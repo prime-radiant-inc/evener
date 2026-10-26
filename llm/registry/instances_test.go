@@ -273,6 +273,10 @@ Authorization = "Bearer $PORTKEY_KEY"
 	for name, w := range want {
 		rec := r.explicit[name]
 		got, warns := r.credential(rec, r.listingTransport(rec))
+		if (got.MissingReason != "") != (len(warns) > 0) {
+			t.Errorf("%s: MissingReason = %q with warnings %v; want one exactly when the other is set", name, got.MissingReason, warns)
+		}
+		got.MissingReason = ""
 		if got != w {
 			t.Errorf("%s: credential = %+v, want %+v", name, got, w)
 		}
@@ -2168,5 +2172,51 @@ func TestLiteralCredentialHeaderValueStays(t *testing.T) {
 	}
 	if got := res.CredentialHeaders["X-Api-Key"]; got != "abcdef" {
 		t.Fatalf("credential header map carries %q; want the literal key kept", got)
+	}
+}
+
+// MissingReason is the typed half of the credential diagnosis: set exactly
+// when a scheme that needs a credential resolved to none, on the listing,
+// the gate and the full resolution alike, so no caller parses Warnings.
+func TestCredentialMissingReasonTracksTheSlotState(t *testing.T) {
+	const head = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n"
+	const model = "[providers.gw.models.\"house-model\"]\n"
+	for _, tt := range []struct {
+		name    string
+		config  string
+		env     map[string]string
+		missing bool
+	}{
+		{"api_key unset variable", head + "auth = \"bearer\"\napi_key = '''$MISSING'''\n" + model, nil, true},
+		{"api_key empty expansion", head + "auth = \"bearer\"\napi_key = '''${MISSING:-}'''\n" + model, nil, true},
+		{"api_key scheme word only", head + "auth = \"bearer\"\napi_key = '''${MISSING:-Bearer}'''\n" + model, nil, true},
+		{"nothing authored", head + "auth = \"bearer\"\n" + model, nil, true},
+		{"auth header unset variable", head + "auth = \"header\"\nauth_header = \"Authorization\"\ncredential_headers = { \"Authorization\" = '''$MISSING''' }\n" + model, nil, true},
+		{"auth header empty expansion", head + "auth = \"header\"\nauth_header = \"Authorization\"\ncredential_headers = { \"Authorization\" = '''${MISSING:-}''' }\n" + model, nil, true},
+		{"api_key present", head + "auth = \"bearer\"\napi_key = '''$PRESENT'''\n" + model, map[string]string{"PRESENT": "k"}, false},
+		{"auth header present", head + "auth = \"header\"\nauth_header = \"X-K\"\ncredential_headers = { \"X-K\" = '''$PRESENT''' }\n" + model, map[string]string{"PRESENT": "k"}, false},
+		{"optional bearer without key", head + "auth = \"optional-bearer\"\n" + model, nil, false},
+		{"auth none", head + "auth = \"none\"\n" + model, nil, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := fixtureLoad(t, tt.env, tt.config)
+			res, err := r.Resolve("gw/house-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := res.Credential.MissingReason != ""; got != tt.missing {
+				t.Fatalf("resolve: MissingReason = %q; want missing=%v", res.Credential.MissingReason, tt.missing)
+			}
+			gate, err := r.ResolveGateCredential("gw", "house-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gate.Credential.MissingReason != ""; got != tt.missing {
+				t.Fatalf("gate: MissingReason = %q; want missing=%v", gate.Credential.MissingReason, tt.missing)
+			}
+		})
 	}
 }

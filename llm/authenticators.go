@@ -27,7 +27,7 @@ func (bearerAuth) Apply(_ context.Context, req *http.Request, res registry.Resol
 		return nil
 	}
 	if res.Credential.Value == "" {
-		return missingCredential(res, "Authorization")
+		return missingCredential(res)
 	}
 	req.Header.Set("Authorization", "Bearer "+res.Credential.Value)
 	return nil
@@ -55,7 +55,7 @@ func (headerAuth) Apply(_ context.Context, req *http.Request, res registry.Resol
 		return nil
 	}
 	if res.Credential.Value == "" {
-		return missingCredential(res, res.Transport.AuthHeader)
+		return missingCredential(res)
 	}
 	req.Header.Set(res.Transport.AuthHeader, res.Credential.Value)
 	return nil
@@ -80,24 +80,13 @@ func credentialHeaderWins(res registry.Resolved, name string) bool {
 	return false
 }
 
-// missingCredential names the instance and repeats the registry's own
-// "no credential" warning, which says which variable or login is missing.
-// The resolve path suppresses that warning when the auth header's own
-// expression failed — the header form carries the diagnosis — so the second
-// look recognizes the auth header's failure wording, case-folded like every
-// other header match.
-func missingCredential(res registry.Resolved, authHeader string) error {
+// missingCredential names the instance and carries the registry's typed
+// diagnosis of the missing credential (which variable, login or header
+// expression failed), so the request-time error says what the user can act on.
+func missingCredential(res registry.Resolved) error {
 	msg := fmt.Sprintf("instance %q has no credential", res.Instance)
-	for _, w := range res.Warnings {
-		if strings.HasPrefix(w, "no credential") {
-			return &ConfigurationError{Message: msg + ": " + w, Cause: ErrNoCredential}
-		}
-	}
-	prefix := fmt.Sprintf("credential header %q:", authHeader)
-	for _, w := range res.Warnings {
-		if len(w) >= len(prefix) && strings.EqualFold(w[:len(prefix)], prefix) {
-			return &ConfigurationError{Message: msg + ": " + w, Cause: ErrNoCredential}
-		}
+	if reason := res.Credential.MissingReason; reason != "" {
+		msg += ": " + reason
 	}
 	return &ConfigurationError{Message: msg, Cause: ErrNoCredential}
 }

@@ -862,19 +862,6 @@ func resolveEvenerStateDirWithProject(workDir, override, stateHome string) (iden
 	return project, stateDir, nil
 }
 
-// resolveGateCredentialForSpawn is the gate's judgment of a named launch. A
-// Codex id the bundled roster rejects is not this gate's refusal: the child
-// applies the instance's live roster before resolving the model, so the gate
-// falls back to the instance's own transport and leaves the model verdict to
-// the child.
-func resolveGateCredentialForSpawn(r *registry.Registry, name, model string) (registry.Resolved, error) {
-	res, err := r.ResolveGateCredential(name, model)
-	if err != nil && model != "" && errors.Is(err, registry.ErrCodexModelNotListed) {
-		return r.ResolveGateCredentialCandidate(name, model)
-	}
-	return res, err
-}
-
 // validateProviderCredentials refuses a launch whose target has no
 // credential the child could resolve, so the failure is a launch error the
 // user can read rather than a 401 mid-session. A launch names a model, and
@@ -917,7 +904,7 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		// rather than a credential message for a launch that never happens.
 		// An unlisted Codex id has no row to judge: the child owns that
 		// verdict against the instance's live roster.
-		res, err := resolveGateCredentialForSpawn(r, name, model)
+		res, err := r.ResolveGateCredential(name, model)
 		if err != nil {
 			return wireRefusal(appwire.HubLaunchError, err)
 		}
@@ -947,7 +934,7 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		// refusal, before the spawn — not a bare-launch scheme to offer a
 		// credential remedy against. An unlisted Codex id is left to the
 		// child's live-roster resolution.
-		res, err := resolveGateCredentialForSpawn(r, name, model)
+		res, err := r.ResolveGateCredential(name, model)
 		if err != nil {
 			return wireRefusal(appwire.HubLaunchError, err)
 		}
