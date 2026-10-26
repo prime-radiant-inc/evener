@@ -234,13 +234,14 @@ func TestValidateSubmodulePointer_RejectsNonSubmoduleTargets(t *testing.T) {
 }
 
 func TestPointerTarget(t *testing.T) {
-	if got, ok := PointerTarget("gitdir: /some/abs/path", "/ancestor"); !ok || got != "/some/abs/path" {
+	ancestor := t.TempDir()
+	if got, ok := PointerTarget("gitdir: /some/abs/path", ancestor); !ok || got != "/some/abs/path" {
 		t.Fatalf("absolute pointer = %q, %v", got, ok)
 	}
-	if got, ok := PointerTarget("gitdir: relative/path", "/ancestor"); !ok || got != filepath.Join("/ancestor", "relative", "path") {
+	if got, ok := PointerTarget("gitdir: relative/path", ancestor); !ok || got != filepath.Join(ancestor, "relative", "path") {
 		t.Fatalf("relative pointer = %q, %v", got, ok)
 	}
-	if _, ok := PointerTarget("not a pointer", "/ancestor"); ok {
+	if _, ok := PointerTarget("not a pointer", ancestor); ok {
 		t.Fatal("expected false for non-pointer content")
 	}
 }
