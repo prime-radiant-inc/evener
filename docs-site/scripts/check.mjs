@@ -65,7 +65,6 @@ const DOC_FILES = [
   "fuzz/README.md",
   "tools/tool-fluency/README.md",
   "tools/prompt-eval/README.md",
-  "tools/prompt-eval/memory-lab/README.md",
 ];
 
 // Generated and installed trees are not sources: `.generated` is restaged from
