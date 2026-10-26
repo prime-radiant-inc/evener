@@ -659,8 +659,13 @@ func TestHostTombstoneExpirySkipsGatedNames(t *testing.T) {
 		t.Fatal("the mutation-path prune dropped a remnant-gated tombstone")
 	}
 	remnantID, _ := f.m.openRemnantID("side")
-	if row := rowFor(t, f.m, "side"); row.OpenRemnantID != remnantID {
-		t.Fatalf("gated expired tombstone row = %+v, want it to name remnant %q", row, remnantID)
+	// Boot from the persisted records: the failed teardown left the name live
+	// in this process, and the restart is what renders the retained tombstone.
+	rebooted := bootHostManager(t, f.configPath)
+	rebooted.cfg.now = f.m.cfg.now
+	row := rowFor(t, rebooted, "side")
+	if !row.Removed || row.OpenRemnantID != remnantID {
+		t.Fatalf("gated expired tombstone row = %+v, want it rendered removed and naming remnant %q", row, remnantID)
 	}
 }
 
