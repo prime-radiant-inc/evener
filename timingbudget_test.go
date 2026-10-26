@@ -1022,3 +1022,34 @@ func TestTimingBudgetFailsOnANonObjectTopLevelBudgetInEveryMode(t *testing.T) {
 	assertBudgetFailsInEveryMode(t, "list", measured, `[]`)
 	assertBudgetFailsInEveryMode(t, "number", measured, `5`)
 }
+
+// TestCheckedInTimingBudgetEnforcesPackageRatios guards the ratchet against
+// silently disarming: the checked-in budget must carry the wall-time metric
+// marker, so a package far over its recorded budget fails under --strict
+// instead of downgrading to a stale-units warning.
+func TestCheckedInTimingBudgetEnforcesPackageRatios(t *testing.T) {
+	dir := t.TempDir()
+	measured := filepath.Join(dir, "measured.tsv")
+	const pkg = "primeradiant.com/evener/agent"
+	writeAuditScriptFixture(t, measured, "SUM\t"+pkg+"\t100000.00\n")
+	out, err := runTimingBudgetFixture(t, measured, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
+	if err == nil {
+		t.Fatalf("a package far over its checked-in budget must fail the strict check:\n%s", out)
+	}
+	if !strings.Contains(out, "FAIL  "+pkg) {
+		t.Fatalf("the over-budget package was not reported as a FAIL:\n%s", out)
+	}
+}
+
+// TestCheckedInTimingBudgetAcceptsHealthyWebMeasurement pairs with the test
+// above: with the ratios armed, the "web" row must be a CI-class number, so a
+// healthy web-unit measurement (the slowest seen was 547.26s) passes.
+func TestCheckedInTimingBudgetAcceptsHealthyWebMeasurement(t *testing.T) {
+	dir := t.TempDir()
+	measured := filepath.Join(dir, "measured.tsv")
+	writeAuditScriptFixture(t, measured, "SUM\tweb\t547.26\n")
+	out, err := runTimingBudgetFixture(t, measured, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
+	if err != nil {
+		t.Fatalf("a healthy CI web measurement must pass the strict check:\n%s", out)
+	}
+}
