@@ -40,17 +40,13 @@ func TestW3Init_PrepareSubagentRun_SkillResolveSkipped(t *testing.T) {
 		Skills:       []string{"w3-nonexistent-skill"},
 	}
 
-	prepared, err := s.prepareSubagentRun(context.Background(), "task", "", "", 0, "w3agent", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
+	prepared := prepareStableChild(t, s, delegateArgs{Task: "task", AgentType: "w3agent"})
 	if prepared == nil || prepared.sub == nil || prepared.sub.sess == nil {
 		t.Fatal("expected a prepared subagent run")
 	}
 	if len(prepared.frozenSkillNames) != 0 {
 		t.Fatalf("frozenSkillNames = %v, want none (unresolved skill skipped)", prepared.frozenSkillNames)
 	}
-	releasePreparedTreeSlot(prepared)
 	prepared.sub.sess.Close()
 }
 

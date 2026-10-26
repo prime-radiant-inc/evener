@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -25,8 +24,7 @@ func TestJobTreeRevisionSharedAcrossSpawnAndRestore(t *testing.T) {
 		}),
 	)
 
-	childPrepared := prepareSubagentForTreeRevisionTest(t, root, "child task")
-	defer releasePreparedTreeSlot(childPrepared)
+	childPrepared := prepareStableChild(t, root, delegateArgs{Task: "child task"})
 	defer childPrepared.runCancel()
 	child := childPrepared.sub.sess
 	defer child.Close()
@@ -34,8 +32,7 @@ func TestJobTreeRevisionSharedAcrossSpawnAndRestore(t *testing.T) {
 		t.Fatal("child did not inherit root tree clock")
 	}
 
-	grandPrepared := prepareSubagentForTreeRevisionTest(t, child, "grandchild task")
-	defer releasePreparedTreeSlot(grandPrepared)
+	grandPrepared := prepareStableChild(t, child, delegateArgs{Task: "grandchild task"})
 	defer grandPrepared.runCancel()
 	grandchild := grandPrepared.sub.sess
 	defer grandchild.Close()
@@ -44,18 +41,21 @@ func TestJobTreeRevisionSharedAcrossSpawnAndRestore(t *testing.T) {
 	}
 
 	rootStarted := createShellAndReadJobStarted(t, root, "printf root")
-	if rootStarted.RootSessionID != root.ID() || rootStarted.TreeRevision != 1 {
-		t.Fatalf("root started=%+v, want root_session_id=%q revision=1", rootStarted, root.ID())
+	// Creating the delegates advanced the tree's revision already; every job
+	// after this one must advance the same counter by exactly one.
+	baseRevision := rootStarted.TreeRevision
+	if rootStarted.RootSessionID != root.ID() || baseRevision < 1 {
+		t.Fatalf("root started=%+v, want root_session_id=%q and a positive revision", rootStarted, root.ID())
 	}
 
 	childStarted := createShellAndReadJobStarted(t, child, "printf child")
-	if childStarted.RootSessionID != root.ID() || childStarted.TreeRevision != 2 {
-		t.Fatalf("child started=%+v, want root_session_id=%q revision=2", childStarted, root.ID())
+	if childStarted.RootSessionID != root.ID() || childStarted.TreeRevision != baseRevision+1 {
+		t.Fatalf("child started=%+v, want root_session_id=%q revision=%d", childStarted, root.ID(), baseRevision+1)
 	}
 
 	grandStarted := createShellAndReadJobStarted(t, grandchild, "printf grandchild")
-	if grandStarted.RootSessionID != root.ID() || grandStarted.TreeRevision != 3 {
-		t.Fatalf("grandchild started=%+v, want root_session_id=%q revision=3", grandStarted, root.ID())
+	if grandStarted.RootSessionID != root.ID() || grandStarted.TreeRevision != baseRevision+2 {
+		t.Fatalf("grandchild started=%+v, want root_session_id=%q revision=%d", grandStarted, root.ID(), baseRevision+2)
 	}
 
 	childMeta := child.Meta()
@@ -76,8 +76,8 @@ func TestJobTreeRevisionSharedAcrossSpawnAndRestore(t *testing.T) {
 	}
 
 	restoredStarted := createShellAndReadJobStarted(t, restored, "printf restored")
-	if restoredStarted.RootSessionID != root.ID() || restoredStarted.TreeRevision != 4 {
-		t.Fatalf("restored child started=%+v, want root_session_id=%q revision=4", restoredStarted, root.ID())
+	if restoredStarted.RootSessionID != root.ID() || restoredStarted.TreeRevision != baseRevision+3 {
+		t.Fatalf("restored child started=%+v, want root_session_id=%q revision=%d", restoredStarted, root.ID(), baseRevision+3)
 	}
 }
 
@@ -96,8 +96,7 @@ func TestJobTreeRevisionBareChildRestoreStartsIndependentRootTree(t *testing.T) 
 		}),
 	)
 
-	prepared := prepareSubagentForTreeRevisionTest(t, root, "child task")
-	defer releasePreparedTreeSlot(prepared)
+	prepared := prepareStableChild(t, root, delegateArgs{Task: "child task"})
 	defer prepared.runCancel()
 	child := prepared.sub.sess
 	childMeta := child.Meta()
@@ -119,22 +118,6 @@ func TestJobTreeRevisionBareChildRestoreStartsIndependentRootTree(t *testing.T) 
 	if started.RootSessionID != child.ID() {
 		t.Fatalf("bare restored child root_session_id=%q, want independent root %q", started.RootSessionID, child.ID())
 	}
-}
-
-func prepareSubagentForTreeRevisionTest(t *testing.T, parent *Session, task string) *preparedSubagentRun {
-	t.Helper()
-	ctx := context.Background()
-	parent.mu.Lock()
-	allowance := parent.delegationAllowance
-	parent.mu.Unlock()
-	if allowance > 0 {
-		ctx = context.WithValue(ctx, ctxDelegationAllowance, allowance-1)
-	}
-	prepared, err := parent.prepareSubagentRun(ctx, task, "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun(%q): %v", task, err)
-	}
-	return prepared
 }
 
 func createShellAndReadJobStarted(t *testing.T, sess *Session, command string) events.JobStartedData {

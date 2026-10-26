@@ -615,17 +615,13 @@ func TestUnservedSessionAnnouncesBoundary(t *testing.T) {
 		defer mu.Unlock()
 		forwarded = append(forwarded, ev)
 	})
-	prepared, err := parent.prepareSubagentRun(context.Background(), "inspect", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	defer releasePreparedTreeSlot(prepared)
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "inspect"})
 	s := prepared.sub.sess
 	defer s.Close()
 
 	s.SteerKind("look at this", events.SteeringKindNotification)
 
-	if _, err = s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
 

@@ -2083,7 +2083,7 @@ func TestSharedTaskStore_ShareTasksWithChildrenConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	defer parentSess.Close()
+	t.Cleanup(parentSess.Close)
 
 	// Populate parent task store.
 	parentStore := parentSess.getOrCreateTaskStore()
@@ -2091,21 +2091,13 @@ func TestSharedTaskStore_ShareTasksWithChildrenConfig(t *testing.T) {
 		{Type: taskpkg.TaskTypeResearch, Description: "Shared via config", Prompt: "Work"},
 	})
 
-	// Exercise the actual propagation path inside prepareSubagentRun (subagents.go
-	// lines 385-388). A re-implementation of the if-statement here would not catch
-	// a condition inversion in the SUT.
-	ctx := context.Background()
-	prepared, err := parentSess.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	// We are not launching the child; release the tree-counter slot that
-	// prepareSubagentRun reserved (mirrors the spawnAgent in-process path).
-	releasePreparedTreeSlot(prepared)
-	defer prepared.sub.sess.Close()
+	// Exercise the actual propagation path of the stable create. A
+	// re-implementation of the if-statement here would not catch a condition
+	// inversion in the SUT.
+	prepared := prepareStableChild(t, parentSess, delegateArgs{Task: "child task"})
 
 	// The child's spawn config must carry the parent's store — not a copy, not nil.
-	// This assertion fails if the condition in prepareSubagentRun is ever inverted.
+	// This assertion fails if the sharing condition is ever inverted.
 	if got := prepared.sub.sess.cfg.spawn.sharedTaskStore; got != parentStore {
 		t.Fatalf("child cfg.spawn.sharedTaskStore = %v, want parent's store (%v)", got, parentStore)
 	}

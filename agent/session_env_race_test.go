@@ -91,7 +91,6 @@ func TestSession_CurrentEnv_NoRaceWithConcurrentSwap(t *testing.T) {
 			if err != nil {
 				continue
 			}
-			releasePreparedTreeSlot(prepared)
 			prepared.sub.sess.Close()
 		}
 	})

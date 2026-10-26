@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"io/fs"
 	"path/filepath"
 	"slices"
@@ -250,7 +249,7 @@ func buildRootWithOverridesSession(t *testing.T) *Session {
 	}))
 }
 
-// buildPromptDelegate spawns a real delegate through prepareSubagentRun. An
+// buildPromptDelegate prepares a real delegate through the stable create path. An
 // allowance above zero lets the delegate delegate in turn. The parent's fake
 // bwrap prober lets a read-only delegate (explorer) resolve its sandbox
 // without a bwrap binary on the host.
@@ -258,6 +257,7 @@ func buildPromptDelegate(t *testing.T, allowance int, agentType string) *Session
 	t.Helper()
 	cfg := SessionConfig{
 		MaxSubagentDepth: 2,
+		StateDir:         t.TempDir(),
 		AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
 		testOnly: testConfig{
 			skipGitSnapshot: true,
@@ -274,17 +274,9 @@ func buildPromptDelegate(t *testing.T, allowance int, agentType string) *Session
 	if agentType == "implementer" {
 		parent.pluginAgents[agentType] = coordinatorWorkflowAgentForTest(t, agentType)
 	}
-	ctx := context.Background()
-	if allowance > 0 {
-		ctx = context.WithValue(ctx, ctxDelegationAllowance, allowance)
-	}
-	prepared, err := parent.prepareSubagentRun(ctx, "task", "", "", 0, agentType, "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun(%q): %v", agentType, err)
-	}
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "task", AgentType: agentType, DelegationAllowance: &allowance})
 	child := prepared.sub.sess
 	t.Cleanup(func() {
-		releasePreparedTreeSlot(prepared)
 		child.Close()
 	})
 	return child
@@ -558,7 +550,7 @@ func TestSystemPromptLoadedSources(t *testing.T) {
 		}},
 		{"explorer delegate", buildPromptDelegate(t, 0, "explorer"), []string{
 			systemPromptTemplateLabel,
-			"agent:explorer",
+			"config:role_prompt_override",
 		}},
 	}
 	for _, tc := range cases {

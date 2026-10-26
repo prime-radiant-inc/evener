@@ -657,11 +657,7 @@ func TestPreparedSubagentGetsNoAuthoritativeConsumer(t *testing.T) {
 	t.Parallel()
 	parent := newTestSession(t)
 
-	prepared, err := parent.prepareSubagentRun(context.Background(), "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	defer releasePreparedTreeSlot(prepared)
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "child task"})
 	child := prepared.sub.sess
 	defer child.Close()
 
@@ -695,11 +691,7 @@ func TestPreparedSubagentForwardsEventsToRootObserver(t *testing.T) {
 		observed = append(observed, event)
 	})
 
-	prepared, err := parent.prepareSubagentRun(context.Background(), "child task", "", "", 0, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	defer releasePreparedTreeSlot(prepared)
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "child task"})
 	child := prepared.sub.sess
 	defer child.Close()
 
