@@ -2,6 +2,7 @@ package launchconfig
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -79,12 +80,7 @@ func layerWith(f reflect.StructField) Layer {
 // layerFields is every Layer field; a field added to Layer lands in each of the
 // checks below until it is covered or named as an exclusion.
 func layerFields() []reflect.StructField {
-	typ := reflect.TypeFor[Layer]()
-	fields := make([]reflect.StructField, 0, typ.NumField())
-	for i := range typ.NumField() {
-		fields = append(fields, typ.Field(i))
-	}
-	return fields
+	return slices.Collect(reflect.TypeFor[Layer]().Fields())
 }
 
 func TestEveryLayerFieldHasASchemaRow(t *testing.T) {
