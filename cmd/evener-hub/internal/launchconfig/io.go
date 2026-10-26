@@ -10,6 +10,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/afero"
+
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // LoadLayer reads a Layer from path. A missing file is not an error —
@@ -37,51 +39,24 @@ func loadLayerFS(fs afero.Fs, path string) (Layer, error) {
 	return out, nil
 }
 
-// SaveLayer writes a Layer to path atomically: it writes to path.tmp,
-// fsync's it, then renames over the target. Mode 0600.
+// SaveLayer writes a Layer to path durably and atomically (fsatomic.Write).
+// Mode 0600.
 func SaveLayer(path string, layer Layer) error {
-	return saveLayerFS(afero.NewOsFs(), path, layer)
-}
-
-// saveLayerFS is the filesystem seam beneath SaveLayer. See loadLayerFS.
-func saveLayerFS(fs afero.Fs, path string, layer Layer) error {
-	return writeAtomicFS(fs, path, func(w io.Writer) error {
+	return writeAtomic(path, func(w io.Writer) error {
 		return toml.NewEncoder(w).Encode(layer)
 	})
 }
 
-func writeAtomicFS(fs afero.Fs, path string, encode func(io.Writer) error) error {
-	if err := fs.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+func writeAtomic(path string, encode func(io.Writer) error) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("launchconfig: mkdir %s: %w", filepath.Dir(path), err)
-	}
-	tmp := path + ".tmp"
-	f, err := fs.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("launchconfig: open %s: %w", tmp, err)
 	}
 	var buf bytes.Buffer
 	if err := encode(&buf); err != nil {
-		_ = f.Close()
-		_ = fs.Remove(tmp)
-		return fmt.Errorf("launchconfig: encode %s: %w", tmp, err)
+		return fmt.Errorf("launchconfig: encode %s: %w", path, err)
 	}
-	if _, err := f.Write(buf.Bytes()); err != nil {
-		_ = f.Close()
-		_ = fs.Remove(tmp)
-		return fmt.Errorf("launchconfig: write %s: %w", tmp, err)
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		_ = fs.Remove(tmp)
-		return fmt.Errorf("launchconfig: sync %s: %w", tmp, err)
-	}
-	if err := f.Close(); err != nil {
-		_ = fs.Remove(tmp)
-		return fmt.Errorf("launchconfig: close %s: %w", tmp, err)
-	}
-	if err := fs.Rename(tmp, path); err != nil {
-		_ = fs.Remove(tmp)
-		return fmt.Errorf("launchconfig: rename %s -> %s: %w", tmp, path, err)
+	if err := fsatomic.Write(path, buf.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("launchconfig: write %s: %w", path, err)
 	}
 	return nil
 }
@@ -113,14 +88,9 @@ func tomlDecode(data []byte, out any) (toml.MetaData, error) {
 	return toml.Decode(string(data), out)
 }
 
-// SaveMeta writes a Meta to path atomically.
+// SaveMeta writes a Meta to path durably and atomically. Mode 0600.
 func SaveMeta(path string, meta Meta) error {
-	return saveMetaFS(afero.NewOsFs(), path, meta)
-}
-
-// saveMetaFS is the filesystem seam beneath SaveMeta. See loadLayerFS.
-func saveMetaFS(fs afero.Fs, path string, meta Meta) error {
-	return writeAtomicFS(fs, path, func(w io.Writer) error {
+	return writeAtomic(path, func(w io.Writer) error {
 		return toml.NewEncoder(w).Encode(meta)
 	})
 }

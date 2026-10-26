@@ -309,11 +309,11 @@ func rleRenderContracts(t *testing.T) {
 		wantParsed bool
 	}{
 		{nil, "", false}, {json.RawMessage("{"), "", false},
-		{json.RawMessage(`{"intent":false}`), "false", true},
+		{json.RawMessage(`{"intent":false}`), "", true},
 		{json.RawMessage(`{"intent":"why"}`), "why", true},
 	} {
-		if got := toolIntent(tc.raw); got != tc.wantIntent {
-			t.Fatalf("toolIntent(%q) = %q, want %q", tc.raw, got, tc.wantIntent)
+		if got := schema.ToolIntent(tc.raw); got != tc.wantIntent {
+			t.Fatalf("ToolIntent(%q) = %q, want %q", tc.raw, got, tc.wantIntent)
 		}
 		if parsed := parseArgs(tc.raw); (parsed != nil) != tc.wantParsed {
 			t.Fatalf("parseArgs(%q) parsed=%v, wantParsed=%v", tc.raw, parsed, tc.wantParsed)

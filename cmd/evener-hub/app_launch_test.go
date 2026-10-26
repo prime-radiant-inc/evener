@@ -124,6 +124,47 @@ func TestLaunchController_SetLayer_GlobalRoundtrip(t *testing.T) {
 	}
 }
 
+// A save whose rename landed but whose directory sync failed has changed the
+// layer on disk, so every other client's launch config is stale: the failure
+// must carry the applied mark.
+func TestLaunchController_SetLayer_PublishedButUnsyncedSaveCountsAsApplied(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens any directory")
+	}
+	stateRoot := t.TempDir()
+	cwd := canonicalTempDir(t)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
+	paths, err := launchconfig.PathsFor(stateRoot, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(paths.Global)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o700) }()
+
+	_, err = c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
+		CWD: cwd, Layer: "global",
+		Config: appwire.LaunchConfigLayer{Model: "openai/gpt-5"},
+	})
+	if err == nil {
+		t.Fatal("expected the unsynced save to report an error")
+	}
+	if !writeDidApply(err) {
+		t.Fatalf("SetLayer error = %v, want it marked as an applied write", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := launchconfig.LoadLayer(paths.Global); err != nil || got.Model != "openai/gpt-5" {
+		t.Fatalf("saved layer = %+v, %v; want the published model", got, err)
+	}
+}
+
 func TestLaunchController_SetLayer_RejectsEnabledPlugins(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)

@@ -55,9 +55,12 @@ type HostConfig struct {
 // Config is the hub's runtime configuration loaded from hub.toml (see
 // DefaultConfigPath).
 type Config struct {
-	Addr               string           `toml:"addr"`
-	PublicURL          string           `toml:"public_url"`
-	addrPresent        bool             `toml:"-"`
+	Addr        string `toml:"addr"`
+	PublicURL   string `toml:"public_url"`
+	addrPresent bool   `toml:"-"`
+	// removedHostKnobs names the retired host_* retention keys the file still
+	// sets. They are ignored; runMain warns about each one at boot.
+	removedHostKnobs   []string         `toml:"-"`
 	HubStateRoot       string           `toml:"hub_state_root"`
 	StateGlob          string           `toml:"state_glob"`
 	RunDir             string           `toml:"run_dir"`
@@ -174,69 +177,6 @@ type Config struct {
 	// `list` between those writes. Default DefaultHostTombstoneRetention; a
 	// value at or below zero is floored back to the default at load.
 	HostTombstoneRetention time.Duration `toml:"host_tombstone_retention"`
-	// HostTombstoneMaxRows and HostTombstoneMaxRowBytes are the per-tombstone
-	// retained-projection bounds (spec §15: "at most 500 retained rows per
-	// tombstone and at most 1 MiB of serialized row bytes per tombstone
-	// (owner-adjustable knobs in the same family as the cleared-marker TTL; the
-	// defaults ship in the implementing PR)"). A non-positive value is floored
-	// to the default at load, so an unset knob never disables the bound.
-	HostTombstoneMaxRows     int   `toml:"host_tombstone_max_rows"`
-	HostTombstoneMaxRowBytes int64 `toml:"host_tombstone_max_row_bytes"`
-	// HostTombstoneMaxCount and HostTombstoneMaxBytes are the GLOBAL tombstone
-	// caps (spec §15: "at most 64 tombstones and at most 16 MiB of total
-	// serialized tombstone bytes (same knob family; defaults ship in the
-	// implementing PR)"). A non-positive value is floored to the default.
-	HostTombstoneMaxCount int   `toml:"host_tombstone_max_count"`
-	HostTombstoneMaxBytes int64 `toml:"host_tombstone_max_bytes"`
-	// HostOperationTerminalPerHost, HostOperationTerminalStoreWide,
-	// HostOperationStoreMaxBytes, HostOperationTerminalMaxAge and
-	// HostOperationTombstonesPerHost are the operation store's retention knobs
-	// (deploy pipeline 08b §4: "at most 50 terminal records per host (tunable
-	// owner knob ...) ... at most 500 terminal records store-wide, at most
-	// 64 MiB of serialized store bytes, and at most 30 days of terminal-record
-	// age ... At most 50 tombstones per host (same owner-knob family)"). A
-	// non-positive value is floored to the default at load. The removed-host
-	// horizon is HostTombstoneRetention itself: §4's "past the
-	// `tombstoneRetention` horizon — 7-day default".
-	HostOperationTerminalPerHost   int           `toml:"host_operation_terminal_per_host"`
-	HostOperationTerminalStoreWide int           `toml:"host_operation_terminal_store_wide"`
-	HostOperationStoreMaxBytes     int64         `toml:"host_operation_store_max_bytes"`
-	HostOperationTerminalMaxAge    time.Duration `toml:"host_operation_terminal_max_age"`
-	HostOperationTombstonesPerHost int           `toml:"host_operation_tombstones_per_host"`
-	// HostSupersededReceiptMaxCount and HostSupersededReceiptTTL bound a live
-	// name's superseded-generation receipts (spec §6: "at most 8 newest
-	// same-key superseded receipts per name (owner-adjustable count bound; a
-	// same-key superseded receipt older than the owner-set superseded-receipt
-	// TTL compacts the same way)"). A non-positive value is floored to the
-	// default at load.
-	HostSupersededReceiptMaxCount int           `toml:"host_superseded_receipt_max_count"`
-	HostSupersededReceiptTTL      time.Duration `toml:"host_superseded_receipt_ttl"`
-	// HostPrunedReceiptMaxCount and HostPrunedReceiptTTL bound a live name's
-	// pruned markers (spec §6: "at most 64 newest markers per live name plus a
-	// marker TTL in the same owner-knob family as the superseded-receipt TTL
-	// (every `hub.toml` mutation and every boot compacts markers past either
-	// bound in the same atomic write; defaults ship in the implementing PR)").
-	// A non-positive value is floored to the default at load.
-	HostPrunedReceiptMaxCount int           `toml:"host_pruned_receipt_max_count"`
-	HostPrunedReceiptTTL      time.Duration `toml:"host_pruned_receipt_ttl"`
-	// HostKeylessAuditMaxCount and HostKeylessAuditTTL bound a name's
-	// keyless-add audit records (spec §11: "audit records compact under the
-	// same dual bound as receipts — at most 64 newest per name plus an
-	// owner-set audit TTL in the same knob family, every `hub.toml` mutation
-	// and every boot compacting past either bound in the same atomic write").
-	// A non-positive value is floored to the default at load.
-	HostKeylessAuditMaxCount int           `toml:"host_keyless_audit_max_count"`
-	HostKeylessAuditTTL      time.Duration `toml:"host_keyless_audit_ttl"`
-	// The teardown-repair bounds (registry spec 08 §6): the cleared-remnant
-	// marker bounds, the recovery-marker bounds, and the attempt-history bound
-	// per remnant. Non-positive values take the documented defaults.
-	HostRemnantClearedMaxCount  int           `toml:"host_remnant_cleared_max_count"`
-	HostRemnantClearedTTL       time.Duration `toml:"host_remnant_cleared_ttl"`
-	HostRemnantRecoveryMaxCount int           `toml:"host_remnant_recovery_max_count"`
-	HostRemnantRecoveryTTL      time.Duration `toml:"host_remnant_recovery_ttl"`
-	HostRemnantAttemptMaxCount  int           `toml:"host_remnant_attempt_max_count"`
-	HostRemnantTeardownTimeout  time.Duration `toml:"host_remnant_teardown_timeout"`
-	HostRemnantEscalationAge    time.Duration `toml:"host_remnant_escalation_age"`
 }
 
 const (
@@ -255,116 +195,53 @@ const (
 	// DefaultHostTombstoneRetention is the tombstone retention period spec 08
 	// §15 names: seven days.
 	DefaultHostTombstoneRetention = 7 * 24 * time.Hour
-	// DefaultHostTombstoneMaxRows and DefaultHostTombstoneMaxRowBytes are the
-	// per-tombstone retained-projection bounds spec §15 names: 500 rows and
-	// 1 MiB of serialized row bytes.
-	DefaultHostTombstoneMaxRows           = 500
-	DefaultHostTombstoneMaxRowBytes int64 = 1 << 20
-	// DefaultHostTombstoneMaxCount and DefaultHostTombstoneMaxBytes are the
-	// global caps spec §15 names: 64 tombstones and 16 MiB of serialized
-	// tombstone bytes.
-	DefaultHostTombstoneMaxCount       = 64
-	DefaultHostTombstoneMaxBytes int64 = 16 << 20
-	// DefaultHostOperationTerminalPerHost, DefaultHostOperationTerminalStoreWide,
-	// DefaultHostOperationStoreMaxBytes, DefaultHostOperationTerminalMaxAge and
-	// DefaultHostOperationTombstonesPerHost are deploy pipeline 08b §4's
-	// shipped operation-store retention defaults: 50 terminal records per host,
-	// 500 store-wide, 64 MiB of serialized store bytes, 30 days of terminal
-	// age, and 50 dedup tombstones per host.
-	DefaultHostOperationTerminalPerHost         = 50
-	DefaultHostOperationTerminalStoreWide       = 500
-	DefaultHostOperationStoreMaxBytes     int64 = 64 << 20
-	DefaultHostOperationTerminalMaxAge          = 30 * 24 * time.Hour
-	DefaultHostOperationTombstonesPerHost       = 50
-	// DefaultHostSupersededReceiptMaxCount and DefaultHostSupersededReceiptTTL
-	// are the superseded-receipt bounds spec §6 describes. The TTL matches the
-	// tombstone retention: a superseded receipt's post-remove recovery window
-	// is the tombstone's own window, and any replay past it refuses through the
-	// retained pruned marker instead.
-	DefaultHostSupersededReceiptMaxCount = 8
-	DefaultHostSupersededReceiptTTL      = 7 * 24 * time.Hour
-	// DefaultHostPrunedReceiptMaxCount and DefaultHostPrunedReceiptTTL are the
-	// pruned-marker bounds spec §6 describes; the TTL matches the tombstone
-	// retention for the same reason.
-	DefaultHostPrunedReceiptMaxCount = 64
-	DefaultHostPrunedReceiptTTL      = 7 * 24 * time.Hour
-	// DefaultHostKeylessAuditMaxCount and DefaultHostKeylessAuditTTL are the
-	// keyless-add audit bounds spec §11 describes; the TTL is longer than the
-	// tombstone window because the audit trail's purpose is post-hoc forensics
-	// rather than outcome recovery.
-	DefaultHostKeylessAuditMaxCount = 64
-	DefaultHostKeylessAuditTTL      = 30 * 24 * time.Hour
-	// DefaultHostRemnantClearedMaxCount and DefaultHostRemnantClearedTTL are the
-	// cleared-remnant marker bounds spec §6 names: "owner-set cleared-marker TTL
-	// plus an at-most-64-newest-per-name count bound in the same owner-knob
-	// family". The TTL matches the tombstone retention so a lost-response retry
-	// keeps its `already-cleared` replay for the window the tombstone lives, and
-	// past it reads `teardown-unknown-key` exactly as the spec requires.
-	DefaultHostRemnantClearedMaxCount = 64
-	DefaultHostRemnantClearedTTL      = 7 * 24 * time.Hour
-	// DefaultHostRemnantRecoveryMaxCount and DefaultHostRemnantRecoveryTTL are
-	// the recovery-marker bounds spec §11 names: "at most 64 newest recovery
-	// records per name plus a recovery-marker TTL in the same owner-knob family
-	// as the cleared-marker TTL".
-	DefaultHostRemnantRecoveryMaxCount = 64
-	DefaultHostRemnantRecoveryTTL      = 7 * 24 * time.Hour
-	// DefaultHostRemnantAttemptMaxCount bounds the attempt history one remnant
-	// keeps: the newest attempts survive so a timed-out attempt's record stays
-	// readable while a churn of retries cannot grow hub.toml without limit.
-	DefaultHostRemnantAttemptMaxCount = 8
-	// DefaultHostRemnantTeardownTimeout is the retry's bounded execution
-	// deadline (spec §6: "the retry's own teardown run carries a bounded
-	// execution deadline of the same owner-set family"). Two minutes is long
-	// enough for a local supervisor/channel teardown to drain and short enough
-	// that a stuck remote surfaces the terminal outcome with a live retry handle
-	// instead of holding the host gate.
-	DefaultHostRemnantTeardownTimeout = 2 * time.Minute
-	// DefaultHostRemnantEscalationAge is the bound past which an open remnant's
-	// row reports `escalationAgeSec` (spec §11): an hour is long enough that a
-	// transient teardown failure resolves itself through one retry and short
-	// enough that an operator hears about a remnant that is not going away.
-	DefaultHostRemnantEscalationAge = time.Hour
 )
+
+// removedHostKnobs are the host_* retention and pruning keys that were once
+// tunable. The hub now reads one internal default policy (defaultHostRecordPolicy)
+// for them, so a hub.toml that still sets one starts normally and warns.
+var removedHostKnobs = []string{
+	"host_tombstone_max_rows",
+	"host_tombstone_max_row_bytes",
+	"host_tombstone_max_count",
+	"host_tombstone_max_bytes",
+	"host_operation_terminal_per_host",
+	"host_operation_terminal_store_wide",
+	"host_operation_store_max_bytes",
+	"host_operation_terminal_max_age",
+	"host_operation_tombstones_per_host",
+	"host_superseded_receipt_max_count",
+	"host_superseded_receipt_ttl",
+	"host_pruned_receipt_max_count",
+	"host_pruned_receipt_ttl",
+	"host_keyless_audit_max_count",
+	"host_keyless_audit_ttl",
+	"host_remnant_cleared_max_count",
+	"host_remnant_cleared_ttl",
+	"host_remnant_recovery_max_count",
+	"host_remnant_recovery_ttl",
+	"host_remnant_attempt_max_count",
+	"host_remnant_teardown_timeout",
+	"host_remnant_escalation_age",
+}
 
 // DefaultConfig returns a Config populated with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		Addr:                           "127.0.0.1:9180",
-		HubStateRoot:                   DefaultHubStateRoot(),
-		StateGlob:                      "",
-		RunDir:                         "",
-		StatusPollInterval:             2 * time.Second,
-		PastIndexRebuild:               60 * time.Second,
-		SpawnTimeout:                   30 * time.Second,
-		PastResultsPerPage:             50,
-		PluginAutoUpgrade:              true,
-		PluginAutoUpgradeInterval:      12 * time.Hour,
-		DaemonIdleTimeout:              time.Hour,
-		HostProbeTimeout:               DefaultHostProbeTimeout,
-		HostMinFreeSpaceBytes:          DefaultHostMinFreeSpaceBytes,
-		HostTombstoneRetention:         DefaultHostTombstoneRetention,
-		HostTombstoneMaxRows:           DefaultHostTombstoneMaxRows,
-		HostTombstoneMaxRowBytes:       DefaultHostTombstoneMaxRowBytes,
-		HostTombstoneMaxCount:          DefaultHostTombstoneMaxCount,
-		HostTombstoneMaxBytes:          DefaultHostTombstoneMaxBytes,
-		HostOperationTerminalPerHost:   DefaultHostOperationTerminalPerHost,
-		HostOperationTerminalStoreWide: DefaultHostOperationTerminalStoreWide,
-		HostOperationStoreMaxBytes:     DefaultHostOperationStoreMaxBytes,
-		HostOperationTerminalMaxAge:    DefaultHostOperationTerminalMaxAge,
-		HostOperationTombstonesPerHost: DefaultHostOperationTombstonesPerHost,
-		HostSupersededReceiptMaxCount:  DefaultHostSupersededReceiptMaxCount,
-		HostSupersededReceiptTTL:       DefaultHostSupersededReceiptTTL,
-		HostPrunedReceiptMaxCount:      DefaultHostPrunedReceiptMaxCount,
-		HostPrunedReceiptTTL:           DefaultHostPrunedReceiptTTL,
-		HostKeylessAuditMaxCount:       DefaultHostKeylessAuditMaxCount,
-		HostKeylessAuditTTL:            DefaultHostKeylessAuditTTL,
-		HostRemnantClearedMaxCount:     DefaultHostRemnantClearedMaxCount,
-		HostRemnantClearedTTL:          DefaultHostRemnantClearedTTL,
-		HostRemnantRecoveryMaxCount:    DefaultHostRemnantRecoveryMaxCount,
-		HostRemnantRecoveryTTL:         DefaultHostRemnantRecoveryTTL,
-		HostRemnantAttemptMaxCount:     DefaultHostRemnantAttemptMaxCount,
-		HostRemnantTeardownTimeout:     DefaultHostRemnantTeardownTimeout,
-		HostRemnantEscalationAge:       DefaultHostRemnantEscalationAge,
+		Addr:                      "127.0.0.1:9180",
+		HubStateRoot:              DefaultHubStateRoot(),
+		StateGlob:                 "",
+		RunDir:                    "",
+		StatusPollInterval:        2 * time.Second,
+		PastIndexRebuild:          60 * time.Second,
+		SpawnTimeout:              30 * time.Second,
+		PastResultsPerPage:        50,
+		PluginAutoUpgrade:         true,
+		PluginAutoUpgradeInterval: 12 * time.Hour,
+		DaemonIdleTimeout:         time.Hour,
+		HostProbeTimeout:          DefaultHostProbeTimeout,
+		HostMinFreeSpaceBytes:     DefaultHostMinFreeSpaceBytes,
+		HostTombstoneRetention:    DefaultHostTombstoneRetention,
 	}
 }
 
@@ -490,21 +367,14 @@ func decodeConfig(name, data string) (Config, error) {
 	if metadata.Type("host_probe_timeout") == "Integer" {
 		return cfg, fmt.Errorf("host_probe_timeout %[1]w such as \"10s\" (got the integer %[2]d, which TOML decodes as %[2]d nanoseconds)", errIntegerDuration, int64(cfg.HostProbeTimeout))
 	}
-	// The same footgun, same refusal, for every duration-shaped record knob:
-	// `host_tombstone_retention = 7` would arm a 7ns retention and prune every
-	// tombstone on the next write.
-	for _, knob := range []struct {
-		key   string
-		value time.Duration
-	}{
-		{"host_tombstone_retention", cfg.HostTombstoneRetention},
-		{"host_operation_terminal_max_age", cfg.HostOperationTerminalMaxAge},
-		{"host_superseded_receipt_ttl", cfg.HostSupersededReceiptTTL},
-		{"host_pruned_receipt_ttl", cfg.HostPrunedReceiptTTL},
-		{"host_keyless_audit_ttl", cfg.HostKeylessAuditTTL},
-	} {
-		if metadata.Type(knob.key) == "Integer" {
-			return cfg, fmt.Errorf("%[1]s %[3]w such as \"168h\" (got the integer %[2]d, which TOML decodes as %[2]d nanoseconds)", knob.key, int64(knob.value), errIntegerDuration)
+	// The same footgun, same refusal: `host_tombstone_retention = 7` would arm a
+	// 7ns retention and prune every tombstone on the next write.
+	if metadata.Type("host_tombstone_retention") == "Integer" {
+		return cfg, fmt.Errorf("host_tombstone_retention %[1]w such as \"168h\" (got the integer %[2]d, which TOML decodes as %[2]d nanoseconds)", errIntegerDuration, int64(cfg.HostTombstoneRetention))
+	}
+	for _, key := range removedHostKnobs {
+		if metadata.IsDefined(key) {
+			cfg.removedHostKnobs = append(cfg.removedHostKnobs, key)
 		}
 	}
 	applyConfigDefaults(&cfg)
@@ -716,51 +586,6 @@ func applyConfigDefaults(cfg *Config) {
 	}
 	if cfg.HostTombstoneRetention <= 0 {
 		cfg.HostTombstoneRetention = DefaultHostTombstoneRetention
-	}
-	if cfg.HostTombstoneMaxRows <= 0 {
-		cfg.HostTombstoneMaxRows = DefaultHostTombstoneMaxRows
-	}
-	if cfg.HostTombstoneMaxRowBytes <= 0 {
-		cfg.HostTombstoneMaxRowBytes = DefaultHostTombstoneMaxRowBytes
-	}
-	if cfg.HostTombstoneMaxCount <= 0 {
-		cfg.HostTombstoneMaxCount = DefaultHostTombstoneMaxCount
-	}
-	if cfg.HostTombstoneMaxBytes <= 0 {
-		cfg.HostTombstoneMaxBytes = DefaultHostTombstoneMaxBytes
-	}
-	if cfg.HostOperationTerminalPerHost <= 0 {
-		cfg.HostOperationTerminalPerHost = DefaultHostOperationTerminalPerHost
-	}
-	if cfg.HostOperationTerminalStoreWide <= 0 {
-		cfg.HostOperationTerminalStoreWide = DefaultHostOperationTerminalStoreWide
-	}
-	if cfg.HostOperationStoreMaxBytes <= 0 {
-		cfg.HostOperationStoreMaxBytes = DefaultHostOperationStoreMaxBytes
-	}
-	if cfg.HostOperationTerminalMaxAge <= 0 {
-		cfg.HostOperationTerminalMaxAge = DefaultHostOperationTerminalMaxAge
-	}
-	if cfg.HostOperationTombstonesPerHost <= 0 {
-		cfg.HostOperationTombstonesPerHost = DefaultHostOperationTombstonesPerHost
-	}
-	if cfg.HostSupersededReceiptMaxCount <= 0 {
-		cfg.HostSupersededReceiptMaxCount = DefaultHostSupersededReceiptMaxCount
-	}
-	if cfg.HostSupersededReceiptTTL <= 0 {
-		cfg.HostSupersededReceiptTTL = DefaultHostSupersededReceiptTTL
-	}
-	if cfg.HostPrunedReceiptMaxCount <= 0 {
-		cfg.HostPrunedReceiptMaxCount = DefaultHostPrunedReceiptMaxCount
-	}
-	if cfg.HostPrunedReceiptTTL <= 0 {
-		cfg.HostPrunedReceiptTTL = DefaultHostPrunedReceiptTTL
-	}
-	if cfg.HostKeylessAuditMaxCount <= 0 {
-		cfg.HostKeylessAuditMaxCount = DefaultHostKeylessAuditMaxCount
-	}
-	if cfg.HostKeylessAuditTTL <= 0 {
-		cfg.HostKeylessAuditTTL = DefaultHostKeylessAuditTTL
 	}
 	if cfg.HubStateRoot == "" {
 		cfg.HubStateRoot = DefaultHubStateRoot()
