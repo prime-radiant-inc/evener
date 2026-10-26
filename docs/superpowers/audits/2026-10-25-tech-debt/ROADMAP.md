@@ -11,7 +11,7 @@ LOC figures are net lines of change (negative means removed), prod plus tests, a
 | 0: guardrails, defects, dead-code deletions | 27 | 28 | -12,100 | 27 entries, -12,100 (W0-01, W0-05 and W0-18 were gated on Q12, Q10 and Q17; all answered) |
 | 1: consolidations | 69 | about 98 | -46,800 | 69 entries, about -46,800. Every gate is answered in [DECISIONS.md](DECISIONS.md); the Deps: fields still order the work. The answers shrank several entries (W1-27 dedupe only, W1-56 keep-and-fix, W1-60 and W1-62..W1-64 simplify-only) |
 | 2: structural splits (all need design discussion) | 19 | about 45 | -9,300 (about 330,000 lines moved with no net change) | 1 entry, about -1,000 (W2-09 is now comment and dead-code trimming only, Q18 answered); the other 18 need design discussion (Q20 is answered for W2-13) |
-| Total | 115 | about 172 | about -68,000 | 96 entries, about -59,600 |
+| Total | 115 | about 172 | about -68,000 | 97 entries, about -59,900 |
 
 Net LOC is production plus tests; markdown deleted under W1-58 (about 300,000 lines) and binaries under W0-14 (about 69 MB) are not counted. The sum is the arithmetic total of the per-PR estimates below, which come from the slice reports and verifier notes; SYNTHESIS section 1 estimated 25-35k production lines and 60-90k test lines removable, so this is consistent but not independently measured. Entries marked `~` with no audit count are rough.
 
