@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
 import { join } from 'node:path';
 import { mkdtemp, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { failureRoot } from './diagnostics.mjs';
 
 export async function recordWebFailure(error, phase, details) {
  // The Go driver owns TMPDIR and removes it before the caller can inspect logs.
- const directory=await mkdtemp(join(process.platform==='win32'?tmpdir():'/tmp','evener-web-failure-'));
+ const directory=await mkdtemp(join(failureRoot(),'evener-web-failure-'));
  const file=join(directory,'failure.json');
  await writeFile(file,JSON.stringify({phase,message:error.message,stack:error.stack,details}),{mode:0o600});
  error.diagnosticsPath=file;

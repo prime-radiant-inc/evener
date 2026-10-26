@@ -43,9 +43,11 @@ export function summarizeFailure(failure, tail = 12) {
  return [...lines, ...events.slice(-tail).map(e => e.line)].join('\n');
 }
 
-// Tours run in child processes whose TMPDIR is private, but recordWebFailure
+// Tours run in child processes whose TMPDIR is private, so recordWebFailure
 // writes under the real /tmp, which survives them.
-export async function collectDiagnostics({source = tmpdir(), out}) {
+export const failureRoot = () => process.platform === 'win32' ? tmpdir() : '/tmp';
+
+export async function collectDiagnostics({source = failureRoot(), out}) {
  const names = (await readdir(source)).filter(name => name.startsWith('evener-web-failure-')).sort();
  const failures = [];
  for (const name of names) {

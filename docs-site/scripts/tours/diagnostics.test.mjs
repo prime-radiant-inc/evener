@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { recordWebFailure } from './web.mjs';
 import { collectDiagnostics, sanitizeFailure, summarizeFailure } from './diagnostics.mjs';
 
 const record = {
@@ -53,4 +54,17 @@ test('collect writes one sanitized file per recorded failure and ignores other e
  assert.equal(failures.length, 1);
  assert.deepEqual(await readdir(out), ['web-failure-1.json']);
  assert.equal((await readFile(join(out, 'web-failure-1.json'), 'utf8')).includes('canary'), false);
+});
+
+test('collect reads where recordWebFailure writes, whatever TMPDIR says', async t => {
+ const root = await mkdtemp(join(tmpdir(), 'tour-diagnostics-'));
+ t.after(() => rm(root, {recursive: true, force: true}));
+ const error = new Error('private-canary');
+ const original = process.env.TMPDIR;
+ process.env.TMPDIR = root;
+ t.after(() => { if (original === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = original; });
+ await recordWebFailure(error, 'folder-confirm', {rpc: [], picker: []});
+ t.after(() => rm(dirname(error.diagnosticsPath), {recursive: true, force: true}));
+ const failures = await collectDiagnostics({out: join(root, 'out')});
+ assert.ok(failures.some(f => f.phase === 'folder-confirm'));
 });
