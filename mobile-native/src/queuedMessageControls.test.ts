@@ -2966,3 +2966,92 @@ test("a built-in command completing after an occupied handoff moves its marker",
 	});
 	expect(library.hasPendingHandoff(bDestination)).toBe(false);
 });
+
+test("consecutive refusals carry released recovery sources to the next destination", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	f.document.edit("current");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	// The resume needs a waiting message to retarget; this one rides along.
+	await f.enqueue();
+	const bDestination = { hubId: destination.hubId, sessionRef: "session-b" };
+	const cDestination = { hubId: destination.hubId, sessionRef: "session-c" };
+	const bKey = nativeMutationTargetKey(destination.hubId, bDestination.sessionRef);
+	const cKey = nativeMutationTargetKey(destination.hubId, cDestination.sessionRef);
+	f.repository.write(bDestination, { draft: "B occupied", unconfirmed: null });
+	f.repository.write(cDestination, { draft: "C occupied", unconfirmed: null });
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: bKey,
+			wireRef: bDestination.sessionRef,
+			threadId: "thread-b",
+			instanceId: "instance-b",
+		}),
+	).toHaveLength(1);
+	expect(library.handoff(destination, bDestination)).toBe(false);
+	expect(f.repository.read(bDestination).releasedRecoveryIds).toEqual([captured]);
+	expect(
+		f.runtime.storage.retarget(bKey, {
+			ref: cKey,
+			wireRef: cDestination.sessionRef,
+			threadId: "thread-c",
+			instanceId: "instance-c",
+		}),
+	).toHaveLength(1);
+	expect(library.handoff(bDestination, cDestination)).toBe(false);
+
+	// The second refusal must carry the first refusal's exclusions, or C's
+	// automatic recovery appends A's original input to its occupied draft.
+	expect(f.repository.read(cDestination).releasedRecoveryIds).toEqual([captured]);
+	const cDocument = library.open(cDestination);
+	const deliberatelyReleased = new Set(cDocument.getSnapshot().record.releasedRecoveryIds ?? []);
+	for (const row of (await f.runtime.read(cKey)).recovery) {
+		if (row.recoveryKind === "editing" && !deliberatelyReleased.has(row.clientMutationId))
+			await editQueuedMessageIntoDraft(f.runtime, cKey, row.clientMutationId, cDocument);
+	}
+	expect(cDocument.getSnapshot().record.draft).toBe("C occupied");
+});
+
+test("an inherited submission defers an occupied handoff until its completion marker arrives", async () => {
+	const f = fixture();
+	f.repository.write(destination, {
+		draft: "current",
+		unconfirmed: null,
+		composer: { recoveryIds: ["captured"] },
+	});
+	const bDestination = { hubId: destination.hubId, sessionRef: "session-b" };
+	const cDestination = { hubId: destination.hubId, sessionRef: "session-c" };
+	f.repository.write(cDestination, { draft: "C occupied", unconfirmed: null });
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	const source = library.open(destination);
+	let finishSubmission!: () => void;
+	const submitted = source.submitBuiltinCommand(
+		() =>
+			new Promise<boolean>((resolve) => {
+				finishSubmission = () => resolve(true);
+			}),
+	);
+	// The empty destination accepts the handoff while the command still runs.
+	expect(library.handoff(destination, bDestination)).toBe(true);
+	// The further occupied hop must wait for the completion the handoff
+	// inherited, not settle with only the markers that exist so far.
+	expect(library.handoff(bDestination, cDestination)).toBe(false);
+	expect(library.hasPendingHandoff(cDestination)).toBe(true);
+	finishSubmission();
+	await submitted;
+	library.retryPendingHandoffs();
+	expect(f.repository.read(cDestination)).toMatchObject({
+		draft: "C occupied",
+		completedCommandRecoveryIds: expect.arrayContaining(["captured"]),
+	});
+	expect(library.hasPendingHandoff(cDestination)).toBe(false);
+});

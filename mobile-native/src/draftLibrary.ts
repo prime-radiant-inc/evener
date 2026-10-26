@@ -140,7 +140,7 @@ export class DraftLibrary {
 			// when it finishes. Finalizing the refusal now would copy only the
 			// markers already on the source and leave the late one stranded for
 			// the destination to restore and run again.
-			if (source.getSnapshot().submitting) {
+			if (source.hasOutstandingSubmission()) {
 				this.deferHandoff(from, to);
 				return false;
 			}
@@ -514,6 +514,10 @@ export class DraftLibrary {
 		const completed = record.completedCommandRecoveryIds ?? [];
 		const markersMoved = !completed.length || destination.adoptCompletedCommandRecovery(completed);
 		const ids = [
+			// An earlier refusal already released these sources at the
+			// intermediate destination; their rows moved on, so the next
+			// destination needs the same exclusions.
+			...(record.releasedRecoveryIds ?? []),
 			...(record.composer?.recoveryIds ?? []),
 			...(record.unconfirmedComposer?.recoveryIds ?? []),
 			...(record.parkedCompositions ?? []).flatMap((parked) => parked.composer?.recoveryIds ?? []),
