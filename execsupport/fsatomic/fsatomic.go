@@ -32,6 +32,14 @@ var ErrPublished = errors.New("contents published but not confirmed durable")
 // temp file; a crash between the create and the rename leaves a stray "<name>.tmp-*" file behind, which
 // is the cost of never reusing a name another process could plant.
 func Write(path string, data []byte, perm os.FileMode) error {
+	return WriteWithDirSync(path, data, perm, SyncDir)
+}
+
+// WriteWithDirSync is Write with the caller's own directory sync, for a store
+// whose tests must fail the sync after the rename deterministically (a real
+// filesystem cannot be made to fail one sync of several). A syncDir error
+// wraps ErrPublished exactly as a real sync failure does.
+func WriteWithDirSync(path string, data []byte, perm os.FileMode, syncDir func(dir string) error) error {
 	dir := filepath.Dir(path)
 	temp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -76,13 +84,15 @@ func Remove(path string) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove %s: %w", path, err)
 	}
-	if err := syncDir(filepath.Dir(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := SyncDir(filepath.Dir(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
 }
 
-func syncDir(dir string) error {
+// SyncDir flushes dir's entries so a rename or removal inside it survives a
+// crash. A filesystem that cannot sync directories at all is tolerated.
+func SyncDir(dir string) error {
 	if runtime.GOOS == "windows" {
 		// Windows cannot flush a directory through a handle; NTFS journals
 		// the rename itself.

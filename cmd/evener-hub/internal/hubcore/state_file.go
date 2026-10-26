@@ -31,7 +31,7 @@ import (
 // wrapped errors ("keybindings", "transcript display", "deletion"). beforeRename
 // and afterRename, when non-nil, fire around the rename; an afterRename fault is
 // reported with renamed=true because the rename has already published the new
-// contents. An unsupported sync (deletionSyncUnsupported) is tolerated.
+// contents. An unsupported sync (fsatomic.SyncUnsupported) is tolerated.
 func writeStateFileAtomic(fs afero.Fs, path, label string, data []byte, beforeRename, afterRename func() error) (renamed bool, err error) {
 	dir := filepath.Dir(path)
 	if err := fs.MkdirAll(dir, 0o700); err != nil {
@@ -53,7 +53,7 @@ func writeStateFileAtomic(fs afero.Fs, path, label string, data []byte, beforeRe
 	if _, err := temp.Write(data); err != nil {
 		return false, fmt.Errorf("write temp %s state: %w", label, err)
 	}
-	if err := temp.Sync(); err != nil && !deletionSyncUnsupported(err) {
+	if err := temp.Sync(); err != nil && !fsatomic.SyncUnsupported(err) {
 		return false, fmt.Errorf("sync temp %s state: %w", label, err)
 	}
 	if err := temp.Close(); err != nil {
@@ -73,7 +73,7 @@ func writeStateFileAtomic(fs afero.Fs, path, label string, data []byte, beforeRe
 	if err != nil {
 		return true, fmt.Errorf("open %s state directory: %w", label, err)
 	}
-	if err := directory.Sync(); err != nil && !deletionSyncUnsupported(err) {
+	if err := directory.Sync(); err != nil && !fsatomic.SyncUnsupported(err) {
 		_ = directory.Close()
 		return true, fmt.Errorf("sync %s state directory: %w", label, err)
 	}
@@ -120,10 +120,4 @@ func decodeStateFileStrict(data []byte, label string, out any) error {
 		return fmt.Errorf("decode %s state trailing data: %w", label, err)
 	}
 	return nil
-}
-
-// deletionSyncUnsupported is the name the deletion store's tests use for the
-// hub's shared sync-tolerance predicate, which lives in fsatomic.
-func deletionSyncUnsupported(err error) bool {
-	return fsatomic.SyncUnsupported(err)
 }

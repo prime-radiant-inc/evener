@@ -729,11 +729,11 @@ A live functional check can incur provider charges: authorize the browser, choos
 The documentation site tracks main. Release builds can lag it; snapshot builds follow ongoing development. Record the current version and installation prefix before changing channels. The installation guide owns download procedures; Settings → Hub → Updates owns an installed hub's update flow above.
 
 **Before shutting down an older daemon:** saved session trees containing legacy
-delegate lifecycle or legacy delegate-addressed watch state cannot resume on
-the current runtime. Read [the compatibility warning and fresh-root
-continuation](../UPGRADING.md#before-shutting-down-an-older-session). Preserve
-history and finish essential work first. Layout migration does not repair that
-format, and saved-history visibility is not proof of resumability.
+delegate lifecycle or legacy delegate-addressed watch state resume with that
+state ignored. Read [what is and is not
+resumed](../UPGRADING.md#before-shutting-down-an-older-session). Finish
+essential work first. Layout migration does not convert that format, and
+saved-history visibility is not proof that old delegates continue.
 
 1. Finish work that must not straddle a version change. In each session's actions menu, choose **Shut down** and confirm. This stops the agent process; the composer's **Stop** only interrupts a turn. Verify that the old daemon process has exited before copying state. A hub restart alone does not stop its session daemons.
 2. Inventory effective paths and make a private [backup](security.md#storage-and-backups). Copying live state is not guaranteed consistent.

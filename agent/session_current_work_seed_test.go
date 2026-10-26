@@ -117,11 +117,7 @@ func TestFreshChildStartThenTemplatePopulationEmitsTaskCorrection(t *testing.T) 
 	var recorder sessionEventRecorder
 	root.SetDescendantEventFunc(recorder.record)
 
-	prepared, err := root.prepareSubagentRun(context.Background(), "inspect", "", "", 1, agentType, "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	defer releasePreparedTreeSlot(prepared)
+	prepared := prepareStableChild(t, root, delegateArgs{Task: "inspect", AgentType: agentType})
 	defer prepared.sub.sess.Close()
 
 	relevant := childCurrentWorkEvents(recorder.snapshot(), prepared.sub.id)
@@ -172,11 +168,7 @@ func TestSharedChildStartAndTaskUpdateNameRootOwner(t *testing.T) {
 	var recorder sessionEventRecorder
 	root.SetDescendantEventFunc(recorder.record)
 
-	prepared, err := root.prepareSubagentRun(context.Background(), "inspect shared work", "", "", 1, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	defer releasePreparedTreeSlot(prepared)
+	prepared := prepareStableChild(t, root, delegateArgs{Task: "inspect shared work"})
 	defer prepared.sub.sess.Close()
 	child := prepared.sub.sess
 

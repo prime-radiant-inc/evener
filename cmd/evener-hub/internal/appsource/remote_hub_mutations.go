@@ -57,16 +57,7 @@ func (s *RemoteHubSource) remoteHubMutationCallError(clientMutationID string, er
 	if !ok || wire.Code != appwire.CodeUnavailable {
 		return mapped
 	}
-	return appwire.WireError{
-		Code:    appwire.CodeInternalError,
-		Message: "mutation outcome is unknown after remote hub response loss",
-		Data: appwire.ErrorData{
-			EvenerErrorInfo:  appwire.ErrorMutationOutcomeUnknown,
-			ClientMutationID: clientMutationID,
-			MutationOutcome:  appwire.MutationOutcomeUnknown,
-			RetryDisposition: appwire.RetryDispositionAutomatic,
-		},
-	}
+	return mutationOutcomeUnknown("mutation outcome is unknown after remote hub response loss", clientMutationID, appwire.RetryDispositionAutomatic)
 }
 
 // StartThread forwards thread/start, which the remote hub serves hub-scoped and

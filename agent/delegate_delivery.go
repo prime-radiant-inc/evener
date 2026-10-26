@@ -1024,30 +1024,19 @@ func (s *Session) scheduleDelegateDeliveryRetryLocked() {
 	if s.delegateDeliveryRetry.active || s.delegateDeliveryWake || len(s.pendingDelegateDeliveries) == 0 {
 		return
 	}
-	delay := s.delegateDeliveryRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
-	s.delegateDeliveryRetry.active = true
-	s.delegateDeliveryRetry.generation++
-	generation := s.delegateDeliveryRetry.generation
+	delay, generation := s.delegateDeliveryRetry.arm()
 	s.sclock().AfterFunc(delay, func() {
 		s.delegateDeliveryMu.Lock()
-		if s.delegateDeliveryRetry.generation != generation {
+		if !s.delegateDeliveryRetry.fire(generation) {
 			s.delegateDeliveryMu.Unlock()
 			return
 		}
-		s.delegateDeliveryRetry.active = false
 		pending := len(s.pendingDelegateDeliveries) != 0
 		shouldWake := pending && !s.delegateDeliveryWake
 		if shouldWake {
 			s.delegateDeliveryWake = true
 		}
-		if pending {
-			s.delegateDeliveryRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
-		} else {
-			s.delegateDeliveryRetry.delay = jobNotificationRetryInitialDelay
-		}
+		s.delegateDeliveryRetry.settle(pending, delay, jobNotificationRetryMaxDelay)
 		s.delegateDeliveryMu.Unlock()
 		if shouldWake {
 			s.notify()
@@ -1056,9 +1045,7 @@ func (s *Session) scheduleDelegateDeliveryRetryLocked() {
 }
 
 func (s *Session) resetDelegateDeliveryRetryLocked() {
-	s.delegateDeliveryRetry.generation++
-	s.delegateDeliveryRetry.active = false
-	s.delegateDeliveryRetry.delay = jobNotificationRetryInitialDelay
+	s.delegateDeliveryRetry.reset()
 }
 
 func (s *Session) hasPendingDelegateDeliveries() bool {
@@ -1127,10 +1114,7 @@ func (s *Session) flushPendingDelegateDeliveries() error {
 	}
 	s.delegateDeliveryPumping = true
 	s.delegateDeliveryWake = false
-	if s.delegateDeliveryRetry.active {
-		s.delegateDeliveryRetry.generation++
-		s.delegateDeliveryRetry.active = false
-	}
+	s.delegateDeliveryRetry.disarmIfArmed()
 	s.delegateDeliveryMu.Unlock()
 	defer func() {
 		s.delegateDeliveryMu.Lock()

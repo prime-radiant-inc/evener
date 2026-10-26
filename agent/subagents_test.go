@@ -34,11 +34,7 @@ func TestSubagentInheritsSelectedPluginDirs(t *testing.T) {
 		PluginDirs:       want,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
-	prepared, err := parent.prepareSubagentRun(context.Background(), "inspect", "", "", 1, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	defer releasePreparedTreeSlot(prepared)
+	prepared := prepareStableChild(t, parent, delegateArgs{Task: "inspect"})
 	defer prepared.sub.sess.Close()
 	if !slices.Equal(prepared.sub.sess.cfg.PluginDirs, want) {
 		t.Fatalf("child PluginDirs = %v, want %v", prepared.sub.sess.cfg.PluginDirs, want)
@@ -119,14 +115,10 @@ func TestFrozenSubagentToolNamesIncludeRecoveryReader(t *testing.T) {
 		SystemPrompt: "Read the requested files.",
 		Tools:        []string{"read_file"},
 	}
-	prepared, err := s.prepareSubagentRun(context.Background(), "inspect", "", "", 1, "task7-reader", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	releasePreparedTreeSlot(prepared)
+	prepared := prepareStableChild(t, s, delegateArgs{Task: "inspect", AgentType: "task7-reader"})
 	defer prepared.sub.sess.Close()
 	got := prepared.frozenToolNames
-	if !slices.Equal(got, []string{"read_file", "task_list", "compact_context", "use_skill", "job_list", "job_status", "job_stop", "job_watch", "read_transcript"}) {
+	if !slices.Equal(got, []string{"communicate", "compact_context", "job_list", "job_status", "job_stop", "job_watch", "read_file", "read_transcript", "task_list", "use_skill"}) {
 		t.Fatalf("frozen names = %v", got)
 	}
 }
@@ -805,7 +797,7 @@ func TestWatchParentGrantIsNotInheritedByGrandchild(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	subCfg := SessionConfig{MaxSubagentDepth: 3}
+	subCfg := SessionConfig{MaxSubagentDepth: 3, StateDir: t.TempDir()}
 	subCfg.spawn.depth = 1
 	subCfg.spawn.parentSessionID = "parent"
 	subCfg.spawn.delegationAllowance = 1
@@ -816,7 +808,7 @@ func TestWatchParentGrantIsNotInheritedByGrandchild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer child.Close()
+	t.Cleanup(child.Close)
 	if child.reg.Get("job_watch") == nil {
 		t.Fatal("test setup: watch_parent child must have job_watch registered")
 	}
@@ -832,7 +824,6 @@ func TestWatchParentGrantIsNotInheritedByGrandchild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer releasePreparedTreeSlot(prepared)
 	defer prepared.sub.sess.Close()
 
 	grandchild := prepared.sub.sess

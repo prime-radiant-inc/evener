@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
@@ -167,23 +166,5 @@ func TestHostManageHubTOMLSaveSyncsItsDirectory(t *testing.T) {
 	// The directory is write-only, so opening it for the sync is what fails.
 	if !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("writeHubTOMLHosts error = %q, want the directory-sync step's refusal", err)
-	}
-}
-
-// TestHubTOMLSyncUnsupported covers the sync tolerance the write shares
-// with the hubcore deletion store and the thread-clear journal: a filesystem
-// that cannot sync a directory at all (ENOSYS, ENOTSUP, EINVAL) keeps a
-// working save instead of a hard failure, while every other error surfaces.
-func TestHubTOMLSyncUnsupported(t *testing.T) {
-	for _, err := range []error{syscall.ENOSYS, syscall.ENOTSUP, syscall.EINVAL} {
-		if !hubTOMLSyncUnsupported(err) {
-			t.Fatalf("hubTOMLSyncUnsupported(%v) = false, want true", err)
-		}
-	}
-	if hubTOMLSyncUnsupported(nil) {
-		t.Fatal("hubTOMLSyncUnsupported(nil) = true, want false")
-	}
-	if hubTOMLSyncUnsupported(errors.New("other")) {
-		t.Fatal(`hubTOMLSyncUnsupported("other") = true, want false`)
 	}
 }

@@ -3,7 +3,6 @@ package hubcore
 import (
 	"encoding/json"
 	"errors"
-	"syscall"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -215,25 +214,6 @@ func TestValidateDeletionSnapshot(t *testing.T) {
 	}}
 	if err := validateDeletionSnapshot(badPID); err == nil {
 		t.Fatalf("validateDeletionSnapshot invalid project ID should error")
-	}
-}
-
-// TestDeletionSyncUnsupported covers the deletionSyncUnsupported function.
-func TestDeletionSyncUnsupported(t *testing.T) {
-	if !deletionSyncUnsupported(syscall.ENOSYS) {
-		t.Fatalf("deletionSyncUnsupported(ENOSYS) should be true")
-	}
-	if !deletionSyncUnsupported(syscall.ENOTSUP) {
-		t.Fatalf("deletionSyncUnsupported(ENOTSUP) should be true")
-	}
-	if !deletionSyncUnsupported(syscall.EINVAL) {
-		t.Fatalf("deletionSyncUnsupported(EINVAL) should be true")
-	}
-	if deletionSyncUnsupported(nil) {
-		t.Fatalf("deletionSyncUnsupported(nil) should be false")
-	}
-	if deletionSyncUnsupported(errors.New("other")) {
-		t.Fatalf("deletionSyncUnsupported(other) should be false")
 	}
 }
 

@@ -670,7 +670,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
-	scratchReconcile := newScratchReconciler(hubcore.WebConfig{Past: past, Archive: archive, Roster: roster})
+	scratchReconcile := newScratchReconciler(past, archive, roster)
 	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   boundAddr,
 		AuthToken:                 authToken,

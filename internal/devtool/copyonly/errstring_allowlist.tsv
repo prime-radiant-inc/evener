@@ -12,13 +12,12 @@ agent/cov_s2_strategy_test.go	1
 agent/cov_w2conc_processoneinput_test.go	1
 agent/cov_w2tail_namer_test.go	1
 agent/cov_w3init_fork_test.go	3
-agent/cov_w3init_restore_test.go	3
+agent/cov_w3init_restore_test.go	2
 agent/cov_w3init_session_test.go	5
 agent/cov_w3init_subagents_test.go	1
 agent/delegate_delivery_branches_test.go	2
 agent/delegate_effort_alias_test.go	1
 agent/delegate_lane_branch_disposal_test.go	2
-agent/delegate_resource_bootstrap_test.go	2
 agent/delegate_resource_create_test.go	3
 agent/delegate_resource_runtime_test.go	1
 agent/delegate_resource_supervision_test.go	3
@@ -174,7 +173,7 @@ agent/transcript/open_unix_covtest_test.go	1
 agent/transcript/read_header_test.go	1
 agent/transcript_lookup_covtest_test.go	3
 agent/transcript_lookup_test.go	4
-agent/transcript_test.go	9
+agent/transcript_test.go	7
 agent/transcript_tools_test.go	2
 agent/watch_pure_covtest_test.go	5
 agent/worktree_scripted_failures_test.go	3

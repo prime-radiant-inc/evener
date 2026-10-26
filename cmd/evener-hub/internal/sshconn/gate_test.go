@@ -311,13 +311,20 @@ type ensureCommandSighting struct {
 // `systemctl restart`.
 func ensureDeployTestHarness(t *testing.T, restartErr error) (*Manager, *hostops.Store, *string, *[]ensureCommandSighting) {
 	t.Helper()
+	return ensureDeployTestHarnessInstalling(t, restartErr, "newsha")
+}
+
+// ensureDeployTestHarnessInstalling is ensureDeployTestHarness for a deploy whose
+// installed executable reports installedVersion when the ladder re-reads it.
+func ensureDeployTestHarnessInstalling(t *testing.T, restartErr error, installedVersion string) (*Manager, *hostops.Store, *string, *[]ensureCommandSighting) {
+	t.Helper()
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := deployRunner(t,
 		func(call int) ([]byte, error) {
 			if call == 0 {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"` + installedVersion + `","launch_flags":["api-log"]}`), nil
 		},
 		func(int) ([]byte, error) {
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -449,6 +456,28 @@ func TestEnsureRestartLegFailureFailsTheStillOpenRecord(t *testing.T) {
 	}
 	if record.Result == nil || !strings.Contains(record.Result.Message, "systemctl restart failed") {
 		t.Fatalf("record result = %+v, want the restart leg's failure verbatim", record.Result)
+	}
+}
+
+// TestEnsureUnstampedDeployFailsTheOpenRecordBeforeTheRestartLeg pins that a
+// deploy leaving a build other than the controller's ends its record failed and
+// never reaches the restart leg the record was kept open for.
+func TestEnsureUnstampedDeployFailsTheOpenRecordBeforeTheRestartLeg(t *testing.T) {
+	m, store, recordID, seen := ensureDeployTestHarnessInstalling(t, nil, "othersha")
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	if !errors.Is(err, ErrDeployUnstamped) {
+		t.Fatalf("Ensure error = %v, want the unstamped-build refusal", err)
+	}
+	if restarts := restartSightings(*seen); len(restarts) != 0 {
+		t.Fatalf("the restart leg ran %d times after a refused deploy", len(restarts))
+	}
+	record, ok := store.Record(*recordID)
+	if !ok {
+		t.Fatal("the Ensure record disappeared")
+	}
+	if record.State != hostops.StateFailed {
+		t.Fatalf("record state = %q, want failed", record.State)
 	}
 }
 

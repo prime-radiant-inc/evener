@@ -25,6 +25,12 @@ behind the web's seen mark, come from a different, hub-level read:
 not one of the `evener/thread/*` activity reads below and carries no delegate,
 job or watch rows.
 
+A working session is stuck after ten minutes without transcript motion, and
+never while one of its subagents runs. The web session pane, the phone tray and
+the phone Board all read that one rule from `@evener/appwire-client`
+(`isStuck`). The web's short quiet hint at twenty seconds is a separate, softer
+state that is not called stuck.
+
 Transcript delegate cards and status indicators use the same
 owner-qualified delegate entity projection as Activity. Retained transcripts do
 not require a live diagnostics roster to display authoritative delegate state.

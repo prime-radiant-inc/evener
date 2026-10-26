@@ -70,6 +70,7 @@ func TestSubagentRegistryHasIntrinsicTools(t *testing.T) {
 			t.Parallel()
 			s := newSession(t, withConfig(SessionConfig{
 				MaxSubagentDepth: 3,
+				StateDir:         t.TempDir(),
 				testOnly: testConfig{
 					skipGitSnapshot:     true,
 					minimalSystemPrompt: true,
@@ -79,10 +80,7 @@ func TestSubagentRegistryHasIntrinsicTools(t *testing.T) {
 			}))
 			maps.Copy(s.pluginAgents, coordinatorAgents)
 			s.delegationAllowance = 1 // child grant 0: a leaf
-			prepared, err := s.prepareSubagentRun(context.Background(), "task", "", "", 0, agentType, "", nil, nil)
-			if err != nil {
-				t.Fatalf("prepareSubagentRun(agent_type=%q): %v", agentType, err)
-			}
+			prepared := prepareStableChild(t, s, delegateArgs{Task: "task", AgentType: agentType})
 			for _, want := range intrinsicSubagentTools {
 				if prepared.sub.sess.reg.Get(want) == nil {
 					t.Errorf("agent_type=%q: child registry has no %q — a session that can run jobs must be able to supervise its own jobs", agentType, want)
@@ -94,7 +92,6 @@ func TestSubagentRegistryHasIntrinsicTools(t *testing.T) {
 			if prepared.sub.sess.reg.Get("job_list") == nil {
 				t.Errorf("agent_type=%q: child registry has no job_list to enumerate its own jobs", agentType)
 			}
-			releasePreparedTreeSlot(prepared)
 			prepared.sub.sess.Close()
 		})
 	}
@@ -165,6 +162,7 @@ func TestTypedLeafCannotReachParentJobs(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 3,
+		StateDir:         t.TempDir(),
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -172,15 +170,10 @@ func TestTypedLeafCannotReachParentJobs(t *testing.T) {
 			sandboxProber:       bwrapCapableProber(t.TempDir()),
 		},
 	}))
-	ctx := context.Background()
 	parentJobID := startBackgroundJob(t, s)
 
 	s.delegationAllowance = 1 // child grant 0: a leaf
-	prepared, err := s.prepareSubagentRun(ctx, "task", "", "", 0, "explorer", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	defer releasePreparedTreeSlot(prepared)
+	prepared := prepareStableChild(t, s, delegateArgs{Task: "task", AgentType: "explorer"})
 	defer prepared.sub.sess.Close()
 
 	assertCannotReachParentJobs(t, prepared.sub.sess, parentJobID)
@@ -194,6 +187,7 @@ func TestTypedLeafSupervisesItsOwnJobs(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 3,
+		StateDir:         t.TempDir(),
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -203,11 +197,7 @@ func TestTypedLeafSupervisesItsOwnJobs(t *testing.T) {
 	}))
 	ctx := context.Background()
 	s.delegationAllowance = 1 // child grant 0: a leaf
-	prepared, err := s.prepareSubagentRun(ctx, "task", "", "", 0, "explorer", "", nil, nil)
-	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
-	}
-	defer releasePreparedTreeSlot(prepared)
+	prepared := prepareStableChild(t, s, delegateArgs{Task: "task", AgentType: "explorer"})
 	defer prepared.sub.sess.Close()
 	child := prepared.sub.sess
 

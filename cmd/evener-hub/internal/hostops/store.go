@@ -686,9 +686,7 @@ type compensationFile struct {
 	Generation *uint64      `json:"generation"`
 }
 
-// compensation maps the decode shape to a record, refusing every omitted field
-// and normalizing the retired `compensating-sidecar` spelling to its live
-// alias.
+// compensation maps the decode shape to a record, refusing every omitted field.
 func (f compensationFile) compensation() (Compensation, error) {
 	for _, required := range []struct {
 		present bool

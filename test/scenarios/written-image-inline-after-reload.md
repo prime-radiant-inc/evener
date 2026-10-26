@@ -108,7 +108,7 @@ and `rm -rf` `$WORK` plus your own run dir. Leave any real hub untouched.
 - **The reload path needs the session's cwd.** `enrichThreadFileBackedOutputImages`
   returns the thread untouched when `thread.CWD` is empty
   (`app_threadread.go:524-527`), and `/doc/image` refuses a session whose cwd
-  it cannot resolve (`localSessionCWD`, `doc_serve.go#localSessionCWD`). A session
+  it cannot resolve (`sessionCWD`, `doc_serve.go#sessionCWD`). A session
   spawned with no `working_dir` cannot pass this card.
 - **`/doc/image` is LOCAL-session only** (`isLocalRouteID`, `doc_serve.go:133-135`).
   A source-qualified `remote:thread-id` ref gets no file-backed descriptor at

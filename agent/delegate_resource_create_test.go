@@ -1294,23 +1294,78 @@ func TestDelegateResourceCreate_CloseAfterDrainRefusesFailedStartRetention(t *te
 
 func prepareCommittedUnadoptedDelegate(t *testing.T, root *Session, task string) (delegateRuntime, delegateStartCommit, delegateIsolation, *preparedSubagentRun) {
 	t.Helper()
+	return prepareCommittedDelegate(t, root, delegateArgs{Task: task, DelegationAllowance: new(0)})
+}
+
+// prepareStableChild builds a delegate child the way create does (describe,
+// reserve, commit, construct, attach, admit the start input) and stops before
+// launch, so a test can inspect the child session a real delegate would run,
+// and that child can delegate in turn. Disposal is registered with t.Cleanup.
+func prepareStableChild(t *testing.T, root *Session, args delegateArgs) *preparedSubagentRun {
+	t.Helper()
+	_, started, _, prepared := prepareCommittedDelegate(t, root, args)
+	// The delegate never runs, so end its generation at teardown: a root that
+	// closes with a generation still open waits out its stop drain.
+	t.Cleanup(func() {
+		_, _ = root.delegateController.FinishGeneration(started.lease, delegatePermanentStartFailure(errors.New("test teardown"), "test_teardown"))
+	})
+	claim, err := root.delegateController.BeginStartInput(started.lease)
+	if err != nil {
+		t.Fatalf("BeginStartInput: %v", err)
+	}
+	if _, err := root.delegateController.CompleteStartInput(claim, true, delegateFinish{}); err != nil {
+		t.Fatalf("CompleteStartInput: %v", err)
+	}
+	return prepared
+}
+
+// delegateActorForTest is the actor a create from owner would act as: the
+// root for a root session, the owning delegate's live lease for a delegate
+// that delegates in turn.
+func delegateActorForTest(t *testing.T, owner *Session) delegateActor {
+	t.Helper()
+	if owner.owningDelegateID == "" {
+		return rootDelegateActor(owner.delegateRootSessionID)
+	}
+	controller := owner.delegateController
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	live := controller.live[owner.owningDelegateID]
+	if live == nil || live.binding == nil {
+		t.Fatalf("delegate %q has no live generation binding to act as", owner.owningDelegateID)
+	}
+	lease := live.binding.lease
+	return delegateActor{lease: &lease}
+}
+
+func prepareCommittedDelegate(t *testing.T, root *Session, args delegateArgs) (delegateRuntime, delegateStartCommit, delegateIsolation, *preparedSubagentRun) {
+	t.Helper()
 	runtime := delegateRuntime{owner: root}
 	ctx := context.Background()
-	args := delegateArgs{Task: task, DelegationAllowance: new(0)}
+	if args.DelegationAllowance == nil {
+		root.mu.Lock()
+		args.DelegationAllowance = new(defaultDelegateGrant(root.delegationAllowance))
+		root.mu.Unlock()
+	}
+	task := args.Task
 	selection, err := root.selectSubagentModel(ctx, args.Model, args.AgentType)
 	if err != nil {
 		t.Fatalf("selectSubagentModel: %v", err)
 	}
 	toolNameCeiling := root.stableDelegateEffectiveToolNameCeiling(selection, args, "")
-	descriptor, project, err := runtime.describe(ctx, args, task, "", nil, selection, toolNameCeiling)
+	requestedSandbox, err := root.requestedDelegateSandbox(args, toolNameCeiling)
+	if err != nil {
+		t.Fatalf("requestedDelegateSandbox: %v", err)
+	}
+	descriptor, project, err := runtime.describe(ctx, args, task, "", requestedSandbox, selection, toolNameCeiling)
 	if err != nil {
 		t.Fatalf("describe delegate: %v", err)
 	}
-	reservation, err := root.delegateController.ReserveCreate(rootDelegateActor(root.ID()), descriptor)
+	reservation, err := root.delegateController.ReserveCreate(delegateActorForTest(t, root), descriptor)
 	if err != nil {
 		t.Fatalf("ReserveCreate: %v", err)
 	}
-	isolation, err := runtime.prepareIsolation(ctx, reservation, project, nil)
+	isolation, err := runtime.prepareIsolation(ctx, reservation, project, requestedSandbox)
 	if err != nil {
 		t.Fatalf("prepareIsolation: %v", err)
 	}

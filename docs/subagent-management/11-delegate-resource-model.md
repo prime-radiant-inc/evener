@@ -126,9 +126,10 @@ The flag-day implementation deliberately excludes:
 - public activation-addressable status, output, history, watch, stop, and UI
   rows;
 - migration or aliases for legacy delegate JobRecord state; a root containing
-  it fails closed with legacy_delegate_state;
-- migration of old delegate-job-addressed watch rows; they fail closed with
-  legacy_delegate_watch_state;
+  it starts normally, ignores those rows and reports legacy_delegate_state as a
+  warning;
+- migration of old delegate-job-addressed watch rows; they are ignored with the
+  same warning;
 - non-recursive stable delegate stop; job_stop(dlg_...) is recursive and
   include_children does not weaken it;
 - job_status(dlg_...) returning terminal packet contents or acknowledging
@@ -330,8 +331,8 @@ All shipped watch semantics remain: event/output/progress filters, every,
 bounded frames, latest-frame-wins coalescing, the delivery budget, list/inspect/
 clear, terminal ordering, observer callbacks, restart cancellation/end notices,
 and append-only deduplicated SessionMeta.ObservedBy UI metadata. Legacy rows
-whose source or receiver is addressed through a delegate JobRecord fail closed
-with legacy_delegate_watch_state; they are not translated to the stable ID.
+whose source or receiver is addressed through a delegate JobRecord are ignored
+and reported; they are not translated to the stable ID.
 
 ### Authorization
 
@@ -1346,17 +1347,13 @@ conversation seen by a later resumable generation.
 This is a flag-day cutover. There is no migration, mixed loader, compatibility
 window, dual writer, fallback route, or feature flag.
 
-When opening a root, Evener always checks whether the existing root job history
-contains delegate JobRecords. If it does, startup or restore fails with
-legacy_delegate_state and directs the operator to use a fresh state root,
-whether or not a new delegate-tree store is also present. It must not silently
-ignore, translate, prefer, or partially load either side of mixed state.
-
-The same preflight scans the existing watch journal for rows addressed through
-a legacy delegate JobRecord. Any such row fails closed with
-legacy_delegate_watch_state before the new controller admits work. Stable
-session/shell/delegate watch rows remain in the existing watch journal and are
-not migrated into the delegate store.
+When opening a root, Evener checks whether the existing root job history
+contains delegate JobRecords or watch rows addressed through one. If it does,
+startup and restore proceed on the stable delegate store: the retired rows stay
+in the journal, are never translated, preferred or loaded, and the session
+reports a legacy_delegate_state warning. Stable session/shell/delegate watch
+rows remain in the existing watch journal and are not migrated into the
+delegate store.
 
 A root with shell-only job history may create or open the new delegate store because
 the shell job schema is unchanged. A present delegate-tree store with an
@@ -2174,9 +2171,9 @@ The project is complete only when all of the following are true:
     foreground shell timeout cannot leak its controller receipt.
 31. Historical transcript/activity/Hub/doctor reads are pure and never create,
     append, repair, truncate, or mutate a log.
-32. Old delegate durable state fails legacy_delegate_state and old
-    delegate-job-addressed watch state fails legacy_delegate_watch_state; no
-    migration or mixed load exists.
+32. Old delegate durable state and old delegate-job-addressed watch state are
+    ignored with a legacy_delegate_state warning; no migration or mixed load
+    exists.
 33. Old public argument/result aliases are absent.
 34. The deletion inventory has no active production references and preserved
     behavior has stable replacements before old helpers are removed.

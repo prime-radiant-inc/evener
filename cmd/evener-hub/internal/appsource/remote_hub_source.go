@@ -220,7 +220,7 @@ func (s *RemoteHubSource) resolveClient(ctx context.Context) (*appwire.Client, e
 		if client, ok := s.clientIfAttached(s.id); ok && client != nil {
 			return client, nil
 		}
-		return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id)
+		return nil, remoteHubUnavailable(s.id, "")
 	}
 	return s.client(ctx, s.id)
 }
@@ -273,7 +273,7 @@ func (s *RemoteHubSource) mapCallError(err error) error {
 	if !appwire.IsTransportFailure(err) {
 		return err
 	}
-	return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + wire.Message)
+	return remoteHubUnavailable(s.id, wire.Message)
 }
 
 // mapConnectError mirrors localDaemonDialError for the attach step: a timeout
@@ -343,7 +343,7 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 	// other terminal classes are deliberately not matched: they name a host that
 	// will never attach and must stay raw so recovery is not retried forever.
 	if errors.Is(err, sshconn.ErrSSHStart) {
-		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + err.Error())
+		return remoteHubUnavailable(s.id, err.Error())
 	}
 	// A failed hub restart is transient as well: sshconn stays disconnected and
 	// retries the restart on the next Ensure (ErrRestart is not terminal), so it
@@ -351,7 +351,7 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 	// recovery/auto-resume gate that saw the raw error could not attribute the
 	// outage, so it maps like the other transient attach failures.
 	if errors.Is(err, sshconn.ErrRestart) {
-		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + err.Error())
+		return remoteHubUnavailable(s.id, err.Error())
 	}
 	if errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.ECONNRESET) ||
@@ -363,14 +363,14 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 		errors.Is(err, io.EOF) ||
 		errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, context.DeadlineExceeded) {
-		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + err.Error())
+		return remoteHubUnavailable(s.id, err.Error())
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
-		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + err.Error())
+		return remoteHubUnavailable(s.id, err.Error())
 	}
 	if remoteHubTransportText(strings.ToLower(err.Error())) {
-		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + err.Error())
+		return remoteHubUnavailable(s.id, err.Error())
 	}
 	return err
 }
@@ -1837,15 +1837,7 @@ func callerContextEnded(err error) bool {
 // operator reading a hub log can tell a lost response from a caller-side
 // context end.
 func (s *RemoteHubSource) hubAdminMutationOutcomeUnknown(reason string) appwire.WireError {
-	return appwire.WireError{
-		Code:    appwire.CodeInternalError,
-		Message: reason + ": " + s.id,
-		Data: appwire.ErrorData{
-			EvenerErrorInfo:  appwire.ErrorMutationOutcomeUnknown,
-			MutationOutcome:  appwire.MutationOutcomeUnknown,
-			RetryDisposition: appwire.RetryDispositionBlocked,
-		},
-	}
+	return mutationOutcomeUnknown(reason+": "+s.id, "", appwire.RetryDispositionBlocked)
 }
 
 // remoteHubHostSubscription is one host-level notification consumer, e.g. the

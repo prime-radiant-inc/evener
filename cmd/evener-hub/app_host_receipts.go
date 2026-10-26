@@ -387,7 +387,7 @@ func newHostMutationReceipt(mutationID string, kind hostMutationKind, entry host
 		Row:           hostReceiptRowFor(entry),
 		Generation:    entry.Generation,
 		IncarnationID: entry.IncarnationID,
-		CommittedAt:   committedAt.UTC().Format(time.RFC3339),
+		CommittedAt:   hostInstant(committedAt),
 	}
 }
 

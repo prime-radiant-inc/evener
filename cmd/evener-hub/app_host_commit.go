@@ -123,7 +123,7 @@ type hostCommitPlan struct {
 func (m *hubHostManager) stagedMarker(plan *hostCommitPlan, now time.Time) HostStagedReceipt {
 	return HostStagedReceipt{
 		Key:                  plan.Key,
-		StagedAt:             now.UTC().Format(time.RFC3339),
+		StagedAt:             hostInstant(now),
 		SwapStarted:          false,
 		TeardownStarted:      false,
 		Phase:                hostStagedPhaseStaged,

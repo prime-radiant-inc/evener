@@ -2092,6 +2092,32 @@ func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateM
 	return result
 }
 
+// requestedDelegateSandbox resolves the sandbox policy a delegate create asks
+// for: a read-only tool scope derives its own, an explicit request is
+// narrowed against the parent's, and no request leaves the policy to the
+// descriptor's defaults (nil).
+func (s *Session) requestedDelegateSandbox(args delegateArgs, toolNameCeiling []string) (*sandbox.SandboxPolicy, error) {
+	explicitSandbox := strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil
+	if explicitSandbox && args.SandboxNet != nil && strings.TrimSpace(args.Sandbox) == "" && !delegateSandboxBackendAvailable(s.sandboxHostFacts()) {
+		return nil, newDelegateSandboxRequestError(
+			errors.New("invalid_request: sandbox cannot be enforced on this host because no sandbox backend is available; omit the sandbox parameter"),
+			"sandbox",
+		)
+	}
+	if subagentToolScopeIsReadOnly(false, toolNameCeiling) {
+		return s.resolveReadOnlyDelegateSandboxRequest(args.Sandbox, args.SandboxNet)
+	}
+	if !explicitSandbox {
+		return nil, nil
+	}
+	parentMode, parentNetwork := s.parentSandboxModeNet()
+	requested, err := resolveDelegateSandboxRequest(args.Sandbox, args.SandboxNet, parentMode, parentNetwork)
+	if err != nil {
+		return nil, err
+	}
+	return s.applyParentWriteBlockedFloor(args.Sandbox, requested)
+}
+
 func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) delegateResult {
 	s := runtime.owner
 	if s == nil || s.delegateController == nil {
@@ -2144,30 +2170,9 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		s.emitDiagnosticWarning(*selection.warning)
 	}
 	toolNameCeiling := s.stableDelegateEffectiveToolNameCeiling(selection, args, isolationName)
-	readOnlyScope := subagentToolScopeIsReadOnly(false, toolNameCeiling)
-	var requestedSandbox *sandbox.SandboxPolicy
-	explicitSandbox := strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil
-	if explicitSandbox && args.SandboxNet != nil && strings.TrimSpace(args.Sandbox) == "" && !delegateSandboxBackendAvailable(s.sandboxHostFacts()) {
-		return delegateStartFailed(newDelegateSandboxRequestError(
-			errors.New("invalid_request: sandbox cannot be enforced on this host because no sandbox backend is available; omit the sandbox parameter"),
-			"sandbox",
-		))
-	}
-	if readOnlyScope {
-		requestedSandbox, err = s.resolveReadOnlyDelegateSandboxRequest(args.Sandbox, args.SandboxNet)
-		if err != nil {
-			return delegateStartFailed(err)
-		}
-	} else if explicitSandbox {
-		parentMode, parentNetwork := s.parentSandboxModeNet()
-		requestedSandbox, err = resolveDelegateSandboxRequest(args.Sandbox, args.SandboxNet, parentMode, parentNetwork)
-		if err != nil {
-			return delegateStartFailed(err)
-		}
-		requestedSandbox, err = s.applyParentWriteBlockedFloor(args.Sandbox, requestedSandbox)
-		if err != nil {
-			return delegateStartFailed(err)
-		}
+	requestedSandbox, err := s.requestedDelegateSandbox(args, toolNameCeiling)
+	if err != nil {
+		return delegateStartFailed(err)
 	}
 	descriptor, worktreeProject, err := runtime.describe(ctx, args, task, isolationName, requestedSandbox, selection, toolNameCeiling)
 	if err != nil {
@@ -3228,8 +3233,8 @@ func (s *Session) bootstrapDelegateResources() error {
 		s.owningDelegateID = s.cfg.spawn.owningDelegateID
 		return nil
 	}
-	if err := rejectLegacyDelegateState(s.stateDir, s.id); err != nil {
-		return err
+	if warning, ok := legacyDelegateStateWarning(s.stateDir, s.id); ok {
+		s.pendingHookWarnings = append(s.pendingHookWarnings, warning)
 	}
 	path := filepath.Join(jobsDir(s.stateDir, s.id), "delegates.jsonl")
 	store, err := delegatestore.Open(path)

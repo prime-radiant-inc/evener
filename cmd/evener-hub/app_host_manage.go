@@ -868,48 +868,16 @@ func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, record
 	if _, err := decodeConfig(path, string(data)); err != nil {
 		return fmt.Errorf("hub.toml rewrite refused: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("hub.toml mkdir: %w", err)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".hub.toml-*.tmp")
-	if err != nil {
-		return fmt.Errorf("hub.toml temp: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("hub.toml chmod: %w", err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("hub.toml write: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("hub.toml sync: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("hub.toml close: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("hub.toml rename: %w", err)
-	}
-	// The rename is only durable once the directory entry that carries it is
-	// synced too: a crash right after it could otherwise lose the committed
-	// add or remove despite the synced temp file above. Some filesystems
-	// cannot sync a directory at all; the tolerance inside the sync seam keeps
-	// the save working there instead of turning a durability nicety into a
-	// hard failure, the same way the hub's deletion and transcript-display
-	// stores and the server's thread-clear journal treat this idiom.
-	//
-	// The rename above is the save's commit point: the target file already
-	// holds the new entries, so a failure behind it cannot be returned as
-	// though nothing was written. It is wrapped in hubTOMLPostRenameError,
-	// and the callers compensate the live state (rollbackHubTOML) before
-	// reporting the failure.
-	if err := hubTOMLSyncDir(filepath.Dir(path)); err != nil {
-		return &hubTOMLPostRenameError{err: err}
+	// The replace's rename is the save's commit point: the target file already
+	// holds the new entries once fsatomic reports ErrPublished, so that failure
+	// cannot be returned as though nothing was written. It is wrapped in
+	// hubTOMLPostRenameError, and the callers compensate the live state
+	// (rollbackHubTOML) before reporting the failure.
+	if err := hubTOMLReplaceWithBytes(path, data, hubTOMLSyncDir); err != nil {
+		if errors.Is(err, fsatomic.ErrPublished) {
+			return &hubTOMLPostRenameError{err: err}
+		}
+		return err
 	}
 	return nil
 }
@@ -958,26 +926,12 @@ func hubTOMLHostTables(entries []hostreg.Host) []HostConfig {
 	return tables
 }
 
-// hubTOMLSyncDir opens dir, syncs it, and closes it — the durability half
-// of the atomic-rename idiom, so a crash right after a hub.toml rename cannot
-// lose the committed add or remove. It is a swappable package variable so
-// tests can force the post-rename failure path deterministically, the one
-// point where a failed save has already replaced the target file; the default
-// keeps the tolerance for filesystems that cannot sync a directory at all.
-var hubTOMLSyncDir = func(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("hub.toml directory: %w", err)
-	}
-	if err := d.Sync(); err != nil && !hubTOMLSyncUnsupported(err) {
-		_ = d.Close()
-		return fmt.Errorf("hub.toml directory sync: %w", err)
-	}
-	if err := d.Close(); err != nil {
-		return fmt.Errorf("hub.toml directory close: %w", err)
-	}
-	return nil
-}
+// hubTOMLSyncDir is the directory sync every hub.toml write ends with, so a
+// crash right after a rename cannot lose the committed add or remove. It is a
+// swappable package variable so tests can force the post-rename failure path
+// deterministically, the one point where a failed save has already replaced
+// the target file.
+var hubTOMLSyncDir = fsatomic.SyncDir
 
 // hubTOMLStashSyncDir is the stash write's own directory-sync seam. It starts
 // as the hub.toml seam's value at process start and is separate so a test that
@@ -1004,15 +958,6 @@ func (e *hubTOMLPostRenameError) Unwrap() error { return e.err }
 func hubTOMLRenameCommitted(err error) bool {
 	var post *hubTOMLPostRenameError
 	return errors.As(err, &post)
-}
-
-// hubTOMLSyncUnsupported reports whether a sync failed because the
-// filesystem cannot sync a directory at all. It delegates to the hub's one
-// canonical predicate (execsupport/fsatomic); hubcore's deletion store and
-// the server's thread-clear journal keep matching package-private copies of
-// the same tolerance in their own modules.
-func hubTOMLSyncUnsupported(err error) bool {
-	return fsatomic.SyncUnsupported(err)
 }
 
 // add inserts entry at the end. Callers hold hostManagerConfig.mu.
@@ -2713,12 +2658,6 @@ func hubTOMLMirrorCommitTables(cfg Config, entries, known []hostreg.Host, genera
 // compensation still names, so the next boot would restore the wrong bytes as
 // that record's pre-mutation state. The compensation record carries the exact
 // path; only a record naming it keeps it from the boot prune.
-//
-// Compatibility: the pre-rename shared name (`<hub.toml>.stash`) never shipped
-// — this branch introduced it — so there is no persisted record to migrate. A
-// record that names it anyway (a file written by an earlier build of this
-// branch) keeps it and restores it unchanged; the boot prune removes it only
-// when no open record names it.
 func hubTOMLStashPath(configPath, receiptKey string) string {
 	sum := sha256.Sum256([]byte(receiptKey))
 	return fmt.Sprintf("%s.stash.%x", configPath, sum[:8])
@@ -2742,8 +2681,7 @@ func isStashKeyHex(suffix string) bool {
 }
 
 // ownsStashPath reports whether stash names this hub's own stash family beside
-// its hub.toml: the canonical legacy name or a per-commit
-// `<hub.toml>.stash.<16 hex>` name. Anything else is not this hub's to read,
+// its hub.toml: a per-commit `<hub.toml>.stash.<16 hex>` name. Anything else is not this hub's to read,
 // restore, or remove — a tampered or foreign record names a path, never bytes
 // this hub wrote.
 func (m *hubHostManager) ownsStashPath(stash string) bool {
@@ -2756,11 +2694,6 @@ func stashPathOwnedBy(configPath, stash string) bool {
 	path := strings.TrimSpace(configPath)
 	if path == "" || strings.TrimSpace(stash) == "" {
 		return false
-	}
-	if stash == path+".stash" {
-		// The legacy spelling an earlier build of this branch wrote; a record
-		// naming it keeps its restore source.
-		return true
 	}
 	suffix, ok := strings.CutPrefix(stash, path+".stash.")
 	return ok && isStashKeyHex(suffix)
@@ -2818,35 +2751,10 @@ func (m *hubHostManager) writeHubTOMLStash(receiptKey string) (string, error) {
 // test injecting a hub.toml sync failure drives the writes it names and not the
 // stash beside them.
 func hubTOMLReplaceWithBytes(path string, data []byte, sync func(string) error) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dir, err)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
-	tmp, err := os.CreateTemp(dir, ".hub.toml-*.tmp")
-	if err != nil {
-		return fmt.Errorf("temp file in %s: %w", dir, err)
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod %s: %w", tmpName, err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write %s: %w", tmpName, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync %s: %w", tmpName, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close %s: %w", tmpName, err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("rename %s over %s: %w", tmpName, path, err)
-	}
-	return sync(dir)
+	return fsatomic.WriteWithDirSync(path, data, 0o600, sync)
 }
 
 // restoreHubTOMLFromStash applies a compensation's stash: the prior hub.toml
@@ -3267,7 +3175,7 @@ func (m *hubHostManager) reconcileCompensations() {
 		if !ok {
 			continue
 		}
-		if hostops.NormalizeCompensationPhase(record.Phase) == hostops.CompensationArmed {
+		if record.Phase == hostops.CompensationArmed {
 			m.resumeArmedCompensation(record)
 			continue
 		}
@@ -3355,7 +3263,7 @@ func (m *hubHostManager) resumeArmedCompensation(record hostops.Compensation) {
 // the phase the failing step belongs to (a runtime-revert failure leaves the
 // record in `compensating-runtime` with the stash intact).
 func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
-	switch hostops.NormalizeCompensationPhase(record.Phase) {
+	switch record.Phase {
 	case hostops.CompensationHubTOML:
 		// §9's commit-point check, the same one the armed arm makes.
 		fileCfg, hasFile := m.hostFileRecords()

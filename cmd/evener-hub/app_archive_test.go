@@ -344,7 +344,7 @@ func TestArchiveSetRemovesTheSessionsScratchTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := hubcore.WebConfig{Archive: archive, HubStateRoot: t.TempDir(), Past: past}
-	cfg.ScratchReconcile = func() { reconcileArchivedScratch(cfg, time.Now()) }
+	cfg.ScratchReconcile = func() { reconcileArchivedScratch(cfg.Past, cfg.Archive, cfg.Roster, time.Now()) }
 	web := NewWebServer(cfg)
 
 	tree := mintEndedScratchTree(t, sessionID, "CHILD1")
@@ -440,7 +440,7 @@ func TestReconcileArchivedScratchFollowsEveryArchiveRule(t *testing.T) {
 		t.Fatal("the live session was not confirmed into the roster")
 	}
 
-	reconcileArchivedScratch(hubcore.WebConfig{Past: past, Archive: archive, Roster: roster}, now)
+	reconcileArchivedScratch(past, archive, roster, now)
 
 	for name, s := range sessions {
 		_, err := os.Lstat(trees[name])
@@ -515,7 +515,7 @@ func TestReconcileFindsAnArchivedTreeInTheDaemonsTempDir(t *testing.T) {
 	tree := mintEndedScratchTree(t, sessionID)
 	t.Setenv("TMPDIR", hubTmp)
 
-	reconcileArchivedScratch(hubcore.WebConfig{Past: past, Archive: archive}, time.Now())
+	reconcileArchivedScratch(past, archive, nil, time.Now())
 
 	if _, err := os.Lstat(tree); !os.IsNotExist(err) {
 		t.Errorf("the reconcile left the archived tree %s in the daemon's temp dir: %v", tree, err)
@@ -543,7 +543,7 @@ func TestScratchReconcilerRunServesAKick(t *testing.T) {
 		t.Fatal(err)
 	}
 	tree := mintEndedScratchTree(t, sessionID)
-	reconciler := newScratchReconciler(hubcore.WebConfig{Past: past, Archive: archive})
+	reconciler := newScratchReconciler(past, archive, nil)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() { defer close(done); reconciler.Run(ctx) }()
@@ -590,7 +590,7 @@ func TestDaemonExitRemovesOnlyAnArchivedSessionsScratchTree(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := hubcore.WebConfig{Roster: roster, Archive: archive, Past: past}
-			cfg.ScratchReconcile = func() { reconcileArchivedScratch(cfg, time.Now()) }
+			cfg.ScratchReconcile = func() { reconcileArchivedScratch(cfg.Past, cfg.Archive, cfg.Roster, time.Now()) }
 			newHubSourceRegistry(cfg)
 			tree := mintEndedScratchTree(t, sessionID, "CHILD1")
 

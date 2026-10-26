@@ -2447,9 +2447,10 @@ type ThreadTurnItemsListResponse struct {
 //
 //   - SHA addresses the replayed-input form /s/<session>/images/<sha>, whose
 //     bytes are re-scanned out of the session transcript;
-//   - Path is a relative or current-root absolute file path for the file-backed
-//     form /doc/image?session=<session>&path=<path>, resolved inside the
-//     session's current working directory. Absolute paths outside that root are
+//   - Path is a file path for the file-backed form
+//     /doc/image?session=<session>&path=<path>: relative to the session's
+//     current working directory, or absolute inside that directory or the
+//     session's retained artifacts directory. Any other absolute path is
 //     refused.
 //
 // Both set, or neither, is InvalidParams. SessionID names the session in the
@@ -3362,8 +3363,14 @@ type AuthLoginCompleteParams struct {
 	OriginClientId string `json:"originClientId,omitempty"`
 }
 
+// AuthLoginCompleteResponse reports a completed login. Restart is true when the
+// hub could not check the flow against the endpoint it was started for, so it
+// discarded the flow and saved nothing; Status is then empty and the client
+// starts a fresh login (evener/auth/login/start), which binds to the endpoint
+// the name resolves to now.
 type AuthLoginCompleteResponse struct {
-	Status AuthStatusResponse `json:"status"`
+	Status  AuthStatusResponse `json:"status"`
+	Restart bool               `json:"restart,omitempty"`
 }
 
 type AuthLogoutParams struct {
@@ -3993,8 +4000,11 @@ type AuthDevicePollParams struct {
 }
 
 // AuthDevicePollResponse reports one poll attempt. State is "pending",
-// "authorized", or "expired". Status is nil (the "status" key is absent from
-// the wire) except when authorized.
+// "authorized", "expired", or "restart": the hub could not check the flow
+// against the endpoint it was started for, so it discarded the flow and saved
+// nothing, and the client starts a fresh device flow (evener/auth/device/start)
+// against the endpoint the name resolves to now. Status is nil (the "status"
+// key is absent from the wire) except when authorized.
 type AuthDevicePollResponse struct {
 	State  string              `json:"state"`
 	Status *AuthStatusResponse `json:"status,omitempty"`

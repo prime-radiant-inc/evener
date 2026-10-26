@@ -404,7 +404,6 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 			return "", fmt.Errorf("%w: host %q: this controller's own executable targets %s/%s but the host runs %s/%s, and the installer fallback has no published artifact to pin for this controller's build (a dev or dirty controller has none, and a release needs a stamped tag); %s",
 				ErrOwnExecutableCannotServe, host.Name, runtime.GOOS, runtime.GOARCH, facts.OS, facts.Arch, m.deployHelp())
 		}
-		return m.deployInstaller(ctx, host, facts, guardedWrite)
 	}
 	return m.deployInstaller(ctx, host, facts, guardedWrite)
 }
@@ -1181,15 +1180,11 @@ func (m *Manager) deploySelectedWithSupersession(ctx context.Context, host hostr
 			if err := supersede(); err != nil {
 				return err
 			}
-			m.mu.Lock()
-			m.pendingRestarts[host.Name] = fresh
-			m.mu.Unlock()
+			m.storePendingRestart(host.Name, fresh)
 		}
 		for _, record := range recorders {
 			if err := record(target); err != nil {
-				m.mu.Lock()
-				m.pendingRestarts[host.Name] = previous
-				m.mu.Unlock()
+				m.storePendingRestart(host.Name, previous)
 				return err
 			}
 		}
