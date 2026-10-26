@@ -1,6 +1,10 @@
 package hubapi
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"testing"
+)
 
 func TestAttentionRank(t *testing.T) {
 	cases := []struct {
@@ -51,26 +55,24 @@ func TestAttentionRank_ErroredOutranksAwaiting(t *testing.T) {
 	}
 }
 
+// The same fixture drives appwire-client's approvalWaiting test, so the hub
+// and the clients cannot disagree about which states an approval escalates.
 func TestAttentionState(t *testing.T) {
-	cases := []struct {
-		state           string
-		approvalPending bool
-		want            string
-	}{
-		// The escalation blocks mid-turn, so the session still reports
-		// "active"; its attention is a person's answer, like a question's.
-		{"active", true, "awaiting"},
-		{"idle", true, "awaiting"},
-		{"warning", true, "awaiting"},
-		{"restartRequired", true, "awaiting"},
-		{"errored", true, "errored"}, // a failure still outranks an approval
-		{"active", false, "active"},
-		{"warning", false, "warning"},
-		{"errored", false, "errored"},
+	raw, err := os.ReadFile("../testdata/attention/approval_state.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		State           string `json:"state"`
+		ApprovalPending bool   `json:"approval_pending"`
+		Want            string `json:"want"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
 	}
 	for _, c := range cases {
-		if got := AttentionState(c.state, c.approvalPending); got != c.want {
-			t.Errorf("AttentionState(%q, %v) = %q, want %q", c.state, c.approvalPending, got, c.want)
+		if got := AttentionState(c.State, c.ApprovalPending); got != c.Want {
+			t.Errorf("AttentionState(%q, %v) = %q, want %q", c.State, c.ApprovalPending, got, c.Want)
 		}
 	}
 }
@@ -93,6 +95,8 @@ func TestNeedsYouBand(t *testing.T) {
 		// question does, and shares its band (#4093).
 		{"awaiting", false, false, 1},
 		{"warning", false, false, 0},
+		// A restart outranks the approval, as in AttentionState.
+		{"restartRequired", false, true, 0},
 	}
 	for _, c := range cases {
 		if got := NeedsYouBand(c.state, c.askPending, c.approvalPending); got != c.want {

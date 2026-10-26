@@ -230,6 +230,70 @@ func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 	}, nil
 }
 
+// request builds the model request for one step from opts and the conversation so far.
+func (gs *generationState) request(opts GenerateOptions, history []Message) Request {
+	return Request{
+		Model:                opts.Model,
+		Provider:             opts.Provider,
+		Messages:             append([]Message{}, history...),
+		Tools:                gs.toolDefs,
+		ToolChoice:           opts.ToolChoice,
+		ResponseFormat:       opts.ResponseFormat,
+		Temperature:          opts.Temperature,
+		TopP:                 opts.TopP,
+		MaxTokens:            opts.MaxTokens,
+		StopSequences:        opts.StopSequences,
+		ReasoningEffort:      opts.ReasoningEffort,
+		Metadata:             opts.Metadata,
+		ClientMetadata:       opts.ClientMetadata,
+		Include:              opts.Include,
+		PromptCacheKey:       opts.PromptCacheKey,
+		PreviousResponseID:   opts.PreviousResponseID,
+		ConversationID:       opts.ConversationID,
+		ServiceTier:          opts.ServiceTier,
+		SafetyIdentifier:     opts.SafetyIdentifier,
+		PromptCacheRetention: opts.PromptCacheRetention,
+		Truncation:           opts.Truncation,
+		MaxToolCalls:         opts.MaxToolCalls,
+		Background:           opts.Background,
+		Store:                opts.Store,
+		SessionID:            opts.SessionID,
+		ThreadID:             opts.ThreadID,
+		ProviderOptions:      opts.ProviderOptions,
+		WebSearch:            opts.WebSearch,
+		AdapterTimeout:       opts.AdapterTimeout,
+	}
+}
+
+// endsToolLoop reports whether a step's response is the last one: it carries no
+// executable tool calls, tool looping is disabled or its round budget is spent,
+// or a tool call has no Execute handler and so goes back to the caller.
+func (gs *generationState) endsToolLoop(resp *Response, calls []ToolCallData, toolRoundsUsed int) bool {
+	if len(calls) == 0 || (resp.Finish.Reason != FinishReasonToolCalls && resp.Finish.Reason != FinishReasonPauseTurn) || !gs.hasActiveTool || gs.maxToolRounds == 0 || toolRoundsUsed >= gs.maxToolRounds {
+		return true
+	}
+	for _, call := range calls {
+		if t, ok := gs.toolIndex[call.Name]; ok && t.Execute == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// newStepResult summarizes one model response and the tool results it produced.
+func newStepResult(resp *Response, calls []ToolCallData, results []ToolResultData) StepResult {
+	return StepResult{
+		Text:         resp.Text(),
+		Reasoning:    resp.ReasoningText(),
+		ToolCalls:    calls,
+		ToolResults:  results,
+		FinishReason: resp.Finish,
+		Usage:        resp.Usage,
+		Response:     *resp,
+		Warnings:     append([]Warning{}, resp.Warnings...),
+	}
+}
+
 // Generate runs a generation request described by opts. It calls the model
 // (with retries per the configured policy), and when the model requests tool
 // calls it executes any tools that have an Execute handler and feeds the
@@ -252,37 +316,7 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 
 	toolRoundsUsed := 0
 	for {
-		req := Request{
-			Model:                opts.Model,
-			Provider:             opts.Provider,
-			Messages:             append([]Message{}, history...),
-			Tools:                gs.toolDefs,
-			ToolChoice:           opts.ToolChoice,
-			ResponseFormat:       opts.ResponseFormat,
-			Temperature:          opts.Temperature,
-			TopP:                 opts.TopP,
-			MaxTokens:            opts.MaxTokens,
-			StopSequences:        opts.StopSequences,
-			ReasoningEffort:      opts.ReasoningEffort,
-			Metadata:             opts.Metadata,
-			ClientMetadata:       opts.ClientMetadata,
-			Include:              opts.Include,
-			PromptCacheKey:       opts.PromptCacheKey,
-			PreviousResponseID:   opts.PreviousResponseID,
-			ConversationID:       opts.ConversationID,
-			ServiceTier:          opts.ServiceTier,
-			SafetyIdentifier:     opts.SafetyIdentifier,
-			PromptCacheRetention: opts.PromptCacheRetention,
-			Truncation:           opts.Truncation,
-			MaxToolCalls:         opts.MaxToolCalls,
-			Background:           opts.Background,
-			Store:                opts.Store,
-			SessionID:            opts.SessionID,
-			ThreadID:             opts.ThreadID,
-			ProviderOptions:      opts.ProviderOptions,
-			WebSearch:            opts.WebSearch,
-			AdapterTimeout:       opts.AdapterTimeout,
-		}
+		req := gs.request(opts, history)
 
 		callCtx, cancelStep := WithTimeout(ctx, opts.TimeoutPerStep)
 		callCtx, attemptGroupScope := BeginAPIAttemptGroupScope(callCtx)
@@ -300,32 +334,16 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 			_ = calls[i].Parse() // best-effort; invalid JSON handled later in validation
 		}
 
-		step := StepResult{
-			Text:         resp.Text(),
-			Reasoning:    resp.ReasoningText(),
-			ToolCalls:    calls,
-			FinishReason: resp.Finish,
-			Usage:        resp.Usage,
-			Response:     resp,
-			Warnings:     append([]Warning{}, resp.Warnings...),
-		}
+		step := newStepResult(&resp, calls, nil)
 		totalUsage = totalUsage.Add(resp.Usage)
-		if len(calls) == 0 || (resp.Finish.Reason != FinishReasonToolCalls && resp.Finish.Reason != FinishReasonPauseTurn) || !gs.hasActiveTool || gs.maxToolRounds == 0 || toolRoundsUsed >= gs.maxToolRounds {
-			// No tool loop (natural completion, tool loops disabled, or budget exhausted).
+		if gs.endsToolLoop(&resp, calls, toolRoundsUsed) {
+			// Natural completion, tool loops disabled, budget exhausted, or a passive tool call for the caller.
 			steps = append(steps, step)
 			return newResult(step, totalUsage, steps, resp), nil
 		}
 
 		// Add assistant message (including tool calls/thinking) before tool results.
 		history = append(history, resp.Message)
-
-		// Passive tool call: return tool calls to the caller when we lack an execute handler.
-		for _, call := range calls {
-			if t, ok := gs.toolIndex[call.Name]; ok && t.Execute == nil {
-				steps = append(steps, step)
-				return newResult(step, totalUsage, steps, resp), nil
-			}
-		}
 
 		// Execute tools (in parallel) and continue.
 		results := executeToolCalls(ctx, gs.toolIndex, calls, history, opts.RepairToolCall)

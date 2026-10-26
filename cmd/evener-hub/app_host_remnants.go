@@ -46,10 +46,6 @@ package hub
 //     and recover attempt records keep their epoch fields as historical data;
 //     the takeover of a timed-out attempt records its fenced-closed mark only,
 //     and the abandoned run may still execute (the accepted residual).
-//   - The store-side compensation record (deploy-pipeline spec §9, S7's
-//     `pendingStoreSync`/`pendingCompensation`): pre-commit compensation stays
-//     the hub.toml rollback (plus the re-read preimage), with no cross-file
-//     intent record.
 //   - `attachUnderGate`'s reservation primitive (S13): the attach fence refusal
 //     is here; the reservation is not.
 //   - The retry/recover UI affordances (S16): the store narrows the union and
@@ -559,9 +555,9 @@ func (s *hostStore) remnantByID(remnantID string) (HostTeardownRemnant, bool) {
 // ---------------------------------------------------------------------------
 
 // openRemnantID is the manager's remnant fence: the id of the open remnant
-// fencing name, if one does. It is the function cfg.remnantFence is wired to in
-// production (newHubHostManager), so every gate S10/S11 shipped — and every new
-// one this slice adds — reads the real record set.
+// fencing name, if one does. Every gate that consults a remnant — the
+// retention and capacity exemptions, the boot collision rule, deploy, restart,
+// plan, attach, and the re-add, update and remove refusals — reads it here.
 func (m *hubHostManager) openRemnantID(name string) (string, bool) {
 	if strings.TrimSpace(name) == "" {
 		return "", false
