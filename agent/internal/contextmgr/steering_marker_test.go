@@ -1,9 +1,8 @@
 package contextmgr
 
 // Tests for replaceSteeringMarkerTurn, the shared marker-swap helper behind
-// the three self-injecting strategies (memory-crystals, ooda, and
-// recursive-distill share it so the marker filtering, pre-baseline removal
-// counting, and net-delta reporting cannot drift apart).
+// the self-injecting ooda strategy (the helper keeps the marker filtering,
+// pre-baseline removal counting, and net-delta reporting in one place).
 
 import (
 	"context"

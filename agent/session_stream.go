@@ -45,7 +45,7 @@ func sortedPreviewCallIDs(calls map[string]struct{}) []string {
 
 func (s *Session) resetCommunicatePreviews(calls map[string]struct{}) {
 	for callID := range calls {
-		s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+		s.emit(events.CommunicatePreviewResetData{CallID: callID})
 		delete(calls, callID)
 	}
 }
@@ -130,7 +130,7 @@ func (s *Session) emitModelRetry(policy llm.RetryPolicy, req llm.Request, group 
 		if le, ok := errors.AsType[llm.Error](err); ok {
 			data.StatusCode = le.StatusCode()
 		}
-		s.emit(events.EventModelRetry, data)
+		s.emit(data)
 	}
 }
 
@@ -181,7 +181,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 		// Before retrying an attempt that already streamed partial output,
 		// discard it so the retry's output replaces rather than appends.
 		OnReset: func() {
-			s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
+			s.emit(events.AssistantTextResetData{})
 			s.resetCommunicatePreviews(previewCalls)
 		},
 		// FailFastAfter enables both llm.RetryStream early-stop rules: the
@@ -320,7 +320,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			for _, callID := range previewCallIDs() {
-				s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+				s.emit(events.CommunicatePreviewResetData{CallID: callID})
 			}
 			panic(recovered)
 		}
@@ -376,7 +376,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		if assistantStarted {
 			return
 		}
-		s.emit(events.EventAssistantTextStart, events.AssistantTextStartData{Model: req.Model})
+		s.emit(events.AssistantTextStartData{Model: req.Model})
 		assistantStarted = true
 		streamedAssistant = true
 	}
@@ -385,13 +385,13 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			return
 		}
 		emitAssistantStart()
-		s.emit(events.EventAssistantTextDelta, events.AssistantTextDeltaData{Delta: delta})
+		s.emit(events.AssistantTextDeltaData{Delta: delta})
 	}
 	emitReasoningDelta := func(delta string) {
 		if delta == "" {
 			return
 		}
-		s.emit(events.EventReasoningSummaryDelta, events.ReasoningSummaryDeltaData{Delta: delta})
+		s.emit(events.ReasoningSummaryDeltaData{Delta: delta})
 	}
 	emitCommunicatePreview := func(callID string) {
 		args := ""
@@ -408,11 +408,11 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		}
 		communicateText[callID] = message
 		if !communicatePreviewStarted[callID] {
-			s.emit(events.EventCommunicatePreviewStart, events.CommunicatePreviewStartData{CallID: callID})
+			s.emit(events.CommunicatePreviewStartData{CallID: callID})
 			communicatePreviewStarted[callID] = true
 			communicatePreviewOrder = append(communicatePreviewOrder, callID)
 		}
-		s.emit(events.EventCommunicatePreviewDelta, events.CommunicatePreviewDeltaData{CallID: callID, Delta: message[len(prev):]})
+		s.emit(events.CommunicatePreviewDeltaData{CallID: callID, Delta: message[len(prev):]})
 	}
 
 	for ev := range st.Events() {

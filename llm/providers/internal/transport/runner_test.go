@@ -342,3 +342,62 @@ func TestRun_TerminalErrorHookIsNotConsultedOnCancelOrFatal(t *testing.T) {
 		})
 	}
 }
+
+// TestFinish_PublishesFinishEventOnceAndStopsParse pins Finish for both attempt
+// states: the Finish event reaches the stream exactly once, the runner counts
+// the stream as complete (no terminal error) and the parse is canceled.
+func TestFinish_PublishesFinishEventOnceAndStopsParse(t *testing.T) {
+	for _, withAttempt := range []bool{false, true} {
+		t.Run(map[bool]string{false: "no attempt", true: "active attempt"}[withAttempt], func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			resp := respFrom("data: finish\n\n")
+			var attempt *APIAttemptCapture
+			if withAttempt {
+				sink := &responseAssociationSink{}
+				client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+					return resp, nil
+				})}
+				request, err := http.NewRequestWithContext(attemptContext("ag_finish", sink), http.MethodPost, "https://provider.test/v1", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, attempt, err = DoWithAPIAttempts(context.Background(), client, request, attemptMeta); err != nil {
+					t.Fatal(err)
+				}
+				if !attempt.Active() {
+					t.Fatal("fixture attempt is not active")
+				}
+			}
+			finished := false
+			want := llm.Response{ID: "resp_1", Finish: llm.FinishReason{Reason: "stop"}}
+			r := &StreamRunner{
+				Provider:      "test",
+				Resp:          resp,
+				Attempt:       attempt,
+				Stream:        llm.NewChanStream(nil),
+				Finished:      &finished,
+				Cancel:        cancel,
+				IncompleteMsg: "test stream ended without completion",
+			}
+			r.OnEvent = func(llm.SSEEvent) error {
+				r.Finish(want)
+				return nil
+			}
+			got := drain(ctx, t, r)
+
+			if len(got) != 1 || got[0].Type != llm.StreamEventFinish {
+				t.Fatalf("events = %+v, want exactly one finish event", got)
+			}
+			if got[0].Response == nil || got[0].Response.ID != want.ID || got[0].FinishReason == nil || got[0].FinishReason.Reason != "stop" {
+				t.Fatalf("finish event does not carry the response: %+v", got[0])
+			}
+			if !finished {
+				t.Fatal("Finish did not mark the stream finished")
+			}
+			if ctx.Err() == nil {
+				t.Fatal("Finish did not cancel the parse")
+			}
+		})
+	}
+}

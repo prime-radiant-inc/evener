@@ -208,15 +208,21 @@ export { isUserAuthoredSteer, liveAskQuestions } from "./deriveAskQuestions";
 export type { DisclosureReadOptions, DisclosureState, DisclosureStore } from "./disclosure";
 export { createDisclosureStore, isDisclosureOpenIn, scopedDisclosureId } from "./disclosure";
 export {
+  compactDuration,
+  DURATION_UNIT_MS,
+  type DurationUnit,
+  durationParts,
   firstLine,
   formatCharCount,
   formatClockTime,
-  formatClockTimeSeconds,
   formatDurationMs,
   formatElapsed,
+  formatSpan,
   formatTokenCount,
+  parseTimestampMs,
   plainQuoteLine,
   splitMandate,
+  spokenDuration,
 } from "./displayFormat";
 export type { DocFileContent, DocFileErrorKind } from "./docContent";
 // readDocFile is deliberately absent from the root: it needs a DocPort from the

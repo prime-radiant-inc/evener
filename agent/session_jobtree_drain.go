@@ -854,7 +854,7 @@ func (s *Session) recordDrainAbandonedChild(childSessionID, delegateID string, g
 	if already && previous.delegateID == delegateID && previous.generation == generation {
 		return
 	}
-	s.emit(events.EventWarning, events.WarningData{
+	s.emit(events.WarningData{
 		Message:    fmt.Sprintf("no longer waiting on delegate %s after two drain grace windows with its run still open", delegateID),
 		Source:     "drain",
 		Code:       events.WarningCodeDelegateAbandonedByDrain,
@@ -1304,7 +1304,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 					quietPasses = 0
 					continue
 				}
-				s.emit(events.EventWarning, events.WarningData{Message: "terminal communicate already ended this run; abandoning undeliverable drain residue so shutdown can proceed"})
+				s.emit(events.WarningData{Message: "terminal communicate already ended this run; abandoning undeliverable drain residue so shutdown can proceed"})
 				return lastResult, nil
 			}
 		}
@@ -1411,7 +1411,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 					deliveredBefore := s.jobNotificationsDelivered()
 					res, perr := process(ctx, "", nil, EntryNotification)
 					if perr != nil {
-						s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+						s.emit(events.WarningData{Message: fmt.Sprintf(
 							"undisposed-background-job announcement turn failed: %v", perr)})
 					} else if res != "" && s.jobNotificationsDelivered() != deliveredBefore {
 						// A completion rode this request: the model answered it,
@@ -1444,7 +1444,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 						quietPasses = 0
 						continue
 					}
-					s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+					s.emit(events.WarningData{Message: fmt.Sprintf(
 						"exiting with %d undisposed background job(s) after two declined announcements; they die with the process: %s",
 						len(undisposed), s.jobManager.describeUndisposedJobs(undisposed))})
 					return lastResult, nil
@@ -1499,7 +1499,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 					quietPasses = 0
 					continue
 				}
-				s.emit(events.EventWarning, events.WarningData{Message: drainStallGiveUpMessage(
+				s.emit(events.WarningData{Message: drainStallGiveUpMessage(
 					s.subtreeOutstandingDrainJobIDs(), s.subtreeUndisposableStoppedDelegates())})
 				return lastResult, nil
 			}
@@ -1744,7 +1744,7 @@ func (s *Session) settlePresentedDelegateUpdates(driven map[string]struct{}) {
 	}
 	if s.hasPendingDelegateUpdateAttention() {
 		if err := s.finishAttentionTurn(nil, nil); err != nil {
-			s.emit(events.EventWarning, warningDataFromError("delegate update consumption failed; left pending for its next generation", err))
+			s.emit(warningDataFromError("delegate update consumption failed; left pending for its next generation", err))
 		}
 	}
 }

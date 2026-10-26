@@ -241,7 +241,7 @@ func TestDelegateResourceBootstrap_RestartIsProviderFreeAndLazy(t *testing.T) {
 	if err := schema.SaveSessionMeta(stateDir, childMeta); err != nil {
 		t.Fatal(err)
 	}
-	writer, err := transcript.NewWriter(filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl"), transcript.Header{
+	writer, err := transcript.NewWriter(schema.SessionTranscriptPath(stateDir, childID), transcript.Header{
 		SessionID:       childID,
 		ParentSessionID: meta.ID,
 		Task:            "resume lazily",
@@ -403,7 +403,7 @@ func newIdleDelegateRestoreInputFixture(t *testing.T) idleDelegateRestoreInputFi
 	if err := schema.SaveSessionMeta(stateDir, childMeta); err != nil {
 		t.Fatal(err)
 	}
-	transcriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(stateDir, childID)
 	writer, err := transcript.NewWriter(transcriptPath, transcript.Header{
 		SessionID:       childID,
 		ParentSessionID: meta.ID,
@@ -434,7 +434,7 @@ func newIdleDelegateRestoreInputFixture(t *testing.T) idleDelegateRestoreInputFi
 		storePath:      storePath,
 		storeBytes:     storeBytes,
 		workingDir:     workingDir,
-		metaPath:       filepath.Join(stateDir, sessionsSubdir, childID+".meta.json"),
+		metaPath:       schema.SessionMetaPath(stateDir, childID),
 		transcriptPath: transcriptPath,
 	}
 }
@@ -591,7 +591,7 @@ func removeDelegateStoreIfPresent(t *testing.T, stateDir, rootSessionID string) 
 }
 
 func delegateResourceStorePath(stateDir, rootSessionID string) string {
-	return filepath.Join(stateDir, sessionsSubdir, rootSessionID, "delegates.jsonl")
+	return filepath.Join(stateDir, schema.SessionsSubdir, rootSessionID, "delegates.jsonl")
 }
 
 func assertBootstrapScanWasReadOnly(t *testing.T, stateDir, rootSessionID, jobPath string, wantJobBytes []byte) {

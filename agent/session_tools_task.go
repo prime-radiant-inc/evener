@@ -531,7 +531,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					tasks := store.View()
 					summary := taskpkg.Summarize(tasks)
 					taskUpdate := taskUpdatedData(summary, "", epoch, revision)
-					deps.emit(events.EventTaskUpdated, taskUpdate)
+					deps.emit(taskUpdate)
 					return tool.StateResult{
 						Output: fmt.Sprintf("Added %d task(s). Progress: %s.", len(added), summary.ProgressText()),
 						State:  tasks,
@@ -616,7 +616,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 
 				if !completedAny && manuallyStartedID == 0 {
 					summary := taskpkg.Summarize(mutation.After)
-					deps.emit(events.EventTaskUpdated, taskUpdatedData(summary, "", epoch, revision))
+					deps.emit(taskUpdatedData(summary, "", epoch, revision))
 					return tool.StateResult{
 						// Every successful mutation output carries Progress:
 						// the card's footer (aggregate, meter, and the
@@ -684,7 +684,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 
 				summary := taskpkg.Summarize(finalTasks)
 				taskUpdate := taskUpdatedData(summary, "", epoch, revision)
-				deps.emit(events.EventTaskUpdated, taskUpdate)
+				deps.emit(taskUpdate)
 				if postCommitErr != nil {
 					msg.WriteString(postCommitErr.Error())
 					msg.WriteString(" ")

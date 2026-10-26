@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -677,20 +676,6 @@ func TestStableDelegateToolNameCeilingNilRegistry(t *testing.T) {
 // ---------------------------------------------------------------------------
 // subagent emit field
 // ---------------------------------------------------------------------------
-
-func TestSubagentEmitField(t *testing.T) {
-	t.Parallel()
-	called := false
-	sub := &subagent{
-		emit: func(kind events.EventKind, data events.EventData) {
-			called = true
-		},
-	}
-	sub.emit(events.EventSessionStart, nil)
-	if !called {
-		t.Fatalf("expected emit to be called")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // subagent time fields

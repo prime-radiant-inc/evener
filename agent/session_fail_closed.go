@@ -131,14 +131,7 @@ const (
 // durabilityRetryBackoff is attempt's backoff delay: durabilityRetryDelay,
 // doubling each attempt, capped at durabilityRetryMaxDelay.
 func durabilityRetryBackoff(attempt int) time.Duration {
-	delay := durabilityRetryDelay
-	for range attempt {
-		delay *= 2
-		if delay >= durabilityRetryMaxDelay {
-			return durabilityRetryMaxDelay
-		}
-	}
-	return delay
+	return backoffDelay(attempt, durabilityRetryDelay, durabilityRetryMaxDelay)
 }
 
 // retainedUnsyncedError extracts a *transcript.RetainedUnsyncedError from a
@@ -204,7 +197,7 @@ func (s *Session) retryDurabilityUntilSettledOrExhausted(retained *transcript.Re
 		return // the session shut down while the last attempt was in flight
 	}
 	if !s.servedByDaemon() {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("%s could not be made durable after retrying: %v", what, lastErr)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("%s could not be made durable after retrying: %v", what, lastErr)})
 		return
 	}
 	if refusal := s.failClosed(fmt.Errorf("%s could not be made durable after retrying: %w", what, lastErr)); refusal != nil {
@@ -227,7 +220,7 @@ func (s *Session) announceFailClosed() {
 	if refusal == nil || !s.failedClosed.announced.CompareAndSwap(false, true) {
 		return
 	}
-	s.emit(events.EventError, events.ErrorData{
+	s.emit(events.ErrorData{
 		Error: refusal.Error(),
 		Title: "Session stopped",
 		Hint:  "Its transcript can no longer record new history. Restart the session to continue from what the transcript holds.",

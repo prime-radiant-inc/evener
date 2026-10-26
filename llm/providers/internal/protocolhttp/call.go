@@ -42,12 +42,6 @@ type Call struct {
 	Headers map[string]string
 	Req     llm.Request
 	Res     registry.Resolved
-	// Auth, when set, replaces the process-global
-	// AuthenticatorFor(Res.Transport.Auth) lookup for this call: the
-	// caller binds the authenticator (and its state root) to the
-	// request instead of racing a global rewire. Nil keeps the
-	// historical global lookup.
-	Auth llm.Authenticator
 	// Client is nil for DefaultClient.
 	Client *http.Client
 	// Reclassify, when set, post-processes the classified error of a non-2xx
@@ -95,10 +89,7 @@ func Prepare(ctx context.Context, c *Call) (*Prepared, error) {
 	if c.Body != nil {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
-	auth := c.Auth
-	if auth == nil {
-		auth = llm.AuthenticatorForContext(ctx, c.Res.Transport.Auth)
-	}
+	auth := llm.AuthenticatorForContext(ctx, c.Res.Transport.Auth)
 	if auth == nil {
 		return nil, &llm.ConfigurationError{Message: fmt.Sprintf("instance %q: no authenticator for auth scheme %q", c.Res.Instance, c.Res.Transport.Auth)}
 	}
@@ -156,7 +147,7 @@ func authHeaderName(res registry.Resolved) string {
 // every value that must never reach a log: the resolved credential, the
 // credential headers, the value the authenticator wrote (a Codex or ADC
 // bearer token is not res.Credential.Value), and any userinfo the base URL
-// carries, as llm.BuildAPILogCredentialMaterial does for the adapters.
+// carries.
 func credentialMaterial(res registry.Resolved, httpReq *http.Request) llm.APILogCredentialMaterial {
 	header := authHeaderName(res)
 	names := []string{header}

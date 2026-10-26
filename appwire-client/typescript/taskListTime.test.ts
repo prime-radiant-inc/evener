@@ -9,13 +9,17 @@ test("under a minute reads as now", () => {
   expect(relativeTime("2026-08-09T13:02:10-07:00", NOW)).toBe("now");
 });
 
-test("minutes round to the nearest minute", () => {
+test("minutes, hours and days floor to the largest whole unit", () => {
   expect(relativeTime("2026-08-09T12:25:17-07:00", NOW)).toBe("37m ago");
+  expect(relativeTime("2026-08-09T13:00:18-07:00", NOW)).toBe("1m ago");
+  expect(relativeTime("2026-08-09T12:00:18-07:00", NOW)).toBe("1h ago");
+  expect(relativeTime("2026-08-08T13:02:17-07:00", NOW)).toBe("1d ago");
+  expect(relativeTime("2026-08-08T13:03:17-07:00", NOW)).toBe("23h ago");
 });
 
 test("hours up to a day", () => {
   expect(relativeTime("2026-08-09T11:02:17-07:00", NOW)).toBe("2h ago");
-  expect(relativeTime("2026-08-08T22:03:48-07:00", NOW)).toBe("15h ago");
+  expect(relativeTime("2026-08-08T22:03:48-07:00", NOW)).toBe("14h ago");
 });
 
 test("days past 24 hours", () => {

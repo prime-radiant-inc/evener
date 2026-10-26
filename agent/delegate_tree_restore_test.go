@@ -42,7 +42,7 @@ func TestDelegateAttentionSchemaStrictRoundTrip(t *testing.T) {
 func TestDelegateControllerCloseExecutesColdAttentionCleanup(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
-	path := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
+	path := filepath.Join(c.stateDir, schema.SessionsSubdir, "child-dlg_target.transcript.jsonl")
 	writeDelegateAttentionTranscript(t, path, "child-dlg_target", "attention-close")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -320,7 +320,7 @@ func TestDelegateAttentionDiscardUnlessResolvedRenewsARecordedConsumption(t *tes
 func TestDelegateAttentionAppendFailureLeavesStopPending(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
-	path := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
+	path := filepath.Join(c.stateDir, schema.SessionsSubdir, "child-dlg_target.transcript.jsonl")
 	writeDelegateAttentionTranscript(t, path, "child-dlg_target", "attention-failure")
 	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
 		t.Fatalf("StopSubtree: %v", err)
@@ -350,7 +350,7 @@ func TestDelegateAttentionAppendFailureLeavesStopPending(t *testing.T) {
 func TestDelegateAttentionCleanupRejectsReplacedRuntime(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
-	path := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
+	path := filepath.Join(c.stateDir, schema.SessionsSubdir, "child-dlg_target.transcript.jsonl")
 	writeDelegateAttentionTranscript(t, path, "child-dlg_target", "attention-stale")
 	originalWriter, _, err := transcript.OpenWriterForSession(path, "child-dlg_target")
 	if err != nil {
@@ -404,7 +404,7 @@ func TestDelegateAttentionCleanupRejectsNilRuntimeReplacementAndStaleEvidence(t 
 		t.Run(test.name, func(t *testing.T) {
 			c, _ := newDelegateControllerTestHarness(t, 1, 1)
 			seedDelegateControllerIdle(t, c, "dlg_target", "")
-			path := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
+			path := filepath.Join(c.stateDir, schema.SessionsSubdir, "child-dlg_target.transcript.jsonl")
 			writeDelegateAttentionTranscript(t, path, "child-dlg_target", "attention-stale")
 			if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
 				t.Fatalf("StopSubtree: %v", err)
@@ -438,7 +438,7 @@ func TestDelegateControllerLiveAttentionCleanupKeepsOneWriterSequence(t *testing
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	sessionID := "child-dlg_target"
-	path := filepath.Join(c.stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
+	path := schema.SessionTranscriptPath(c.stateDir, sessionID)
 	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
@@ -535,7 +535,7 @@ func TestDelegateControllerLiveAttentionCleanupRequiresUsableAttachedWriter(t *t
 			c, _ := newDelegateControllerTestHarness(t, 1, 1)
 			seedDelegateControllerIdle(t, c, "dlg_target", "")
 			sessionID := "child-dlg_target"
-			path := filepath.Join(c.stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
+			path := schema.SessionTranscriptPath(c.stateDir, sessionID)
 			writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
 			if err != nil {
 				t.Fatalf("NewWriter: %v", err)
@@ -577,7 +577,7 @@ func TestDelegateControllerLiveAttentionCleanupRequiresUsableAttachedWriter(t *t
 func TestDelegateControllerStopRescansAttentionCreatedByCancellation(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
-	path := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
+	path := filepath.Join(c.stateDir, schema.SessionsSubdir, "child-dlg_target.transcript.jsonl")
 	writeDelegateAttentionTranscript(t, path, "child-dlg_target", "attention-before-cancel")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
 	c.live["dlg_target"].binding.cancel = func() {
@@ -814,7 +814,7 @@ func TestDelegateControllerRestartCleansAttentionWithoutRuntime(t *testing.T) {
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	requestSeq := appendDelegateControllerStopRequest(t, c, "dlg_target")
-	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
+	transcriptPath := filepath.Join(c.stateDir, schema.SessionsSubdir, "child-dlg_target.transcript.jsonl")
 	writeDelegateAttentionTranscriptState(t, transcriptPath, "child-dlg_target", "attention-1", false)
 	restarted := reopenDelegateController(t, c, path)
 	requirements := restarted.ReconcileRequirements()
