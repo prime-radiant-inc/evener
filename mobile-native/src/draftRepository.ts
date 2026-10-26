@@ -391,8 +391,13 @@ export class DraftRepository {
 	 * normal delete failed, so a restart cannot mistake it for a pending one. */
 	markPendingHandoffSettled(from: DraftDestination, to: DraftDestination): void {
 		this.db.runSync(
-			`UPDATE pending_draft_handoffs SET settled = 1
-			 WHERE from_hub_id = ? AND from_session_ref = ? AND to_hub_id = ? AND to_session_ref = ?`,
+			`INSERT INTO pending_draft_handoffs
+			 (from_hub_id, from_session_ref, to_hub_id, to_session_ref, settled)
+			 VALUES (?, ?, ?, ?, 1)
+			 ON CONFLICT (to_hub_id, to_session_ref) DO UPDATE SET
+			 from_hub_id = excluded.from_hub_id,
+			 from_session_ref = excluded.from_session_ref,
+			 settled = 1`,
 			from.hubId,
 			from.sessionRef,
 			to.hubId,

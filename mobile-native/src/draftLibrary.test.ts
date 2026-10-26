@@ -209,6 +209,39 @@ describe("drafts across navigation", () => {
 		expect(repository.read(from)).toEqual({ draft: "", unconfirmed: null });
 	});
 
+	it("publishes the resolved identity before an incomplete graph defers the transfer", () => {
+		const { database, port } = openSqliteSyncDouble();
+		try {
+			const repository = new DraftRepository(port);
+			const ledger = {
+				readResumeIdentities: (): never => {
+					throw new Error("ledger unavailable");
+				},
+				redirectResumeIdentity: () => {},
+				settleResumeIdentity: () => {},
+			};
+			const library = new DraftLibrary(
+				() => repository,
+				undefined,
+				() => ledger,
+			);
+			const from = { hubId: "one", sessionRef: "old" };
+			const to = { hubId: "one", sessionRef: "resumed" };
+			const source = library.open(from);
+			source.edit("edited recovery");
+
+			expect(library.handoff(from, to)).toBe(false);
+			// The screen's retarget signal must arrive even though the composition
+			// transfer is deferred until the ledger can be read.
+			expect(source.resolvedRef).toBe("resumed");
+			expect(repository.read(from).draft).toBe("edited recovery");
+			expect(repository.read(to).draft).toBe("");
+			expect(library.hasPendingHandoff(to)).toBe(true);
+		} finally {
+			database.close();
+		}
+	});
+
 	it("retries a destination load before deferring the handoff", () => {
 		const { database: db, port } = openSqliteSyncDouble();
 		databases.push(db);
