@@ -115,8 +115,14 @@ import {
   useDraftField,
 } from "./spawnDrafts";
 import {
+  catalogEffortLevels,
+  FALLBACK_EFFORT_LEVELS,
+  resolveSpawnBuiltinLaunch,
+  type SpawnLaunchScalars,
+  spawnBuiltinBlockMessage,
+} from "./spawnLaunch";
+import {
   PRE_SESSION_BUILTIN_IDS,
-  resolveSpawnEffortItems,
   resolveSpawnModelItems,
   runSpawnBuiltinAfterStart,
   spawnBuiltinCommands,
@@ -157,17 +163,6 @@ interface ProviderCompletionAttempt {
   generation: number;
 }
 
-// Fallback effort ladder for a model whose own ladder the hub does not
-// enumerate - the same fallback the session status row uses (StatusRow.tsx's
-// DEFAULT_EFFORT_LEVELS), so both surfaces agree on the unknown case. The
-// select's real ladder comes from the selected model's catalog entry
-// (reasoningEffortLevels/supportsReasoning, served by model/list);
-// "(default)" + an explicit "none" ride every ladder.
-const FALLBACK_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
-// Shared empty-ladder constant so the derived value keeps a stable identity
-// across renders (the stale-effort effect below keys off it).
-const NO_EFFORT_LEVELS: string[] = [];
-
 // How long the working-directory field must be quiet before the pane reloads
 // the model catalog behind the Effort ladder. Long enough to collapse a typed
 // path into one load, short enough that the ladder is right by the time anyone
@@ -190,21 +185,6 @@ const CATALOG_SETTLE_MS = 250;
 // to poll instead (adding one would touch the router catalog), so the explicit
 // long timeout is the whole fix.
 export const CONNECT_ATTACH_TIMEOUT_MS = 35 * 60_000;
-
-// The effort levels a catalog entry authorizes: the model's own named ladder
-// when it has one, an EMPTY list when the catalog says the model cannot
-// reason at all, and null when the hub can't say (enrichment failed, or the
-// entry names neither levels nor a reasoning capability). The caller
-// substitutes FALLBACK_EFFORT_LEVELS for null, so a missing catalog never
-// empties or disables the field.
-function catalogEffortLevels(entry: ModelCatalogEntry | undefined): string[] | null {
-  if (entry === undefined) return null;
-  if (entry.reasoningEffortLevels !== undefined && entry.reasoningEffortLevels.length > 0) {
-    return entry.reasoningEffortLevels;
-  }
-  if (entry.supportsReasoning === false) return NO_EFFORT_LEVELS;
-  return null;
-}
 
 const CLASS = {
   form: requireClass(styles.form, "spawn.module.css", "form"),
@@ -2312,139 +2292,25 @@ function SpawnForm({
         ? matchBuiltinInvocation(prompt, spawnBuiltinCommands())
         : null;
     // Launch-scalar overrides carried by a matched /model or /reasoning-effort
-    // invocation: resolved during pre-start validation below and folded into
-    // the thread/start scalars under the chips.
-    let slashScalars: { modelProvider?: string; model?: string; reasoningEffort?: string } | null = null;
-    // Bare /goal fail-closes pre-start like bare /reasoning-effort: there is
-    // no goal to clear before the session exists, so starting one just to
-    // no-op its clearing is waste, and sending the literal "/goal" as the
-    // first turn is noise.
-    if (builtinMatch && builtinMatch.command.id === "goal" && builtinMatch.argsText.trim() === "") {
-      toasts.push("error", "/goal needs a value");
-      finishBusy();
-      return;
-    }
-    if (builtinMatch && (builtinMatch.command.id === "model" || builtinMatch.command.id === "reasoning-effort")) {
-      // Pre-start validation for enum-arg builtins: there is no cheaper
-      // moment to refuse than before the session exists. Unknown value ->
-      // toast the blocked message and abort WITHOUT thread/start - AND reset
-      // the busy guard handleSpawn set above, or Start strands disabled.
-      // Empty /model means "(default)": fail-open, no override at all.
-      const value = builtinMatch.argsText.trim();
-      if (builtinMatch.command.id === "model" && value === "") {
-        // Fall through to the ordinary start below with no model override.
-      } else if (remoteLaunch) {
-        // Remote target: the selected host's own hub validates the forwarded
-        // value. This controller's catalog describes ITS providers and models
-        // - not the host's - so matching against it here would refuse a model
-        // or effort level that only the selected host supports, contradicting
-        // the host-authority model the launch already follows for cwd,
-        // providers and plugins. (Source-aware discovery needs the
-        // evener/host/request proxy, absent from this branch.) The value is
-        // forwarded verbatim: a model as "provider/model" (the split every
-        // other /model path uses), an effort level as typed. Bare /model is the
-        // "(default)" branch above and forwards no override; bare
-        // /reasoning-effort still fails closed, since an empty enum value is
-        // not a controller-catalog judgment.
-        if (value === "") {
-          toasts.push("error", "/reasoning-effort needs a value");
-          finishBusy();
-          return;
-        }
-        if (builtinMatch.command.id === "model") {
-          const { provider, model: modelId } = splitModelId(value);
-          // Unlike every other splitModelId caller, this input is RAW user text,
-          // not a provider/model catalog id that always contains a slash: "foo"
-          // splits to provider "foo" with an empty model, and the selected host
-          // ignores a provider with no model (its own model field stays empty),
-          // so the requested model would be silently dropped rather than
-          // refused. The host's own parser requires provider/model too, so
-          // refuse here with the same unknown-value message the local path
-          // uses - a clear pre-launch rejection instead of a silent no-op
-          // (round seven).
-          if (provider === "" || modelId === "") {
-            toasts.push("error", `/${builtinMatch.command.id}: unknown value "${value}"`);
-            finishBusy();
-            return;
-          }
-          slashScalars = { modelProvider: provider, model: modelId };
-        } else {
-          slashScalars = { reasoningEffort: value };
-        }
-      } else {
-        // Effort validation reads the scope-stamped catalog, not the merged
-        // display ladder: same staleness hole as /model (a value valid only
-        // in the previous scope must not validate). Only PROVEN staleness
-        // fail-closes (a stamp for another scope/loader): an unknown ladder
-        // with no stamp — never loaded, failed refresh, or an entry without
-        // ladder metadata — falls back to the fallback ladder, the pre-load
-        // status quo. Conflating "don't know" with "known empty" would
-        // refuse valid values whenever the catalog lists the model without
-        // ladder details.
-        const scopedEffortEntry =
-          effortModel === ""
-            ? undefined
-            : scopedModelCatalog?.models.find((entry) => `${entry.provider}/${entry.model}` === effortModel);
-        const scopedKnownEffortLevels = catalogEffortLevels(scopedEffortEntry);
-        // Proven staleness fail-closes to no levels — and the chip value must
-        // not re-authorize itself through `current`: effortOptionLevels
-        // appends a missing current, so resolving against the chip would
-        // validate a value the new scope never offered. Passing "" keeps the
-        // stale chip out of the candidate set (bare effort fails closed on
-        // the empty query regardless).
-        const scopedEffortLevels = modelCatalogScopeMismatch ? [] : (scopedKnownEffortLevels ?? FALLBACK_EFFORT_LEVELS);
-        const scopedEffortCurrent = modelCatalogScopeMismatch ? "" : reasoningEffort;
-        // A model value cannot be validated against a catalog that never
-        // committed for the current scope: during the ~250ms CATALOG_SETTLE_MS
-        // window after mount - or after a failed refresh - resolveSpawnModelItems
-        // resolves zero items for EVERY value, known or not, so fail-closing
-        // here toasts a spurious "unknown value" for a model the scope does
-        // offer. Treat it as "don't know" and forward the typed value as the
-        // launch scalar, letting the start call's own check decide. Only PROVEN
-        // staleness (a stamp for another scope/loader) and a scope-matched
-        // catalog that omits the value still fail closed.
-        const modelCatalogUnknown =
-          builtinMatch.command.id === "model" && scopedModelCatalog === null && !modelCatalogScopeMismatch;
-        const items =
-          builtinMatch.command.id === "model"
-            ? resolveSpawnModelItems(scopedModelCatalog)
-            : resolveSpawnEffortItems(scopedEffortLevels, scopedEffortCurrent);
-        // Bare /reasoning-effort fails CLOSED pre-start: the "" head of
-        // resolveSpawnEffortItems (the "(default)" entry) must not count as
-        // known here, so an empty effort value toasts
-        // "/reasoning-effort needs a value" and aborts without thread/start
-        // (palette parity - in-session bare /reasoning-effort errors with no
-        // side effects). Bare /model stays fail-open via the branch above.
-        const matched =
-          builtinMatch.command.id === "reasoning-effort" && value === ""
-            ? undefined
-            : findBuiltinArgument(items, builtinMatch.argsText);
-        if (!matched && !modelCatalogUnknown) {
-          const message = value
-            ? `/${builtinMatch.command.id}: unknown value "${value}"`
-            : `/${builtinMatch.command.id} needs a value`;
-          toasts.push("error", message);
-          finishBusy();
-          return;
-        }
-        if (builtinMatch.command.id === "model") {
-          // A forwarded-but-unvalidated value (modelCatalogUnknown) is RAW user
-          // text, not a provider/model catalog id: "foo" splits to provider
-          // "foo" with an empty model, and the launch would carry no model at
-          // all. Refuse the same way the remote path above does rather than
-          // silently drop the request - this is a shape check, not a catalog
-          // judgment, so it holds even while the catalog is unknown.
-          const { provider, model: modelId } = splitModelId(matched ? matched.id : value);
-          if (provider === "" || modelId === "") {
-            toasts.push("error", `/${builtinMatch.command.id}: unknown value "${value}"`);
-            finishBusy();
-            return;
-          }
-          slashScalars = { modelProvider: provider, model: modelId };
-        } else if (builtinMatch.command.id === "reasoning-effort" && matched) {
-          slashScalars = { reasoningEffort: matched.id };
-        }
+    // invocation: resolved by pre-start validation and folded into the
+    // thread/start scalars under the chips. A refusal toasts and aborts
+    // WITHOUT thread/start - and hands Start back, or it strands disabled.
+    let slashScalars: SpawnLaunchScalars | null = null;
+    if (builtinMatch) {
+      const launch = resolveSpawnBuiltinLaunch({
+        match: builtinMatch,
+        remoteLaunch,
+        scopedModelCatalog,
+        modelCatalogScopeMismatch,
+        effortModel,
+        reasoningEffort,
+      });
+      if (launch.kind === "block") {
+        toasts.push("error", spawnBuiltinBlockMessage(launch));
+        finishBusy();
+        return;
       }
+      if (launch.kind === "scalars") slashScalars = launch.scalars;
     }
     // A /model invocation at submit is an explicit model choice - bare
     // included, where it means "(default)". Record it at the entry point so a
