@@ -186,7 +186,7 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 	})
 }
 
-func TestCovSpawnMainFaultSeams(t *testing.T) {
+func TestSpawnMainFaultSeams(t *testing.T) {
 	originalRead := hubTokenRead
 	originalOpen := httpRecorderOpenFile
 	originalMarshal := httpRecorderMarshal

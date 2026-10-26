@@ -10,10 +10,10 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-// FuzzSessionLivePass4 closes the successful remote-source paths left by the
+// FuzzSessionLive closes the successful remote-source paths left by the
 // broad route fuzzers. The source is entirely in-process and never dials a
 // daemon or provider.
-func FuzzSessionLivePass4(f *testing.F) {
+func FuzzSessionLive(f *testing.F) {
 	for op := range uint8(3) {
 		f.Add(op, "remote title", int64(1700000000))
 	}

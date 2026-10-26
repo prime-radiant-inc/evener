@@ -18,7 +18,7 @@ import (
 	"primeradiant.com/evener/internal/credentials"
 )
 
-func FuzzFinalMainBootstrap(f *testing.F) {
+func FuzzMainBootstrap(f *testing.F) {
 	for mode := byte(0); mode < 8; mode++ {
 		f.Add(mode)
 	}
@@ -109,7 +109,7 @@ func FuzzFinalMainBootstrap(f *testing.F) {
 	})
 }
 
-func FuzzFinalMainProcessBoundary(f *testing.F) {
+func FuzzMainProcessBoundary(f *testing.F) {
 	f.Add(false)
 	f.Add(true)
 	f.Fuzz(func(t *testing.T, fail bool) {
@@ -132,7 +132,7 @@ func FuzzFinalMainProcessBoundary(f *testing.F) {
 	})
 }
 
-func FuzzFinalMainExecutableFallbacks(f *testing.F) {
+func FuzzMainExecutableFallbacks(f *testing.F) {
 	for mode := byte(0); mode < 6; mode++ {
 		f.Add(mode)
 	}

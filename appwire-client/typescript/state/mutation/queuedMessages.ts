@@ -1,5 +1,6 @@
 import type { InputItem } from "../../types.gen";
 import type { MutationStopBarrier } from "./outbox";
+import { PENDING_TURN_METHODS } from "./pendingEntries";
 import type { MutationAttachmentRef, MutationIntent, MutationOutboxRecord, MutationRecoveryRecord } from "./records";
 
 // Optional composition ownership actions, separate from the dispatcher's port.
@@ -33,14 +34,6 @@ export function matchesQueuedMessageSnapshot(record: MutationOutboxRecord, expec
   );
 }
 
-const REMOVABLE_MESSAGE_METHODS = new Set([
-  "turn/start",
-  "turn/steer",
-  "turn/queue",
-  "turn/drainAsSteer",
-  "turn/promoteQueuedAsSteer",
-]);
-
 function hasContradictoryAttemptEvidence(record: MutationOutboxRecord): boolean {
   return record.attempted === true || (record.unresolvedAttempts !== undefined && record.unresolvedAttempts > 0);
 }
@@ -73,5 +66,5 @@ export function canEditQueuedMessage(record: MutationOutboxRecord): boolean {
 }
 
 export function canRemoveQueuedMessage(record: MutationOutboxRecord): boolean {
-  return isSafelyWaiting(record) && REMOVABLE_MESSAGE_METHODS.has(record.method);
+  return isSafelyWaiting(record) && PENDING_TURN_METHODS.includes(record.method);
 }

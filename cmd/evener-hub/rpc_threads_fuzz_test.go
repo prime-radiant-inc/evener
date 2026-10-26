@@ -10,11 +10,11 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 )
 
-// FuzzCovRPCThreadsHelpers drives the small branch-heavy helpers used by the
+// FuzzRPCThreadsHelpers drives the small branch-heavy helpers used by the
 // RPC and thread handlers. Each selector has a seed so the deterministic
 // corpus run covers the complete table; fuzzed bytes additionally vary the
 // text fields without involving network, process, or ambient filesystem state.
-func FuzzCovRPCThreadsHelpers(f *testing.F) {
+func FuzzRPCThreadsHelpers(f *testing.F) {
 	for selector := range byte(14) {
 		f.Add(selector, "needle")
 	}
@@ -173,7 +173,7 @@ type assertionError string
 
 func (e assertionError) Error() string { return string(e) }
 
-func FuzzCovRPCThreadsHandlers(f *testing.F) {
+func FuzzRPCThreadsHandlers(f *testing.F) {
 	for selector := range byte(11) {
 		f.Add(selector)
 	}

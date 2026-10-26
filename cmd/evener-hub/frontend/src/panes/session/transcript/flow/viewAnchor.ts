@@ -373,3 +373,10 @@ export interface PendingTranscriptViewRestore {
   focusScrollRequested: boolean;
   viewportReflow: boolean;
 }
+
+export interface PendingViewAnchor {
+  anchor: ViewAnchor | undefined;
+  proportion: number;
+  target?: RestoredViewAnchor;
+  scrollRequested?: boolean;
+}

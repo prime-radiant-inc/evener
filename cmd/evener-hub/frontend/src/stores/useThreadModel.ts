@@ -8,7 +8,11 @@ import { useEffect } from "react";
 import { connectionStore } from "./connection";
 import { threadsStore, useThreadsStore } from "./threads";
 
-export function useThreadModel(ref: string): ThreadModel | undefined {
+// useThreadClaim holds one ensureThread(ref) claim while the caller is
+// mounted, starting it once the connection is ready, and releases it on
+// unmount. The threads store owns hydration, retries and re-subscription from
+// there; the claim, not this effect, is what the store converges on.
+export function useThreadClaim(ref: string): void {
   useEffect(() => {
     let started = false;
     const tryStart = () => {
@@ -26,5 +30,9 @@ export function useThreadModel(ref: string): ThreadModel | undefined {
       if (started) threadsStore.getState().releaseThread(ref);
     };
   }, [ref]);
+}
+
+export function useThreadModel(ref: string): ThreadModel | undefined {
+  useThreadClaim(ref);
   return useThreadsStore((state) => state.threads.get(ref));
 }

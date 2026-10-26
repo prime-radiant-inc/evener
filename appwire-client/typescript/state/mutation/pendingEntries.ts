@@ -42,13 +42,16 @@ export interface PendingTurnEntry {
 // The wire-method → PendingMethod mapping that names the entry method family:
 // promote is its own method so labels and tests stay honest (spec §3), never
 // folded into `steer`.
+const PENDING_METHOD_BY_WIRE_METHOD: ReadonlyMap<string, PendingMethod> = new Map([
+  ["turn/start", "send"],
+  ["turn/steer", "steer"],
+  ["turn/queue", "queue"],
+  ["turn/drainAsSteer", "drain"],
+  ["turn/promoteQueuedAsSteer", "promote"],
+]);
+
 function pendingMethod(method: string): PendingMethod | undefined {
-  if (method === "turn/start") return "send";
-  if (method === "turn/steer") return "steer";
-  if (method === "turn/queue") return "queue";
-  if (method === "turn/drainAsSteer") return "drain";
-  if (method === "turn/promoteQueuedAsSteer") return "promote";
-  return undefined;
+  return PENDING_METHOD_BY_WIRE_METHOD.get(method);
 }
 
 // The wire methods that name pending composer input - the family whose rows the
@@ -56,13 +59,7 @@ function pendingMethod(method: string): PendingMethod | undefined {
 // from an authoritative projection proves delivery. Exported so a storage
 // adapter pruning by absence reads the family from here rather than restating
 // the method names: adding a pending verb must change this mapping alone.
-export const PENDING_TURN_METHODS: readonly string[] = Object.freeze([
-  "turn/start",
-  "turn/steer",
-  "turn/queue",
-  "turn/drainAsSteer",
-  "turn/promoteQueuedAsSteer",
-]);
+export const PENDING_TURN_METHODS: readonly string[] = Object.freeze([...PENDING_METHOD_BY_WIRE_METHOD.keys()]);
 
 // Collapses any whitespace run to a single space and trims both ends.
 export function normalizeText(s: string): string {
