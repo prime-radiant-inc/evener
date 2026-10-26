@@ -10,6 +10,10 @@ export interface SessionNavigation {
 	navigate(name: "Conversation", params: { hubId: string; ref: string; title: string }): void;
 }
 
+export interface SheetSessionNavigation extends SessionNavigation {
+	goBack(): void;
+}
+
 const SESSION_ROUTES: ReadonlySet<string> = new Set(["Conversation", "Subagent"]);
 
 /** How many screens to pop to land on this session's own screen, or null
@@ -30,4 +34,23 @@ export function returnToSession(
 	const pops = popsToSession(navigation.getState(), session.ref);
 	if (pops !== null) navigation.pop(pops);
 	else navigation.navigate("Conversation", session);
+}
+
+/** Return from a sheet route. A pop removes the sheet with the screens above
+ * the session. When the session isn't under the sheet, the sheet has to go
+ * first: a navigate alone would leave it presented over the conversation. */
+export function returnToSessionFromSheet(
+	sheet: { finish(then?: () => void): void },
+	navigation: SheetSessionNavigation,
+	session: { hubId: string; ref: string; title: string },
+): void {
+	const pops = popsToSession(navigation.getState(), session.ref);
+	if (pops !== null) {
+		sheet.finish(() => navigation.pop(pops));
+		return;
+	}
+	sheet.finish(() => {
+		navigation.goBack();
+		navigation.navigate("Conversation", session);
+	});
 }

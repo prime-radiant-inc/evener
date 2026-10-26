@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { PendingMutation, ThreadCapabilities, ThreadReadResponse, Turn } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { DraftLibrary } from "../draftLibrary";
+import { DraftRepository } from "../draftRepository";
 import { NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMutationRuntime";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
 import {
@@ -230,7 +232,9 @@ describe("submitting a message to a session", () => {
 				throw new Error("offline");
 			},
 		};
-		await expect(submitSessionMessage(runtime, new FakeClient("ready"), target, "send", "hi")).resolves.toBeUndefined();
+		await expect(submitSessionMessage(runtime, new FakeClient("ready"), target, "send", "hi")).resolves.toBe(
+			"local:coord",
+		);
 	});
 
 	it("releases nothing when the admission itself fails", async () => {
@@ -245,6 +249,57 @@ describe("submitting a message to a session", () => {
 			"The mutations database is unavailable",
 		);
 		expect(settle).not.toHaveBeenCalled();
+	});
+
+	it("carries the edited draft to the identity a resume resolves to", async () => {
+		const opened = openSqliteSyncDouble();
+		try {
+			const repository = new DraftRepository(opened.port);
+			const library = new DraftLibrary(() => repository);
+			const from = { hubId: "hub-1", sessionRef: "local:coord" };
+			const to = { hubId: "hub-1", sessionRef: "local:resumed" };
+			repository.write(from, {
+				draft: "",
+				unconfirmed: null,
+				composer: { recoveryIds: ["source-a"] },
+			});
+			library.open(from).edit("edited recovered");
+			const settleTarget = vi.fn(
+				async (
+					_hubId: string,
+					_ref: string,
+					_client: unknown,
+					options: {
+						mayResumeFenced?: () => Promise<boolean>;
+						onResolvedIdentity?: (ref: string) => void;
+					} = {},
+				) => {
+					options.onResolvedIdentity?.("local:resumed");
+					return "reconciled" as const;
+				},
+			);
+			// NativeMutationRuntime.submit now returns its admission; model it
+			// rather than returning an impossible undefined.
+			const runtime = { submit: async () => ({ clientMutationId: "admission-1" }), settleTarget };
+
+			await submitSessionMessage(
+				runtime,
+				new FakeClient("ready"),
+				target,
+				"send",
+				"hi",
+				true,
+				(hubId, fromRef, toRef) => library.handoff({ hubId, sessionRef: fromRef }, { hubId, sessionRef: toRef }),
+			);
+
+			expect(repository.read(to)).toMatchObject({
+				draft: "edited recovered",
+				composer: { recoveryIds: ["source-a"] },
+			});
+			expect(repository.read(from)).toEqual({ draft: "", unconfirmed: null });
+		} finally {
+			opened.database.close();
+		}
 	});
 });
 

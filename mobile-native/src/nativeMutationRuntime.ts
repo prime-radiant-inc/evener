@@ -32,6 +32,7 @@ import {
 	MutationNotSentError,
 } from "../../mobile/src/state/conversationMutation";
 import { MutationOutboxSQLite, type RecoveryResendCommit } from "./mutationOutboxStorage";
+import type { ResumeIdentityEdge, ResumeIdentityEndpoint } from "./resumeIdentity";
 import { isSqliteStorageFailure, type SqliteSync } from "./sqliteSync";
 
 export interface NativeMutationRuntimeOptions {
@@ -55,6 +56,14 @@ type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> &
 		/** Moves a resumed session's waiting rows to its resolved identity and
 		 * returns the ids that moved. */
 		retarget(ref: string, to: { ref: string; wireRef: string; threadId?: string; instanceId?: string }): string[];
+		/** Identity-changing resumes whose draft handoff is still owed. */
+		readResumeIdentities(): ResumeIdentityEdge[];
+		settleResumeIdentity(from: ResumeIdentityEndpoint, to: ResumeIdentityEndpoint): void;
+		redirectResumeIdentity(
+			from: ResumeIdentityEndpoint,
+			previousTo: ResumeIdentityEndpoint,
+			to: ResumeIdentityEndpoint,
+		): void;
 		pruneUnlistedAccepted(
 			targetRef: string,
 			acceptedBefore: number,

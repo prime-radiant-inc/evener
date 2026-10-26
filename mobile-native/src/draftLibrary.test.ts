@@ -209,6 +209,85 @@ describe("drafts across navigation", () => {
 		expect(repository.read(from)).toEqual({ draft: "", unconfirmed: null });
 	});
 
+	it("publishes the resolved identity before an incomplete graph defers the transfer", () => {
+		const { database, port } = openSqliteSyncDouble();
+		try {
+			const repository = new DraftRepository(port);
+			const ledger = {
+				readResumeIdentities: (): never => {
+					throw new Error("ledger unavailable");
+				},
+				redirectResumeIdentity: () => {},
+				settleResumeIdentity: () => {},
+			};
+			const library = new DraftLibrary(
+				() => repository,
+				undefined,
+				() => ledger,
+			);
+			const from = { hubId: "one", sessionRef: "old" };
+			const to = { hubId: "one", sessionRef: "resumed" };
+			const source = library.open(from);
+			source.edit("edited recovery");
+
+			expect(library.handoff(from, to)).toBe(false);
+			// The screen's retarget signal must arrive even though the composition
+			// transfer is deferred until the ledger can be read.
+			expect(source.resolvedRef).toBe("resumed");
+			expect(repository.read(from).draft).toBe("edited recovery");
+			expect(repository.read(to).draft).toBe("");
+			expect(library.hasPendingHandoff(to)).toBe(true);
+		} finally {
+			database.close();
+		}
+	});
+
+	it("removes a pending copy when a settled marker appears after a partial read", () => {
+		const { database, port } = openSqliteSyncDouble();
+		try {
+			const repository = new DraftRepository(port);
+			const from = { hubId: "one", sessionRef: "old" };
+			const to = { hubId: "one", sessionRef: "resumed" };
+			repository.write(from, { draft: "A draft", unconfirmed: null });
+			repository.markPendingHandoffSettled(from, to);
+			let failDraftsRead = true;
+			const storage = new Proxy(repository, {
+				get(target, property, receiver) {
+					if (property === "readPendingHandoffs" || property === "readSettledHandoffs") {
+						return () => {
+							if (failDraftsRead) throw new Error("drafts unavailable");
+							const read = Reflect.get(target, property, target) as () => unknown;
+							return read.call(target);
+						};
+					}
+					const value = Reflect.get(target, property, receiver);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const ledger = {
+				readResumeIdentities: () => [{ from, to }],
+				redirectResumeIdentity: () => {},
+				settleResumeIdentity: () => {},
+			};
+			const library = new DraftLibrary(
+				() => storage,
+				undefined,
+				() => ledger,
+			);
+			// The drafts read fails, so the ledger's A->B enters pending alone.
+			expect(library.hasPendingHandoff(to)).toBe(true);
+			failDraftsRead = false;
+			library.retryPendingHandoffs();
+			// Recovery reveals the settled marker and must drop the pending copy.
+			expect(library.hasPendingHandoff(to)).toBe(false);
+			expect(repository.read(from).draft).toBe("A draft");
+			expect(repository.read(to).draft).toBe("");
+			expect(repository.readSettledHandoffs()).toEqual([]);
+		} finally {
+			database.close();
+		}
+	});
+
 	it("retries a destination load before deferring the handoff", () => {
 		const { database: db, port } = openSqliteSyncDouble();
 		databases.push(db);
@@ -324,5 +403,59 @@ describe("drafts across navigation", () => {
 		library.removeHub("one");
 		expect(source.getSnapshot().loaded).toBe(false);
 		expect(repository.read(from)).toEqual({ draft: "", unconfirmed: null });
+	});
+
+	it("recovers a pending handoff from disk after an app restart before restoring sources", () => {
+		const { library, repository, db } = setup();
+		const from = { hubId: "one", sessionRef: "old" };
+		const to = { hubId: "one", sessionRef: "resumed" };
+		repository.write(from, {
+			draft: "",
+			unconfirmed: null,
+			composer: { recoveryIds: ["source-a"] },
+		});
+		library.open(from).edit("edited recovered");
+		// The destination write fails while the mutation rows have already moved:
+		// the pending mapping must outlive this process on the drafts database.
+		db.exec(
+			"CREATE TRIGGER reject_destination BEFORE INSERT ON drafts WHEN NEW.session_ref = 'resumed' BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+		);
+		expect(library.handoff(from, to)).toBe(false);
+		expect(repository.read(from).draft).toBe("edited recovered");
+		db.exec("DROP TRIGGER reject_destination");
+
+		// A restart builds a new library. The resumed screen opens before any
+		// retry, and the pending mapping keeps it from restoring the source's
+		// original recovery text.
+		const restarted = new DraftLibrary(() => repository);
+		expect(restarted.hasPendingHandoff(to)).toBe(true);
+		expect(restarted.open(to).getSnapshot().record.draft).toBe("");
+
+		restarted.retryPendingHandoffs();
+		expect(restarted.hasPendingHandoff(to)).toBe(false);
+		expect(repository.read(to)).toMatchObject({
+			draft: "edited recovered",
+			composer: { recoveryIds: ["source-a"] },
+		});
+		expect(repository.read(from)).toEqual({ draft: "", unconfirmed: null });
+	});
+
+	it("preserves completed command markers at an occupied resumed destination", () => {
+		const { library, repository } = setup();
+		const from = { hubId: "one", sessionRef: "old" };
+		const to = { hubId: "one", sessionRef: "resumed" };
+		repository.write(from, {
+			draft: "",
+			unconfirmed: null,
+			composer: { recoveryIds: ["done"] },
+			completedCommandRecoveryIds: ["done"],
+		});
+		repository.write(to, { draft: "existing destination work", unconfirmed: null });
+		const destination = library.open(to);
+
+		expect(library.handoff(from, to)).toBe(false);
+		expect(destination.getSnapshot().record.draft).toBe("existing destination work");
+		expect(destination.getSnapshot().record.completedCommandRecoveryIds).toEqual(["done"]);
+		expect(repository.read(to).completedCommandRecoveryIds).toEqual(["done"]);
 	});
 });

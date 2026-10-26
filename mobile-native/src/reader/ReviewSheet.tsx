@@ -10,8 +10,9 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useConnection } from "../ConnectionProvider";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
+import { handoffNativeResumeDraft } from "../nativeDrafts";
 import type { Routes } from "../screens";
-import { returnToSession } from "../session/returnToSession";
+import { returnToSessionFromSheet } from "../session/returnToSession";
 import type { SendAction } from "../session/sendAction";
 import { SendButton } from "../session/SendButton";
 import { readSendAction, type SessionTarget, submitSessionMessage } from "../session/sessionMessage";
@@ -69,6 +70,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 		if (!verdict || !client || !canSend) return;
 		setSending(true);
 		setFailure(null);
+		let resolvedRef = sessionRef;
 		try {
 			// The session may have started or stopped working since the sheet
 			// read it, so Send asks again: queue while it works, never steer.
@@ -79,13 +81,14 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 				setSending(false);
 				return;
 			}
-			await submitSessionMessage(
+			resolvedRef = await submitSessionMessage(
 				runtime,
 				client,
 				now.target,
 				now.action === "queue" ? "queue" : "send",
 				reviewMessage(reviewDocumentName({ path, root, readTarget }), verdict, comments, note),
 				now.action === "resume",
+				handoffNativeResumeDraft,
 			);
 		} catch (error) {
 			setFailure(error instanceof Error ? error.message : String(error));
@@ -93,7 +96,9 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 			return;
 		}
 		memory.clearComments(key);
-		sheet.finish(() => returnToSession(navigation, { hubId, ref: sessionRef, title: sessionTitle }));
+		// The resume may have moved the session; return to the identity it
+		// resolved to, not the retired ref whose draft and rows no longer exist.
+		returnToSessionFromSheet(sheet, navigation, { hubId, ref: resolvedRef, title: sessionTitle });
 	};
 
 	const why = !online

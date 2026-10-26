@@ -112,8 +112,55 @@ the replacement screen opens: its text, image bytes, skill and command
 selections, recovery source IDs, and any pending submission's capture token and
 settlement markers move together, and recovery resend receipts move with their
 sources. An already-open resumed draft adopts the transferred record
-immediately. The retired ref keeps no draft or recovery ownership. A resumed
-destination that already holds work is left untouched.
+immediately. Every resume path takes this handoff, including the background
+outbox flush and a message sent from a screen above the session. The retired
+ref keeps no draft or recovery ownership. A resumed destination that already
+holds work is left untouched. A mounted conversation whose draft is retired
+follows the resolved ref instead of keeping a document that refuses edits and
+sends, and returning from a review sheet after a resume opens the resolved
+session. A refused handoff publishes the resolved ref without retiring the
+source, so the mounted screen follows while both compositions stay in place. A
+sheet returning to a session that isn't already under it dismisses itself
+before navigating.
+
+A destination write that fails after the mutation rows moved leaves a durable
+pending mapping on the drafts database. The mutations database also records the
+source-to-destination edge in the same savepoint that moves the rows, so a
+drafts database that cannot write at all still leaves a handoff to reconstruct
+after restart. If an intermediate identity resolves again before its
+predecessor's handoff retries, the pending predecessor is redirected to the
+newest ref and its old persisted mapping is replaced, so a restart cannot
+replay the retired intermediate. If one store rejects that redirect, the
+intermediate edge stays pending and a restart canonicalizes the loaded graph
+through it before any transfer. A redirect that still fails while loading also
+keeps the intermediate pending, so a second restart cannot replay the stale
+mapping. Downstream edges settle before their predecessors: an intermediate
+identity's composition wins the shared destination, and its predecessor falls
+under the occupied-destination rule. The predecessor edge stays in the
+mutations database as chain provenance until the intermediate settles, so both
+the order and the dependency survive a restart. Settlement deletes the settled
+edge and the provenance pointing at it in one savepoint, so an exit cannot
+orphan a predecessor. Ordering comes from the longest path over all provenance
+edges, not the first matching one, so a shortcut cannot hide a longer chain
+that must settle first. Reloading upgrades an existing pending entry's rank and
+dependencies when the mutations store recovers, and replaces an obsolete
+destination with the recovered terminal. A settled transfer whose ledger
+cleanup fails keeps a durable settled marker until that cleanup succeeds, even
+when no drafts mapping existed before the refusal. Settlement is stored per
+edge, so another transfer still pending to the same destination cannot hide
+it; a later resume retries cleanup without transferring it, and settled edges
+are excluded from transfer reconstruction. A load that reveals a settlement
+drops any pending copy loaded during an earlier partial read. Redirection
+merges the predecessor's existing dependencies with the intermediate, an
+incomplete read defers the composition transfer but still publishes the
+resolved identity so the mounted screen follows it, and a settled/refused
+mapping is marked durably so a restart retries only its cleanup, never the
+transfer. The destination stays pending until the whole chain settles. A
+restarted app retries that handoff before reconciling the resumed screen and
+does not restore the source's original recovery text while the transfer is
+still owed. A refused handoff still moves a completed built-in command's
+completion markers to the destination, so reconciliation discards those moved
+rows instead of appending and re-running the command on a later Send.
 
 Browser and native outboxes share one receipt-settlement rule from the AppWire
 package (`retainsAcceptedCopy`, `settlementRetiresRecovery`): a `pending` receipt

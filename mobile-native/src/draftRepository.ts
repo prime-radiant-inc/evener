@@ -64,6 +64,26 @@ export class DraftRepository {
       unconfirmed TEXT,
       PRIMARY KEY (hub_id, session_ref)
     )`);
+		db.execSync(`CREATE TABLE IF NOT EXISTS pending_draft_handoffs (
+      from_hub_id TEXT NOT NULL,
+      from_session_ref TEXT NOT NULL,
+      to_hub_id TEXT NOT NULL,
+      to_session_ref TEXT NOT NULL,
+      settled INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (to_hub_id, to_session_ref)
+    )`);
+		db.execSync(`CREATE TABLE IF NOT EXISTS draft_handoff_settlements (
+      from_hub_id TEXT NOT NULL,
+      from_session_ref TEXT NOT NULL,
+      to_hub_id TEXT NOT NULL,
+      to_session_ref TEXT NOT NULL,
+      PRIMARY KEY (from_hub_id, from_session_ref, to_hub_id, to_session_ref)
+    )`);
+		const handoffColumns = new Set(
+			db.getAllSync<{ name: string }>("PRAGMA table_info(pending_draft_handoffs)").map((column) => column.name),
+		);
+		if (!handoffColumns.has("settled"))
+			db.execSync("ALTER TABLE pending_draft_handoffs ADD COLUMN settled INTEGER NOT NULL DEFAULT 0");
 		const draftColumns = new Set(
 			db.getAllSync<{ name: string }>("PRAGMA table_info(drafts)").map((column) => column.name),
 		);
@@ -305,6 +325,127 @@ export class DraftRepository {
 		});
 	}
 
+	/** A handoff whose destination write has not committed yet. The mapping is
+	 * durable so a restart can retry the transfer before the resumed screen
+	 * restores the source's original recovery text. */
+	readPendingHandoffs(): { from: DraftDestination; to: DraftDestination }[] {
+		const rows = this.db.getAllSync<{
+			from_hub_id: string;
+			from_session_ref: string;
+			to_hub_id: string;
+			to_session_ref: string;
+		}>("SELECT from_hub_id, from_session_ref, to_hub_id, to_session_ref FROM pending_draft_handoffs WHERE settled = 0");
+		return rows.map((row) => ({
+			from: { hubId: row.from_hub_id, sessionRef: row.from_session_ref },
+			to: { hubId: row.to_hub_id, sessionRef: row.to_session_ref },
+		}));
+	}
+
+	/** Mappings whose transfer is already settled or refused. A restart must
+	 * retry only their cleanup, never the transfer. */
+	readSettledHandoffs(): { from: DraftDestination; to: DraftDestination }[] {
+		const rows = this.db.getAllSync<{
+			from_hub_id: string;
+			from_session_ref: string;
+			to_hub_id: string;
+			to_session_ref: string;
+		}>(`SELECT from_hub_id, from_session_ref, to_hub_id, to_session_ref FROM draft_handoff_settlements
+		    UNION
+		    SELECT from_hub_id, from_session_ref, to_hub_id, to_session_ref FROM pending_draft_handoffs WHERE settled = 1`);
+		return rows.map((row) => ({
+			from: { hubId: row.from_hub_id, sessionRef: row.from_session_ref },
+			to: { hubId: row.to_hub_id, sessionRef: row.to_session_ref },
+		}));
+	}
+
+	writePendingHandoff(from: DraftDestination, to: DraftDestination): void {
+		this.db.runSync(
+			`INSERT INTO pending_draft_handoffs (from_hub_id, from_session_ref, to_hub_id, to_session_ref, settled)
+       VALUES (?, ?, ?, ?, 0) ON CONFLICT (to_hub_id, to_session_ref) DO UPDATE SET
+       from_hub_id = excluded.from_hub_id, from_session_ref = excluded.from_session_ref, settled = 0`,
+			from.hubId,
+			from.sessionRef,
+			to.hubId,
+			to.sessionRef,
+		);
+	}
+
+	/** Replace one pending handoff's destination atomically. A redirected
+	 * chain must not leave the predecessor's old mapping for a restart to
+	 * replay into the retired ref. */
+	redirectPendingHandoff(from: DraftDestination, previousTo: DraftDestination, to: DraftDestination): void {
+		if (previousTo.hubId === to.hubId && previousTo.sessionRef === to.sessionRef) return;
+		withSavepoint(this.db, "draft_handoff_redirect", () => {
+			this.writePendingHandoff(from, to);
+			this.db.runSync(
+				`DELETE FROM pending_draft_handoffs
+				 WHERE from_hub_id = ? AND from_session_ref = ? AND to_hub_id = ? AND to_session_ref = ?`,
+				from.hubId,
+				from.sessionRef,
+				previousTo.hubId,
+				previousTo.sessionRef,
+			);
+		});
+	}
+
+	removePendingHandoff(to: DraftDestination): void {
+		this.db.runSync(
+			"DELETE FROM pending_draft_handoffs WHERE to_hub_id = ? AND to_session_ref = ?",
+			to.hubId,
+			to.sessionRef,
+		);
+	}
+
+	/** Mark a settled transfer's mapping for cleanup. Called only when the
+	 * normal delete failed, so a restart cannot mistake it for a pending one. */
+	markPendingHandoffSettled(from: DraftDestination, to: DraftDestination): void {
+		// Settlement is per edge, not per destination: another transfer may still
+		// be pending to the same destination. Write it independently of the
+		// drafts-row cleanup; the settlement table is authoritative on load.
+		this.db.runSync(
+			`INSERT OR IGNORE INTO draft_handoff_settlements
+			 (from_hub_id, from_session_ref, to_hub_id, to_session_ref)
+			 VALUES (?, ?, ?, ?)`,
+			from.hubId,
+			from.sessionRef,
+			to.hubId,
+			to.sessionRef,
+		);
+		try {
+			this.db.runSync(
+				`DELETE FROM pending_draft_handoffs
+				 WHERE from_hub_id = ? AND from_session_ref = ? AND to_hub_id = ? AND to_session_ref = ?`,
+				from.hubId,
+				from.sessionRef,
+				to.hubId,
+				to.sessionRef,
+			);
+		} catch {
+			// A leftover pending row is filtered by the settlement on load.
+		}
+	}
+
+	removeSettledHandoff(from: DraftDestination, to: DraftDestination): void {
+		withSavepoint(this.db, "draft_handoff_settle_remove", () => {
+			this.db.runSync(
+				`DELETE FROM draft_handoff_settlements
+				 WHERE from_hub_id = ? AND from_session_ref = ? AND to_hub_id = ? AND to_session_ref = ?`,
+				from.hubId,
+				from.sessionRef,
+				to.hubId,
+				to.sessionRef,
+			);
+			this.db.runSync(
+				`DELETE FROM pending_draft_handoffs
+				 WHERE from_hub_id = ? AND from_session_ref = ? AND to_hub_id = ? AND to_session_ref = ?`,
+				from.hubId,
+				from.sessionRef,
+				to.hubId,
+				to.sessionRef,
+			);
+		});
+	}
+
 	remove(destination: DraftDestination): void {
 		withSavepoint(this.db, "draft_remove", () => {
 			this.db.runSync(
@@ -391,6 +532,8 @@ export class DraftRepository {
 
 	removeHub(hubId: string): void {
 		this.creation.clear(hubId);
+		this.db.runSync("DELETE FROM pending_draft_handoffs WHERE from_hub_id = ? OR to_hub_id = ?", hubId, hubId);
+		this.db.runSync("DELETE FROM draft_handoff_settlements WHERE from_hub_id = ? OR to_hub_id = ?", hubId, hubId);
 		this.db.runSync("DELETE FROM draft_image_sets WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM draft_images WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM drafts WHERE hub_id = ?", hubId);
