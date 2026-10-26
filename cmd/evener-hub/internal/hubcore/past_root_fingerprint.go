@@ -5,7 +5,9 @@ import (
 	"hash"
 	"hash/fnv"
 	"io"
+	"math"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -118,6 +120,14 @@ func writeHashString(h hash.Hash64, s string) {
 	_, _ = h.Write([]byte{0})
 }
 
+// sortedMapKeys returns a string-keyed map's keys in order, so a map hashes the
+// same however it was built.
+func sortedMapKeys(m reflect.Value) []reflect.Value {
+	keys := m.MapKeys()
+	sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
+	return keys
+}
+
 func writeHashValue(h hash.Hash64, v reflect.Value) {
 	var b [8]byte
 	switch v.Kind() {
@@ -139,14 +149,36 @@ func writeHashValue(h hash.Hash64, v reflect.Value) {
 			writeHashValue(h, v.Index(n))
 		}
 		return
-	case reflect.Struct:
-		t, ok := reflect.TypeAssert[time.Time](v)
-		if !ok {
-			panic("shown SessionMeta field of unsupported struct type " + v.Type().String())
+	case reflect.Float64:
+		binary.LittleEndian.PutUint64(b[:], math.Float64bits(v.Float()))
+	case reflect.Pointer:
+		if v.IsNil() {
+			_, _ = h.Write(b[:1])
+			return
 		}
-		binary.LittleEndian.PutUint64(b[:], uint64(t.UnixNano()))
+		b[0] = 1
+		_, _ = h.Write(b[:1])
+		writeHashValue(h, v.Elem())
+		return
+	case reflect.Map:
+		binary.LittleEndian.PutUint64(b[:], uint64(v.Len()))
+		_, _ = h.Write(b[:])
+		for _, key := range sortedMapKeys(v) {
+			writeHashString(h, key.String())
+			writeHashValue(h, v.MapIndex(key))
+		}
+		return
+	case reflect.Struct:
+		if t, ok := reflect.TypeAssert[time.Time](v); ok {
+			binary.LittleEndian.PutUint64(b[:], uint64(t.UnixNano()))
+			break
+		}
+		for n := range v.NumField() {
+			writeHashValue(h, v.Field(n))
+		}
+		return
 	default:
-		panic("shown SessionMeta field of unsupported kind " + v.Kind().String())
+		panic("hashed field of unsupported kind " + v.Kind().String())
 	}
 	_, _ = h.Write(b[:])
 }
