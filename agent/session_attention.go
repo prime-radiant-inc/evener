@@ -943,10 +943,7 @@ func (s *Session) beginRootDelegateAttentionTurn() []string {
 		return nil
 	}
 	s.rootAttentionWake = false
-	if s.rootAttentionRetry.active {
-		s.rootAttentionRetry.generation++
-		s.rootAttentionRetry.active = false
-	}
+	s.rootAttentionRetry.disarmIfArmed()
 	s.attentionMu.Unlock()
 	sort.Strings(ids)
 	return ids
@@ -1265,13 +1262,7 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 	if s.rootAttentionRetry.active || s.rootAttentionWake || len(s.rootAttentionWakeIDs) == 0 {
 		return
 	}
-	delay := s.rootAttentionRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
-	s.rootAttentionRetry.active = true
-	s.rootAttentionRetry.generation++
-	generation := s.rootAttentionRetry.generation
+	delay, generation := s.rootAttentionRetry.arm()
 	s.sclock().AfterFunc(delay, func() {
 		// The rail parks with the durable holds, so read them before any
 		// lock: a firing under a standing hold disarms without a wake, and
@@ -1288,7 +1279,7 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 			// resetRootAttentionRetryLocked or a newer schedule, and re-arming
 			// it would resurrect a stale wake the owner already settled.
 			s.attentionMu.Lock()
-			if s.rootAttentionRetry.generation == generation {
+			if !s.rootAttentionRetry.superseded(generation) {
 				s.rootAttentionRetry.active = false
 				s.scheduleRootAttentionRetryLocked()
 			}
@@ -1297,11 +1288,10 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 		}
 		defer release()
 		s.attentionMu.Lock()
-		if s.rootAttentionRetry.generation != generation {
+		if !s.rootAttentionRetry.fire(generation) {
 			s.attentionMu.Unlock()
 			return
 		}
-		s.rootAttentionRetry.active = false
 		if parkedAtFire {
 			s.attentionMu.Unlock()
 			return
@@ -1311,11 +1301,7 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 		if shouldWake {
 			s.rootAttentionWake = true
 		}
-		if pending {
-			s.rootAttentionRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
-		} else {
-			s.rootAttentionRetry.delay = jobNotificationRetryInitialDelay
-		}
+		s.rootAttentionRetry.settle(pending, delay, jobNotificationRetryMaxDelay)
 		s.attentionMu.Unlock()
 		// The seam fires for a callback that passed every early return above --
 		// live generation, rail not parked -- whether or not it then notifies. It
@@ -1332,9 +1318,7 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 }
 
 func (s *Session) resetRootAttentionRetryLocked() {
-	s.rootAttentionRetry.generation++
-	s.rootAttentionRetry.active = false
-	s.rootAttentionRetry.delay = jobNotificationRetryInitialDelay
+	s.rootAttentionRetry.reset()
 }
 
 // parkRootDelegateAttention silences the root attention rail when a Stop is
@@ -1397,20 +1381,13 @@ func (s *Session) scheduleDelegateAttentionArmRetryLocked() {
 	if s.delegateAttentionArmRetry.active || len(s.delegateAttentionArmIDs) == 0 {
 		return
 	}
-	delay := s.delegateAttentionArmRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
-	s.delegateAttentionArmRetry.active = true
-	s.delegateAttentionArmRetry.generation++
-	generation := s.delegateAttentionArmRetry.generation
+	delay, generation := s.delegateAttentionArmRetry.arm()
 	s.sclock().AfterFunc(delay, func() {
 		s.attentionMu.Lock()
-		if s.delegateAttentionArmRetry.generation != generation {
+		if !s.delegateAttentionArmRetry.fire(generation) {
 			s.attentionMu.Unlock()
 			return
 		}
-		s.delegateAttentionArmRetry.active = false
 		ids := make([]string, 0, len(s.delegateAttentionArmIDs))
 		for id := range s.delegateAttentionArmIDs {
 			ids = append(ids, id)
@@ -1431,7 +1408,7 @@ func (s *Session) scheduleDelegateAttentionArmRetryLocked() {
 		if len(s.delegateAttentionArmIDs) == 0 {
 			s.resetDelegateAttentionArmRetryLocked()
 		} else {
-			s.delegateAttentionArmRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
+			s.delegateAttentionArmRetry.settle(true, delay, jobNotificationRetryMaxDelay)
 			s.scheduleDelegateAttentionArmRetryLocked()
 		}
 		s.attentionMu.Unlock()
@@ -1439,9 +1416,7 @@ func (s *Session) scheduleDelegateAttentionArmRetryLocked() {
 }
 
 func (s *Session) resetDelegateAttentionArmRetryLocked() {
-	s.delegateAttentionArmRetry.generation++
-	s.delegateAttentionArmRetry.active = false
-	s.delegateAttentionArmRetry.delay = jobNotificationRetryInitialDelay
+	s.delegateAttentionArmRetry.reset()
 }
 
 func (s *Session) scheduleStableDelegateAttentionRetry() {
@@ -1453,22 +1428,15 @@ func (s *Session) scheduleStableDelegateAttentionRetry() {
 		s.attentionMu.Unlock()
 		return
 	}
-	delay := s.stableAttentionRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
+	delay, generation := s.stableAttentionRetry.arm()
 	s.stableAttentionRetry.delay = delay
-	s.stableAttentionRetry.active = true
-	s.stableAttentionRetry.generation++
-	generation := s.stableAttentionRetry.generation
 	s.attentionMu.Unlock()
 	s.sclock().AfterFunc(delay, func() {
 		s.attentionMu.Lock()
-		if s.stableAttentionRetry.generation != generation {
+		if !s.stableAttentionRetry.fire(generation) {
 			s.attentionMu.Unlock()
 			return
 		}
-		s.stableAttentionRetry.active = false
 		s.attentionMu.Unlock()
 
 		runnable := s.delegateController != nil && s.delegateController.hasRunnableDelegateAttention()
@@ -1483,11 +1451,7 @@ func (s *Session) scheduleStableDelegateAttentionRetry() {
 		// initial delay forever. The backoff doubles the current delay, not
 		// the one this retry was armed with, so a reset that landed while it
 		// was armed holds.
-		if pending || runnable {
-			s.stableAttentionRetry.delay = min(s.stableAttentionRetry.delay*2, jobNotificationRetryMaxDelay)
-		} else {
-			s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
-		}
+		s.stableAttentionRetry.settle(pending || runnable, s.stableAttentionRetry.delay, jobNotificationRetryMaxDelay)
 		s.attentionMu.Unlock()
 		if pending {
 			s.scheduleStableDelegateAttentionRetry()
@@ -1500,9 +1464,7 @@ func (s *Session) resetStableDelegateAttentionRetry() {
 		return
 	}
 	s.attentionMu.Lock()
-	s.stableAttentionRetry.generation++
-	s.stableAttentionRetry.active = false
-	s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
+	s.stableAttentionRetry.reset()
 	s.attentionMu.Unlock()
 }
 
