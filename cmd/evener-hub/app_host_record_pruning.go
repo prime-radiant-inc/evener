@@ -192,21 +192,9 @@ func (m *hubHostManager) nowTime() time.Time {
 // spec 08 §6's retention and §15's capacity rules skip: an open remnant pins
 // its name's tombstone until the remnant resolves, so such a tombstone is
 // never an expiry or eviction candidate.
-//
-// BOUNDARY (S12): remnants are S12's records; no remnant store exists yet.
-// The gate is parameterized over a "remnant-gated names" source that is empty
-// today: cfg.remnantFence answers when a build wires one, and the test-only
-// testOnlyRemnantGated override lets the exemption and the tombstone-capacity
-// refusal be falsified now (the S10 testOnlyParkPostCommit precedent). S12
-// replaces the override by wiring cfg.remnantFence to the real remnant
-// records; nothing else in this slice needs to change.
 func (m *hubHostManager) remnantGated(name string) bool {
-	if m.cfg.remnantFence != nil {
-		if _, open := m.cfg.remnantFence(name); open {
-			return true
-		}
-	}
-	return m.testOnlyRemnantGated != nil && m.testOnlyRemnantGated(name)
+	_, open := m.openRemnantID(name)
+	return open
 }
 
 // hostNameSet returns the names in a host slice.
