@@ -345,7 +345,7 @@ func (s *Session) scheduleRunningTurnReleaseRetry(turnID string) {
 func (s *Session) clearRunningTurnReleaseRetry() {
 	s.releaseRetryMu.Lock()
 	s.runningTurnReleaseRetry = runningTurnReleaseRetryState{
-		backoffTimer: backoffTimer{generation: s.runningTurnReleaseRetry.generation + 1},
+		generation: s.runningTurnReleaseRetry.generation + 1,
 	}
 	s.releaseRetryMu.Unlock()
 }
