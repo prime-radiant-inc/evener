@@ -8288,6 +8288,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // transcript repository republishes its own model on later frames and
     // would otherwise put the cleared card back, including after a Clear
     // window or a hydration that was in flight when the resolve landed.
+    // Recorded on the route as well as folded through the repository: a frame
+    // suppressed by an in-flight Clear is discarded when the Clear commits, and
+    // the retained repository still has to drop this escalation.
+    entryTranscriptRoute(ref)?.resolvedEscalations?.add(escalationId);
     const resolvedAnywhere =
       (model !== undefined && resolvedModel !== model) ||
       (watchedModel !== undefined && resolvedWatched !== watchedModel);

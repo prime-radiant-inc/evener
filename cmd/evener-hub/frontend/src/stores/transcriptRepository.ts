@@ -757,9 +757,7 @@ export class TranscriptRepository {
         );
       }
     }
-    for (const escalationId of this.#resolvedEscalations) {
-      candidate = resolvePendingEscalation(candidate, escalationId);
-    }
+    candidate = this.#withoutResolvedEscalations(candidate);
     if (candidate === before) return false;
     this.#model = candidate;
     const previousHistory = before?.history;
@@ -920,6 +918,12 @@ export class TranscriptRepository {
     }
   }
 
+  #withoutResolvedEscalations(model: ThreadModel): ThreadModel {
+    let kept = model;
+    for (const escalationId of this.#resolvedEscalations) kept = resolvePendingEscalation(kept, escalationId);
+    return kept;
+  }
+
   /** Apply response metadata after the caller's generation and intent fences. */
   acceptResponseFields(fields: Partial<Pick<ThreadModel, "goal" | "humanNote">>): void {
     if (this.#disposed || this.#sealed || !this.#model) return;
@@ -945,10 +949,11 @@ export class TranscriptRepository {
     }
     const previousModel = this.#model;
     const now = this.#now();
-    const next =
+    const next = this.#withoutResolvedEscalations(
       notification.method === "overlay/end"
         ? applyOverlayEndForTranscriptHandoff(this.#model, notification, now)
-        : (this.#binding.foldNotification ?? applyNotification)(this.#model, notification, now);
+        : (this.#binding.foldNotification ?? applyNotification)(this.#model, notification, now),
+    );
     if (next === this.#model) {
       if (notification.method !== "overlay/end") return false;
       this.#admitHandoffRound(next, (notification.params as { roundId?: string }).roundId ?? "");
