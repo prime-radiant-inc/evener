@@ -311,6 +311,14 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
 		return err
 	}
+	// The registry's catalog cache and every OAuth record live under the
+	// default state root whatever hub_state_root says, so a hub with no state
+	// home cannot start; say so rather than run with auth that has nowhere to
+	// keep records.
+	if _, err := DefaultHubStateRoot(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] state home: %v\n", err)
+		return err
+	}
 	if err := hostlock.CheckStorage(cfg.HubStateRoot, deps.inspectFilesystem); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
@@ -370,7 +378,6 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if runDir == "" {
 		var err error
 		if runDir, err = rendezvous.DefaultDir(); err != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] resolve runtime directory: %v\n", err)
 			return fmt.Errorf("resolve runtime directory: %w", err)
 		}
 	}
@@ -383,7 +390,6 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if stateGlob == "" {
 		var err error
 		if stateGlob, err = DefaultStateGlob(); err != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] resolve state glob: %v\n", err)
 			return fmt.Errorf("resolve state glob: %w", err)
 		}
 	}
@@ -391,7 +397,6 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if pastIndexDB == "" {
 		var err error
 		if pastIndexDB, err = DefaultPastIndexDBPath(); err != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] resolve past-session index: %v\n", err)
 			return fmt.Errorf("resolve past-session index: %w", err)
 		}
 	}

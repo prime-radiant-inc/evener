@@ -152,14 +152,15 @@ func TestRunMainFixesThePluginRegistryRootBeforeLaunchingChildren(t *testing.T) 
 	}
 }
 
-// A hub whose config names its own hub_state_root but leaves run_dir,
-// state_glob and past_index_db to the default state root cannot start without
-// a home; it must say so on stderr rather than exit silently.
+// A hub cannot start without a state home even when its config names every
+// path itself: its registry cache and OAuth records live under the default
+// state root. It must say so on stderr rather than exit silently.
 func TestRunMainReportsDefaultPathsWithoutStateHome(t *testing.T) {
 	for name, blank := range map[string]func(*Config){
 		"run dir":    func(cfg *Config) { cfg.RunDir = "" },
 		"state glob": func(cfg *Config) { cfg.StateGlob = "" },
 		"past index": func(cfg *Config) { cfg.PastIndexDB = "" },
+		"nothing":    func(*Config) {},
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
