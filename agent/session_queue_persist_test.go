@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -467,5 +468,105 @@ func TestQueuePersist_DrainSteering_CrashLosesAtMostInFlightItem(t *testing.T) {
 	}
 	if !foundAlpha {
 		t.Fatalf("restored history missing alpha's steering turn (should have been durably recorded before the crash); kinds=%v", restored.history)
+	}
+}
+
+func TestSaveQueues_DoesNotFollowSymlinkPlantedAtTempName(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	path := queuesFilePath(stateDir, "sid1")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(stateDir, "victim")
+	if err := os.WriteFile(victim, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, path+".tmp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveQueues(stateDir, "sid1", []steeringMessage{{Text: "steer"}}, nil); err != nil {
+		t.Fatalf("saveQueues: %v", err)
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "untouched" {
+		t.Fatalf("save followed the planted symlink: victim = %q", got)
+	}
+	steering, _, err := loadQueues(stateDir, "sid1")
+	if err != nil || len(steering) != 1 || steering[0].Text != "steer" {
+		t.Fatalf("loadQueues = %v, %v; want the saved steering message", steering, err)
+	}
+}
+
+// Queued steering is the user's pending input, so the snapshot is private to
+// them whatever the umask.
+func TestSaveQueues_SnapshotIsPrivate(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes are not POSIX permission bits on windows")
+	}
+	stateDir := t.TempDir()
+	if err := saveQueues(stateDir, "sid1", []steeringMessage{{Text: "steer"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(queuesFilePath(stateDir, "sid1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("snapshot mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestSaveQueues_RoundTripAndEmptyRemoval(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	steering := []steeringMessage{{Text: "steer"}}
+	input := []queuedInput{{Text: "input"}}
+	if err := saveQueues(stateDir, "sid1", steering, input); err != nil {
+		t.Fatalf("saveQueues: %v", err)
+	}
+	gotSteering, gotInput, err := loadQueues(stateDir, "sid1")
+	if err != nil {
+		t.Fatalf("loadQueues: %v", err)
+	}
+	if len(gotSteering) != 1 || gotSteering[0].Text != "steer" || len(gotInput) != 1 || gotInput[0].Text != "input" {
+		t.Fatalf("round trip = %v, %v", gotSteering, gotInput)
+	}
+	if err := saveQueues(stateDir, "sid1", nil, nil); err != nil {
+		t.Fatalf("saveQueues empty: %v", err)
+	}
+	if _, err := os.Stat(queuesFilePath(stateDir, "sid1")); !os.IsNotExist(err) {
+		t.Fatalf("empty snapshot left the file behind: stat err=%v", err)
+	}
+	if err := saveQueues(stateDir, "sid1", nil, nil); err != nil {
+		t.Fatalf("saveQueues empty with no file: %v", err)
+	}
+}
+
+func TestQueuesPersistence_BlankStateDirAndMissingFileAreNoOps(t *testing.T) {
+	t.Parallel()
+	if err := saveQueues("", "sid1", []steeringMessage{{Text: "hi"}}, nil); err != nil {
+		t.Fatalf("saveQueues with blank stateDir: %v", err)
+	}
+	for _, dir := range []string{"", t.TempDir()} {
+		steering, input, err := loadQueues(dir, "sid1")
+		if err != nil || steering != nil || input != nil {
+			t.Fatalf("loadQueues(%q) = %v, %v, %v; want nothing", dir, steering, input, err)
+		}
+	}
+}
+
+func TestLoadQueues_CorruptSnapshotIsAnError(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	path := queuesFilePath(stateDir, "sid1")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadQueues(stateDir, "sid1"); err == nil {
+		t.Fatal("expected a decode error")
 	}
 }

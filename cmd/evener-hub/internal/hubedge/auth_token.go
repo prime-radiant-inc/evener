@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // Capability-URL authentication for the hub web edge.
@@ -78,10 +80,10 @@ func cookieName(token string) string {
 // $hubStateRoot/auth-token, or generates a fresh 256-bit token and
 // persists it. The file is created with mode 0600.
 func LoadOrCreateAuthToken(hubStateRoot string) (string, error) {
-	return loadOrCreateAuthToken(hubStateRoot, rand.Reader, os.Rename)
+	return loadOrCreateAuthToken(hubStateRoot, rand.Reader)
 }
 
-func loadOrCreateAuthToken(hubStateRoot string, random io.Reader, rename func(string, string) error) (string, error) {
+func loadOrCreateAuthToken(hubStateRoot string, random io.Reader) (string, error) {
 	if strings.TrimSpace(hubStateRoot) == "" {
 		return "", errors.New("hub state root not configured")
 	}
@@ -103,13 +105,8 @@ func loadOrCreateAuthToken(hubStateRoot string, random io.Reader, rename func(st
 		return "", fmt.Errorf("auth token: rand: %w", err)
 	}
 	tok := base64.RawURLEncoding.EncodeToString(buf[:])
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(tok+"\n"), 0o600); err != nil {
-		return "", fmt.Errorf("auth token: write %s: %w", tmp, err)
-	}
-	if err := rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return "", fmt.Errorf("auth token: rename %s: %w", path, err)
+	if err := fsatomic.Write(path, []byte(tok+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("auth token: write %s: %w", path, err)
 	}
 	return tok, nil
 }

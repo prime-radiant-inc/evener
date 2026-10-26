@@ -1286,7 +1286,7 @@ func appwireDelegateFromAgentStatus(delegate agent.DelegateStatusInfo) appwire.E
 		ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,
 		ReasoningEffort: delegate.ReasoningEffort, OriginTurnID: delegate.OriginTurnID, OriginToolCallID: delegate.OriginToolCallID,
 		OriginItemID: delegate.OriginItemID, RunStartedAt: delegate.RunStartedAt, RunEndedAt: delegate.RunEndedAt,
-		LatestActivityAt: delegate.LatestActivityAt, RunningForMS: appwire.ClonePointer(delegate.RunningForMS),
+		LatestActivityAt: delegate.LatestActivityAt, LatestIntent: delegate.LatestIntent, RunningForMS: appwire.ClonePointer(delegate.RunningForMS),
 		QuietForMS: appwire.ClonePointer(delegate.QuietForMS), DurationMS: appwire.ClonePointer(delegate.DurationMS), PacketKind: delegate.PacketKind,
 		Message: append(json.RawMessage(nil), delegate.Message...), StructuredResult: append(json.RawMessage(nil), delegate.StructuredResult...),
 		StructuredValid: appwire.ClonePointer(delegate.StructuredValid), StructuredReason: delegate.StructuredReason,
