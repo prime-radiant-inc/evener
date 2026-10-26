@@ -25,7 +25,7 @@ import {
   captureTranscriptView,
   resetTranscriptViewRegistryForTests,
 } from "./flow/transcriptViewRegistry";
-import { readingPointOffset } from "./flow/useTranscriptScroll";
+import { readingPointOffset } from "./flow/viewAnchor";
 import {
   TranscriptBody,
   type TranscriptTurnRow,

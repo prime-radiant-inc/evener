@@ -296,15 +296,17 @@ field is absent.
 Write every duration as a TOML string, such as `"30s"` or `"1h"`. A bare integer
 is read by TOML as a nanosecond count, so `spawn_timeout = 30` arms 30ns rather
 than 30 seconds. Some duration fields refuse that form outright
-(`daemon_idle_timeout`, `host_probe_timeout`, and the host receipt and operation
-TTLs). Negative handling then differs by field: a negative
-`daemon_idle_timeout` is rejected, some fields fall back to their default, and
+(`daemon_idle_timeout`, `host_probe_timeout`, and `host_tombstone_retention`).
+Negative handling then differs by field: a negative `daemon_idle_timeout` is rejected, some fields fall back to their default, and
 others keep the negative value. The loader does not validate every duration
 field the same way, so assume a typo can take effect and check the resolved
 value rather than trusting a silent load.
 
-The remaining `host_*` retention and pruning keys are defined in
-`cmd/evener-hub/config.go`, which is their source of truth.
+Every other host-record bound (tombstone and receipt counts, sizes and ages,
+operation-store limits, teardown-repair timing) is a built-in default and is not
+configurable. A `hub.toml` that still sets one of the retired `host_*` retention
+or pruning keys starts normally, ignores the value, and logs a warning naming
+the key on every boot while it is present.
 
 ## Launch configuration
 

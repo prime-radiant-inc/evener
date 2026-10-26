@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"maps"
 	"os"
 	"path/filepath"
@@ -12,6 +13,11 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 )
+
+// listMemoryPages lists env's scope with no cancellation.
+func listMemoryPages(env *execenv.LocalExecutionEnvironment) ([]memoryPage, error) {
+	return listMemoryPagesCtx(context.Background(), env)
+}
 
 func TestParseMemoryPage(t *testing.T) {
 	t.Parallel()
