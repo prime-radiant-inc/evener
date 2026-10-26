@@ -23,7 +23,10 @@ func FuzzSpawnCredentialOrchestrationPass4(f *testing.F) {
 		// Walk the spawn gate over every registry shape: nothing named, a
 		// credential-less curated provider, an instance on each auth scheme,
 		// and a name nothing declares.
-		stateDir := authopenai.DefaultStateDirWithStateHome(root)
+		stateDir, err := authopenai.DefaultStateDirWithStateHome(root)
+		if err != nil {
+			t.Fatal(err)
+		}
 		validRecord := func(source string, expiry time.Time, refresh string) authopenai.AuthRecord {
 			return authopenai.AuthRecord{
 				Version: 1, Provider: "openai", Source: source,

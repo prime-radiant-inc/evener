@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -41,7 +40,7 @@ func modelsFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(cmdutil.DefaultStateRoot(), "catalog")
+	dir := filepath.Join(mustStateRoot(t), "catalog")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

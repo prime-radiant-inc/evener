@@ -13,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // fixtureLoad loads the 40-provider fixture with the real curated overlay,
@@ -1059,14 +1057,39 @@ func TestLoad_WithInstances(t *testing.T) {
 	}
 }
 
-func TestLoadWithoutStateRootOrHomeReportsNoStateHome(t *testing.T) {
+// With neither XDG_STATE_HOME nor HOME the registry has no state root: it loads
+// from the embedded catalog and never reads a cache or OAuth record from a
+// path relative to the working directory.
+func TestLoadWithoutStateRootOrHomeHasNoStateRoot(t *testing.T) {
 	data, err := os.ReadFile("testdata/models.dev.sample.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer())
-	if !errors.Is(err, userdirs.ErrNoStateHome) {
-		t.Fatalf("Load error = %v, want ErrNoStateHome", err)
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	for _, dir := range []string{"catalog", filepath.Join(".local", "state", "evener", "catalog")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "models.dev.json"), []byte(`{}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "models.dev.meta.json"), []byte(`{"fetched_at":"2999-01-01T00:00:00Z"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.StateRoot() != "" {
+		t.Fatalf("StateRoot = %q, want empty", r.StateRoot())
+	}
+	if tag, _ := r.Catalog(); tag != LayerSnapshot {
+		t.Fatalf("catalog layer = %q, want the snapshot", tag)
+	}
+	if got := r.StrayOAuthRecords(); len(got) != 0 {
+		t.Fatalf("StrayOAuthRecords = %v, want none", got)
 	}
 }
 

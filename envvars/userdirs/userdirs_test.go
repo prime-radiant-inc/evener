@@ -143,3 +143,26 @@ func TestStateHome(t *testing.T) {
 		t.Fatalf("StateHome() error = %v, want ErrNoStateHome", err)
 	}
 }
+
+func TestDefaultStateRootReadsProcessEnvironment(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/explicit/state")
+	got, err := DefaultStateRoot()
+	if err != nil || got != "/explicit/state/evener" {
+		t.Fatalf("DefaultStateRoot with XDG_STATE_HOME = %q, %v", got, err)
+	}
+
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "/home/tester")
+	got, err = DefaultStateRoot()
+	if err != nil || got != "/home/tester/.local/state/evener" {
+		t.Fatalf("DefaultStateRoot home fallback = %q, %v", got, err)
+	}
+
+	t.Setenv("HOME", "")
+	if _, err := DefaultStateRoot(); !errors.Is(err, ErrNoStateHome) {
+		t.Fatalf("DefaultStateRoot with no XDG_STATE_HOME and no HOME error = %v, want ErrNoStateHome", err)
+	}
+	if _, err := DefaultStateHome(); !errors.Is(err, ErrNoStateHome) {
+		t.Fatalf("DefaultStateHome with no XDG_STATE_HOME and no HOME error = %v, want ErrNoStateHome", err)
+	}
+}

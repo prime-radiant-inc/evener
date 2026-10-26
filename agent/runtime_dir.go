@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -19,7 +20,9 @@ func RuntimeDir(workDir, overrideDir string) (identifier.Project, string, error)
 }
 
 // RuntimeDirWithStateHome computes the project state directory like RuntimeDir,
-// but uses stateHome as the base when it is non-empty instead of xdgStateHome().
+// but uses stateHome as the base when it is non-empty instead of the XDG state
+// home (userdirs.StateHome). It fails with userdirs.ErrNoStateHome when neither
+// is available.
 // If overrideDir is non-empty, it is returned directly without resolving the
 // project. Otherwise the result is <base>/evener/projects/<Project.ID>.
 func RuntimeDirWithStateHome(workDir, overrideDir, stateHome string) (identifier.Project, string, error) {
@@ -30,23 +33,26 @@ func RuntimeDirWithStateHome(workDir, overrideDir, stateHome string) (identifier
 	if err != nil {
 		return identifier.Project{}, "", err
 	}
-	base := stateHome
-	if base == "" {
-		base = xdgStateHome()
+	dir, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		return identifier.Project{}, "", err
 	}
-	return project, filepath.Join(base, "evener", "projects", project.ID), nil
+	return project, dir, nil
 }
 
 // RuntimeDirForProjectWithStateHome returns the state directory for an
 // already-resolved project without performing filesystem or Git resolution.
 // Callers that have a Project from an earlier launch-resolution boundary use
 // this to carry identity forward without resolving the active cwd again.
-func RuntimeDirForProjectWithStateHome(project identifier.Project, stateHome string) string {
-	base := stateHome
-	if base == "" {
-		base = xdgStateHome()
+func RuntimeDirForProjectWithStateHome(project identifier.Project, stateHome string) (string, error) {
+	if stateHome == "" {
+		stateHome = envvars.XDGStateHome.Getenv()
 	}
-	return filepath.Join(base, "evener", "projects", project.ID)
+	root, err := userdirs.StateRoot(stateHome, os.UserHomeDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "projects", project.ID), nil
 }
 
 // CacheDir returns the global cache directory: $XDG_CACHE_HOME/evener/
@@ -69,18 +75,6 @@ func nonProjectHash(input string) string {
 
 // hexHash is retained for non-project cache/test callers.
 func hexHash(input string) string { return nonProjectHash(input) }
-
-// xdgStateHome returns $XDG_STATE_HOME or ~/.local/state as default.
-func xdgStateHome() string {
-	if v := envvars.XDGStateHome.Getenv(); v != "" {
-		return v
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.TempDir()
-	}
-	return filepath.Join(home, ".local", "state")
-}
 
 // xdgCacheHome returns $XDG_CACHE_HOME or ~/.cache per the XDG spec.
 func xdgCacheHome() string {

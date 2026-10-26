@@ -23,8 +23,8 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/doctor"
-	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 type stringSlice []string
@@ -46,7 +46,7 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 var harvestDiscoverSources = discoverSources
 var harvestCoreToolNames = agent.CoreToolNames
 var harvestGitleaksScan = gitleaksScan
-var harvestDefaultStateRoot = cmdutil.DefaultStateRoot
+var harvestDefaultStateRoot = userdirs.DefaultStateRoot
 var harvestResolveStateBase = doctor.ResolveStateBase
 var harvestIsDir = isDir
 
@@ -79,7 +79,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(stateDirs) == 0 {
-		stateDirs = defaultStateDirs()
+		var err error
+		if stateDirs, err = defaultStateDirs(); err != nil {
+			fmt.Fprintf(stderr, "resolve default state dirs: %v\n", err) //nolint:errcheck
+			return 2
+		}
 	}
 
 	var logw io.Writer
@@ -156,7 +160,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 // defaultStateDirs returns the roots to harvest when no --state-dir is given.
 // Evener installations may have session state under an explicit/default state
 // root or the XDG session base. Both are walked and deduplicated.
-func defaultStateDirs() stringSlice {
+func defaultStateDirs() (stringSlice, error) {
 	seen := map[string]bool{}
 	var out stringSlice
 	add := func(dir string) {
@@ -170,14 +174,21 @@ func defaultStateDirs() stringSlice {
 		seen[abs] = true
 		out = append(out, dir)
 	}
-	add(harvestDefaultStateRoot())
-	base := harvestResolveStateBase("")
+	root, err := harvestDefaultStateRoot()
+	if err != nil {
+		return nil, err
+	}
+	add(root)
+	base, err := harvestResolveStateBase("")
+	if err != nil {
+		return nil, err
+	}
 	if sub := filepath.Join(base, "evener"); harvestIsDir(sub) {
 		add(sub)
 	} else {
 		add(base)
 	}
-	return out
+	return out, nil
 }
 
 func isDir(path string) bool {

@@ -960,7 +960,7 @@ func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transpo
 	}
 	switch t.Auth {
 	case AuthOAuthOpenAICodex:
-		if fileExists(oauthRecordPath(r.stateRoot, rec.name)) {
+		if r.stateRoot != "" && fileExists(oauthRecordPath(r.stateRoot, rec.name)) {
 			return Credential{Source: "oauth"}, nil
 		}
 		return none(fmt.Sprintf("no credential (run `evener openai login --instance %s`)", rec.name))
@@ -1263,13 +1263,17 @@ func (r *Registry) HasInstance(name string) bool {
 
 // StateRoot is the state root the registry was loaded with: OAuth records
 // and the catalog cache live under it, and the Codex authenticator must
-// read the same directory (spec §9.5).
+// read the same directory (spec §9.5). It is empty for a registry loaded
+// without any, which has neither.
 func (r *Registry) StateRoot() string { return r.stateRoot }
 
 // StrayOAuthRecords lists auth/<name>.json records under the state root
 // whose <name> is not an instance on the Codex transport (spec §9.5, §14.1).
 // Nothing reads such a record, so each notice says how to remove it.
 func (r *Registry) StrayOAuthRecords() []string {
+	if r.stateRoot == "" {
+		return nil
+	}
 	dir := filepath.Join(r.stateRoot, "auth")
 	entries, err := os.ReadDir(dir)
 	if err != nil {

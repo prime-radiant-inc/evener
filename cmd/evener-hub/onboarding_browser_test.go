@@ -543,7 +543,7 @@ func newOnboardingGuardHub(t *testing.T, g *onboardingGuardEnv, oauthSetup func(
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := cmdutil.DefaultStateRoot()
+	state := mustStateRoot(t)
 	roster := hubcore.NewRoster(g.run, &hubcore.StatusProber{Timeout: time.Second})
 	past := hubcore.NewPastIndex(filepath.Join(state, "projects", "*"))
 	if _, err := past.Rebuild(); err != nil {

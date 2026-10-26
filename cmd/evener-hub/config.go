@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/internal/hubendpoint"
 )
 
@@ -226,10 +227,15 @@ var removedHostKnobs = []string{
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.
+//
+// HubStateRoot is empty when the state root cannot be resolved (no
+// XDG_STATE_HOME and no home directory); LoadConfig reports that as an error
+// rather than hand back a config with nowhere to keep state.
 func DefaultConfig() Config {
+	hubStateRoot, _ := DefaultHubStateRoot()
 	return Config{
 		Addr:                      "127.0.0.1:9180",
-		HubStateRoot:              DefaultHubStateRoot(),
+		HubStateRoot:              hubStateRoot,
 		StateGlob:                 "",
 		RunDir:                    "",
 		StatusPollInterval:        2 * time.Second,
@@ -246,12 +252,13 @@ func DefaultConfig() Config {
 }
 
 // DefaultHubStateRoot returns the hub's machine-generated state root
-// (cmdutil.DefaultStateRoot(): $XDG_STATE_HOME/evener, or
-// ~/.local/state/evener when XDG_STATE_HOME is unset). It holds the auth
-// token, the past-session index, the deletion-fence store, the host lock,
-// and the daemon rendezvous/log directory.
-func DefaultHubStateRoot() string {
-	return cmdutil.DefaultStateRoot()
+// (userdirs.StateRoot: $XDG_STATE_HOME/evener, or ~/.local/state/evener when
+// XDG_STATE_HOME is unset). It holds the auth token, the past-session index,
+// the deletion-fence store, the host lock, and the daemon rendezvous/log
+// directory. It returns userdirs.ErrNoStateHome when neither XDG_STATE_HOME
+// nor a home directory is available.
+func DefaultHubStateRoot() (string, error) {
+	return userdirs.StateRoot(envvars.XDGStateHome.Getenv(), configUserHomeDir)
 }
 
 // DefaultConfigPath returns the hub's optional config file:
@@ -262,21 +269,21 @@ func DefaultConfigPath() string {
 }
 
 // DefaultStateGlob returns the project state roots indexed by the hub.
-func DefaultStateGlob() string {
-	base := envvars.XDGStateHome.Getenv()
-	if base == "" {
-		home, err := configUserHomeDir()
-		if err != nil || home == "" {
-			home = "."
-		}
-		base = filepath.Join(home, ".local", "state")
+func DefaultStateGlob() (string, error) {
+	root, err := DefaultHubStateRoot()
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(base, "evener", "projects", "*")
+	return filepath.Join(root, "projects", "*"), nil
 }
 
 // DefaultPastIndexDBPath returns DefaultHubStateRoot()/index.db.
-func DefaultPastIndexDBPath() string {
-	return filepath.Join(DefaultHubStateRoot(), "index.db")
+func DefaultPastIndexDBPath() (string, error) {
+	root, err := DefaultHubStateRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "index.db"), nil
 }
 
 // LoadConfig reads path. A missing file returns DefaultConfig() and a nil
@@ -309,14 +316,25 @@ func loadConfigForCommandLine(cfgPath string, explicit bool) (Config, error) {
 }
 
 func loadConfig(path string, explicit bool) (Config, error) {
+	var cfg Config
 	data, err := configReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) && !explicit {
-			return DefaultConfig(), nil
-		}
+	switch {
+	case err == nil:
+		cfg, err = decodeConfig(path, string(data))
+	case errors.Is(err, os.ErrNotExist) && !explicit:
+		cfg, err = DefaultConfig(), nil
+	default:
 		return DefaultConfig(), fmt.Errorf("read config %s: %w", path, err)
 	}
-	return decodeConfig(path, string(data))
+	if err != nil {
+		return cfg, err
+	}
+	if cfg.HubStateRoot == "" {
+		if cfg.HubStateRoot, err = DefaultHubStateRoot(); err != nil {
+			return cfg, fmt.Errorf("hub state root: %w", err)
+		}
+	}
+	return cfg, nil
 }
 
 // decodeConfig decodes and validates one hub.toml document. loadConfig runs it
@@ -586,9 +604,6 @@ func applyConfigDefaults(cfg *Config) {
 	}
 	if cfg.HostTombstoneRetention <= 0 {
 		cfg.HostTombstoneRetention = DefaultHostTombstoneRetention
-	}
-	if cfg.HubStateRoot == "" {
-		cfg.HubStateRoot = DefaultHubStateRoot()
 	}
 	// time.NewTicker (app_plugin_autoupgrade.go) panics on d <= 0, and the
 	// daemon is launched with a bare `go` (no recover), so a bad interval

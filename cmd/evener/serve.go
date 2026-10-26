@@ -33,6 +33,7 @@ import (
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
@@ -683,8 +684,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if !resuming {
 		memoryProjectID = resolveMemoryProjectID(env, os.Stderr)
 	}
+	memoryStateRoot, err := userdirs.DefaultStateRoot()
+	if err != nil {
+		return err
+	}
 	sessionCfg := agent.SessionConfig{
-		MemoryStateRoot: cmdutil.DefaultStateRoot(),
+		MemoryStateRoot: memoryStateRoot,
 		MemoryProjectID: memoryProjectID,
 		DisableMemory:   *disableMemory,
 		// The session tree lives exactly as long as this daemon does. Shutdown

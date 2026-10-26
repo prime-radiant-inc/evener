@@ -50,7 +50,7 @@ var ErrLegacySerfData = errors.New("legacy Serf data")
 func checkLegacyDataDirs() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil //nolint:nilerr // no home directory to compare against; DefaultStateRoot/DefaultConfigRoot already degrade gracefully in this case, so let that fallback behavior proceed rather than erroring here too
+		return nil //nolint:nilerr // no home directory to compare against; the state and config root resolvers report this case themselves, so do not error here too
 	}
 
 	type pair struct {
@@ -67,9 +67,9 @@ func checkLegacyDataDirs() error {
 		target: filepath.Join(configBase, "evener"),
 	})
 
-	stateBase := envvars.XDGStateHome.Getenv()
-	if stateBase == "" {
-		stateBase = filepath.Join(home, ".local", "state")
+	stateBase, err := userdirs.StateHome(envvars.XDGStateHome.Getenv(), func() (string, error) { return home, nil })
+	if err != nil {
+		return err
 	}
 	pairs = append(pairs, pair{
 		legacy: filepath.Join(stateBase, "serf"),

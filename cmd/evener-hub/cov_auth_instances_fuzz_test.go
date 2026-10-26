@@ -65,8 +65,8 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 			t.Fatalf("effectiveHubAuthEnv: COV_AUTH = %q, want launch env to override ambient value", got["COV_AUTH"])
 		}
 		wantStateDir := filepath.Join(root, "evener")
-		if got := openAIStateDirFromEnv(map[string]string{envvars.XDGStateHome.Name: root}); got != wantStateDir {
-			t.Fatalf("openAIStateDirFromEnv(XDG_STATE_HOME=%s) = %q, want %q", root, got, wantStateDir)
+		if got, err := openAIStateDirFromEnv(map[string]string{envvars.XDGStateHome.Name: root}); err != nil || got != wantStateDir {
+			t.Fatalf("openAIStateDirFromEnv(XDG_STATE_HOME=%s) = %q, %v, want %q", root, got, err, wantStateDir)
 		}
 
 		type authStatusCase struct {

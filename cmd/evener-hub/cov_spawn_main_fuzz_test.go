@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 func FuzzSpawnMainHelpers(f *testing.F) {
@@ -37,8 +38,8 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 		switch op % 6 {
 		case 0:
 			_ = DefaultConfigPath()
-			_ = DefaultStateGlob()
-			_ = DefaultPastIndexDBPath()
+			_, _ = DefaultStateGlob()
+			_, _ = DefaultPastIndexDBPath()
 			root := t.TempDir()
 			path := filepath.Join(root, "hub.toml")
 			if data != "" {
@@ -66,8 +67,8 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 		case 1:
 			env := map[string]string{}
 			// A supplied env with no XDG_STATE_HOME and no home resolves to
-			// cmdutil's "."-rooted fallback; it never reads the process env.
-			want := filepath.Join(".local", "state", "evener")
+			// ErrNoStateHome; it never reads the process env.
+			want := ""
 			switch data {
 			case "xdg":
 				stateHome := t.TempDir()
@@ -84,8 +85,13 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 				}
 				want = filepath.Join(home, ".local", "state", "evener")
 			}
-			if got := openAIStateDirFromEnvMap(env); got != want {
-				t.Fatalf("openAIStateDirFromEnvMap(%v) = %q, want %q", env, got, want)
+			got, err := openAIStateDirFromEnvMap(env)
+			if want == "" {
+				if !errors.Is(err, userdirs.ErrNoStateHome) {
+					t.Fatalf("openAIStateDirFromEnvMap(%v) error = %v, want ErrNoStateHome", env, err)
+				}
+			} else if err != nil || got != want {
+				t.Fatalf("openAIStateDirFromEnvMap(%v) = %q, %v, want %q", env, got, err, want)
 			}
 		case 2:
 			root := t.TempDir()

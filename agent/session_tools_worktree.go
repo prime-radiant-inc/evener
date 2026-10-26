@@ -877,7 +877,11 @@ func (s *Session) worktreeRootForProject(stateDir string, project identifier.Pro
 	if stateDir != "" {
 		return filepath.Join(stateDir, "worktrees"), nil
 	}
-	return filepath.Join(RuntimeDirForProjectWithStateHome(project, ""), "worktrees"), nil
+	projectDir, err := RuntimeDirForProjectWithStateHome(project, "")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(projectDir, "worktrees"), nil
 }
 
 // resolveWorktreeProject is the single project-identity boundary for a

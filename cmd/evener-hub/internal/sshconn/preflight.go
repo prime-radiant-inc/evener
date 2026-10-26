@@ -147,13 +147,15 @@ func parseEffectiveUID(out []byte) string {
 // resolveRoots resolves the host's evener config and state roots from the
 // probed environment using the same chain the host binary itself uses
 // (cmdutil.StateRootFromLookup, envvars/userdirs.ConfigRoot). Empty variables
-// are treated as unset, matching evener's own env lookups.
+// are treated as unset, matching evener's own env lookups. A root the host
+// cannot resolve (no HOME and no XDG base) is reported as "" rather than a
+// guessed path, the way userdirs.ConfigRoot reports an unavailable root.
 func resolveRoots(goos string, env map[string]string) (configRoot, stateRoot string) {
 	lookup := func(key string) (string, bool) {
 		value, ok := env[key]
 		return value, ok && value != ""
 	}
-	stateRoot = cmdutil.StateRootFromLookup(goos, lookup)
+	stateRoot, _ = cmdutil.StateRootFromLookup(goos, lookup)
 	home := env["HOME"]
 	configRoot = userdirs.ConfigRoot(env["XDG_CONFIG_HOME"], func() (string, error) {
 		if home != "" {

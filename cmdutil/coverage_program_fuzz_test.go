@@ -68,7 +68,6 @@ func FuzzCmdutilCoverage(f *testing.F) {
 		t.Setenv(envvars.XDGStateHome.Name, "")
 		t.Setenv(envvars.XDGConfigHome.Name, "")
 		t.Setenv("HOME", "")
-		_ = DefaultStateRoot()
 		_ = DefaultConfigRoot()
 
 		badSessions := filepath.Join(t.TempDir(), "sessions-file")
@@ -156,7 +155,6 @@ func FuzzCmdutilScenarioReplay(f *testing.F) {
 			{"resume-missing", TestResolveResumeModelRefNoModel},
 			{"git-origin", TestGitOriginURLFromDir},
 			{"session-meta", TestResolveSessionMeta},
-			{"state-root", TestDefaultStateRoot},
 			{"config-subdirs", TestDefaultConfigRootAndSubdirs},
 			{"ensure-dirs", TestEnsureUserConfigDirs},
 			{"ensure-dirs-error", TestEnsureUserConfigDirsSurfacesMkdirError},

@@ -48,10 +48,10 @@ func TestDefaultStateDirIsUserScoped(t *testing.T) {
 	xdgStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
 
-	got := DefaultStateDir()
+	got, err := DefaultStateDir()
 	want := filepath.Join(xdgStateHome, "evener")
-	if got != want {
-		t.Fatalf("DefaultStateDir() = %q, want %q", got, want)
+	if err != nil || got != want {
+		t.Fatalf("DefaultStateDir() = %q, %v, want %q", got, err, want)
 	}
 }
 
@@ -60,10 +60,10 @@ func TestDefaultStateDirWithStateHomeUsesChildEnvStateHome(t *testing.T) {
 	childStateHome := filepath.Join(t.TempDir(), "child")
 	t.Setenv("XDG_STATE_HOME", processStateHome)
 
-	got := DefaultStateDirWithStateHome(childStateHome)
+	got, err := DefaultStateDirWithStateHome(childStateHome)
 	want := filepath.Join(childStateHome, "evener")
-	if got != want {
-		t.Fatalf("DefaultStateDirWithStateHome() = %q, want %q", got, want)
+	if err != nil || got != want {
+		t.Fatalf("DefaultStateDirWithStateHome() = %q, %v, want %q", got, err, want)
 	}
 }
 

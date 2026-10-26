@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtestenv"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/execsupport/shellquote"
 )
 
@@ -28,9 +29,13 @@ func runHostDeployEnvironmentProbe() error {
 		return err
 	}
 	providers, _ := cmdutil.ProvidersConfigPath()
+	state, err := userdirs.DefaultStateRoot()
+	if err != nil {
+		return err
+	}
 	paths := map[string]string{
 		"home": os.Getenv("HOME"), "config": cmdutil.DefaultConfigRoot(),
-		"state": cmdutil.DefaultStateRoot(), "cache": cache,
+		"state": state, "cache": cache,
 		"providers": providers, "credentials": cmdutil.CredentialsPath(),
 		"state_override": os.Getenv("EVENER_STATE_DIR"),
 	}

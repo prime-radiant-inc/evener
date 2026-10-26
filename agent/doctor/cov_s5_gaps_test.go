@@ -18,9 +18,11 @@ import (
 func TestResolveStateBase_DefaultFallback(t *testing.T) {
 	t.Setenv("EVENER_STATE_DIR", "")
 	t.Setenv("XDG_STATE_HOME", "")
-	got := ResolveStateBase("")
-	if !strings.HasSuffix(got, filepath.Join(".local", "state")) {
-		t.Errorf("default should end in .local/state, got %q", got)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	got, err := ResolveStateBase("")
+	if want := filepath.Join(home, ".local", "state"); err != nil || got != want {
+		t.Errorf("default = %q, %v, want %q", got, err, want)
 	}
 }
 

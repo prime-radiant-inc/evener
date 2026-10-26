@@ -380,11 +380,17 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	stateGlob := cfg.StateGlob
 	if stateGlob == "" {
-		stateGlob = DefaultStateGlob()
+		var err error
+		if stateGlob, err = DefaultStateGlob(); err != nil {
+			return fmt.Errorf("resolve state glob: %w", err)
+		}
 	}
 	pastIndexDB := cfg.PastIndexDB
 	if pastIndexDB == "" {
-		pastIndexDB = DefaultPastIndexDBPath()
+		var err error
+		if pastIndexDB, err = DefaultPastIndexDBPath(); err != nil {
+			return fmt.Errorf("resolve past-session index: %w", err)
+		}
 	}
 
 	// Roster + past index

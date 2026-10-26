@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -130,5 +131,15 @@ func TestNewRegistryClientWiresTheProcessSeams(t *testing.T) {
 	}
 	if tokenauth.DefaultCodex.StateDir != stateRoot || tokenauth.ClientVersion != buildinfo.Version() {
 		t.Fatalf("seams: %q %q", tokenauth.DefaultCodex.StateDir, tokenauth.ClientVersion)
+	}
+}
+
+func TestLoadRegistryWithoutStateHomeIsAnError(t *testing.T) {
+	isolateRoots(t)
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "")
+
+	if _, _, err := LoadRegistry(registry.WithOffline(true), registry.WithoutCache()); !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("LoadRegistry error = %v, want ErrNoStateHome", err)
 	}
 }

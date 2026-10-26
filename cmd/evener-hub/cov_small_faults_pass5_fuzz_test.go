@@ -59,18 +59,18 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 
 		configUserHomeDir = func() (string, error) { return "/home/fuzz", nil }
 		_ = DefaultConfig()
-		_ = DefaultHubStateRoot()
+		_, _ = DefaultHubStateRoot()
 		_ = DefaultConfigPath()
-		_ = DefaultPastIndexDBPath()
+		_, _ = DefaultPastIndexDBPath()
 		t.Setenv(envvars.XDGStateHome.Name, "/state")
-		_ = DefaultStateGlob()
+		_, _ = DefaultStateGlob()
 		t.Setenv(envvars.XDGStateHome.Name, "")
-		_ = DefaultStateGlob()
+		_, _ = DefaultStateGlob()
 		configUserHomeDir = func() (string, error) { return "", errors.New("home") }
-		_ = DefaultHubStateRoot()
+		_, _ = DefaultHubStateRoot()
 		_ = DefaultConfigPath()
-		_ = DefaultStateGlob()
-		_ = DefaultPastIndexDBPath()
+		_, _ = DefaultStateGlob()
+		_, _ = DefaultPastIndexDBPath()
 		cfgPath := filepath.Join(root, "hub.toml")
 		mustConfig := func(body string) {
 			if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {

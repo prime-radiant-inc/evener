@@ -12773,7 +12773,7 @@ func TestHubRPCTestServerGivesEachTestItsOwnRoots(t *testing.T) {
 		got    func(hubcore.WebConfig) string
 		shared string
 	}{
-		{"HubStateRoot", func(c hubcore.WebConfig) string { return c.HubStateRoot }, cmdutil.DefaultStateRoot()},
+		{"HubStateRoot", func(c hubcore.WebConfig) string { return c.HubStateRoot }, mustStateRoot(t)},
 		{"LaunchConfigRoot", func(c hubcore.WebConfig) string { return c.LaunchConfigRoot }, cmdutil.DefaultConfigRoot()},
 		{"PluginRoot", func(c hubcore.WebConfig) string { return c.PluginRoot }, plugins.DefaultRoot()},
 	} {

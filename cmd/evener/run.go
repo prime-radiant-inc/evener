@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/execsupport/syncio"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -350,9 +351,13 @@ func run(ctx context.Context, cfg runConfig) error {
 		memoryProjectID = resolveMemoryProjectID(env, cfg.stderr)
 	}
 
+	memoryStateRoot, err := userdirs.DefaultStateRoot()
+	if err != nil {
+		return err
+	}
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
-		MemoryStateRoot:             cmdutil.DefaultStateRoot(),
+		MemoryStateRoot:             memoryStateRoot,
 		MemoryProjectID:             memoryProjectID,
 		DisableMemory:               cfg.disableMemory,
 		LifetimeContext:             ctx,

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
@@ -67,27 +68,20 @@ func AuthFilePath(stateDir, instanceName string) string {
 // DefaultStateDir returns the default Evener state directory, resolving the state
 // home from XDG_STATE_HOME (falling back to ~/.local/state). It is equivalent
 // to DefaultStateDirWithStateHome("").
-func DefaultStateDir() string {
+func DefaultStateDir() (string, error) {
 	return DefaultStateDirWithStateHome("")
 }
 
 // DefaultStateDirWithStateHome returns the Evener state directory rooted at the
-// given state home. When stateHome is empty it falls back to XDG_STATE_HOME,
-// then to ~/.local/state (or the OS temp dir if the home directory cannot be
-// determined). The result is that base joined with "evener".
-func DefaultStateDirWithStateHome(stateHome string) string {
+// given state home (userdirs.StateRoot). When stateHome is empty it falls back
+// to XDG_STATE_HOME, then to ~/.local/state. It returns userdirs.ErrNoStateHome
+// when none of those resolve.
+func DefaultStateDirWithStateHome(stateHome string) (string, error) {
 	base := strings.TrimSpace(stateHome)
 	if base == "" {
 		base = envvars.XDGStateHome.Trimmed()
 	}
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			home = os.TempDir()
-		}
-		base = filepath.Join(home, ".local", "state")
-	}
-	return filepath.Join(base, "evener")
+	return userdirs.StateRoot(base, os.UserHomeDir)
 }
 
 // LoadAuth reads and validates the stored auth record for instanceName under

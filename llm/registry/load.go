@@ -201,13 +201,20 @@ func defaultConfigRoot(env func(string) (string, bool)) string {
 
 // defaultStateRoot resolves the registry's state root from its injected
 // environment function (userdirs.StateRoot), so tests do not depend on the
-// process environment.
-func defaultStateRoot(env func(string) (string, bool)) (string, error) {
+// process environment. It is empty when neither XDG_STATE_HOME nor HOME is
+// there: a registry with no state root runs from the embedded catalog and has
+// no runtime cache or OAuth records. Callers that need the state root
+// (cmdutil.LoadRegistry) resolve it themselves and report the error.
+func defaultStateRoot(env func(string) (string, bool)) string {
 	xdg, _ := env("XDG_STATE_HOME")
-	return userdirs.StateRoot(xdg, func() (string, error) {
+	root, err := userdirs.StateRoot(xdg, func() (string, error) {
 		home, _ := env("HOME")
 		return home, nil
 	})
+	if err != nil {
+		return ""
+	}
+	return root
 }
 
 // Load assembles the registry from the embedded snapshot, the curated
@@ -220,11 +227,7 @@ func Load(opts ...Option) (*Registry, error) {
 		opt(o)
 	}
 	if o.stateRoot == "" {
-		root, err := defaultStateRoot(o.env)
-		if err != nil {
-			return nil, fmt.Errorf("registry state root: %w", err)
-		}
-		o.stateRoot = root
+		o.stateRoot = defaultStateRoot(o.env)
 	}
 	r := &Registry{
 		presets: map[string]Transport{}, topGlobs: map[string]map[string]Model{},
@@ -1239,7 +1242,7 @@ func (r *Registry) maybeStartRefresh(o *options) {
 	if v, _ := o.env("EVENER_OFFLINE"); v == "1" {
 		offline = true
 	}
-	if offline {
+	if offline || o.stateRoot == "" {
 		return
 	}
 	if _, meta, ok := readCache(o.stateRoot); ok && time.Since(meta.FetchedAt) < cacheMaxAge {

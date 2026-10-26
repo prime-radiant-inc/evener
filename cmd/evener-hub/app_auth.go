@@ -138,8 +138,11 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 	if len(launchEnv) > 0 {
 		authEnv = effectiveHubAuthEnv(launchEnv[0])
 	}
-	stateDir := openAIStateDirFromEnv(authEnv)
+	stateDir, stateErr := openAIStateDirFromEnv(authEnv)
 	store, storeErr := hubCredentialStore(stateDir, nil)
+	if stateErr != nil {
+		storeErr = stateErr
+	}
 	c := &hubAuthController{
 		stateDir:             stateDir,
 		creds:                store,
@@ -170,13 +173,29 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 // live under, which is where newHubAuthController has always found the default
 // store. An empty stateRoot resolves the directory from the process environment
 // (XDG_STATE_HOME / HOME), matching that constructor without launch-env
-// overrides.
-func hubAuthCredentialsPath(stateRoot string) string {
+// overrides; it fails with userdirs.ErrNoStateHome when that resolves nowhere.
+func hubAuthCredentialsPath(stateRoot string) (string, error) {
 	stateDir := strings.TrimSpace(stateRoot)
 	if stateDir == "" {
-		stateDir = openAIStateDirFromEnv(effectiveHubAuthEnv(nil))
+		var err error
+		if stateDir, err = openAIStateDirFromEnv(effectiveHubAuthEnv(nil)); err != nil {
+			return "", err
+		}
 	}
-	return filepath.Join(filepath.Dir(stateDir), "credentials.toml")
+	return filepath.Join(filepath.Dir(stateDir), "credentials.toml"), nil
+}
+
+// refuseAuthRecordsWithoutStateDir answers every OAuth record read, write and
+// delete with stateErr when the state directory could not be resolved. The
+// record helpers would otherwise resolve auth/<instance>.json against the
+// working directory.
+func (c *hubAuthController) refuseAuthRecordsWithoutStateDir(stateErr error) {
+	if stateErr == nil {
+		return
+	}
+	c.loadAuth = func(string, string) (authopenai.AuthRecord, error) { return authopenai.AuthRecord{}, stateErr }
+	c.saveAuth = func(string, string, authopenai.AuthRecord) error { return stateErr }
+	c.deleteAuth = func(string, string) (bool, error) { return false, stateErr }
 }
 
 // hubCredentialStore resolves the one credentials store every credential
@@ -199,7 +218,11 @@ func hubCredentialStore(stateRoot string, store *credentials.Store) (*credential
 	if store != nil {
 		return store, nil
 	}
-	loaded, err := credentials.LoadStore(hubAuthCredentialsPath(stateRoot))
+	path, err := hubAuthCredentialsPath(stateRoot)
+	if err != nil {
+		return nil, err
+	}
+	loaded, err := credentials.LoadStore(path)
 	if err != nil {
 		return nil, err
 	}
@@ -257,8 +280,9 @@ func newHubAuthControllerWithStore(stateRoot string, store *credentials.Store) *
 	cfg := authopenai.DefaultConfig()
 	client := &http.Client{Timeout: cfg.HTTPTimeout}
 	stateDir := strings.TrimSpace(stateRoot)
+	var stateErr error
 	if stateDir == "" {
-		stateDir = openAIStateDirFromEnv(effectiveHubAuthEnv(nil))
+		stateDir, stateErr = openAIStateDirFromEnv(effectiveHubAuthEnv(nil))
 	}
 	// A nil store should never happen in production (main.go always supplies
 	// one). Fall back to the on-disk default store — the same path
@@ -291,6 +315,7 @@ func newHubAuthControllerWithStore(stateRoot string, store *credentials.Store) *
 		credentialTestLoader: loadCredentialTestClient,
 		credentialTests:      map[string]*credentialTestCall{},
 	}
+	c.refuseAuthRecordsWithoutStateDir(stateErr)
 	c.wireCredentialStore()
 	if hubAuthControllerSetup != nil {
 		hubAuthControllerSetup(c)
@@ -1039,7 +1064,7 @@ func effectiveHubAuthEnv(launchEnv map[string]string) map[string]string {
 	return out
 }
 
-func openAIStateDirFromEnv(env map[string]string) string {
+func openAIStateDirFromEnv(env map[string]string) (string, error) {
 	return openAIStateDirFromEnvMap(env)
 }
 

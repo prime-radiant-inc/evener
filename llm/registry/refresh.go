@@ -31,6 +31,9 @@ func cachePaths(stateRoot string) (jsonPath, metaPath string) {
 // readCache returns the cached snapshot and its meta when both exist and
 // parse. Validation against the converter happens in Load.
 func readCache(stateRoot string) ([]byte, Meta, bool) {
+	if stateRoot == "" {
+		return nil, Meta{}, false
+	}
 	jsonPath, metaPath := cachePaths(stateRoot)
 	raw, err := os.ReadFile(jsonPath)
 	if err != nil {

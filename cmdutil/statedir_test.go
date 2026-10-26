@@ -1,6 +1,7 @@
 package cmdutil
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,13 +9,13 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 )
 
 // TestStateRootFromLookup pins the canonical state-root chain against a
 // supplied environment lookup: XDG_STATE_HOME (verbatim), then the home
-// directory in os.UserHomeDir's per-OS spellings, then the "."-rooted
-// fallback. The Windows arms are pinned from any host so the hub's launch-env
+// directory in os.UserHomeDir's per-OS spellings, then ErrNoStateHome. The Windows arms are pinned from any host so the hub's launch-env
 // resolution cannot regress off-Windows again (#1012).
 func TestStateRootFromLookup(t *testing.T) {
 	lookup := func(env map[string]string) func(string) (string, bool) {
@@ -28,6 +29,7 @@ func TestStateRootFromLookup(t *testing.T) {
 		goos      string
 		env       map[string]string
 		wantParts []string
+		wantErr   bool
 	}{
 		{
 			name:      "xdg state home wins over home",
@@ -65,29 +67,29 @@ func TestStateRootFromLookup(t *testing.T) {
 		{
 			// os.UserHomeDir has no HOMEDRIVE/HOMEPATH arm; the old hub did,
 			// and that was the drift #1012 removed. Partial and full
-			// combinations alike fall through to the "."-rooted fallback.
-			name:      "windows ignores homedrive and homepath",
-			goos:      "windows",
-			env:       map[string]string{envvars.HomeDrive.Name: "D:", envvars.HomePath.Name: `\Users\u`},
-			wantParts: []string{".local", "state", "evener"},
+			// combinations alike resolve no home.
+			name:    "windows ignores homedrive and homepath",
+			goos:    "windows",
+			env:     map[string]string{envvars.HomeDrive.Name: "D:", envvars.HomePath.Name: `\Users\u`},
+			wantErr: true,
 		},
 		{
-			name:      "windows ignores a lone homedrive",
-			goos:      "windows",
-			env:       map[string]string{envvars.HomeDrive.Name: "D:"},
-			wantParts: []string{".local", "state", "evener"},
+			name:    "windows ignores a lone homedrive",
+			goos:    "windows",
+			env:     map[string]string{envvars.HomeDrive.Name: "D:"},
+			wantErr: true,
 		},
 		{
-			name:      "windows ignores a lone homepath",
-			goos:      "windows",
-			env:       map[string]string{envvars.HomePath.Name: `\Users\u`},
-			wantParts: []string{".local", "state", "evener"},
+			name:    "windows ignores a lone homepath",
+			goos:    "windows",
+			env:     map[string]string{envvars.HomePath.Name: `\Users\u`},
+			wantErr: true,
 		},
 		{
-			name:      "windows ignores a msys home with no profile",
-			goos:      "windows",
-			env:       map[string]string{envvars.Home.Name: `C:\msys\home\u`},
-			wantParts: []string{".local", "state", "evener"},
+			name:    "windows ignores a msys home with no profile",
+			goos:    "windows",
+			env:     map[string]string{envvars.Home.Name: `C:\msys\home\u`},
+			wantErr: true,
 		},
 		{
 			name:      "android uses the sdcard constant",
@@ -102,17 +104,24 @@ func TestStateRootFromLookup(t *testing.T) {
 			wantParts: []string{"/", ".local", "state", "evener"},
 		},
 		{
-			name:      "no home falls back to dot",
-			goos:      "linux",
-			env:       map[string]string{},
-			wantParts: []string{".local", "state", "evener"},
+			name:    "no home is an error",
+			goos:    "linux",
+			env:     map[string]string{},
+			wantErr: true,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			got, err := StateRootFromLookup(tc.goos, lookup(tc.env))
+			if tc.wantErr {
+				if !errors.Is(err, userdirs.ErrNoStateHome) {
+					t.Fatalf("StateRootFromLookup(%q, %v) error = %v, want ErrNoStateHome", tc.goos, tc.env, err)
+				}
+				return
+			}
 			want := filepath.Join(tc.wantParts...)
-			if got := StateRootFromLookup(tc.goos, lookup(tc.env)); got != want {
-				t.Fatalf("StateRootFromLookup(%q, %v) = %q, want %q", tc.goos, tc.env, got, want)
+			if err != nil || got != want {
+				t.Fatalf("StateRootFromLookup(%q, %v) = %q, %v, want %q", tc.goos, tc.env, got, err, want)
 			}
 		})
 	}

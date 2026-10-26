@@ -18,8 +18,8 @@ import (
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/internal/credentials"
 )
 
@@ -257,14 +257,14 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 
 // TestOpenAIStateDirFromEnvUsesLaunchEnvStateHome pins the one thing the hub
 // auth controller still resolves for itself: XDG_STATE_HOME out of the launch
-// env it is handed, which is not the process env cmdutil.DefaultStateRoot reads.
+// env it is handed, which is not the process env userdirs.DefaultStateRoot reads.
 func TestOpenAIStateDirFromEnvUsesLaunchEnvStateHome(t *testing.T) {
 	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
 	launchStateHome := t.TempDir()
 
-	got := openAIStateDirFromEnv(map[string]string{envvars.XDGStateHome.Name: launchStateHome})
-	if want := filepath.Join(launchStateHome, "evener"); got != want {
-		t.Fatalf("stateDir=%q, want %q", got, want)
+	got, err := openAIStateDirFromEnv(map[string]string{envvars.XDGStateHome.Name: launchStateHome})
+	if want := filepath.Join(launchStateHome, "evener"); err != nil || got != want {
+		t.Fatalf("stateDir=%q, %v, want %q", got, err, want)
 	}
 }
 
@@ -272,7 +272,7 @@ func TestOpenAIStateDirFromEnvUsesLaunchEnvStateHome(t *testing.T) {
 // launch override: when the launch env redirects the home directory and
 // XDG_STATE_HOME is unset, the home arm must read that supplied home, not the
 // process environment. Delegating the whole arm to the process-based
-// cmdutil.DefaultStateRoot() silently ignored the launch env, so a hub handed a
+// userdirs.DefaultStateRoot() silently ignored the launch env, so a hub handed a
 // redirecting environment read and wrote OAuth state in the ambient home.
 //
 // goos is passed explicitly so the Windows arm is pinned from any host; a test
@@ -290,6 +290,7 @@ func TestOpenAIStateDirFromLookupUsesLaunchEnvHome(t *testing.T) {
 		goos      string
 		env       map[string]string
 		wantParts []string
+		wantErr   bool
 	}{
 		{
 			name:      "unix home",
@@ -305,18 +306,25 @@ func TestOpenAIStateDirFromLookupUsesLaunchEnvHome(t *testing.T) {
 		},
 		{
 			// A launch env that carries only the removed HOMEDRIVE/HOMEPATH
-			// spelling resolves like cmdutil: no profile, so the fallback.
-			name:      "windows homedrive and homepath are not a home",
-			goos:      "windows",
-			env:       map[string]string{envvars.HomeDrive.Name: "D:", envvars.HomePath.Name: `\Users\u`},
-			wantParts: []string{".local", "state", "evener"},
+			// spelling resolves like cmdutil: no profile, so no state root.
+			name:    "windows homedrive and homepath are not a home",
+			goos:    "windows",
+			env:     map[string]string{envvars.HomeDrive.Name: "D:", envvars.HomePath.Name: `\Users\u`},
+			wantErr: true,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			got, err := openAIStateDirFromLookup(tc.goos, lookup(tc.env))
+			if tc.wantErr {
+				if !errors.Is(err, userdirs.ErrNoStateHome) {
+					t.Fatalf("stateDir error = %v, want ErrNoStateHome", err)
+				}
+				return
+			}
 			want := filepath.Join(tc.wantParts...)
-			if got := openAIStateDirFromLookup(tc.goos, lookup(tc.env)); got != want {
-				t.Fatalf("stateDir=%q, want launch home %q", got, want)
+			if err != nil || got != want {
+				t.Fatalf("stateDir=%q, %v, want launch home %q", got, err, want)
 			}
 		})
 	}
@@ -324,35 +332,32 @@ func TestOpenAIStateDirFromLookupUsesLaunchEnvHome(t *testing.T) {
 
 // TestOpenAIStateDirFromEnvMatchesDefaultStateRoot pins the anti-drift contract
 // #1012 asked for: when the supplied env is the process env, the hub resolves
-// exactly what cmdutil.DefaultStateRoot resolves. The two used to disagree on
+// exactly what userdirs.DefaultStateRoot resolves. The two used to disagree on
 // Windows, where the hub read USERPROFILE/HOMEDRIVE+HOMEPATH out of the
 // supplied env instead of letting os.UserHomeDir find the home directory.
 func TestOpenAIStateDirFromEnvMatchesDefaultStateRoot(t *testing.T) {
 	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
 	t.Setenv(envvars.Home.Name, t.TempDir())
 
-	if got, want := openAIStateDirFromEnv(envToMap(os.Environ())), cmdutil.DefaultStateRoot(); got != want {
-		t.Fatalf("stateDir=%q, want cmdutil.DefaultStateRoot() %q", got, want)
+	got, err := openAIStateDirFromEnv(envToMap(os.Environ()))
+	if want := mustStateRoot(t); err != nil || got != want {
+		t.Fatalf("stateDir=%q, %v, want userdirs.DefaultStateRoot() %q", got, err, want)
 	}
 }
 
-// TestOpenAIStateDirFromEnvFallsBackWhenNoHome pins the last-resort arm: a
-// supplied environment with neither XDG_STATE_HOME nor a home resolves to
-// cmdutil's "."-rooted fallback, not back into the process environment. A
-// launch env that deliberately carries no home therefore cannot silently read
-// or write OAuth state under the ambient one.
-func TestOpenAIStateDirFromEnvFallsBackWhenNoHome(t *testing.T) {
+// TestOpenAIStateDirFromEnvReportsNoStateHomeWhenNoHome pins the last-resort
+// arm: a supplied environment with neither XDG_STATE_HOME nor a home resolves
+// to an error, not back into the process environment. A launch env that
+// deliberately carries no home therefore cannot silently read or write OAuth
+// state under the ambient one.
+func TestOpenAIStateDirFromEnvReportsNoStateHomeWhenNoHome(t *testing.T) {
 	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
 	t.Setenv(envvars.Home.Name, t.TempDir())
 	t.Setenv(envvars.UserProfile.Name, t.TempDir())
-	processRoot := cmdutil.DefaultStateRoot()
 
-	got := openAIStateDirFromEnv(map[string]string{})
-	if want := filepath.Join(".local", "state", "evener"); got != want {
-		t.Fatalf("stateDir=%q, want %q", got, want)
-	}
-	if got == processRoot {
-		t.Fatalf("stateDir=%q equals the process root; the supplied env must win", got)
+	got, err := openAIStateDirFromEnv(map[string]string{})
+	if !errors.Is(err, userdirs.ErrNoStateHome) || got != "" {
+		t.Fatalf("stateDir=%q, %v; the supplied env must win and report ErrNoStateHome", got, err)
 	}
 }
 
@@ -1625,4 +1630,47 @@ func renameProvidersEntry(t *testing.T, c *hubAuthController, path, content stri
 func attachTestRegistry(t *testing.T, c *hubAuthController) {
 	t.Helper()
 	c.reg = newTestRegistry(t, c.stateDir, "", c.creds, nil)
+}
+
+// mustStateRoot is the Evener state root of the test's isolated environment.
+func mustStateRoot(t *testing.T) string {
+	t.Helper()
+	root, err := userdirs.DefaultStateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// A hub with no state home refuses to read or write OAuth records, rather than
+// resolving auth/<instance>.json against its working directory, and answers
+// credential writes with the same reason. A controller built once a home
+// exists works again.
+func TestHubAuthControllerWithoutStateHomeRefusesRecords(t *testing.T) {
+	t.Setenv(envvars.XDGStateHome.Name, "")
+	t.Setenv(envvars.Home.Name, "")
+	t.Chdir(t.TempDir())
+
+	ctrl := newHubAuthControllerWithStore("", nil)
+	if _, err := ctrl.loadAuth(ctrl.stateDir, "openai"); !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("loadAuth error = %v, want ErrNoStateHome", err)
+	}
+	if err := ctrl.saveAuth(ctrl.stateDir, "openai", authopenai.AuthRecord{}); !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("saveAuth error = %v, want ErrNoStateHome", err)
+	}
+	if _, err := ctrl.deleteAuth(ctrl.stateDir, "openai"); !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("deleteAuth error = %v, want ErrNoStateHome", err)
+	}
+	if _, credsErr := ctrl.credentialStore(); !errors.Is(credsErr, userdirs.ErrNoStateHome) {
+		t.Fatalf("credentialStore error = %v, want ErrNoStateHome", credsErr)
+	}
+	if _, err := os.Stat("auth"); !os.IsNotExist(err) {
+		t.Fatalf("an auth directory appeared in the working directory: %v", err)
+	}
+
+	t.Setenv(envvars.Home.Name, t.TempDir())
+	recovered := newHubAuthControllerWithStore("", nil)
+	if _, err := recovered.loadAuth(recovered.stateDir, "openai"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("loadAuth after the home returned error = %v, want ErrAuthNotFound", err)
+	}
 }

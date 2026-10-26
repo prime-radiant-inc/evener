@@ -14,7 +14,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -52,8 +52,8 @@ func TestMemoryRunAndServeLaunch(t *testing.T) {
 				capture := func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 					defer env.Cleanup()
 					captured = true
-					if cfg.MemoryStateRoot != cmdutil.DefaultStateRoot() || cfg.MemoryStateRoot == state || cfg.MemoryProjectID != project.ID || cfg.DisableMemory != disabled {
-						t.Errorf("root=%q project=%q disabled=%t, want root=%q project=%q disabled=%t", cfg.MemoryStateRoot, cfg.MemoryProjectID, cfg.DisableMemory, cmdutil.DefaultStateRoot(), project.ID, disabled)
+					if cfg.MemoryStateRoot != mustStateRoot(t) || cfg.MemoryStateRoot == state || cfg.MemoryProjectID != project.ID || cfg.DisableMemory != disabled {
+						t.Errorf("root=%q project=%q disabled=%t, want root=%q project=%q disabled=%t", cfg.MemoryStateRoot, cfg.MemoryProjectID, cfg.DisableMemory, mustStateRoot(t), project.ID, disabled)
 					}
 					return nil, stop
 				}
@@ -104,7 +104,7 @@ func TestMemoryRunAndServeResumeLaunch(t *testing.T) {
 				capture := func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, cfg agent.RestoreSessionConfig) (*agent.Session, error) {
 					defer env.Cleanup()
 					captured = true
-					if cfg.MemoryStateRoot != cmdutil.DefaultStateRoot() || cfg.DisableMemory != disabled || meta.Config.MemoryProjectID != "saved-binding" {
+					if cfg.MemoryStateRoot != mustStateRoot(t) || cfg.DisableMemory != disabled || meta.Config.MemoryProjectID != "saved-binding" {
 						t.Errorf("resume root=%q disable=%t saved project=%q", cfg.MemoryStateRoot, cfg.DisableMemory, meta.Config.MemoryProjectID)
 					}
 					return nil, stop
@@ -203,7 +203,7 @@ func TestMemoryLaunchBindingFailure(t *testing.T) {
 	constructed := false
 	runNewSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 		constructed = true
-		if cfg.MemoryProjectID != "" || cfg.MemoryStateRoot != cmdutil.DefaultStateRoot() {
+		if cfg.MemoryProjectID != "" || cfg.MemoryStateRoot != mustStateRoot(t) {
 			t.Errorf("failure binding=%q root=%q", cfg.MemoryProjectID, cfg.MemoryStateRoot)
 		}
 		return old(client, profile, env, cfg)
@@ -214,10 +214,20 @@ func TestMemoryLaunchBindingFailure(t *testing.T) {
 	if !constructed {
 		t.Fatal("ordinary session not constructed")
 	}
-	for path, want := range map[string]string{filepath.Join(dir, "ordinary.txt"): "opaque-ordinary-46", filepath.Join(cmdutil.DefaultStateRoot(), "memory", "topic.txt"): "---\nwhen: w\n---\n\nopaque-personal-58"} {
+	for path, want := range map[string]string{filepath.Join(dir, "ordinary.txt"): "opaque-ordinary-46", filepath.Join(mustStateRoot(t), "memory", "topic.txt"): "---\nwhen: w\n---\n\nopaque-personal-58"} {
 		bytes, err := os.ReadFile(path)
 		if err != nil || string(bytes) != want {
 			t.Fatalf("path=%s bytes=%q err=%v", path, bytes, err)
 		}
 	}
+}
+
+// mustStateRoot is the Evener state root of the test's isolated environment.
+func mustStateRoot(t *testing.T) string {
+	t.Helper()
+	root, err := userdirs.DefaultStateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
 }

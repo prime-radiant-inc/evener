@@ -52,12 +52,12 @@ var doctorEvenerCommandNames = tool.DoctorEvenerCommands()
 // session has no state dir (state persistence off). This is the inheritance
 // that removes the PATH/cwd/env failure class: a doctor delegate sees the
 // daemon's state root by construction.
-func doctorStateBase(deps *toolDeps, override string) string {
+func doctorStateBase(deps *toolDeps, override string) (string, error) {
 	if v := strings.TrimSpace(override); v != "" {
-		return v
+		return v, nil
 	}
 	if deps != nil && deps.stateDir != "" {
-		return deps.stateDir
+		return deps.stateDir, nil
 	}
 	return doctor.ResolveStateBase("")
 }
@@ -83,7 +83,10 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 		return nil, fmt.Errorf("unknown doctor command %q (one of: %s)", command, strings.Join(doctorEvenerCommandNames, ", "))
 	}
 
-	stateBase := doctorStateBase(deps, stringArg(args, "state_dir"))
+	stateBase, err := doctorStateBase(deps, stringArg(args, "state_dir"))
+	if err != nil {
+		return nil, err
+	}
 	selector := stringArg(args, "selector")
 
 	// Selector validation mirrors the CLI's own usage errors: an agent

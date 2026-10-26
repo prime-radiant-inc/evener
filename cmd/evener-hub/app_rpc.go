@@ -20,7 +20,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
@@ -930,17 +929,18 @@ func hubLaunchConfigRoot(cfg hubcore.WebConfig) string {
 // hubAuthStateRoot is where the auth controller keeps OAuth records: the
 // registry's state root, because registry credential resolution reads
 // auth/<instance>.json from there. The hub loads its registry at
-// cmdutil.DefaultStateRoot() whatever hub_state_root says, so a record kept
+// userdirs.DefaultStateRoot() whatever hub_state_root says, so a record kept
 // under HubStateRoot would be a login the registry, the credential probe and
 // every spawned child never see. Before the first successful load, or with no
-// registry wired (a bare test config), that same default is the answer.
+// registry wired (a bare test config), the answer is empty and the auth
+// controller resolves that same default itself.
 func hubAuthStateRoot(reg *hubcore.ProviderRegistry) string {
 	if reg != nil {
 		if r := reg.Get(); r != nil {
 			return r.StateRoot()
 		}
 	}
-	return cmdutil.DefaultStateRoot()
+	return ""
 }
 
 // hubLogfFor is where the hub's operational log lines go: cfg.Logf, or

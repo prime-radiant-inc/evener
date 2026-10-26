@@ -101,7 +101,11 @@ func (c *Codex) AuthScope(_ context.Context, res registry.Resolved) (string, str
 	if res.Credential.Source != "oauth" {
 		return "", "", notSignedIn(res.Instance)
 	}
-	record, err := authopenai.LoadAuth(c.stateDir(), res.Instance)
+	stateDir, err := c.stateDir()
+	if err != nil {
+		return "", "", err
+	}
+	record, err := authopenai.LoadAuth(stateDir, res.Instance)
 	if err != nil {
 		return "", "", err
 	}
@@ -179,16 +183,20 @@ func (c *Codex) PrepareRequest(_ context.Context, httpReq *http.Request, body ma
 // request as a stream (spec §9.5).
 func (*Codex) RequiresStreamingComplete() bool { return true }
 
-func (c *Codex) stateDir() string {
+func (c *Codex) stateDir() (string, error) {
 	if c.StateDir != "" {
-		return c.StateDir
+		return c.StateDir, nil
 	}
 	return authopenai.DefaultStateDir()
 }
 
 func (c *Codex) credentials(ctx context.Context, instance string) (authopenai.RuntimeCredentials, error) {
+	stateDir, err := c.stateDir()
+	if err != nil {
+		return authopenai.RuntimeCredentials{}, err
+	}
 	if c.Credentials != nil {
-		return c.Credentials(ctx, c.stateDir(), instance)
+		return c.Credentials(ctx, stateDir, instance)
 	}
 	c.mu.Lock()
 	if c.service == nil {
@@ -196,7 +204,7 @@ func (c *Codex) credentials(ctx context.Context, instance string) (authopenai.Ru
 	}
 	service := c.service
 	c.mu.Unlock()
-	return service.ResolveRuntimeCredentials(ctx, c.stateDir(), instance)
+	return service.ResolveRuntimeCredentials(ctx, stateDir, instance)
 }
 
 // accountID reads the ChatGPT account id from the instance's current record
@@ -207,7 +215,11 @@ func (c *Codex) credentials(ctx context.Context, instance string) (authopenai.Ru
 // or unreadable record drops the cache entry and yields "" rather than an
 // error.
 func (c *Codex) accountID(instance string) string {
-	record, err := authopenai.LoadAuth(c.stateDir(), instance)
+	stateDir, err := c.stateDir()
+	var record authopenai.AuthRecord
+	if err == nil {
+		record, err = authopenai.LoadAuth(stateDir, instance)
+	}
 	if err != nil {
 		c.mu.Lock()
 		delete(c.accounts, instance)

@@ -832,7 +832,7 @@ func resolveStateDirForProject(project identifier.Project, workDir string, env m
 		_, stateDir, err := resolveEvenerStateDirWithProject(workDir, override, stateHome)
 		return stateDir, err
 	}
-	return agent.RuntimeDirForProjectWithStateHome(project, strings.TrimSpace(stateHome)), nil
+	return agent.RuntimeDirForProjectWithStateHome(project, strings.TrimSpace(stateHome))
 }
 
 func resolveEvenerStateDirWithStateHome(workDir, override, stateHome string) (string, error) {

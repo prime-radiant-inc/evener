@@ -99,9 +99,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		configBase = filepath.Join(home, ".config")
 	}
 
-	stateBase := os.Getenv(envvars.XDGStateHome.Name)
-	if stateBase == "" {
-		stateBase = filepath.Join(home, ".local", "state")
+	stateBase, err := userdirs.StateHome(os.Getenv(envvars.XDGStateHome.Name), func() (string, error) { return home, nil })
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "evener-migrate: resolve state home: %v\n", err)
+		return 1
 	}
 
 	cwd, err := os.Getwd()
