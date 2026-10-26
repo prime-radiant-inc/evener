@@ -741,7 +741,7 @@ func (m *hubHostManager) purgeNameReceipts(records hostTOMLRecords, name string,
 		}
 		delete(records.receipts, key)
 		records.droppedReceipts[key] = struct{}{}
-		records.prunedReceipts[key] = PrunedReceiptMarker{PrunedAt: now.UTC().Format(time.RFC3339)}
+		records.prunedReceipts[key] = PrunedReceiptMarker{PrunedAt: hostInstant(now)}
 	}
 }
 
@@ -792,7 +792,7 @@ func (m *hubHostManager) compactNameReceipts(records hostTOMLRecords, name strin
 		if candidate.audit {
 			return
 		}
-		records.prunedReceipts[candidate.key] = PrunedReceiptMarker{PrunedAt: now.UTC().Format(time.RFC3339)}
+		records.prunedReceipts[candidate.key] = PrunedReceiptMarker{PrunedAt: hostInstant(now)}
 	}
 	var superseded []candidate
 	var audits []candidate
