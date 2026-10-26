@@ -273,7 +273,7 @@ function SpawnForm({
   // empty until it loads, and in the common single-host case holds only
   // "local" - either way no picker renders, so the existing form is unchanged.
   //
-  // Two views of it, deliberately (round nine). `sources` is the SETTLED list
+  // Two views of it, deliberately. `sources` is the SETTLED list
   // and owns every decision: the launchable host below, the submitted source,
   // and the write-back; `displaySources` (below) is last-known data for DISPLAY
   // only, so a revalidation cannot make the picker vanish.
@@ -290,7 +290,7 @@ function SpawnForm({
   // selecting "Local" fires no change event while the select already reads
   // local - so the draft, not the remembered host, must carry the choice.
   //
-  // An EMPTY manifest is not that evidence (component 07b review, round five).
+  // An EMPTY manifest is not that evidence.
   // `sources` is empty both while the manifest is in flight (and if its fetch
   // failed) and when the manifest genuinely lists nothing remote, so its
   // emptiness cannot decide the target: reading it as a fallback silently
@@ -440,8 +440,8 @@ function SpawnForm({
   const [harness, setHarness] = useDraftField(draft, "harness");
   const [model, setModel] = useDraftField(draft, "model"); // qualified "provider/model", or "" for the harness default
   const [reasoningEffort, setReasoningEffort] = useDraftField(draft, "reasoningEffort");
-  // The display-only view of the same manifest, used by the picker alone
-  // (round nine): last-known data, so a revalidation (loading/stale) cannot
+  // The display-only view of the same manifest, used by the picker alone:
+  // last-known data, so a revalidation (loading/stale) cannot
   // make the picker vanish or the visible host flip to Local while the fresh
   // manifest is in flight.
   const displaySources = useNavigationStore(selectDisplaySources);
@@ -450,7 +450,7 @@ function SpawnForm({
   // draft names (only `sources` above may decide the launch target). While the
   // manifest is unsettled a submit carries `source` itself, so the visible
   // choice follows the draft rather than reading the withheld list as "the host
-  // is gone" (round nine). Once settled this is exactly hostChoice, preserving
+  // is gone". Once settled this is exactly hostChoice, preserving
   // the round-eight preselection and offline fallback unchanged.
   const displaySource = displaySources.find((candidate) => candidate.id === source);
   const displayHostChoice = sources.length > 0 ? hostChoice : (displaySource?.id ?? hostChoice);
@@ -548,8 +548,8 @@ function SpawnForm({
   // submit gate: a non-empty model is host-derived exactly as the harness is -
   // it was chosen from, or persisted against, the catalog of whichever host was
   // selected at the time - so until the SELECTED host's list lands, a submit
-  // could carry a model this host never offered (component 07b review, round
-  // five: `hostCatalogPending` covered only the harness/schema requests). A
+  // could carry a model this host never offered (`hostCatalogPending` covers
+  // only the harness/schema requests). A
   // LOCAL mount starts settled: nothing about it is host-derived, so the form
   // stays startable exactly as it was before host routing existed. Settlement,
   // not success, is the bar - see the effect below.
@@ -573,11 +573,11 @@ function SpawnForm({
   // (see its derivation). Left open, "Create & start" would then create THIS
   // path and launch THIS draft on whichever host is selected now - a launch the
   // newly selected host never offered, which is the remote-draft-silently-
-  // converted-to-a-local-launch class round five closed for the normal Start
-  // path. A host switch dismisses the pending create rather than re-homing it:
+  // converted-to-a-local-launch class the normal Start path already refuses.
+  // A host switch dismisses the pending create rather than re-homing it:
   // the user confirmed a path on one machine, so the same click must not act on
   // another. handleCreateConfirm re-checks the binding as well, because a
-  // confirm can race this effect (component 07b review, round seven).
+  // confirm can race this effect.
   const createDialogHostRef = useRef(submittedSource);
   useEffect(() => {
     if (createDialogHostRef.current === submittedSource) return;
@@ -833,9 +833,9 @@ function SpawnForm({
   // forwarded to a remote target - the selected host resolves its own default
   // - and is retired when the target becomes remote. Cleared on every
   // user-driven model change, so a value the person chose is never treated as
-  // fallback-derived (Component 06b review, round seven).
+  // fallback-derived.
   //
-  // The marker lives in the DRAFT, not a form-local ref (round eight): this
+  // The marker lives in the DRAFT, not a form-local ref: this
   // component is a singleton reused across drafts and unmounted/remounted with
   // the pane, so a ref-local marker leaked draft A's provenance onto an
   // identical model string draft B legitimately owns (clearing B's user-chosen
@@ -986,8 +986,7 @@ function SpawnForm({
   // source id) and that hub spawns on ITS host, resolving the model, credentials
   // and plugins from its own configuration. So a controller-local "missing" is
   // not evidence a remote launch cannot succeed, and must not BLOCK it - the
-  // remote hub's own thread/start error is the authority. (Source-aware
-  // discovery needs the evener/host/request proxy, which is not in this branch.)
+  // remote hub's own thread/start error is the authority.
   const remoteLaunch = submittedSource !== "" && submittedSource !== "local";
   // The selected target's own label for the notices and disclosures that name
   // it; falls back to the raw source id only while no manifest has ever named
@@ -1040,7 +1039,7 @@ function SpawnForm({
       : resolvedDefaultModel !== ""
         ? "resolved-default"
         : "default";
-  // The model half of the host gate (component 07b review, round five): a
+  // The model half of the host gate: a
   // non-empty model belongs to the host whose catalog offered it, so it cannot
   // be submitted until the SELECTED host's model list has settled - see
   // modelHostSettled above for why settlement (not success) is the bar.
@@ -1293,8 +1292,7 @@ function SpawnForm({
           error: r.error,
           path: r.path,
         }));
-      // A superseded host's answer must not land (component 07b review, round
-      // five): the advanced panel accepts a validation result on FIELD identity
+      // A superseded host's answer must not land: the advanced panel accepts a validation result on FIELD identity
       // alone, and a pathList add goes on its "ok" verdict, so a response issued
       // for host A could still mark - or re-add - an override after the reader
       // switched to host B, which then rides thread/start to a machine that
@@ -1329,7 +1327,7 @@ function SpawnForm({
   // typed while local stays marked "no such file or directory" after a remote
   // source is selected, so collectAdvancedOverrides keeps dropping it from
   // launchOverrides even though the disclosure below says the selected host
-  // resolves these paths (round ten). Re-validate the stored values whenever
+  // resolves these paths. Re-validate the stored values whenever
   // the launch target changes - the first run counts, so a remount under a
   // remote target clears a flag a local era left behind - so the flag, the
   // message and the collected overrides always describe the CURRENT target.
@@ -1389,8 +1387,8 @@ function SpawnForm({
   // It is the CONTROLLER's own last accepted directory, so a remote host's
   // picker must not start there: the picker validates its opening path before
   // showing anything, and a controller path usually does not exist on the other
-  // machine, so remote browsing began by refusing a stranger's directory
-  // (component 07b review, round five). A remote picker opens from the committed
+  // machine, so remote browsing began by refusing a stranger's directory.
+  // A remote picker opens from the committed
   // cwd, or the selected host's home when there is none.
   const pickerFallbackDir = isLocalHost(submittedSource) ? getGlobalLastWorkingDir() : "";
   const resolveConfig = useCallback(
@@ -1468,7 +1466,7 @@ function SpawnForm({
   // nothing" and wipe a perfectly valid draft. Tracked PER CATALOG because the
   // two loads answer and fail independently: a host that answers one and
   // refuses the other still owns the half it answered, and only that half may
-  // be reconciled against it (component 07b review, round six).
+  // be reconciled against it.
   const [harnessesHostSettled, setHarnessesHostSettled] = useState<string | null>(null);
   const [schemaHostSettled, setSchemaHostSettled] = useState<string | null>(null);
   // True while the CURRENT host's answers are outstanding. A switch is pending
@@ -1537,13 +1535,12 @@ function SpawnForm({
     // only thing that may reconcile that half of the draft: an empty list read
     // as "this host offers nothing" wiped the draft's harness and every
     // Advanced-options override on one transient hub error, with nothing left
-    // for a later successful load to restore (component 07b review, round five;
-    // the rejection handlers deliberately leave the catalogs as they were, as
-    // they did before that round). A rejection is a settlement but not an
+    // for a later successful load to restore (the rejection handlers
+    // deliberately leave the catalogs as they were). A rejection is a settlement but not an
     // answer: it must release Start (a host that refuses a catalog can never
     // hold the submit hostage) and must NOT be reconciled against. The stamps
     // are per catalog so one host's refusal does not suppress reconciliation of
-    // the catalog it DID answer (round six). `active` is false once this host is
+    // the catalog it DID answer. `active` is false once this host is
     // superseded, so a previous host's late answer never certifies the current
     // one.
     const harnessesLoad = hostRequest(client, submittedSource, "evener/harnesses/list", {}).then((r) => {
@@ -1570,8 +1567,7 @@ function SpawnForm({
   }, [client, submittedSource, setPluginSelection, setKnownSelectionIssues, catalogRetryRevision]);
 
   // The draft's launch config is chosen from the SELECTED host's catalogs, and
-  // the draft store carries it across a host switch (component 07b review, round
-  // three). Left alone, a harness or Advanced-options override that exists only
+  // the draft store carries it across a host switch. Left alone, a harness or Advanced-options override that exists only
   // on the host that produced it still rides thread/start - and the mismatch is
   // invisible in the form, because an empty harness catalog falls back to the
   // "evener" label and an empty schema renders no Advanced fields at all. So
@@ -1580,7 +1576,7 @@ function SpawnForm({
   // default. Each half is gated by its OWN answer stamp, so a host that
   // answered one catalog and refused the other reconciles the half it answered
   // - and only that half, because the refusal remains no evidence about the
-  // other catalog (component 07b review, rounds five and six). The values are
+  // other catalog. The values are
   // read from the store rather than from the rendered state so this effect does
   // not re-run on its own writes.
   useEffect(() => {
@@ -1613,7 +1609,7 @@ function SpawnForm({
     // field survives (it explains a validation the user still has to fix), while
     // a dropped field's error goes with the field. Clearing the whole map here
     // discarded the kept fields' errors - the fields stayed invalid with nothing
-    // left saying why (component 07b review, round four).
+    // left saying why.
     const errors = draft.fields.getState().advancedErrors;
     const keptErrors = Object.fromEntries(Object.entries(errors).filter(([field]) => offered.has(field)));
     if (Object.keys(keptErrors).length !== Object.keys(errors).length) {
@@ -1925,10 +1921,10 @@ function SpawnForm({
 
   // Retire a model this fallback installed once the target becomes remote: the
   // value describes the CONTROLLER's catalog, and forwarding it would prevent
-  // the selected host from resolving its own default (round seven). Only a
+  // the selected host from resolving its own default. Only a
   // value still equal to the one the fallback installed is cleared, so a
   // person's own choice - or a sticky draft default - is never touched. The
-  // mark is this draft's own (round eight), so another draft's identical model
+  // mark is this draft's own, so another draft's identical model
   // string is untouched, and it survives a pane remount.
   useEffect(() => {
     if (!remoteLaunch) return;
@@ -2032,7 +2028,7 @@ function SpawnForm({
     if (!harnessSupportsPluginSelection(next, harnesses)) handlePluginSelectionChange({ mode: "default" });
     // Switching to a non-evener harness always blanks the model; switching to a
     // evener-model harness only blanks a value that isn't already provider/model
-    // shaped (floor §1.10, spawn.js:395-402).
+    // shaped (floor §1.10).
     if (!harnessUsesEvenerModels(next, harnesses)) setModel("");
     else if (model !== "" && !model.includes("/")) setModel("");
   }
@@ -2134,7 +2130,7 @@ function SpawnForm({
     // with the menu open. Shift+Enter, Alt+Enter, and composing Enter keep
     // their existing behavior (newline/composition).
     if (handleSlashKeyDown(event)) return;
-    // ⌘/Ctrl+Enter submits (floor §1.12, spawn.js:1204-1211).
+    // ⌘/Ctrl+Enter submits (floor §1.12).
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       void handleSpawn();
@@ -2301,7 +2297,7 @@ function SpawnForm({
       harnessUsesEvenerModels: usesEvenerModels,
       // A remote launch's cwd/model describe the selected host, not this
       // controller, so they must not overwrite the global scalar defaults a
-      // later local spawn reads (round seven).
+      // later local spawn reads.
       remoteLaunch,
     });
     // Reset transient form state on success, before navigating away (floor
@@ -2420,7 +2416,7 @@ function SpawnForm({
     // selected host's harness/schema and model answers are still in flight, so
     // its launch config has not been reconciled against them and a submit could
     // carry a value that host does not offer. No toast: both requests always
-    // SETTLE - a refusal releases the gate too (round five) - so a click here is
+    // SETTLE - a refusal releases the gate too - so a click here is
     // held briefly, never dead-ended, and the same reasoning as handleSpawn's
     // applies (the state is already explained, and a repeating chord must not
     // stack toasts).
@@ -2442,8 +2438,7 @@ function SpawnForm({
   // is the CONTROLLER's own browse history: it seeds this hub's pickers, local
   // ones included. A remote target's cwd belongs to the SELECTED HOST, so
   // recording it would open the next local picker at a path that usually does
-  // not exist here (Component 06b review, round eight - the picker-seed half of
-  // round seven's controller-scoped-cwd rule).
+  // not exist here.
   const commitLastWorkingDir = useCallback(
     (path: string) => {
       if (!remoteLaunch) setGlobalLastWorkingDir(path);
