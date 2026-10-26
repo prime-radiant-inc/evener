@@ -414,10 +414,14 @@ func (x *Index) RebuildIfStillRefused(length int64, refused string) error {
 // locked runs fn holding the sidecar lock, shared or exclusive, after taking
 // up whatever other handles wrote.
 func (x *Index) locked(exclusive bool, fn func() error) error {
+	return x.lockedMode(exclusive, false, fn)
+}
+
+func (x *Index) lockedMode(exclusive, nonblocking bool, fn func() error) error {
 	if x.lock == nil {
 		return errors.New("transcript index is closed")
 	}
-	if x.refusing {
+	if x.refusing || nonblocking {
 		if err := lockFileTry(x.lock, exclusive); err != nil {
 			// Only contention is busy: a fault on the lock itself — a dead
 			// fd, an exhausted lock table — must surface as itself, or the

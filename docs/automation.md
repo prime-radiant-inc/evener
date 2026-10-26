@@ -187,6 +187,11 @@ the returned ref, `input_mode:"start"`, `message`, a fresh
 alone never answers a question. Resolve a pending approval with
 `session_control` and the approval's `escalationId` instead.
 
+A completion watch follows the recorded question-to-answer relationship across
+successive answers, including a watch attached while a question is pending.
+Unrelated work cannot complete it. An unavailable continuation lookup ends the
+watch explicitly rather than guessing; see [completion evidence](job-control.md#manager-observation-evidence).
+
 Creation is local. `hub` accepts only `cwd`, `model` and `watch`, and an
 unknown field such as a source or host name is rejected rather than ignored.
 A Manager can discover an empty remote host and read its model catalog, but it

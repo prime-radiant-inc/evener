@@ -104,6 +104,12 @@ func (jm *jobManager) onHubObservation(watchID string, update appwire.SessionWat
 // execution provenance need not name the current serving boot, so do not fill
 // missing provenance with the subscription's identity.
 func (jm *jobManager) onHubObservationEvidence(watchID string, update appwire.SessionWatchUpdate, recorded bool) error {
+	return jm.onHubObservationLookup(watchID, update, recorded, nil)
+}
+
+type hubAnswerLookup func(ref, instance, generation, ancestor, candidate string) (bool, error)
+
+func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.SessionWatchUpdate, recorded bool, lookup hubAnswerLookup) error {
 	jm.mu.Lock()
 	_, cfg, ok := jm.watchConfigByIDLocked(watchID)
 	if !ok || cfg.hubRef == "" {
@@ -171,7 +177,7 @@ func (jm *jobManager) onHubObservationEvidence(watchID string, update appwire.Se
 					meta.TurnID = turn.ID
 				}
 				u := appwire.SessionWatchUpdate{Metadata: meta, Event: "communicate"}
-				if err := jm.onHubObservationEvidence(watchID, u, true); err != nil {
+				if err := jm.onHubObservationLookup(watchID, u, true, lookup); err != nil {
 					return err
 				}
 			}
@@ -205,7 +211,25 @@ func (jm *jobManager) onHubObservationEvidence(watchID string, update appwire.Se
 		cfg.hubTurnID, cfg.hubTurnBound = m.TurnID, true
 	}
 	matchingTurn := !cfg.hubTurnBound || m.TurnID == cfg.hubTurnID
-	complete := cfg.hubCompletion && matchingTurn && m.CausalKnown && m.TerminalAccepted != nil && *m.TerminalAccepted && m.EndTurn && m.EndReason == "done"
+	terminal := cfg.hubCompletion && m.CausalKnown && m.TerminalAccepted != nil && *m.TerminalAccepted && m.EndTurn && m.EndReason == "done"
+	if terminal && !matchingTurn && m.TurnID != "" && lookup != nil {
+		bound := cfg.hubTurnID
+		ref, instance, generation := cfg.hubRef, cfg.hubInstance, cfg.hubGeneration
+		jm.mu.Unlock()
+		matches, err := lookup(ref, instance, generation, bound, m.TurnID)
+		jm.mu.Lock()
+		_, current, present := jm.watchConfigByIDLocked(watchID)
+		if !present || current != cfg || cfg.rejectingDelivery || cfg.hubTurnID != bound || cfg.hubRef != ref || cfg.hubInstance != instance || cfg.hubGeneration != generation {
+			jm.mu.Unlock()
+			return nil
+		}
+		if err != nil {
+			jm.mu.Unlock()
+			return err
+		}
+		matchingTurn = matches
+	}
+	complete := terminal && matchingTurn
 	identity := entryIdentity + ":" + update.Event
 	if complete {
 		// One recorded entry can first arrive without an acceptance verdict.
@@ -461,6 +485,10 @@ func (s *Session) cancelHubWatch(id string) {
 	}
 }
 
+// hubWatchReadBudget bounds one observation-side operation, not the watch's
+// lifetime. State checks and continuation queries share this existing budget.
+const hubWatchReadBudget = 2 * time.Second
+
 // consumeHubWatch owns just a transport subscription. The job manager owns
 // durable watch state, delivery identities, provenance and restart teardown.
 // callerRef and callerInstance name the Manager whose binding admitted the
@@ -476,9 +504,56 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 	boundSignal := s.hubWatchSignal
 	s.mu.Unlock()
 	stateFailures := 0
+	var held *appwire.SnapshotIdentity
+	var epoch uint64
+	observe := func(update appwire.SessionWatchUpdate) error {
+		if read := update.Snapshot; read != nil && read.Snapshot != nil {
+			if held != nil && (held.Incarnation != read.Snapshot.Incarnation || read.Snapshot.Length < held.Length || epoch != read.Epoch) {
+				return errors.New("answer continuation history identity changed")
+			}
+			cut := *read.Snapshot
+			held, epoch = &cut, read.Epoch
+		}
+		return jm.onHubObservationLookup(id, update, false, func(ref, instance, generation, ancestor, candidate string) (bool, error) {
+			if held == nil {
+				return false, errors.New("answer continuation has no history identity")
+			}
+			s.mu.Lock()
+			client := s.hubClient
+			s.mu.Unlock()
+			if client == nil {
+				return false, errors.New("answer continuation transport unavailable")
+			}
+			query := &appwire.AnswerContinuationQuery{AncestorTurnID: ancestor, CandidateTurnID: candidate}
+			readCtx, cancel := context.WithTimeout(ctx, hubWatchReadBudget)
+			defer cancel()
+			result, err := client.Invoke(readCtx, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: ref, HeldSnapshot: held, AnswerContinuation: query}})
+			if err != nil {
+				return false, err
+			}
+			if err := readCtx.Err(); err != nil {
+				return false, err
+			}
+			read := result.Read
+			if read == nil {
+				return false, errors.New("answer continuation response missing")
+			}
+			if read.Thread.Evener.Ref != ref || read.Thread.Evener.InstanceID != instance || read.BootGeneration != generation || read.Epoch != epoch || read.Snapshot == nil || read.Snapshot.Incarnation != held.Incarnation || read.Snapshot.Length < held.Length {
+				return false, fmt.Errorf("answer continuation response identity mismatch: ref=%t instance=%t boot=%t epoch=%d/%d snapshot=%+v held=%+v", read.Thread.Evener.Ref == ref, read.Thread.Evener.InstanceID == instance, read.BootGeneration == generation, read.Epoch, epoch, read.Snapshot, held)
+			}
+			verdict := read.AnswerContinuation
+			if verdict == nil || verdict.AncestorTurnID != ancestor || verdict.CandidateTurnID != candidate {
+				return false, errors.New("answer continuation response omitted requested verdict")
+			}
+			return verdict.Matches, nil
+		})
+	}
 	for {
-		if err := jm.onHubObservation(id, initial); err != nil {
+		if err := observe(initial); err != nil {
 			_ = jm.endHubWatch(id, "observation snapshot failed: "+err.Error(), nil)
+			return
+		}
+		if !managerHubWatchPresent(jm, id) {
 			return
 		}
 		jm.resumeHubWatch(id)
@@ -495,7 +570,7 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 					_ = jm.endHubWatch(id, "target replaced; re-register", nil)
 					return
 				}
-				if err := jm.onHubObservation(id, update); err != nil {
+				if err := observe(update); err != nil {
 					_ = jm.endHubWatch(id, "observation failed: "+err.Error(), nil)
 					return
 				}
@@ -524,7 +599,7 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 			// "ended unexpectedly" arm a successful read would have reached,
 			// instead of parking on a signal that only fires on a rebind.
 			var stateErr error
-			stateCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			stateCtx, cancel := context.WithTimeout(ctx, hubWatchReadBudget)
 			state, err := client.State(stateCtx)
 			cancel()
 			if err == nil {

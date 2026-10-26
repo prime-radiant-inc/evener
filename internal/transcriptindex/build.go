@@ -1,6 +1,7 @@
 package transcriptindex
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -510,10 +511,17 @@ func turnKindOf(kind schema.TurnSpanKind) uint32 {
 // findTurn searches the summaries, newest first, for the new-format turn id.
 // Legacy turns never match: a new-format entry never joins one.
 func (b *builder) findTurn(id string) (uint64, bool, error) {
+	return b.x.findTurn(context.Background(), id)
+}
+
+func (x *Index) findTurn(ctx context.Context, id string) (uint64, bool, error) {
 	const chunk = 256
-	for end := b.x.turns.n; end > 0; {
+	for end := x.turns.n; end > 0; {
+		if err := ctx.Err(); err != nil {
+			return 0, false, err
+		}
 		start := end - min(end, chunk)
-		buf, err := b.x.turns.read(start, int(end-start))
+		buf, err := x.turns.read(start, int(end-start))
 		if err != nil {
 			return 0, false, err
 		}
@@ -522,7 +530,7 @@ func (b *builder) findTurn(id string) (uint64, bool, error) {
 			if record.Kind == turnKindLegacy || int(record.ID.Len) != len(id) {
 				continue
 			}
-			name, err := b.x.strings.get(record.ID)
+			name, err := x.strings.get(record.ID)
 			if err != nil {
 				return 0, false, err
 			}

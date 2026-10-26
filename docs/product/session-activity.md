@@ -28,6 +28,10 @@ The Manager's local `job_watch` belongs to its receiving session's watch
 activity, even while it observes an independent worker. Its recorded snapshot
 and live entries keep causal generation/entry evidence; accepted terminal
 completion, not an idle label or an unaccepted result, ends a completion watch.
+Recorded answer links let completion follow the watched work through questions.
+The existing history index answers a targeted, non-subscribing read from one
+cut; the watch retains no ancestry graph or unrelated terminal backlog. Lookup
+failure ends observation explicitly, without completing the work.
 Pending notices survive interruption. On reconnect the watch checks the saved
 Manager revision and target generation before resuming; disabling Manager or
 restarting its runtime ends the continuing registration with re-registration

@@ -437,6 +437,23 @@ without that tag. These tables describe fields, not every validation constraint.
 | `content` | string |  |  |
 
 
+### `AnswerContinuationQuery`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ancestorTurnId` | string |  |  |
+| `candidateTurnId` | string |  |  |
+
+
+### `AnswerContinuationVerdict`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ancestorTurnId` | string |  |  |
+| `candidateTurnId` | string |  |  |
+| `matches` | bool |  |  |
+
+
 ### `ApiKeyConditionalSetParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -4509,6 +4526,7 @@ Underlying Go kind: `string` (no struct fields).
 | `itemLimit` | int | yes |  |
 | `requestGeneration` | uint64 | yes |  |
 | `heldSnapshot` | \*[appwire.SnapshotIdentity](#snapshotidentity) | yes |  |
+| `answerContinuation` | \*[appwire.AnswerContinuationQuery](#answercontinuationquery) | yes |  |
 
 
 ### `ThreadReadResponse`
@@ -4516,6 +4534,7 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `thread` | [appwire.Thread](#thread) |  |  |
+| `answerContinuation` | \*[appwire.AnswerContinuationVerdict](#answercontinuationverdict) | yes |  |
 | `olderCursor` | string | yes |  |
 | `requestGeneration` | uint64 | yes |  |
 | `bootGeneration` | string | yes |  |

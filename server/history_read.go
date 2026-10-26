@@ -1,10 +1,27 @@
 package server
 
 import (
+	"context"
+
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/transcriptindex"
 )
+
+func (h *threadHistory) answerContinuation(ctx context.Context, params appwire.ThreadReadParams) (appwire.AnswerContinuationVerdict, appwire.SnapshotIdentity, error) {
+	query := params.AnswerContinuation
+	verdict := appwire.AnswerContinuationVerdict{AncestorTurnID: query.AncestorTurnID, CandidateTurnID: query.CandidateTurnID}
+	var snapshot appwire.SnapshotIdentity
+	if err := ctx.Err(); err != nil {
+		return verdict, snapshot, err
+	}
+	err := h.read(func(idx *transcriptindex.Index) error {
+		var err error
+		verdict.Matches, snapshot, err = idx.AnswerContinuation(ctx, query.AncestorTurnID, query.CandidateTurnID, params.HeldSnapshot)
+		return err
+	})
+	return verdict, snapshot, err
+}
 
 // historyCapture is what a history read takes inside the subscription cut:
 // the overlay and the resync epoch the read's notifications follow. History

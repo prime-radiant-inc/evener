@@ -1413,7 +1413,10 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		}
 	}
 	readThread := func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams) (*hubThreadReadResult, error) {
-		needsRelay := params.Subscribe || relayOnThreadRead(source)
+		if err := params.ValidateAnswerContinuation(); err != nil {
+			return nil, err
+		}
+		needsRelay := params.AnswerContinuation == nil && (params.Subscribe || relayOnThreadRead(source))
 		relaySource, atomic := source.(appsource.RelaySessionSource)
 		if !atomic || !needsRelay {
 			if combined, ok := source.(appsource.CombinedItemReadSource); ok &&

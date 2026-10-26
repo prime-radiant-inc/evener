@@ -2186,10 +2186,37 @@ type ThreadReadParams struct {
 	// from, so the server can answer with HistoryChanges instead of a full
 	// re-read when nothing outside the client's window changed.
 	HeldSnapshot *SnapshotIdentity `json:"heldSnapshot,omitempty"`
+	// AnswerContinuation requests only a recorded ancestry verdict and its
+	// snapshot identity. It cannot subscribe or include a transcript window.
+	AnswerContinuation *AnswerContinuationQuery `json:"answerContinuation,omitempty"`
+}
+
+type AnswerContinuationQuery struct {
+	AncestorTurnID  string `json:"ancestorTurnId"`
+	CandidateTurnID string `json:"candidateTurnId"`
+}
+
+type AnswerContinuationVerdict struct {
+	AncestorTurnID  string `json:"ancestorTurnId"`
+	CandidateTurnID string `json:"candidateTurnId"`
+	Matches         bool   `json:"matches"`
+}
+
+func (p ThreadReadParams) ValidateAnswerContinuation() error {
+	if q := p.AnswerContinuation; q != nil {
+		if err := ValidateThreadReadParams(p); err != nil {
+			return err
+		}
+		if q.AncestorTurnID == "" || q.CandidateTurnID == "" || p.Subscribe || p.ReplaceSubscription || p.IncludeTurns {
+			return InvalidParams("answerContinuation requires two execution IDs and a non-subscribing, verdict-only read")
+		}
+	}
+	return nil
 }
 
 type ThreadReadResponse struct {
-	Thread Thread `json:"thread"`
+	Thread             Thread                     `json:"thread"`
+	AnswerContinuation *AnswerContinuationVerdict `json:"answerContinuation,omitempty"`
 	// OlderCursor is set when itemLimit truncated the returned items; pass it
 	// to thread/turns/list to fetch the page just before the window. Empty means
 	// the response already includes the oldest item.

@@ -1282,6 +1282,27 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 	if err := appwire.ValidateThreadReadParams(params); err != nil {
 		return appwire.ThreadReadResponse{}, s.readError(err, s.appThreadIDForRead(params))
 	}
+	if err := params.ValidateAnswerContinuation(); err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
+	if params.AnswerContinuation != nil {
+		cut := s.appThreadReadCutForTarget(params, s.appThreadIDForRead(params))
+		if !cut.found || cut.history == nil {
+			return appwire.ThreadReadResponse{}, appwire.Unavailable("answer continuation history unavailable")
+		}
+		verdict, snapshot, err := cut.history.answerContinuation(ctx, params)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), cut.response.BootGeneration, cut.response.Epoch)
+		}
+		current := s.appThreadReadCutForTarget(params, s.appThreadIDForRead(params))
+		if !current.found || current.history != cut.history || current.response.Thread.Evener.Ref != cut.response.Thread.Evener.Ref || current.response.Thread.Evener.InstanceID != cut.response.Thread.Evener.InstanceID || current.response.BootGeneration != cut.response.BootGeneration || current.response.Epoch != cut.response.Epoch {
+			return appwire.ThreadReadResponse{}, appwire.Unavailable("answer continuation target changed during read")
+		}
+		response := cut.response
+		response.Thread.Turns = nil
+		response.AnswerContinuation, response.Snapshot = &verdict, &snapshot
+		return response, nil
+	}
 	if !params.Subscribe {
 		return s.appThreadReadSnapshotChecked(params)
 	}

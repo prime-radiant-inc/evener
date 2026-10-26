@@ -18,6 +18,17 @@ export interface AgentsDocSetParams {
   content: string;
 }
 
+export interface AnswerContinuationQuery {
+  ancestorTurnId: string;
+  candidateTurnId: string;
+}
+
+export interface AnswerContinuationVerdict {
+  ancestorTurnId: string;
+  candidateTurnId: string;
+  matches: boolean;
+}
+
 export interface ApiKeyConditionalSetParams {
   provider: string;
   value: string;
@@ -4525,10 +4536,16 @@ export interface ThreadReadParams {
    * re-read when nothing outside the client's window changed.
    */
   heldSnapshot?: SnapshotIdentity;
+  /**
+   * AnswerContinuation requests only a recorded ancestry verdict and its
+   * snapshot identity. It cannot subscribe or include a transcript window.
+   */
+  answerContinuation?: AnswerContinuationQuery;
 }
 
 export interface ThreadReadResponse {
   thread: Thread;
+  answerContinuation?: AnswerContinuationVerdict;
   /**
    * OlderCursor is set when itemLimit truncated the returned items; pass it
    * to thread/turns/list to fetch the page just before the window. Empty means

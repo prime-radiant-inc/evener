@@ -71,6 +71,18 @@ the original historical execution.
 Questions, waits, rejected terminal calls, and idle state do not complete it.
 The watch removes itself before delivering a completion wake.
 
+An accepted answer records the question execution it resolves. Completion also
+follows those recorded links across successive questions, whether the answer
+comes from a human or a Manager. It never follows unrelated later work or
+infers a link from an older record that lacks one. For a different terminal
+execution, the watch asks the existing history reader for a single-cut verdict;
+it keeps no continuation graph or terminal backlog. The query uses the same
+two-second operation budget as watch state reads. Missing required evidence,
+incompatible identity, timeout, cancellation or a busy index is an observation
+failure, not a negative verdict: the watch ends with re-registration guidance.
+Index traversal checks cancellation between reads; existing catch-up and OS
+I/O may still finish after the caller stops waiting.
+
 The watch keeps its ID and pending notices through a connection interruption.
 It sends one interruption notice for the loss, then checks the Manager caller's
 ref and instance before resubscribing. A restored connection retains the watch
