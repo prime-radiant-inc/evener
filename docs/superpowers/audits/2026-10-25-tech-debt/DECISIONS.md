@@ -154,6 +154,14 @@ Orchestrator defaults for the other questions in the design records (Jesse can o
 - W2-05: the quiet-watch registry becomes a field on the owner Session, matching today's per-session behavior.
 - Behavior changes these records surfaced but don't need get filed separately and are not done here: `job_watch clear` on descendant watches (W2-02), checkpointed carry for the session-log strategy (W2-04), and the lenient shell/model_list clamps (W2-06).
 
+## G1. `tools/prompt-eval/memory-lab`
+
+It was a one-off experiment. Delete it from the tree (history keeps it), about -9,000 lines. W2-03 then has no memory-lab caller to update.
+
+## Wave 3
+
+The engineering items in [GAPS.md](GAPS.md) run after Wave 2, with the same autonomy: fuzz corpus (G3), the committed bundle (G4), npm version skew (G5), `go.mod` (G6), logging (M1), concurrency and cancellation hygiene (M2), config sprawl (M3), dependencies (M4), and the test-orchestration overlap (M5).
+
 ## Still open
 
 Nothing.
