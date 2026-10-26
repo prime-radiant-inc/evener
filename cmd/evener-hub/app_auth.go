@@ -504,6 +504,12 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 		}
 		return c.saveAuth(c.stateDir, provider, record)
 	})
+	if flowEndpointUncheckable(err) {
+		c.mu.Lock()
+		delete(c.flows, flowID)
+		c.mu.Unlock()
+		return appwire.AuthLoginCompleteResponse{Restart: true}, nil
+	}
 	if err != nil {
 		return appwire.AuthLoginCompleteResponse{}, err
 	}
@@ -1191,6 +1197,12 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 		}
 		return c.saveAuth(c.stateDir, provider, record)
 	})
+	if flowEndpointUncheckable(err) {
+		c.mu.Lock()
+		delete(c.deviceFlows, flowID)
+		c.mu.Unlock()
+		return appwire.AuthDevicePollResponse{State: "restart"}, nil
+	}
 	if err != nil {
 		return appwire.AuthDevicePollResponse{}, err
 	}
@@ -1496,6 +1508,10 @@ func (c *hubAuthController) verifyConfigRevision(name, asserted, current string,
 // The empty capture's refusal reads the destination and the state root rather
 // than the key; a key the hub could not resolve leaves the empty current value
 // the comparison refuses.
+//
+// The unkeyable and unresolvable refusals end the flow rather than the
+// sign-in: the completion discards the flow and tells the client to start a
+// fresh one (flowEndpointUncheckable). A moved endpoint is a plain refusal.
 func (c *hubAuthController) verifyFlowEndpoint(name, started string, key []byte) error {
 	return checkAssertion(started, c.endpointHasDestination(name) && c.hasEndpointStateRoot(),
 		func() string { return c.endpointFingerprintForKey(name, key) },
@@ -1513,6 +1529,16 @@ func (c *hubAuthController) verifyFlowEndpoint(name, started string, key []byte)
 				return endpointConflict("%s %w this sign-in was started on: review its destination and start the sign-in again", name, errEndpointMoved)
 			},
 		})
+}
+
+// flowEndpointUncheckable reports whether verifyFlowEndpoint refused a flow
+// because the hub could not key or place its endpoint, as opposed to the
+// endpoint having moved. The record is never filed unchecked: the completion
+// discards the flow and answers that the client must start a fresh one, which
+// captures the endpoint the name resolves to now. A moved endpoint stays a
+// refusal, since the user reviewed the old one.
+func flowEndpointUncheckable(err error) bool {
+	return errors.Is(err, errEndpointUnkeyable) || errors.Is(err, errEndpointUnresolvable)
 }
 
 // captureFlowEndpoint is the endpoint fingerprint a sign-in flow is recorded

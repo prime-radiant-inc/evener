@@ -1486,9 +1486,6 @@ func TestSession_StateDirSessionsPathConflictFailsClosedAtDelegateBootstrap(t *t
 		sess.Close()
 		t.Fatal("NewSession succeeded with unusable state sessions path")
 	}
-	if !strings.Contains(err.Error(), "scan legacy delegate state") || !strings.Contains(err.Error(), "not a directory") {
-		t.Fatalf("NewSession error = %v, want fail-closed delegate bootstrap state-dir failure", err)
-	}
 }
 
 // --- Fix 2: readTranscript returns corrupt line count ---

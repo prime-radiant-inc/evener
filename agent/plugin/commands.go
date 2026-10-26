@@ -84,29 +84,35 @@ func ParseCommand(data []byte, name string, pluginName string) (Command, error) 
 // commandName is each file's basename with the .md extension stripped (a
 // frontmatter "name" field, if a plugin author includes one, is not read —
 // see ParseCommand).
-func discoverPluginCommands(pluginDir string, commandsOverride json.RawMessage, pluginName string) (map[string]Command, error) {
+//
+// A file that cannot be read or parsed is skipped and reported, so one bad file
+// leaves the plugin's other commands usable.
+func discoverPluginCommands(pluginDir string, commandsOverride json.RawMessage, pluginName string) (map[string]Command, []SkippedComponent, error) {
 	var override any
 	if len(commandsOverride) > 0 {
 		if err := json.Unmarshal(commandsOverride, &override); err != nil {
-			return nil, fmt.Errorf("parsing commands override: %w", err)
+			return nil, nil, fmt.Errorf("parsing commands override: %w", err)
 		}
 	}
 
 	files, err := componentMarkdownFiles(resolveComponentDirs(pluginDir, "commands", override))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	commands := map[string]Command{}
+	var skipped []SkippedComponent
 	for _, file := range files {
 		data, err := pluginReadFile(file)
 		if err != nil {
-			return nil, fmt.Errorf("reading command file %q: %w", filepath.Base(file), err)
+			skipped = append(skipped, SkippedComponent{Kind: "command", File: file, Reason: err.Error()})
+			continue
 		}
 		name := strings.TrimSuffix(filepath.Base(file), ".md")
 		command, err := ParseCommand(data, name, pluginName)
 		if err != nil {
-			return nil, fmt.Errorf("parsing command file %q: %w", filepath.Base(file), err)
+			skipped = append(skipped, SkippedComponent{Kind: "command", File: file, Reason: err.Error()})
+			continue
 		}
 		command.Source = "plugin"
 		command.File = file
@@ -114,7 +120,7 @@ func discoverPluginCommands(pluginDir string, commandsOverride json.RawMessage, 
 		commands[key] = command
 	}
 
-	return commands, nil
+	return commands, skipped, nil
 }
 
 // ErrCommandNotFound reports that no command matches the requested name.

@@ -156,35 +156,27 @@ func TestUpgradeRunbookPreservesHistoryAndContinuesInFreshRoot(t *testing.T) {
 				events = append(events, jobstore.Event{Kind: jobstore.EventWatchRegistered, WatchID: "watch_legacy", Watch: &jobstore.WatchEvent{Generation: "wg_legacy", OwnerSessionID: meta.ID, VisibleSessionID: meta.ID, Target: "job_legacy_delegate", SendTo: meta.ID, ConfigHash: "legacy"}})
 			}
 			appendLegacyBootstrapEvents(t, filepath.Join(jobsDir(root, meta.ID), "jobs.jsonl"), events...)
-			legacyBefore := upgradeHashes(t, root)
-			rejected, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, root)
-			if rejected != nil {
-				rejected.Close()
-				t.Fatal("legacy root was restored")
+			restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, root)
+			if err != nil {
+				t.Fatalf("legacy delegate state must not stop the session restoring: %v", err)
 			}
-			if err == nil {
-				t.Fatal("legacy root was not rejected")
-			}
-			// Refusal has no exported sentinel/type. Check refusal and all file effects,
-			// never its diagnostic prose.
-			if !reflect.DeepEqual(legacyBefore, upgradeHashes(t, root)) {
-				t.Fatal("legacy rejection mutated saved state")
-			}
+			t.Cleanup(restored.Close)
+			muteNoteElicitation(restored)
+			completeTask(restored, fmt.Sprintf("legacy-%t.txt", watch))
+			restored.Close()
 			_, entries, _, err := readTranscript(schema.SessionTranscriptPath(root, meta.ID), "")
 			if err != nil {
 				t.Fatal(err)
 			}
-			found := false
+			var inputs []string
 			for _, entry := range entries {
-				if entry.Turn.Kind == schema.TurnUserInput && entry.Turn.Message.Text() == "runbook-input-before-upgrade.txt" {
-					found = true
+				if entry.Turn.Kind == schema.TurnUserInput {
+					inputs = append(inputs, entry.Turn.Message.Text())
 				}
 			}
-			if !found {
-				t.Fatal("rejected root lost readable history")
-			}
-			if !reflect.DeepEqual(legacyBefore, upgradeHashes(t, root)) {
-				t.Fatal("history inspection mutated rejected state")
+			want := []string{"runbook-input-before-upgrade.txt", fmt.Sprintf("runbook-input-legacy-%t.txt", watch)}
+			if !reflect.DeepEqual(inputs, want) {
+				t.Fatalf("restored legacy session inputs = %v, want saved history kept and the new input appended", inputs)
 			}
 		})
 	}
@@ -214,5 +206,5 @@ func TestUpgradeRunbookPreservesHistoryAndContinuesInFreshRoot(t *testing.T) {
 	if !reflect.DeepEqual(before, upgradeHashes(t, original)) {
 		t.Fatal("upgrade rehearsal mutated original backup")
 	}
-	t.Log("legacy delegate and delegate-watch copies rejected without byte changes; history readable; compatible restore and separate fresh root completed real file-writing tasks through scripted HTTP provider")
+	t.Log("legacy delegate and delegate-watch copies restored with the retired state ignored; compatible restore and separate fresh root completed real file-writing tasks through scripted HTTP provider")
 }

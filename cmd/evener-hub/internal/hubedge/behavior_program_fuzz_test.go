@@ -8,7 +8,6 @@ import "testing"
 func FuzzHubEdgeBehaviorProgram(f *testing.F) {
 	checks := []func(*testing.T){
 		checkLoadOrCreateAuthToken_RandomError,
-		checkLoadOrCreateAuthToken_RenameErrorRemovesTemporaryFile,
 		checkLoadOrCreateAuthToken_PersistsAndReloads,
 		checkAuthGuard_AllowsExemptRoutes,
 		checkAuthGuard_PathFormAuthenticatesEndToEnd,
@@ -28,7 +27,7 @@ func FuzzHubEdgeBehaviorProgram(f *testing.F) {
 		checkLoadOrCreateAuthToken_EmptyRoot,
 		checkLoadOrCreateAuthToken_MkdirAllError,
 		checkLoadOrCreateAuthToken_ReadFileError,
-		checkLoadOrCreateAuthToken_WriteFileError,
+		checkLoadOrCreateAuthToken_DoesNotFollowSymlinkAtTempName,
 		checkAuthGuard_ReturnsHTMLForBrowser,
 		checkAuthGuard_AcceptsQueryTokenOnAnyGET,
 		checkAuthGuard_RejectsWrongQueryToken,

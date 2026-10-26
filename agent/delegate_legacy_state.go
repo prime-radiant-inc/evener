@@ -5,23 +5,38 @@ import (
 	"path/filepath"
 	"sort"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
-func rejectLegacyDelegateState(stateDir, rootSessionID string) error {
+// legacyDelegateStateWarning reports retired delegate state in the root
+// session's job journal. The state is left in place and ignored: stable
+// delegates have their own store, and the retired rows have no live control
+// path, so the session starts and the warning tells the user the old delegate
+// work is not resumed. The second result is false when there is nothing to
+// report or the journal could not be scanned (the job manager reports an
+// unreadable journal itself).
+func legacyDelegateStateWarning(stateDir, rootSessionID string) (events.WarningData, bool) {
 	path := filepath.Join(jobsDir(stateDir, rootSessionID), "jobs.jsonl")
-	events, err := jobstore.ReadEvents(path)
+	jobEvents, err := jobstore.ReadEvents(path)
 	if err != nil {
-		return fmt.Errorf("scan legacy delegate state: %w", err)
+		return events.WarningData{}, false
 	}
-	legacyJobIDs := legacyDelegateJobIDs(events)
-	if watchID, ok := firstLegacyDelegateWatch(events, legacyJobIDs); ok {
-		return fmt.Errorf("legacy_delegate_watch_state: watch %q is addressed through a legacy delegate job; use a fresh state root", watchID)
+	legacyJobIDs := legacyDelegateJobIDs(jobEvents)
+	warning := events.WarningData{
+		Source: "delegates",
+		Code:   events.WarningCodeLegacyDelegateState,
+		Title:  "retired delegate state ignored",
 	}
-	if len(legacyJobIDs) != 0 || containsLegacyDelegateLifecycle(events) {
-		return fmt.Errorf("legacy_delegate_state: root session %q contains legacy delegate lifecycle state; use a fresh state root", rootSessionID)
+	if watchID, ok := firstLegacyDelegateWatch(jobEvents, legacyJobIDs); ok {
+		warning.Message = fmt.Sprintf("watch %q is addressed through a retired delegate job and is ignored; the journal row is kept", watchID)
+		return warning, true
 	}
-	return nil
+	if len(legacyJobIDs) != 0 || containsLegacyDelegateLifecycle(jobEvents) {
+		warning.Message = "this session's journal holds retired delegate lifecycle state; it is ignored and kept"
+		return warning, true
+	}
+	return events.WarningData{}, false
 }
 
 func legacyDelegateJobIDs(events []jobstore.Event) map[string]struct{} {
@@ -75,4 +90,32 @@ func firstLegacyDelegateWatch(events []jobstore.Event, delegateJobIDs map[string
 	}
 	sort.Strings(watchIDs)
 	return watchIDs[0], true
+}
+
+// retiredDelegateJobIDs returns the ids of retired delegate job records in the
+// job journal. Their rows stay in the journal and are never restored as live
+// work.
+func (jm *jobManager) retiredDelegateJobIDs() (map[string]struct{}, error) {
+	records, err := jm.store.Load()
+	if err != nil {
+		return nil, err
+	}
+	ids := make(map[string]struct{})
+	for id, record := range records {
+		if record != nil && string(record.Type) == delegateResourceType {
+			ids[id] = struct{}{}
+		}
+	}
+	return ids, nil
+}
+
+// addressedThroughRetiredDelegate reports whether a watch-send frame names a
+// retired delegate job as its target, watched identity or receiver.
+func addressedThroughRetiredDelegate(key jobstore.WatchSendKey, retired map[string]struct{}) bool {
+	for _, id := range []string{key.WatchTarget, key.ResolvedWatchedIdentity, key.ResolvedSendTo} {
+		if _, ok := retired[id]; ok {
+			return true
+		}
+	}
+	return false
 }

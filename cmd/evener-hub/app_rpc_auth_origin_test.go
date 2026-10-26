@@ -18,6 +18,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -198,6 +199,58 @@ func TestAuthLoginCompleteFailedStatusReadBroadcastsNoData(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "originClientId") {
 		t.Fatalf("broadcast params = %s, want no originClientId: the no-data form must not be attributable as a provider-instance echo", raw)
+	}
+}
+
+// TestAuthLoginCompleteRestartBroadcastsNothing drives evener/auth/loginComplete
+// for a flow the hub cannot check because its fingerprint key was lost
+// mid-flow. The completion saved nothing and answers restart, so it owes no
+// evener/auth/updated: the next broadcast a client sees is the one a later
+// write sends, not an empty one that would send every client re-reading a
+// listing nothing changed.
+func TestAuthLoginCompleteRestartBroadcastsNothing(t *testing.T) {
+	client, web := newAuthOriginTestHub(t)
+
+	ctrl := web.auth
+	ctrl.exchangeCode = func(context.Context, *http.Client, authopenai.Config, authopenai.TokenExchangeRequest) (authopenai.TokenSet, error) {
+		if err := os.Remove(filepath.Join(ctrl.stateDir, endpointFingerprintKeyFile)); err != nil {
+			t.Errorf("remove fingerprint key: %v", err)
+		}
+		unkeyableStateRoot(t, ctrl.stateDir)
+		return authopenai.TokenSet{AccessToken: "access-token", RefreshToken: "refresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}, nil
+	}
+
+	var start appwire.AuthLoginStartResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerAuthLoginStart,
+		appwire.AuthLoginStartParams{Provider: "openai-codex"}, &start); err != nil {
+		t.Fatalf("evener/auth/loginStart: %v", err)
+	}
+	state := mustAuthorizeState(t, start.URL)
+
+	var resp appwire.AuthLoginCompleteResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerAuthLoginComplete,
+		appwire.AuthLoginCompleteParams{
+			Provider: "openai-codex", FlowID: start.FlowID, OriginClientId: "tab-a",
+			RedirectURL: "http://localhost:1455/auth/callback?code=auth-code&state=" + url.QueryEscape(state),
+		}, &resp); err != nil {
+		t.Fatalf("evener/auth/loginComplete: %v", err)
+	}
+	if !resp.Restart {
+		t.Fatalf("evener/auth/loginComplete = %+v, want Restart", resp)
+	}
+
+	// The state root can be keyed again, so a write goes through.
+	if err := os.RemoveAll(filepath.Join(ctrl.stateDir, endpointFingerprintKeyFile)); err != nil {
+		t.Fatalf("clear the key obstacle: %v", err)
+	}
+	var status appwire.AuthStatusResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerAuthApiKeySet,
+		appwire.AuthApiKeySetParams{Provider: "anthropic", Value: "sk-after-restart", OriginClientId: "tab-b"}, &status); err != nil {
+		t.Fatalf("evener/auth/apiKey/set: %v", err)
+	}
+	params := waitForAuthUpdated(t, client)
+	if params.OriginClientId != "tab-b" || params.Provider != "anthropic" {
+		t.Fatalf("first broadcast = %+v, want the later write's: the restart answer owes none", params)
 	}
 }
 

@@ -181,9 +181,9 @@ content-part boundaries may differ from the lost transcript.
 
 Readable staged history is not a full backup or a guarantee of safe resumption.
 Check current files and external effects yourself, then use a reviewed handoff
-for [fresh-root continuation](../UPGRADING.md#before-shutting-down-an-older-session)
-when needed. This procedure does not install the reconstruction over live state
-and does not migrate rejected legacy delegate or watch state.
+for a new task when needed. This procedure does not install the reconstruction
+over live state and does not migrate [retired legacy delegate or watch
+state](../UPGRADING.md#before-shutting-down-an-older-session).
 
 ## Report a reproducible problem
 

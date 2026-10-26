@@ -1208,8 +1208,12 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     },
 
     loginComplete(provider, flowId, redirectUrl) {
-      return authMutation(provider, (client, origin) =>
-        client.request("evener/auth/login/complete", { provider, flowId, redirectUrl, ...origin }),
+      // A completion the hub discarded unchecked (restart) wrote nothing, so it
+      // arms no echo and schedules no listing read.
+      return authMutation(
+        provider,
+        (client, origin) => client.request("evener/auth/login/complete", { provider, flowId, redirectUrl, ...origin }),
+        (resp) => resp.restart !== true,
       );
     },
 

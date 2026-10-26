@@ -61,7 +61,14 @@ describe("OAuthRedirectDialog", () => {
     fake.on("evener/instance/list", list);
     const onSuccess = vi.fn();
     const { unmount } = render(
-      <OAuthRedirectDialog name="work" flowId="flow" authUrl="https://x" onCancel={() => {}} onSuccess={onSuccess} />,
+      <OAuthRedirectDialog
+        name="work"
+        flowId="flow"
+        authUrl="https://x"
+        onRestart={() => {}}
+        onCancel={() => {}}
+        onSuccess={onSuccess}
+      />,
     );
     await userEvent.setup().type(screen.getByLabelText("Redirect URL"), "https://redirect?code=1");
     await act(async () => fireEvent.submit(screen.getByRole("button", { name: "Finish" }).closest("form")!));
@@ -107,6 +114,7 @@ describe("OAuthRedirectDialog", () => {
           name="work"
           flowId="flow-1"
           authUrl="https://auth"
+          onRestart={() => {}}
           onCancel={() => {}}
           onSuccess={onSuccess}
         />
@@ -135,6 +143,7 @@ describe("OAuthRedirectDialog", () => {
         name="work"
         flowId="flow-1"
         authUrl="https://auth.example.com/start"
+        onRestart={() => {}}
         onCancel={() => {}}
         onSuccess={() => {}}
       />,
@@ -151,7 +160,14 @@ describe("OAuthRedirectDialog", () => {
     fake.on("evener/auth/login/complete", complete);
     const onCancel = vi.fn();
     render(
-      <OAuthRedirectDialog name="work" flowId="flow-1" authUrl="https://x" onCancel={onCancel} onSuccess={() => {}} />,
+      <OAuthRedirectDialog
+        name="work"
+        flowId="flow-1"
+        authUrl="https://x"
+        onRestart={() => {}}
+        onCancel={onCancel}
+        onSuccess={() => {}}
+      />,
     );
     fireEvent.submit(screen.getByRole("button", { name: "Finish" }).closest("form")!);
     expect(complete).not.toHaveBeenCalled();
@@ -179,6 +195,7 @@ describe("OAuthRedirectDialog", () => {
           name="work"
           flowId="flow-1"
           authUrl="https://x"
+          onRestart={() => {}}
           onCancel={() => {}}
           onSuccess={onSuccess}
         />
@@ -195,6 +212,44 @@ describe("OAuthRedirectDialog", () => {
     // test's own flow has actually completed.
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(toastKinds()).toEqual(["success"]);
+  });
+
+  test("a completion the hub discarded unchecked restarts the sign-in instead of reporting success", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/auth/login/complete", () => ({
+      status: { provider: "work", supported: false, signedIn: false, activeSource: "none", hasStoredOAuth: false },
+      restart: true,
+    }));
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    const onSuccess = vi.fn();
+    const onAuthorized = vi.fn();
+    const onRestart = vi.fn();
+    render(
+      <>
+        <OAuthRedirectDialog
+          name="work"
+          flowId="flow-1"
+          authUrl="https://x"
+          onCancel={() => {}}
+          onAuthorized={onAuthorized}
+          onSuccess={onSuccess}
+          onRestart={onRestart}
+        />
+        <Toast />
+      </>,
+    );
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Redirect URL"), "https://redirect?code=1");
+    await user.click(screen.getByRole("button", { name: "Finish" }));
+    await waitFor(() => expect(onRestart).toHaveBeenCalledTimes(1));
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(onAuthorized).not.toHaveBeenCalled();
+    expect(toastKinds()).toEqual([]);
+    // The replacement start can be refused and leave this editor on screen. It
+    // no longer offers the discarded flow's Finish, only a way to start again.
+    expect(screen.queryByRole("button", { name: "Finish" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Start again" }));
+    expect(onRestart).toHaveBeenCalledTimes(2);
   });
 
   test("a completed sign-in whose listing read is lost is still reported as a sign-in", async () => {
@@ -215,6 +270,7 @@ describe("OAuthRedirectDialog", () => {
           name="work"
           flowId="flow-1"
           authUrl="https://x"
+          onRestart={() => {}}
           onCancel={() => {}}
           onSuccess={onSuccess}
         />
@@ -249,6 +305,7 @@ describe("OAuthRedirectDialog", () => {
           name="work"
           flowId="flow-1"
           authUrl="https://x"
+          onRestart={() => {}}
           onCancel={() => {}}
           onSuccess={onSuccess}
         />
@@ -730,6 +787,32 @@ describe("DeviceCodeDialog", () => {
     await advanceTime(1000);
     fireEvent.click(screen.getByRole("button", { name: "Start again" }));
     expect(onRestart).toHaveBeenCalled();
+  });
+
+  test("polling: a flow the hub discarded unchecked is restarted without a click and stops polling", async () => {
+    vi.useFakeTimers();
+    const fake = connectFakeClient();
+    fake.on("evener/auth/device/poll", () => ({ state: "restart" }));
+    const onRestart = vi.fn();
+    render(
+      <DeviceCodeDialog
+        name="work"
+        flowId="flow-2"
+        userCode="ABCD-EFGH"
+        verificationUrl="https://verify"
+        intervalSeconds={1}
+        onCancel={() => {}}
+        onSuccess={() => {}}
+        onRestart={onRestart}
+      />,
+    );
+    await advanceTime(1000);
+    expect(onRestart).toHaveBeenCalledTimes(1);
+    // The replacement start can still be refused; the dialog then offers the
+    // same Start again action as an expired code instead of waiting forever.
+    expect(screen.getByRole("button", { name: "Start again" })).toBeTruthy();
+    await advanceTime(5000);
+    expect(fake.calls.filter((call) => call.method === "evener/auth/device/poll")).toHaveLength(1);
   });
 
   test("unmounting the dialog stops polling (no further requests after unmount)", async () => {

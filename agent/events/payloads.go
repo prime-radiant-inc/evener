@@ -616,6 +616,10 @@ const WarningCodePluginCompatibility = "plugin_compatibility"
 // Healthy skills remain usable; clients retain this warning at ordinary detail.
 const WarningCodeSkillDiagnostic = "skill_diagnostic"
 
+// WarningCodeLegacyDelegateState identifies the notice that a session's job
+// journal holds retired delegate state, which is left in place and ignored.
+const WarningCodeLegacyDelegateState = "legacy_delegate_state"
+
 // WarningCodeMCPReconnected identifies a restored MCP connection. Clients show
 // it as quiet detail; the retried tool call reports its own outcome separately.
 const WarningCodeMCPReconnected = "mcp_reconnected"
