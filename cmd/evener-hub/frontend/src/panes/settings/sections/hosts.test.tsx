@@ -1,5 +1,6 @@
 import {
   friendlyErrorMessage,
+  HOST_POLL_MS,
   type HostPlan,
   type HostRow,
   type OperationRecord,
@@ -16,7 +17,7 @@ import { hostsStore } from "../../../stores/hosts";
 import { enterText } from "../../../textEntryTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { toastKinds } from "../../../widgets/toast/toastTestUtils";
-import { HOST_POLL_MS, HostsSection, OPERATION_POLL_MS } from "./hosts";
+import { HostsSection, OPERATION_POLL_MS } from "./hosts";
 import { statusReasons } from "./reasonTestUtils";
 
 function row(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {

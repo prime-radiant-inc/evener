@@ -2,6 +2,7 @@ import {
   friendlyErrorMessage,
   HOST_CHANGED_MESSAGE,
   HOST_ENTRY_FIELD_TEXT,
+  HOST_POLL_MS,
   type HostEntry,
   type HostRow,
   hostChangedSinceOpened,
@@ -54,10 +55,6 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hosts.module.css";
 import { Code } from "./settingsField";
 import { useConnectedEffect } from "./useConnectedEffect";
-
-// How often the section re-reads host rows while it is mounted (the poll
-// below). Matches the HubResidents section's poll cadence.
-export const HOST_POLL_MS = 2000;
 
 // How often the section reads a tracked operation's record while it is
 // mounted (S15). The read is a cheap controller-local store read that never

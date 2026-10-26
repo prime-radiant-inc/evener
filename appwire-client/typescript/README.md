@@ -601,7 +601,9 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   nobody can vouch for left `blockedUnknown` rather than replayed - the rule a
   client must not break after a lost connection. Every reaction to an outcome (a
   blocked mutation, a clear's response, a shared note's authority) is a callback
-  the app supplies. Its pure reconciliation (`reconcilePendingEntries`) turns
+  the app supplies. `COMPOSER_METHODS` states the composer verbs and their wire
+  methods once (with `PENDING_TURN_METHODS`, `DIRECT_FALLBACK_METHODS` and
+  `composerVerb` derived from it). Its pure reconciliation (`reconcilePendingEntries`) turns
   those durable records plus a live `ThreadModel` into the `PendingTurnEntry`
   rows a composer's queue renders - identity-based, so an authoritative
   projection replaces the same outbox entry rather than duplicating it - and
