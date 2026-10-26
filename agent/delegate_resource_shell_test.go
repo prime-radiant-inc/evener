@@ -412,17 +412,17 @@ func newStableDelegateShellTree(t *testing.T) *stableDelegateShellTree {
 	root := &Session{
 		id: "root-session", stateDir: controller.stateDir, jobManager: rootJM,
 		delegateController: controller, delegateRootSessionID: "root-session",
-		subagents: newSubagentManager(nil, 0), state: SessionIdle,
+		subagents: newSubagentManager(0), state: SessionIdle,
 	}
 	child := &Session{
 		id: "child-dlg_child", stateDir: controller.stateDir, jobManager: childJM,
 		delegateController: controller, delegateRootSessionID: "root-session", owningDelegateID: "dlg_child",
-		subagents: newSubagentManager(nil, 0), state: SessionIdle,
+		subagents: newSubagentManager(0), state: SessionIdle,
 	}
 	grandchild := &Session{
 		id: "child-dlg_grandchild", stateDir: controller.stateDir, jobManager: grandJM,
 		delegateController: controller, delegateRootSessionID: "root-session", owningDelegateID: "dlg_grandchild",
-		subagents: newSubagentManager(nil, 0), state: SessionIdle,
+		subagents: newSubagentManager(0), state: SessionIdle,
 	}
 	for _, session := range []*Session{root, child, grandchild} {
 		writer, err := transcript.NewWriter(transcriptPath(controller.stateDir, session.ID()), transcript.Header{SessionID: session.ID()})

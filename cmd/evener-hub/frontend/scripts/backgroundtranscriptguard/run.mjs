@@ -1966,6 +1966,17 @@ async function waitForRestoredDomain(driver, ref, sentinel, timeoutMs = 30000) {
   return last;
 }
 
+// A hidden page gets no rendering opportunities, so a viewport change made
+// while the page is hidden never reaches the responsive host (the media-query
+// change event does not fire). Callers that hide the page must bring it back
+// to the front before waiting here.
+async function waitForResponsiveHost(driver) {
+  await driver.waitPage(`(() => {
+    const mobile = matchMedia("(max-width: 899px)").matches;
+    return mobile === Boolean(document.querySelector("[data-stacked-pane-type]"));
+  })()`, { label: "the responsive host has committed" });
+}
+
 // openSessionInCurrentShell activates a session through whichever shell the
 // current viewport hosts. At or below the mobile breakpoint
 // (useIsMobile.ts MOBILE_QUERY "(max-width: 899px)") the desktop RailHost is
@@ -1973,10 +1984,7 @@ async function waitForRestoredDomain(driver, ref, sentinel, timeoutMs = 30000) {
 // through the tree-drawer trigger. The guarantee - a real rail-row activation
 // that re-focuses the session - is identical.
 async function openSessionInCurrentShell(driver, ref) {
-  await driver.waitPage(`(() => {
-    const mobile = matchMedia("(max-width: 899px)").matches;
-    return mobile === Boolean(document.querySelector("[data-stacked-pane-type]"));
-  })()`, { label: "the responsive host has committed" });
+  await waitForResponsiveHost(driver);
   const rowSelector = `[data-session-ref='${ref}']`;
   const rowVisible = async () =>
     evaluate(
@@ -2077,6 +2085,11 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
         `${error instanceof Error ? error.message : String(error)}\ntab errors:\n${tabErrors.join("\n") || "(none captured)"}`,
       );
     }
+    // Opening the second tab hid the driver's page; restore it so a viewport
+    // change still pending from the journey reaches the desktop rail before the
+    // rail row is pressed.
+    await driver.send("Page.bringToFront");
+    await waitForResponsiveHost(driver);
     const call = (send, method, ...args) =>
       evaluate(send, `window.backgroundTranscriptGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
     const fence = (send, ref) => call(send, "fenceState", ref);

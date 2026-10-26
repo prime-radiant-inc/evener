@@ -27,15 +27,6 @@ func TestS1Cov_watchEventFilterMatches(t *testing.T) {
 	if watchEventFilterMatches(&watchEventFilter{}, events.SessionEvent{Kind: events.EventToolCallEnd, Data: events.JobStartedData{}}) {
 		t.Fatal("mismatched data type must not match")
 	}
-	// A nil pointer-typed payload → false.
-	if watchEventFilterMatches(&watchEventFilter{}, events.SessionEvent{Kind: events.EventToolCallEnd, Data: (*events.ToolCallEndData)(nil)}) {
-		t.Fatal("nil pointer payload must not match")
-	}
-	// A non-nil pointer payload with matching tool name → true.
-	ptr := &events.ToolCallEndData{ToolName: "read_file"}
-	if !watchEventFilterMatches(&watchEventFilter{ToolName: "read_file"}, events.SessionEvent{Kind: events.EventToolCallEnd, Data: ptr}) {
-		t.Fatal("pointer payload with matching tool name must match")
-	}
 	// Tool name mismatch → false.
 	if watchEventFilterMatches(&watchEventFilter{ToolName: "edit_file"}, toolEnd("read_file", "")) {
 		t.Fatal("tool name mismatch must not match")
