@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -406,4 +407,34 @@ func blockSaves(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return filepath.Join(kept, filepath.Base(path))
+}
+
+// A directory that can be searched and written but not read lets the rename
+// land and then fails the directory sync. The file holds what memory holds, so
+// the save is a success.
+func TestStore_SetSucceedsWhenOnlyTheDirectorySyncFails(t *testing.T) {
+	if os.Geteuid() == 0 || runtime.GOOS == "windows" {
+		t.Skip("needs a directory the process cannot open for reading")
+	}
+	dir := filepath.Join(t.TempDir(), "creds")
+	path := filepath.Join(dir, "credentials.toml")
+	s := mustLoad(t, path)
+	if err := s.Set("work", "sk-old"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := os.Chmod(dir, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if err := s.Set("work", "sk-new"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := mustLoad(t, path).Get("work"); v != "sk-new" || !ok {
+		t.Errorf("reloaded Get = %q/%v, want sk-new/true", v, ok)
+	}
 }

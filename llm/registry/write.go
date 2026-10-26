@@ -238,7 +238,9 @@ func WriteConfigFile(path string, l *Layer) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return fmt.Errorf("providers.toml: mkdir: %w", err)
 	}
-	if err := fsatomic.Write(target, data, 0o644); err != nil {
+	// A directory sync that fails after the rename leaves the new file in
+	// place, which is what callers reload from, so it is not a failed write.
+	if err := fsatomic.Write(target, data, 0o644); err != nil && !errors.Is(err, fsatomic.ErrPublished) {
 		return fmt.Errorf("providers.toml: write: %w", err)
 	}
 	return nil
