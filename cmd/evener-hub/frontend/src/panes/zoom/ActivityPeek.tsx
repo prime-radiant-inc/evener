@@ -1,12 +1,11 @@
 import { type ReactElement, useState } from "react";
 import { ACTIVITY_TABS, activityTabSpec } from "../../shell/activitybar/activityTabs";
-import { SIGNAL_STATES } from "../../shell/sessionStatus";
+import { cadenceStateFor, SIGNAL_STATES } from "../../shell/sessionStatus";
 import type { ActivityScope, ActivityTab } from "../../shell/statusbar/statusScope";
 import { CloseIcon, IconButton, Popover, StatusDot } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { ActivityBodyClock } from "../session/chrome/activityTime";
-import { cadenceStateForStatus } from "../session/liveness";
 import { enterAgentCascade } from "./actions";
 import styles from "./zoom.module.css";
 
@@ -105,7 +104,7 @@ export function ScopeRuntimeState({ scope, compact = false }: { scope: ActivityS
   const state = scope.activity?.runtime?.status.type;
   const label = state ? state.charAt(0).toUpperCase() + state.slice(1) : "State unknown";
   if (compact) {
-    const signal = cadenceStateForStatus(state ?? "");
+    const signal = cadenceStateFor(state ?? "");
     // The compact spine's own exact runtime label is the single status name
     // assistive tech should hear: the shared session-list glyph stays for its
     // shape and motion, but it renders decoratively so a screen reader never
