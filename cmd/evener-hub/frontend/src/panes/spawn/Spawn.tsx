@@ -41,8 +41,7 @@ import { navigate, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
 import { useExtensionsStore } from "../../stores/extensions";
 import { hostRequest, isLocalHost } from "../../stores/hostRouting";
-import { hostsStore, registrySaysHostGone } from "../../stores/hosts";
-import { launchConfigStoreForHost } from "../../stores/launchConfig";
+import { withLaunchConfig } from "../../stores/launchConfig";
 import { selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import {
@@ -1321,7 +1320,7 @@ function SpawnForm({
   // from its own kind, so this just forwards it.
   const complete = useCallback(
     (prefix: string, includeFiles: boolean) =>
-      launchConfigStoreForHost(submittedSource).getState().completePaths(prefix, includeFiles),
+      withLaunchConfig(submittedSource, (config) => config.completePaths(prefix, includeFiles)),
     [submittedSource],
   );
   // Path unfolding is host-scoped (component 07b). evener/path/validate answers
@@ -1337,23 +1336,16 @@ function SpawnForm({
   // the MACHINE that ran it, never for the one the reader moved to.
   const activeHostRef = useRef(submittedSource);
   activeHostRef.current = submittedSource;
-  // The host picker lists the navigation manifest, but the launch-config store
-  // serves only hosts the host registry lists, and only Settings re-reads that
-  // registry. Selecting a host a cached registry snapshot predates re-reads it,
-  // so the host's path and resolve reads are served instead of refused.
-  useEffect(() => {
-    if (isLocalHost(submittedSource)) return;
-    if (registrySaysHostGone(hostsStore.getState().load, submittedSource)) void hostsStore.getState().refresh();
-  }, [submittedSource]);
   const validatePath = useCallback(
     (path: string, kind: string): Promise<PathValidation> => {
       // `path` is the server-canonicalized spelling, which a pathList add stores
       // in place of the raw input (matching the settings-side pathList field).
       const ask = (host: string) =>
-        launchConfigStoreForHost(host)
-          .getState()
-          .validatePath(path, kind)
-          .then((r) => ({ valid: r.valid, error: r.error, path: r.path }));
+        withLaunchConfig(host, (config) => config.validatePath(path, kind)).then((r) => ({
+          valid: r.valid,
+          error: r.error,
+          path: r.path,
+        }));
       // A superseded host's answer must not land (component 07b review, round
       // five): the advanced panel accepts a validation result on FIELD identity
       // alone, and a pathList add goes on its "ok" verdict, so a response issued
@@ -1378,7 +1370,7 @@ function SpawnForm({
   // through evener/host/request (component 07b): the folder is created on the
   // machine the launch will use, never here.
   const createDirectory = useCallback(
-    (path: string) => launchConfigStoreForHost(submittedSource).getState().createDirectory(path),
+    (path: string) => withLaunchConfig(submittedSource, (config) => config.createDirectory(path)),
     [submittedSource],
   );
   // A path-kind value's verdict belongs to the TARGET it was judged for, but
@@ -1456,14 +1448,14 @@ function SpawnForm({
   const pickerFallbackDir = isLocalHost(submittedSource) ? getGlobalLastWorkingDir() : "";
   const resolveConfig = useCallback(
     (overrides: LaunchConfigLayer) =>
-      launchConfigStoreForHost(submittedSource)
-        .getState()
-        .resolve(
+      withLaunchConfig(submittedSource, (config) =>
+        config.resolve(
           cwd,
           pluginSelectionSupported
             ? withPluginSelection(overrides, pluginSelection)
             : withPluginSelection(overrides, { mode: "default" }),
         ),
+      ),
     [submittedSource, cwd, pluginSelection, pluginSelectionSupported],
   );
 
@@ -2656,7 +2648,7 @@ function SpawnForm({
     const submittedPromptRevision = draft.fields.getState().promptRevision;
     const ownsLaunchView = captureLaunchView();
     try {
-      await launchConfigStoreForHost(submittedSource).getState().createDirectory(path);
+      await withLaunchConfig(submittedSource, (config) => config.createDirectory(path));
       await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
       // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call

@@ -73,6 +73,17 @@ export function launchConfigStoreForHost(host: string | null | undefined): Launc
   return hostEntry(host as string).store;
 }
 
+/** withLaunchConfig runs `use` against launchConfigStoreForHost's state for a
+ * caller whose host came from somewhere other than the registry (the navigation
+ * manifest's host picker). Only Settings re-reads the registry, so a host a
+ * cached snapshot predates is waited on for one re-read instead of being
+ * refused. A listed (or local) host runs `use` synchronously. */
+export function withLaunchConfig<T>(host: string, use: (config: LaunchConfigStoreState) => Promise<T>): Promise<T> {
+  const run = () => use(launchConfigStoreForHost(host).getState());
+  if (isLocalHost(host) || !registrySaysHostGone(hostsStore.getState().load, host)) return run();
+  return hostsStore.getState().refresh().then(run);
+}
+
 /**
  * onLaunchConfigUpdated subscribes `handler` to `host`'s own launch-config
  * CHANGE, which is what lets a mounted launch-config pane converge when the
