@@ -100,7 +100,7 @@ func FuzzLoadStore(f *testing.F) {
 			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":1}]}`,
 	}
 	for _, seed := range seeds {
-		f.Add(seed)
+		f.Add(withRecentDates(seed))
 	}
 
 	f.Fuzz(func(t *testing.T, body string) {
@@ -252,7 +252,7 @@ func TestRepairedFuzzSeedsReachTheirIntendedArms(t *testing.T) {
 
 	// The boot-pass seed loads and moves only the pending record.
 	path := StorePath(t.TempDir())
-	writeRawStore(t, path, 0o600, pendingComplete)
+	writeRawStore(t, path, 0o600, withRecentDates(pendingComplete))
 	store, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open(pending/complete): %v", err)

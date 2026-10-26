@@ -11,7 +11,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// withRecentDates moves a fixture's records to today. A terminal record older
+// than DefaultTerminalMaxAge is compacted on load, so a fixed date turns a
+// fixture that must stay served into one that is retired once the calendar
+// passes that age.
+func withRecentDates(fixture string) string {
+	return strings.ReplaceAll(fixture, "2026-09-26", time.Now().UTC().Format(time.DateOnly))
+}
 
 // priorShapeStoreJSON is a healthy prior-build store: one pending record
 // carrying an orphan boundary, a resolved marker and an open pending-spawn
@@ -36,7 +45,7 @@ const priorShapeStoreJSON = `{"version":1,"sequence":1,"allocatorHighWaterMark":
 // payload, and the boot pass's rewrite leaves none of the keys in the file.
 func TestPriorBuildStoreLoadsAndDropsRetiredKeys(t *testing.T) {
 	path := StorePath(t.TempDir())
-	writeRawStore(t, path, 0o600, priorShapeStoreJSON)
+	writeRawStore(t, path, 0o600, withRecentDates(priorShapeStoreJSON))
 	store, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open on a prior-build store: %v", err)
