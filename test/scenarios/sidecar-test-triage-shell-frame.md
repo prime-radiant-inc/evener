@@ -28,7 +28,7 @@ this rewrite exists to remove. Why it cannot:
 - What DOES carry the failing text across the session boundary is an
   `assistant.tool` frame: it includes the tool's own `output` (or
   `error`) up to 1000 characters
-  (`agent/job_watch.go#writeAssistantToolWatchEvent`). So the parent
+  (`agent/watch_frame.go#writeAssistantToolWatchEvent`). So the parent
   runs the failing command in
   the FOREGROUND and the signature rides the frame. The trigger is
   weaker than a live mid-stream match — it lands when the command
