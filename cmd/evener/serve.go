@@ -637,6 +637,17 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 
 	// Create LLM client and session.
+	// Resolved before the session and listener exist, so a missing state home
+	// fails the launch with nothing to unwind.
+	runDir := *runDirFlag
+	if runDir == "" {
+		runDir = envvars.EVENERRunDir.Getenv()
+	}
+	if runDir == "" {
+		if runDir, err = rendezvous.DefaultDir(); err != nil {
+			return fmt.Errorf("resolve runtime directory: %w", err)
+		}
+	}
 	client, closeClient, err := deps.newClient(sd, os.Stderr)
 	if err != nil {
 		return err
@@ -1911,16 +1922,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	spawnedBy := "user"
 	if envvars.EVENERHubSpawned.Getenv() == "1" {
 		spawnedBy = "hub"
-	}
-	runDir := *runDirFlag
-	if runDir == "" {
-		runDir = envvars.EVENERRunDir.Getenv()
-	}
-	if runDir == "" {
-		var err error
-		if runDir, err = rendezvous.DefaultDir(); err != nil {
-			return fmt.Errorf("resolve runtime directory: %w", err)
-		}
 	}
 	rvEntry := rendezvous.Entry{
 		PID:          os.Getpid(),

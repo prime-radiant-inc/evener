@@ -187,17 +187,20 @@ func hubAuthCredentialsPath(stateRoot string) (string, error) {
 	return filepath.Join(filepath.Dir(stateDir), "credentials.toml"), nil
 }
 
-// refuseAuthRecordsWithoutStateDir answers every OAuth record read, write and
-// delete with stateErr when the state directory could not be resolved. The
-// record helpers would otherwise resolve auth/<instance>.json against the
-// working directory.
+// refuseAuthRecordsWithoutStateDir keeps the OAuth record helpers off the
+// working directory (where auth/<instance>.json would otherwise resolve) when
+// the state directory could not be resolved. With no state directory there
+// are no records to read or delete, so instance management that merely checks
+// for them keeps working; only saving one, the sign-in itself, reports stateErr.
 func (c *hubAuthController) refuseAuthRecordsWithoutStateDir(stateErr error) {
 	if stateErr == nil {
 		return
 	}
-	c.loadAuth = func(string, string) (authopenai.AuthRecord, error) { return authopenai.AuthRecord{}, stateErr }
+	c.loadAuth = func(string, string) (authopenai.AuthRecord, error) {
+		return authopenai.AuthRecord{}, authopenai.ErrAuthNotFound
+	}
 	c.saveAuth = func(string, string, authopenai.AuthRecord) error { return stateErr }
-	c.deleteAuth = func(string, string) (bool, error) { return false, stateErr }
+	c.deleteAuth = func(string, string) (bool, error) { return false, nil }
 }
 
 // hubCredentialStore resolves the one credentials store every credential

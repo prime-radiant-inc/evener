@@ -265,3 +265,30 @@ func TestMemoryLaunchWithoutStateHome(t *testing.T) {
 		})
 	}
 }
+
+// A serve launch with no state home and no explicit run dir fails before any
+// session exists (so there is nothing to unwind), while an explicit run dir
+// starts without a home.
+func TestServeWithoutStateHomeFailsBeforeConstructingASession(t *testing.T) {
+	dir := memoryLaunchFixture(t)
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("EVENER_RUN_DIR", "")
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+
+	stop := errors.New("fixture constructor reached")
+	constructed := false
+	deps := defaultServeDeps()
+	deps.newSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
+		constructed = true
+		return nil, stop
+	}
+	args := []string{"--dir", dir, "--state-dir", t.TempDir(), "--model", "openai/gpt-test", "--disable-memory"}
+
+	if err := runServeWithDeps(args, deps); !errors.Is(err, userdirs.ErrNoStateHome) || constructed {
+		t.Fatalf("serve = %v constructed=%t, want ErrNoStateHome before a session is constructed", err, constructed)
+	}
+	if err := runServeWithDeps(append(args, "--run-dir", t.TempDir()), deps); !errors.Is(err, stop) || !constructed {
+		t.Fatalf("serve with --run-dir = %v constructed=%t, want the constructor reached", err, constructed)
+	}
+}

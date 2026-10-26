@@ -1642,24 +1642,24 @@ func mustStateRoot(t *testing.T) string {
 	return root
 }
 
-// A hub with no state home refuses to read or write OAuth records, rather than
-// resolving auth/<instance>.json against its working directory, and answers
-// credential writes with the same reason. A controller built once a home
-// exists works again.
+// A hub with no state home finds no OAuth records and refuses to save one,
+// rather than resolving auth/<instance>.json against its working directory, and
+// answers credential writes with the same reason. A controller built once a
+// home exists works again.
 func TestHubAuthControllerWithoutStateHomeRefusesRecords(t *testing.T) {
 	t.Setenv(envvars.XDGStateHome.Name, "")
 	t.Setenv(envvars.Home.Name, "")
 	t.Chdir(t.TempDir())
 
 	ctrl := newHubAuthControllerWithStore("", nil)
-	if _, err := ctrl.loadAuth(ctrl.stateDir, "openai"); !errors.Is(err, userdirs.ErrNoStateHome) {
-		t.Fatalf("loadAuth error = %v, want ErrNoStateHome", err)
+	if _, err := ctrl.loadAuth(ctrl.stateDir, "openai"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("loadAuth error = %v, want ErrAuthNotFound", err)
 	}
 	if err := ctrl.saveAuth(ctrl.stateDir, "openai", authopenai.AuthRecord{}); !errors.Is(err, userdirs.ErrNoStateHome) {
 		t.Fatalf("saveAuth error = %v, want ErrNoStateHome", err)
 	}
-	if _, err := ctrl.deleteAuth(ctrl.stateDir, "openai"); !errors.Is(err, userdirs.ErrNoStateHome) {
-		t.Fatalf("deleteAuth error = %v, want ErrNoStateHome", err)
+	if deleted, err := ctrl.deleteAuth(ctrl.stateDir, "openai"); deleted || err != nil {
+		t.Fatalf("deleteAuth = %v, %v, want nothing deleted and no error", deleted, err)
 	}
 	if _, credsErr := ctrl.credentialStore(); !errors.Is(credsErr, userdirs.ErrNoStateHome) {
 		t.Fatalf("credentialStore error = %v, want ErrNoStateHome", credsErr)
@@ -1682,5 +1682,34 @@ func TestHubAuthControllerWithoutStateHomeRefusesRecords(t *testing.T) {
 	recovered := newHubAuthControllerWithStore("", nil)
 	if _, err := recovered.loadAuth(recovered.stateDir, "openai"); !errors.Is(err, authopenai.ErrAuthNotFound) {
 		t.Fatalf("loadAuth after the home returned error = %v, want ErrAuthNotFound", err)
+	}
+}
+
+// A hub with explicit paths and a healthy credentials store but no default
+// state home can still rename and remove API-key instances: with no state
+// directory there is no OAuth record to collide with or clean up.
+func TestHubInstancesWithoutStateHomeSeeNoOAuthRecords(t *testing.T) {
+	t.Setenv(envvars.XDGStateHome.Name, "")
+	t.Setenv(envvars.Home.Name, "")
+	store, err := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set("gateway", "sk-test"); err != nil {
+		t.Fatal(err)
+	}
+	instances := &hubInstancesController{auth: newHubAuthControllerWithStore("", store)}
+
+	if held := instances.credentialsUnder("unused"); len(held) != 0 {
+		t.Fatalf("credentialsUnder(unused) = %v, want none", held)
+	}
+	if held := instances.credentialsUnder("gateway"); len(held) != 1 {
+		t.Fatalf("credentialsUnder(gateway) = %v, want only the credentials.toml entry", held)
+	}
+	if err := instances.moveCredentials("gateway", "renamed"); err != nil {
+		t.Fatalf("moveCredentials: %v", err)
+	}
+	if _, ok := store.Get("renamed"); !ok {
+		t.Fatal("the renamed instance lost its stored key")
 	}
 }
