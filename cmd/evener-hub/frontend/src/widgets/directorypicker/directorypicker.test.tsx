@@ -294,6 +294,27 @@ test.each(["Enter", "Go"])(
   },
 );
 
+test("focus taken while the initial validation result is waiting to render keeps its selection", async () => {
+  const { resolveInitial } = setupPendingInitialValidation();
+  const input = screen.getByRole<HTMLInputElement>("textbox", { name: "Path" });
+  // React flushes the validation result on a later task. A user (or a browser
+  // driver) can focus and select the field after the result was received and
+  // before it renders; the render must not replace the text under that selection.
+  const actEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+  try {
+    resolveInitial();
+    for (let tick = 0; tick < 10; tick++) await Promise.resolve();
+    input.focus();
+    input.select();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = actEnvironment;
+  }
+  expect(input.value).toBe("~");
+  expect([input.selectionStart, input.selectionEnd]).toEqual([0, 1]);
+});
+
 test.each(["confirm", "blur"])(
   "an untouched focused validated draft supports %s without revalidation",
   async (action) => {

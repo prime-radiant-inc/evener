@@ -65,6 +65,7 @@ export function DirectoryPicker({
   const [typed, setTyped] = useState(initialPath);
   const [pathEdited, setPathEdited] = useState(false);
   const [entries, setEntries] = useState<string[] | null>(null);
+  const [initialCanonical, setInitialCanonical] = useState<string | null>(null);
   const [validatedInput, setValidatedInput] = useState<string | null>(null);
   const [recents, setRecents] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -110,8 +111,8 @@ export function DirectoryPicker({
       setCurrent(canonical);
       // Initial validation must not collapse a selection made before the first
       // input event. Explicit navigation still canonicalizes its submitted path.
-      if (!preserveFocusedInput || ownerDocumentOf(pathInput.current).activeElement !== pathInput.current)
-        setTyped(canonical);
+      if (preserveFocusedInput) setInitialCanonical(canonical);
+      else setTyped(canonical);
       setValidatedInput(path);
       const children = await complete(childrenPrefix(canonical), false);
       if (mounted.current && request.current === id) setEntries(children);
@@ -152,6 +153,14 @@ export function DirectoryPicker({
       goButton.current?.focus();
     }
   }, [creating, busy]);
+
+  // Focus is read in the commit that would replace the text. Reading it when
+  // the validation result arrives misses a field focused and selected before
+  // that result renders, and the replacement then lands under the selection.
+  useLayoutEffect(() => {
+    if (initialCanonical !== null && ownerDocumentOf(pathInput.current).activeElement !== pathInput.current)
+      setTyped(initialCanonical);
+  }, [initialCanonical]);
 
   const ready = validatedInput !== null && !pathEdited && (typed === current || typed === validatedInput) && !busy;
   // Paths belong to the Linux/macOS hub, regardless of the browser OS.
