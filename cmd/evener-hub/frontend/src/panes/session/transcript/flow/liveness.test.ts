@@ -166,6 +166,12 @@ test("formatQuietBucket: just under the 180s stall threshold still reads ~2m, ne
   expect(formatQuietBucket(179_999)).toBe("~2m");
 });
 
+test("formatQuietBucket: past two minutes it counts whole minutes up to the stuck threshold", () => {
+  expect(formatQuietBucket(179_999)).toBe("~2m");
+  expect(formatQuietBucket(180_000)).toBe("~3m");
+  expect(formatQuietBucket(STUCK_AFTER_MS - 1)).toBe("~9m");
+});
+
 test("formatQuietBucket: a gap at the very start of the quiet band (20s) reads ~30s", () => {
   expect(formatQuietBucket(20_000)).toBe("~30s");
 });

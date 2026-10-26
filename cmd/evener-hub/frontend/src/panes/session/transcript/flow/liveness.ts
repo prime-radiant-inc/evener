@@ -35,13 +35,14 @@ const MINUTE_MS = 60 * SECOND_MS;
  * Bucketed, quantized "calm quiet" phrasing - never an exact rising
  * per-second counter, matching the legacy renderer's own
  * formatLivenessQuiet breakpoints (parity doc §16): <45s -> "~30s",
- * <90s -> "~1m", >=90s -> "~2m". The top bucket covers everything from 90s
- * up to stalled, so the quiet line never climbs past "~2m".
+ * <90s -> "~1m", <3m -> "~2m", then whole minutes up to stalled, so the quiet
+ * line never understates a long silence.
  */
 export function formatQuietBucket(gapMs: number): string {
   if (gapMs < 45_000) return "~30s";
   if (gapMs < 90_000) return "~1m";
-  return "~2m";
+  if (gapMs < 3 * MINUTE_MS) return "~2m";
+  return `~${Math.floor(gapMs / MINUTE_MS)}m`;
 }
 
 /**
