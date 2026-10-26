@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 const threadClearJournalName = "thread-clear-journal.json"
@@ -104,58 +104,10 @@ func persistThreadClearJournal(path string, records map[string]threadClearRecord
 	if err != nil {
 		return fmt.Errorf("encode thread clear journal: %w", err)
 	}
-	tmp := path + ".tmp"
-	file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("open thread clear journal temporary file: %w", err)
-	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		_ = os.Remove(tmp)
+	if err := fsatomic.Write(path, data, 0o600); err != nil {
 		return fmt.Errorf("write thread clear journal: %w", err)
 	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("sync thread clear journal: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("close thread clear journal: %w", err)
-	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("secure thread clear journal: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("replace thread clear journal: %w", err)
-	}
-	// The rename is only durable once the directory entry itself is synced; a
-	// crash right after the rename could otherwise lose the replacement. Some
-	// filesystems cannot sync a directory at all; tolerating that keeps clear
-	// usable there instead of turning a durability nicety into a hard failure.
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return fmt.Errorf("open thread clear journal directory: %w", err)
-	}
-	if err := dir.Sync(); err != nil && !journalSyncUnsupported(err) {
-		_ = dir.Close()
-		return fmt.Errorf("sync thread clear journal directory: %w", err)
-	}
-	if err := dir.Close(); err != nil {
-		return fmt.Errorf("close thread clear journal directory: %w", err)
-	}
 	return nil
-}
-
-// journalSyncUnsupported reports whether a sync failed because the filesystem
-// does not support syncing that file, mirroring the tolerance the hub's
-// deletion and transcript-display stores apply to the same rename idiom.
-func journalSyncUnsupported(err error) bool {
-	return errors.Is(err, syscall.ENOSYS) ||
-		errors.Is(err, syscall.ENOTSUP) ||
-		errors.Is(err, syscall.EINVAL)
 }
 
 func threadClearRequestHash(params appwire.ThreadClearParams) (string, error) {
