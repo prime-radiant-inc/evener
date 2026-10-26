@@ -200,13 +200,13 @@ cmd/evener-hub/internal/hubedge/auth_token_test.go	2
 cmd/evener-hub/internal/launchconfig/coverage_test.go	2
 cmd/evener-hub/internal/launchconfig/io_test.go	4
 cmd/evener-hub/internal/launchconfig/merge_test.go	3
+cmd/evener-hub/internal/sshconn/deploy_byte_count_test.go	2
+cmd/evener-hub/internal/sshconn/deploy_dirty_controller_test.go	1
 cmd/evener-hub/internal/sshconn/deploy_help_test.go	4
+cmd/evener-hub/internal/sshconn/deploy_resolved_target_test.go	1
 cmd/evener-hub/internal/sshconn/deploy_retained_target_test.go	2
-cmd/evener-hub/internal/sshconn/deploy_round10_test.go	2
-cmd/evener-hub/internal/sshconn/deploy_round8_test.go	1
 cmd/evener-hub/internal/sshconn/deploy_test.go	11
 cmd/evener-hub/internal/sshconn/gate_test.go	4
-cmd/evener-hub/internal/sshconn/round13_test.go	1
 cmd/evener-hub/internal/sshconn/version_test.go	1
 cmd/evener-hub/spawn_test.go	1
 cmd/evener-internalcheck/coverage_test.go	1
