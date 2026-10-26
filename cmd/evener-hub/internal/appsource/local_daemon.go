@@ -572,144 +572,75 @@ func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.Tur
 }
 
 func (s *LocalDaemonSource) PromoteQueuedAsSteer(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return appwire.TurnPromoteQueuedAsSteerResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
-	}
-	var out appwire.TurnPromoteQueuedAsSteerResponse
-	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
-		return client.Request(ctx, appwire.MethodTurnPromoteQueuedAsSteer, params, &out)
+	return localForwardMutation(ctx, s, params.Ref, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+		return requestAs[appwire.TurnPromoteQueuedAsSteerResponse](ctx, client, appwire.MethodTurnPromoteQueuedAsSteer, params)
 	})
-	return out, err
 }
 
 func (s *LocalDaemonSource) CancelQueued(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return appwire.TurnCancelQueuedResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
-	}
-	var resp appwire.TurnCancelQueuedResponse
-	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
-		var cerr error
-		resp, cerr = client.TurnCancelQueued(ctx, params)
-		return cerr
+	return localForwardMutation(ctx, s, params.Ref, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) (appwire.TurnCancelQueuedResponse, error) {
+		return client.TurnCancelQueued(ctx, params)
 	})
-	if err != nil {
-		return appwire.TurnCancelQueuedResponse{}, err
-	}
-	return resp, nil
 }
 
 func (s *LocalDaemonSource) CompactThread(ctx context.Context, params appwire.ThreadCompactStartParams) error {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return err
-	}
-	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+	return localForwardVoid(ctx, s, params.Ref, func(ctx context.Context, client *appwire.Client) error {
 		return client.ThreadCompactStart(ctx, params)
 	})
 }
 
 func (s *LocalDaemonSource) ShutdownThread(ctx context.Context, params appwire.ThreadShutdownParams) error {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return err
-	}
-	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+	return localForwardVoid(ctx, s, params.Ref, func(ctx context.Context, client *appwire.Client) error {
 		return client.ThreadShutdown(ctx, params)
 	})
 }
 
 func (s *LocalDaemonSource) SetThreadModel(ctx context.Context, params appwire.ThreadModelSetParams) error {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return err
-	}
-	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+	return localForwardVoid(ctx, s, params.Ref, func(ctx context.Context, client *appwire.Client) error {
 		return client.ThreadModelSet(ctx, params)
 	})
 }
 
 func (s *LocalDaemonSource) SetThreadVisionModel(ctx context.Context, params appwire.ThreadVisionModelSetParams) error {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return err
-	}
-	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+	return localForwardVoid(ctx, s, params.Ref, func(ctx context.Context, client *appwire.Client) error {
 		return client.ThreadVisionModelSet(ctx, params)
 	})
 }
 
 func (s *LocalDaemonSource) SetThreadReasoningEffort(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) error {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return err
-	}
-	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+	return localForwardVoid(ctx, s, params.Ref, func(ctx context.Context, client *appwire.Client) error {
 		return client.ThreadReasoningEffortSet(ctx, params)
 	})
 }
 
 func (s *LocalDaemonSource) SetThreadName(ctx context.Context, params appwire.ThreadNameSetParams) error {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return err
-	}
-	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+	return localForwardVoid(ctx, s, params.Ref, func(ctx context.Context, client *appwire.Client) error {
 		return client.ThreadNameSet(ctx, params)
 	})
 }
 
 func (s *LocalDaemonSource) GoalSet(ctx context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return appwire.GoalSetResponse{}, err
-	}
-	var out appwire.GoalSetResponse
-	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
-		var callErr error
-		out, callErr = client.GoalSet(ctx, params)
-		return callErr
+	return localForward(ctx, s, params.Ref, func(ctx context.Context, client *appwire.Client) (appwire.GoalSetResponse, error) {
+		return client.GoalSet(ctx, params)
 	})
-	return out, err
 }
 
 func (s *LocalDaemonSource) NotesHumanSet(ctx context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return appwire.NotesHumanSetResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
-	}
-	var out appwire.NotesHumanSetResponse
-	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
-		return client.Request(ctx, appwire.MethodNotesHumanSet, params, &out)
+	return localForwardMutation(ctx, s, params.Ref, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) (appwire.NotesHumanSetResponse, error) {
+		return requestAs[appwire.NotesHumanSetResponse](ctx, client, appwire.MethodNotesHumanSet, params)
 	})
-	return out, err
 }
 
 func (s *LocalDaemonSource) UrlsRemove(ctx context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return appwire.UrlsRemoveResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
-	}
-	var out appwire.UrlsRemoveResponse
-	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
-		return client.Request(ctx, appwire.MethodUrlsRemove, params, &out)
+	return localForwardMutation(ctx, s, params.Ref, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) (appwire.UrlsRemoveResponse, error) {
+		return requestAs[appwire.UrlsRemoveResponse](ctx, client, appwire.MethodUrlsRemove, params)
 	})
-	return out, err
 }
 
 func (s *LocalDaemonSource) ClearThread(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return appwire.ThreadClearResponse{}, err
-	}
-	var out appwire.ThreadClearResponse
-	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
-		var callErr error
-		out, callErr = client.ThreadClear(ctx, params)
-		return callErr
+	return localForward(ctx, s, params.Ref, func(ctx context.Context, client *appwire.Client) (appwire.ThreadClearResponse, error) {
+		return client.ThreadClear(ctx, params)
 	})
-	return out, err
 }
 
 func (s *LocalDaemonSource) ListModels(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
@@ -727,59 +658,27 @@ func (s *LocalDaemonSource) ListModels(ctx context.Context, params appwire.Model
 }
 
 func (s *LocalDaemonSource) ListTasks(ctx context.Context, params appwire.TaskListParams) (appwire.TaskListResponse, error) {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return appwire.TaskListResponse{}, err
-	}
-	var out appwire.TaskListResponse
-	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
-		var callErr error
-		out, callErr = client.TasksList(ctx, params)
-		return callErr
+	return localForward(ctx, s, params.Ref, func(ctx context.Context, client *appwire.Client) (appwire.TaskListResponse, error) {
+		return client.TasksList(ctx, params)
 	})
-	return out, err
 }
 
 func (s *LocalDaemonSource) ListJobs(ctx context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return appwire.JobsListResponse{}, err
-	}
-	var out appwire.JobsListResponse
-	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
-		var callErr error
-		out, callErr = client.JobsList(ctx, params)
-		return callErr
+	return localForward(ctx, s, params.Ref, func(ctx context.Context, client *appwire.Client) (appwire.JobsListResponse, error) {
+		return client.JobsList(ctx, params)
 	})
-	return out, err
 }
 
 func (s *LocalDaemonSource) JobOutput(ctx context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return appwire.JobsOutputResponse{}, err
-	}
-	var out appwire.JobsOutputResponse
-	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
-		var callErr error
-		out, callErr = client.JobOutput(ctx, params)
-		return callErr
+	return localForward(ctx, s, params.Ref, func(ctx context.Context, client *appwire.Client) (appwire.JobsOutputResponse, error) {
+		return client.JobOutput(ctx, params)
 	})
-	return out, err
 }
 
 func (s *LocalDaemonSource) JobGet(ctx context.Context, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
-	entry, err := s.entryForRef(params.Ref, "")
-	if err != nil {
-		return appwire.JobsGetResponse{}, err
-	}
-	var out appwire.JobsGetResponse
-	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
-		var callErr error
-		out, callErr = client.JobsGet(ctx, params)
-		return callErr
+	return localForward(ctx, s, params.Ref, func(ctx context.Context, client *appwire.Client) (appwire.JobsGetResponse, error) {
+		return client.JobsGet(ctx, params)
 	})
-	return out, err
 }
 
 func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
@@ -846,6 +745,51 @@ func forwardLocalDaemonNotification(ctx context.Context, out chan<- appwire.Noti
 	case <-ctx.Done():
 	case out <- notification:
 	}
+}
+
+// localForwardVoid sends one non-mutation RPC for the session params.Ref names
+// to that session's daemon.
+func localForwardVoid(ctx context.Context, s *LocalDaemonSource, ref string, call func(context.Context, *appwire.Client) error) error {
+	entry, err := s.entryForRef(ref, "")
+	if err != nil {
+		return err
+	}
+	return s.withClient(ctx, entry, call)
+}
+
+// localForward is localForwardVoid for an RPC that returns a result.
+func localForward[R any](ctx context.Context, s *LocalDaemonSource, ref string, call func(context.Context, *appwire.Client) (R, error)) (R, error) {
+	var out R
+	err := localForwardVoid(ctx, s, ref, func(ctx context.Context, client *appwire.Client) error {
+		var callErr error
+		out, callErr = call(ctx, client)
+		return callErr
+	})
+	return out, err
+}
+
+// localForwardMutation sends one mutation to the daemon for ref. A lost
+// response, or a session that has gone away, is reported against
+// clientMutationID so the caller knows whether the mutation was accepted.
+func localForwardMutation[R any](ctx context.Context, s *LocalDaemonSource, ref, clientMutationID string, call func(context.Context, *appwire.Client) (R, error)) (R, error) {
+	var out R
+	entry, err := s.entryForRef(ref, "")
+	if err != nil {
+		return out, localDaemonMutationEntryError(clientMutationID, err)
+	}
+	err = s.withMutationClient(ctx, entry, clientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		var callErr error
+		out, callErr = call(ctx, client)
+		return callErr
+	})
+	return out, err
+}
+
+// requestAs sends a method that has no typed client helper and decodes its result.
+func requestAs[R any](ctx context.Context, client *appwire.Client, method string, params any) (R, error) {
+	var out R
+	err := client.Request(ctx, method, params, &out)
+	return out, err
 }
 
 func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Entry, fn func(context.Context, *appwire.Client) error) error {

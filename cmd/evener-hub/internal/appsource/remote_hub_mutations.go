@@ -60,6 +60,47 @@ func (s *RemoteHubSource) remoteHubMutationCallError(clientMutationID string, er
 	return mutationOutcomeUnknown("mutation outcome is unknown after remote hub response loss", clientMutationID, appwire.RetryDispositionAutomatic)
 }
 
+// remoteForwardVoid sends one non-mutation RPC to the remote hub. remote is the
+// caller's copy of its params and ref points at that copy's Ref field: the ref
+// is rewritten in place to the remote hub's own spelling before the call.
+func remoteForwardVoid[P any](ctx context.Context, s *RemoteHubSource, method string, remote *P, ref *string) error {
+	translated, err := s.toRemoteRef(*ref, "")
+	if err != nil {
+		return err
+	}
+	*ref = translated.String()
+	return s.call(ctx, method, *remote, nil)
+}
+
+// remoteForward is remoteForwardVoid for an RPC that returns a result.
+func remoteForward[R, P any](ctx context.Context, s *RemoteHubSource, method string, remote *P, ref *string) (R, error) {
+	var out, zero R
+	translated, err := s.toRemoteRef(*ref, "")
+	if err != nil {
+		return out, err
+	}
+	*ref = translated.String()
+	if err := s.call(ctx, method, *remote, &out); err != nil {
+		return zero, err
+	}
+	return out, nil
+}
+
+// remoteForwardMutation is remoteForward for a mutation: a lost response is
+// reported against clientMutationID.
+func remoteForwardMutation[R, P any](ctx context.Context, s *RemoteHubSource, method, clientMutationID string, remote *P, ref *string) (R, error) {
+	var out, zero R
+	translated, err := s.toRemoteRef(*ref, "")
+	if err != nil {
+		return out, err
+	}
+	*ref = translated.String()
+	if err := s.mutationCall(ctx, method, clientMutationID, *remote, &out); err != nil {
+		return zero, err
+	}
+	return out, nil
+}
+
 // StartThread forwards thread/start, which the remote hub serves hub-scoped and
 // spawns on its own host. ThreadStartParams carries no ref, so its Harness field
 // is the controller's source selector and must not be forwarded verbatim: the
@@ -88,31 +129,13 @@ func (s *RemoteHubSource) StartThread(ctx context.Context, params appwire.Thread
 }
 
 func (s *RemoteHubSource) ResumeThread(ctx context.Context, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return appwire.ThreadResumeResponse{}, err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	var out appwire.ThreadResumeResponse
-	if err := s.call(ctx, appwire.MethodThreadResume, remote, &out); err != nil {
-		return appwire.ThreadResumeResponse{}, err
-	}
-	return out, nil
+	return remoteForward[appwire.ThreadResumeResponse](ctx, s, appwire.MethodThreadResume, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) ForkThread(ctx context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return appwire.ThreadForkResponse{}, err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	var out appwire.ThreadForkResponse
-	if err := s.call(ctx, appwire.MethodThreadFork, remote, &out); err != nil {
-		return appwire.ThreadForkResponse{}, err
-	}
-	return out, nil
+	return remoteForward[appwire.ThreadForkResponse](ctx, s, appwire.MethodThreadFork, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) StartTurn(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -187,79 +210,33 @@ func (s *RemoteHubSource) InterruptTurn(ctx context.Context, params appwire.Turn
 }
 
 func (s *RemoteHubSource) QueueTurn(ctx context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return appwire.TurnQueueResponse{}, err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	var out appwire.TurnQueueResponse
-	if err := s.mutationCall(ctx, appwire.MethodTurnQueue, params.ClientMutationID, remote, &out); err != nil {
-		return appwire.TurnQueueResponse{}, err
-	}
-	return out, nil
+	return remoteForwardMutation[appwire.TurnQueueResponse](ctx, s, appwire.MethodTurnQueue, params.ClientMutationID, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) DrainAsSteer(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return appwire.TurnDrainAsSteerResponse{}, err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	var out appwire.TurnDrainAsSteerResponse
-	if err := s.mutationCall(ctx, appwire.MethodTurnDrainAsSteer, params.ClientMutationID, remote, &out); err != nil {
-		return appwire.TurnDrainAsSteerResponse{}, err
-	}
-	return out, nil
+	return remoteForwardMutation[appwire.TurnDrainAsSteerResponse](ctx, s, appwire.MethodTurnDrainAsSteer, params.ClientMutationID, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) PromoteQueuedAsSteer(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	var out appwire.TurnPromoteQueuedAsSteerResponse
-	if err := s.mutationCall(ctx, appwire.MethodTurnPromoteQueuedAsSteer, params.ClientMutationID, remote, &out); err != nil {
-		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
-	}
-	return out, nil
+	return remoteForwardMutation[appwire.TurnPromoteQueuedAsSteerResponse](ctx, s, appwire.MethodTurnPromoteQueuedAsSteer, params.ClientMutationID, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) CancelQueued(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return appwire.TurnCancelQueuedResponse{}, err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	var out appwire.TurnCancelQueuedResponse
-	if err := s.mutationCall(ctx, appwire.MethodTurnCancelQueued, params.ClientMutationID, remote, &out); err != nil {
-		return appwire.TurnCancelQueuedResponse{}, err
-	}
-	return out, nil
+	return remoteForwardMutation[appwire.TurnCancelQueuedResponse](ctx, s, appwire.MethodTurnCancelQueued, params.ClientMutationID, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) CompactThread(ctx context.Context, params appwire.ThreadCompactStartParams) error {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	return s.call(ctx, appwire.MethodThreadCompactStart, remote, nil)
+	return remoteForwardVoid(ctx, s, appwire.MethodThreadCompactStart, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) ShutdownThread(ctx context.Context, params appwire.ThreadShutdownParams) error {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	return s.call(ctx, appwire.MethodThreadShutdown, remote, nil)
+	return remoteForwardVoid(ctx, s, appwire.MethodThreadShutdown, &remote, &remote.Ref)
 }
 
 // ForceStopThread forwards evener/thread/forceStop with the ref translated into
@@ -268,163 +245,66 @@ func (s *RemoteHubSource) ShutdownThread(ctx context.Context, params appwire.Thr
 // dispatch (evener/thread/forceStop)"). It is deliberately outside the
 // evener/host/request allow-list.
 func (s *RemoteHubSource) ForceStopThread(ctx context.Context, params appwire.ThreadForceStopParams) error {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	return s.call(ctx, appwire.MethodEvenerThreadForceStop, remote, nil)
+	return remoteForwardVoid(ctx, s, appwire.MethodEvenerThreadForceStop, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) SetThreadModel(ctx context.Context, params appwire.ThreadModelSetParams) error {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	return s.call(ctx, appwire.MethodThreadModelSet, remote, nil)
+	return remoteForwardVoid(ctx, s, appwire.MethodThreadModelSet, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) SetThreadReasoningEffort(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) error {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	return s.call(ctx, appwire.MethodThreadReasoningEffortSet, remote, nil)
+	return remoteForwardVoid(ctx, s, appwire.MethodThreadReasoningEffortSet, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) SetThreadVisionModel(ctx context.Context, params appwire.ThreadVisionModelSetParams) error {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	return s.call(ctx, appwire.MethodThreadVisionModelSet, remote, nil)
+	return remoteForwardVoid(ctx, s, appwire.MethodThreadVisionModelSet, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) SetThreadName(ctx context.Context, params appwire.ThreadNameSetParams) error {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	return s.call(ctx, appwire.MethodEvenerThreadNameSet, remote, nil)
+	return remoteForwardVoid(ctx, s, appwire.MethodEvenerThreadNameSet, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) GoalSet(ctx context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return appwire.GoalSetResponse{}, err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	var out appwire.GoalSetResponse
-	if err := s.call(ctx, appwire.MethodGoalSet, remote, &out); err != nil {
-		return appwire.GoalSetResponse{}, err
-	}
-	return out, nil
+	return remoteForward[appwire.GoalSetResponse](ctx, s, appwire.MethodGoalSet, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) NotesHumanSet(ctx context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return appwire.NotesHumanSetResponse{}, err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	var out appwire.NotesHumanSetResponse
-	if err := s.mutationCall(ctx, appwire.MethodNotesHumanSet, params.ClientMutationID, remote, &out); err != nil {
-		return appwire.NotesHumanSetResponse{}, err
-	}
-	return out, nil
+	return remoteForwardMutation[appwire.NotesHumanSetResponse](ctx, s, appwire.MethodNotesHumanSet, params.ClientMutationID, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) UrlsRemove(ctx context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return appwire.UrlsRemoveResponse{}, err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	var out appwire.UrlsRemoveResponse
-	if err := s.mutationCall(ctx, appwire.MethodUrlsRemove, params.ClientMutationID, remote, &out); err != nil {
-		return appwire.UrlsRemoveResponse{}, err
-	}
-	return out, nil
+	return remoteForwardMutation[appwire.UrlsRemoveResponse](ctx, s, appwire.MethodUrlsRemove, params.ClientMutationID, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) ClearThread(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return appwire.ThreadClearResponse{}, err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	var out appwire.ThreadClearResponse
-	if err := s.mutationCall(ctx, appwire.MethodThreadClear, params.ClientMutationID, remote, &out); err != nil {
-		return appwire.ThreadClearResponse{}, err
-	}
-	return out, nil
+	return remoteForwardMutation[appwire.ThreadClearResponse](ctx, s, appwire.MethodThreadClear, params.ClientMutationID, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) ListTasks(ctx context.Context, params appwire.TaskListParams) (appwire.TaskListResponse, error) {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return appwire.TaskListResponse{}, err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	var out appwire.TaskListResponse
-	if err := s.call(ctx, appwire.MethodEvenerTasksList, remote, &out); err != nil {
-		return appwire.TaskListResponse{}, err
-	}
-	return out, nil
+	return remoteForward[appwire.TaskListResponse](ctx, s, appwire.MethodEvenerTasksList, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) ListJobs(ctx context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return appwire.JobsListResponse{}, err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	var out appwire.JobsListResponse
-	if err := s.call(ctx, appwire.MethodEvenerJobsList, remote, &out); err != nil {
-		return appwire.JobsListResponse{}, err
-	}
-	return out, nil
+	return remoteForward[appwire.JobsListResponse](ctx, s, appwire.MethodEvenerJobsList, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) JobOutput(ctx context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return appwire.JobsOutputResponse{}, err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	var out appwire.JobsOutputResponse
-	if err := s.call(ctx, appwire.MethodEvenerJobsOutput, remote, &out); err != nil {
-		return appwire.JobsOutputResponse{}, err
-	}
-	return out, nil
+	return remoteForward[appwire.JobsOutputResponse](ctx, s, appwire.MethodEvenerJobsOutput, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) JobGet(ctx context.Context, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
-	ref, err := s.toRemoteRef(params.Ref, "")
-	if err != nil {
-		return appwire.JobsGetResponse{}, err
-	}
 	remote := params
-	remote.Ref = ref.String()
-	var out appwire.JobsGetResponse
-	if err := s.call(ctx, appwire.MethodEvenerJobsGet, remote, &out); err != nil {
-		return appwire.JobsGetResponse{}, err
-	}
-	return out, nil
+	return remoteForward[appwire.JobsGetResponse](ctx, s, appwire.MethodEvenerJobsGet, &remote, &remote.Ref)
 }
