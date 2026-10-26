@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -145,7 +146,7 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 	// The sandbox request is fixed for the session's life; SessionStart
 	// carries it so a subagent's thread reports its own access (S15).
 	start.Sandbox = s.cfg.Sandbox
-	start.SandboxNet = cloneBool(s.cfg.SandboxNet)
+	start.SandboxNet = appwire.ClonePointer(s.cfg.SandboxNet)
 	store := s.getOrCreateTaskStore()
 	_ = store.MutateAndPublish(func(epoch, revision uint64) error {
 		// Sample current work only after entering the shared store's publication

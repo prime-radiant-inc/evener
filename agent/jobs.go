@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 )
@@ -599,7 +600,7 @@ func jobsDir(stateDir, sessionID string) string {
 	if strings.TrimSpace(stateDir) == "" {
 		return filepath.Join(os.TempDir(), "evener-jobs", sessionID)
 	}
-	return filepath.Join(stateDir, "sessions", sessionID)
+	return filepath.Join(schema.SessionsDir(stateDir), sessionID)
 }
 
 type jobStoreOpener func(string) (*jobstore.Store, error)

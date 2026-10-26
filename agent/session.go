@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2762,17 +2761,11 @@ func (s *Session) saveSessionMetaLocked() error {
 	return schema.SaveSessionMeta(s.stateDir, meta)
 }
 
-// sessionsSubdir is the directory, under a session's StateDir, where its
-// per-session files live: the transcript and log JSONL written by package
-// agent, alongside the meta.json/snapshot written by package schema (which
-// keeps its own private copy of this name).
-const sessionsSubdir = "sessions"
-
 // TranscriptPath returns the path to this session's transcript JSONL file,
 // or empty string if state persistence is not enabled.
 func (s *Session) TranscriptPath() string {
 	if s.stateDir == "" {
 		return ""
 	}
-	return filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+	return schema.SessionTranscriptPath(s.stateDir, s.id)
 }
