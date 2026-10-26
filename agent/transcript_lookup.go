@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/bucketref"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 )
@@ -435,7 +436,7 @@ func validateLayoutPrefix(stateDir string) error {
 
 // transcriptPath builds the path to a transcript JSONL file.
 func transcriptPath(bucketDir, sessionID string) string {
-	return filepath.Join(bucketDir, sessionsSubdir, sessionID+".transcript.jsonl")
+	return schema.SessionTranscriptPath(bucketDir, sessionID)
 }
 
 // parentBucketAndID resolves a ref (or bare ID) to the bucket directory and
