@@ -99,13 +99,6 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 	if err := roster.RefreshAndWait(ctx); err != nil {
 		t.Fatal(err)
 	}
-	watchCtx, stopWatch := context.WithCancel(ctx)
-	watchDone := make(chan struct{})
-	go func() {
-		defer close(watchDone)
-		watchHubRoster(watchCtx, roster)
-	}()
-	defer func() { stopWatch(); <-watchDone }()
 	past := hubcore.NewPastIndex(filepath.Join(fixture.stateRoot, "projects", "*"))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -119,7 +112,8 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 	if err := os.MkdirAll(hubStateRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	config := hubcore.WebConfig{AuthToken: token, HubStateRoot: hubStateRoot, RunDir: fixture.runDir, Past: past, Roster: roster, StateDir: fixture.stateRoot, PastIndexPath: filepath.Join(hubStateRoot, "index.db")}
+	inputs := &hubcore.InputsVersion{}
+	config := hubcore.WebConfig{AuthToken: token, HubStateRoot: hubStateRoot, RunDir: fixture.runDir, Past: past, Roster: roster, Inputs: inputs, StateDir: fixture.stateRoot, PastIndexPath: filepath.Join(hubStateRoot, "index.db")}
 	config.Spawner = &HubSpawner{EvenerBinary: launchBinary, RunDir: fixture.runDir, NoUserLayer: true}
 	originWeb := newWebServer(config, nil)
 	origin := httptest.NewServer(originWeb.Handler())
@@ -142,6 +136,20 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 	web := newWebServer(config, nil)
 	hub := httptest.NewServer(web.Handler())
 	defer hub.Close()
+	// Match main.go's roster publication wiring. These two hubs share the
+	// roster, so both retained navigation projections must observe its changes.
+	roster.SetOnChange(func() {
+		inputs.Bump()
+		originWeb.navigation.Invalidate(navigationChangeHint{})
+		web.navigation.Invalidate(navigationChangeHint{})
+	})
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		watchHubRoster(watchCtx, roster)
+	}()
+	defer func() { stopWatch(); <-watchDone }()
 	checkpointTransport, err := appwire.DialWebSocketWithHeaders(ctx, "ws"+strings.TrimPrefix(hub.URL, "http")+"/rpc", http.DefaultClient, http.Header{"Authorization": {"Bearer " + token}})
 	if err != nil {
 		t.Fatal(err)
