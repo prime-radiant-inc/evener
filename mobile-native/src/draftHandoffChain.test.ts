@@ -347,10 +347,59 @@ describe("handoff chain obligations", () => {
 		).toBe(true);
 		expect(sent).toBe(true);
 		expect(token).toBeDefined();
-		// The resolution still records the outcome for the next ledger write.
-		expect(resolved).toEqual([[token, "completed"]]);
+		// The outcome is retained in the document, not discarded: its resolution
+		// commits on the next ledger write instead of being lost with the
+		// obligation that never got recorded.
+		expect(resolved).toEqual([]);
 		// The spent capture is cleared locally: the message went out.
 		expect(repository.read(endpoint("a"))).toEqual({ draft: "", unconfirmed: null });
+	});
+
+	test("a failed obligation creation is retried once the ledger recovers", async () => {
+		const { storageLedger, repository } = setup();
+		let failBegin = true;
+		const failing = new Proxy(storageLedger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "beginSubmission" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (failBegin) throw new Error("ledger unavailable");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftHandoffLedger;
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => failing,
+		);
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const document = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = document.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		// The send went out; its obligation could not be recorded.
+		expect(storageLedger.readGraph().obligations).toEqual([]);
+		finish();
+		await submitted;
+		expect(storageLedger.readGraph().obligations).toEqual([]);
+
+		// The ledger recovers: the retained begin adopts the pending capture, so
+		// the queued resolution attaches its completion markers.
+		failBegin = false;
+		document.retry();
+		expect(storageLedger.readGraph().obligations).toMatchObject([
+			{ state: "completed", completedCommandIds: ["recovered-a"] },
+		]);
 	});
 
 	test("a failed obligation resolution is retried on the next document reload", async () => {
@@ -449,5 +498,46 @@ describe("handoff chain obligations", () => {
 			unconfirmed: "current[image 1]",
 			unconfirmedCaptureToken: token,
 		});
+	});
+
+	test("a completion lands where a transfer committed without its composed marker", async () => {
+		const { storageLedger, repository } = setup();
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const failing = flaky(storageLedger, "recordComposed", 1);
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => failing,
+		);
+		const source = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		expect(library.handoff(endpoint("a"), endpoint("b"))).toBe(true);
+		// The transfer committed, but its composed marker write failed: the
+		// capture is durably at the destination while the graph still names the
+		// origin as its owner.
+		expect(repository.read(endpoint("b"))).toMatchObject({ unconfirmed: "current" });
+
+		finish();
+		await submitted;
+		// The completion follows the durable capture evidence to the
+		// destination instead of recreating a record at the retired origin.
+		expect(repository.read(endpoint("b"))).toMatchObject({
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+		expect(repository.read(endpoint("a"))).toEqual({ draft: "", unconfirmed: null });
+
+		library.retryPendingHandoffs();
+		expect(storageLedger.readGraph().edges[0]).toMatchObject({ state: "settled" });
 	});
 });

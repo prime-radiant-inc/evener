@@ -1,4 +1,5 @@
 import type { DraftHandoffEdge, DraftHandoffEndpoint, DraftHandoffGraph } from "./draftHandoffLedger";
+import type { DraftRecord } from "./draftRepository";
 
 /** One read of the ledger. A failing read is an incomplete graph, never a
  * partial one: settlement must not be planned against edges it could not see. */
@@ -67,6 +68,32 @@ export function terminalDestination(
 
 function sameEndpoint(a: DraftHandoffEndpoint, b: DraftHandoffEndpoint): boolean {
 	return a.hubId === b.hubId && a.sessionRef === b.sessionRef;
+}
+
+/** The identity that durably owns a resolved capture. The graph's terminal is
+ * the answer unless one of the chain's hops durably holds the capture token: a
+ * transfer can commit while its composed-marker write fails, and a delayed
+ * predecessor can land its composition at an intermediate identity after the
+ * continuation moved on. The capture token is unique, so durable evidence at
+ * any hop wins over the graph's routing. */
+export function captureTerminal(
+	edges: readonly DraftHandoffEdge[],
+	obligation: {
+		obligationId: string;
+		origin: DraftHandoffEndpoint;
+		chainId: string | null;
+	},
+	read: (endpoint: DraftHandoffEndpoint) => DraftRecord | undefined,
+): DraftHandoffEndpoint {
+	const hops = edges
+		.filter((edge) => sameEndpoint(edge.from, obligation.origin) || obligation.chainId === edge.chainId)
+		.sort(compareEdges)
+		.reverse() as DraftHandoffEdge[];
+	for (const hop of hops) {
+		const record = read(hop.to);
+		if (record?.unconfirmedCaptureToken === obligation.obligationId) return hop.to;
+	}
+	return terminalDestination(edges, obligation.origin, obligation.chainId ?? undefined);
 }
 
 /** Deterministic settlement planning over the durable graph.
@@ -182,7 +209,7 @@ export function orderHandoffGraph(load: HandoffGraphLoad): HandoffOrdering {
 	return { state: "ready", order, blocked };
 }
 
-function compareEdges(a: DraftHandoffEdge, b: DraftHandoffEdge): number {
+export function compareEdges(a: DraftHandoffEdge, b: DraftHandoffEdge): number {
 	if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
 	return a.edgeId < b.edgeId ? -1 : a.edgeId > b.edgeId ? 1 : 0;
 }

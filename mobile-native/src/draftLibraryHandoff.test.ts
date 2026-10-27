@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { DraftHandoffEdge, DraftHandoffEndpoint, DraftHandoffLedger } from "./draftHandoffLedger";
 import { DraftHandoffLedgerSQLite } from "./draftHandoffLedgerSQLite";
 import { DraftLibrary } from "./draftLibrary";
+import { terminalDestination } from "./draftHandoffGraph";
 import { type DraftDestination, DraftRepository } from "./draftRepository";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
@@ -116,6 +117,43 @@ describe("durable handoff library", () => {
 		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "refused" });
 		expect(repository.read(destination("a")).draft).toBe("mine");
 		expect(repository.read(destination("b")).draft).toBe("");
+	});
+
+	test("a refusal defers while the destination cannot load its saved record", () => {
+		const { ledger, repository, draftDatabase, library } = setup();
+		// Another chain already owns the destination, so the hop is refused.
+		const owner = ledger.createEdge({ chainId: "other", from: endpoint("x"), to: endpoint("b") });
+		ledger.claimDestination(owner.edgeId);
+		ledger.settleEdge(owner.edgeId, [], "owner");
+		repository.write(destination("a"), {
+			draft: "mine",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		// The destination holds work, but its record cannot load: a parked
+		// composition references an image whose bytes are gone.
+		draftDatabase.exec(
+			`INSERT INTO drafts (hub_id, session_ref, draft, unconfirmed, parked_composition)
+			 VALUES ('hub', 'b', 'theirs', NULL,
+			 '[{"id":"park","text":"parked","images":[{"id":"missing","marker":1,"mediaType":"image/png"}]}]')`,
+		);
+		expect(() => repository.read(destination("b"))).toThrow(/Saved image is unavailable/);
+
+		const draftLibrary = library();
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		// The refusal defers instead of merging dispositions through the
+		// destination's unreadable record, so no work is replaced.
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("pending");
+		expect(repository.read(destination("a")).draft).toBe("mine");
+
+		// The record becomes readable again: the refusal proceeds.
+		draftDatabase.exec("UPDATE drafts SET parked_composition = NULL WHERE hub_id = 'hub' AND session_ref = 'b'");
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("refused");
+		expect(repository.read(destination("b"))).toMatchObject({
+			draft: "theirs",
+			releasedRecoveryIds: ["recovered-a"],
+		});
 	});
 
 	test("cleans settled and refused edges on retry, and a second retry is a no-op", () => {
@@ -441,7 +479,13 @@ describe("durable handoff library", () => {
 		await submitted;
 		draftLibrary.retryPendingHandoffs();
 		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
-		expect(repository.read(destination("b"))).toMatchObject({ unconfirmed: null });
+		// The send resolved as a message admission: its recovered capture settles
+		// through the resend receipt, not through the handoff graph, so it stays
+		// recoverable input instead of being cleared here.
+		expect(repository.read(destination("b"))).toMatchObject({
+			unconfirmed: "current",
+			unconfirmedComposer: { recoveryIds: ["recovered-a"] },
+		});
 		expect(draftLibrary.openObligationRecoveryIds(destination("b"))).toEqual(new Set());
 	});
 
@@ -545,5 +589,33 @@ describe("durable handoff library", () => {
 			unconfirmedCaptureToken: "abandoned-token",
 		});
 		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
+	});
+
+	test("a recovered first transfer reaches the terminal of a chain whose next hop exists", () => {
+		const { ledger, repository, draftDatabase, library } = setup();
+		repository.write(destination("a"), { draft: "delayed work", unconfirmed: null });
+		const draftLibrary = library();
+		// The first hop's transfer fails after its delivered hash is recorded.
+		draftDatabase.exec(
+			"CREATE TRIGGER reject_b BEFORE INSERT ON drafts WHEN NEW.session_ref = 'b' BEGIN SELECT RAISE(ABORT, 'full'); END",
+		);
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "a", "b")?.deliveredHash).not.toBeNull();
+		// The chain continues while the first hop is still pending: the second
+		// hop must not move the source's not-yet-landed composition.
+		expect(draftLibrary.handoff(destination("b"), destination("c"))).toBe(false);
+		expect(edgeFor(ledger, "b", "c")).toMatchObject({ state: "pending" });
+
+		draftDatabase.exec("DROP TRIGGER reject_b");
+		draftLibrary.retryPendingHandoffs();
+		// The recovered composition reaches the terminal identity...
+		expect(repository.read(destination("c"))).toMatchObject({ draft: "delayed work" });
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		expect(edgeFor(ledger, "b", "c")?.state).toBe("settled");
+		// ...and the graph's terminal names the identity that holds it.
+		const graph = ledger.readGraph();
+		expect(terminalDestination(graph.edges, endpoint("a"))).toEqual(endpoint("c"));
+		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
+		expect(repository.read(destination("b"))).toEqual({ draft: "", unconfirmed: null });
 	});
 });

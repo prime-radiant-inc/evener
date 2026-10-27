@@ -1,4 +1,10 @@
-import { captureInFlight, type DraftCompletionDelivery, DraftDocument, mergeCompletion } from "./draftDocument";
+import {
+	captureInFlight,
+	type DraftCompletionDelivery,
+	DraftDocument,
+	mergeCompletion,
+	messageAdmissionCapture,
+} from "./draftDocument";
 import type {
 	DraftHandoffDelivery,
 	DraftHandoffEdge,
@@ -7,7 +13,14 @@ import type {
 	DraftSubmissionObligation,
 } from "./draftHandoffLedger";
 import { clearsCapture } from "./draftHandoffLedger";
-import { type HandoffOrdering, orderHandoffGraph, readHandoffGraph, terminalDestination } from "./draftHandoffGraph";
+import {
+	captureTerminal,
+	compareEdges,
+	type HandoffOrdering,
+	orderHandoffGraph,
+	readHandoffGraph,
+	terminalDestination,
+} from "./draftHandoffGraph";
 import type { DraftComposerMetadata, DraftDestination, DraftRecord, DraftRepository } from "./draftRepository";
 
 export type DraftStorage = Pick<
@@ -106,34 +119,47 @@ export class DraftLibrary {
 			const fresh = readHandoffGraph(ledger);
 			if (fresh.state !== "ready") return;
 			this.cleanFinished(ledger, fresh.graph);
-			this.attemptOrderedHandoffs(ledger, orderHandoffGraph(fresh));
+			this.attemptOrderedHandoffs(ledger, fresh.graph, orderHandoffGraph(fresh));
 			return;
 		}
 		this.cleanFinished(ledger, load.graph);
 		const ordering = orderHandoffGraph(load);
-		this.attemptOrderedHandoffs(ledger, ordering);
+		this.attemptOrderedHandoffs(ledger, load.graph, ordering);
 	}
 
-	private attemptOrderedHandoffs(ledger: DraftHandoffLedger, ordering: HandoffOrdering): void {
+	/** Transfers compose upstream first — a composition lands at its destination
+	 * before a continuation moves it onward. Settlement then decides downstream
+	 * first: a predecessor settles only after the edge that continues its
+	 * chain, which the ledger itself enforces. */
+	private attemptOrderedHandoffs(
+		ledger: DraftHandoffLedger,
+		graph: DraftHandoffGraph,
+		ordering: HandoffOrdering,
+	): void {
 		if (ordering.state !== "ready") return;
-		const blocked = new Set<string>();
-		for (const edge of ordering.order) {
-			if (edge.dependencies.some((dependency) => blocked.has(dependency))) {
-				blocked.add(edge.edgeId);
-				continue;
-			}
-			let accepted: boolean;
+		const byId = new Map(graph.edges.map((edge) => [edge.edgeId, edge]));
+		const predecessors = ordering.blocked
+			.map((entry) => byId.get(entry.edgeId))
+			.filter((candidate): candidate is DraftHandoffEdge => candidate !== undefined)
+			.sort(compareEdges);
+		for (const edge of [...predecessors, ...[...ordering.order].reverse()]) {
 			try {
-				accepted = this.applyEdge(ledger, edge);
+				// Transfers only: the fresh graph reflects the composition the
+				// previous attempt in this pass just committed.
+				const load = readHandoffGraph(ledger);
+				if (load.state !== "ready") continue;
+				const fresh = load.graph.edges.find((e) => e.edgeId === edge.edgeId);
+				if (fresh !== undefined) this.deliver(ledger, fresh, load.graph, false);
 			} catch {
-				blocked.add(edge.edgeId);
-				continue;
+				// A failing transfer stays pending for the next retry.
 			}
-			if (accepted) continue;
-			const fresh = readHandoffGraph(ledger);
-			if (fresh.state !== "ready") return;
-			if (fresh.graph.edges.find((entry) => entry.edgeId === edge.edgeId)?.state === "pending")
-				blocked.add(edge.edgeId);
+		}
+		for (const edge of [...ordering.order, ...predecessors]) {
+			try {
+				this.applyEdge(ledger, edge);
+			} catch {
+				// A failing decision stays pending for the next retry.
+			}
 		}
 	}
 
@@ -204,19 +230,32 @@ export class DraftLibrary {
 	private applyEdge(ledger: DraftHandoffLedger, edge: DraftHandoffEdge): boolean {
 		const load = readHandoffGraph(ledger);
 		if (load.state !== "ready") return false;
+		// The caller's edge object can predate this call's own writes (a
+		// transfer pass in the same retry); only the freshly read edge carries
+		// the delivered hash and composed marker those writes committed.
+		const fresh = load.graph.edges.find((candidate) => candidate.edgeId === edge.edgeId);
+		if (fresh === undefined) return false;
 		const ordering = orderHandoffGraph(load);
 		if (ordering.state !== "ready") return false;
-		const blocked = ordering.blocked.find((entry) => entry.edgeId === edge.edgeId);
-		// A dependency that is not settled stops the hop entirely. An open
-		// obligation only defers the settle/refuse decision: the composition may
-		// still move so an in-flight submission completes at the destination.
-		if (blocked?.reason === "dependency") return false;
-		const planned = ordering.order.some((entry) => entry.edgeId === edge.edgeId) || blocked?.reason === "obligation";
+		const blocked = ordering.blocked.find((entry) => entry.edgeId === fresh.edgeId);
+		// A dependency that is not settled stops the settle/refuse decision, not
+		// the transfer: a predecessor's composition must still land at its
+		// destination so the continuation can carry it onward. An open obligation
+		// defers the decision the same way.
+		const planned =
+			ordering.order.some((entry) => entry.edgeId === fresh.edgeId) ||
+			blocked?.reason === "obligation" ||
+			blocked?.reason === "dependency";
 		if (!planned) return false;
-		return this.deliver(ledger, edge, blocked === undefined);
+		return this.deliver(ledger, fresh, load.graph, blocked === undefined);
 	}
 
-	private deliver(ledger: DraftHandoffLedger, edge: DraftHandoffEdge, mayDecide: boolean): boolean {
+	private deliver(
+		ledger: DraftHandoffLedger,
+		edge: DraftHandoffEdge,
+		graph: DraftHandoffGraph,
+		mayDecide: boolean,
+	): boolean {
 		// A failed settlement leaves the edge pending after this edge retired the
 		// source. The retired document still holds the record the edge wrote, so a
 		// retry must read it, not a fresh empty document.
@@ -227,6 +266,22 @@ export class DraftLibrary {
 			snapshot = source.getSnapshot();
 		}
 		if (!snapshot.loaded) return false;
+		// A hop whose empty source is still waiting on a pending, uncomposed
+		// inbound transfer would move a half-finished composition: defer until
+		// the predecessor lands, settles, or refuses. An occupied source is
+		// different: its inbound can never compose, only refuse, so the source's
+		// own work may move on.
+		if (
+			!isOccupied(snapshot.record) &&
+			graph.edges.some(
+				(inbound) =>
+					inbound.edgeId !== edge.edgeId &&
+					inbound.state === "pending" &&
+					inbound.composedAt === null &&
+					sameDestination(inbound.to, edge.from),
+			)
+		)
+			return false;
 
 		let claimed: boolean;
 		try {
@@ -253,6 +308,20 @@ export class DraftLibrary {
 				// fingerprint ignores those. Any composition change is someone else's
 				// work, so refuse instead of resurrecting the stale source.
 				if (destinationNow === edge.deliveredHash)
+					return mayDecide ? this.settle(ledger, edge, destination, current.record, edge.deliveredHash) : true;
+				// Unless the change is this chain's own doing: a continuation
+				// accepted after this edge wrote its record can have carried
+				// exactly this composition onward, and its delivered hash proves it.
+				if (
+					graph.edges.some(
+						(continuation) =>
+							continuation.edgeId !== edge.edgeId &&
+							continuation.chainId === edge.chainId &&
+							sameDestination(continuation.from, edge.to) &&
+							continuation.deliveredHash === edge.deliveredHash &&
+							(continuation.resolvedAs === "settled" || continuation.composedAt !== null),
+					)
+				)
 					return mayDecide ? this.settle(ledger, edge, destination, current.record, edge.deliveredHash) : true;
 				return mayDecide ? this.refuse(ledger, edge, source) : false;
 			}
@@ -356,6 +425,15 @@ export class DraftLibrary {
 		const completed = [...(record.completedCommandRecoveryIds ?? [])];
 		const released = releasedSources(record);
 		const destination = this.open(edge.to);
+		let current = destination.getSnapshot();
+		if (!current.loaded || current.error !== null) {
+			destination.retry();
+			current = destination.getSnapshot();
+		}
+		// An unloaded or unsaved destination has an empty snapshot; merging
+		// dispositions through it would replace its existing text and images
+		// with exclusion markers, so leave the edge pending for the next retry.
+		if (!current.loaded || current.error !== null) return false;
 		try {
 			if (completed.length && !destination.adoptCompletedCommandRecovery(completed)) return false;
 			if (released.length && !destination.releaseRecoverySources(released)) return false;
@@ -433,17 +511,17 @@ export class DraftLibrary {
 		}
 		for (const obligation of graph.obligations) {
 			if (!clearsCapture(obligation.state)) continue;
-			if (
-				!sameDestination(
-					terminalDestination(graph.edges, obligation.origin, obligation.chainId ?? undefined),
-					destination,
-				)
-			)
-				continue;
-			this.applyCompletion(
-				obligation,
-				terminalDestination(graph.edges, obligation.origin, obligation.chainId ?? undefined),
-			);
+			// A transfer can commit while its composed-marker write fails, so the
+			// graph can name an origin whose capture durably lives elsewhere.
+			const owner = captureTerminal(graph.edges, obligation, (endpoint) => {
+				try {
+					return this.repository().read(endpoint);
+				} catch {
+					return undefined;
+				}
+			});
+			if (!sameDestination(owner, destination)) continue;
+			this.applyCompletion(obligation, owner);
 		}
 	}
 
@@ -452,6 +530,7 @@ export class DraftLibrary {
 	private applyCompletion(obligation: DraftSubmissionObligation, terminal: DraftDestination): void {
 		this.deliverCompletionAt(terminal, {
 			captureToken: obligation.obligationId,
+			state: obligation.state === "completed" ? "completed" : "not-sent",
 			completedCommandIds: obligation.completedCommandIds,
 			releasedRecoveryIds: obligation.releasedRecoveryIds,
 		});
@@ -459,11 +538,12 @@ export class DraftLibrary {
 
 	/** Merge a delivered completion into the terminal's live document when one
 	 * is open, so its unsaved edits and pending image data survive through the
-	 * document's own persistence path. Without a live document, the persisted
-	 * record at the terminal is authoritative. */
+	 * document's own persistence path. A live document that cannot adopt the
+	 * completion is stale or already consumed the capture, so the persisted
+	 * record at the terminal decides. */
 	private deliverCompletionAt(terminal: DraftDestination, completion: DraftCompletionDelivery): boolean {
 		const open = this.hubs.get(terminal.hubId)?.get(terminal.sessionRef);
-		if (open?.getSnapshot().loaded) return open.adoptCompletion(completion);
+		if (open?.getSnapshot().loaded && open.adoptCompletion(completion)) return true;
 		let current: DraftRecord;
 		try {
 			current = this.repository().read(terminal);
@@ -471,6 +551,9 @@ export class DraftLibrary {
 			return false;
 		}
 		if (current.unconfirmedCaptureToken !== completion.captureToken) return false;
+		// A recovered message's capture settles through its resend receipt,
+		// which the receipt-acknowledging coordinator clears.
+		if (messageAdmissionCapture(completion, current)) return true;
 		try {
 			this.repository().write(terminal, mergeCompletion(current, completion));
 		} catch {

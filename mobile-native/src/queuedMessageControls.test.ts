@@ -318,6 +318,53 @@ test("an open obligation's capture survives resend reconciliation at an adopted 
 	});
 });
 
+test("a restart preserves a recovered message capture for receipt reconciliation", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	f.document.edit("current");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	f.document.edit("edited recovered text");
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage.handoffLedger,
+	);
+	const source = library.open(destination);
+	await source.submit(async (text, images, context) => {
+		expect(f.repository.read(destination).unconfirmed).toBe(text);
+		await f.runtime.submit(
+			request({
+				input: buildComposerInput(
+					text,
+					images,
+					context.composer?.skillNames,
+					context.composer?.commandNames,
+					context.composer?.mentions,
+				),
+				...context,
+			}),
+		);
+		return true;
+	});
+	// The send resolved as a message admission: its recovered sources settle
+	// through the resend receipt, not through the completion.
+	// A restart must not clear the capture before that reconciliation.
+	const reopened = library.open(destination);
+	expect(reopened.getSnapshot().record).toMatchObject({
+		unconfirmed: "edited recovered text",
+		unconfirmedCaptureToken: expect.any(String),
+	});
+	expect(reopened.getSnapshot().record.unconfirmedComposer?.recoveryIds).toEqual([captured]);
+
+	// The receipt coordinator settles it: the capture clears and the durable
+	// resend receipt is acknowledged instead of orphaned.
+	await reconcileEditedResends(f.runtime, key, reopened);
+	expect(reopened.getSnapshot().record).toMatchObject({ unconfirmed: null });
+	expect(reopened.getSnapshot().record.unconfirmedComposer).toBeUndefined();
+	expect(await f.runtime.readRecoveryResend(key, [captured])).toBeUndefined();
+	expect(f.repository.read(destination)).toMatchObject({ unconfirmed: null });
+});
+
 test("successful built-in completion durably cleans only captured sources without replay", async () => {
 	const f = fixture();
 	const captured = await f.enqueue();
