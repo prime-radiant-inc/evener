@@ -808,9 +808,53 @@ func stopHostListener(t *testing.T, host *hostSSH, addr, configPath, binaryPath 
 	if err := stopHostListenerProof(host, addr, configPath, binaryPath); err != nil {
 		t.Errorf("stopping the deploy check's host hub on %s (config %s): %v", addr, configPath, err)
 		retainHostCleanupRoot(t)
+		if reapErr := host.tryRun(hostHubReapCommand(configPath, binaryPath)); reapErr != nil {
+			t.Errorf("reaping owned host hub processes on %s (config %s): %v", addr, configPath, reapErr)
+			retainHostCleanupRoot(t)
+		}
 		return false
 	}
 	return true
+}
+
+// hostHubReapCommand handles only the exact executable/config process identity
+// after graceful proof failed. Every signal follows a fresh identity check, and
+// absence is accepted only from a successful process listing.
+func hostHubReapCommand(configPath, binaryPath string) string {
+	script := `set -eu
+scan() {
+  rows=$(ps -ww -o pid=,command= -A) || return $?
+  printf '%s\n' "$rows" | awk -v executable="$EVENER_HUB_BIN" -v config="$EVENER_HUB_CONFIG" '$2 == executable && index($0, config) { print $1 }'
+}
+signal_owned() {
+  sig=$1
+  for pid in $(scan); do
+    case "$pid" in ''|*[!0-9]*) exit 2;; esac
+    cmd=$(ps -ww -o command= -p "$pid")
+    printf '%s\n' "$cmd" | awk -v executable="$EVENER_HUB_BIN" -v config="$EVENER_HUB_CONFIG" '$1 == executable && index($0, config) { found=1 } END { exit !found }' || continue
+    cmd=$(ps -ww -o command= -p "$pid")
+    printf '%s\n' "$cmd" | awk -v executable="$EVENER_HUB_BIN" -v config="$EVENER_HUB_CONFIG" '$1 == executable && index($0, config) { found=1 } END { exit !found }' || continue
+    kill -"$sig" "$pid"
+  done
+}
+signal_owned TERM
+i=0
+while [ $i -lt 20 ]; do
+  left=$(scan)
+  [ -z "$left" ] && exit 0
+  sleep 0.1
+  i=$((i+1))
+done
+signal_owned KILL
+i=0
+while [ $i -lt 20 ]; do
+  left=$(scan)
+  [ -z "$left" ] && exit 0
+  sleep 0.1
+  i=$((i+1))
+done
+exit 1`
+	return "env EVENER_HUB_BIN=" + shellquote.RemoteWord(binaryPath) + " EVENER_HUB_CONFIG=" + shellquote.RemoteWord(configPath) + " bash -c " + shellquote.RemoteWord(script)
 }
 
 func stopHostListenerProof(host *hostSSH, addr, configPath, binaryPath string) error {

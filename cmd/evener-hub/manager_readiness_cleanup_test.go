@@ -4,6 +4,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -24,6 +25,8 @@ const managerCleanupHelperEnv = "EVENER_MANAGER_CLEANUP_PROCESS_HELPER"
 const managerCleanupListenEnv = "EVENER_MANAGER_CLEANUP_PROCESS_LISTEN"
 const managerCleanupReadyEnv = "EVENER_MANAGER_CLEANUP_PROCESS_READY"
 const managerCleanupClosedEnv = "EVENER_MANAGER_CLEANUP_PROCESS_CLOSED"
+const managerCleanupFailureChildEnv = "EVENER_MANAGER_CLEANUP_FAILURE_CHILD"
+const managerCleanupFailureRootReportEnv = "EVENER_MANAGER_CLEANUP_FAILURE_ROOT_REPORT"
 const hostCleanupBoundaryEnv = "EVENER_HOST_CLEANUP_BOUNDARY"
 const hostCleanupBoundaryReportEnv = "EVENER_HOST_CLEANUP_BOUNDARY_REPORT"
 const hostCleanupBoundaryMarkEnv = "EVENER_HOST_CLEANUP_BOUNDARY_MARK"
@@ -51,14 +54,18 @@ func TestManagerReadinessCleanupProcessHelper(t *testing.T) {
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGUSR1)
 	defer signal.Stop(signals)
+	listenerClosed := false
 	for sig := range signals {
 		switch sig {
 		case syscall.SIGTERM:
-			if err := listener.Close(); err != nil {
-				t.Fatalf("close listener: %v", err)
-			}
-			if err := os.WriteFile(os.Getenv(managerCleanupClosedEnv), []byte("closed"), 0o600); err != nil {
-				t.Fatalf("write listener-closed barrier: %v", err)
+			if !listenerClosed {
+				if err := listener.Close(); err != nil {
+					t.Fatalf("close listener: %v", err)
+				}
+				if err := os.WriteFile(os.Getenv(managerCleanupClosedEnv), []byte("closed"), 0o600); err != nil {
+					t.Fatalf("write listener-closed barrier: %v", err)
+				}
+				listenerClosed = true
 			}
 		case syscall.SIGUSR1:
 			return
@@ -139,6 +146,108 @@ func TestStopHostListenerWaitsForTheOwnedHubProcess(t *testing.T) {
 	if stopErr == nil {
 		t.Fatalf("stopHostListener returned success after the listener closed while its owned PID %d was still held at the exit barrier", cmd.Process.Pid)
 	}
+}
+
+func TestStopHostListenerReapsOwnedProcessAfterProofFailure(t *testing.T) {
+	if os.Getenv(managerCleanupFailureChildEnv) != "1" {
+		exe, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		reportPath := filepath.Join(t.TempDir(), "retained-root")
+		cmd := exec.Command(exe, "-test.run=^TestStopHostListenerReapsOwnedProcessAfterProofFailure$", "-test.v")
+		cmd.Env = withoutEnv(os.Environ(), sandboxtest.RootVar, "TMPDIR", "TMP", "TEMP", "EVENER_HOST_TEMP_BASES")
+		cmd.Env = append(cmd.Env, managerCleanupFailureChildEnv+"=1", managerCleanupFailureRootReportEnv+"="+reportPath, liveStackWarmEnv+"=1")
+		output, runErr := cmd.CombinedOutput()
+		var exitErr *exec.ExitError
+		if !errors.As(runErr, &exitErr) {
+			t.Fatalf("failure-path child exit = %v, want a test failure; output:\n%s", runErr, output)
+		}
+		for _, marker := range []string{"CLEANUP_PROOF_FAILURE", "OWNED_PROCESS_EXITED", "CLEANUP_STATE_RETAINED"} {
+			if !strings.Contains(string(output), marker) {
+				t.Fatalf("failure-path child output lacks %s; output:\n%s", marker, output)
+			}
+		}
+		rootBytes, err := os.ReadFile(reportPath)
+		if err != nil {
+			t.Fatalf("read child retained-root report: %v", err)
+		}
+		retainedRoot := strings.TrimSpace(string(rootBytes))
+		if _, err := os.Stat(filepath.Join(retainedRoot, retainHostCleanupRootMarker)); err != nil {
+			t.Fatalf("child did not retain cleanup marker at %s: %v", retainedRoot, err)
+		}
+		if err := os.RemoveAll(retainedRoot); err != nil {
+			t.Fatalf("remove verified child test root %s: %v", retainedRoot, err)
+		}
+		return
+	}
+	t.Parallel()
+	root := t.TempDir()
+	hostDir := filepath.Join(root, "fixture")
+	binDir := filepath.Join(hostDir, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(hostDir, "hub.toml")
+	if err := os.WriteFile(config, []byte("test fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtureBin := filepath.Join(binDir, "evener-real")
+	if err := os.Symlink(exe, fixtureBin); err != nil {
+		t.Fatal(err)
+	}
+	readyPath := filepath.Join(root, "ready")
+	closedPath := filepath.Join(root, "closed")
+	cmd := exec.Command(fixtureBin, "-test.run=^TestManagerReadinessCleanupProcessHelper$", "-manager-cleanup-process-config="+config)
+	cmd.Env = append(os.Environ(), managerCleanupHelperEnv+"=1", managerCleanupListenEnv+"=127.0.0.1:0", managerCleanupReadyEnv+"="+readyPath, managerCleanupClosedEnv+"="+closedPath)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	defer func() {
+		if !waited {
+			_ = cmd.Process.Signal(syscall.SIGUSR1)
+			_ = cmd.Wait()
+		}
+	}()
+	waitForCleanupFile(t, readyPath)
+	addrBytes, err := os.ReadFile(readyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &hostSSH{t: t, target: "local-process-fixture", execCommand: func(ctx context.Context, script string) *exec.Cmd {
+		return exec.CommandContext(ctx, "/bin/bash", "-c", script)
+	}}
+	if stopHostListener(t, host, strings.TrimSpace(string(addrBytes)), config, fixtureBin) {
+		t.Fatal("graceful proof unexpectedly succeeded while the owned process was held at its exit barrier")
+	}
+	t.Errorf("CLEANUP_PROOF_FAILURE")
+	markerPath := filepath.Join(os.Getenv(sandboxtest.RootVar), retainHostCleanupRootMarker)
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("failed cleanup did not retain its evidence marker %s: %v", markerPath, err)
+	}
+	if err := os.WriteFile(os.Getenv(managerCleanupFailureRootReportEnv), []byte(os.Getenv(sandboxtest.RootVar)), 0o600); err != nil {
+		t.Fatalf("write retained-root report: %v", err)
+	}
+	t.Errorf("CLEANUP_STATE_RETAINED")
+	waitErr := cmd.Wait()
+	if waitErr == nil {
+		t.Fatal("graceful proof unexpectedly passed; the failure evidence must remain visible")
+	}
+	waited = true
+	exitErr, ok := waitErr.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("owned process exit was not a signal failure: %T %v", waitErr, waitErr)
+	}
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
+		t.Fatalf("owned process exit status = %v, want verified SIGKILL after it held the barrier", exitErr.Sys())
+	}
+	t.Errorf("OWNED_PROCESS_EXITED")
 }
 
 func TestHostHubKillTargetsEvenerFixtureBinary(t *testing.T) {
@@ -296,6 +405,58 @@ func TestHostHubProcessProbeFailsClosedWhenPsFails(t *testing.T) {
 	if err == nil || hostHubProcessesAbsent(out) {
 		t.Fatalf("failed ps probe became absence: output=%q err=%v", out, err)
 	}
+	if err := host.tryRun(hostHubReapCommand("/tmp/hub.toml", "/tmp/bin/evener")); err == nil {
+		t.Fatal("emergency reaper treated a failed process scan as absence")
+	}
+}
+
+func TestHostHubReapPreservesProcessWithDifferentConfig(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtureBin := filepath.Join(binDir, "evener-real")
+	if err := os.Symlink(exe, fixtureBin); err != nil {
+		t.Fatal(err)
+	}
+	actualConfig := filepath.Join(root, "actual.toml")
+	expectedConfig := filepath.Join(root, "expected.toml")
+	readyPath := filepath.Join(root, "ready")
+	closedPath := filepath.Join(root, "closed")
+	cmd := exec.Command(fixtureBin, "-test.run=^TestManagerReadinessCleanupProcessHelper$", "-manager-cleanup-process-config="+actualConfig)
+	cmd.Env = append(os.Environ(), managerCleanupHelperEnv+"=1", managerCleanupListenEnv+"=127.0.0.1:0", managerCleanupReadyEnv+"="+readyPath, managerCleanupClosedEnv+"="+closedPath)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	defer func() {
+		if !waited {
+			_ = cmd.Process.Signal(syscall.SIGUSR1)
+			_ = cmd.Wait()
+		}
+	}()
+	waitForCleanupFile(t, readyPath)
+	host := &hostSSH{t: t, target: "local-process-fixture", execCommand: func(ctx context.Context, script string) *exec.Cmd {
+		return exec.CommandContext(ctx, "/bin/bash", "-c", script)
+	}}
+	if err := host.tryRun(hostHubReapCommand(expectedConfig, fixtureBin)); err != nil {
+		t.Fatalf("reap command for different config: %v", err)
+	}
+	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("unrelated process %d did not survive emergency reap: %v", cmd.Process.Pid, err)
+	}
+	if err := cmd.Process.Signal(syscall.SIGUSR1); err != nil {
+		t.Fatalf("release unrelated process: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait for unrelated process: %v", err)
+	}
+	waited = true
 }
 
 func TestHostHubProcessProbeRequiresAnExactAbsentMarker(t *testing.T) {

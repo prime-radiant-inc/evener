@@ -782,12 +782,13 @@ func startManagerAcceptanceSSHFixture(t *testing.T, provider *fakellm.Server, ct
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if stopHostListener(t, host, addr, hostDir+"/"+hostDeployToml, hostDir+"/bin/evener-real") {
-			if err := host.tryRun(hostDaemonReapCommand(hostDir)); err != nil {
-				t.Errorf("reap SSH-hosted daemons: %v", err)
-				retainHostCleanupRoot(t)
-				return
-			}
+		shutdownProved := stopHostListener(t, host, addr, hostDir+"/"+hostDeployToml, hostDir+"/bin/evener-real")
+		if err := host.tryRun(hostDaemonReapCommand(hostDir)); err != nil {
+			t.Errorf("reap SSH-hosted daemons: %v", err)
+			retainHostCleanupRoot(t)
+			return
+		}
+		if shutdownProved {
 			if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
 				t.Errorf("clean SSH fixture: %v", err)
 			}
