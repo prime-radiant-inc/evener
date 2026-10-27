@@ -2530,7 +2530,7 @@ func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *
 
 // TestAskUser_RestoreClassifiesAKindlessProvenancelessHumanNoteByItsTextShape
 // covers RoboRev #1907 round 2's low/medium (session_tools_ask.go:117-122,
-// 374-376 vs session_notes_rpc.go:931-936): origin.steeringKind() only
+// 374-376 vs session_notes_selfecho.go steeringKind): origin.steeringKind() only
 // recovers note origin from a recorded kind or a notes/human/set method,
 // unlike isHumanNoteSteer, which ALSO falls back to the write-path text
 // shape (humanNoteSteerPrefix) when neither is available. turnResolvesAskBoundary
