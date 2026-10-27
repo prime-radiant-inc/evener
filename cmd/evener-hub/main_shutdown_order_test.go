@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/internal/hubendpoint"
 )
@@ -26,6 +27,11 @@ type shutdownProbe struct {
 	released        int
 	atListenerClose *shutdownSnapshot
 	atRelease       *shutdownSnapshot
+	// A background worker that outlives the cancel by a beat: it records the
+	// state it sees when cancelled, then finishes only after a delay, so a hub
+	// that stopped waiting for background work would move on without it.
+	atBackgroundCancel *shutdownSnapshot
+	workerFinished     bool
 }
 
 type shutdownSnapshot struct {
@@ -33,6 +39,7 @@ type shutdownSnapshot struct {
 	backgroundDone  bool
 	appRPCDrained   bool
 	listenerClosed  bool
+	workerFinished  bool
 }
 
 func (p *shutdownProbe) snapshot() *shutdownSnapshot {
@@ -40,6 +47,7 @@ func (p *shutdownProbe) snapshot() *shutdownSnapshot {
 	s := &shutdownSnapshot{
 		endpointRetired: readErr != nil,
 		listenerClosed:  p.listenerClosed > 0,
+		workerFinished:  p.workerFinished,
 	}
 	if p.serveCtx != nil {
 		s.backgroundDone = p.serveCtx.Err() != nil
@@ -65,6 +73,10 @@ func (l *recordingListener) Close() error {
 	return l.Listener.Close()
 }
 
+// workerCleanupDelay is how long the probe worker keeps running after it is
+// cancelled; the hub must wait it out before closing the listener.
+const workerCleanupDelay = 100 * time.Millisecond
+
 func newShutdownProbeDeps(t *testing.T) (*shutdownProbe, Config, mainDeps) {
 	t.Helper()
 	_, cfg, deps := newTraceMainTestDeps(t)
@@ -86,6 +98,18 @@ func newShutdownProbeDeps(t *testing.T) (*shutdownProbe, Config, mainDeps) {
 		return &recordingListener{Listener: ln, probe: probe}, nil
 	}
 	deps.afterWeb = func(web *WebServer) { probe.web = web }
+	deps.startLaunchPrefetch = func(ctx context.Context, _ *WebServer, startBackground func(func())) {
+		startBackground(func() {
+			<-ctx.Done()
+			probe.mu.Lock()
+			probe.atBackgroundCancel = probe.snapshot()
+			probe.mu.Unlock()
+			time.Sleep(workerCleanupDelay)
+			probe.mu.Lock()
+			probe.workerFinished = true
+			probe.mu.Unlock()
+		})
+	}
 	return probe, cfg, deps
 }
 
@@ -166,7 +190,20 @@ func assertShutdownOrder(t *testing.T, probe *shutdownProbe) {
 	if probe.atListenerClose == nil || probe.atRelease == nil || probe.released != 1 {
 		t.Fatalf("listener closed %d times, lock released %d times", probe.listenerClosed, probe.released)
 	}
+	cancelled := probe.atBackgroundCancel
+	if cancelled == nil {
+		t.Fatal("the background worker was never cancelled")
+	}
+	if !cancelled.endpointRetired {
+		t.Error("background work was cancelled while the endpoint record was still published")
+	}
+	if cancelled.appRPCDrained || cancelled.listenerClosed {
+		t.Errorf("the AppWire server drained or the listener closed before background work was cancelled: %+v", cancelled)
+	}
 	at := probe.atListenerClose
+	if !at.workerFinished {
+		t.Error("the listener closed before background work finished")
+	}
 	if !at.endpointRetired {
 		t.Error("the listener closed while the endpoint record was still published")
 	}
@@ -180,7 +217,7 @@ func assertShutdownOrder(t *testing.T, probe *shutdownProbe) {
 	if !rel.listenerClosed {
 		t.Error("the lock was released before the listener closed")
 	}
-	if !rel.endpointRetired || !rel.backgroundDone || !rel.appRPCDrained {
+	if !rel.endpointRetired || !rel.backgroundDone || !rel.appRPCDrained || !rel.workerFinished {
 		t.Errorf("the lock was released with shutdown unfinished: %+v", rel)
 	}
 }
