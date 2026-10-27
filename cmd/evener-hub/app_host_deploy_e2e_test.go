@@ -821,19 +821,20 @@ func stopHostListener(t *testing.T, host *hostSSH, addr, configPath, binaryPath 
 // after graceful proof failed. Every signal follows a fresh identity check, and
 // absence is accepted only from a successful process listing.
 func hostHubReapCommand(configPath, binaryPath string) string {
+	identityAWK := hostHubIdentityAWK()
 	script := `set -eu
 scan() {
   rows=$(ps -ww -o pid=,command= -A) || return $?
-  printf '%s\n' "$rows" | awk -v executable="$EVENER_HUB_BIN" -v config="$EVENER_HUB_CONFIG" '$2 == executable && index($0, config) { print $1 }'
+	  printf '%s\n' "$rows" | awk -v executable="$EVENER_HUB_BIN" -v config="$EVENER_HUB_CONFIG" '` + identityAWK + ` { if (owns(2)) print $1 }'
 }
 signal_owned() {
   sig=$1
   for pid in $(scan); do
     case "$pid" in ''|*[!0-9]*) exit 2;; esac
     cmd=$(ps -ww -o command= -p "$pid")
-    printf '%s\n' "$cmd" | awk -v executable="$EVENER_HUB_BIN" -v config="$EVENER_HUB_CONFIG" '$1 == executable && index($0, config) { found=1 } END { exit !found }' || continue
+    printf '%s\n' "$cmd" | awk -v executable="$EVENER_HUB_BIN" -v config="$EVENER_HUB_CONFIG" '` + identityAWK + ` { if (owns(1)) found=1 } END { exit !found }' || continue
     cmd=$(ps -ww -o command= -p "$pid")
-    printf '%s\n' "$cmd" | awk -v executable="$EVENER_HUB_BIN" -v config="$EVENER_HUB_CONFIG" '$1 == executable && index($0, config) { found=1 } END { exit !found }' || continue
+    printf '%s\n' "$cmd" | awk -v executable="$EVENER_HUB_BIN" -v config="$EVENER_HUB_CONFIG" '` + identityAWK + ` { if (owns(1)) found=1 } END { exit !found }' || continue
     kill -"$sig" "$pid"
   done
 }
@@ -900,8 +901,23 @@ func hostHubProcessProbeCommand(configPath, binaryPath string) string {
 	return "ps -ww -o pid=,command= -A >/dev/null 2>&1 || { echo 'cannot list host processes' >&2; exit 1; }; " +
 		"rows=$(ps -ww -o pid=,command= -A) || exit $?; " +
 		"printf '%s\\n' \"$rows\" | awk -v executable=" + shellquote.RemoteWord(binaryPath) +
-		" -v config=" + shellquote.RemoteWord(configPath) +
-		" '$2 == executable && index($0, config) { print \"HUB_PID \" $1; found=1 } END { if (!found) print \"HUB_PROCESSES_ABSENT\" }'"
+		" -v config=" + shellquote.RemoteWord(configPath) + " '" + hostHubIdentityAWK() +
+		" { if (owns(2)) { print \"HUB_PID \" $1; found=1 } } END { if (!found) print \"HUB_PROCESSES_ABSENT\" }'"
+}
+
+// hostHubIdentityAWK matches an exact executable and config argument. start is
+// 2 for a full ps PID/command row and 1 for ps command= output. It accepts both
+// hub forms (--config PATH, --config=PATH) and the real-process test helper's
+// dedicated config flag; arbitrary argument substrings are not ownership.
+func hostHubIdentityAWK() string {
+	return `function owns(start, i) {
+  if ($(start) != executable) return 0
+  for (i = start + 1; i <= NF; i++) {
+    if ($i == "--config" && $(i + 1) == config) return 1
+    if ($i == "--config=" config || $i == "-manager-cleanup-process-config=" config) return 1
+  }
+  return 0
+}`
 }
 
 func hostHubProcessesAbsent(out []byte) bool {
@@ -928,8 +944,8 @@ func hostHubKillCommand(addr, configPath, binaryPath string) string {
 	// guard keeps only numeric pids as kill candidates, so a marker can never
 	// reach `ps` or `kill`.
 	identityCheck := "printf '%s\\n' \"$cmd\" | awk -v executable=" + shellquote.RemoteWord(binaryPath) +
-		" -v config=" + shellquote.RemoteWord(configPath) +
-		" '$1 == executable && index($0, config) { found=1 } END { exit !found }'"
+		" -v config=" + shellquote.RemoteWord(configPath) + " '" + hostHubIdentityAWK() +
+		" { if (owns(1)) found=1 } END { exit !found }'"
 	return "pids=$( " + sshconn.ListenerProbeRemote(port) + " ); s=$?; " +
 		"if [ $s -ne 0 ]; then echo 'evener-hub deploy check cleanup: no listener probe is available on the host (lsof, ss, and /proc/net/tcp are all missing); refusing to conclude no hub is listening' >&2; exit $s; fi; " +
 		"for pid in $pids; do " +

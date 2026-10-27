@@ -27,6 +27,8 @@ import (
 var testEnv *hubtestenv.Env
 
 const detachHelperRunDirEnv = "EVENER_HUB_DETACH_HELPER_RUN_DIR"
+const managerCleanupServeHelperEnv = "EVENER_MANAGER_CLEANUP_SERVE_HELPER"
+const managerCleanupServeReadyEnv = "EVENER_MANAGER_CLEANUP_SERVE_READY"
 
 // liveStackWarmEnv marks a process whose suite has already warmed the
 // live-stack binaries. The parent sets it in its own environment, so every
@@ -95,6 +97,10 @@ func TestTestMainSurvivesOutsideTheCheckout(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
+	if os.Getenv(managerCleanupServeHelperEnv) == "1" {
+		runManagerCleanupServeHelper()
+		os.Exit(0)
+	}
 	// The remote startup probe must observe its supplied environment before
 	// the suite redirects HOME and XDG roots.
 	if os.Getenv(hostDeployEnvironmentChildEnv) == "1" {

@@ -782,17 +782,7 @@ func startManagerAcceptanceSSHFixture(t *testing.T, provider *fakellm.Server, ct
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		shutdownProved := stopHostListener(t, host, addr, hostDir+"/"+hostDeployToml, hostDir+"/bin/evener-real")
-		if err := host.tryRun(hostDaemonReapCommand(hostDir)); err != nil {
-			t.Errorf("reap SSH-hosted daemons: %v", err)
-			retainHostCleanupRoot(t)
-			return
-		}
-		if shutdownProved {
-			if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
-				t.Errorf("clean SSH fixture: %v", err)
-			}
-		}
+		cleanupManagerAcceptanceFixture(t, host, addr, hostDir+"/"+hostDeployToml, hostDir+"/bin/evener-real", hostDir)
 	})
 	host.writeFile(hostDir+"/"+hostDeployToml, hostDeployConfig(hostDir, addr))
 	host.mustRun("cp " + shellquote.RemoteWord(filepath.Join(local.binDir, "evener")) + " " + shellquote.RemoteWord(hostDir+"/bin/evener-real"))
@@ -808,4 +798,19 @@ func startManagerAcceptanceSSHFixture(t *testing.T, provider *fakellm.Server, ct
 	}
 	awaitHostAttachedWithin(ctx, t, human, remoteHost, hostDeployAttachTimeout)
 	return local, human, host, hostDir, addr, remoteHost
+}
+
+func cleanupManagerAcceptanceFixture(t *testing.T, host *hostSSH, addr, configPath, binaryPath, hostDir string) {
+	t.Helper()
+	shutdownProved := stopHostListener(t, host, addr, configPath, binaryPath)
+	if err := host.tryRun(hostDaemonReapCommand(hostDir)); err != nil {
+		t.Errorf("reap SSH-hosted daemons: %v", err)
+		retainHostCleanupRoot(t)
+		return
+	}
+	if shutdownProved {
+		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
+			t.Errorf("clean SSH fixture: %v", err)
+		}
+	}
 }
