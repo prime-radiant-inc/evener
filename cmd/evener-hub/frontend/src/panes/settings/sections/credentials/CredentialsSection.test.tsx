@@ -1354,11 +1354,19 @@ describe("OAuth start branches", () => {
     await screen.findByText("personal");
     const user = userEvent.setup();
     const inspector = await openSheet(user, "personal");
-    await user.click(within(inspector).getByRole("button", { name: "Sign in…" }));
-    await screen.findByText("ABCD-EFGH");
-    await waitFor(() => expect(starts).toBe(2));
+    // The restart rides the dialog's one-second poll timer, so the fake clock
+    // drives it; a real waitFor races that timer on a loaded runner. The stubbed
+    // `jest` global lets Testing Library's waitFor advance the fake clock.
+    vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(within(inspector).getByRole("button", { name: "Sign in…" }));
+    });
+    await waitFor(() => expect(screen.getByText("ABCD-EFGH")).toBeTruthy());
+    await advanceTime(1000);
+    expect(starts).toBe(2);
 
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog", { name: "Sign in to personal" })).toBeNull();
     await act(async () => {
       replacement.resolve({
