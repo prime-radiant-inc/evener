@@ -15,7 +15,7 @@ import (
 // session temp container exists (sandbox.SessionTmpSupported), TMPDIR names an
 // existing 1777 sticky <host-temp>/evener-sandbox-*/tmp container distinct from
 // the private scratch. Where none can exist — Windows — production keeps TMPDIR
-// on that scratch (local.go's tmpDirNamesScratch), so the two are equal.
+// on that scratch (local_scratch.go's tmpDirNamesScratch), so the two are equal.
 func processRuntimeSessionTmpError(name, tmpDir, scratch string, tmpSupported bool) error {
 	if !tmpSupported {
 		if tmpDir != scratch {
