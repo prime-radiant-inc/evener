@@ -143,6 +143,11 @@ branch releases that branch and its descendants, not an independently opened
 reader of the same child. Neither expansion nor paging starts or resumes a
 session or writes to the parent's shared composer draft.
 
+Clear can replace the logical session while its workspace address stays the
+same. That replacement retires the old session's inline descendants and their
+read demand, preserving independent readers. Activity refreshes and a new daemon
+instance for the same logical session preserve expansion.
+
 `useComicActivity` observes only session-scoped delegates through the shared
 activity owner. `buildEntityView` chooses generation and revision precedence;
 `projectComicDelegates` qualifies owner, delegate ID and authoritative child ref.
@@ -150,6 +155,11 @@ A canonical loaded delegation event supplies placement, not current status.
 Without one, the existing strip stays in a separate group. Loading its event
 moves the strip without changing its key or committed child lifetime. Ambiguous
 identity remains readable as attributed source, without an invented child route.
+
+Routing keeps the workspace address; delegate membership and personas use the
+resolved session's source-qualified identity. Activity and transcript reads can
+settle separately during Clear, so Comic combines them only when their logical
+session identities agree.
 
 Activity headings use proven `SessionActivityContext.delegateName`. Transcript
 panels instead consume the shared SDK's typed `ItemModel.authorship`, never the
