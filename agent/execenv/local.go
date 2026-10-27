@@ -720,38 +720,7 @@ func readFileNotFoundSuggestion(absPath string) string {
 // directories within the active sandbox policy. It returns a
 // human-readable summary of the bytes written.
 func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (string, error) {
-	if sfs := e.sandbox(); sfs != nil {
-		defer sfs.release()
-		if err := e.requireLiveSandboxRootForRelative(sfs, "write_file", path); err != nil {
-			return "", err
-		}
-		// Sandboxed: atomic temp+renameat beneath a writable-root fd (creating any
-		// missing parents beneath the same root); read-only mode / out-of-root /
-		// masked / git-protected targets return a typed denial.
-		if err := sfs.writeFile("write_file", e.resolve(path), []byte(content), 0o644); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
-	}
-	abs := e.resolve(path)
-	if sfs := e.scratchSandboxFor(abs); sfs != nil {
-		defer sfs.release()
-		if err := sfs.writeFile("write_file", abs, []byte(content), 0o644); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
-	}
-	if err := e.requireLiveWorkingDirForRelative(path); err != nil {
-		return "", err
-	}
-	abs, err := e.resolveWrite(path)
-	if err != nil {
-		return "", err
-	}
-	if err := e.filesystem().MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		return "", err
-	}
-	if err := afero.WriteFile(e.filesystem(), abs, []byte(content), 0o644); err != nil {
+	if err := e.writeFileAs("write_file", path, []byte(content), 0o644); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
