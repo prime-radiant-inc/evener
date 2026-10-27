@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/llm"
 )
 
 // notificationWakeLog records what the session's notification queue held at
@@ -35,125 +38,108 @@ func (l *notificationWakeLog) snapshot() [][]jobNotification {
 	return append([][]jobNotification(nil), l.wakes...)
 }
 
-// TestWatchedJobCompletionWakesTheSessionOnce pins the coalescing rule: when a
-// watched job ends, its watch settlement and its terminal status are two facts
-// about ONE event, and the owner hears them in one notification turn.
-//
-// Before this, the watch settlement was enqueued (and woke the session) well
-// before the terminal notice was built, so an idle session took a turn for the
-// settlement and a second turn moments later for the completion it had just
-// been told about in different words.
+// A real Session uses canonical custody, not the legacy notification queue.
+// Source Delivered means custody, and only the scripted response observes it.
 func TestWatchedJobCompletionWakesTheSessionOnce(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
-
-	// The job waits on a file rather than a clock, so the watch is provably
-	// installed while the job is still running — no sleep to race with.
-	gate := filepath.Join(t.TempDir(), "release")
-	jobID := startBackgroundShellJob(t, s, "while [ ! -f "+gate+" ]; do sleep 0.02; done; printf 'released\\n'")
-
-	// output_match that the job never prints: the watch is still live and
-	// unfired when the job ends, so it settles with an end notice.
-	watchRes, err := jobWatchTool(s, map[string]any{
-		"operation":    "create",
-		"source":       jobID,
-		"output_match": "this-never-appears-in-the-output",
-	}, jobToolResultDefaultMaxChar)
-	if err != nil {
-		t.Fatalf("job_watch create: %v", err)
-	}
-	_ = watchRes
-
-	log := &notificationWakeLog{}
-	watcher := newJobNotifyWatcher(s, func() { log.observe(s) })
-
-	if err := os.WriteFile(gate, []byte("go\n"), 0o600); err != nil {
-		t.Fatalf("release the job: %v", err)
-	}
-	waitForShellDone(t, s.jobManager, jobID)
-
-	// Both notices must be queued before the assertion; the terminal notice is
-	// the last thing armFinalizedJob enqueues. armFinalizedJob queues them
-	// under one notification hold (see holdJobNotificationWake) so the
-	// session's own notify wake -- fired once the hold releases -- tells us
-	// when to look, rather than polling on a timer.
-	watcher.await(t, "watch settlement and terminal notice queued", func() bool {
-		s.pendingJobNotifsMu.Lock()
-		defer s.pendingJobNotifsMu.Unlock()
-		var watch, terminal bool
-		for _, n := range s.pendingJobNotifs {
-			if n.Status == jobNotificationEventWatch {
-				watch = true
+	for _, persistent := range []bool{true, false} {
+		t.Run(fmt.Sprintf("persistent=%t", persistent), func(t *testing.T) {
+			s, adapter := newTerminalFlushSession(t, persistent)
+			adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("completion-response-429") }}
+			gate := filepath.Join(t.TempDir(), "release")
+			jobID := startBackgroundShellJob(t, s, "while [ ! -f "+gate+" ]; do sleep 0.02; done; printf 'released\\n'")
+			if _, err := jobWatchTool(s, map[string]any{"operation": "create", "source": jobID, "output_match": "unmatched-completion-517"}, jobToolResultDefaultMaxChar); err != nil {
+				t.Fatal(err)
 			}
-			if n.JobID == jobID && n.Status != jobNotificationEventWatch {
-				terminal = true
+			var mu sync.Mutex
+			var wakes [][]string
+			watcher := newJobNotifyWatcher(s, func() {
+				ids, err := s.pendingNotificationIDs()
+				if err != nil {
+					t.Error(err)
+				}
+				mu.Lock()
+				wakes = append(wakes, ids)
+				mu.Unlock()
+			})
+			if err := os.WriteFile(gate, []byte("go"), 0o600); err != nil {
+				t.Fatal(err)
 			}
-		}
-		return watch && terminal
-	})
-
-	wakes := log.snapshot()
-	if len(wakes) != 1 {
-		t.Fatalf("notification wakes = %d, want 1 (one completion is one notification turn); wake contents: %s",
-			len(wakes), describeWakes(wakes))
-	}
-	var sawWatch, sawTerminal bool
-	for _, n := range wakes[0] {
-		if n.Status == jobNotificationEventWatch {
-			sawWatch = true
-		}
-		if n.JobID == jobID && n.Status != jobNotificationEventWatch {
-			sawTerminal = true
-		}
-	}
-	if !sawWatch || !sawTerminal {
-		t.Fatalf("the single wake carried watch=%t terminal=%t, want both: %s",
-			sawWatch, sawTerminal, describeWakes(wakes))
-	}
-
-	// Coalescing changes turns, not the durable ledger: the watch's own records
-	// and the job's terminal notification state are untouched by it.
-	rec := loadShellRecord(t, s.jobManager, jobID)
-	if rec.NotifyState != jobstore.NotifyPending {
-		t.Fatalf("terminal_notification_state = %q, want %q (still awaiting its turn)", rec.NotifyState, jobstore.NotifyPending)
+			waitForShellDone(t, s.jobManager, jobID)
+			watcher.await(t, "canonical watch and shell custody", func() bool {
+				ids, err := s.pendingNotificationIDs()
+				return err == nil && len(ids) == 2
+			})
+			source := producerSourceEvents(t, s.jobManager, jobstore.EventWatchSendPending)
+			if len(source) != 1 {
+				t.Fatalf("source watch frames=%d want1", len(source))
+			}
+			state := *source[0].WatchSend
+			ids := []string{fmt.Sprintf("watch:%s:%d", state.DeliveryID, state.UpdateSeq), requireCanonicalShellNotification(t, s, jobID, 0)}
+			requireCallbackBatchSource(t, s, state)
+			mu.Lock()
+			snapshots := append([][]string(nil), wakes...)
+			mu.Unlock()
+			if len(snapshots) != 1 || !equalNotificationIDs(snapshots[0], ids) {
+				t.Fatalf("canonical handoffs=%v want one ordered batch %v", snapshots, ids)
+			}
+			requireCallbackBatchReceipts(t, s, ids, 0)
+			requireWatchSettlement(t, s.jobManager, state, 1)
+			if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			requests := adapter.Requests()
+			if len(requests) != 1 {
+				t.Fatalf("provider requests=%d want1", len(requests))
+			}
+			requireCallbackBatchRequest(t, s, requests[0], ids)
+			requireCallbackBatchReceipts(t, s, ids, 1)
+			requireCanonicalShellNotification(t, s, jobID, 1)
+			if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			s.jobManager.dispatchProducedWatchSends()
+			if len(adapter.Requests()) != 1 {
+				t.Fatal("replay executed another provider request")
+			}
+			requireCallbackBatchReceipts(t, s, ids, 1)
+		})
 	}
 }
 
 func TestWatchBudgetClearCoalescesWithMatchedEvent(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
-	jobID := startBackgroundShellJob(t, s, "sleep 300")
-	t.Cleanup(func() {
-		_, _ = s.jobManager.stop(jobID)
-		waitForShellDone(t, s.jobManager, jobID)
-	})
-
-	// Public job_watch rejects a concrete job.notification watch because a
-	// completion notification is already automatic. This test exercises the
-	// retained internal coalescing mechanism directly.
-	if _, err := s.jobManager.configureWatch(watchArgs{Target: jobID, Events: []string{"job.notification"}}); err != nil {
-		t.Fatalf("configure watch: %v", err)
+	// Construct the retained local legacy rail directly. Never remove canonical
+	// owner/controller wiring from a real Session to force a legacy fixture.
+	source := newTestJM(t)
+	source.enqueue = s.enqueueJobNotificationAndNotify
+	source.holdWake = s.holdJobNotificationWake
+	rec, err := source.createShell(createShellOpts{Command: "legacy-local-931"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	s.jobManager.mu.Lock()
+	if _, err := source.configureWatch(watchArgs{Target: rec.JobID, Events: []string{"job.notification"}}); err != nil {
+		t.Fatal(err)
+	}
+	source.mu.Lock()
 	var watched *watchConfig
-	for _, cfg := range s.jobManager.watches {
-		if cfg != nil && cfg.target == jobID {
+	for _, cfg := range source.watches {
+		if cfg.target == rec.JobID {
 			watched = cfg
 			break
 		}
 	}
 	if watched == nil {
-		s.jobManager.mu.Unlock()
-		t.Fatalf("watch for %s not installed", jobID)
+		source.mu.Unlock()
+		t.Fatal("watch missing")
 	}
-	// One condition fire short of the budget, which is what the breaker latches on.
-	watched.deliveries = watchDeliveryBudget - 1
-	watched.conditionFires = watchDeliveryBudget - 1
-	s.jobManager.mu.Unlock()
-
+	watched.deliveries, watched.conditionFires = watchDeliveryBudget-1, watchDeliveryBudget-1
+	source.mu.Unlock()
+	jobID := rec.JobID
 	log := &notificationWakeLog{}
 	watcher := newJobNotifyWatcher(s, func() { log.observe(s) })
-	onSessionEventKD(s.jobManager, events.EventJobFinished, events.JobFinishedData{
+	onSessionEventKD(source, events.EventJobFinished, events.JobFinishedData{
 		JobID: jobID, JobType: "shell", Status: "completed",
 	})
 	watcher.await(t, "matched event and budget-clear notices queued", func() bool {
@@ -167,12 +153,13 @@ func TestWatchBudgetClearCoalescesWithMatchedEvent(t *testing.T) {
 		t.Fatalf("notification wakes = %d, want 1 (matched event and budget clear are one event); wake contents: %s",
 			len(wakes), describeWakes(wakes))
 	}
+	requireLegacyBudgetBatch(t, source, watched, wakes[0])
 	var matched, cleared bool
 	for _, n := range wakes[0] {
 		if n.JobID == jobID && n.Status != jobNotificationEventWatch {
 			matched = true
 		}
-		if n.Status == jobNotificationEventWatch && strings.Contains(n.Reason, "watch cleared") {
+		if n.Status == jobNotificationEventWatch && n.callbackTrigger == watchBudgetEndTrigger {
 			cleared = true
 		}
 	}
@@ -229,12 +216,13 @@ func TestReceiverWatchBudgetClearCoalescesWithMatchedEvent(t *testing.T) {
 		t.Fatalf("receiver notification wakes = %d, want 1; wake contents: %s",
 			len(wakes), describeWakes(wakes))
 	}
+	requireLegacyBudgetBatch(t, source, watched, wakes[0])
 	var matched, cleared bool
 	for _, n := range wakes[0] {
 		if n.JobID == rec.JobID && n.Status != jobNotificationEventWatch {
 			matched = true
 		}
-		if n.Status == jobNotificationEventWatch && strings.Contains(n.Reason, "watch cleared") {
+		if n.Status == jobNotificationEventWatch && n.callbackTrigger == watchBudgetEndTrigger {
 			cleared = true
 		}
 	}

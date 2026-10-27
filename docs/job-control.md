@@ -386,8 +386,9 @@ Defaults and timeout semantics:
 - To learn when a launch-and-return command reaches a state (e.g. a server printing "ready"), use `job_watch(operation="create", source=<job_id>, output_match=...)` and continue from the notification — an output-match watch catch-up-scans a job's retained output even if it already finished.
 
 For a healthy background completion addressed to its idle owner, matching public
-self `job.notification` watch frames and terminal-expiry EndNotice frames precede
-the distinct shell notification in one provider request. The notifying
+self `job.notification` watch frames, any co-produced budget notice, and
+terminal-expiry EndNotice frames precede the distinct shell notification in one
+provider request. The notifying
 finalization attempt holds the owner's existing notification wake until watch
 and shell custody are accepted, then the receiver rechecks ordinary execution
 eligibility. Wake callbacks hand off and return, rather than running the turn.
@@ -937,9 +938,15 @@ Transport retries do not make additional one-shot teardown attempts.
   retries on the next matching condition without producing a 51st firing or
   resetting the count. Re-arm with a tighter condition: higher `every` or narrower
   `output_match`.
-- Terminal notification ordering: flush any queued watch notification/frame for a
-  concrete job, then deliver the terminal notification. Both are facts about the same
-  completion, so they arrive in one notification turn, watch settlement first.
+  A callback's co-produced budget notice stays in that call's batch, after the
+  final firing. The retained local and supplied-receiver legacy callback rails
+  route that batch under their existing wake holds, without a standalone kick.
+  Canonical custody remains per ID, not a global one-handoff promise for arbitrary
+  watch events outside the notifying-completion hold described above.
+- Healthy automatic terminal notification ordering follows the bounded owner
+  completion contract above: watch facts first, then the distinct shell notice
+  in one request. Foreign canonical receivers, already-entered dispatch and
+  partial failure retain their independent delivery and recovery boundaries.
 - If no watch condition is supplied (`output_match`, `events`, `progress_interval_ms`,
   `after_seconds`, or `repeat_seconds`) for `operation="create"`, the tool fails unless
   the source is a granted cross-session session source such as `parent`, where the
