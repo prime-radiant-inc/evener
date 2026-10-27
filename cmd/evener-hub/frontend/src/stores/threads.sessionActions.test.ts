@@ -45,7 +45,6 @@ import {
   wedgeDatabaseOpens,
 } from "./testing/stalledIndexedDB";
 import {
-  ConflictError,
   discardRecoveryMutation,
   hasBlockedUnknown,
   hasQueuedNonSend,
@@ -67,6 +66,7 @@ import {
   subscribeMutationPersistence,
   threadsStore,
 } from "./threads";
+import { ConflictError } from "./threadsErrors";
 
 interface ScheduledHydrationRetry {
   attempt: number;

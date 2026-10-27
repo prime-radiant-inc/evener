@@ -8,7 +8,6 @@ import { connectionStore } from "./connection";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   acquireBackgroundThread,
-  ConflictError,
   clearCachedSessions,
   productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
@@ -16,6 +15,7 @@ import {
   settleEntryTranscriptForTests,
   threadsStore,
 } from "./threads";
+import { ConflictError } from "./threadsErrors";
 
 let cache: SessionEntryCache;
 beforeEach(() => {

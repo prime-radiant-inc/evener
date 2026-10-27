@@ -8,7 +8,8 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { connectionStore } from "./connection";
-import { isResumeOnly, productionEntryTranscriptForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
+import { isResumeOnly } from "./recoveryFence";
+import { productionEntryTranscriptForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
 
 const cleanupStops: Array<() => Promise<void>> = [];
 beforeEach(() => {

@@ -7,15 +7,8 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import { SessionEntryCache } from "./sessionEntryCache";
-import {
-  appendFrameTime,
-  FRAME_TIMES_MAX_ENTRIES,
-  FRAME_TIMES_WINDOW_MS,
-  resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
-  threadsStore,
-  useThreadsStore,
-} from "./threads";
+import { resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore, useThreadsStore } from "./threads";
+import { appendFrameTime, FRAME_TIMES_MAX_ENTRIES, FRAME_TIMES_WINDOW_MS } from "./threadsErrors";
 
 let cache: SessionEntryCache;
 beforeEach(() => {

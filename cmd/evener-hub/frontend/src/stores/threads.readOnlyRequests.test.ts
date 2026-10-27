@@ -13,7 +13,8 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import { SessionEntryCache } from "./sessionEntryCache";
-import { ConflictError, resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore } from "./threads";
+import { resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore } from "./threads";
+import { ConflictError } from "./threadsErrors";
 
 // These direct read-only RPCs exercise the real store client/readiness path,
 // not transcript acquisition. No route selector is installed.

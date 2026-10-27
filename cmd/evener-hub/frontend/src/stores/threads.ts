@@ -98,12 +98,11 @@ import {
 import {
   MutationOutboxIndexedDB,
   type MutationRecoveryResendResult,
-  MutationStorageError,
-  MutationStorageTimeoutError,
   type RetargetedMutations,
 } from "./mutationOutboxIndexedDB";
 import { trackProjectionWork } from "./projectionWork";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
+import { isRecoveryFenced, isResumeOnly, isSendResumes, type ResumeOnlySignals } from "./recoveryFence";
 import { createSecureUUID } from "./secureUUID";
 import {
   entryHistoryKey,
@@ -113,6 +112,7 @@ import {
 } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
+import { appendFrameTime, isStorageFailure, isStorageTimeout, mapConflict, StopCanceledError } from "./threadsErrors";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
 import {
   nextTranscriptReadIdentity,
@@ -165,22 +165,6 @@ export interface ForkFromTurnOptions {
   model?: string;
   deferInput?: boolean;
   aside?: boolean;
-}
-
-export class ConflictError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ConflictError";
-  }
-}
-
-/** A user's Stop landed while a resume was pending, so the resume and the
- * send it carried were canceled rather than delivered. */
-export class StopCanceledError extends Error {
-  constructor() {
-    super("Stop canceled this pending action; send again when ready.");
-    this.name = "StopCanceledError";
-  }
 }
 
 // The ghost's display input (steering-ghost spec §3): the row's full text
@@ -4220,27 +4204,6 @@ function olderItemsParams(ref: string, cursor: string) {
   return { ref, cursor, itemsView: "full", itemLimit: TRANSCRIPT_ITEM_PAGE_SIZE } as const;
 }
 
-// FRAME_TIMES_WINDOW_MS matches widgets/cadence's own WINDOW_MS exactly
-// (the trace it renders) so the ring never evicts a sample Cadence would
-// still want to show; FRAME_TIMES_MAX_ENTRIES is an independent cap purely
-// against runaway growth during a high-frequency notification burst within
-// that same 60s window (a long-lived, mostly-idle thread's ring stays far
-// under 64 on the window alone).
-export const FRAME_TIMES_WINDOW_MS = 60_000;
-export const FRAME_TIMES_MAX_ENTRIES = 64;
-
-// appendFrameTime is a pure ring-buffer step: append `now`, evict anything
-// older than the trace window (mirroring Cadence's own ticksFor exclusion,
-// `age > WINDOW_MS`, so the two boundaries agree exactly), then cap at
-// FRAME_TIMES_MAX_ENTRIES, keeping the most recent. `times` need not be
-// sorted (Cadence's own frameTimes prop doc says the same) - this never
-// re-sorts, only filters and slices.
-export function appendFrameTime(times: number[], now: number): number[] {
-  const kept = times.filter((t) => now - t <= FRAME_TIMES_WINDOW_MS);
-  const next = [...kept, now];
-  return next.length > FRAME_TIMES_MAX_ENTRIES ? next.slice(next.length - FRAME_TIMES_MAX_ENTRIES) : next;
-}
-
 function attachmentBlob(attachment: InputAttachment): Blob {
   const bytes = Uint8Array.from(atob(attachment.data), (character) => character.charCodeAt(0));
   return new Blob([bytes], { type: attachment.mediaType });
@@ -4370,97 +4333,6 @@ function composerMutationIntent(
     payload: { ref, expectedInstanceId, expectedQueueRevision, input },
     optimisticDisplay: { method: COMPOSER_METHODS.drain, input },
   };
-}
-
-// The recovery fence. A session carrying a restart-blocking
-// obligation (a Stop in flight, or a snapshot the daemon reports as
-// restartRequired/resumeRequired) admits no session action at all while the
-// obligation stands: the hub's recovery admission refuses turn/steer,
-// turn/queue and every other fenced mutation for exactly that window
-// (cmd/evener-hub's sessionActionRecoveryError reads the resume locks, never
-// the projected status), with turn/start carved out only for the merely-
-// resumable shape isResumeOnly names, so even a still-ACTIVE snapshot is
-// fenced while
-// a Stop drains - a live read relays the daemon's active status with
-// resumeRequired overlaid beside it (applyThreadResumeRequirement), and the
-// store arms the obligation on that very hydration. An offered press in that
-// window could only mint durable intent that parks until the explicit Resume
-// action clears the fence. The predicate lives here - beside the obligation
-// state it reads, and where the store's own mutation admission enforces it
-// (enqueueMutationIntent) without an import cycle - and liveControls
-// re-exports it for the surfaces.
-// Every ref shape carries the fence: a remote session's hub overlays
-// resumeRequired on the read it proxies back, so the same obligation reaches
-// this predicate.
-export function isRecoveryFenced(restartObligated: boolean): boolean {
-  return restartObligated;
-}
-
-// A LOCAL session the hub admits a folded send for. The authority is the hub's
-// OWN answer, not a shape this client infers: ResumeOnlyFoldable (whom
-// applyThreadResumeRequirement stamps) is true exactly when a turn/start on the
-// current connection would be admitted under the resume-only carve-out
-// (cmd/evener-hub's sessionAdmitsResumeRequired, read without a request: the
-// requirement is set, no Stop is draining, the exit is confirmed, and no
-// connection fence applies). The client no longer reads resumeRequired plus a
-// cleared send capability as this shape - that overlay (applyThreadResumeRequirement)
-// sets both for a Stop drain, an unconfirmed force-stop exit, the
-// connection-recovery fence, and an incompatible-protocol daemon too, four
-// shapes whose turn/start the hub still refuses, so inferring from them offered
-// Send where the hub would refuse it.
-//
-// Deliberately narrow - it is NOT the whole recovery fence. Every clause below
-// excludes a shape the hub would refuse or one whose send would starve:
-//
-//   - the hub bit must be true; an older or non-local snapshot that never
-//     carried it is not this shape.
-//   - no status clause: the hub's admission is status-independent
-//     (sessionActionRecoveryError / resumeOnlyFoldable read no status), so a
-//     live snapshot the hub legitimately stamped foldable - a daemon another
-//     controller started under a confirmed force-stop obligation - is admitted
-//     and folds. A status clause here would hide the folded send from a
-//     snapshot the hub would happily admit, silently falling back to the old
-//     explicit-Resume step the fold exists to remove. The stale bit a shut-down
-//     snapshot leaves behind is defended against where it is written, not here:
-//     the off-shut-down transition clears it (settleResumeOnlyOffShutdown) and
-//     a connection-generation change invalidates it
-//     (invalidateHeldHistoriesForReconnect), so a bit whose shut-down snapshot
-//     has ended cannot mis-route a send.
-//   - signals.uncertainMessages must be false: while delivery-uncertain rows
-//     exist the hub's explicit Resume still runs reconciliation, so the send is
-//     not the whole story and the Resume affordance stays.
-//   - signals.stopInFlight must be false: a snapshot taken before this page's
-//     Stop was answered can still carry the bit the hub stamped before the
-//     Stop's drain began, so the local in-flight Stop keeps the fence.
-//   - signals.queuedNonSend must be false: a queued non-turn/start durable row
-//     (still "submitting", attempted or not) parks at the target's FIFO ahead
-//     of a turn/start, so folding a send behind it would silently never
-//     deliver it.
-//
-// A Stop in flight / active drain, a restartRequired daemon that needs the
-// older daemon stopped first, and a stale-connection snapshot all leave the hub
-// bit false; all keep the fence.
-export interface ResumeOnlySignals {
-  // The store's delivery-uncertain rows (blockedUnknown).
-  uncertainMessages?: boolean;
-  // A Force stop this page started is still draining (stoppingRefs).
-  stopInFlight?: boolean;
-  // A queued non-turn/start durable row (still "submitting", attempted or not)
-  // ahead of the send (the pending-turns projection's hasQueuedNonSend).
-  queuedNonSend?: boolean;
-  // The store's mutation-recency reading (mutationAuthorityRefs), read only by
-  // the Send-resumes face below: a local snapshot whose parent still owns its
-  // uncertain rows (Session.tsx's recoveryOwnerRef) is not Send-driven.
-  mutationStateAuthoritative?: boolean;
-}
-
-export function isResumeOnly(model: Pick<ThreadModel, "resumeOnlyFoldable">, signals: ResumeOnlySignals = {}): boolean {
-  return (
-    model.resumeOnlyFoldable === true &&
-    signals.uncertainMessages !== true &&
-    signals.stopInFlight !== true &&
-    signals.queuedNonSend !== true
-  );
 }
 
 // The pending-turns projection's synchronous view of a ref's durable outbox,
@@ -4607,46 +4479,6 @@ function localFenceSignals(ref: string): ResumeOnlySignals {
     queuedNonSend: hasQueuedNonSend(ref),
     mutationStateAuthoritative: state.mutationAuthorityRefs.has(ref),
   };
-}
-
-// A snapshot the pane shows as retained by its owning session: its uncertain
-// rows are the owner's to reconcile, and the pane offers the owner's link and a
-// Refresh - never a resume, because the hub refuses to resume a session another
-// session still owns. Any parent ref counts, local or remote. The ONE
-// definition, consumed by the Send-resumes face here, the session notice, and
-// SessionChrome's force-stop eligibility.
-export function ownerRetainedRef(
-  model: Pick<ThreadModel, "status" | "parentRef">,
-  mutationStateAuthoritative: boolean,
-): string | undefined {
-  return !mutationStateAuthoritative &&
-    model.status.type !== "notLoaded" &&
-    model.status.type !== "restartRequired" &&
-    model.parentRef !== undefined &&
-    model.parentRef !== ""
-    ? model.parentRef
-    : undefined;
-}
-
-// The recovery fence's Send-driven face: any session carrying a
-// restart-blocking obligation. Send is the single recovery action; the store's
-// driver resumes before the parked send dispatches. Two shapes keep their own
-// controls because Send cannot complete them:
-//   - a restartRequired daemon needs its older process stopped first, which
-//     Send cannot do;
-//   - an owner-retained snapshot's rows belong to its owner.
-// Everything else - every ref shape, delivery-uncertain rows, a queued
-// non-send row, an unconfirmed exit, the connection fence, and a draining Stop
-// (the driver waits the drain out) - offers Send.
-export function isSendResumes(
-  model: Pick<ThreadModel, "resumeOnlyFoldable" | "status" | "parentRef">,
-  restartObligated: boolean,
-  signals: ResumeOnlySignals = {},
-): boolean {
-  if (!restartObligated) return false;
-  if (model.status.type === "restartRequired") return false;
-  if (ownerRetainedRef(model, signals.mutationStateAuthoritative === true) !== undefined) return false;
-  return !isResumeOnly(model, signals);
 }
 
 // isSendResumes over the store's current model for ref: the ADMISSION
@@ -5090,46 +4922,6 @@ async function enqueueDurableMutation(
   }
 }
 
-// Whether the IndexedDB watchdog gave up on an open or a transaction: storage
-// that may only be slow, so a durable write is worth a second attempt.
-function isStorageTimeout(error: unknown): boolean {
-  return error instanceof MutationStorageTimeoutError;
-}
-
-// The DOMException names IndexedDB uses when storage itself refuses: a full
-// origin, a browser that denies this origin storage, a schema version another
-// tab moved, a connection closed under the transaction, a transaction the
-// browser aborted, an internal failure. Names that judge the record written
-// (DataError, DataCloneError, ConstraintError: its key, its payload, a
-// duplicate id) or that only this code's own bugs raise (NotFoundError for a
-// missing store, TransactionInactiveError for a request on a finished
-// transaction) are absent on purpose. An AbortError cannot stand in for a
-// record judgment: the outbox adapter races a transaction's body against its
-// completion, so a body that throws rejects with its own error before the
-// abort it causes is reported, and IDBConnection rejects an open whose schema
-// upgrade threw with IDBUpgradeError, not the abort.
-const STORAGE_REFUSAL_NAMES: ReadonlySet<string> = new Set([
-  "QuotaExceededError",
-  "SecurityError",
-  "VersionError",
-  "InvalidStateError",
-  "UnknownError",
-  "AbortError",
-]);
-
-// Whether an outbox operation failed because storage did, not because of what
-// it was asked to write: the adapter's own storage errors (a timeout, a
-// refused, blocked or superseded open) or a storage refusal IndexedDB raised.
-// Only these earn the send fallback and the storage-blocked reconcile record;
-// the outbox's own validation errors keep their ordinary meaning. IndexedDB's
-// are matched by name because DOMExceptions from another realm fail
-// instanceof.
-function isStorageFailure(error: unknown): boolean {
-  if (error instanceof MutationStorageError) return true;
-  const name = typeof error === "object" && error !== null ? (error as { name?: unknown }).name : undefined;
-  return typeof name === "string" && STORAGE_REFUSAL_NAMES.has(name);
-}
-
 // The fallback send's RPC is its only transport, so a failure on the wire is
 // retried rather than surfaced. Only a transport failure earns the second
 // attempt: a settled WireError is the daemon's own answer (a conflict or a
@@ -5247,22 +5039,6 @@ async function enqueueMutation(
     durableWrite,
   );
   notifyMutationPersistence([ref]);
-}
-
-// mapConflict recognizes the WireError shape the daemon uses for a lost turn
-// CAS (turn/start, turn/steer, turn/queue, turn/interrupt) or a stale/raced
-// escalation resolve: code -32013 with
-// data.evenerErrorInfo === "conflict" (appwire.Conflict(), appwire/errors.go).
-// The discriminator is the evenerErrorInfo string, not the code alone — code
-// -32013 is also used by appwire.QueuedDrainPartial with a different
-// evenerErrorInfo, which must NOT map to ConflictError. Any other rejection
-// (a different WireError, RequestTimeoutError, ConnectionClosedError, ...)
-// passes through unchanged.
-function mapConflict(err: unknown): Error {
-  if (err instanceof WireError && err.evenerErrorInfo === "conflict") {
-    return new ConflictError(err.message);
-  }
-  return err instanceof Error ? err : new Error(String(err));
 }
 
 function clearMutationIntent(ref: string): MutationIntent {
