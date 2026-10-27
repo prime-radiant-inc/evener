@@ -98,10 +98,32 @@ async function readerGestures(send, width) {
   return evidence;
 }
 
-async function appearancePopup(send, bottom) {
+async function appearancePopup(send, bottom, stage) {
+  try { return await checkAppearancePopup(send,bottom); }
+  catch(error) {
+    const state=await evaluate(send,`(() => {
+      const trigger=[...document.querySelectorAll('[data-comic-font][data-session-ref] button')].find(node=>node.textContent.trim()==='Appearance');
+      const popup=document.querySelector('[role="dialog"][aria-label="Appearance"]');
+      const rect=node=>{if(!node)return null;const r=node.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,hit:node.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))};};
+      return {trigger:rect(trigger),triggerExpanded:trigger?.getAttribute('aria-expanded'),popup:rect(popup),focus:{tag:document.activeElement?.tagName,label:document.activeElement?.getAttribute('aria-label'),text:document.activeElement?.textContent?.slice(0,100),trigger:document.activeElement===trigger,popup:popup?.contains(document.activeElement)},font:document.querySelector('[data-comic-font]')?.dataset.comicFont};
+    })()`);
+    throw Error('Appearance failure '+JSON.stringify({stage,bottom,state})+': '+error.message);
+  }
+}
+
+async function checkAppearancePopup(send, bottom) {
   const snapshot = () => `(() => ({draft:document.querySelector('[role="textbox"]')?.innerHTML,reader:sessionStorage.getItem('evener:comic:position:local:comic-geometry'),height:document.querySelector('[data-comic-scroll]').getBoundingClientRect().height}))()`;
   const before = await evaluate(send,snapshot());
-  await evaluate(send,`(() => {const button=[...document.querySelectorAll('button')].find(node=>node.textContent.trim()==='Appearance');button.focus();button.click();})()`);
+  const point = await until(send,`(async () => {
+    const button=[...document.querySelectorAll('[data-comic-font][data-session-ref] button')].find(node=>node.textContent.trim()==='Appearance');
+    if(!button||button.disabled)return null;
+    const before=button.getBoundingClientRect();
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    const r=button.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;
+    return button.isConnected&&r.width&&r.height&&Math.abs(before.x-r.x)<0.1&&Math.abs(before.y-r.y)<0.1&&button.contains(document.elementFromPoint(x,y))?{x,y}:null;
+  })()`);
+  await send('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'left',buttons:1,clickCount:1});
+  await send('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'left',buttons:0,clickCount:1});
   const popup = await until(send,`(() => {
     const popup=document.querySelector('[role="dialog"][aria-label="Appearance"]');if(!popup)return null;
     const r=popup.getBoundingClientRect();
@@ -182,7 +204,7 @@ export default async function assert(_measurement, { page }) {
     await evaluate(send, "document.fonts.ready");
     await frame(send);
     const native = await readSession();
-    evidence.push({width,blockedFonts,popup:await appearancePopup(send,620)});
+    evidence.push({width,blockedFonts,popup:await appearancePopup(send,620,{width,blockedFonts,phase:'native'})});
     if (blockedFonts && (!native.fallbackNotice?.hit || native.fallbackNotice.height<=0))
       failures.push('blocked fonts did not mount the actual notice '+JSON.stringify(native));
     const checkSession = (name, state) => {
@@ -335,7 +357,7 @@ export default async function assert(_measurement, { page }) {
           await evaluate(send, `window.comicGeometry.viewport(${JSON.stringify(event)}, ${JSON.stringify(values)})`);
           await frame(send);
           const state = await readSession();
-          if(name==='short-open')evidence.push({width,blockedFonts,control,popup:await appearancePopup(send,bottom)});
+          if(name==='short-open')evidence.push({width,blockedFonts,control,popup:await appearancePopup(send,bottom,{width,blockedFonts,control,phase:name})});
           if (
             state.boxSizing !== "border-box" ||
             state.shell.bottom !== 620 ||
