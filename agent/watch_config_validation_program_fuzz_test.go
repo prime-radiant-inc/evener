@@ -275,9 +275,8 @@ func wcvpAssertSendTargetValidation(t *testing.T, r *wcvpReader) {
 		{"dlg_missing", "target_not_found:"},
 	}
 	for _, tc := range cases {
-		args := watchArgs{Source: r.text()}
-		first := wcvpErrorString(validateWatchSendDeliveryTarget(tc.target, args))
-		second := wcvpErrorString(validateWatchSendDeliveryTarget(tc.target, args))
+		first := wcvpErrorString(validateWatchSendDeliveryTarget(tc.target))
+		second := wcvpErrorString(validateWatchSendDeliveryTarget(tc.target))
 		if first != second {
 			t.Fatalf("send validation is not deterministic for %q: %q then %q", tc.target, first, second)
 		}

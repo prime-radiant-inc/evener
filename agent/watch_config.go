@@ -25,10 +25,8 @@ func (jm *jobManager) validateWatchConfig(a watchArgs, slot string) (*watchConfi
 	if !watchArgsHasCondition(a) {
 		return nil, errors.New("invalid_request: nothing to watch")
 	}
-	if a.Send != nil && !a.ReceiverSendInternal {
-		if err := jm.validateWatchSendTarget(a.Send.To, a); err != nil {
-			return nil, err
-		}
+	if err := validateWatchSendArgs(a); err != nil {
+		return nil, err
 	}
 	cfg, err := newWatchConfig(a, jm.now(), slot)
 	if err != nil {
@@ -168,10 +166,8 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 				return watchResult{}, statusErr
 			}
 			if terminal {
-				if a.Send != nil && !a.ReceiverSendInternal {
-					if sendErr := jm.validateWatchSendTarget(a.Send.To, a); sendErr != nil {
-						return watchResult{}, sendErr
-					}
+				if sendErr := validateWatchSendArgs(a); sendErr != nil {
+					return watchResult{}, sendErr
 				}
 				return jm.runTerminalCatchup(a, key, status, reason)
 			}
@@ -596,11 +592,16 @@ func (jm *jobManager) terminalWatchTargetStatus(target string) (status jobstore.
 	return "", "", false, nil
 }
 
-func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error {
-	return validateWatchSendDeliveryTarget(target, a)
+// validateWatchSendArgs checks a watch's delivery target. A watch with no send,
+// or one whose send is the receiver's own internal rail, has no target to check.
+func validateWatchSendArgs(a watchArgs) error {
+	if a.Send == nil || a.ReceiverSendInternal {
+		return nil
+	}
+	return validateWatchSendDeliveryTarget(a.Send.To)
 }
 
-func validateWatchSendDeliveryTarget(target string, _ watchArgs) error {
+func validateWatchSendDeliveryTarget(target string) error {
 	if target == "" {
 		return errors.New("invalid_request: internal watch delivery target is required")
 	}
