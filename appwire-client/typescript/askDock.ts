@@ -12,11 +12,12 @@
 // Pure logic - no DOM, no React.
 
 import { type AskResolution, composeAskAnswers } from "./askAnswers";
-import { type AskQuestionRef, liveAskQuestions } from "./deriveAskQuestions";
+import { type AskQuestionRef, isResolutionItem, liveAskQuestions } from "./deriveAskQuestions";
 import { sessionActionError } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore, type StoreListener } from "./frameworkFreeStore";
 import type { ThreadModel } from "./model";
 import { type AskBatch, reconcileBatches } from "./reconcileBatches";
+import { comparePositions, itemTextPresence } from "./reducer";
 
 export interface AskAnswerState {
   resolution: AskResolution | null;
@@ -366,6 +367,66 @@ function withLiveQuestions(
   };
 }
 
+// A background publication may omit completed bodies before a local opening
+// starts. Keep only already-known questions backed by the SAME canonical call,
+// not arbitrary questions merely because some ask is pending. Resident bodies
+// and the normal live scan remain authoritative when they return.
+function retainedQuestions(
+  model: ThreadModel,
+  previous: ThreadModel | undefined,
+  known: readonly AskQuestionRef[],
+): AskQuestionRef[] {
+  if (
+    !model.askPending ||
+    !model.history ||
+    !previous ||
+    model.threadId !== previous.threadId ||
+    model.instanceId !== previous.instanceId ||
+    known.length === 0
+  )
+    return [];
+  const priorItems = new Map(
+    (previous.history?.turns ?? previous.turns).flatMap((turn) => turn.items.map((item) => [item.id, item] as const)),
+  );
+  const retained: AskQuestionRef[] = [];
+  const visibleTurns = new Map(model.turns.map((turn) => [turn.id, turn]));
+  const canonicalTurns = new Map(model.history.turns.map((turn) => [turn.id, turn]));
+  const turns = [...model.history.turns, ...model.turns.filter((turn) => !canonicalTurns.has(turn.id))];
+  for (const turn of turns) {
+    const visible = visibleTurns.get(turn.id)?.items ?? [];
+    const byId = new Map(visible.map((item) => [item.id, item]));
+    const canonicalIds = new Set(canonicalTurns.get(turn.id)?.items.map((item) => item.id));
+    const items = turn.items.map((item) => byId.get(item.id) ?? item);
+    const present = new Set(items.map((item) => item.id));
+    // Overlay items without a canonical slot trail history, except positioned
+    // notices, whose position is their resolution boundary in this turn.
+    for (const item of visible) {
+      if (present.has(item.id)) continue;
+      const at = item.position
+        ? items.findIndex((held) => held.position && comparePositions(held.position, item.position) > 0)
+        : -1;
+      items.splice(at < 0 ? items.length : at, 0, item);
+    }
+    for (const item of items) {
+      if (isResolutionItem(item)) retained.length = 0;
+      if (
+        !canonicalIds.has(item.id) ||
+        item.type !== "commandExecution" ||
+        itemTextPresence(item) !== "omitted" ||
+        item.toolName !== undefined ||
+        item.status !== undefined ||
+        item.argumentsJSON !== undefined ||
+        item.error !== undefined
+      )
+        continue;
+      const prior = priorItems.get(item.id);
+      if (!prior || prior.turnId !== item.turnId || prior.callId !== item.callId) continue;
+      retained.push(...known.filter((question) => question.callId === (item.callId ?? item.id)));
+    }
+  }
+  return retained;
+}
+
 /** Builds an empty ask-dock store over the host's ports. */
 export function createAskDockStore({ send }: AskDockPorts = {}): AskDockStore {
   const store = createFrameworkFreeStore<AskDockState>(() => ({
@@ -459,7 +520,17 @@ export function createAskDockStore({ send }: AskDockPorts = {}): AskDockStore {
       return threads.subscribe((state, previous) => {
         if (state.threads === previous.threads) return;
         for (const [ref, model] of state.threads) {
-          if (previous.threads.get(ref) !== model) reconcile(ref, liveAskQuestions(model));
+          const prior = previous.threads.get(ref);
+          if (prior === model) continue;
+          const known =
+            store
+              .getState()
+              .byRef.get(ref)
+              ?.batches.flatMap((batch) => batch.questions) ?? [];
+          const live = liveAskQuestions(model);
+          const missing = known.filter((question) => !live.some((current) => current.key === question.key));
+          const retained = retainedQuestions(model, prior, missing);
+          reconcile(ref, [...retained, ...live]);
         }
       });
     },

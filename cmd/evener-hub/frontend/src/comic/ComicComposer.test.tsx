@@ -1,9 +1,15 @@
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import {
+  pruneBackgroundHistoryBodies,
+  type Thread,
+  type ThreadCapabilities,
+  type ThreadReadResponse,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { subagentOutcomesDelegatesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { askDockStore, resetAskDockStoreForTests } from "../panes/session/composer/askDock/askDockStore";
 import { Composer } from "../panes/session/composer/Composer";
 import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
@@ -47,6 +53,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
   resetThreadsStoreForTests();
+  resetAskDockStoreForTests();
   resetPendingTurnsStoreForTests();
   resetPrefsStoreForTests();
   resetWorkspaceStoreForTests();
@@ -73,9 +80,10 @@ function sourceFor(target = ref) {
   sources.push(source);
   return source;
 }
-async function setup(status = "idle") {
+async function setup(status = "idle", askPending = false) {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (p) => ({
+    ...(askPending ? { bootGeneration: "1", epoch: 1, snapshot: { incarnation: "ask-history", length: 1 } } : {}),
     thread: {
       id: `thread-${p.ref}`,
       sessionId: `session-${p.ref}`,
@@ -93,11 +101,35 @@ async function setup(status = "idle") {
           id: `turn-${p.ref}`,
           status: "completed",
           itemsView: "full",
-          items: [{ id: `item-${p.ref}`, type: "agentMessage", text: `CONTENT_${p.ref}` }],
+          items: askPending
+            ? [
+                {
+                  id: `item-${p.ref}`,
+                  turnId: `turn-${p.ref}`,
+                  type: "commandExecution",
+                  toolName: "ask_user",
+                  status: "completed",
+                  callId: "pending-call",
+                  transcriptKey: "ask-key",
+                  position: { entry: 0, item: 0 },
+                  version: 1,
+                  argumentsJson: JSON.stringify({
+                    questions: [
+                      {
+                        header: "QUESTION_SENTINEL",
+                        question: "BODY_SENTINEL",
+                        options: [{ label: "OPTION_SENTINEL", detail: "" }],
+                      },
+                    ],
+                  }),
+                },
+              ]
+            : [{ id: `item-${p.ref}`, type: "agentMessage", text: `CONTENT_${p.ref}` }],
         },
       ],
       evener: {
         ref: p.ref,
+        askPending,
         capabilities,
         ...(status === "notLoaded" ? { resumeRequired: true } : {}),
         mutationStateAuthoritative: true,
@@ -129,6 +161,52 @@ async function settle(source?: ComposerSourceState) {
     await source?.flushRecoveryWrites();
   });
 }
+
+test.each(["comic", "standard"] as const)(
+  "%s composer stays hidden and inert across pending body pruning and restoration",
+  async (presentation) => {
+    const fake = await setup("awaiting", true);
+    const source = sourceFor();
+    source.editText("RETAINED_COMPOSER_DRAFT");
+    const view = render(
+      <ClientProvider client={fake}>
+        {presentation === "comic" ? (
+          <ComicComposer source={source} />
+        ) : (
+          <Composer ref={ref} focused={false} source={source} />
+        )}
+      </ClientProvider>,
+    );
+    await settle(source);
+    const message = view.container.querySelector('[contenteditable="true"]');
+    expect(message).not.toBeNull();
+    const assertBlocked = () => {
+      expect(message?.closest("[hidden][inert]")).not.toBeNull();
+      expect(
+        askDockStore
+          .getState()
+          .byRef.get(ref)
+          ?.batches.flatMap((b) => b.questions.map((q) => q.key)),
+      ).toEqual(["pending-call:0"]);
+      expect(source.getSnapshot().text).toBe("RETAINED_COMPOSER_DRAFT");
+    };
+    assertBlocked();
+    const model = threadsStore.getState().threads.get(ref);
+    if (!model) throw new Error("Missing thread");
+    const pruned = pruneBackgroundHistoryBodies(model);
+    expect(pruned.turns.flatMap((turn) => turn.items)).toEqual([]);
+    expect(threadsStore.getState().localOpenings.get(ref)).toBeUndefined();
+    act(() => threadsStore.setState((state) => ({ threads: new Map(state.threads).set(ref, pruned) })));
+    assertBlocked();
+    act(() => threadsStore.setState((state) => ({ threads: new Map(state.threads).set(ref, model) })));
+    assertBlocked();
+    act(() =>
+      threadsStore.setState((state) => ({ threads: new Map(state.threads).set(ref, { ...model, askPending: false }) })),
+    );
+    expect(message?.closest("[hidden], [inert]")).toBeNull();
+    expect(source.getSnapshot().text).toBe("RETAINED_COMPOSER_DRAFT");
+  },
+);
 
 test.each([
   ["idle", "turn/start"],
