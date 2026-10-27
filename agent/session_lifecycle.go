@@ -1585,7 +1585,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// one-shot turn path is followed by DrainJobTree (cmd/evener run,
 		// drainForFinalization), and the drain's own turn gate reads the same
 		// two signals.
-		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() {
+		// Ordinary delegates also hand a current accepted Done report to their
+		// report-preserving finalization drain before a new input clears it.
+		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() &&
+			(!s.isSubagentSession() || s.communicateEndReason() != tool.CommunicateEndReasonDone) {
 			notificationsPending = s.peekNotifications() > 0 || s.notificationsRunnable()
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
