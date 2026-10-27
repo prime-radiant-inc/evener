@@ -38,7 +38,7 @@ type shutdownProbe struct {
 type shutdownSnapshot struct {
 	endpointRetired bool
 	backgroundDone  bool
-	appRPCDrained   bool
+	appRPCShutdownBegun   bool
 	listenerClosed  bool
 	workerFinished  bool
 }
@@ -54,7 +54,7 @@ func (p *shutdownProbe) snapshot() *shutdownSnapshot {
 		s.backgroundDone = p.serveCtx.Err() != nil
 	}
 	if p.web != nil {
-		s.appRPCDrained = p.web.appRPC.Lifetime().Err() != nil
+		s.appRPCShutdownBegun = p.web.appRPC.Lifetime().Err() != nil
 	}
 	return s
 }
@@ -121,8 +121,9 @@ func runShutdownProbe(cfg Config, deps mainDeps) error {
 }
 
 // Leaving the hub unwinds in a fixed order: the endpoint record is retired,
-// background work is cancelled and awaited, the AppWire server drains, the
-// listener closes, and only then is the lock released. A new hub may start the
+// background work is cancelled and awaited, the AppWire server is shut down
+// (its deferred call returns before the next step runs), the listener closes,
+// and only then is the lock released. A new hub may start the
 // moment the lock is released, so the record and the listener must be gone by
 // then.
 func TestRunMainShutsDownInDependencyOrder(t *testing.T) {
@@ -176,7 +177,7 @@ func TestRunMainReleasesTheLockLastAfterASignal(t *testing.T) {
 	if rel == nil || probe.released != 1 {
 		t.Fatalf("lock released %d times", probe.released)
 	}
-	if !rel.listenerClosed || !rel.endpointRetired || !rel.backgroundDone || !rel.appRPCDrained || !rel.workerFinished {
+	if !rel.listenerClosed || !rel.endpointRetired || !rel.backgroundDone || !rel.appRPCShutdownBegun || !rel.workerFinished {
 		t.Errorf("the lock was released with shutdown unfinished: %+v", rel)
 	}
 }
@@ -230,11 +231,11 @@ func assertShutdownOrder(t *testing.T, probe *shutdownProbe) {
 	if !cancelled.endpointRetired {
 		t.Error("background work was cancelled while the endpoint record was still published")
 	}
-	if cancelled.appRPCDrained || cancelled.listenerClosed {
-		t.Errorf("the AppWire server drained or the listener closed before background work was cancelled: %+v", cancelled)
+	if cancelled.appRPCShutdownBegun || cancelled.listenerClosed {
+		t.Errorf("the AppWire server began shutting down or the listener closed before background work was cancelled: %+v", cancelled)
 	}
-	if probe.atWorkerFinish == nil || probe.atWorkerFinish.appRPCDrained {
-		t.Error("the AppWire server began draining before background work finished")
+	if probe.atWorkerFinish == nil || probe.atWorkerFinish.appRPCShutdownBegun {
+		t.Error("the AppWire server began shutting down before background work finished")
 	}
 	at := probe.atListenerClose
 	if !at.workerFinished {
@@ -246,14 +247,14 @@ func assertShutdownOrder(t *testing.T, probe *shutdownProbe) {
 	if !at.backgroundDone {
 		t.Error("the listener closed before background work was cancelled")
 	}
-	if !at.appRPCDrained {
-		t.Error("the listener closed before the AppWire server drained")
+	if !at.appRPCShutdownBegun {
+		t.Error("the listener closed before the AppWire server began shutting down")
 	}
 	rel := probe.atRelease
 	if !rel.listenerClosed {
 		t.Error("the lock was released before the listener closed")
 	}
-	if !rel.endpointRetired || !rel.backgroundDone || !rel.appRPCDrained || !rel.workerFinished {
+	if !rel.endpointRetired || !rel.backgroundDone || !rel.appRPCShutdownBegun || !rel.workerFinished {
 		t.Errorf("the lock was released with shutdown unfinished: %+v", rel)
 	}
 }
