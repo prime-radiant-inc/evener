@@ -49,7 +49,9 @@ Escape, outside clicks, scrolling outside the reader and window resizing dismiss
 
 Comic and plain views preserve semantic reading positions through reflow. The
 root respects reduced motion and safe-area padding, and shared controls retain
-their keyboard behavior. Narrow-screen checks must reach the question choices,
+their keyboard behavior. Pointer completion and text selection follow the pane's
+document when it moves into a popout or docks back, even with Appearance closed.
+Narrow-screen checks must reach the question choices,
 note and final action, not merely capture their container. Browser viewport and
 safe-area emulation do not establish native touch inertia or device behavior.
 
@@ -103,6 +105,8 @@ admission and durable mutation identities. A transport failure does not mean an
 accepted input should be sent again: canonical transcript reconciliation can
 settle an unacknowledged mutation. Newer edits remain separately owned through
 reload, navigation and switches between Standard and Comic.
+Stop remains available beside Send or Queue while a draft is present. Interrupting
+the run preserves that draft; the user need not clear it or switch presentation.
 
 An explicit Send-driven resume owns dispatch for its source and resolved
 destination until identity and outbox reconciliation finish. Reconnect reads
@@ -154,6 +158,8 @@ Proven copied context carries an `inherited` label in both comic and plain views
 Missing, unknown or invalid authors remain neutral source captions; unknown
 reasoning remains labeled Thought rather than becoming the containing agent's
 thought. Explicit user steering remains human when no known author supersedes it.
+Human whiteboard notes remain source captions even when their human authorship is
+known or inherited.
 These presentation choices leave literal source text, item IDs, source positions,
 ordering, paging and root-only interaction admission unchanged. Durable production,
 fork preservation and SDK normalization belong to the shared
