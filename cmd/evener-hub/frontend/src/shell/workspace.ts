@@ -15,6 +15,7 @@ import { useEffect } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import {
+  clearRefComposerSeat,
   composerSelectionScope,
   readPaneComposerSeat,
   readRecoverySelection,
@@ -825,6 +826,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     if (!state.panes.includes(expected)) return false;
     paneFor(type);
     if (expected.type === type && expected.params === params) return true;
+    const previousRef = isConversationPaneType(expected.type) ? refParam(expected.params) : null;
     const replacement = { ...expected, type, params };
     if (!isConversationPaneType(type)) {
       // A read-only transcript owns no composer selection, but keeps the
@@ -851,6 +853,24 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         }
       }
     }
+    const nextPanes = state.panes.map((pane) => (pane === expected ? replacement : pane));
+    const nextRef = isConversationPaneType(type) ? refParam(params) : null;
+    if (previousRef !== null && previousRef !== nextRef) {
+      // The pane no longer owns its old conversation. Point that ref at a
+      // surviving pane, or remove the mapping when the conversation closed.
+      if (
+        nextPanes.some(
+          (pane) =>
+            isConversationPaneType(pane.type) &&
+            refParam(pane.params) === previousRef &&
+            pane.composerSeatId !== undefined,
+        )
+      ) {
+        writeSurvivingRefSeat(previousRef, nextPanes, state.focusedPaneId === expected.id ? null : state.focusedPaneId);
+      } else {
+        clearRefComposerSeat(previousRef);
+      }
+    }
     for (const listener of paneRetypeListeners) listener(expected, replacement);
     const origins = [...transcriptOpenOrigins];
     transcriptOpenOrigins.clear();
@@ -873,7 +893,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     for (const [pane, parentRef] of parents) {
       conversationOpenParentRefs.set(pane === expected ? replacement : pane, parentRef);
     }
-    set({ panes: state.panes.map((pane) => (pane === expected ? replacement : pane)) });
+    set({ panes: nextPanes });
     return true;
   },
 

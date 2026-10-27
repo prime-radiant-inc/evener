@@ -171,6 +171,14 @@ export function writeRefComposerSeat(ref: string, seat: string): void {
   }
 }
 
+export function clearRefComposerSeat(ref: string): void {
+  try {
+    localStorage.removeItem(refSeatKey(ref));
+  } catch {
+    // Best-effort, like every other composer persistence.
+  }
+}
+
 export function writePaneComposerSeat(paneId: string, ref: string, seat: string): void {
   try {
     localStorage.setItem(paneSeatKey(paneId), JSON.stringify({ ref, seat }));

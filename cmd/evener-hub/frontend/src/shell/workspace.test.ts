@@ -1769,3 +1769,28 @@ test.each<[string, (context: SeatTransitionContext) => void]>([
   if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
   expect(reloaded.composerSeatId).toBe(main.composerSeatId);
 });
+
+test("retyping a conversation away reconciles its old ref mapping", () => {
+  installLocalStorage(new MemoryStorage());
+  const oldRef = "local:sweep-old-ref";
+  const newRef = "local:sweep-new-ref";
+  const mainId = workspaceStore.getState().replacePrimary("session", { ref: oldRef });
+  const main = workspaceStore.getState().panes.find((pane) => pane.id === mainId);
+  if (!main?.composerSeatId) throw new Error("main pane lacks its seat");
+  const secondaryId = workspaceStore.getState().openPane("doc", { ref: "doc" });
+  const secondaryPane = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
+  if (!secondaryPane) throw new Error("secondary pane missing");
+  expect(workspaceStore.getState().retypePane(secondaryPane, "session", { ref: oldRef })).toBe(true);
+  const secondary = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
+  if (!secondary?.composerSeatId) throw new Error("secondary session lacks its seat");
+  expect(readRefComposerSeat(oldRef)).toBe(secondary.composerSeatId);
+
+  expect(workspaceStore.getState().retypePane(secondary, "session", { ref: newRef })).toBe(true);
+  expect(readRefComposerSeat(oldRef)).toBe(main.composerSeatId);
+  expect(readRefComposerSeat(newRef)).toBe(secondary.composerSeatId);
+  resetWorkspaceStoreForTests();
+  const reloadedOld = workspaceStore.getState().openPane("session", { ref: oldRef });
+  const reloadedPane = workspaceStore.getState().panes.find((pane) => pane.id === reloadedOld);
+  if (!reloadedPane?.composerSeatId) throw new Error("reloaded old conversation lacks its seat");
+  expect(reloadedPane.composerSeatId).toBe(main.composerSeatId);
+});
