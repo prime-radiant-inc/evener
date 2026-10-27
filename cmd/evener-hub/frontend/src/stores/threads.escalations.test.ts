@@ -15,12 +15,12 @@ import { SessionEntryCache } from "./sessionEntryCache";
 import {
   ConflictError,
   clearCachedSessions,
+  MAX_RESOLVED_ESCALATIONS_PER_REF,
   resetThreadsStoreForTests,
   setProductionEntryCacheForTests,
   settleEntryTranscriptForTests,
   threadsStore,
 } from "./threads";
-import { MAX_RESOLVED_ESCALATIONS_PER_REF } from "./transcriptRepository";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
@@ -252,50 +252,81 @@ describe("useThreadsStore.resolveEscalation", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
   });
 
+  function readCarrying(ids: string[], requestGeneration: number | undefined): ThreadReadResponse {
+    return {
+      ...readResponse("ref_a", {
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 0 },
+          pendingEscalations: ids.map((escalationId) => ({
+            ref: "ref_a",
+            threadId: "thr_ref_a",
+            escalationId,
+            mode: "workspace-write" as const,
+            tool: "shell",
+            kind: "shell" as const,
+            deniedPath: "/etc/hosts",
+          })),
+        },
+      }),
+      requestGeneration,
+    };
+  }
+
+  const MANY_IDS = Array.from({ length: MAX_RESOLVED_ESCALATIONS_PER_REF * 3 }, (_, i) => `esc_${i}`);
+
+  function pendingIds(): string[] | undefined {
+    return threadsStore
+      .getState()
+      .threads.get("ref_a")
+      ?.pendingEscalations.map((e) => e.escalationId);
+  }
+
   // The record exists for reads still carrying an escalation the daemon has
   // since seen resolved, which can only be the few most recent. A long session
   // resolves without bound, so the oldest entries are forgotten.
   test("a long run of resolved escalations is bounded and the most recent stay filtered", async () => {
     const fake = connectFakeClient();
-    const total = MAX_RESOLVED_ESCALATIONS_PER_REF * 3;
-    const ids = Array.from({ length: total }, (_, i) => `esc_${i}`);
-    const pending = (id: string) => ({
-      ref: "ref_a",
-      threadId: "thr_ref_a",
-      escalationId: id,
-      mode: "workspace-write" as const,
-      tool: "shell",
-      kind: "shell" as const,
-      deniedPath: "/etc/hosts",
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_seed");
+      return readCarrying(MANY_IDS, (params as { requestGeneration?: number }).requestGeneration);
     });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    for (const id of MANY_IDS) await threadsStore.getState().resolveEscalation("ref_a", id, true);
+
+    await threadsStore.getState().refreshThread("ref_a");
+
+    expect(pendingIds()).toEqual(MANY_IDS.slice(0, MANY_IDS.length - MAX_RESOLVED_ESCALATIONS_PER_REF));
+  });
+
+  // Eviction waits for the read: one issued before the resolves can carry any
+  // of them however many resolve before it is answered.
+  test("a read in flight across more resolves than the bound still has every one filtered", async () => {
+    const fake = connectFakeClient();
+    let answerRead: (response: ThreadReadResponse) => void = () => {};
     let reads = 0;
     fake.on("thread/read", (params) => {
       reads += 1;
       if (reads === 1) return threadWithEscalation("ref_a", "esc_seed");
       const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
-      return {
-        ...readResponse("ref_a", {
-          evener: {
-            ref: "ref_a",
-            capabilities: CAPABILITIES,
-            queue: { revision: 0 },
-            pendingEscalations: ids.map(pending),
-          },
-        }),
-        requestGeneration,
-      };
+      return new Promise<ThreadReadResponse>((resolve) => {
+        answerRead = (response) => resolve({ ...response, requestGeneration });
+      });
     });
     fake.on("evener/sandbox/escalation/resolve", () => ({}));
     await threadsStore.getState().ensureThread("ref_a");
-    for (const id of ids) await threadsStore.getState().resolveEscalation("ref_a", id, true);
 
-    await threadsStore.getState().refreshThread("ref_a");
+    const refresh = threadsStore.getState().refreshThread("ref_a");
+    await vi.waitFor(() => expect(reads).toBe(2));
+    for (const id of MANY_IDS) await threadsStore.getState().resolveEscalation("ref_a", id, true);
+    answerRead(readCarrying(MANY_IDS, undefined));
+    await refresh;
 
-    const remaining = threadsStore
-      .getState()
-      .threads.get("ref_a")
-      ?.pendingEscalations.map((e) => e.escalationId);
-    expect(remaining).toEqual(ids.slice(0, total - MAX_RESOLVED_ESCALATIONS_PER_REF));
+    expect(pendingIds()).toEqual([]);
   });
 
   test("a superseded read answered after the resolve is still discarded", async () => {

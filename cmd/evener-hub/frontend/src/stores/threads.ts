@@ -116,7 +116,6 @@ import { resetTasksPanelStoreForTests } from "./tasksPanel";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
 import {
   nextTranscriptReadIdentity,
-  recordResolvedEscalation,
   type TranscriptReader,
   TranscriptRepository,
   type TranscriptRetirementOutcome,
@@ -5137,6 +5136,12 @@ function notificationThreadId(n: AnyNotification): string | undefined {
 // which the daemon's snapshot cut does not order: a read issued before the
 // resolve, or one that starts while the approved tool is still rerunning, can
 // carry the escalation. Every model this client builds from a read drops these.
+//
+// A read that was in flight when an escalation was resolved may still carry it,
+// and one that starts later can only carry escalations pending on the daemon,
+// the few most recent. So a ref keeps its latest ids, and drops older ones only
+// while no read for it is in flight.
+export const MAX_RESOLVED_ESCALATIONS_PER_REF = 32;
 const resolvedEscalationsByRef = new Map<string, Set<string>>();
 
 function resolvedEscalationsFor(ref: string): Set<string> {
@@ -5146,6 +5151,16 @@ function resolvedEscalationsFor(ref: string): Set<string> {
     resolvedEscalationsByRef.set(ref, resolved);
   }
   return resolved;
+}
+
+// Trims the Set in place: the transcript repository holds this same Set.
+function trimResolvedEscalations(ref: string): void {
+  const resolved = resolvedEscalationsByRef.get(ref);
+  if (!resolved || pendingThreadHydrations.has(ref) || pendingWatchedHydrations.has(ref)) return;
+  for (const oldest of resolved) {
+    if (resolved.size <= MAX_RESOLVED_ESCALATIONS_PER_REF) break;
+    resolved.delete(oldest);
+  }
 }
 
 function withoutResolvedEscalations(ref: string, pending: PendingThreadHydration, model: ThreadModel): ThreadModel {
@@ -5208,6 +5223,7 @@ function retirePendingHydration(
   pending.baseModel = undefined;
   releasePendingHydrationBytes(ref, pending);
   if (isCurrent) pendingHydrations.delete(ref);
+  trimResolvedEscalations(ref);
   pendingHydrationRetirementForTests?.({
     ref,
     retainedNotificationCount,
@@ -8243,7 +8259,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // this one records the resolve itself (see resolvedEscalationsByRef), then
     // folds it through the same routing a broadcast takes for the models and
     // hydrations that are live now.
-    recordResolvedEscalation(resolvedEscalationsFor(ref), escalationId);
+    const resolved = resolvedEscalationsFor(ref);
+    resolved.delete(escalationId); // re-adding makes it the newest
+    resolved.add(escalationId);
+    trimResolvedEscalations(ref);
     const resolvedAnywhere =
       (model !== undefined && resolvedModel !== model) ||
       (watchedModel !== undefined && resolvedWatched !== watchedModel);
