@@ -156,6 +156,7 @@ function ChildSnapshot({
     entries,
     activity,
     history.model,
+    history.olderPageKey,
     history.hasOlder,
     history.loadingOlder,
     history.olderError,

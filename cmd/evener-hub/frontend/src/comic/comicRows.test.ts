@@ -18,6 +18,7 @@ const strip = projectComicDelegates(model, entities)[0]!;
 const activity = { snapshot: null, entities, strips: [], context: {}, loadMore: async () => {} };
 const history = {
   model,
+  olderPageKey: undefined,
   hasOlder: false,
   loadingOlder: false,
   olderError: null,

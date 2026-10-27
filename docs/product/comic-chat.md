@@ -179,6 +179,10 @@ loads preserve the saved source and child path until loading finishes. A newly
 loaded source waits for composed layout before any missing-source fallback. User
 movement cancels pending restoration. A collapsed branch keeps its small anchor
 for reopening; a parent end target does not follow later child panels.
+The shared transcript hook captures the older-page scheduling key with its
+loading state. Comic uses that snapshot for continuation, so a delayed child
+publication cannot mark a newer page requested while the previous load is still
+finishing.
 If a saved child never hydrates and the shared owner confirms deletion,
 restoration settles at its parent strip. Temporary loading or repair preserves
 the saved intent until recovery or user movement. **Jump to latest** releases
