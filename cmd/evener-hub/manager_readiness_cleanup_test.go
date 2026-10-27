@@ -365,6 +365,7 @@ func TestHostCleanupRootTestMainBoundary(t *testing.T) {
 		{name: "unsafe cleanup retains package root", mark: true, wantRetain: true},
 		{name: "unrelated test failure still removes package root", fail: true},
 	} {
+		childRoot := ""
 		t.Run(tc.name, func(t *testing.T) {
 			report := filepath.Join(t.TempDir(), "root-path")
 			cmd := exec.Command(exe, "-test.run=^TestHostCleanupRootTestMainBoundary$")
@@ -388,6 +389,7 @@ func TestHostCleanupRootTestMainBoundary(t *testing.T) {
 				t.Fatalf("read child root report: %v\n%s", err, output)
 			}
 			root := strings.TrimSpace(string(rootBytes))
+			childRoot = root
 			_, statErr := os.Stat(root)
 			retained := statErr == nil
 			if statErr != nil && !os.IsNotExist(statErr) {
@@ -396,7 +398,17 @@ func TestHostCleanupRootTestMainBoundary(t *testing.T) {
 			if retained != tc.wantRetain {
 				t.Fatalf("child TestMain root retained=%v, want %v (root %s, output %s)", retained, tc.wantRetain, root, output)
 			}
+			t.Cleanup(func() {
+				if err := os.RemoveAll(root); err != nil {
+					t.Errorf("remove verified child TestMain root %s: %v", root, err)
+				}
+			})
 		})
+		if _, err := os.Stat(childRoot); err == nil {
+			t.Errorf("per-case teardown left child TestMain root %s", childRoot)
+		} else if !os.IsNotExist(err) {
+			t.Errorf("checking child TestMain root after per-case teardown: %v", err)
+		}
 	}
 }
 
