@@ -44,16 +44,8 @@ import {
 	sessionControls,
 	WireError,
 } from "@evener/appwire-client";
-import type {
-	MutationAttachmentRef,
-	MutationPersistenceSnapshot,
-	PendingTurnEntry,
-} from "@evener/appwire-client/state/mutation";
-import {
-	appliedMutationIdentities,
-	ownPendingSend,
-	reconcilePendingEntries,
-} from "@evener/appwire-client/state/mutation";
+import type { PendingTurnEntry } from "@evener/appwire-client/state/mutation";
+import { appliedMutationIdentities, ownPendingSend } from "@evener/appwire-client/state/mutation";
 import { create } from "zustand";
 import type { BoundText, MobileConversation, MobileTimelineItem } from "../../projectedRows";
 import {
@@ -92,6 +84,7 @@ import {
 	MutationNotSentError,
 } from "./conversationMutation";
 import { createBoundedTextCache } from "./boundedText";
+import { createPendingMutationBinding, samePendingRows } from "./pendingMutations";
 import { reconcileCrossTurnReissues } from "./rowTransforms";
 import { createTransientWarnings } from "./transientWarnings";
 
@@ -1151,130 +1144,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		return trimmed ? bounded : turns;
 	}
 
-	// Slice 7a: the durable pending-row seam. While a host binds one, the store
-	// follows this conversation target's durable outbox/optimistic records and
-	// projects them as pending rows through the shared reconciliation (#2140's
-	// shape) — so an in-flight mutation survives a cold reopen (its record is the
-	// runtime's, not the store's memory), a rejected or reflected one drops out
-	// (no zombie pendings, no double rows), and a settled one clears exactly when
-	// its record leaves storage. The reconciliation always reads the live model:
-	// every durable read re-runs it, and so does every conversation write.
-	let pendingPort: ConversationMutationPendingPort | null = null;
-	let pendingUnsubscribe: (() => void) | null = null;
-	let pendingGeneration = 0;
-	// The bound seam's "demand a fresh current read" operation and the waiters
-	// an awaitable refresh is holding. Retirement resolves those waiters (it
-	// cancels the wait, never the commit) so no caller is left awaiting a read
-	// from a seam that no longer exists.
-	let pendingDemandRead: (() => Promise<void>) | null = null;
-	const pendingRefreshWaiters = new Set<() => void>();
-	function settlePendingRefreshes(): void {
-		const waiters = [...pendingRefreshWaiters];
-		pendingRefreshWaiters.clear();
-		for (const waiter of waiters) waiter();
-	}
-	// Demand a fresh read of the bound durable projection for an explicit
-	// lifecycle event (a connection recovery or a canonical read demand), not a
-	// storage notification. No timer and no loop: a failure leaves readiness false
-	// and the next explicit event tries again.
-	function demandBoundPendingRead(): void {
-		const demand = pendingDemandRead;
-		if (demand === null) return;
-		void demand();
-	}
-	// Advanced only by forgetPendingProvenance (close/reset). A read's provenance
-	// write is fenced on THIS, not on pendingGeneration: a read in flight across a
-	// same-target rebind or a thread open still observed a durable record of this
-	// client's own, and ids are unique per submission so it cannot contaminate
-	// another target. Only a teardown fences it out.
-	let pendingProvenanceGeneration = 0;
-	let pendingSnapshot: {
-		outbox: MutationPersistenceSnapshot<MutationAttachmentRef>["outbox"];
-		optimistic: MutationPersistenceSnapshot<MutationAttachmentRef>["optimistic"];
-	} | null = null;
-	// Every durable record this client submitted, id -> createdAt, carried past
-	// the record's own settle so the reconciliation's provenance rule can still
-	// answer after the durable read reports the id out of storage.
-	// Growth is bounded by the store's own lifetime: a store is per conversation,
-	// client mutation ids are unique per submission, and close/reset forget the
-	// map. The package store this mirrors deliberately never prunes it, because
-	// pruning an id the daemon still reports would flip an own in-flight send to
-	// `fromThisClient: false` and misroute tier-6 send/queue availability.
-	const pendingSubmittedHere = new Map<string, number>();
-
-	function reconcilePendingMutations(
-		model: MobileConversation | null | undefined = storeGet?.().conversation,
-	): readonly PendingTurnEntry[] {
-		const port = pendingPort;
-		const snapshot = pendingSnapshot;
-		if (port === null || snapshot === null || !model) return [];
-		return reconcilePendingEntries(
-			port.targetRef,
-			[...snapshot.outbox, ...snapshot.optimistic],
-			model,
-			pendingSubmittedHere,
-			(record) => port.isOwnMutationRecord(record),
-		);
-	}
-
-	// Whether two reconciliations describe the same rows. The reconciliation
-	// always allocates a fresh array, so publishing it on every conversation
-	// write would re-render every subscriber on each streaming delta even when
-	// nothing about the rows changed; comparing the fields keeps the reference
-	// stable until a row actually appears, changes state, or drops out.
-	function samePendingRows(
-		left: readonly PendingTurnEntry[] | null | undefined,
-		right: readonly PendingTurnEntry[],
-	): boolean {
-		if (left === undefined || left === null || left.length !== right.length) {
-			return false;
-		}
-		for (let index = 0; index < right.length; index += 1) {
-			const a = left[index];
-			const b = right[index];
-			if (
-				a.id !== b.id ||
-				a.method !== b.method ||
-				a.state !== b.state ||
-				a.source !== b.source ||
-				a.text !== b.text ||
-				a.imageCount !== b.imageCount ||
-				a.createdAt !== b.createdAt ||
-				a.fromThisClient !== b.fromThisClient ||
-				a.skillNames.length !== b.skillNames.length ||
-				a.skillNames.some((name, skillIndex) => name !== b.skillNames[skillIndex])
-			) {
-				return false;
-			}
-		}
-		return true;
-	}
-
-	// Stops following the bound seam and forgets its snapshot. Never sets state:
-	// the callers that clear the published projection do so through their own
-	// set (close/reset null it, the returned unbind publishes the clear).
-	// Provenance is deliberately NOT forgotten here: the id -> createdAt map is
-	// monotonic knowledge the package store treats as never pruned, so a
-	// same-target rebind keeps it and a still-authoritative entry stays honest.
-	function detachPendingRows(): void {
-		++pendingGeneration;
-		pendingDemandRead = null;
-		settlePendingRefreshes();
-		pendingUnsubscribe?.();
-		pendingUnsubscribe = null;
-		pendingPort = null;
-		pendingSnapshot = null;
-	}
-
-	// Forgets the carried provenance. Only a true teardown (close/reset) calls
-	// this: a rebind keeps it (same target), and a thread open keeps it too - the
-	// map is keyed by client mutation id, unique per submission, and it is the
-	// only carrier once a record settles out of storage while the daemon still
-	// reports the id.
-	function forgetPendingProvenance(): void {
-		++pendingProvenanceGeneration;
-		pendingSubmittedHere.clear();
-	}
+	const pendingBinding = createPendingMutationBinding(() => storeGet?.().conversation);
 
 	return create<LiveConversationState>((rawSet, get) => {
 		// R1: Wrap set so any write to the mutation markers or error increments
@@ -1295,10 +1165,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			if (
 				"conversation" in partial &&
 				!("pendingMutations" in partial) &&
-				pendingPort !== null &&
-				pendingSnapshot !== null
+				pendingBinding.port !== null &&
+				pendingBinding.snapshot !== null
 			) {
-				const next = reconcilePendingMutations(partial.conversation);
+				const next = pendingBinding.reconcile(partial.conversation);
 				if (!samePendingRows(get().pendingMutations, next)) {
 					rawSet({ ...partial, pendingMutations: next });
 					return;
@@ -1399,7 +1269,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		// `ready`, when supplied, rides the same write: a read that certifies the
 		// projection publishes its rows and readiness atomically.
 		const republishPendingRows = (ready?: boolean) => {
-			const next = reconcilePendingMutations();
+			const next = pendingBinding.reconcile();
 			const current = get();
 			const readyChanged = ready !== undefined && current.pendingMutationsReady !== ready;
 			const rowsChanged = !samePendingRows(current.pendingMutations, next);
@@ -1531,7 +1401,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// carried provenance is NOT forgotten: it is keyed by client mutation id
 				// (unique per submission), it is the only carrier once a record settles
 				// out of storage, and the package store it mirrors never prunes it.
-				detachPendingRows();
+				pendingBinding.detach();
 				// Increment conversation generation so late frames from a previous
 				// conversation are rejected.
 				const gen = ++conversationGen;
@@ -1604,7 +1474,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// rows (the durable target key is hub + ref, and the store cannot see
 				// the hub), and the host rebinds for the conversation it opens. The
 				// carried provenance survives, keyed by client mutation id.
-				detachPendingRows();
+				pendingBinding.detach();
 				const gen = ++conversationGen;
 				// I1: increment the binding epoch and bind the service so queued
 				// requests from an older binding are suppressed at the boundary.
@@ -1719,7 +1589,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// durable projection too. The bound port survives a suspend, so its
 				// idempotent rebind performs no read; without this, one transient
 				// pending-read failure would strand Retry until a full remount.
-				demandBoundPendingRead();
+				pendingBinding.demandRead();
 				const gen = ++conversationGen;
 				bindingEpoch += 1;
 				loadOlderToken += 1;
@@ -2462,14 +2332,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 
 			bindPendingMutations(port) {
 				// One conversation follows one target: release any prior binding first.
-				detachPendingRows();
+				pendingBinding.detach();
 				// Replacing the binding retires the prior target's published rows at
 				// once: they belong to the seam being replaced, and a replacement whose
 				// own first read never lands must not leave them standing. Nothing is
 				// certified for the new seam until its own read answers.
 				set({ pendingMutations: null, pendingMutationsReady: false });
-				const generation = pendingGeneration;
-				pendingPort = port;
+				const generation = pendingBinding.attach(port);
 				// Within one binding, only a read newer than the last PUBLISHED one may
 				// publish: a slow earlier read cannot resurrect a row a newer successful
 				// read already dropped, and a FAILED read (sync throw or rejection)
@@ -2487,7 +2356,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 
 				const read = (): Promise<void> => {
 					const request = ++readRequest;
-					const provenanceGeneration = pendingProvenanceGeneration;
+					const provenanceGeneration = pendingBinding.provenanceGeneration;
 					let pending: ReturnType<ConversationMutationPendingPort["read"]>;
 					try {
 						pending = port.read();
@@ -2505,15 +2374,15 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							// of this client's own, and the package store it mirrors records
 							// submitted-here before applying its own fences. Ids are unique
 							// per submission, so this cannot contaminate another target.
-							if (provenanceGeneration === pendingProvenanceGeneration) {
+							if (provenanceGeneration === pendingBinding.provenanceGeneration) {
 								for (const record of [...snapshot.outbox, ...snapshot.optimistic]) {
 									// Target-scoped exactly as the reconciliation is: a foreign
 									// target's row must not claim this client's provenance.
 									if (record.targetRef === port.targetRef && port.isOwnMutationRecord(record)) {
-										if (!pendingSubmittedHere.has(record.clientMutationId)) {
+										if (!pendingBinding.submittedHere.has(record.clientMutationId)) {
 											recordedProvenance = true;
 										}
-										pendingSubmittedHere.set(record.clientMutationId, record.createdAt);
+										pendingBinding.submittedHere.set(record.clientMutationId, record.createdAt);
 									}
 								}
 							}
@@ -2524,18 +2393,18 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							// read's, so a newer read's removals cannot be resurrected.
 							if (
 								recordedProvenance &&
-								pendingPort !== null &&
-								pendingSnapshot !== null &&
-								pendingPort.targetRef === port.targetRef
+								pendingBinding.port !== null &&
+								pendingBinding.snapshot !== null &&
+								pendingBinding.port.targetRef === port.targetRef
 							) {
 								republishPendingRows();
 							}
 							// A retired binding publishes nothing of its own snapshot.
-							if (generation !== pendingGeneration) return;
+							if (generation !== pendingBinding.generation) return;
 							// Only a read newer than the last published one publishes.
 							if (request <= lastPublishedRequest) return;
 							lastPublishedRequest = request;
-							pendingSnapshot = snapshot;
+							pendingBinding.adoptSnapshot(snapshot);
 							// The same stability check the conversation-write path uses: a
 							// storage read that re-serves identical rows must not churn
 							// subscribers with a fresh array. Readiness is set only by a
@@ -2560,34 +2429,36 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					if (get().pendingMutationsReady) set({ pendingMutationsReady: false });
 					return read();
 				};
-				pendingDemandRead = demandFreshRead;
+				pendingBinding.followReads(demandFreshRead);
 
-				pendingUnsubscribe = port.subscribe(() => {
-					// A target storage transition: readiness drops before this read
-					// starts (prior rows stay for display, never as a verified empty
-					// snapshot), and canonical authority is fail-closed at once.
-					void demandFreshRead();
-					// Deliberately NOT `ensureLatest()` here. On native that read
-					// takes the runtime's authoritative-read lease, which blocks the
-					// target between the outbox dispatcher's post-mark client recheck
-					// and its request — no turn/start or turn/queue leaves the phone
-					// and the attempted row parks blockedUnknown. Retry authority only
-					// needs to be unavailable until an accepted publication; a
-					// consumer that can afford the read (the Retry surface/entry read
-					// actor) demands it through ensureLatest at a point where no
-					// ordinary dispatch is in flight.
-					// A storage transition invalidates live-tail authority, but it must
-					// not erase an outstanding latest-read failure: the entry read actor
-					// keys its retry on "error", and "unknown" would cancel that retry
-					// (and clear its failure count) without a successful read, leaving
-					// the runtime's dispatch gate blocked. Only an accepted ready
-					// publication (or retirement) clears the failure.
-					if (get().latestReadState !== "error") markLatest("unknown");
-				});
+				pendingBinding.holdSubscription(
+					port.subscribe(() => {
+						// A target storage transition: readiness drops before this read
+						// starts (prior rows stay for display, never as a verified empty
+						// snapshot), and canonical authority is fail-closed at once.
+						void demandFreshRead();
+						// Deliberately NOT `ensureLatest()` here. On native that read
+						// takes the runtime's authoritative-read lease, which blocks the
+						// target between the outbox dispatcher's post-mark client recheck
+						// and its request — no turn/start or turn/queue leaves the phone
+						// and the attempted row parks blockedUnknown. Retry authority only
+						// needs to be unavailable until an accepted publication; a
+						// consumer that can afford the read (the Retry surface/entry read
+						// actor) demands it through ensureLatest at a point where no
+						// ordinary dispatch is in flight.
+						// A storage transition invalidates live-tail authority, but it must
+						// not erase an outstanding latest-read failure: the entry read actor
+						// keys its retry on "error", and "unknown" would cancel that retry
+						// (and clear its failure count) without a successful read, leaving
+						// the runtime's dispatch gate blocked. Only an accepted ready
+						// publication (or retirement) clears the failure.
+						if (get().latestReadState !== "error") markLatest("unknown");
+					}),
+				);
 				void read();
 				return () => {
-					if (generation !== pendingGeneration) return;
-					detachPendingRows();
+					if (generation !== pendingBinding.generation) return;
+					pendingBinding.detach();
 					set({ pendingMutations: null, pendingMutationsReady: false });
 				};
 			},
@@ -2596,7 +2467,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// Already following a seam: leave it alone, so a host that re-runs its
 				// rebind after a generation bump the store did not retire (suspend,
 				// rehydrate) does not churn a live subscription.
-				if (pendingPort !== null) return null;
+				if (pendingBinding.port !== null) return null;
 				return get().bindPendingMutations(port);
 			},
 
@@ -2609,7 +2480,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// The same explicit demand recovers a pending projection whose read
 				// failed while Retry's consumer (which waits for readiness) could not
 				// ask for one. A storage read, so it never blocks ordinary dispatch.
-				demandBoundPendingRead();
+				pendingBinding.demandRead();
 				return scheduler.request(binding.ref, async () => {
 					if (!isBindingCurrent(binding)) return;
 					if (!binding.projected) return;
@@ -2618,17 +2489,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			},
 
 			refreshPendingMutations() {
-				const demand = pendingDemandRead;
-				if (demand === null) return Promise.resolve();
-				const completion = demand();
-				return new Promise<void>((resolve) => {
-					const finish = () => {
-						pendingRefreshWaiters.delete(finish);
-						resolve();
-					};
-					pendingRefreshWaiters.add(finish);
-					void completion.then(finish, finish);
-				});
+				return pendingBinding.refresh();
 			},
 
 			async send(service, input, context, precondition) {
@@ -2849,8 +2710,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				trailingReread = null;
 				transientWarnings.clear();
 				boundedText.release();
-				detachPendingRows();
-				forgetPendingProvenance();
+				pendingBinding.detach();
+				pendingBinding.forgetProvenance();
 				boundService = null;
 				boundProjected = false;
 				retireMutationAttempt();
@@ -2885,7 +2746,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// retires now instead of waiting for a wide enough read. The
 				// applied-only rule: this store draws the message itself, so a queue
 				// row the daemon merely holds must not retire it early.
-				const settle = pendingPort?.settleIdentities;
+				const settle = pendingBinding.port?.settleIdentities;
 				const settledIds = settle === undefined ? [] : appliedMutationIdentities(n);
 				if (settle !== undefined && settledIds.length > 0) {
 					void settle(settledIds).catch(() => {
@@ -3067,8 +2928,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				trailingReread = null;
 				transientWarnings.clear();
 				boundedText.release();
-				detachPendingRows();
-				forgetPendingProvenance();
+				pendingBinding.detach();
+				pendingBinding.forgetProvenance();
 				boundService = null;
 				boundProjected = false;
 				retireMutationAttempt();
