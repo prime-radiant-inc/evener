@@ -40,6 +40,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$repo" ] && [ -n "$pr" ] || usage
 case "$wait" in ''|*[!0-9]*) echo "--wait takes whole seconds, got: $wait" >&2; usage ;; esac
+wait=$((10#$wait))  # decimal: bash arithmetic reads a leading 0 as octal
 
 # status prints "STATE MERGE_SHA POSITION QUEUE_STATE" from one query, so the
 # PR's state and its queue entry are read at the same instant ("-" for absent
@@ -82,8 +83,10 @@ echo "MERGEQ queued position=$pos"
 [ "$wait" -gt 0 ] || exit 0
 
 deadline=$(( $(date +%s) + wait ))
-while [ "$(date +%s)" -lt "$deadline" ]; do
-  sleep 30
+while :; do
+  left=$(( deadline - $(date +%s) ))
+  [ "$left" -gt 0 ] || break
+  sleep $(( left < 30 ? left : 30 ))
   refresh
   if [ "$st" = "MERGED" ]; then echo "MERGEQ merged sha=$sha"; exit 0; fi
   if [ "$pos" = "-" ]; then
