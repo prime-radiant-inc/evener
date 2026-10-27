@@ -510,6 +510,7 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 		t.Fatal("cleared remote watch remained active")
 	}
 	var queueMutations, inputMutations []string
+	var managerDirectInputs []acceptanceManagerInputMutation
 	for _, message := range []string{task, answer} {
 		mutationID := newMutationID(t)
 		inputMutations = append(inputMutations, mutationID)
@@ -564,7 +565,7 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 				t.Fatalf("remote question watch wake: call=%v err=%v", managerCall, err)
 			}
 		} else {
-			managerCall, targetCall, queueMutations = acceptanceRemoteQueueControls(ctx, t, provider, remoteHuman, managerCall, targetCall, workerRef, target, instance, opening, task)
+			managerCall, targetCall, queueMutations, managerDirectInputs = acceptanceRemoteQueueControls(ctx, t, provider, remoteHuman, managerCall, targetCall, workerRef, target, instance, opening, task, managerRef)
 			targetCall.RespondToolCall("communicate", communicateArgs("remote answer received"))
 		}
 	}
@@ -641,9 +642,10 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 	}
 	var saved struct {
 		Journal map[string]struct {
-			Actor        schema.SessionActor `json:"actor"`
-			Method       string              `json:"method"`
-			StableTurnID string              `json:"stable_turn_id"`
+			Actor               schema.SessionActor `json:"actor"`
+			Method              string              `json:"method"`
+			StableTurnID        string              `json:"stable_turn_id"`
+			StableQueueEntryIDs []string            `json:"stable_queue_entry_ids"`
 		} `json:"journal"`
 	}
 	if err := json.Unmarshal(data, &saved); err != nil {
@@ -652,6 +654,29 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 	for _, id := range queueMutations {
 		if record, ok := saved.Journal[id]; !ok || record.Actor.Kind != "manager" || record.Actor.ManagerRef != wantActor {
 			t.Errorf("remote queue mutation %s saved actor=%+v exists=%t, want %s", id, record.Actor, ok, wantActor)
+		}
+	}
+	for _, direct := range managerDirectInputs {
+		record, ok := saved.Journal[direct.MutationID]
+		if !ok || record.Actor.Kind != "manager" || record.Actor.ManagerRef != wantActor || record.Method != "turn/"+direct.Mode {
+			t.Errorf("Manager %s mutation %s saved actor=%+v method=%q exists=%t, want Manager %s and method turn/%s", direct.Mode, direct.MutationID, record.Actor, record.Method, ok, wantActor, direct.Mode)
+		}
+		if direct.Mode == "queue" && (len(record.StableQueueEntryIDs) != 1 || record.StableQueueEntryIDs[0] != direct.QueueEntryID) {
+			t.Errorf("Manager queue mutation %s saved queue entry IDs=%v, want receipt entry %q", direct.MutationID, record.StableQueueEntryIDs, direct.QueueEntryID)
+		}
+		count := 0
+		for _, turn := range turns {
+			for _, item := range turn.Items {
+				if strings.Contains(item.Text, direct.Payload) {
+					count++
+					if item.Actor == nil || item.Actor.Kind != "manager" || item.Actor.ManagerRef != wantActor {
+						t.Errorf("saved Manager %s payload %q actor=%+v, want Manager %s", direct.Mode, direct.Payload, item.Actor, wantActor)
+					}
+				}
+			}
+		}
+		if count != 1 {
+			t.Errorf("saved Manager %s payload %q count=%d, want exactly one", direct.Mode, direct.Payload, count)
 		}
 	}
 	for i, id := range inputMutations {
