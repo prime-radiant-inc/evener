@@ -744,7 +744,7 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 		walk.largeNamedFile = func(p string) error {
 			opened, oerr := fsys.Open(p)
 			if oerr != nil {
-				return nil
+				return nil //nolint:nilerr // best-effort grep: an unreadable file is skipped
 			}
 			cf, ok := opened.(*grepCtxFile)
 			if !ok {
@@ -754,7 +754,7 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 			info, ierr := cf.Stat()
 			if ierr != nil || !info.Mode().IsRegular() {
 				_ = opened.Close()
-				return nil
+				return nil //nolint:nilerr // best-effort grep: an unreadable file is skipped
 			}
 			stop, serr := a.feedLargeFile(cf.ctx, cf.File)
 			_ = cf.Close()
