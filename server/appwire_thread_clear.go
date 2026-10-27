@@ -2,11 +2,37 @@ package server
 
 import (
 	"context"
-	"maps"
 	"strings"
 
 	"primeradiant.com/evener/appwire"
 )
+
+// threadClearAction is what decideThreadClear concludes about a request.
+type threadClearAction int
+
+const (
+	// threadClearReject refuses the request with the decision's error.
+	threadClearReject threadClearAction = iota
+	// threadClearReplay answers with a receipt the journal already holds.
+	threadClearReplay
+	// threadClearRecover finishes a clear whose replacement is installed but
+	// whose receipt was never recorded.
+	threadClearRecover
+	// threadClearProceed runs the clear; its reservation is already journaled.
+	threadClearProceed
+)
+
+type threadClearDecision struct {
+	action      threadClearAction
+	err         error
+	response    appwire.ThreadClearResponse
+	fn          func(context.Context, appwire.ThreadClearParams) error
+	reservation threadClearReservation
+}
+
+func rejectThreadClear(err error) threadClearDecision {
+	return threadClearDecision{action: threadClearReject, err: err}
+}
 
 // handleAppThreadClear owns the retry-safe identity transition for clear. The
 // callback is deliberately outside s.mu: it provisions and closes sessions and
@@ -41,121 +67,95 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 	}
 	defer s.appMutationGate.Unlock()
 
+	decision := s.decideThreadClear(params, requestHash)
+	switch decision.action {
+	case threadClearReplay:
+		return decision.response, nil
+	case threadClearRecover:
+		return s.recoverThreadClear(params)
+	case threadClearProceed:
+		return s.runThreadClear(ctx, params, decision)
+	default:
+		return appwire.ThreadClearResponse{}, decision.err
+	}
+}
+
+// decideThreadClear checks the request against the journal and the live
+// identity and, when a clear should run, journals its reservation.
+func (s *Server) decideThreadClear(params appwire.ThreadClearParams, requestHash string) threadClearDecision {
 	s.mu.Lock()
-	if s.clearJournalErr != nil {
-		err := appwire.MutationUnknown(params.ClientMutationID, "thread clear journal is unavailable")
-		s.mu.Unlock()
-		return appwire.ThreadClearResponse{}, err
+	defer s.mu.Unlock()
+	if s.clearJournal.loadErr != nil {
+		return rejectThreadClear(appwire.MutationUnknown(params.ClientMutationID, "thread clear journal is unavailable"))
 	}
 	if s.appRef != "" && params.Ref != s.appRef {
-		s.mu.Unlock()
-		return appwire.ThreadClearResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, "thread identity is stale")
+		return rejectThreadClear(appwire.MutationNotAccepted(params.ClientMutationID, "thread identity is stale"))
 	}
-	if record, ok := s.clearRecords[params.ClientMutationID]; ok {
+	if record, ok := s.clearJournal.records[params.ClientMutationID]; ok {
 		if record.RequestHash != requestHash || record.Ref != params.Ref || record.ExpectedInstanceID != params.ExpectedInstanceID {
-			s.mu.Unlock()
-			return appwire.ThreadClearResponse{}, appwire.InvalidRequest("client mutation ID reused with a different clear request")
+			return rejectThreadClear(appwire.InvalidRequest("client mutation ID reused with a different clear request"))
 		}
 		if record.State == threadClearApplied {
 			if record.Response == nil {
-				s.mu.Unlock()
-				return appwire.ThreadClearResponse{}, appwire.MutationUnknown(params.ClientMutationID, "thread clear receipt is incomplete")
+				return rejectThreadClear(appwire.MutationUnknown(params.ClientMutationID, "thread clear receipt is incomplete"))
 			}
 			response := *record.Response
 			response.Receipt.Disposition = appwire.MutationDispositionReplayed
-			s.mu.Unlock()
-			return response, nil
+			return threadClearDecision{action: threadClearReplay, response: response}
 		}
 		// A reserved record with a different current instance means the process
 		// reached the replacement before it crashed or lost its response. The
-		// current stable ref is authoritative, so persist the reconstructed
-		// receipt and replay it instead of running a second replacement.
-		currentRef := s.appRef
-		currentInstanceID := s.appThreadID
-		if currentRef == params.Ref && currentInstanceID != params.ExpectedInstanceID {
-			s.mu.Unlock()
-			response := s.threadClearResponse(params.ClientMutationID, appwire.MutationDispositionApplied)
-			s.mu.Lock()
-			currentRecord, stillReserved := s.clearRecords[params.ClientMutationID]
-			if !stillReserved || currentRecord.State != threadClearReserved || s.appRef != params.Ref || s.appThreadID == params.ExpectedInstanceID {
-				s.mu.Unlock()
-				return appwire.ThreadClearResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, "thread clear state changed while recovering")
-			}
-			record = currentRecord
-			record.State = threadClearApplied
-			record.Response = &response
-			s.clearRecords[params.ClientMutationID] = record
-			if err := persistThreadClearJournal(s.clearJournalPath, s.clearRecords); err != nil {
-				// An unpersisted receipt must not stand in memory: the retry has
-				// to come back through this branch and make it durable.
-				s.clearRecords[params.ClientMutationID] = currentRecord
-				s.mu.Unlock()
-				return appwire.ThreadClearResponse{}, appwire.MutationUnknown(params.ClientMutationID, "thread clear receipt could not be persisted")
-			}
-			response.Receipt.Disposition = appwire.MutationDispositionReplayed
-			s.mu.Unlock()
-			return response, nil
+		// current stable ref is authoritative, so the reconstructed receipt is
+		// recorded and replayed instead of running a second replacement.
+		if s.appRef == params.Ref && s.appThreadID != params.ExpectedInstanceID {
+			return threadClearDecision{action: threadClearRecover}
 		}
 	}
-
 	if params.ExpectedInstanceID != s.appThreadID {
-		s.mu.Unlock()
-		return appwire.ThreadClearResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, "thread instance is stale")
+		return rejectThreadClear(appwire.MutationNotAccepted(params.ClientMutationID, "thread instance is stale"))
 	}
 	if reason := s.clearBlockedReasonLocked(); reason != "" {
-		s.mu.Unlock()
-		return appwire.ThreadClearResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, reason)
+		return rejectThreadClear(appwire.MutationNotAccepted(params.ClientMutationID, reason))
 	}
-	fn := s.clearFunc
-	if fn == nil {
-		s.mu.Unlock()
-		return appwire.ThreadClearResponse{}, appwire.Unavailable("thread/clear is unavailable")
+	if s.clearFunc == nil {
+		return rejectThreadClear(appwire.Unavailable("thread/clear is unavailable"))
 	}
-	record := threadClearRecord{
+	reservation, err := s.clearJournal.reserve(threadClearRecord{
 		ClientMutationID:   params.ClientMutationID,
 		RequestHash:        requestHash,
 		Ref:                params.Ref,
 		ExpectedInstanceID: params.ExpectedInstanceID,
 		State:              threadClearReserved,
+	})
+	if err != nil {
+		return rejectThreadClear(appwire.MutationUnknown(params.ClientMutationID, "thread clear reservation could not be persisted"))
 	}
-	// A new reservation supersedes every older record for the same stable ref:
-	// the instance those records expected (or installed) is being replaced, so
-	// none of them can be a live client's retry anymore. This bounds the
-	// journal at one record per ref instead of one per clear, forever. The two
-	// snapshots make each rollback below a wholesale restore; only this
-	// handler mutates clearRecords, and appMutationGate serializes it.
-	beforeReservation := maps.Clone(s.clearRecords)
-	for id, existing := range s.clearRecords {
-		if existing.Ref == params.Ref {
-			delete(s.clearRecords, id)
-		}
-	}
-	s.clearRecords[params.ClientMutationID] = record
-	if err := persistThreadClearJournal(s.clearJournalPath, s.clearRecords); err != nil {
-		s.clearRecords = beforeReservation
-		s.mu.Unlock()
-		return appwire.ThreadClearResponse{}, appwire.MutationUnknown(params.ClientMutationID, "thread clear reservation could not be persisted")
-	}
-	reserved := maps.Clone(s.clearRecords)
-	s.mu.Unlock()
+	return threadClearDecision{action: threadClearProceed, fn: s.clearFunc, reservation: reservation}
+}
 
-	if err := fn(ctx, params); err != nil {
+// recoverThreadClear records the receipt of a replacement that is already
+// installed and replays it.
+func (s *Server) recoverThreadClear(params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+	response := s.threadClearResponse(params.ClientMutationID, appwire.MutationDispositionApplied)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, stillReserved := s.clearJournal.records[params.ClientMutationID]
+	if !stillReserved || record.State != threadClearReserved || s.appRef != params.Ref || s.appThreadID == params.ExpectedInstanceID {
+		return appwire.ThreadClearResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, "thread clear state changed while recovering")
+	}
+	if err := s.clearJournal.markApplied(params.ClientMutationID, &response); err != nil {
+		return appwire.ThreadClearResponse{}, appwire.MutationUnknown(params.ClientMutationID, "thread clear receipt could not be persisted")
+	}
+	response.Receipt.Disposition = appwire.MutationDispositionReplayed
+	return response, nil
+}
+
+// runThreadClear invokes the clear callback for a journaled reservation and
+// records the receipt of the replacement it installs.
+func (s *Server) runThreadClear(ctx context.Context, params appwire.ThreadClearParams, decision threadClearDecision) (appwire.ThreadClearResponse, error) {
+	if err := decision.fn(ctx, params); err != nil {
 		s.mu.Lock()
-		// The failed clear installed nothing, so the records its reservation
-		// superseded describe the still-current instance: restoring the
-		// pre-reservation journal keeps an older receipt's replay alive after
-		// a failed newer clear.
-		s.clearRecords = beforeReservation
-		persistErr := persistThreadClearJournal(s.clearJournalPath, s.clearRecords)
-		if persistErr != nil {
-			// Roll memory back to the journal the reservation persisted. Disk
-			// may already hold the rollback if only the post-rename directory
-			// sync failed, but either state is safe: every persist rewrites
-			// the whole file from memory, so the next successful one resyncs
-			// disk, and a retry that re-invokes the callback re-runs work that
-			// failed without installing anything.
-			s.clearRecords = reserved
-		}
+		persistErr := s.clearJournal.release(decision.reservation)
 		s.mu.Unlock()
 		if persistErr != nil {
 			return appwire.ThreadClearResponse{}, appwire.MutationUnknown(params.ClientMutationID, "thread clear outcome could not be persisted")
@@ -165,20 +165,13 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 
 	response := s.threadClearResponse(params.ClientMutationID, appwire.MutationDispositionApplied)
 	s.mu.Lock()
-	record = s.clearRecords[params.ClientMutationID]
-	reservedRecord := record
-	record.State = threadClearApplied
-	record.Response = &response
-	s.clearRecords[params.ClientMutationID] = record
-	if err := persistThreadClearJournal(s.clearJournalPath, s.clearRecords); err != nil {
-		// Keep the reserved record and the new identity. A retry will take the
-		// crash-recovery branch above and make the receipt durable before it
-		// reports success.
-		s.clearRecords[params.ClientMutationID] = reservedRecord
-		s.mu.Unlock()
+	defer s.mu.Unlock()
+	// A receipt that cannot be persisted leaves the record reserved with the new
+	// identity installed; a retry takes the recovery path and makes it durable
+	// before it reports success.
+	if err := s.clearJournal.markApplied(params.ClientMutationID, &response); err != nil {
 		return appwire.ThreadClearResponse{}, appwire.MutationUnknown(params.ClientMutationID, "thread clear receipt could not be persisted")
 	}
-	s.mu.Unlock()
 	return response, nil
 }
 
