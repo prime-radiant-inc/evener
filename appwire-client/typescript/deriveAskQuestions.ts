@@ -91,7 +91,7 @@ export function isUserAuthoredSteer(item: ItemModel): boolean {
 // accepted-turn path that clears askPending for a plain user message -
 // isUserAuthoredSteer above). A daemon-originated steer with neither marker,
 // and a human-note steer, are not the user speaking and resolve nothing.
-function isResolutionItem(item: ItemModel): boolean {
+export function isResolutionItem(item: ItemModel): boolean {
   if (item.type === "userMessage") return true;
   if (item.type !== "steering") return false;
   if (item.steeringKind === "interrupted") return true;
