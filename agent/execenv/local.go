@@ -564,14 +564,13 @@ func (e *LocalExecutionEnvironment) ReadFileCtx(ctx context.Context, path string
 // read saw. The bytes are the complete file even when offset and limit select
 // only some of its lines; on error they are nil.
 func (e *LocalExecutionEnvironment) ReadFileAndBytesCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, []byte, error) {
-	abs := e.resolve(path)
-	var b []byte
-	var err error
-	sfs := e.sandbox()
-	if sfs == nil {
-		sfs = e.scratchSandboxFor(abs)
+	t, err := e.fileTarget("read_file", path, targetRead)
+	if err != nil {
+		return "", nil, err
 	}
-	defer sfs.release()
+	defer t.release()
+	sfs, abs := t.sfs, t.abs
+	var b []byte
 	if sfs != nil {
 		// Sandboxed or explicitly granted scratch: race-safe fd read
 		// (symlink-refusing, root/denylist-checked).
@@ -715,38 +714,7 @@ func readFileNotFoundSuggestion(absPath string) string {
 // directories within the active sandbox policy. It returns a
 // human-readable summary of the bytes written.
 func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (string, error) {
-	if sfs := e.sandbox(); sfs != nil {
-		defer sfs.release()
-		if err := e.requireLiveSandboxRootForRelative(sfs, "write_file", path); err != nil {
-			return "", err
-		}
-		// Sandboxed: atomic temp+renameat beneath a writable-root fd (creating any
-		// missing parents beneath the same root); read-only mode / out-of-root /
-		// masked / git-protected targets return a typed denial.
-		if err := sfs.writeFile("write_file", e.resolve(path), []byte(content), 0o644); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
-	}
-	abs := e.resolve(path)
-	if sfs := e.scratchSandboxFor(abs); sfs != nil {
-		defer sfs.release()
-		if err := sfs.writeFile("write_file", abs, []byte(content), 0o644); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
-	}
-	if err := e.requireLiveWorkingDirForRelative(path); err != nil {
-		return "", err
-	}
-	abs, err := e.resolveWrite(path)
-	if err != nil {
-		return "", err
-	}
-	if err := e.filesystem().MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		return "", err
-	}
-	if err := afero.WriteFile(e.filesystem(), abs, []byte(content), 0o644); err != nil {
+	if err := e.writeFileAs("write_file", path, []byte(content), 0o644); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
@@ -771,40 +739,22 @@ func (e *LocalExecutionEnvironment) EditFileCtx(ctx context.Context, path string
 // EditFileWithCtx is EditFileCtx, except that finish, when not nil, turns the
 // edited bytes into the bytes written, inside the same read and write.
 func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {
-	sfs := e.sandbox()
-	sandboxArm := sfs != nil
-	var abs string
-	var b []byte
-	var err error
-	if sfs == nil {
-		abs = e.resolve(path)
-		sfs = e.scratchSandboxFor(abs)
-	} else {
-		abs = e.resolve(path)
+	t, err := e.fileTarget("edit_file", path, targetWrite)
+	if err != nil {
+		return "", err
 	}
-	defer sfs.release()
-	if sfs != nil {
-		if sandboxArm {
-			if derr := e.requireLiveSandboxRootForRelative(sfs, "edit_file", path); derr != nil {
-				return "", derr
-			}
-		}
+	defer t.release()
+	var b []byte
+	if t.sfs != nil {
 		// Deny an edit in a non-writable location up front (read-only mode, outside
 		// the writable roots, or a masked/git-protected surface) before reading, so
 		// the model gets a clean write denial rather than a match/not-found result.
-		if derr := sfs.checkWritable("edit_file", abs); derr != nil {
+		if derr := t.sfs.checkWritable("edit_file", t.abs); derr != nil {
 			return "", derr
 		}
-		b, err = sfs.readFileCtx(ctx, "edit_file", abs)
+		b, err = t.sfs.readFileCtx(ctx, "edit_file", t.abs)
 	} else {
-		if err := e.requireLiveWorkingDirForRelative(path); err != nil {
-			return "", err
-		}
-		abs, err = e.resolveWrite(path)
-		if err != nil {
-			return "", err
-		}
-		b, err = readFileCappedCtx(ctx, e.filesystem(), abs)
+		b, err = readFileCappedCtx(ctx, e.filesystem(), t.abs)
 	}
 	if err != nil {
 		return "", err
@@ -837,11 +787,11 @@ func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path st
 	if finish != nil {
 		edited = finish(edited)
 	}
-	if sfs != nil {
-		if werr := sfs.writeFile("edit_file", abs, edited, 0o644); werr != nil {
+	if t.sfs != nil {
+		if werr := t.sfs.writeFile("edit_file", t.abs, edited, 0o644); werr != nil {
 			return "", werr
 		}
-	} else if werr := afero.WriteFile(e.filesystem(), abs, edited, 0o644); werr != nil {
+	} else if werr := afero.WriteFile(e.filesystem(), t.abs, edited, 0o644); werr != nil {
 		return "", werr
 	}
 	plural := "s"
