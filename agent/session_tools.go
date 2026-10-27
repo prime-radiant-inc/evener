@@ -901,24 +901,3 @@ func (s *Session) resolveFilePath(path string) string {
 	}
 	return filepath.Join(s.currentEnv().WorkingDirectory(), p)
 }
-
-// stringArg returns args[key] as a string, or "" when absent or not a string.
-func stringArg(args map[string]any, key string) string {
-	if v, ok := args[key].(string); ok {
-		return v
-	}
-	return ""
-}
-
-// optionalIntArg extracts an optional integer pointer from tool arguments.
-func optionalIntArg(args map[string]any, key string) *int {
-	v, ok := args[key]
-	if !ok {
-		return nil
-	}
-	if n, ok := v.(float64); ok {
-		ni := int(n)
-		return &ni
-	}
-	return nil
-}
