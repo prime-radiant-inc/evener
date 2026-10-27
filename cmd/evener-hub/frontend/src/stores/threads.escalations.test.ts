@@ -13,8 +13,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
+  acquireBackgroundThread,
   ConflictError,
   clearCachedSessions,
+  productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
   setProductionEntryCacheForTests,
   settleEntryTranscriptForTests,
@@ -463,6 +465,56 @@ describe("useThreadsStore.resolveEscalation", () => {
     await tracked;
 
     expect(pendingIds()).toEqual([]);
+  });
+
+  // The repository's own end-of-round reconciliation read is no hydration, so
+  // only the in-flight read count keeps a confirmed id until it is answered.
+  test("a repository-owned end read answered after a confirming read does not bring the resolve back", async () => {
+    const fake = connectFakeClient();
+    let answerEnd: (response: ThreadReadResponse) => void = () => {};
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      if (reads === 2)
+        return new Promise<ThreadReadResponse>((resolve) => {
+          answerEnd = (response) => resolve({ ...response, requestGeneration });
+        });
+      return readCarrying([], requestGeneration);
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    const owner = acquireBackgroundThread("ref_a");
+    await owner.ready;
+    await settleEntryTranscriptForTests("ref_a");
+    fake.emitNotification({
+      method: "overlay/upserted",
+      params: {
+        ref: "ref_a",
+        threadId: "thr_ref_a",
+        item: {
+          key: "tool:old",
+          kind: "tool",
+          roundId: "r1",
+          historyKey: "old-tool",
+          turnId: "turn_1",
+          anchor: { entry: 2, item: 0 },
+          item: { id: "old-tool", type: "commandExecution", turnId: "turn_1", status: "inProgress", output: "" },
+        },
+      },
+    } as never);
+    fake.emitNotification({
+      method: "overlay/end",
+      params: { ref: "ref_a", threadId: "thr_ref_a", roundId: "r1" },
+    } as never);
+    await vi.waitFor(() => expect(reads).toBe(2));
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    answerEnd(readCarrying(["esc_1"], undefined));
+    await settleEntryTranscriptForTests("ref_a");
+
+    expect(productionEntryTranscriptForTests("ref_a").repository?.getSnapshot()?.pendingEscalations).toEqual([]);
+    await owner.release();
   });
 
   test("a superseded read answered after the resolve is still discarded", async () => {
