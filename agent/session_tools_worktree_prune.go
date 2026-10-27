@@ -139,20 +139,21 @@ func prunePolicy() laneSweepPolicy {
 			if tErr != nil {
 				return false, "rev-parse HEAD failed: " + tErr.Error(), tErr
 			}
-			disposable, reasonTag, dErr := disposableReason(run, strings.TrimSpace(tipOut), sc.BaseSHA, sc.MergeTarget)
-			if dErr != nil {
-				return false, "merge check failed: " + dErr.Error(), dErr
-			}
-			return disposable, reasonTag, nil
+			return disposableOrMergeCheckFailure(run, strings.TrimSpace(tipOut), sc.BaseSHA, sc.MergeTarget)
 		},
-		disposableBranch: func(run worktree.GitRunner, tip, baseSHA, mergeTarget string) (bool, string, error) {
-			disposable, reasonTag, dErr := disposableReason(run, tip, baseSHA, mergeTarget)
-			if dErr != nil {
-				return false, "merge check failed: " + dErr.Error(), dErr
-			}
-			return disposable, reasonTag, nil
-		},
+		disposableBranch: disposableOrMergeCheckFailure,
 	}
+}
+
+// disposableOrMergeCheckFailure is disposableReason with a failed merge check
+// reported as the skip reason, alongside the error that decides whether the
+// sweep aborts.
+func disposableOrMergeCheckFailure(run worktree.GitRunner, tip, baseSHA, mergeTarget string) (bool, string, error) {
+	disposable, reasonTag, dErr := disposableReason(run, tip, baseSHA, mergeTarget)
+	if dErr != nil {
+		return false, "merge check failed: " + dErr.Error(), dErr
+	}
+	return disposable, reasonTag, nil
 }
 
 // collectRegisteredLanes disposes of registered managed worktrees (spec §5
