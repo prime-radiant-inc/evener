@@ -18,7 +18,7 @@ import type {
   ThreadStartParams,
   ThreadStartResponse,
 } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { SCOPED_HOST_READ_DEBOUNCE_MS, WireError } from "@evener/appwire-client";
 import type { ResourceState } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -53,7 +53,6 @@ import {
   setDraftField,
   spawnDraftsStore,
 } from "./spawnDrafts";
-import { SCOPED_HOST_READ_DEBOUNCE_MS } from "./useScopedHostRead";
 
 let modelListOverride: ModelDescriptor[] | null = null;
 

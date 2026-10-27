@@ -7,13 +7,14 @@
 // model and an effort look and behave the same wherever they happen, instead
 // of being bespoke sheets on this surface and different controls on every
 // other.
+
+import type { PluginPreviewLoadState } from "@evener/appwire-client";
 import { type PluginSelectionState, selectedPluginNames } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
 import { Button, Chevron, DirectoryPicker, type DirectoryPickerProps, InlineNotice, Sheet } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./MobileSettingRows.module.css";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
-import type { PluginPreviewLoadState } from "./usePluginPreview";
 
 export interface MobilePickerOption {
   value: string;

@@ -794,7 +794,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 			return
 		}
 		m.recordProgress(id, "pushing the controller's build")
-		_, afterDeploy, err := m.cfg.deployHost(ctx, work.entry, facts, restartFollows, beforeMutation, sshconn.DeploymentJournal{
+		_, afterDeploy, err := m.cfg.deployHost(ctx, work.entry, facts, restartFollows, beforeMutation, &sshconn.DeploymentJournal{
 			OperationID: id,
 			Supersede: func(priorID string) error {
 				prior, found := m.cfg.ops.Record(priorID)

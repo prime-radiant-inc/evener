@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -360,27 +359,6 @@ func TestNewPinSectionIDReturnsErrorOnEntropyFailure(t *testing.T) {
 	pinSectionRandRead = func([]byte) (int, error) { return 0, errors.New("entropy exhausted") }
 	if _, err := newPinSectionID(); err == nil || !strings.Contains(err.Error(), "entropy exhausted") {
 		t.Fatalf("newPinSectionID error = %v", err)
-	}
-}
-
-// TestIsSQLiteRetryable covers the retryable-error detector.
-func TestIsSQLiteRetryable(t *testing.T) {
-	cases := []struct {
-		err  error
-		want bool
-	}{
-		{nil, false},
-		{errors.New("database is locked"), true},
-		{errors.New("sqlite_busy: another write"), true},
-		{errors.New("sqlite_locked: cannot commit"), true},
-		{errors.New("server is busy"), true},
-		{errors.New("syntax error"), false},
-		{fmt.Errorf("wrapped: %w", errors.New("database is locked")), true},
-	}
-	for _, c := range cases {
-		if got := isSQLiteRetryable(c.err); got != c.want {
-			t.Errorf("isSQLiteRetryable(%v) = %v, want %v", c.err, got, c.want)
-		}
 	}
 }
 

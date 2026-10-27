@@ -357,7 +357,6 @@ const SteeringSourceParent = "parent"
 const (
 	SteeringKindInterrupted        = "interrupted"
 	SteeringKindInterruptedSalvage = "interrupted-salvage"
-	SteeringKindAgentMessage       = "agent-message"
 	SteeringKindHookContext        = "hook-context"
 	SteeringKindPrecompactHook     = "precompact-hook"
 	SteeringKindCompactNudge       = "compact-nudge"
@@ -383,7 +382,6 @@ const (
 var AllSteeringKinds = []string{
 	SteeringKindInterrupted,
 	SteeringKindInterruptedSalvage,
-	SteeringKindAgentMessage,
 	SteeringKindHookContext,
 	SteeringKindPrecompactHook,
 	SteeringKindCompactNudge,

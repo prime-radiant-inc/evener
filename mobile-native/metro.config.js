@@ -23,9 +23,6 @@ const sourceExtensions = (sharedEnv.match(/^extensions="([^"]*)"/m)?.[1] ?? "").
 config.resolver.resolveRequest = (context, name, platform) => {
 	const shared =
 		context.originModulePath.startsWith(path.join(root, "mobile", "src")) ||
-		context.originModulePath.startsWith(
-			path.join(root, "cmd", "evener-hub", "frontend", "src"),
-		) ||
 		context.originModulePath.startsWith(appwirePackage);
 	// Every native import of the package comes through here -- the whole tree
 	// spells it by name now -- and `make test-native-bundle` is what exercises

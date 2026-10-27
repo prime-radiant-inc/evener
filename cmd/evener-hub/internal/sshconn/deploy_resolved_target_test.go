@@ -47,7 +47,7 @@ func TestPushDeployReturnsResolvedTarget(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{BuildBinary: writeStageBinary})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
+	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil, nil)
 	if err != nil {
 		t.Fatalf("deploy: %v", err)
 	}

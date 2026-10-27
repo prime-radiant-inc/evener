@@ -5,6 +5,7 @@ package sshconn
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -15,11 +16,15 @@ import (
 	"syscall"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // The process, service and endpoint are strict command fixtures. The selected
 // lock files, flock and /proc fd device/inode comparison are real Linux evidence.
+// The lock table is a fixture holding the selected lock's real device and inode,
+// because the ambient /proc/locks can duplicate or omit records under churn.
 func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 	for _, name := range []string{"retarget-invalid-lock", "retarget-other-lock", "retarget-symlink-lock", "retarget-primary-symlink-lock", "unlocked-read-only", "shared-lock", "lock-query-unavailable", "lock-query-ambiguous", "candidate-holds-selected-lock", "retained-witness", "same-root-invalid-no-witness", "changed-birth-witness", "changed-registration-witness", "healthy-fallback", "primary-lock-path"} {
 		t.Run(name, func(t *testing.T) {
@@ -67,13 +72,20 @@ func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 				}
 				if remote == serviceLockVnodeTestCommand(currentRoot, pid) {
 					vnodeReads++
-					prefix := ""
+					// The kernel lists the lock mode the holder took: WRITE for the
+					// exclusive lock, READ for the shared one, nothing once unlocked.
+					mode, rows := "WRITE", 1
 					switch name {
-					case "lock-query-unavailable":
-						prefix = "awk() { return 23; }; "
+					case "unlocked-read-only":
+						rows = 0
+					case "shared-lock":
+						mode = "READ"
 					case "lock-query-ambiguous":
-						// Read the real table twice to inject duplicate owner records.
-						prefix = "awk() { command awk \"$@\" /proc/locks; }; "
+						rows = 2
+					}
+					prefix := "awk() { [ \"$#\" -eq 6 ] && [ \"$6\" = /proc/locks ] || return 25; command awk \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" " + shellquote.RemoteWord(lockTableFixture(t, filepath.Join(currentRoot, "hub.lock"), pid, mode, rows)) + "; }; "
+					if name == "lock-query-unavailable" {
+						prefix = "awk() { return 23; }; "
 					}
 					return exec.CommandContext(ctx, "/bin/sh", "-c", prefix+remote).CombinedOutput()
 				}
@@ -209,6 +221,25 @@ func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 			}
 		})
 	}
+}
+
+// lockTableFixture writes a /proc/locks table with rows identical FLOCK records
+// of pid in mode on lock's real device and inode, and returns its path.
+func lockTableFixture(t *testing.T, lock, pid, mode string, rows int) string {
+	t.Helper()
+	var stat unix.Stat_t
+	if err := unix.Stat(lock, &stat); err != nil {
+		t.Fatal(err)
+	}
+	var table strings.Builder
+	for i := 1; i <= rows; i++ {
+		fmt.Fprintf(&table, "%d: FLOCK  ADVISORY  %s %s %02x:%02x:%d 0 EOF\n", i, mode, pid, unix.Major(stat.Dev), unix.Minor(stat.Dev), stat.Ino)
+	}
+	path := filepath.Join(t.TempDir(), "locks")
+	if err := os.WriteFile(path, []byte(table.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // This literal allowlist is independent of the production command constructor.

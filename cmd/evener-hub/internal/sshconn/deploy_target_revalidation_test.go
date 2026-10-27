@@ -97,7 +97,7 @@ func TestFreshDeployRevalidatesResolvedTarget(t *testing.T) {
 				if err := os.WriteFile(target, concurrent, 0700); err != nil {
 					t.Fatal(err)
 				}
-				_, err = m.deploySelectedWithAuthority(t.Context(), host, facts, false)
+				_, err = m.deploySelected(t.Context(), host, facts, deployOpts{})
 				after, readErr := os.ReadFile(target)
 				if err == nil || readErr != nil || !bytes.Equal(after, concurrent) || effects.installers != 0 || effects.pushes != 0 || len(fr.recordedStarts()) != 0 {
 					t.Fatalf("appeared file not preserved/refused: err=%v read=%v same-bytes=%v installer=%d pushes=%d starts=%d", err, readErr, bytes.Equal(after, concurrent), effects.installers, effects.pushes, len(fr.recordedStarts()))
@@ -125,7 +125,7 @@ func TestFreshDeployRevalidatesAfterBuild(t *testing.T) {
 	if err != nil || !facts.ExecutableMissing {
 		t.Fatalf("preflight=%+v err=%v", facts, err)
 	}
-	_, err = m.deploySelectedWithAuthority(t.Context(), host, facts, false)
+	_, err = m.deploySelected(t.Context(), host, facts, deployOpts{})
 	after, readErr := os.ReadFile(target)
 	if !errors.Is(err, errOwnerEvidence) || readErr != nil || !bytes.Equal(after, concurrent) || effects.pushes != 0 {
 		t.Fatalf("post-build revalidation: err=%v read=%v same-bytes=%v", err, readErr, bytes.Equal(after, concurrent))
@@ -166,7 +166,7 @@ func TestFreshDeployResolvedTargetFailuresAreNotAbsence(t *testing.T) {
 			if err != nil || !facts.ExecutableMissing {
 				t.Fatalf("preflight=%+v err=%v", facts, err)
 			}
-			_, err = m.deploySelectedWithAuthority(t.Context(), host, facts, false)
+			_, err = m.deploySelected(t.Context(), host, facts, deployOpts{})
 			if restoreErr := os.Chmod(filepath.Dir(target), 0700); restoreErr != nil {
 				t.Fatal(restoreErr)
 			}
@@ -206,7 +206,7 @@ func TestFreshDeployDefaultAbsentPushSucceeds(t *testing.T) {
 	if err != nil || !facts.ExecutableMissing {
 		t.Fatalf("preflight=%+v err=%v", facts, err)
 	}
-	target, err := m.deploySelectedWithAuthority(t.Context(), host, facts, false)
+	target, err := m.deploySelected(t.Context(), host, facts, deployOpts{})
 	expected := filepath.Join(home, ".local", "bin", "evener")
 	after, readErr := os.ReadFile(expected)
 	if err != nil || target != expected || readErr != nil || !bytes.Equal(after, data) || effects.installers != 0 || effects.pushes != 1 {

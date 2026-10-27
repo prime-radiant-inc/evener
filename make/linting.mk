@@ -227,16 +227,18 @@ lint-fuzz-registry:
 # rewritten again the next time the package moves, which is the coupling the
 # SDK migration exists to remove.
 ## Fail if a web or native import names the AppWire TypeScript package by
-## path instead of by its package name.
+## path instead of by its package name, or native imports the web app's source.
 ## proves: Every import specifier under cmd/evener-hub/frontend/src,
 ##   mobile-native and mobile/src spells the package @evener/appwire-client
 ##   (or a subpath its exports map publishes), with no file exempt but the resolver
 ##   configs and mobile-native/src/metroResolver.test.ts, which asserts that
-##   mapping - each named one by one.
+##   mapping - each named one by one. No mobile-native import reaches into
+##   cmd/evener-hub/frontend/src; code both apps need lives in the package.
 ## trigger: Required CI (via make lint); local pre-merge. Well under a second.
 ## requires: None beyond a POSIX shell and grep.
 ## fails-when: Any import specifier in those trees names the package directory
-##   or the protocol/ directory it moved out of, or a swept tree is missing.
+##   or the protocol/ directory it moved out of, a mobile-native import names
+##   the web app's source tree, or a swept tree is missing.
 lint-package-imports:
 	$(call run_quiet_lint,scripts/sdk/package-import-paths-check.sh)
 

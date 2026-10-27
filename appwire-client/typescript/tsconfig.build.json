@@ -44,6 +44,7 @@
     "watchText.ts",
     "steeringLabels.ts",
     "approvalDecision.ts",
+    "scopedHostRead.ts",
     "searchGrouping.ts",
     "systemEventCopy.ts",
     "toolEvidence.ts",

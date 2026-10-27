@@ -3,12 +3,11 @@
 // hub's hosts and live sessions, and this phone's memory of starts. It lives
 // apart from NewSessionSheet.tsx, the navigator, so the pages the sheet mounts
 // can read it without importing their own navigator.
-import type { AppwireClient } from "@evener/appwire-client";
+import type { AppwireClient, PluginPreviewLoadState } from "@evener/appwire-client";
 import { createContext, useContext } from "react";
 import type { HostsController } from "../hosts/hostsController";
 import type { LiveSessionsReader } from "../hosts/liveCounts";
 import type { createNewSessionStore } from "../newSession";
-import type { PluginPreviewLoadState } from "../../../cmd/evener-hub/frontend/src/panes/spawn/usePluginPreview";
 import type { LaunchMemory } from "./launchMemory";
 import type { LaunchDefaults } from "./useLaunchDefaults";
 

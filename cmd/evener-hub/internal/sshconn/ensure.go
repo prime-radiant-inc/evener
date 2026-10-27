@@ -746,7 +746,10 @@ func (a *ensureAttempt) runDeployLeg() error {
 	if !intent.deployment {
 		intent = m.deploymentIntent(a.restart, a.running)
 	}
-	resolvedTarget, err := m.deploySelectedWithAuthority(deployCtx, host, a.facts, a.liveIncompatible || (intent.deployment && intent.selected != nil), m.deploymentRecorder(host.Name, intent))
+	resolvedTarget, err := m.deploySelected(deployCtx, host, a.facts, deployOpts{
+		realEndpointAuthority: a.liveIncompatible || (intent.deployment && intent.selected != nil),
+		record:                m.deploymentRecorder(host.Name, intent),
+	})
 	cancelDeploy()
 	if err != nil {
 		return err

@@ -72,7 +72,6 @@
 // this app. Not a gap this task introduces.
 
 import {
-  dualWriteLegacyPreferences,
   encodeLocalConfig,
   type LegacyPreferenceKey,
   type LegacyPreferenceValues,
@@ -195,23 +194,11 @@ function removeRaw(name: string): void {
   }
 }
 
-// These adapters deliberately name the only compatibility keys that the
-// transcript-display store may touch. Callers cannot use them to turn this
+// This adapter deliberately names the only compatibility keys that the
+// transcript-display store may read, for the one-time migration. Callers cannot use them to turn this
 // module into a general localStorage wrapper.
 export function readLegacyPreference(key: LegacyPreferenceKey): string | null {
   return readRaw(key);
-}
-
-export function hasLegacyPreference(key: LegacyPreferenceKey): boolean {
-  return readLegacyPreference(key) !== null;
-}
-
-export function writeLegacyBooleanPreference(key: LegacyPreferenceKey, value: boolean): void {
-  writeBool(key, value);
-}
-
-export function removeLegacyPreference(key: LegacyPreferenceKey): void {
-  removeRaw(key);
 }
 
 export function readTranscriptDisplayLocal(layout: TranscriptViewportClass): string | null {
@@ -235,11 +222,28 @@ export function removeTranscriptDisplayLocal(layout: TranscriptViewportClass): v
 }
 
 /**
+ * Remove the six pre-v1 global transcript keys. Cleared layout overrides must
+ * stay cleared: leftover old keys would be migrated again on the next load.
+ */
+export function retireLegacyTranscriptKeys(): void {
+  for (const key of LEGACY_TRANSCRIPT_KEYS) removeRaw(key);
+}
+
+/**
  * Convert the six pre-v1 global transcript keys once, before the new
- * layout-specific store loads. Existing keys are intentionally retained.
+ * layout-specific store loads, then remove them. A profile that already has
+ * both layout keys was migrated (or dual-written by an earlier build), so its
+ * old keys are stale and are removed without being read.
  */
 export function migrateLegacyTranscriptDisplay(): TranscriptDisplayConfigV1 | undefined {
-  if (hasTranscriptDisplayLocal("desktop") || hasTranscriptDisplayLocal("mobile")) return undefined;
+  const hasDesktop = hasTranscriptDisplayLocal("desktop");
+  const hasMobile = hasTranscriptDisplayLocal("mobile");
+  if (hasDesktop || hasMobile) {
+    // One layout key alone may be an interrupted migration (the other write
+    // failed), so the old keys stay as its recovery source.
+    if (hasDesktop && hasMobile) retireLegacyTranscriptKeys();
+    return undefined;
+  }
   const values: LegacyPreferenceValues = Object.fromEntries(
     LEGACY_TRANSCRIPT_KEYS.map((key) => [key, readLegacyPreference(key)]),
   ) as LegacyPreferenceValues;
@@ -247,12 +251,8 @@ export function migrateLegacyTranscriptDisplay(): TranscriptDisplayConfigV1 | un
   if (config === undefined) return undefined;
   writeTranscriptDisplayConfig("desktop", config);
   writeTranscriptDisplayConfig("mobile", config);
+  if (hasTranscriptDisplayLocal("desktop") && hasTranscriptDisplayLocal("mobile")) retireLegacyTranscriptKeys();
   return config;
-}
-
-/** Keep old transcript consumers in sync without changing their 1/0 wire. */
-export function dualWriteTranscriptDisplayLegacy(config: TranscriptDisplayConfigV1): void {
-  dualWriteLegacyPreferences(config, writeLegacyBooleanPreference);
 }
 
 // "1"/"0", not JS's "true"/"false": every boolean this store persists

@@ -1,7 +1,8 @@
-// Metro resolves shared protocol, state and web helpers outside the native app.
+// Metro resolves shared protocol and state, including the AppWire package,
+// outside the native app.
 // Track them so Gradle cannot reuse a bundle made from older shared sources.
 tasks.matching { it.name.startsWith("createBundle") && it.name.endsWith("JsAndAssets") }.configureEach {
-    inputs.files(fileTree("../../../mobile/src"), fileTree("../../../cmd/evener-hub/frontend/src"))
+    inputs.files(fileTree("../../../mobile/src"), fileTree(dir: "../../../appwire-client/typescript", excludes: ["node_modules/**"]))
         .withPropertyName("evenerSharedSources")
         .withPathSensitivity(PathSensitivity.RELATIVE)
 }
