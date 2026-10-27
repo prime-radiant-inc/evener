@@ -4,15 +4,38 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { subagentOutcomesDelegatesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, expect, onTestFinished, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { readComposerDraftSnapshot, writeComposerDraft } from "../panes/session/composer/draft";
+import { CommittedSession } from "../panes/session/testing/CommittedSession";
 import { resetTranscriptPagingForTests } from "../panes/session/transcript/useTranscript";
+import { ClientProvider } from "../shell/clientContext";
+import { navigate, paneToURL } from "../shell/routing";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { installHydrationRetrySchedulerForTests, resetThreadsStoreForTests, threadsStore } from "../stores/threads";
-import { ComicSession } from "./ComicSession";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../stores/transcriptDisplay";
 import { readComicPosition, writeComicPosition } from "./readerPosition";
 
+function page(ref: string) {
+  return (
+    <ClientProvider client={connectionStore.getState().client!}>
+      <CommittedSession key={ref} paneId="comic-session-pane" params={{ ref }} focused />
+    </ClientProvider>
+  );
+}
+beforeEach(() => {
+  resetWorkspaceStoreForTests();
+  resetTranscriptDisplayStoreForTests();
+  transcriptDisplayStore.getState().setPresentation("desktop", "comic");
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+});
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -23,10 +46,16 @@ afterEach(() => {
   resetTranscriptPagingForTests();
   resetWorkspaceStoreForTests();
 });
-test("a selected existing session retains a direct regular-client link without creating workspace panes", () => {
-  const mounted = render(<ComicSession sessionRef="local:existing" onReplaceRef={() => {}} onSelectRef={() => {}} />);
-  expect(screen.getByRole("link", { name: /regular/i }).getAttribute("href")).toContain("local%3Aexisting");
-  expect(workspaceStore.getState().panes).toHaveLength(0);
+test("a selected existing session keeps the normal route and one workspace pane", () => {
+  const ref = "local:existing";
+  const client = new FakeClient("ready");
+  client.on("thread/read", () => new Promise(() => {}));
+  connectionStore.getState().connect(client);
+  window.history.replaceState(null, "", paneToURL("session", { ref }));
+  const mounted = render(page(ref));
+  expect(window.location.pathname).toBe(paneToURL("session", { ref }));
+  expect(workspaceStore.getState().panes).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "Verbosity" })).toBeTruthy();
   expect(threadsStore.getState().threads.size).toBe(0);
   mounted.unmount();
 });
@@ -109,9 +138,8 @@ test.each(["deleted", "recoverable", "repairing", "superseded"] as const)(
           : [],
     }));
     connectionStore.getState().connect(client);
-    const select = vi.fn();
-    const replace = vi.fn();
-    const mounted = render(<ComicSession sessionRef={root} onSelectRef={select} onReplaceRef={replace} />);
+    window.history.replaceState(null, "", paneToURL("session", { ref: root }));
+    const mounted = render(page(root));
     await waitFor(() => expect(childReads).toBe(1));
     await waitFor(() =>
       expect(
@@ -172,11 +200,9 @@ test.each(["deleted", "recoverable", "repairing", "superseded"] as const)(
         mounted.container.querySelector(`[data-comic-flow="availability"][data-comic-session="${child}"]`),
       ).toBeNull();
     }
-    expect(screen.getByRole("link", { name: /regular/i }).getAttribute("href")).toBe(`/s/${encodeURIComponent(root)}`);
+    expect(window.location.pathname).toBe(paneToURL("session", { ref: root }));
     expect(readComposerDraftSnapshot(root)).toEqual(draft);
-    expect(select).not.toHaveBeenCalled();
-    expect(replace).not.toHaveBeenCalled();
-    expect(workspaceStore.getState().panes).toHaveLength(0);
+    expect(workspaceStore.getState().panes).toMatchObject([{ params: { ref: root } }]);
     expect(mounted.container.querySelector(`[data-comic-session="${root}"] [data-comic-text]`)?.textContent).toBe(
       `CONTENT_${root}`,
     );
@@ -187,7 +213,7 @@ test.each(["deleted", "recoverable", "repairing", "superseded"] as const)(
     expect(readComicPosition(root)).toEqual({ mode: "end", sessionRef: root, path: [] });
     const childHeader = mounted.container.querySelector(`[data-comic-child-ref="${child}"]`)!;
     fireEvent.click(within(childHeader as HTMLElement).getByRole("button", { name: /open conversation/i }));
-    expect(select).toHaveBeenCalledExactlyOnceWith(child);
+    expect(window.location.pathname).toBe(paneToURL("session", { ref: child }));
     expect(client.calls.some((call) => call.method === "turn/start" || call.method === "thread/resume")).toBe(false);
     mounted.unmount();
   },
@@ -233,20 +259,18 @@ test("selection A→B releases A's foreground claim and ignores its late respons
   client.on("thread/read", (params) => (params.ref === "local:A" ? delayedA : makeRead("local:B")));
   client.on("thread/unsubscribe", () => ({}));
   connectionStore.getState().connect(client);
-  const mount = (ref: string) => (
-    <ComicSession key={ref} sessionRef={ref} onReplaceRef={() => {}} onSelectRef={() => {}} />
-  );
-  const mounted = render(mount("local:A"));
+  const mounted = render(page("local:A"));
   await act(async () => {
-    mounted.rerender(mount("local:B"));
+    navigate(paneToURL("session", { ref: "local:B" })!);
+    mounted.rerender(page("local:B"));
     await Promise.resolve();
   });
   await act(async () => {
     completeA(makeRead("local:A"));
     await Promise.resolve();
   });
-  expect(screen.getByRole("link", { name: /regular/i }).getAttribute("href")).toBe("/s/local%3AB");
-  expect(workspaceStore.getState().panes).toHaveLength(0);
+  expect(window.location.pathname).toBe(paneToURL("session", { ref: "local:B" }));
+  expect(workspaceStore.getState().panes).toMatchObject([{ params: { ref: "local:B" } }]);
   expect(threadsStore.getState().threads.has("local:A")).toBe(false);
   const methods = client.calls.map((call) => call.method);
   expect(methods.filter((method) => method === "turn/start")).toHaveLength(0);

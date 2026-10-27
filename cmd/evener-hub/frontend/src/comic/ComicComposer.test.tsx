@@ -9,16 +9,18 @@ import { readComposerDraft, writeComposerDraft } from "../panes/session/composer
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { type ComposerSourceState, createComposerSourceState } from "../panes/session/composer/sourceState";
+import { CommittedSession } from "../panes/session/testing/CommittedSession";
 import { editorCursor, replaceEditorText, selectEditorText } from "../panes/session/testing/editor";
 import { ClientProvider } from "../shell/clientContext";
+import { navigate, paneToURL } from "../shell/routing";
+import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { MutationOutboxIndexedDB } from "../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../stores/threads";
-import { ComicApp } from "./ComicApp";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../stores/transcriptDisplay";
 import { ComicComposer } from "./ComicComposer";
-import { ComicSession } from "./ComicSession";
 import { readComicPosition, writeComicPosition } from "./readerPosition";
 
 const ref = "local:comic-source";
@@ -47,6 +49,9 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetPrefsStoreForTests();
+  resetWorkspaceStoreForTests();
+  resetTranscriptDisplayStoreForTests();
+  transcriptDisplayStore.getState().setPresentation("desktop", "comic");
   storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   sources = [];
@@ -54,6 +59,7 @@ beforeEach(() => {
 afterEach(async () => {
   await flushPendingTurnsProjectionForTests();
   cleanup();
+  resetWorkspaceStoreForTests();
   for (const source of sources) source.dispose();
   resetThreadsStoreForTests();
   sessionStorage.clear();
@@ -105,6 +111,13 @@ async function setup(status = "idle") {
   });
   await flushPendingTurnsProjectionForTests();
   return fake;
+}
+function page(target: string) {
+  return (
+    <ClientProvider client={connectionStore.getState().client!}>
+      <CommittedSession key={target} paneId="comic-composer-pane" params={{ ref: target }} focused />
+    </ClientProvider>
+  );
 }
 const editor = () => screen.getByRole("textbox", { name: "Message" });
 async function settle(source?: ComposerSourceState) {
@@ -195,7 +208,7 @@ test("Send and Stop are distinct controls with the existing activation delay", a
 test("opening a stopped full-page conversation does not resume and keeps a usable draft", async () => {
   const fake = await setup("notLoaded");
   writeComposerDraft(ref, { text: "saved followup", skillNames: [] });
-  render(<ComicSession sessionRef={ref} onReplaceRef={() => true} onSelectRef={() => {}} />);
+  render(page(ref));
   await waitFor(() => expect(editor().textContent).toBe("saved followup"));
   expect(fake.calls.filter((c) => c.method === "thread/resume" || c.method === "turn/start")).toEqual([]);
   act(() => connectionStore.setState({ state: "idle" }));
@@ -293,9 +306,18 @@ test("cross-client editing preserves structured recovery", async () => {
 });
 
 test("pending A resume cannot change B route, text or focus", async () => {
-  window.history.replaceState(null, "", `/comic/s/${encodeURIComponent(ref)}`);
-  const view = render(<ComicApp />);
+  window.history.replaceState(null, "", paneToURL("session", { ref }));
   const fake = await setup("notLoaded");
+  transcriptDisplayStore.getState().setPresentation("desktop", "comic");
+  const page = (target: string) => (
+    <ClientProvider client={fake}>
+      <CommittedSession key={target} paneId="resume-pane" params={{ ref: target }} focused />
+    </ClientProvider>
+  );
+  let view!: ReturnType<typeof render>;
+  await act(async () => {
+    view = render(page(ref));
+  });
   let finish!: (response: ThreadReadResponse) => void;
   fake.on(
     "thread/resume",
@@ -312,8 +334,8 @@ test("pending A resume cannot change B route, text or focus", async () => {
     { payload: { input: [{ type: "text", text: "A submitted" }] } },
   ]);
   act(() => {
-    window.history.pushState(null, "", "/comic/s/local%3AB");
-    window.dispatchEvent(new PopStateEvent("popstate"));
+    navigate(paneToURL("session", { ref: "local:B" }) ?? "/");
+    view.rerender(page("local:B"));
   });
   await waitFor(() =>
     expect(view.container.querySelector("[data-comic-composer]")?.getAttribute("data-comic-composer")).toBe("local:B"),
@@ -326,7 +348,7 @@ test("pending A resume cannot change B route, text or focus", async () => {
     finish(response);
   });
   await waitFor(() => expect(threadsStore.getState().resumedIdentities.get(ref)).toBe("local:A-resumed"));
-  expect(window.location.pathname).toBe("/comic/s/local%3AB");
+  expect(window.location.pathname).toBe(paneToURL("session", { ref: "local:B" }));
   expect(editor()).toBe(bEditor);
   expect(editor().textContent).toBe("B newer draft");
   expect(document.activeElement).toBe(bEditor);
@@ -361,8 +383,16 @@ test("inline children stay readers and full-page child send targets only the can
     context: { ...fixture.context, ref: p.ref },
     delegates: p.ref === root ? [child] : [],
   }));
-  const select = vi.fn();
-  const view = render(<ComicSession key={root} sessionRef={root} onSelectRef={select} onReplaceRef={() => true} />);
+  const position = {
+    mode: "away" as const,
+    sessionRef: root,
+    path: [],
+    entryId: `item-${root}`,
+    offset: 0,
+    viewportOffset: 24,
+  };
+  writeComicPosition(root, position);
+  const view = render(page(root));
   await waitFor(() =>
     expect(view.container.querySelector(`[data-comic-child-ref="${child.childRef}"]`)).not.toBeNull(),
   );
@@ -380,20 +410,9 @@ test("inline children stay readers and full-page child send targets only the can
   expect(view.container.querySelector("[data-comic-composer]")?.getAttribute("data-comic-composer")).toBe(root);
   fireEvent.click(within(header).getByRole("button", { name: /collapse/i }));
   expect(editor()).toBe(parentEditor);
-  const position = {
-    mode: "away" as const,
-    sessionRef: root,
-    path: [],
-    entryId: JSON.stringify([root, child.delegateId]),
-    offset: 0,
-    viewportOffset: 24,
-  };
-  writeComicPosition(root, position);
   fireEvent.click(within(header).getByRole("button", { name: /open conversation/i }));
-  expect(select).toHaveBeenCalledWith(child.childRef);
-  view.rerender(
-    <ComicSession key={child.childRef} sessionRef={child.childRef} onSelectRef={select} onReplaceRef={() => true} />,
-  );
+  expect(window.location.pathname).toBe(paneToURL("session", { ref: child.childRef }));
+  view.rerender(page(child.childRef));
   await waitFor(() => expect(editor().textContent).toBe(""));
   act(() => connectionStore.setState({ state: "idle" }));
   replaceEditorText(editor(), "child-only message");
@@ -406,7 +425,11 @@ test("inline children stay readers and full-page child send targets only the can
     },
   ]);
   expect(await storage.listOutbox(root)).toEqual([]);
-  view.rerender(<ComicSession key={root} sessionRef={root} onSelectRef={select} onReplaceRef={() => true} />);
+  await act(async () => {
+    connectionStore.setState({ state: "ready" });
+    navigate(paneToURL("session", { ref: root })!);
+    view.rerender(page(root));
+  });
   await waitFor(() => expect(editor().textContent).toBe("parent draft retained"));
   expect(readComicPosition(root)).toEqual(position);
 });

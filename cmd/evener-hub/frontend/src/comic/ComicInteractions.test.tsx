@@ -10,14 +10,18 @@ import { readComposerDraft, writeComposerDraft } from "../panes/session/composer
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { type ComposerSourceState, createComposerSourceState } from "../panes/session/composer/sourceState";
+import { CommittedSession } from "../panes/session/testing/CommittedSession";
 import { replaceEditorText, selectEditorText } from "../panes/session/testing/editor";
+import { ClientProvider } from "../shell/clientContext";
+import { conversationPaneLifetime } from "../shell/paneLifetime";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { MutationOutboxIndexedDB } from "../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../stores/threads";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../stores/transcriptDisplay";
 import { ComicComposer } from "./ComicComposer";
 import { ComicInteractions } from "./ComicInteractions";
-import { ComicSession } from "./ComicSession";
 
 const firstRef = "local:interaction-A";
 const secondRef = "local:interaction-B";
@@ -37,6 +41,9 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
   resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
+  resetTranscriptDisplayStoreForTests();
+  transcriptDisplayStore.getState().setPresentation("desktop", "comic");
   resetAskDockStoreForTests();
   resetComposerFocusStoreForTests();
   resetPendingTurnsStoreForTests();
@@ -47,6 +54,7 @@ beforeEach(() => {
 afterEach(async () => {
   await flushPendingTurnsProjectionForTests();
   cleanup();
+  resetWorkspaceStoreForTests();
   for (const source of sources) source.dispose();
   resetThreadsStoreForTests();
   storage.close();
@@ -91,7 +99,11 @@ async function setup() {
   return fake;
 }
 function page(ref: string) {
-  return <ComicSession sessionRef={ref} onSelectRef={() => {}} onReplaceRef={() => true} />;
+  return (
+    <ClientProvider client={connectionStore.getState().client!}>
+      <CommittedSession key={ref} paneId="interaction-pane" params={{ ref }} focused />
+    </ClientProvider>
+  );
 }
 const editor = () => screen.getByRole("textbox", { name: "Message" });
 function approval(fake: FakeClient, ref = firstRef) {
@@ -235,30 +247,29 @@ test.each([true, false])("explicit approval choice %s recovers after failure wit
   expect(editor().closest("[inert]")).toBeNull();
 });
 
-test("late approval stays attached to the original ref", async () => {
+test.each(["completion", "error"])("late approval %s stays attached to the original ref", async (outcome) => {
   const fake = await setup();
   let finish!: (result: object) => void;
+  let reject!: (reason: Error) => void;
   const resolvedRefs: string[] = [];
   fake.on(resolveMethod, (params) => {
     resolvedRefs.push(params.ref!);
-    return new Promise((resolve) => {
+    return new Promise((resolve, fail) => {
       finish = resolve;
+      reject = fail;
     });
   });
-  const firstSource = createComposerSourceState(firstRef, "first-seat");
-  const secondSource = createComposerSourceState(secondRef, "second-seat");
-  sources.push(firstSource, secondSource);
-  const surface = (source: ComposerSourceState) => (
-    <>
-      <ComicInteractions sessionRef={source.ref} />
-      <ComicComposer key={source.ref} source={source} />
-    </>
-  );
-  const view = render(surface(firstSource));
+  const view = render(page(firstRef));
   approval(fake);
   fireEvent.click(screen.getByRole("button", { name: /allow/i }));
+  await act(async () => transcriptDisplayStore.getState().setPresentation("desktop", "standard"));
+  expect((screen.getByRole("button", { name: /allow/i }) as HTMLButtonElement).disabled).toBe(true);
+  await act(async () => transcriptDisplayStore.getState().setPresentation("desktop", "comic"));
   approval(fake, secondRef);
-  view.rerender(surface(secondSource));
+  view.rerender(page(secondRef));
+  const secondSource = conversationPaneLifetime(
+    workspaceStore.getState().panes.find((pane) => pane.id === "interaction-pane")!,
+  ).composer!;
   await waitFor(() =>
     expect(view.container.querySelector("[data-comic-composer]")?.getAttribute("data-comic-composer")).toBe(secondRef),
   );
@@ -269,8 +280,9 @@ test("late approval stays attached to the original ref", async () => {
   const secondEditor = editor();
   const allow = screen.getByRole("button", { name: /allow/i }) as HTMLButtonElement;
   expect(allow.disabled).toBe(false);
-  await act(async () => finish({}));
+  await act(async () => (outcome === "completion" ? finish({}) : reject(new Error("ORIGINAL_REF_FAILURE"))));
   expect(resolvedRefs).toEqual([firstRef]);
+  expect(view.container.textContent).not.toContain("ORIGINAL_REF_FAILURE");
   expect(secondSource.getSnapshot()).toEqual(secondBefore);
   const replayedApprovalRequests = fake.calls.filter((c) => c.method === resolveMethod).slice(1);
   expect(replayedApprovalRequests).toHaveLength(0);
