@@ -967,6 +967,13 @@ async function resumeJourney(page,fixture,{wireTrace,screenshot,endpoint}) {
     destinationPage=await connectPage(endpoint,targetId);
     await destinationPage.send('Page.enable');
     await destinationPage.send('Runtime.enable');
+    await destinationPage.send('Network.enable');
+    destinationPage.ws.addEventListener('message',event=>{
+      const message=JSON.parse(event.data);
+      if(!['Network.webSocketCreated','Network.webSocketFrameSent','Network.webSocketFrameReceived','Network.webSocketClosed'].includes(message.method))return;
+      const row={at:Date.now(),event:message.method,connection:message.params.requestId,frame:message.params.response?.payloadData};
+      appendFileSync(`${fixture.evidenceDir}/resume-destination-wire.jsonl`,`${JSON.stringify(row)}\n`);
+    });
     await navigateTo(destinationPage,new URL('/s/'+encodeURIComponent(destination),fixture.baseURL).href);
     await replaceDraft(destinationPage,'COMIC_NEWER_DESTINATION_DRAFT');
   } catch (error) {
