@@ -86,7 +86,7 @@ async function setup(status = "idle", askPending = false) {
     ...(askPending ? { bootGeneration: "1", epoch: 1, snapshot: { incarnation: "ask-history", length: 1 } } : {}),
     thread: {
       id: `thread-${p.ref}`,
-      sessionId: `session-${p.ref}`,
+      sessionId: p.ref?.slice(p.ref.indexOf(":") + 1),
       preview: "",
       ephemeral: false,
       modelProvider: "test",
@@ -479,7 +479,7 @@ test("inline children stay readers and full-page child send targets only the can
   if (!child) throw Error("missing child fixture");
   const root = fixture.context.ref;
   fake.on("evener/thread/activity/read", (p) => ({
-    context: { ...fixture.context, ref: p.ref },
+    context: { ...fixture.context, ref: p.ref, sessionId: p.ref.slice(p.ref.indexOf(":") + 1) },
     scope: "session",
     delegates: { known: true, total: p.ref === root ? 1 : 0, active: 0, failed: 0, completed: 0 },
     jobs: { known: false, total: 0, active: 0, failed: 0, completed: 0 },
@@ -488,7 +488,7 @@ test("inline children stay readers and full-page child send targets only the can
   fake.on("evener/thread/delegates/list", (p) => ({
     ...fixture,
     scope: "session",
-    context: { ...fixture.context, ref: p.ref },
+    context: { ...fixture.context, ref: p.ref, sessionId: p.ref.slice(p.ref.indexOf(":") + 1) },
     delegates: p.ref === root ? [child] : [],
   }));
   const position = {

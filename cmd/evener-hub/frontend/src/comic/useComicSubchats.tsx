@@ -6,7 +6,6 @@ import { useThreadsStore } from "../stores/threads";
 import { useThreadModel } from "../stores/useThreadModel";
 import type { ComicDelegateStrip } from "./delegates";
 import { type ComicEntry, projectComicConversation } from "./projection";
-import type { ComicReadingPosition } from "./readerPosition";
 import { useComicActivity } from "./useComicActivity";
 import { useComicReader } from "./useComicReader";
 export type ComicReaderSnapshot = {
@@ -32,17 +31,19 @@ export const comicPathContains = (branch: readonly string[], path: readonly stri
 /** The returned components belong above virtual mounts. Only explicit expansion acquires reads. */
 export function useComicSubchats(
   rootRef: string,
-  _restore: ComicReadingPosition | undefined,
+  owner: { sessionRef: string; ownerRef: string } | undefined,
 ): { state: ComicSubchatState; lifetimes: ReactNode } {
+  const sessionRef = owner?.sessionRef ?? rootRef;
+  const ownerRef = owner?.ownerRef ?? rootRef;
   const [nodes, setNodes] = useState<readonly Node[]>([]);
   const [readers, setReaders] = useState<ReadonlyMap<string, ComicReaderSnapshot>>(new Map());
   const [availability, setAvailability] = useState<ReadonlyMap<string, ComicChildAvailability>>(new Map());
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a different selected root retires every expanded lifetime
+  // biome-ignore lint/correctness/useExhaustiveDependencies: routing or logical-session replacement retires every owned descendant, activity refresh does not
   useLayoutEffect(() => {
     setNodes([]);
     setReaders(new Map());
     setAvailability(new Map());
-  }, [rootRef]);
+  }, [rootRef, sessionRef]);
   const publishAvailability = useCallback((key: string, value: ComicChildAvailability | undefined) => {
     setAvailability((before) => {
       if (before.get(key) === value) return before;
@@ -64,10 +65,11 @@ export function useComicSubchats(
     (parentPath: readonly string[], strip: ComicDelegateStrip) => {
       setNodes((before) => {
         const parent = before.find((node) => comicPathKey(node.path) === comicPathKey(parentPath));
-        if ((parentPath.length ? parent?.strip.childRef : rootRef) !== strip.ownerRef) return before;
+        if ((parentPath.length ? parent?.strip.childRef : ownerRef) !== strip.ownerRef) return before;
         const ancestors = before.filter((node) => comicPathContains(node.path, parentPath));
         if (
           strip.childRef === rootRef ||
+          strip.childRef === ownerRef ||
           ancestors.some((node) => node.strip.key === strip.key || node.strip.childRef === strip.childRef)
         )
           return before;
@@ -76,7 +78,7 @@ export function useComicSubchats(
         return [...before, { path, strip }];
       });
     },
-    [rootRef],
+    [rootRef, ownerRef],
   );
   const collapse = useCallback((path: readonly string[]) => {
     setNodes((before) => before.filter((node) => !comicPathContains(path, node.path)));

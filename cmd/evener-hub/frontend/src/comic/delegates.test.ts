@@ -20,7 +20,8 @@ import { comicDelegatePersona } from "./cast";
 import { comicActivityContext, projectComicDelegates } from "./delegates";
 import { projectComicConversation } from "./projection";
 
-const model = (): ThreadModel => hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+const model = (): ThreadModel =>
+  hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0);
 const entityMap = (m: ThreadModel) =>
   buildEntityView({
     sessionRef: m.ref,

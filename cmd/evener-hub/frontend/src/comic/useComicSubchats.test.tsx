@@ -40,6 +40,7 @@ function clientFor() {
   const client = new FakeClient("ready");
   client.on("thread/read", (p) => ({
     thread: wireThread(p.ref, {
+      sessionId: p.ref === root ? fixture.context.sessionId : `sess_${p.ref}`,
       turns: [
         {
           id: "t",
@@ -52,7 +53,11 @@ function clientFor() {
   }));
   client.on("thread/unsubscribe", () => ({}));
   client.on("evener/thread/activity/read", (p) => ({
-    context: { ...fixture.context, ref: p.ref },
+    context: {
+      ...fixture.context,
+      ref: p.ref,
+      sessionId: p.ref === root ? fixture.context.sessionId : `sess_${p.ref}`,
+    },
     scope: "session",
     delegates: { known: true, total: p.ref === root ? 3 : 0, active: 0, failed: 0, completed: 0 },
     jobs: { known: false, total: 0, active: 0, failed: 0, completed: 0 },
@@ -60,7 +65,11 @@ function clientFor() {
   }));
   client.on("evener/thread/delegates/list", (p) => ({
     ...fixture,
-    context: { ...fixture.context, ref: p.ref },
+    context: {
+      ...fixture.context,
+      ref: p.ref,
+      sessionId: p.ref === root ? fixture.context.sessionId : `sess_${p.ref}`,
+    },
     scope: "session",
     delegates: p.ref === root ? fixture.delegates : [],
   }));
@@ -81,7 +90,7 @@ test("keeps one owned strip when its causal event arrives", async () => {
   const draft = readComposerDraftSnapshot(root);
   let activity!: ReturnType<typeof useComicActivity>;
   let state!: ComicSubchatState;
-  const model = hydrateThread({ thread: wireThread(root) }, root, 0);
+  const model = hydrateThread({ thread: wireThread(root, { sessionId: fixture.context.sessionId }) }, root, 0);
   function Harness({ model, showRows = true }: { model: ThreadModel; showRows?: boolean }) {
     activity = useComicActivity(root, model);
     const subchats = useComicSubchats(root, undefined);
@@ -166,7 +175,7 @@ test("opens two qualified siblings and one explicit grandchild, rejecting cycles
   const client = clientFor();
   let activity!: ReturnType<typeof useComicActivity>;
   let state!: ComicSubchatState;
-  const model = hydrateThread({ thread: wireThread(root) }, root, 0);
+  const model = hydrateThread({ thread: wireThread(root, { sessionId: fixture.context.sessionId }) }, root, 0);
   function Harness() {
     activity = useComicActivity(root, model);
     const subchats = useComicSubchats(root, undefined);
@@ -210,6 +219,7 @@ test("collapsing a delayed child leaves an independent reader's retry alive acro
   const client = clientFor();
   client.on("thread/read", (p) => ({
     thread: wireThread(p.ref, {
+      sessionId: p.ref === root ? fixture.context.sessionId : `sess_${p.ref}`,
       turns: [
         {
           id: "current",
@@ -243,7 +253,7 @@ test("collapsing a delayed child leaves an independent reader's retry alive acro
   let activity!: ReturnType<typeof useComicActivity>;
   let state!: ComicSubchatState;
   let independent!: UseTranscriptResult;
-  const model = hydrateThread({ thread: wireThread(root) }, root, 0);
+  const model = hydrateThread({ thread: wireThread(root, { sessionId: fixture.context.sessionId }) }, root, 0);
   function Root({ selected = root }: { selected?: string }) {
     activity = useComicActivity(root, model);
     const subchats = useComicSubchats(selected, undefined);
