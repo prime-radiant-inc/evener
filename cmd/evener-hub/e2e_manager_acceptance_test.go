@@ -41,50 +41,9 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(provider.Close)
-	local := startHubStack(t, provider)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	human := local.dialRPC(ctx, t)
-	// A private, initially empty real SSH host. No session is created there until
-	// after the Manager has discovered the host and selected its model catalog.
-	host := newHostSSH(t, "localhost", "")
-	hostDir := filepath.Join(os.TempDir(), "evener-manager-accept-"+hostDeployRunID())
-	host.prepareDeployDir(hostDir)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if stopHostListener(t, host, addr, hostDir+"/"+hostDeployToml) {
-			// Stopping the listener does not stop the session daemons the hub
-			// started over SSH; deleting the directory underneath them leaves
-			// them running with no owner.
-			if err := host.tryRun(hostDaemonReapCommand(hostDir)); err != nil {
-				t.Errorf("reap SSH-hosted daemons: %v", err)
-				return
-			}
-			if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
-				t.Errorf("clean SSH fixture: %v", err)
-			}
-		}
-	})
-	host.writeFile(hostDir+"/"+hostDeployToml, hostDeployConfig(hostDir, addr))
-	host.mustRun("cp " + shellquote.RemoteWord(filepath.Join(local.binDir, "evener")) + " " + shellquote.RemoteWord(hostDir+"/bin/evener-real"))
-	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir+"/home/config/evener") + " " + shellquote.RemoteWord(hostDir+"/workspace"))
-	host.writeFile(hostDir+"/home/config/evener/providers.toml", []byte(fmt.Sprintf("default = \"fake\"\n[providers.fake]\nbase = \"openai-compatible\"\nbase_url = %q\napi_key = \"fakellm-not-a-secret\"\n", provider.BaseURL())))
-	host.writeFile(hostDir+"/bin/evener", []byte(fmt.Sprintf("#!/bin/sh\nexport HOME=%s XDG_CONFIG_HOME=%s XDG_STATE_HOME=%s XDG_CACHE_HOME=%s EVENER_PROVIDERS_CONFIG=%s\nexec %s \"$@\"\n", shellquote.RemoteWord(hostDir+"/home"), shellquote.RemoteWord(hostDir+"/home/config"), shellquote.RemoteWord(hostDir+"/home/state"), shellquote.RemoteWord(hostDir+"/home/cache"), shellquote.RemoteWord(hostDir+"/home/config/evener/providers.toml"), shellquote.RemoteWord(hostDir+"/bin/evener-real"))))
-	host.mustRun("chmod 700 " + shellquote.RemoteWord(hostDir+"/bin/evener"))
-	sshDir := hostDeploySSHWrapper(t, hostDir)
-	t.Setenv("PATH", sshDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	const remoteHost = "accept-remote"
-	if _, err := hostAddCommittedRow(ctx, human, appwire.HostAddParams{Entry: appwire.HostEntry{Name: remoteHost, Address: "localhost", EvenerPath: hostDir + "/bin/evener", ConfigPath: hostDir + "/" + hostDeployToml, Addr: addr}}); err != nil {
-		t.Fatal(err)
-	}
-	awaitHostAttachedWithin(ctx, t, human, remoteHost, hostDeployAttachTimeout)
+	local, human, _, hostDir, addr, remoteHost := startManagerAcceptanceSSHFixture(t, provider, ctx)
 	if _, err := clientRequest[appwire.LaunchConfigResolved](ctx, human, appwire.MethodEvenerLaunchSetLayer, appwire.LaunchConfigSetLayerParams{CWD: local.workDir, Layer: "global", Config: appwire.LaunchConfigLayer{Sandbox: "restricted"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -699,4 +658,49 @@ func acceptanceWatchCompleted(watches appwire.SessionWatchesResponse, watchID st
 		}
 	}
 	return false
+}
+
+// startManagerAcceptanceSSHFixture owns the disposable A-to-B localhost SSH
+// setup shared by the original acceptance and readiness tests. It creates no
+// sessions; each caller owns those through the returned human client.
+func startManagerAcceptanceSSHFixture(t *testing.T, provider *fakellm.Server, ctx context.Context) (hubStack, *appwire.Client, *hostSSH, string, string, string) {
+	t.Helper()
+	local := startHubStack(t, provider)
+	human := local.dialRPC(ctx, t)
+	host := newHostSSH(t, "localhost", "")
+	hostDir := filepath.Join(os.TempDir(), "evener-manager-accept-"+hostDeployRunID())
+	host.prepareDeployDir(hostDir)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if stopHostListener(t, host, addr, hostDir+"/"+hostDeployToml) {
+			if err := host.tryRun(hostDaemonReapCommand(hostDir)); err != nil {
+				t.Errorf("reap SSH-hosted daemons: %v", err)
+				return
+			}
+			if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
+				t.Errorf("clean SSH fixture: %v", err)
+			}
+		}
+	})
+	host.writeFile(hostDir+"/"+hostDeployToml, hostDeployConfig(hostDir, addr))
+	host.mustRun("cp " + shellquote.RemoteWord(filepath.Join(local.binDir, "evener")) + " " + shellquote.RemoteWord(hostDir+"/bin/evener-real"))
+	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir+"/home/config/evener") + " " + shellquote.RemoteWord(hostDir+"/workspace"))
+	host.writeFile(hostDir+"/home/config/evener/providers.toml", []byte(fmt.Sprintf("default = \"fake\"\n[providers.fake]\nbase = \"openai-compatible\"\nbase_url = %q\napi_key = \"fakellm-not-a-secret\"\n", provider.BaseURL())))
+	host.writeFile(hostDir+"/bin/evener", []byte(fmt.Sprintf("#!/bin/sh\nexport HOME=%s XDG_CONFIG_HOME=%s XDG_STATE_HOME=%s XDG_CACHE_HOME=%s EVENER_PROVIDERS_CONFIG=%s\nexec %s \"$@\"\n", shellquote.RemoteWord(hostDir+"/home"), shellquote.RemoteWord(hostDir+"/home/config"), shellquote.RemoteWord(hostDir+"/home/state"), shellquote.RemoteWord(hostDir+"/home/cache"), shellquote.RemoteWord(hostDir+"/home/config/evener/providers.toml"), shellquote.RemoteWord(hostDir+"/bin/evener-real"))))
+	host.mustRun("chmod 700 " + shellquote.RemoteWord(hostDir+"/bin/evener"))
+	sshDir := hostDeploySSHWrapper(t, hostDir)
+	t.Setenv("PATH", sshDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	const remoteHost = "accept-remote"
+	if _, err := hostAddCommittedRow(ctx, human, appwire.HostAddParams{Entry: appwire.HostEntry{Name: remoteHost, Address: "localhost", EvenerPath: hostDir + "/bin/evener", ConfigPath: hostDir + "/" + hostDeployToml, Addr: addr}}); err != nil {
+		t.Fatal(err)
+	}
+	awaitHostAttachedWithin(ctx, t, human, remoteHost, hostDeployAttachTimeout)
+	return local, human, host, hostDir, addr, remoteHost
 }
