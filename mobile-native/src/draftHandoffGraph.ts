@@ -18,8 +18,9 @@ export type HandoffOrdering =
 	| { state: "invalid"; invalid: { edgeId: string; reason: HandoffInvalidReason }[] }
 	| { state: "incomplete" };
 
-/** Read the whole graph in one call. The ledger's readGraph is one transaction;
- * a throw means the store is unreadable, so no ordering is produced. */
+/** Read the whole graph in one call. readGraph issues its queries synchronously
+ * on the single owning connection; a throw means the store is unreadable, so no
+ * ordering is produced. */
 export function readHandoffGraph(ledger: { readGraph(): DraftHandoffGraph }): HandoffGraphLoad {
 	try {
 		return { state: "ready", graph: ledger.readGraph() };

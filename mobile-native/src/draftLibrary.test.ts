@@ -12,12 +12,6 @@ function setup() {
 	const { database: db, port } = openSqliteSyncDouble();
 	databases.push(db);
 	const repository = new DraftRepository(port);
-	return { library: new DraftLibrary(() => repository), repository, db };
-}
-
-function setupWithLedger() {
-	const { database: db, port } = openSqliteSyncDouble();
-	databases.push(db);
 	const { database: ledgerDb, port: ledgerPort } = openSqliteSyncDouble();
 	databases.push(ledgerDb);
 	let next = 0;
@@ -25,7 +19,6 @@ function setupWithLedger() {
 		now: () => 1000,
 		createId: () => `id-${++next}`,
 	});
-	const repository = new DraftRepository(port);
 	return {
 		library: new DraftLibrary(
 			() => repository,
@@ -237,6 +230,13 @@ describe("drafts across navigation", () => {
 		const { database: db, port } = openSqliteSyncDouble();
 		databases.push(db);
 		const repository = new DraftRepository(port);
+		const { database: ledgerDb, port: ledgerPort } = openSqliteSyncDouble();
+		databases.push(ledgerDb);
+		let next = 0;
+		const ledger = new DraftHandoffLedgerSQLite(ledgerPort, {
+			now: () => 1000,
+			createId: () => `id-${++next}`,
+		});
 		let failedReads = 2;
 		const storage = {
 			read: (destination: DraftDestination) => {
@@ -252,7 +252,11 @@ describe("drafts across navigation", () => {
 			imageInputs: repository.imageInputs.bind(repository),
 			refsWithDrafts: repository.refsWithDrafts.bind(repository),
 		};
-		const library = new DraftLibrary(() => storage);
+		const library = new DraftLibrary(
+			() => storage,
+			undefined,
+			() => ledger,
+		);
 		const from = { hubId: "one", sessionRef: "old" };
 		const to = { hubId: "one", sessionRef: "resumed" };
 		repository.write(from, { draft: "edited recovery", unconfirmed: null });
@@ -351,7 +355,7 @@ describe("drafts across navigation", () => {
 	});
 
 	it("delivers an in-flight built-in completion to the resumed destination", async () => {
-		const { library, repository, ledger } = setupWithLedger();
+		const { library, repository, ledger } = setup();
 		const from = { hubId: "one", sessionRef: "old" };
 		const to = { hubId: "one", sessionRef: "resumed" };
 		repository.write(from, {

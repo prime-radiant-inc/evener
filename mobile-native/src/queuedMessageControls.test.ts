@@ -198,7 +198,11 @@ test("a resume carries the edited recovered composition to the new ref and retir
 		}),
 	).toHaveLength(1);
 
-	const library = new DraftLibrary(() => f.repository);
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage.handoffLedger,
+	);
 	expect(library.handoff(destination, resumedDestination)).toBe(true);
 	const resumed = library.open(resumedDestination);
 	expect(resumed.getSnapshot().record).toMatchObject({
@@ -233,7 +237,11 @@ test("a migrated resend receipt reconciles under the resumed ref and clears its 
 		}),
 	).toHaveLength(1);
 
-	const library = new DraftLibrary(() => f.repository);
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage.handoffLedger,
+	);
 	expect(library.handoff(destination, resumedDestination)).toBe(true);
 	const resumed = library.open(resumedDestination);
 	expect(await f.runtime.readRecoveryResend(resumedKey, [captured])).toMatchObject({

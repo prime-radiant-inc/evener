@@ -252,8 +252,10 @@ export class DraftDocument {
 		};
 	}
 	retry = () => {
-		if (this.forgotten || this.retired) return;
+		// A retired document may still hold resolutions the successor must know
+		// about; flush before the retired check so a late retry is not a no-op.
 		this.flushObligationResolutions();
+		if (this.forgotten || this.retired) return;
 		try {
 			if (this.snapshot.loaded) this.persist(this.snapshot.record, true);
 			else {
@@ -293,6 +295,11 @@ export class DraftDocument {
 	 * inherited the record. */
 	retireInto(successor: DraftDocument): void {
 		if (successor === this) return;
+		this.flushObligationResolutions();
+		for (const [captureToken, resolution] of this.unresolvedResolutions)
+			if (!successor.unresolvedResolutions.has(captureToken))
+				successor.unresolvedResolutions.set(captureToken, resolution);
+		this.unresolvedResolutions.clear();
 		this.successor = successor;
 		this.retired = true;
 		this.unsavedImages.clear();
@@ -308,6 +315,21 @@ export class DraftDocument {
 		if (released.length === (current.releasedRecoveryIds?.length ?? 0)) return true;
 		try {
 			this.persist({ ...current, releasedRecoveryIds: released }, true);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+	/** Keep a completed built-in command's sources out of automatic restore and
+	 * replay after their rows moved to this destination, even when this
+	 * composition refuses the draft itself. */
+	adoptCompletedCommandRecovery(ids: readonly string[]): boolean {
+		if (this.forgotten || this.retired || !ids.length) return true;
+		const current = this.snapshot.record;
+		const completed = [...new Set([...(current.completedCommandRecoveryIds ?? []), ...ids])];
+		if (completed.length === (current.completedCommandRecoveryIds?.length ?? 0)) return true;
+		try {
+			this.persist({ ...current, completedCommandRecoveryIds: completed }, true);
 			return true;
 		} catch {
 			return false;
@@ -694,7 +716,10 @@ export class DraftDocument {
 			this.submissionLedger?.().resolveSubmission(captureToken, state, completedCommandIds);
 			this.unresolvedResolutions.delete(captureToken);
 		} catch {
-			this.unresolvedResolutions.set(captureToken, { state, completedCommandIds: [...completedCommandIds] });
+			// A retired document forwards the retry to the document that owns the
+			// record now, so a later reload of the successor resolves it.
+			const owner = this.retired && this.successor !== undefined ? this.successor : this;
+			owner.unresolvedResolutions.set(captureToken, { state, completedCommandIds: [...completedCommandIds] });
 		}
 	}
 

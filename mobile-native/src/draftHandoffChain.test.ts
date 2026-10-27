@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { DraftLibrary } from "./draftLibrary";
-import type { DraftHandoffEndpoint } from "./draftHandoffLedger";
+import type { DraftHandoffEndpoint, DraftHandoffLedger, DraftSubmissionLedger } from "./draftHandoffLedger";
 import type { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { MutationOutboxSQLite } from "./mutationOutboxStorage";
@@ -65,6 +65,43 @@ function pendingSubmission(document: DraftDocument) {
 			}),
 	);
 	return { submitted, settle: (sent: boolean) => settle(sent) };
+}
+
+/** A ledger fake for document-only tests: handoff transitions are unreachable
+ * here, so any accidental use fails loudly. */
+function submissionLedger(
+	submission: Pick<DraftSubmissionLedger, "beginSubmission" | "resolveSubmission">,
+): DraftHandoffLedger {
+	const unused = () => {
+		throw new Error("unused handoff transition");
+	};
+	return {
+		...submission,
+		readGraph: unused,
+		recordIdentityChange: unused,
+		createEdge: unused,
+		claimDestination: unused,
+		recordDelivered: unused,
+		settleEdge: unused,
+		refuseEdge: unused,
+		cleanEdge: unused,
+	};
+}
+
+/** Fails the named ledger method a fixed number of times, then delegates. */
+function flaky(ledger: DraftHandoffLedger, method: keyof DraftHandoffLedger, times: number): DraftHandoffLedger {
+	let remaining = times;
+	return new Proxy(ledger, {
+		get(target, property) {
+			const value = Reflect.get(target, property, target);
+			if (property === method && typeof value === "function")
+				return (...args: unknown[]) => {
+					if (remaining-- > 0) throw new Error(`injected ${String(method)} failure`);
+					return (value as (...inner: unknown[]) => unknown).apply(target, args);
+				};
+			return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+		},
+	}) as DraftHandoffLedger;
 }
 
 describe("handoff chain obligations", () => {
@@ -285,15 +322,16 @@ describe("handoff chain obligations", () => {
 		const library = new DraftLibrary(
 			() => repository,
 			undefined,
-			() => ({
-				beginSubmission: (obligationId: string) => {
-					token = obligationId;
-					if (failBegin) throw new Error("ledger unavailable");
-				},
-				resolveSubmission: (obligationId: string, state: "completed" | "failed") => {
-					resolved.push([obligationId, state]);
-				},
-			}),
+			() =>
+				submissionLedger({
+					beginSubmission: (obligationId: string) => {
+						token = obligationId;
+						if (failBegin) throw new Error("ledger unavailable");
+					},
+					resolveSubmission: (obligationId: string, state: "completed" | "failed") => {
+						resolved.push([obligationId, state]);
+					},
+				}),
 		);
 		const document = library.open(endpoint("a"));
 		document.edit("current");
@@ -321,16 +359,17 @@ describe("handoff chain obligations", () => {
 		const library = new DraftLibrary(
 			() => repository,
 			undefined,
-			() => ({
-				beginSubmission: () => {},
-				resolveSubmission: (obligationId: string, state: "completed" | "failed", ids: readonly string[] = []) => {
-					if (failResolve) {
-						failResolve = false;
-						throw new Error("write failed");
-					}
-					resolved.push([obligationId, state, ids]);
-				},
-			}),
+			() =>
+				submissionLedger({
+					beginSubmission: () => {},
+					resolveSubmission: (obligationId: string, state: "completed" | "failed", ids: readonly string[] = []) => {
+						if (failResolve) {
+							failResolve = false;
+							throw new Error("write failed");
+						}
+						resolved.push([obligationId, state, ids]);
+					},
+				}),
 		);
 		const document = library.open(endpoint("a"));
 		document.edit("current");
@@ -340,5 +379,39 @@ describe("handoff chain obligations", () => {
 		document.retry();
 		expect(resolved).toHaveLength(1);
 		expect(resolved[0][1]).toBe("completed");
+	});
+
+	test("a failed resolution after retirement is retried by the successor's reload", async () => {
+		const { storageLedger, repository } = setup();
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const failing = flaky(storageLedger, "resolveSubmission", 1);
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => failing,
+		);
+		const source = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		expect(library.handoff(endpoint("a"), endpoint("b"))).toBe(true);
+
+		finish();
+		await submitted;
+		// The first resolution write failed after retirement; the successor owns
+		// the retry, so a reload there resolves the obligation.
+		expect(storageLedger.readGraph().obligations).toMatchObject([{ state: "open" }]);
+		library.open(endpoint("b")).retry();
+		expect(storageLedger.readGraph().obligations).toMatchObject([
+			{ state: "completed", completedCommandIds: ["recovered-a"] },
+		]);
 	});
 });

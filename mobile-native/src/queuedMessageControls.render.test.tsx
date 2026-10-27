@@ -1095,7 +1095,11 @@ it("actual screen completes edited /compact without sending and does not replay 
 it("actual screen protects and retries cleanup after /compact success without rerunning it", async () => {
 	const { f, source } = await prepareRecoveredCompact();
 	const db = sqlite.ports.get("evener-mutations.db") as SqliteSync;
-	db.execSync("PRAGMA query_only = ON");
+	// Fail only the cleanup delete: the ledger shares this database, and a
+	// globally read-only store would (correctly) refuse to start a submission.
+	db.execSync(
+		`CREATE TRIGGER fail_compact_cleanup BEFORE DELETE ON mutation_recovery WHEN OLD.client_mutation_id = '${source.clientMutationId}' BEGIN SELECT RAISE(ABORT, 'cleanup failed'); END`,
+	);
 	await act(async () => pressable(f.tree, "Compact transcript")?.props.onPress());
 	await settle();
 	expect(f.requests.filter((r) => r.method === "thread/compact/start")).toHaveLength(1);
@@ -1114,7 +1118,7 @@ it("actual screen protects and retries cleanup after /compact success without re
 	await act(async () => pressable(f.tree, "Retry saving")?.props.onPress());
 	await settle();
 	expect(f.document.getSnapshot().record.completedCommandRecoveryIds).toEqual([source.clientMutationId]);
-	db.execSync("PRAGMA query_only = OFF");
+	db.execSync("DROP TRIGGER fail_compact_cleanup");
 	await act(async () => pressable(f.tree, "Retry")?.props.onPress());
 	await settle();
 	expect(f.document.getSnapshot().record.completedCommandRecoveryIds ?? []).toEqual([]);

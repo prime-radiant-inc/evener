@@ -143,6 +143,16 @@ describe("draft handoff ledger", () => {
 		expect(ledger.readGraph().edges[0].state).toBe("settled");
 	});
 
+	test("records the delivered hash before settlement", () => {
+		const { ledger } = setup();
+		const edge = ledger.createEdge({ chainId: "chain", from: a, to: b });
+		ledger.claimDestination(edge.edgeId);
+		ledger.recordDelivered(edge.edgeId, "fingerprint");
+		expect(ledger.readGraph().edges[0]).toMatchObject({ state: "pending", deliveredHash: "fingerprint" });
+		ledger.settleEdge(edge.edgeId, [], "fingerprint");
+		expect(ledger.readGraph().edges[0]).toMatchObject({ state: "settled", deliveredHash: "fingerprint" });
+	});
+
 	test("sets the downstream edge before its predecessor", () => {
 		const { ledger } = setup();
 		const downstream = ledger.createEdge({ chainId: "chain", from: b, to: c });

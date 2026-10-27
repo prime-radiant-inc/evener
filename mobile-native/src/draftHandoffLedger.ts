@@ -86,6 +86,10 @@ export interface DraftHandoffLedger extends DraftSubmissionLedger {
 	/** Claims the destination for this edge. False when another live edge or
 	 * chain already owns it. */
 	claimDestination(edgeId: string): boolean;
+	/** Record the record bytes this edge wrote, before settlement commits. A
+	 * retry compares the destination against it to tell its own write from work
+	 * added afterwards. */
+	recordDelivered(edgeId: string, deliveredHash: string): void;
 	settleEdge(edgeId: string, deliveries: readonly DraftHandoffDelivery[], deliveredHash: string): void;
 	refuseEdge(edgeId: string, deliveries: readonly DraftHandoffDelivery[]): void;
 	cleanEdge(edgeId: string): void;

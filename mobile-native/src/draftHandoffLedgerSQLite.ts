@@ -324,6 +324,18 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 		});
 	}
 
+	recordDelivered(edgeId: string, deliveredHash: string): void {
+		withSavepoint(this.db, "draft_handoff_delivered", () => {
+			const edge = this.requirePending(edgeId);
+			this.db.runSync(
+				`UPDATE draft_handoff_edges SET delivered_hash = ?, state_changed_at = ? WHERE edge_id = ?`,
+				deliveredHash,
+				this.#now(),
+				edge.edgeId,
+			);
+		});
+	}
+
 	refuseEdge(edgeId: string, deliveries: readonly DraftHandoffDelivery[]): void {
 		withSavepoint(this.db, "draft_handoff_refuse", () => {
 			const edge = this.requirePending(edgeId);

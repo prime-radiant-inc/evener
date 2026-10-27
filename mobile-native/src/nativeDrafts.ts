@@ -2,6 +2,7 @@ import { openDatabaseSync } from "expo-sqlite";
 import { randomUUID } from "expo-crypto";
 import { DraftLibrary } from "./draftLibrary";
 import { DraftRepository } from "./draftRepository";
+import { getNativeMutationRuntime } from "./nativeMutationRuntime";
 
 let repository: DraftRepository | undefined;
 export function nativeDrafts(): DraftRepository {
@@ -13,4 +14,8 @@ export function nativeDrafts(): DraftRepository {
 	return repository;
 }
 
-export const drafts = new DraftLibrary(nativeDrafts, randomUUID);
+export const drafts = new DraftLibrary(
+	nativeDrafts,
+	randomUUID,
+	() => getNativeMutationRuntime().storage.handoffLedger,
+);
