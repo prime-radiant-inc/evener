@@ -11,6 +11,9 @@ import type { TranscriptReadView } from "./transcriptReadView";
 
 export interface UseTranscriptResult {
   model: ThreadModel | undefined;
+  // Capture the scheduling key with loadingOlder so consumers cannot combine
+  // an older idle snapshot with a cursor advanced by an unfinished page.
+  olderPageKey: string | null | undefined;
   hasOlder: boolean;
   loadOlder(): Promise<void>; // thread/turns/list via olderCursor -> prependOlderTurns
   loadingOlder: boolean;
@@ -60,7 +63,7 @@ function useTranscriptInternal(
     typeof reader === "object" && reader !== null && !typedReader ? (reader as TranscriptReadView) : undefined;
   const viewId = typeof reader === "string" ? reader : (reader?.id ?? ref);
   const model = useThreadsStore((s) => s.threads.get(ref));
-  const hasOlder = useThreadsStore(() => olderTranscriptPageKey(ref) != null);
+  const olderPageKey = useThreadsStore(() => olderTranscriptPageKey(ref));
   const { state: connection } = useConnectionStore();
   const binding = model?.instanceId ?? model?.threadId;
   const [entry, setEntry] = useState(() => {
@@ -140,7 +143,8 @@ function useTranscriptInternal(
   }, [committedEntry, viewId, ref, standalone]);
   return {
     model,
-    hasOlder,
+    olderPageKey,
+    hasOlder: olderPageKey != null,
     loadOlder,
     cancelOlder,
     loadingOlder: state.loading || (state.pending && state.error === null),

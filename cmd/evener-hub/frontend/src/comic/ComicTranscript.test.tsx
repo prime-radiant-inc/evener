@@ -14,6 +14,7 @@ import {
 } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { type ReactNode, useImperativeHandle, useRef } from "react";
+import { flushSync } from "react-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { pagingByRef } from "../panes/session/transcript/transcriptPaging";
 import {
@@ -22,7 +23,12 @@ import {
   useTranscriptReader,
 } from "../panes/session/transcript/useTranscript";
 import { connectionStore } from "../stores/connection";
-import { resetThreadsStoreForTests, settleEntryTranscriptForTests, threadsStore } from "../stores/threads";
+import {
+  olderTranscriptPageKey,
+  resetThreadsStoreForTests,
+  settleEntryTranscriptForTests,
+  threadsStore,
+} from "../stores/threads";
 import { useThreadModel } from "../stores/useThreadModel";
 import * as widgets from "../widgets";
 import { ComicTranscript } from "./ComicTranscript";
@@ -70,6 +76,7 @@ const entry: ComicEntry = {
 function history(): UseTranscriptResult {
   return {
     model: undefined,
+    olderPageKey: undefined,
     hasOlder: false,
     loadOlder: vi.fn(async () => {}),
     loadingOlder: false,
@@ -1295,15 +1302,16 @@ test.each(["collapse", "reopen"] as const)(
 );
 
 test.each([
-  { intent: "continue", recorded: false, opening: "none" },
-  { intent: "cancel", recorded: false, opening: "none" },
-  { intent: "continue", recorded: true, opening: "none" },
-  { intent: "cancel", recorded: true, opening: "none" },
-  { intent: "continue", recorded: true, opening: "before page" },
-  { intent: "continue", recorded: true, opening: "after page" },
+  { intent: "continue", recorded: false, opening: "none", delivery: "current" },
+  { intent: "cancel", recorded: false, opening: "none", delivery: "current" },
+  { intent: "continue", recorded: true, opening: "none", delivery: "current" },
+  { intent: "cancel", recorded: true, opening: "none", delivery: "current" },
+  { intent: "continue", recorded: true, opening: "before page", delivery: "current" },
+  { intent: "continue", recorded: true, opening: "after page", delivery: "current" },
+  { intent: "continue", recorded: true, opening: "none", delivery: "retained idle" },
 ])(
-  "saved child restoration owns the next accepted page only while active: $intent, recorded=$recorded, opening=$opening",
-  async ({ intent, recorded, opening }) => {
+  "saved child restoration owns the next accepted page only while active: $intent, recorded=$recorded, opening=$opening, delivery=$delivery",
+  async ({ intent, recorded, opening, delivery }) => {
     const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
     const entities = buildEntityView({
       sessionRef: model.ref,
@@ -1315,7 +1323,7 @@ test.each([
     const strip = {
       ...projectComicDelegates(model, entities)[0]!,
       ownerRef: "local:test",
-      childRef: `local:continuation-${intent}-${recorded}-${opening}`,
+      childRef: `local:continuation-${intent}-${recorded}-${opening}-${delivery}`,
     };
     const turn = (id: string, entry: number) => ({
       id: recorded ? "child-turn" : id,
@@ -1375,13 +1383,26 @@ test.each([
     }
     const parentHistory = history();
     let childState!: ComicSubchatState;
+    let retainIdleDelivery = delivery === "retained idle";
+    let retainedReaders: ComicSubchatState["readers"] | undefined;
+    const childKey = JSON.stringify([strip.key]);
     function Root() {
       const subchats = useComicSubchats("local:test", undefined);
       childState = subchats.state;
+      const child = childState.readers.get(childKey);
+      if (retainIdleDelivery && !retainedReaders && child?.history.hasOlder && !child.history.loadingOlder) {
+        // Delay only delivery to the consumer. The child lifetime, shared
+        // paging owner, store and transport continue publishing real state.
+        retainedReaders = childState.readers;
+      }
       return (
         <>
           {subchats.lifetimes}
-          <Reader older={parentHistory} strips={[strip]} subchats={subchats.state} />
+          <Reader
+            older={parentHistory}
+            strips={[strip]}
+            subchats={retainedReaders ? { ...subchats.state, readers: retainedReaders } : subchats.state}
+          />
         </>
       );
     }
@@ -1398,6 +1419,12 @@ test.each([
     await waitFor(() => expect(childState.readers.get(JSON.stringify(position.path))?.history.loadingOlder).toBe(true));
     await act(async () => firstRequested);
     expect(requests).toEqual(["96"]);
+    const firstPageKey = olderTranscriptPageKey(strip.childRef);
+    if (retainIdleDelivery) {
+      expect(retainedReaders?.get(childKey)?.history.loadingOlder).toBe(false);
+      expect(retainedReaders?.get(childKey)?.history.olderPageKey).toBe(firstPageKey);
+      expect(pagingByRef.get(strip.childRef)?.paging.getSnapshot().loading).toBe(true);
+    }
     if (recorded)
       expect(client.calls).toEqual(
         expect.arrayContaining([
@@ -1414,10 +1441,56 @@ test.each([
       expect(threadsStore.getState().localOpenings.has(strip.childRef)).toBe(true);
       if (opening === "before page") publishLocalOpening(strip.childRef, false);
     }
-    await act(async () => acceptFirst({ ...authority, data: [turn("middle", 56)], nextCursor: "56" }));
+    let publication:
+      | {
+          cursor: string;
+          deliveredLoading: boolean | undefined;
+          ownerLoading: boolean | undefined;
+          deliveredKey: string | null | undefined;
+          liveKey: string | null | undefined;
+        }
+      | undefined;
+    const unsubscribe = threadsStore.subscribe((state) => {
+      const cursor = state.threads.get(strip.childRef)?.olderCursor;
+      if (!retainIdleDelivery || publication || cursor !== "56") return;
+      publication = {
+        cursor,
+        deliveredLoading: retainedReaders?.get(childKey)?.history.loadingOlder,
+        ownerLoading: pagingByRef.get(strip.childRef)?.paging.getSnapshot().loading,
+        deliveredKey: retainedReaders?.get(childKey)?.history.olderPageKey,
+        liveKey: olderTranscriptPageKey(strip.childRef),
+      };
+      // acceptPage publishes synchronously before loadOlderTurns settles.
+      // Commit the retained consumer map at that exact publication, outside
+      // React's render/effect lifecycle, rather than racing a timer.
+      flushSync(() => mounted.rerender(<Root />));
+    });
+    try {
+      await act(async () => acceptFirst({ ...authority, data: [turn("middle", 56)], nextCursor: "56" }));
+    } finally {
+      unsubscribe();
+    }
     await waitFor(() =>
       expect(childState.readers.get(JSON.stringify(position.path))?.history.loadingOlder).toBe(false),
     );
+    if (retainIdleDelivery) {
+      expect(publication).toMatchObject({
+        cursor: "56",
+        deliveredLoading: false,
+        ownerLoading: true,
+        deliveredKey: firstPageKey,
+      });
+      expect(publication?.liveKey).not.toBe(firstPageKey);
+      expect(childState.readers.get(childKey)?.history.olderPageKey).toBe(publication?.liveKey);
+      expect(readComicPosition("local:test")).toEqual(position);
+      await act(async () => {
+        retainIdleDelivery = false;
+        retainedReaders = undefined;
+        mounted.rerender(<Root />);
+      });
+      await waitFor(() => expect(requests).toEqual(["96", "56"]));
+      await waitFor(() => expect(childState.readers.get(childKey)?.history.loadingOlder).toBe(false));
+    }
     if (opening === "after page") {
       expect(requests).toEqual(["96"]);
       expect(

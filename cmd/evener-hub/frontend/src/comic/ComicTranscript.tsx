@@ -12,7 +12,7 @@ import {
 import { isAtBottom } from "../panes/session/transcript/flow/scrollMetrics";
 import { useChromeStore } from "../shell/chromeStore";
 import { useIsMobile } from "../shell/useIsMobile";
-import { isEntryTranscriptLocalOpening, olderTranscriptPageKey, threadsStore } from "../stores/threads";
+import { isEntryTranscriptLocalOpening, threadsStore } from "../stores/threads";
 import {
   Button,
   type CommittedVirtualListLayout,
@@ -533,7 +533,7 @@ export function ComicTranscript({
           return;
         }
         if (target.history.hasOlder) {
-          const page = olderTranscriptPageKey(target.ref) ?? undefined;
+          const page = target.history.olderPageKey ?? undefined;
           if (!target.history.loadingOlder && !target.history.olderError && lastPage.current !== page) {
             lastPage.current = page;
             target.history.loadOlderReportingError();
@@ -575,7 +575,7 @@ export function ComicTranscript({
       return;
     const history = target.history;
     if (history.hasOlder) {
-      const page = olderTranscriptPageKey(target.ref) ?? target.entries.map((entry) => entry.id).join("\n");
+      const page = history.olderPageKey ?? target.entries.map((entry) => entry.id).join("\n");
       if (!history.loadingOlder && !history.olderError && lastPage.current !== page) {
         lastPage.current = page;
         history.loadOlderReportingError();
