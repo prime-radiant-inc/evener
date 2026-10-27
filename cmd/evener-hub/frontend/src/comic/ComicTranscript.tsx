@@ -348,6 +348,8 @@ export function ComicTranscript({
           cancelAnimationFrame(frame);
           moving.current = false;
           movementStart.current = undefined;
+          // A delayed restore scroll event still belongs to this preserved point.
+          commanded.current = port.scrollTop;
           return;
         }
       }

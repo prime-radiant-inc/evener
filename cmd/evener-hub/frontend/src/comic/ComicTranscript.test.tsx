@@ -624,11 +624,53 @@ test.each([false, true])(
     expect(older.cancelOlder).toHaveBeenCalledTimes(1);
     expect(port.scrollTop).toBe(96);
     expect(readComicPosition("local:test")).toEqual(position);
+    // The restore's native scroll event can arrive after the stationary click
+    // completes, without a new layout or any DOM movement.
+    fireEvent.scroll(port);
+    expect(port.scrollTop).toBe(96);
+    expect(readComicPosition("local:test")).toEqual(position);
     geometry.valid = true;
     geometry.sourceY = 220;
     publish();
     expect(geometry.sourceY - port.scrollTop).toBe(position.viewportOffset);
     expect(readComicPosition("local:test")).toEqual(position);
+    mounted.unmount();
+  },
+);
+
+test.each(["wheel", "key", "touch pan", "scrollbar", "selection", "native scroll"])(
+  "captures %s movement after preserving a stationary pointer source",
+  async (input) => {
+    const { port, geometry, publish, frame, mounted, position } = await mountGestureReader();
+    fireEvent.pointerDown(port);
+    fireEvent.pointerUp(port);
+    fireEvent.scroll(port);
+    expect(readComicPosition("local:test")).toEqual(position);
+
+    if (input === "wheel") fireEvent.wheel(port, { deltaY: -120 });
+    if (input === "key") fireEvent.keyDown(port, { key: "PageUp" });
+    if (input === "touch pan") {
+      fireEvent.pointerDown(port, { pointerId: 7, pointerType: "touch" });
+      fireEvent.touchStart(port);
+      fireEvent.pointerCancel(port, { pointerId: 7, pointerType: "touch" });
+    }
+    if (input === "scrollbar") fireEvent.pointerDown(port, { pointerId: 9, pointerType: "mouse" });
+    if (input === "selection") {
+      vi.spyOn(document, "getSelection").mockReturnValue({
+        isCollapsed: false,
+        anchorNode: port.querySelector("[data-comic-text]")?.firstChild,
+      } as Selection);
+      fireEvent(document, new Event("selectionchange"));
+    }
+    port.scrollTop = 76;
+    fireEvent.scroll(port);
+    if (input === "scrollbar") fireEvent.pointerUp(port, { pointerId: 9, pointerType: "mouse" });
+    frame();
+    expect(readComicPosition("local:test")).toEqual({ ...position, offset: 0, viewportOffset: 44 });
+    geometry.sourceY = 220;
+    publish();
+    expect(port.scrollTop).toBe(176);
+    expect(readComicPosition("local:test")).toEqual({ ...position, offset: 0, viewportOffset: 44 });
     mounted.unmount();
   },
 );
