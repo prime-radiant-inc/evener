@@ -13,7 +13,7 @@ import (
 const seedSubscriptionMethod = "test/seedSubscription"
 
 type seedSubscriptionParams struct {
-	ThreadID string `json:"threadId"`
+	ThreadID string `json:"thread_id"`
 }
 
 // seedSubscription connects a client to server's websocket edge and subscribes
