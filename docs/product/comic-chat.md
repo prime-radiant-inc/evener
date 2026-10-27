@@ -15,6 +15,12 @@ connection. Reading a saved or remote conversation does not launch a daemon.
 Within each project tier, overlapping pages show each session ref once. Paging
 continues from raw returned row counts, not the deduplicated display count;
 loaded later pages remain available through navigation refresh and reconnect.
+Failed project or page refreshes retain their visible conversations and expose
+a retry for each failed resource, including earlier pages and terminal pages.
+Page retries request the failed offset without replacing the loaded page list.
+Successful reads replace retained data with canonical rows; continuation uses
+the last page's raw returned length after recovery. More waits while that page
+is loading or failed; healthy rows and retries for earlier pages remain usable.
 
 ## Presentation and accessibility
 

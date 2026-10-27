@@ -57,19 +57,12 @@ function SessionRows({ rows, onSelect }: { rows: readonly NavigationSessionSumma
 
 function Project({ project, onSelect }: { project: NavigationProjectSummary; onSelect(ref: string): void }) {
   const [open, setOpen] = useState(false);
-  const [error, setError] = useState(false);
   const [pages, setPages] = useState<Partial<Record<Tier, number[]>>>({});
   const resource = useNavigationStore((s) => s.resources.get(keyID({ kind: "project", projectKey: project.key })));
   const pageResources = useNavigationStore((s) => s.resources);
   const load = () => {
     setOpen(true);
-    void navigationStore
-      .getState()
-      .loadProject(project.key)
-      .then(
-        (result) => setError(!!result.error),
-        () => setError(true),
-      );
+    void navigationStore.getState().loadProject(project.key);
   };
   return (
     <li>
@@ -78,7 +71,7 @@ function Project({ project, onSelect }: { project: NavigationProjectSummary; onS
       </Button>
       {open && (
         <>
-          {error && (
+          {!!resource?.error && (
             <div role="alert">
               <Button variant="link" onClick={load}>
                 Retry project
@@ -115,8 +108,25 @@ function Project({ project, onSelect }: { project: NavigationProjectSummary; onS
               <section key={tier} aria-label={`${project.name} ${tier}`}>
                 <h3>{tier}</h3>
                 <SessionRows rows={rows} onSelect={onSelect} />
-                {!!last?.error && <div role="alert">Page unavailable</div>}
-                {remaining > 0 && (
+                {subsequent.map((page) => {
+                  const key = page?.key;
+                  if (!page?.error || key?.kind !== "project_page") return null;
+                  return (
+                    <div key={keyID(key)} role="alert">
+                      <Button
+                        variant="link"
+                        onClick={() => {
+                          void navigationStore
+                            .getState()
+                            .loadProjectPage(key.projectKey, key.tier, key.offset, key.limit);
+                        }}
+                      >
+                        Retry {tier} page
+                      </Button>
+                    </div>
+                  );
+                })}
+                {!last?.error && !last?.loading && remaining > 0 && (
                   <Button
                     variant="link"
                     onClick={() => {
