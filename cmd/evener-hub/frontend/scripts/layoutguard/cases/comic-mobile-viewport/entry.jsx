@@ -9,8 +9,20 @@ import { ComicPicker } from "/src/comic/ComicPicker";
 import { ComicSession } from "/src/comic/ComicSession";
 import styles from "/src/comic/comic.module.css";
 import { ClientProvider } from "/src/shell/clientContext";
+import { useKeyboardInset } from "/src/shell/useKeyboardInset";
 import { navigationStore } from "/src/stores/navigation/store";
 import { threadsStore } from "/src/stores/threads";
+
+// Headless Chrome cannot open Safari's software keyboard. Replace only that
+// browser API boundary; use the real hook and CSS below it. ComicApp.test.tsx
+// separately proves that the actual app mounts and releases the hook.
+const viewport = Object.assign(new EventTarget(), { height: 620, offsetTop: 0, scale: 1 });
+const nativeViewport = window.visualViewport;
+let simulatedViewport = false;
+function KeyboardInset() {
+  useKeyboardInset();
+  return null;
+}
 
 const root = createRoot(document.getElementById("root"), {
   onUncaughtError: (error) => {
@@ -107,6 +119,7 @@ function render(kind, count = 0) {
   flushSync(() =>
     root.render(
       <ClientProvider client={client}>
+        <KeyboardInset key={String(simulatedViewport)} />
         <main key={kind} className={styles.comicRoot} data-theme="light" data-comic-route={kind}>
           {kind === "picker" ? (
             <ComicPicker
@@ -123,6 +136,23 @@ function render(kind, count = 0) {
   );
 }
 
-window.comicGeometry = { render, source };
+window.comicGeometry = {
+  render,
+  source,
+  simulateViewport() {
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: viewport });
+    simulatedViewport = true;
+    render("session");
+  },
+  restoreViewport() {
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: nativeViewport });
+    simulatedViewport = false;
+    render("session");
+  },
+  viewport(event, values) {
+    Object.assign(viewport, values);
+    viewport.dispatchEvent(new Event(event));
+  },
+};
 window.measure = () => ({ ready: true });
 render("picker");

@@ -50,7 +50,8 @@ function sessionGeometry() {
   const rect = (node) => {
     if (!node) return null;
     const r = node.getBoundingClientRect();
-    return { top: r.top, bottom: r.bottom, height: r.height, left: r.left, right: r.right };
+    const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    return { top: r.top, bottom: r.bottom, height: r.height, left: r.left, right: r.right, hit: node.contains(hit) };
   };
   const sources = [...document.querySelectorAll("[data-comic-entry]")];
   const source = window.comicGeometry.source;
@@ -62,6 +63,8 @@ function sessionGeometry() {
     editor: rect(document.querySelector('[role="textbox"]')),
     submit: rect(document.querySelector('[data-testid="composer-submit"]')),
     reader: rect(document.querySelector("[data-comic-scroll]")),
+    draft: document.querySelector('[role="textbox"]')?.textContent,
+    boxSizing: getComputedStyle(document.querySelector("main")).boxSizing,
     overflow: document.documentElement.scrollWidth - innerWidth,
     sourceParts: sources.length,
     literal: sources.every(
@@ -219,11 +222,56 @@ export default async function assert(_measurement, { page }) {
     const restored = await readSession();
     checkSession("restored native session", restored);
     evidence.push({ width, native, model, toolbar, restored });
+
+    // Keyboard boundary simulation, not physical Safari coverage. The layout
+    // viewport stays 620px while visualViewport shrinks and scrolls independently.
+    await evaluate(send, "window.comicGeometry.simulateViewport()");
+    const draft = `KEYBOARD_DRAFT_${width}`;
+    await evaluate(send, `(() => {
+      const editor = document.querySelector('[role="textbox"]');
+      editor.focus();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+    })()`);
+    await send("Input.insertText", { text: draft });
+    await frame(send);
+    const beforeKeyboard = await readSession();
+    for (const [name, event, values, visibleBottom] of [
+      ["open", "resize", { height: 440, offsetTop: 0, scale: 1 }, 440],
+      ["scroll", "scroll", { offsetTop: 40 }, 480],
+      ["pinch", "resize", { scale: 2 }, 620],
+      ["unpinch", "resize", { scale: 1 }, 480],
+      ["close", "resize", { height: 620, offsetTop: 0 }, 620],
+    ]) {
+      await evaluate(send, `window.comicGeometry.viewport(${JSON.stringify(event)}, ${JSON.stringify(values)})`);
+      await frame(send);
+      const state = await readSession();
+      const bottom = width < 900 ? visibleBottom : 620;
+      if (
+        state.boxSizing !== "border-box" ||
+        state.root.bottom !== 620 ||
+        state.overflow > 1 ||
+        state.reader.height <= 0 ||
+        !state.sourceParts ||
+        !state.literal ||
+        state.draft !== draft ||
+        !state.editor.hit ||
+        !state.submit.hit ||
+        ![state.composer, state.editor, state.submit].every((box) => reachable(box, width, bottom)) ||
+        Math.abs(state.composer.bottom - bottom) > 1
+      ) failures.push(`keyboard ${name} ${width}: expected bottom ${bottom}, ${JSON.stringify(state)}`);
+      if ((name === "close" || width >= 900) && Math.abs(state.reader.height - beforeKeyboard.reader.height) > 1)
+        failures.push(`keyboard ${name} ${width}: reader height did not restore`);
+      evidence.push({ width, keyboard: name, composerBottom: state.composer.bottom, readerHeight: state.reader.height });
+    }
+    await evaluate(send, "window.comicGeometry.restoreViewport()");
   }
   return {
     pass: !failures.length,
     reason: failures.length
       ? failures.join("\n")
-      : `320/390/1360px empty/long picker, native wheel/touch, lower-row selection and pagination hit-testing, real session/composer within 620px under native and modeled 760px large viewport, literal source retained. ${JSON.stringify(evidence.map(({ width, gesture, after, toolbar }) => ({ width, gesture, pickerScroll: after?.scrollTop, composerBottom: toolbar?.composer.bottom })))}`,
+      : `320/390/1360px empty/long picker, native wheel/touch, lower-row selection and pagination hit-testing, real session/composer within 620px under native and modeled 760px large viewport, simulated visualViewport keyboard open/scroll/pinch/close, draft/source retained and reader restored. ${JSON.stringify(evidence.map(({ width, gesture, after, toolbar, keyboard, composerBottom, readerHeight }) => ({ width, gesture, pickerScroll: after?.scrollTop, composerBottom: composerBottom ?? toolbar?.composer.bottom, keyboard, readerHeight })))}`,
   };
 }

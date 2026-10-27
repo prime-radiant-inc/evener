@@ -3,6 +3,7 @@ import { ConnectionBanner } from "../shell/ConnectionBanner";
 import { ToastRegion } from "../shell/chrome/ToastRegion";
 import { ClientProvider } from "../shell/clientContext";
 import { useBrowserConnection } from "../shell/useBrowserConnection";
+import { useKeyboardInset } from "../shell/useKeyboardInset";
 import { useConnectionStore } from "../stores/connection";
 import { EmptyState, InlineNotice } from "../widgets";
 import { ComicPicker } from "./ComicPicker";
@@ -16,6 +17,7 @@ function currentRoute(): ComicRoute {
 }
 
 export function ComicApp(): React.ReactElement {
+  useKeyboardInset();
   const { client, onClientReplaced } = useBrowserConnection({});
   const connectionState = useConnectionStore((state) => state.state);
   const [selection, setSelection] = useState(() => ({ route: currentRoute(), generation: 0 }));
