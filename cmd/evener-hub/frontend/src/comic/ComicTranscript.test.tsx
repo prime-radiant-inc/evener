@@ -22,6 +22,7 @@ import {
   type UseTranscriptResult,
   useTranscriptReader,
 } from "../panes/session/transcript/useTranscript";
+import { chromeStore, resetChromeStoreForTests } from "../shell/chromeStore";
 import { connectionStore } from "../stores/connection";
 import {
   olderTranscriptPageKey,
@@ -61,6 +62,7 @@ afterEach(() => {
   connectionStore.setState({ state: "idle", client: null });
   resetThreadsStoreForTests();
   resetTranscriptPagingForTests();
+  resetChromeStoreForTests();
 });
 
 const entry: ComicEntry = {
@@ -578,16 +580,16 @@ async function mountGestureReader(
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     return new DOMRect(0, this.dataset.comicEntry ? geometry.sourceY - port.scrollTop : 0, 760, 20);
   });
-  vi.spyOn(document, "createRange").mockImplementation(() => {
-    let source: HTMLElement;
-    return {
-      setStart(node: Node) {
-        source = node.parentElement!.closest<HTMLElement>("[data-comic-entry]")!;
-      },
-      setEnd() {},
-      getBoundingClientRect: () => source.getBoundingClientRect(),
-    } as unknown as Range;
-  });
+  const stubRangeGeometry = (doc: Document) => {
+    const createRange = doc.createRange.bind(doc);
+    vi.spyOn(doc, "createRange").mockImplementation(() => {
+      const range = createRange();
+      range.getBoundingClientRect = () =>
+        range.startContainer.parentElement!.closest<HTMLElement>("[data-comic-entry]")!.getBoundingClientRect();
+      return range;
+    });
+  };
+  stubRangeGeometry(document);
   const position = nested?.position ?? {
     mode: "away" as const,
     sessionRef: "local:test",
@@ -619,7 +621,17 @@ async function mountGestureReader(
       frames.clear();
       for (const callback of pending) callback(0);
     });
-  return { port, geometry, publish: () => act(() => publish!()), place, frame, older, mounted, position };
+  return {
+    port,
+    geometry,
+    publish: () => act(() => publish!()),
+    place,
+    frame,
+    older,
+    mounted,
+    position,
+    stubRangeGeometry,
+  };
 }
 
 test.each([false, true])(
@@ -648,6 +660,93 @@ test.each([false, true])(
     expect(geometry.sourceY - port.scrollTop).toBe(position.viewportOffset);
     expect(readComicPosition("local:test")).toEqual(position);
     mounted.unmount();
+  },
+);
+
+test("retains stationary source when the same closed-Appearance pane moves to a popout and back", async () => {
+  const { port, geometry, publish, frame, older, mounted, position, stubRangeGeometry } = await mountGestureReader();
+  const iframe = document.createElement("iframe");
+  document.body.append(iframe);
+  const popout = iframe.contentDocument!;
+  stubRangeGeometry(popout);
+  try {
+    for (const destination of [popout, document]) {
+      await act(async () => {
+        destination.body.append(mounted.container);
+        chromeStore.getState().setPaneDocumentsFor(["comic-gesture-pane"], destination);
+      });
+      expect(port.ownerDocument).toBe(destination);
+      expect(mounted.container.querySelector("[data-comic-scroll]")!.firstElementChild).toBe(port);
+      expect(mounted.container.querySelector('[role="dialog"]')).toBeNull();
+      geometry.sourceY = 120;
+      publish();
+      expect(port.scrollTop).toBe(96);
+      fireEvent.pointerDown(port, { pointerId: 7, pointerType: "mouse" });
+      fireEvent.pointerUp(port, { pointerId: 7, pointerType: "mouse" });
+      frame();
+      geometry.sourceY = 220;
+      publish();
+      expect(port.scrollTop).toBe(196);
+      expect(readComicPosition("local:test")).toEqual(position);
+    }
+    expect(older.cancelOlder).toHaveBeenCalledTimes(2);
+  } finally {
+    document.body.append(mounted.container);
+    mounted.unmount();
+    iframe.remove();
+  }
+});
+
+test.each([false, true])(
+  "selection cancellation follows the adopted pane document, docked back=%s",
+  async (dockBack) => {
+    const { port, geometry, publish, frame, older, mounted, position, stubRangeGeometry } = await mountGestureReader();
+    const iframe = document.createElement("iframe");
+    document.body.append(iframe);
+    const popout = iframe.contentDocument!;
+    stubRangeGeometry(popout);
+    try {
+      for (const destination of dockBack ? [popout, document] : [popout]) {
+        await act(async () => {
+          destination.body.append(mounted.container);
+          chromeStore.getState().setPaneDocumentsFor(["comic-gesture-pane"], destination);
+        });
+      }
+      const destination = port.ownerDocument;
+      const previous = destination === document ? popout : document;
+      const text = port.querySelector('[data-comic-entry="m"] [data-comic-text]')!.firstChild!;
+      expect(text.nodeType).toBe(Node.TEXT_NODE);
+      expect(text.textContent!.length).toBeGreaterThan(0);
+      const range = destination.createRange();
+      range.selectNodeContents(text);
+      const selection = destination.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      expect(selection.isCollapsed).toBe(false);
+      expect(port.contains(selection.anchorNode)).toBe(true);
+      geometry.valid = false;
+      fireEvent(previous, new Event("selectionchange"));
+      expect(older.cancelOlder).not.toHaveBeenCalled();
+      fireEvent(destination, new Event("selectionchange"));
+      expect(older.cancelOlder).toHaveBeenCalledTimes(1);
+      frame();
+      geometry.sourceY = 220;
+      publish();
+      expect(port.scrollTop).toBe(96);
+      expect(readComicPosition("local:test")).toEqual(position);
+      selection.collapse(text, 0);
+      fireEvent(destination, new Event("selectionchange"));
+      expect(older.cancelOlder).toHaveBeenCalledTimes(1);
+      geometry.valid = true;
+      publish();
+      expect(port.scrollTop).toBe(96);
+      expect(readComicPosition("local:test")).toMatchObject({ offset: 0, viewportOffset: 124 });
+      selection.removeAllRanges();
+    } finally {
+      document.body.append(mounted.container);
+      mounted.unmount();
+      iframe.remove();
+    }
   },
 );
 

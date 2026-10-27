@@ -126,6 +126,20 @@ It loads at least three child history pages, relocates the existing expanded str
 when its causal event arrives, and checks a nonzero later-page source offset through
 disconnect, reconnect, reload and Back. Browser RPC capture rejects `turn/start`
 and `thread/resume` from reads.
+Cached reload must also recover after the current document's full child hydration,
+before any input or cache eviction. A successful correlated `thread/read` reply
+alone is insufficient: the old cached DOM can still show the source before the
+fresh partial window is applied. An ensuing same-connection older-page request
+witnesses application; the guard awaits successful replies for every issued child
+read/page and checks the same saved identity, offset and viewport placement again.
+Each geometry sample follows a frozen wire snapshot and is rejected if child
+read/page traffic or connection lifetime changes during that observation. The
+ordinary condition wait samples again, never attaching newer replies to old DOM.
+Disallowed input is latched from document initialization, including touch events;
+the bounded event-detail buffer cannot erase it.
+`later-child-cached-recovery.json` records those correlated requests/replies, the
+unchanged document, input observations and final geometry. This proves post-refresh
+recovery, not continuous placement or private store/layout settlement invariants.
 After the cached later-child reload, two additional reloads evict only that child's
 real IndexedDB history: first retaining the newest authentic read fragment, then
 removing its history completely. Each must recover the same literal source offset
