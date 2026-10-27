@@ -348,8 +348,7 @@ func gitRunner(ctx context.Context, env execenv.ExecutionEnvironment) worktree.G
 			return res.Stdout, err
 		}
 		// Only a capped STDOUT poisons a parsed command: the parsed stream is
-		// stdout, so a stderr cap is the command's diagnostics, not its records
-		// (#4621 round 15).
+		// stdout, so a stderr cap is the command's diagnostics, not its records.
 		if res.StdoutTruncated && gitOutputIsParsed(args) {
 			return res.Stdout, fmt.Errorf("git %s: %w", strings.Join(args, " "), execenv.ErrOutputTruncated)
 		}
@@ -368,7 +367,7 @@ var gitWorktreeMutations = map[string]bool{
 // records, so a truncated capture must be refused rather than read as if whole.
 // Only the state-changing subcommands are treated as unparsed; an unknown
 // command defaults to parsed, so a new record read added later is refused by
-// default rather than silently accepted (#4621 round 2, M1).
+// default rather than silently accepted.
 func gitOutputIsParsed(args []string) bool {
 	if len(args) == 0 {
 		return true
@@ -654,7 +653,7 @@ func (s *Session) enterWorktree(path string, managed bool) error {
 // worktree entered via the tool), and an error when the swap was refused
 // because the session is closing. This is the env-restore primitive only; the
 // operation-level `exit` semantics (own-marker unlock, restore-land idempotent
-// lock rule) land with Task 14 and layer on top of this.
+// lock rule) layer on top of this.
 func (s *Session) exitWorktree() (string, bool, error) {
 	s.mu.Lock()
 	restore := s.worktreeRestoreEnv

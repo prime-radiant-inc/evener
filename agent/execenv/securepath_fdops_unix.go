@@ -837,18 +837,10 @@ func (s *sandboxFS) walkDirFdBudgeted(ctx context.Context, dirFd int, relPrefix,
 		}
 		retained := budget == nil || !budget.discard()
 		if retained {
-			de := DirEntry{Name: relName, IsDir: ent.IsDir()}
-			if ent.Type()&os.ModeSymlink != 0 {
-				de.IsSymlink = true
-			}
+			de := newDirEntry(relName, ent)
 			if !ent.IsDir() {
 				if size, mode, modTime, ierr := secureEntryInfo(dirFd, name); ierr == nil {
-					de.Size = size
-					de.ModTime = modTime
-					de.IsRegular = mode.IsRegular()
-					if mode&0o111 != 0 {
-						de.IsExec = true
-					}
+					de.setFileInfo(size, mode, modTime)
 				}
 			}
 			*out = append(*out, de)

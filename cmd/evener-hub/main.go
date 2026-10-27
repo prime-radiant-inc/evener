@@ -32,10 +32,8 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
-	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/binresolve"
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/internal/hubendpoint"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/rendezvous"
@@ -344,34 +342,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	defer release()
 
-	_, stopPprof, err := cmdutil.StartLivePprof(func(format string, args ...any) {
-		_, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...)
-	})
+	appwireTrace, stopDiagnostics, err := startDiagnostics(opts, stderr)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
-	defer stopPprof()
-
-	var appwireTrace *appserver.WebSocketTrace
-	if opts.appwireTrace != "" {
-		tracePath, absErr := filepath.Abs(opts.appwireTrace)
-		if absErr != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] appwire trace path: %v\n", absErr)
-			return fmt.Errorf("resolve appwire trace path: %w", absErr)
-		}
-		appwireTrace, err = appserver.NewWebSocketTrace(tracePath)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] appwire trace: %v\n", err)
-			return fmt.Errorf("create appwire trace: %w", err)
-		}
-		defer func() {
-			if closeErr := appwireTrace.Close(); closeErr != nil {
-				_, _ = fmt.Fprintf(stderr, "[hub] close appwire trace: %v\n", closeErr)
-			}
-		}()
-		_, _ = fmt.Fprintf(stderr, "[hub] recording raw browser AppWire frames at %s; this file contains sensitive data\n", tracePath)
-	}
+	defer stopDiagnostics()
 
 	// Resolve runtime paths.
 	runDir := cfg.RunDir
@@ -479,13 +454,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// observe changed navigation inputs instead of stale state.
 	inputs := &hubcore.InputsVersion{}
 
-	// Wire archive/favorite's content-delta-gated onChange hook (Task 10) to
-	// the shared inputs-version counter, so a decision busts the tree memo.
-	// Past/roster get the same bump below, composed with the
-	// evener/tree/changed broadcast once web (and its appRPC) exists.
+	// Every store's onChange hook bumps the shared inputs-version counter so a
+	// decision busts the tree memo; the hooks are wired below, composed with
+	// the navigation invalidation once web (and its appRPC) exists.
 	bump := inputs.Bump
-	archive.SetOnChange(bump)
-	favorite.SetOnChange(bump)
 
 	// A session's Status transitioning (detected per-id by roster.Refresh)
 	// means its daemon likely just rewrote its own meta.json out-of-process
@@ -845,9 +817,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// keep reporting a host online after it dropped, or keep its rows metas-only
 	// after it reconnected.
 	sshStateInvalidatedNavigation = func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) }
-	if pinSections != nil {
-		pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
-	}
+	pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
 	// A seen mark changes live rows' unseen flag; a mark committed by any
 	// writer, the RPC or a session deletion's scrub, invalidates navigation.
 	sessionSeen.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
@@ -982,52 +952,16 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		},
 		ln: hubListener,
 	}
-	// Publish only after the actual listener and health handler exist. A record
-	// does not mean ready until a reader verifies this boot on the live socket.
-	record := hubendpoint.Record{
-		SchemaVersion:       hubendpoint.SchemaVersion,
-		BootID:              hubBootID,
-		PID:                 os.Getpid(),
-		StartedAt:           web.startedAt,
-		ConfigPath:          configIdentity,
-		HubStateRoot:        hubStateRoot,
-		RequestedListenAddr: endpoint.ListenAddr.String(),
-		ListenSource:        endpoint.ListenSource,
-		BoundAddr:           boundAddr,
-	}
-	if endpoint.PublicURL != nil {
-		record.PublicURL = endpoint.PublicURL.String()
-	}
-	if origin, originErr := hubendpoint.LocalOrigin(boundAddr); originErr == nil {
-		record.LocalURL = origin.String()
-		if ip := net.ParseIP(origin.Hostname()); ip != nil && ip.IsLoopback() {
-			record.LoopbackURL = origin.String()
-		}
-	}
-	removeEndpoint, err := hubendpoint.Publish(hubStateRoot, record)
+	record, retireEndpoint, err := publishEndpoint(web, endpoint, configIdentity, hubStateRoot, boundAddr)
 	if err != nil {
-		return fmt.Errorf("publish hub endpoint: %w", err)
+		return err
 	}
 	defer func() {
-		if removeErr := removeEndpoint(); removeErr != nil {
+		if removeErr := retireEndpoint(); removeErr != nil {
 			_, _ = fmt.Fprintf(stderr, "[hub] retire endpoint: %v\n", removeErr)
 		}
 	}()
-
-	_, _ = fmt.Fprintf(stderr, "[hub] evener-hub %s listening on %s (run_dir=%s)\n", Version, boundAddr, runDir)
-	_, _ = fmt.Fprintf(stderr, "[hub] configured listener: %s (%s)\n", record.RequestedListenAddr, record.ListenSource)
-	if origin, originErr := browserLoginOrigin(record, hubHostname); originErr == nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] Browser address: %s (local: %s)\n", origin, record.LocalURL)
-		if isTerminalWriter(stderr) {
-			link := hubedge.AuthURLFor(origin, authToken)
-			_, _ = fmt.Fprintf(stderr, "[hub] Private sign-in link (treat as a password): %s\n", link)
-		}
-	} else {
-		_, _ = fmt.Fprintf(stderr, "[hub] cannot advertise browser origin: %v\n", originErr)
-	}
-	_, _ = fmt.Fprintln(stderr, "[hub] Keep this terminal running while you use Evener in the browser.")
-	_, _ = fmt.Fprintln(stderr, "[hub] retrieve a browser login URL deliberately with evener hub login-url [--config PATH]; treat it as a password")
-	_, _ = fmt.Fprintf(stderr, "[hub] Auth token file: %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
+	announceHub(stderr, record, runDir, hubStateRoot, authToken)
 	if err := deps.serve(ctx, srv); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err

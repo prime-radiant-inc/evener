@@ -340,49 +340,21 @@ func (s *Session) runningDetachedProcessIDs() []string {
 }
 
 func stringArrayArg(args map[string]any, key string) ([]string, error) {
-	raw, ok := args[key]
-	if !ok || raw == nil {
+	if args[key] == nil {
 		return nil, nil
 	}
-	values, ok := raw.([]any)
-	if !ok {
-		return nil, fmt.Errorf("%s must be an array", key)
-	}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		s, ok := value.(string)
-		if !ok {
-			return nil, fmt.Errorf("%s values must be strings", key)
-		}
-		out = append(out, s)
-	}
-	return out, nil
+	return stringListArg(args, key, func(s string) (string, error) { return s, nil })
 }
 
 func jobTypeArrayArg(args map[string]any, key string) ([]jobstore.JobType, error) {
-	raw, ok := args[key]
-	if !ok {
-		return nil, nil
-	}
-	values, ok := raw.([]any)
-	if !ok {
-		return nil, fmt.Errorf("%s must be an array", key)
-	}
-	types := make([]jobstore.JobType, 0, len(values))
-	for _, value := range values {
-		s, ok := value.(string)
-		if !ok {
-			return nil, fmt.Errorf("%s values must be strings", key)
-		}
+	return stringListArg(args, key, func(s string) (jobstore.JobType, error) {
 		jobType := jobstore.JobType(s)
 		switch jobType {
 		case jobstore.JobShell, jobstore.JobType(delegateResourceType):
-			types = append(types, jobType)
-		default:
-			return nil, fmt.Errorf("invalid job type %q", jobType)
+			return jobType, nil
 		}
-	}
-	return types, nil
+		return "", fmt.Errorf("invalid job type %q", jobType)
+	})
 }
 
 func projectJobRecordForViewer(viewer *Session, assessor *Session, rec *jobstore.JobRecord) jobListEntry {

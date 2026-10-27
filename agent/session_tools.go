@@ -264,54 +264,14 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		s.emit(repaired)
 	}
 
-	// PreToolUse hooks
-	if s.hookRunner != nil {
-		hi := s.hookInput(plugin.HookPreToolUse)
-		hi.ToolName = toolname.EvenerToClaude(call.Name)
-		hi.ToolUseID = call.ID
-		if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
-			_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
-		}
-
-		preResult := s.hookRunner.RunPreToolUse(s.apiLogContext(ctx), hi)
-		for _, m := range preResult.ModelContext {
-			if err := s.deliverHookContext(m); err != nil {
-				return tool.ExecResult{ToolName: call.Name, CallID: call.ID, Output: err.Error(), FullOutput: err.Error(), IsError: true}
-			}
-		}
-		for _, m := range preResult.UserMessages {
-			s.deliverHookUserMessage(m)
-		}
-		if !prep.RawArgumentsRejected && preResult.Denied {
-			denyMsg := "Tool call denied by hook"
-			if preResult.DenyMessage != "" {
-				denyMsg = preResult.DenyMessage
-			}
-			return tool.ExecResult{
-				ToolName:   call.Name,
-				CallID:     call.ID,
-				Output:     denyMsg,
-				FullOutput: denyMsg,
-				IsError:    true,
-			}
-		}
-		if !prep.RawArgumentsRejected && len(preResult.UpdatedInput) > 0 {
-			if err := applyUpdatedToolInput(&call, preResult.UpdatedInput); err != nil {
-				msg := "invalid hook updatedInput: " + err.Error()
-				return tool.ExecResult{
-					ToolName:   call.Name,
-					CallID:     call.ID,
-					Output:     msg,
-					FullOutput: msg,
-					IsError:    true,
-				}
-			}
-			// Preparation validated the original arguments. A hook may replace
-			// any semantic task field, so dispatch this changed call through the
-			// normal PreValidate path while unchanged prepared calls still avoid
-			// running that hook twice.
-			prevalidated = false
-		}
+	if early, changed := s.runPreToolHooks(ctx, &call, prep); early != nil {
+		return *early
+	} else if changed {
+		// Preparation validated the original arguments. A hook may replace
+		// any semantic task field, so dispatch this changed call through the
+		// normal PreValidate path while unchanged prepared calls still avoid
+		// running that hook twice.
+		prevalidated = false
 	}
 	s.execToolCheckpoint("after_pre_hook")
 	if err := s.abortIfClosing(ctx); err != nil {
@@ -471,27 +431,92 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	s.responseSideEffectsMu.Unlock()
 	closeToolEvent()
 
-	// PostToolUse hooks
-	if s.hookRunner != nil {
-		hi := s.hookInput(plugin.HookPostToolUse)
-		hi.ToolName = toolname.EvenerToClaude(call.Name)
-		hi.ToolUseID = call.ID
-		hi.ToolResult = res.FullOutput   // legacy alias
-		hi.ToolResponse = res.FullOutput // official field
-		postResult := s.hookRunner.RunPostToolUse(s.apiLogContext(ctx), hi)
-		for _, m := range postResult.ModelContext {
-			if err := s.deliverHookContext(m); err != nil {
-				// Keep the tool state: a turn-ending communicate's records the
-				// end reason restore reads (endedOnNeedsResponse).
-				return tool.ExecResult{ToolName: call.Name, CallID: call.ID, Output: err.Error(), FullOutput: err.Error(), IsError: true, ToolState: res.ToolState}
-			}
-		}
-		for _, m := range postResult.UserMessages {
-			s.deliverHookUserMessage(m)
-		}
+	if early := s.runPostToolHooks(ctx, call, res); early != nil {
+		return *early
 	}
 
 	return res
+}
+
+// errorResult is a tool result that reports msg as the call's failed output.
+func errorResult(call llm.ToolCallData, msg string) tool.ExecResult {
+	return tool.ExecResult{
+		ToolName:   call.Name,
+		CallID:     call.ID,
+		Output:     msg,
+		FullOutput: msg,
+		IsError:    true,
+	}
+}
+
+// runPreToolHooks runs the PreToolUse hooks for call. A non-nil early result
+// ends the call without dispatch (a hook denial, a failed context delivery or
+// an unusable updatedInput). changed reports that a hook replaced call's
+// arguments, so the prepared call's validation no longer applies.
+func (s *Session) runPreToolHooks(ctx context.Context, call *llm.ToolCallData, prep prepareResult) (early *tool.ExecResult, changed bool) {
+	if s.hookRunner == nil {
+		return nil, false
+	}
+	hi := s.hookInput(plugin.HookPreToolUse)
+	hi.ToolName = toolname.EvenerToClaude(call.Name)
+	hi.ToolUseID = call.ID
+	if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
+		_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
+	}
+
+	preResult := s.hookRunner.RunPreToolUse(s.apiLogContext(ctx), hi)
+	for _, m := range preResult.ModelContext {
+		if err := s.deliverHookContext(m); err != nil {
+			res := errorResult(*call, err.Error())
+			return &res, false
+		}
+	}
+	for _, m := range preResult.UserMessages {
+		s.deliverHookUserMessage(m)
+	}
+	if !prep.RawArgumentsRejected && preResult.Denied {
+		denyMsg := "Tool call denied by hook"
+		if preResult.DenyMessage != "" {
+			denyMsg = preResult.DenyMessage
+		}
+		res := errorResult(*call, denyMsg)
+		return &res, false
+	}
+	if !prep.RawArgumentsRejected && len(preResult.UpdatedInput) > 0 {
+		if err := applyUpdatedToolInput(call, preResult.UpdatedInput); err != nil {
+			res := errorResult(*call, "invalid hook updatedInput: "+err.Error())
+			return &res, false
+		}
+		return nil, true
+	}
+	return nil, false
+}
+
+// runPostToolHooks runs the PostToolUse hooks for a dispatched call. A non-nil
+// early result replaces res because a hook's context could not be delivered.
+func (s *Session) runPostToolHooks(ctx context.Context, call llm.ToolCallData, res tool.ExecResult) *tool.ExecResult {
+	if s.hookRunner == nil {
+		return nil
+	}
+	hi := s.hookInput(plugin.HookPostToolUse)
+	hi.ToolName = toolname.EvenerToClaude(call.Name)
+	hi.ToolUseID = call.ID
+	hi.ToolResult = res.FullOutput   // legacy alias
+	hi.ToolResponse = res.FullOutput // official field
+	postResult := s.hookRunner.RunPostToolUse(s.apiLogContext(ctx), hi)
+	for _, m := range postResult.ModelContext {
+		if err := s.deliverHookContext(m); err != nil {
+			// Keep the tool state: a turn-ending communicate's records the
+			// end reason restore reads (endedOnNeedsResponse).
+			failed := errorResult(call, err.Error())
+			failed.ToolState = res.ToolState
+			return &failed
+		}
+	}
+	for _, m := range postResult.UserMessages {
+		s.deliverHookUserMessage(m)
+	}
+	return nil
 }
 
 func (s *Session) execToolCheckpoint(name string) {

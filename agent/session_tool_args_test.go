@@ -173,34 +173,6 @@ func TestWatchIntArg(t *testing.T) {
 	}
 }
 
-func TestWatchStringArg(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		args    map[string]any
-		want    string
-		wantErr bool
-	}{
-		{name: "absent", args: map[string]any{}},
-		{name: "null", args: map[string]any{"k": nil}},
-		{name: "string", args: map[string]any{"k": "s"}, want: "s"},
-		{name: "number", args: map[string]any{"k": 1.0}, wantErr: true},
-		{name: "bool", args: map[string]any{"k": true}, wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := watchStringArg(tt.args, "k")
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
-			}
-			if got != tt.want {
-				t.Fatalf("got %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestLenientStringArg(t *testing.T) {
 	t.Parallel()
 

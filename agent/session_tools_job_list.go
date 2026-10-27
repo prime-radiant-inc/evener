@@ -553,30 +553,15 @@ func jobListFilterFromArgs(args map[string]any) (listFilter, error) {
 }
 
 func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, error) {
-	raw, ok := args[key]
-	if !ok {
-		return nil, nil
-	}
-	values, ok := raw.([]any)
-	if !ok {
-		return nil, fmt.Errorf("%s must be an array", key)
-	}
-	statuses := make([]jobstore.Status, 0, len(values))
-	for _, value := range values {
-		s, ok := value.(string)
-		if !ok {
-			return nil, fmt.Errorf("%s values must be strings", key)
-		}
+	return stringListArg(args, key, func(s string) (jobstore.Status, error) {
 		status := jobstore.Status(s)
 		switch status {
 		case jobstore.StatusRunning,
 			jobstore.Status("idle"), jobstore.Status("settling"), jobstore.Status("stopping"), jobstore.Status("closed"),
 			jobstore.StatusCompleted, jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled,
 			jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled, jobstore.StatusStopped:
-			statuses = append(statuses, status)
-		default:
-			return nil, fmt.Errorf("invalid job status %q", status)
+			return status, nil
 		}
-	}
-	return statuses, nil
+		return "", fmt.Errorf("invalid job status %q", status)
+	})
 }

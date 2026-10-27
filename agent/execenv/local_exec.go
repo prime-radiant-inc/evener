@@ -74,7 +74,7 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 	start := time.Now()
 	stdout := newCappedOutputBuffer(e.outputCaptureCapBytes())
 	stderr := newCappedOutputBuffer(e.outputCaptureCapBytes())
-	env := injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir})
+	env := e.launchEnv(dir, envVars)
 	config := commandRuntimeConfig{
 		Dir:              dir,
 		Env:              env,
@@ -86,11 +86,7 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 	if sink != nil {
 		config.Stdout = sink
 	}
-	if args := cmd.Args(); len(args) > 0 {
-		if resolved, ok := lookPathInEnv(args[0], env); ok {
-			config.ExecutablePath = resolved
-		}
-	}
+	config.ExecutablePath = launchExecutable(cmd, env)
 	cmd.Configure(config)
 
 	if err := cmd.Start(); err != nil {
@@ -200,7 +196,7 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 	}
 	cmd.Configure(commandRuntimeConfig{
 		Dir:              dir,
-		Env:              injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir}),
+		Env:              e.launchEnv(dir, envVars),
 		Stdout:           out,
 		Stderr:           out,
 		CombinedOutput:   combinedOutput,
@@ -320,7 +316,7 @@ func (e *LocalExecutionEnvironment) DetachCommand(ctx context.Context, command, 
 		return DetachedProcess{}, err
 	}
 	cmd := e.commands().Shell(command)
-	env := injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir})
+	env := e.launchEnv(dir, envVars)
 	// A detached process outlives the session, and the session's scratch is
 	// deleted when the session is archived, so the process must not be told
 	// about the scratch, and its TMPDIR must be the world-usable container the
@@ -344,11 +340,7 @@ func (e *LocalExecutionEnvironment) DetachCommand(ctx context.Context, command, 
 		Stderr:      nullDevice,
 		SysProcAttr: sysProcAttr,
 	}
-	if args := cmd.Args(); len(args) > 0 {
-		if resolved, found := lookPathInEnv(args[0], env); found {
-			config.ExecutablePath = resolved
-		}
-	}
+	config.ExecutablePath = launchExecutable(cmd, env)
 	cmd.Configure(config)
 
 	if err := cmd.Start(); err != nil {
@@ -367,6 +359,25 @@ func (e *LocalExecutionEnvironment) DetachCommand(ctx context.Context, command, 
 	}()
 
 	return DetachedProcess{PID: pid, Done: done}, nil
+}
+
+// launchEnv is the environment a launched command receives: the session's
+// command environment with the virtualenv bin directories of the working
+// directory and of the root placed on PATH.
+func (e *LocalExecutionEnvironment) launchEnv(dir string, envVars map[string]string) []string {
+	return injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir})
+}
+
+// launchExecutable is the path cmd's first argument resolves to on env's PATH,
+// or "" when it is empty, names a path, or is not found, leaving the runtime to
+// resolve it itself.
+func launchExecutable(cmd commandRuntime, env []string) string {
+	args := cmd.Args()
+	if len(args) == 0 {
+		return ""
+	}
+	resolved, _ := lookPathInEnv(args[0], env)
+	return resolved
 }
 
 func lookPathInEnv(name string, env []string) (string, bool) {
