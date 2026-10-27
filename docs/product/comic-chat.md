@@ -109,9 +109,14 @@ Completion wakes eligible pending mutations with their original mutation IDs;
 Stop cancellation and failed-resume recovery keep their existing owners.
 
 Pending root questions use the existing AskDock and suppress the ordinary message
-surface. Sandbox requests use the existing approval card; neither arriving at a
-request nor reconnecting approves it. A late response belongs to the original
-root, not the conversation now on screen. Inline children remain read-only.
+surface. The shared question owner retains known pending questions, answers,
+notes and the active tab when background history drops cached bodies, including
+during responsive pane remounts. Retention requires the same canonical call and
+pending state. Resolution, replacement or removal clears the question through
+the ordinary reconciliation rules; omitted bodies do not create new questions.
+Sandbox requests use the existing approval card; neither arriving at a request
+nor reconnecting approves it. A late response belongs to the original root, not
+the conversation now on screen. Inline children remain read-only.
 Comic does not add upload, voice, session creation, configuration, forks or general
 job/watch controls; workspace navigation and existing menus retain those actions.
 Existing structured
