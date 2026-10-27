@@ -27,7 +27,11 @@ Storage failure leaves the current choice usable and reports uncertain persisten
 `ConversationBody` selects the renderer within the existing `ConversationSeat`.
 The seat retains its composer source and identity-recovery owner across switches.
 Each presentation retains its reading position; Comic keeps per-seat semantic
-positions and uses session storage for reload. The normal session menu remains
+positions and uses session storage for reload. Positions belong to the logical
+session, not its routing address. Clear starts the replacement session at its
+latest root output, even when Clear happens while Standard is selected. A daemon
+instance restart for the same session preserves the position.
+The normal session menu remains
 available, including a way back to Standard while the conversation is loading or
 deleted. Session actions also remains available in both presentations while a
 question is pending and message input is hidden. Inline child readers remain
@@ -51,6 +55,11 @@ Comic and plain views preserve semantic reading positions through reflow. The
 root respects reduced motion and safe-area padding, and shared controls retain
 their keyboard behavior. Pointer completion and text selection follow the pane's
 document when it moves into a popout or docks back, even with Appearance closed.
+Comic registers the shared transcript scroll actions for the focused seat,
+including shortcuts dispatched outside its scroll port. Explicit movement and
+positioning cancel that reader's automatic restoration and older-history demand;
+independent readers keep their demand. The shared editable-target and mobile
+shortcut rules remain unchanged.
 Narrow-screen checks must reach the question choices,
 note and final action, not merely capture their container. Browser viewport and
 safe-area emulation do not establish native touch inertia or device behavior.
