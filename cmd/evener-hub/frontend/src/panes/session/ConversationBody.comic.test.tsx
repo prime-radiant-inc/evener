@@ -53,9 +53,7 @@ beforeEach(() => {
   window.history.replaceState(null, "", `/s/${encodeURIComponent(ref)}`);
 });
 afterEach(async () => {
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   cleanup();
   resetWorkspaceStoreForTests();
   resetThreadsStoreForTests();
