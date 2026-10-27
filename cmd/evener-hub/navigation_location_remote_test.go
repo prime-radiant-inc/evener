@@ -360,8 +360,8 @@ func TestNavigationLocationRemoteReadCancellation(t *testing.T) {
 func TestNavigationLocationRemoteCurrentSessionUsesStableWorkspaceRow(t *testing.T) {
 	stable, current, child := hubtest.SessionID(t), hubtest.SessionID(t), hubtest.SessionID(t)
 	entry := liveActivityEntry(1, current, appwire.ThreadStatusActive, nil)
-	entry.Entry.SourceID = "local"
-	entry.Entry.WorkspaceRef = "local:" + stable
+	entry.SourceID = "local"
+	entry.WorkspaceRef = "local:" + stable
 	entry.Crashed = true
 	f := newRemoteLocationFixture(t, entry)
 	f.save(t, schema.SessionMeta{ID: stable, ProfileID: "local"})

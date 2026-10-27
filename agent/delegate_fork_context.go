@@ -43,6 +43,7 @@ func delegateContextEntries(parent []transcript.Entry) []transcript.Entry {
 			Message:              t.Message,
 			Timestamp:            t.Timestamp,
 			SteeringSource:       t.SteeringSource,
+			SteeringKind:         t.SteeringKind,
 			ResponseProvider:     t.ResponseProvider,
 			ResponseModel:        t.ResponseModel,
 			ResponseRequestModel: t.ResponseRequestModel,

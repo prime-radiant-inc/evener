@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -210,6 +211,34 @@ func TestTranscriptAuthorshipForkCopiesKnown(t *testing.T) {
 	human := schema.NewTurn(schema.TurnUserInput, llm.User("original-human"))
 	human.Authorship = humanTranscriptAuthorship()
 	root.recordTurn(human, human)
+	note := schema.NewTurn(schema.TurnSteering, llm.User("fork-note-7f21"))
+	note.Authorship = humanTranscriptAuthorship()
+	note.SteeringSource, note.SteeringKind = "user", "human-note"
+	root.recordTurn(note, note)
+	assertNotes := func(entries []transcript.Entry, want int) {
+		t.Helper()
+		seen := 0
+		for index, entry := range entries {
+			turn := entry.Turn
+			if turn.Message.Text() != note.Message.Text() {
+				continue
+			}
+			seen++
+			if turn.Kind != schema.TurnSteering || turn.SteeringSource != "user" || turn.SteeringKind != "human-note" {
+				t.Errorf("inherited note kind=%q source=%q steering kind=%q", turn.Kind, turn.SteeringSource, turn.SteeringKind)
+			}
+			assertTranscriptAuthor(t, turn, map[string]any{"kind": "human"}, true)
+			items := apptranscript.ProjectTurn("fork-note", index, turn, nil, nil, nil)
+			if len(items) != 1 || items[0].Type != "steering" || items[0].Source != "user" || items[0].SteeringKind != "human-note" || items[0].Text != note.Message.Text() {
+				t.Errorf("projected inherited note = %+v", items)
+			} else {
+				assertTranscriptAuthor(t, items[0], map[string]any{"kind": "human"}, true)
+			}
+		}
+		if seen != want {
+			t.Errorf("inherited notes=%d, want %d", seen, want)
+		}
+	}
 	answer := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "original-answer"}, {Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "original-thought"}}}})
 	answer.Authorship = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: root.id}}
 	root.recordTurn(answer, answer)
@@ -246,7 +275,9 @@ func TestTranscriptAuthorshipForkCopiesKnown(t *testing.T) {
 			t.Fatalf("opt=%v copied=%d", opt, seen)
 		}
 		if opt {
+			assertNotes(data.Entries, 1)
 			nested := delegateContextEntries(data.Entries)
+			assertNotes(nested, 1)
 			for _, e := range nested {
 				if e.Turn.Message.Text() == "original-answer" {
 					assertTranscriptAuthor(t, e.Turn, map[string]any{"kind": "agent", "session_id": root.id}, true)
@@ -256,6 +287,8 @@ func TestTranscriptAuthorshipForkCopiesKnown(t *testing.T) {
 			if answer.Authorship.Author.SessionID != root.id || answer.Authorship.Inherited {
 				t.Fatal("copy changed original")
 			}
+		} else {
+			assertNotes(data.Entries, 0)
 		}
 		adapter.releaseRun()
 	}

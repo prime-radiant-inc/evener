@@ -1622,7 +1622,7 @@ func (key navigationResourceKey) Semantic() navigationResourceKey {
 func (w *WebServer) navigationSubagentParent(ctx context.Context, ref string) (parent, kind string, err error) {
 	parsed, err := appwire.ParseRef(ref)
 	if err != nil {
-		return "", "", nil
+		return "", "", err
 	}
 	if parsed.SourceID != appwire.LocalSourceID {
 		return w.navigationRemoteAncestor(ctx, parsed)

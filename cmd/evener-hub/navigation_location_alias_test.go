@@ -276,6 +276,14 @@ func TestNavigationLocationAliasMovesWithRootInTheSameInvalidation(t *testing.T)
 	}
 }
 
+func TestWebNavigationSubagentParentRejectsMalformedRef(t *testing.T) {
+	web := &WebServer{}
+	parent, kind, err := web.navigationSubagentParent(t.Context(), ":")
+	if err == nil || parent != "" || kind != "" {
+		t.Fatalf("malformed ancestry lookup = %q, %q, %v", parent, kind, err)
+	}
+}
+
 func TestWebNavigationSubagentParentHops(t *testing.T) {
 	root, sub, orig, cont, lone := identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID()
 	live, dead, inproc, stale, unknown := identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID()
@@ -393,8 +401,8 @@ func TestNavigationLocationCurrentSessionUsesStableWorkspaceRow(t *testing.T) {
 				{ID: child, ProfileID: "local", IsSubagent: true, ParentSessionID: current},
 			})
 			entry := liveActivityEntry(1, current, appwire.ThreadStatusActive, nil)
-			entry.Entry.SourceID = "local"
-			entry.Entry.WorkspaceRef = "local:" + stable
+			entry.SourceID = "local"
+			entry.WorkspaceRef = "local:" + stable
 			entry.Crashed = crashed
 			web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries(entry)})
 			t.Cleanup(func() { _ = web.appRPC.Shutdown(context.Background()) })
