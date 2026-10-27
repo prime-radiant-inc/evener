@@ -66,6 +66,22 @@ function recoveryCompositionFingerprint(composition: RecoveryComposition): strin
     mentions: composition.mentions ?? [],
   });
 }
+/** The composition a durable recovery row carries, as the fingerprint sees it. */
+function recordComposition(record: MutationRecoveryRecord): RecoveryComposition {
+  const draft = recoveryComposerDraft(record);
+  return {
+    text: draft.text,
+    attachments: draft.attachments.map(({ marker, name, mediaType, data }) => ({
+      marker,
+      name,
+      mediaType,
+      data: data ?? "",
+    })),
+    skillNames: draft.skillNames,
+    commandNames: draft.commandNames ?? [],
+    mentions: draft.mentions,
+  };
+}
 type SelectionMeta = { commandNames: string[]; mentions: ComposerMention[] | undefined };
 function compositionIsEmpty(composition: RecoveryComposition): boolean {
   return (
@@ -905,6 +921,19 @@ export function createComposerSourceState(
                 refusalComposition,
                 preserved,
               );
+              // Whether the disposal snapshot is already incorporated into
+              // the durable row - by this reconciliation, by the
+              // preservation that wrote it, or by the fresh owner a refused
+              // reconciliation preserved under. A revalidation drop means a
+              // peer consumed that row; re-preserving incorporated content
+              // would resurrect work the peer already sent or discarded, so
+              // only work gained after the first reconciliation preserves
+              // again.
+              const disposalIncorporated =
+                preserved !== undefined &&
+                disposalComposition !== null &&
+                recoveryCompositionFingerprint(recordComposition(preserved)) ===
+                  recoveryCompositionFingerprint(disposalComposition);
               // The post-commit projection waits let another pane consume,
               // send, or edit the preserved row before this source installs
               // it. Installing the captured snapshot would let a later
@@ -913,18 +942,20 @@ export function createComposerSourceState(
               // validation every adoption uses and drop what no longer
               // matches.
               preserved = preserved === undefined ? undefined : await revalidatePreservedRecord(preserved);
-              // A disposal that lands during that read leaves the pane's
-              // newest work - typing and settled attachments gained while
-              // the read was in flight - only in the disposal snapshot:
-              // queued saves abort on the disposed source. Reconcile the
-              // latest snapshot before the selection is published, exactly
-              // like a disposal caught before the read.
-              preserved = await reconcileDisposalComposition(
-                clientMutationId,
-                localDraftRevisionId,
-                refusalComposition,
-                preserved,
-              );
+              if (!disposalIncorporated) {
+                // A disposal that lands during that read leaves the pane's
+                // newest work - typing and settled attachments gained while
+                // the read was in flight - only in the disposal snapshot:
+                // queued saves abort on the disposed source. Reconcile the
+                // latest snapshot before the selection is published, exactly
+                // like a disposal caught before the read.
+                preserved = await reconcileDisposalComposition(
+                  clientMutationId,
+                  localDraftRevisionId,
+                  refusalComposition,
+                  preserved,
+                );
+              }
               destinationOwnsNewer =
                 preserved !== undefined &&
                 destinationHasNewerEdits(recoverySelectionOwnerId, preserved.targetRef, clientMutationId, source);

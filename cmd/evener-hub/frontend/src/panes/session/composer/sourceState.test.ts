@@ -1295,6 +1295,113 @@ test("a disposal during the revalidation read reconciles the pane's newest work"
   }
 });
 
+// The first reconciliation can incorporate the disposal snapshot into the
+// preserved row, and a peer can then consume that row before the
+// revalidation read. Re-preserving the incorporated content then would
+// resurrect work the peer already sent or discarded; only work gained after
+// the first reconciliation may preserve again.
+test("a peer consuming the reconciled row before revalidation does not resurrect disposal work", async () => {
+  class HeldStagesStorage extends MutationOutboxIndexedDB {
+    holdPreservation = true;
+    readonly preservationReached = deferred<void>();
+    readonly releasePreservation = deferred<void>();
+    holdReconcileWrite = false;
+    readonly reconcileReached = deferred<void>();
+    readonly releaseReconcile = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      if (this.holdPreservation) {
+        this.holdPreservation = false;
+        this.preservationReached.resolve();
+        await this.releasePreservation.promise;
+      }
+      return super.preserveRecoveryComposition(...args);
+    }
+
+    override async updateRecoveryInput(
+      ...args: Parameters<MutationOutboxIndexedDB["updateRecoveryInput"]>
+    ): ReturnType<MutationOutboxIndexedDB["updateRecoveryInput"]> {
+      const result = await super.updateRecoveryInput(...args);
+      // Hold the reconciliation's own successful write: the peer consumes
+      // the row between this reconciliation and the revalidation read.
+      if (this.holdReconcileWrite && result !== undefined) {
+        this.holdReconcileWrite = false;
+        this.reconcileReached.resolve();
+        await this.releaseReconcile.promise;
+      }
+      return result;
+    }
+  }
+  const storage = new HeldStagesStorage();
+  setMutationStorageForTests(storage);
+  const ref = "local:consumed-reconcile";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "row composition" }] },
+    attachments: [],
+    composerText: "row composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  const scope = composerSelectionScope("pane-a");
+  try {
+    await source.activateRecovery(recovery);
+    // A peer advances the row so the source's save is refused into
+    // preservation.
+    const peerRow = await peer.getRecovery(original.clientMutationId);
+    if (!peerRow) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRow) },
+    );
+
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, "row composition", [], []);
+    await storage.preservationReached.promise;
+    // The pane gains newer work and closes while the preservation is held.
+    source.editText("newer disposal work");
+    source.dispose();
+    storage.holdReconcileWrite = true;
+    storage.releasePreservation.resolve();
+    await storage.reconcileReached.promise;
+
+    // The first reconciliation incorporated the disposal work into the
+    // preserved row; a peer discards that row before the revalidation read.
+    const preserved = (await peer.listRecovery(ref)).find((row) => row.clientMutationId !== original.clientMutationId);
+    expect(preserved?.composerText).toBe("newer disposal work");
+    expect(await peer.discardRecovery(preserved?.clientMutationId ?? "")).toBe(true);
+    storage.releaseReconcile.resolve();
+    await saving;
+    await flushPendingTurnsProjectionForTests();
+
+    // The consumed disposal work is not resurrected under a fresh identity,
+    // and the stored selection still names the activation's row.
+    expect(
+      (await storage.listRecovery(ref)).filter((row) => row.clientMutationId !== original.clientMutationId),
+    ).toEqual([]);
+    expect(readRecoverySelection(ref, scope)).toBe(original.clientMutationId);
+  } finally {
+    storage.releasePreservation.resolve();
+    storage.releaseReconcile.resolve();
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
 // A deferred adoption can wait on another source's submission alone - the
 // destination holds no operation lock of its own, so only the shared
 // submission guard's release can recheck it.
