@@ -12,12 +12,12 @@ func humanTranscriptAuthorship() *schema.TranscriptAuthorship {
 }
 
 func inheritedTranscriptAuthorship(a *schema.TranscriptAuthorship) *schema.TranscriptAuthorship {
-	copy := a.Clone()
-	if copy == nil {
-		copy = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorUnknown}}
+	cloned := a.Clone()
+	if cloned == nil {
+		cloned = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorUnknown}}
 	}
-	copy.Inherited = true
-	return copy
+	cloned.Inherited = true
+	return cloned
 }
 
 // Call before session/transcript leaf locks. The descriptor's physical store

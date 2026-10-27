@@ -11,10 +11,10 @@ func (s *RemoteHubSource) translateItemAuthorship(item *appwire.ThreadItem) {
 	if item.Authorship == nil {
 		return
 	}
-	copy := *item.Authorship
-	copy.Author.SessionRef = s.translateNestedRef(copy.Author.SessionRef)
-	copy.Author.OwnerRef = s.translateNestedRef(copy.Author.OwnerRef)
-	item.Authorship = &copy
+	cloned := *item.Authorship
+	cloned.Author.SessionRef = s.translateNestedRef(cloned.Author.SessionRef)
+	cloned.Author.OwnerRef = s.translateNestedRef(cloned.Author.OwnerRef)
+	item.Authorship = &cloned
 }
 
 func (s *RemoteHubSource) translateTurnItems(turn *appwire.Turn) {

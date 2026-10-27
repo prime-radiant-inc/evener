@@ -4,8 +4,8 @@ import "testing"
 
 func TestTranscriptAuthorshipClone(t *testing.T) {
 	original := Thread{Turns: []Turn{{Items: []ThreadItem{{Authorship: &TranscriptAuthorship{Author: TranscriptAuthor{Kind: TranscriptAuthorAgent, SessionRef: "local:parent"}, Inherited: true}}}}}}
-	copy := CloneThread(original)
-	copy.Turns[0].Items[0].Authorship.Author.SessionRef = "local:changed"
+	clonedThread := CloneThread(original)
+	clonedThread.Turns[0].Items[0].Authorship.Author.SessionRef = "local:changed"
 	if original.Turns[0].Items[0].Authorship.Author.SessionRef != "local:parent" {
 		t.Fatal("clone shares author pointer")
 	}

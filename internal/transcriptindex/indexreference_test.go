@@ -58,7 +58,7 @@ func TestInheritedCommunicateReopenAndAppend(t *testing.T) {
 			dir := t.TempDir()
 			x := openIndex(t, path, dir)
 			build := x.build
-			for pass := 0; pass < 2; pass++ {
+			for range 2 {
 				w, err := x.Latest(1)
 				if err != nil {
 					t.Fatal(err)
@@ -245,7 +245,7 @@ func TestInheritedCommunicateIndexedNeighbors(t *testing.T) {
 			path := writeFixture(t, fx)
 			dir := t.TempDir()
 			x := openIndex(t, path, dir)
-			for pass := 0; pass < 2; pass++ {
+			for pass := range 2 {
 				w, err := x.Latest(20)
 				if err != nil {
 					t.Fatal(err)
@@ -285,5 +285,84 @@ func TestInheritedCommunicateIndexedNeighbors(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestInheritedCommunicateDedicatedDelivery(t *testing.T) {
+	for _, echo := range []bool{false, true} {
+		t.Run(fmt.Sprintf("echo-%t", echo), func(t *testing.T) {
+			fx := inheritedCommunicateFixture("")
+			delivery := communicated("copied", "call_child", "copied child update")
+			delivery.Authorship = fx.lines[1].turn.Authorship.Clone()
+			fx.lines = append(fx.lines[:2:2], entryLine(delivery), fx.lines[2])
+			if echo {
+				fx.lines[1].turn.Message.Content = append([]llm.ContentPart{text("copied child update")}, fx.lines[1].turn.Message.Content...)
+			}
+			path, lines := writeHeaderOnly(t, fx)
+			for _, line := range lines[:3] {
+				appendBytes(t, path, line)
+			}
+			dir := t.TempDir()
+			x := openIndex(t, path, dir)
+			for pass := range 3 {
+				full, err := x.Latest(10)
+				if err != nil || len(full.Candidates) != 2 || len(x.builder.commCalls) != 0 {
+					t.Fatalf("pass %d: delivery duplicated or left pending: window=%+v pending=%v err=%v", pass, full, x.builder.commCalls, err)
+				}
+				latest, err := x.Latest(1)
+				if err != nil || len(latest.Candidates) != 1 || !latest.HasOlder {
+					t.Fatalf("bounded delivery=%+v err=%v", latest, err)
+				}
+				item := latest.Candidates[0].Item
+				wantID := "item_assistant_3_0"
+				if echo {
+					wantID = "item_assistant_2_0"
+				}
+				if item.ID != wantID || item.Text != "copied child update" || item.Authorship == nil || !item.Authorship.Inherited || item.Authorship.Author.SessionRef != "local:child" {
+					t.Fatalf("dedicated/echo identity or author changed: %+v", item)
+				}
+				if err := x.Close(); err != nil {
+					t.Fatal(err)
+				}
+				x = openIndex(t, path, dir)
+				if x.rebuilds != 0 {
+					t.Fatal("pending-state recovery rebuilt unchanged history")
+				}
+				if pass == 1 {
+					appendBytes(t, path, lines[3])
+					catchUp(t, x)
+				}
+			}
+		})
+	}
+}
+
+func TestInheritedCommunicateDuplicateProjectionRebuild(t *testing.T) {
+	fx := inheritedCommunicateFixture("")
+	delivery := communicated("copied", "call_child", "copied child update")
+	delivery.Authorship = fx.lines[1].turn.Authorship.Clone()
+	fx.lines = append(fx.lines[:2:2], entryLine(delivery), fx.lines[2])
+	path := writeFixture(t, fx)
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	x := openIndex(t, path, dir)
+	if err := x.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rewriteMetaField(t, dir, "projection", strconv.Quote("transcript-read-model-v9:"+schemaID))
+	x = openIndex(t, path, dir)
+	if x.rebuilds != 1 {
+		t.Fatalf("duplicate-prone projection rebuilds=%d want=1", x.rebuilds)
+	}
+	w, err := x.Latest(10)
+	if err != nil || len(w.Candidates) != 2 || w.Candidates[1].Item.ID != "item_assistant_3_0" {
+		t.Fatalf("rebuilt delivery=%+v err=%v", w, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(original, after) {
+		t.Fatalf("sidecar repair changed original transcript: err=%v", err)
 	}
 }

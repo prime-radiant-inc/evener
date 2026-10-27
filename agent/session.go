@@ -2346,18 +2346,6 @@ func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, l
 	return s.appendPairedTurnVia(kind, live, persisted, s.writeTranscriptDurableLocked)
 }
 
-// appendTurnWithSyncedTranscriptMessage records a turn a durability owner
-// depends on being both recorded AND synced before it commits state recovery
-// trusts. Its sole production caller is the delegate seed input (preseedInput):
-// the child is adopted and runs on the strength of that seed, and reads it back
-// from a transcript where a retained (unsynced) line is already visible — so
-// the record must be synced, not merely landed (H1). AppendDurable's
-// recorded-or-nil is the wrong door here for the same reason recordTurn's is
-// the wrong door for a skill carrier.
-func (s *Session) appendTurnWithSyncedTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
-	return s.appendPairedTurnVia(kind, live, persisted, s.writeTranscriptSyncedLocked)
-}
-
 func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.Message, write func(schema.Turn) error) error {
 	t := schema.NewTurn(kind, live)
 	persistedTurn := t

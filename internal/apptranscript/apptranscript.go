@@ -434,6 +434,12 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 		}
 		return items, parts
 	case schema.TurnCommunicate:
+		// Ordinary forks retain the dedicated delivery. Only context-only
+		// copies that omit it need reconstruction from the call and result.
+		if reg != nil && turn.Communicate != nil {
+			delete(reg.CommRawArgs, turn.Communicate.CallID)
+			delete(reg.CommAuthorship, turn.Communicate.CallID)
+		}
 		if item, ok := CommunicateItem(turnID, entryIndex, turn); ok {
 			return []appwire.ThreadItem{item}, []int{0}
 		}
@@ -893,9 +899,10 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 // displays it: one agentMessage per maximal run of consecutive text parts,
 // keyed by the run's first part, and one reasoning item for the whole entry,
 // keyed by its first thinking part. A communicate call projects nothing: its
-// COMMUNICATE entry carries the delivered message. Inherited calls instead
-// defer to their result, because forks exclude transcript-only COMMUNICATE
-// entries. Every item names the entry's round.
+// COMMUNICATE entry carries the delivered message and consumes any pending
+// reconstruction. Inherited calls without that entry defer to their result,
+// because delegate context copies exclude transcript-only entries. Every item
+// names the entry's round.
 func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRegistry, parts *[]int) []appwire.ThreadItem {
 	var items []appwire.ThreadItem
 	var lastAssistantText string

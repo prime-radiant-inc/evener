@@ -28,10 +28,9 @@ const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
 	formatVersion = 6
-	// v9: inherited identity-format communicate calls reconstruct their message
-	// at the result or unpaired flush. Older sidecars omitted those items even
-	// though their transcript/schema shapes were unchanged.
-	projectionID = "transcript-read-model-v9"
+	// Dedicated COMMUNICATE records consume inherited call reconstruction.
+	// Older sidecars can contain duplicate messages from ordinary forks.
+	projectionID = "transcript-read-model-v10"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
 	// the check the attention fold cursor uses (agent/session_attention.go).
