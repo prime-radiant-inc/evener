@@ -41,7 +41,7 @@ func TestLaunchersResolveBareNamesThroughTheProjectVenv(t *testing.T) {
 
 	t.Run("ExecCommand", func(t *testing.T) {
 		env, marker := newEnv(t)
-		if _, err := env.ExecCommand(ctx, "venvtool "+marker, 5000, "", nil); err != nil {
+		if _, err := env.ExecCommand(ctx, "venvtool "+ShellEscapeArgs(marker), 5000, "", nil); err != nil {
 			t.Fatal(err)
 		}
 		ran(t, marker)
@@ -55,7 +55,7 @@ func TestLaunchersResolveBareNamesThroughTheProjectVenv(t *testing.T) {
 	})
 	t.Run("StreamCommand", func(t *testing.T) {
 		env, marker := newEnv(t)
-		h, err := env.StreamCommand(ctx, "venvtool "+marker, "", nil, io.Discard)
+		h, err := env.StreamCommand(ctx, "venvtool "+ShellEscapeArgs(marker), "", nil, io.Discard)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -69,7 +69,7 @@ func TestLaunchersResolveBareNamesThroughTheProjectVenv(t *testing.T) {
 		if !env.DetachSupported() {
 			t.Skip("detached execution is unsupported on this platform")
 		}
-		p, err := env.DetachCommand(ctx, "venvtool "+marker, "", nil)
+		p, err := env.DetachCommand(ctx, "venvtool "+ShellEscapeArgs(marker), "", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
