@@ -12,6 +12,7 @@ import {
 import { retainedConversationComposer } from "../panes/session/composer/retainedComposer";
 import { parseZoomParams } from "../panes/zoom/intent";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import type { MutationRecoveryRecord } from "../stores/mutationOutbox";
 import { currentAttentionEntryToken, openAttentionSession } from "./attentionHistory";
 import {
   captureAttentionPlacement,
@@ -1649,6 +1650,101 @@ test("two cascade columns keep independent selections under one seat", () => {
   expect(readRecoverySelection(ownerRef, reloadedOwner.recoverySelectionOwnerId)).toBe("owner-selected-row");
   expect(readRecoverySelection(childRef, reloadedChild.recoverySelectionOwnerId)).toBe("child-selected-row");
   expect(readRecoverySelection(ownerRef, reloadedOwner.recoverySelectionOwnerId)).not.toBe("child-selected-row");
+});
+
+// A cascade column retained for an ancestor conversation owns a composer with
+// the pane's seat, but no pane ever held that ref, so nothing else establishes
+// its ref-to-seat mapping. Selecting a recovery in that column must map the
+// ref to the seat, or closing the cascade and reopening the ancestor
+// allocates a fresh seat whose stored selection cannot be found.
+test("reopening a never-leaf cascade ancestor restores its retained column's selection", () => {
+  installLocalStorage(new MemoryStorage());
+  const ownerRef = "local:never-leaf-owner";
+  const childRef = "local:never-leaf-child";
+  const params = {
+    ref: childRef,
+    source: { type: "session" as const, params: { ref: ownerRef } },
+    edges: [{ ownerRef, childRef, delegateId: "delegate-never-leaf" }],
+  };
+  const cascadeId = workspaceStore.getState().openPane("sessionZoom", params);
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
+  const seat = cascade.composerSeatId;
+  const lifetime = conversationPaneLifetime(cascade);
+  const ancestorColumn = retainedConversationComposer(lifetime, ownerRef);
+  if (!ancestorColumn) throw new Error("ancestor column lacks a composer");
+
+  // The user selects a recovery row in the cascade's parent column.
+  const selected: MutationRecoveryRecord = {
+    version: 1,
+    clientMutationId: "ancestor-selected-row",
+    targetRef: ownerRef,
+    intentSequence: 1,
+    createdAt: 0,
+    method: "turn/start",
+    payload: { ref: ownerRef, input: [] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [] },
+    composerText: "",
+    state: "submitting",
+    recoveryKind: "rejected",
+  };
+  ancestorColumn.setActiveRecoveryId(selected);
+  expect(readRefComposerSeat(ownerRef)).toBe(seat);
+  expect(readRecoverySelection(ownerRef, composerSelectionScope(seat))).toBe("ancestor-selected-row");
+
+  // Closing the cascade and reopening the ancestor as its own pane reuses the
+  // retained seat, restoring the saved selection instead of a fresh seat that
+  // cannot discover it.
+  workspaceStore.getState().closePane(cascadeId);
+  const reopenedId = workspaceStore.getState().openPane("session", { ref: ownerRef });
+  const reopened = workspaceStore.getState().panes.find((pane) => pane.id === reopenedId);
+  if (!reopened?.composerSeatId) throw new Error("reopened ancestor lacks its seat");
+  expect(reopened.composerSeatId).toBe(seat);
+  expect(readRecoverySelection(ownerRef, composerSelectionScope(reopened.composerSeatId))).toBe(
+    "ancestor-selected-row",
+  );
+});
+
+// An independently open pane that owns the ancestor ref established its own
+// seat mapping; a retained column selecting a recovery must keep it.
+test("a retained column keeps an independently open owner's seat mapping", () => {
+  installLocalStorage(new MemoryStorage());
+  const ownerRef = "local:independent-owner";
+  const childRef = "local:independent-child";
+  const independentId = workspaceStore.getState().openPane("session", { ref: ownerRef });
+  const independent = workspaceStore.getState().panes.find((pane) => pane.id === independentId);
+  if (!independent?.composerSeatId) throw new Error("independent pane lacks its seat");
+  const params = {
+    ref: childRef,
+    source: { type: "session" as const, params: { ref: ownerRef } },
+    edges: [{ ownerRef, childRef, delegateId: "delegate-independent-owner" }],
+  };
+  const cascadeId = workspaceStore.getState().openPane("sessionZoom", params);
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!cascade) throw new Error("cascade missing");
+  const ancestorColumn = retainedConversationComposer(conversationPaneLifetime(cascade), ownerRef);
+  if (!ancestorColumn) throw new Error("ancestor column lacks a composer");
+
+  const selected: MutationRecoveryRecord = {
+    version: 1,
+    clientMutationId: "independent-owner-selected-row",
+    targetRef: ownerRef,
+    intentSequence: 1,
+    createdAt: 0,
+    method: "turn/start",
+    payload: { ref: ownerRef, input: [] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [] },
+    composerText: "",
+    state: "submitting",
+    recoveryKind: "rejected",
+  };
+  ancestorColumn.setActiveRecoveryId(selected);
+  expect(readRefComposerSeat(ownerRef)).toBe(independent.composerSeatId);
+  expect(readRecoverySelection(ownerRef, composerSelectionScope(cascade.composerSeatId ?? cascade.id))).toBe(
+    "independent-owner-selected-row",
+  );
 });
 
 test("closing a competing seat restores the surviving pane's selection", () => {

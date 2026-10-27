@@ -974,6 +974,10 @@ test("a delayed preservation updates an already-mounted replacement composer", a
       storage.release.resolve();
       await saving;
     });
+    // The delayed preservation notifies the mounted replacement, whose
+    // adoption re-reads the durable row before installing; settle that read
+    // inside act so its state updates never land outside a test window.
+    await flushPendingTurnsProjectionForTests();
     const preserved = (await storage.listRecovery(resumed)).find(
       (record) => record.clientMutationId !== original.clientMutationId,
     );

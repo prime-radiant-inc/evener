@@ -1059,6 +1059,125 @@ test.each<[string, (peer: MutationOutboxIndexedDB, preserved: MutationRecoveryRe
   }
 });
 
+// The preservation that captures a record awaits projection refreshes after
+// committing, so another pane can edit, remove, or send the row before an
+// immediate adoption runs too. Installing the captured record then would let
+// the destination's next autosave resurrect that removed or superseded
+// content under a fresh recovery id, so the immediate path re-reads and drops
+// what no longer matches, exactly like the deferred one.
+test.each<[string, (peer: MutationOutboxIndexedDB, preserved: MutationRecoveryRecord) => Promise<void>]>([
+  [
+    "edited",
+    async (peer, preserved) => {
+      await peer.updateRecoveryInput(
+        preserved.clientMutationId,
+        [{ type: "text", text: "edited preserved composition" }],
+        [],
+        "edited preserved composition",
+        [],
+        [],
+        undefined,
+        undefined,
+        { [preserved.clientMutationId]: recoveryCompositionRevision(preserved) },
+      );
+    },
+  ],
+  [
+    "removed",
+    async (peer, preserved) => {
+      expect(await peer.discardRecovery(preserved.clientMutationId)).toBe(true);
+    },
+  ],
+])(
+  "an immediate adoption drops a preserved row another pane %s while the post-commit wait lasted",
+  async (_name, interfere) => {
+    installLocalStorage(new MemoryStorage());
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const ref = `local:immediate-${_name}`;
+    const original = await storage.enqueueIntent({
+      targetRef: ref,
+      method: "turn/start",
+      payload: { ref, input: [{ type: "text", text: "row composition" }] },
+      attachments: [],
+      composerText: "row composition",
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row composition" }] },
+    });
+    await storage.transferToRecovery(original.clientMutationId, "rejected");
+    const recovery = await storage.getRecovery(original.clientMutationId);
+    if (!recovery) throw new Error("missing recovery fixture");
+    const preservedIntent = await storage.enqueueIntent({
+      targetRef: ref,
+      method: "turn/start",
+      payload: { ref, input: [{ type: "text", text: "preserved composition" }] },
+      attachments: [],
+      composerText: "preserved composition",
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "preserved composition" }] },
+    });
+    await storage.transferToRecovery(preservedIntent.clientMutationId, "rejected");
+    const preserved = await storage.getRecovery(preservedIntent.clientMutationId);
+    if (!preserved) throw new Error("missing preserved fixture");
+    const replacement = createTestComposerSource(ref, undefined, "pane-a");
+    const detachEditor = replacement.bindEditor({ read: () => replacement.editor.read(), write: () => {} });
+    const peer = new MutationOutboxIndexedDB();
+    try {
+      replacement.setActiveRecoveryId(recovery);
+      await interfere(peer, preserved);
+      await replacement.adoptPreservedSelection(ref, original.clientMutationId, preserved);
+      // The captured record no longer describes the durable row: the immediate
+      // adoption is dropped, and the composer keeps its own lease.
+      expect(replacement.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+      expect(replacement.getSnapshot().text).toBe("");
+    } finally {
+      detachEditor();
+      replacement.dispose();
+      peer.close();
+      storage.close();
+    }
+  },
+);
+
+test("an immediate adoption still adopts a preserved row no peer changed", async () => {
+  installLocalStorage(new MemoryStorage());
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "local:immediate-unchanged";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "row composition" }] },
+    attachments: [],
+    composerText: "row composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const preservedIntent = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "preserved composition" }] },
+    attachments: [],
+    composerText: "preserved composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "preserved composition" }] },
+  });
+  await storage.transferToRecovery(preservedIntent.clientMutationId, "rejected");
+  const preserved = await storage.getRecovery(preservedIntent.clientMutationId);
+  if (!preserved) throw new Error("missing preserved fixture");
+  const replacement = createTestComposerSource(ref, undefined, "pane-a");
+  const detachEditor = replacement.bindEditor({ read: () => replacement.editor.read(), write: () => {} });
+  try {
+    replacement.setActiveRecoveryId(recovery);
+    await replacement.adoptPreservedSelection(ref, original.clientMutationId, preserved);
+    expect(replacement.getSnapshot().activeRecoveryId).toBe(preserved.clientMutationId);
+    expect(replacement.getSnapshot().text).toBe("preserved composition");
+  } finally {
+    detachEditor();
+    replacement.dispose();
+    storage.close();
+  }
+});
+
 // The row preserved from before a disposal reconciliation can be advanced or
 // consumed by another pane while this source holds the disposal snapshot. A
 // refused reconciliation must preserve that snapshot under a fresh recovery

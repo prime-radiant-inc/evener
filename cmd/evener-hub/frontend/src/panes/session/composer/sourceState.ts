@@ -133,7 +133,7 @@ export interface ComposerSourceState {
    * stale lease and the user has not edited since. Deferred while this source
    * holds the recovery-operation lock or is sending its active row; applied
    * with every guard re-evaluated once that operation settles. */
-  adoptPreservedSelection(targetRef: string, staleId: string, preserved: MutationRecoveryRecord): void;
+  adoptPreservedSelection(targetRef: string, staleId: string, preserved: MutationRecoveryRecord): Promise<void>;
   /** Whether this source still owns the stale lease and has newer work than
    * the composition that lease was activated with. */
   ownsStaleRecoveryWithNewerEdits(targetRef: string, staleId: string): boolean;
@@ -536,9 +536,17 @@ export function createComposerSourceState(
   // A peer retarget moves the row this seat owns. Record the destination's
   // ref-to-seat mapping so a reload can find the seat there.
   function reconcileRecoverySeat(targetRef: string): void {
-    if (targetRef === ref || selectionOwnerId === undefined) return;
+    if (selectionOwnerId === undefined) return;
     const selected = currentRecoveryId();
-    if (selected !== null && readRecoverySelection(targetRef, recoverySelectionOwnerId) === undefined) {
+    if (targetRef === ref) {
+      // A retained cascade column owns a composer for a ref no open pane ever
+      // held, so the workspace never established that ref's seat mapping. When
+      // the column's composer owns a recovery selection, the ref must map to
+      // this seat or a reopen of that conversation cannot discover the saved
+      // selection and restores an older row instead. A seat independently
+      // established for the ref keeps its own mapping.
+      if (selected === null) return;
+    } else if (selected !== null && readRecoverySelection(targetRef, recoverySelectionOwnerId) === undefined) {
       // The selected row moved with the retarget. Carry this pane's choice to
       // the destination unless it already has one of its own.
       writeRecoverySelection(targetRef, recoverySelectionOwnerId, selected);
@@ -588,41 +596,26 @@ export function createComposerSourceState(
   // A mounted composer under the resumed ref may be showing the stale row's
   // peer-updated contents. Adopt the preserved composition there as well, so
   // the next Send uses it without waiting for a reload. Newer user edits win.
-  function adoptPreservedSelection(targetRef: string, staleId: string, preserved: MutationRecoveryRecord): void {
-    if (disposed || ref !== targetRef) return;
-    if (currentRecoveryId() !== staleId) return;
-    // Adoption - the lease swap and the selection publication inside it -
-    // must respect the destination's submission guard and recovery-operation
-    // lock: swapping the lease while this source is sending its restored row
-    // makes the resend read the preserved row's revision under the original
-    // id, a spurious refusal that also replaces the composition being sent.
-    // Every submission holds the operation lock across its awaited save, so
-    // deferring here and flushing on the lock's release re-evaluates full
-    // ownership once the operation settles. A submission held by ANOTHER
-    // source never releases this source's lock, so a deferral waiting on the
-    // shared guard alone also watches that guard's own release.
-    if (state.getState().recoveryOperationBusy || recoverySubmissionsInFlight.has(staleId)) {
-      deferredAdoption = { targetRef, staleId, preserved };
-      if (recoverySubmissionsInFlight.has(staleId)) {
-        deferredAdoptionUnwatch?.();
-        deferredAdoptionUnwatch = onRecoverySubmissionSettled(staleId, () => {
-          void flushDeferredAdoption();
-        });
-      }
-      return;
-    }
-    if (operations.hasPending) return;
-    // An explicit activation is already building the next composition from
-    // this composer's visible work. Adoption must not replace that work before
-    // activation's await returns and merges it.
-    if (state.getState().recoveryActivating) return;
-    if (userEditEpoch !== selectionUserEditEpoch) return;
-    if (activationIncorporatedWork) return;
-    const recovered = recoveryComposerDraft(preserved);
+  async function adoptPreservedSelection(
+    targetRef: string,
+    staleId: string,
+    preserved: MutationRecoveryRecord,
+  ): Promise<void> {
+    if (!adoptionGuardsSettled(targetRef, staleId)) return;
+    if (deferAdoptionIfBusy(targetRef, staleId, preserved)) return;
+    const current = await revalidatePreservedRecord(preserved);
+    if (current === undefined) return;
+    // The durable read waited, so the destination may have changed under it:
+    // re-run every guard. A newer deferral that claimed the slot while the
+    // read was in flight wins and this adoption drops.
+    if (deferredAdoption !== null) return;
+    if (!adoptionGuardsSettled(targetRef, staleId)) return;
+    if (deferAdoptionIfBusy(targetRef, staleId, current)) return;
+    const recovered = recoveryComposerDraft(current);
     const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
     Object.assign(recovered, visible);
     recoveryOwnsLocalDraftRef.current = false;
-    setActiveRecoveryId(preserved, { replaceSelection: staleId });
+    setActiveRecoveryId(current, { replaceSelection: staleId });
     // Restoration replaces this composer's local owner without editing it.
     draftEditRevisionRef.current += 1;
     markRestore();
@@ -633,8 +626,76 @@ export function createComposerSourceState(
     // Draft storage is shared across panes and tabs. Clear only the exact
     // revision the preserved composition incorporated; a newer ordinary draft
     // written while preservation waited belongs to someone else.
-    if (preserved.localDraftRevisionId !== undefined) {
-      clearPersistedDraftIfRevisionMatches(ref, preserved.localDraftRevisionId);
+    if (current.localDraftRevisionId !== undefined) {
+      clearPersistedDraftIfRevisionMatches(ref, current.localDraftRevisionId);
+    }
+  }
+
+  function adoptionGuardsSettled(targetRef: string, staleId: string): boolean {
+    if (disposed || ref !== targetRef) return false;
+    if (currentRecoveryId() !== staleId) return false;
+    if (operations.hasPending) return false;
+    // An explicit activation is already building the next composition from
+    // this composer's visible work. Adoption must not replace that work before
+    // activation's await returns and merges it.
+    if (state.getState().recoveryActivating) return false;
+    if (userEditEpoch !== selectionUserEditEpoch) return false;
+    if (activationIncorporatedWork) return false;
+    return true;
+  }
+
+  // Adoption - the lease swap and the selection publication inside it -
+  // must respect the destination's submission guard and recovery-operation
+  // lock: swapping the lease while this source is sending its restored row
+  // makes the resend read the preserved row's revision under the original
+  // id, a spurious refusal that also replaces the composition being sent.
+  // Every submission holds the operation lock across its awaited save, so
+  // deferring here and flushing on the lock's release re-evaluates full
+  // ownership once the operation settles. A submission held by ANOTHER
+  // source never releases this source's lock, so a deferral waiting on the
+  // shared guard alone also watches that guard's own release.
+  function deferAdoptionIfBusy(targetRef: string, staleId: string, preserved: MutationRecoveryRecord): boolean {
+    if (!state.getState().recoveryOperationBusy && !recoverySubmissionsInFlight.has(staleId)) return false;
+    deferredAdoption = { targetRef, staleId, preserved };
+    if (recoverySubmissionsInFlight.has(staleId)) {
+      deferredAdoptionUnwatch?.();
+      deferredAdoptionUnwatch = onRecoverySubmissionSettled(staleId, () => {
+        void flushDeferredAdoption();
+      });
+    }
+    return true;
+  }
+
+  // The preservation that captured this record awaited projection refreshes
+  // after committing, so another pane could edit, remove, or send the row
+  // before any adoption - deferred or immediate - runs. Re-read the durable
+  // row before installing anything: the captured record would re-write that
+  // outcome as a fresh recovery. Drop the adoption when the row was consumed
+  // (removed or sent) or its composition no longer matches what was
+  // captured; a revision bump that kept the composition - the queue's own
+  // metadata consolidation - still adopts. A read that fails proves nothing
+  // about the row, so the adoption is dropped then too.
+  async function revalidatePreservedRecord(
+    preserved: MutationRecoveryRecord,
+  ): Promise<MutationRecoveryRecord | undefined> {
+    try {
+      const { recovery } = await readMutationPersistence(preserved.targetRef);
+      const current = recovery.find((row) => row.clientMutationId === preserved.clientMutationId);
+      if (current === undefined) return undefined;
+      if (
+        !sameRecoveryComposition(
+          current,
+          (preserved.payload.input ?? []) as InputItem[],
+          preserved.composerText ?? "",
+          preserved.composerMentions,
+          preserved.attachments,
+        )
+      ) {
+        return undefined;
+      }
+      return current;
+    } catch {
+      return undefined;
     }
   }
 
@@ -644,44 +705,16 @@ export function createComposerSourceState(
     deferredAdoptionUnwatch = null;
     const pending = deferredAdoption;
     deferredAdoption = null;
-    // The deferral waited on an operation this source does not own. Re-read
-    // the durable row before installing anything: another pane could edit,
-    // remove, or send the preserved composition while the wait lasted, and the
-    // captured record would re-write that outcome as a fresh recovery. A read
-    // that fails proves nothing about the row, so the adoption is dropped.
-    let current: MutationRecoveryRecord | undefined;
-    try {
-      const { recovery } = await readMutationPersistence(pending.preserved.targetRef);
-      // A newer deferral claimed the slot while the read was in flight; it wins.
-      if (deferredAdoption !== null) return;
-      current = recovery.find((row) => row.clientMutationId === pending.preserved.clientMutationId);
-    } catch {
-      return;
-    }
-    // Drop the adoption when the row was consumed (removed or sent) or its
-    // composition was edited by another pane: the durable row no longer
-    // matches what was captured. A revision bump that kept the composition -
-    // the queue's own metadata consolidation - still adopts. When it matches,
-    // adoptPreservedSelection re-runs every destination guard and can defer
-    // again if a new operation is in flight.
-    if (
-      !current ||
-      !sameRecoveryComposition(
-        current,
-        (pending.preserved.payload.input ?? []) as InputItem[],
-        pending.preserved.composerText ?? "",
-        pending.preserved.composerMentions,
-        pending.preserved.attachments,
-      )
-    ) {
-      return;
-    }
-    adoptPreservedSelection(pending.targetRef, pending.staleId, current);
+    // The deferral waited on an operation this source does not own. The
+    // adoption itself re-reads the durable row before installing anything and
+    // re-runs every destination guard after that read, so a row consumed or
+    // edited during the wait is never installed.
+    await adoptPreservedSelection(pending.targetRef, pending.staleId, pending.preserved);
   }
 
   function notifyPreservedSelection(targetRef: string, staleId: string, preserved: MutationRecoveryRecord): void {
     for (const peer of liveComposerSources.get(recoverySelectionOwnerId) ?? [])
-      peer.adoptPreservedSelection(targetRef, staleId, preserved);
+      void peer.adoptPreservedSelection(targetRef, staleId, preserved);
   }
 
   function ownsStaleRecoveryWithNewerEdits(targetRef: string, staleId: string): boolean {
