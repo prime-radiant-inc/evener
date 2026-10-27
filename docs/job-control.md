@@ -626,7 +626,7 @@ Return shape when messaging a running target:
 
 A live steer carries no `transcript_ref` — the steer branch never resolves
 one, and the field is omitted rather than sent empty
-(`agent/delegate_runtime.go#delegateRuntime.send`,
+(`agent/delegate_send.go#delegateRuntime.send`,
 `agent/session_tools_delegate_send.go#delegateSendResult`). `delegate_id` is the only
 identity a steered result carries.
 

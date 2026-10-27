@@ -263,7 +263,7 @@ sites:
   memory crystals — `agent/internal/contextmgr/*`).
 
 The isolation is structural: a delegate enters the stable controller only
-through the registered create path (`agent/delegate_runtime.go` and
+through the registered create path (`agent/delegate_create.go` and
 `agent/delegate_tree_controller.go`), which none of the helper sites reach.
 Because helpers all route through `llm.Client.Complete`
 (`llm/client.go`) — directly, or via `llm.GenerateObject`/`Generate` for the schema'd

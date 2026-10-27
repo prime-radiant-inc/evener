@@ -617,8 +617,8 @@ The child's resumable data is preserved, but unrelated parent work becomes
 unavailable until the child storage problem is fixed.
 
 **Evidence.** Parent [initialization](../../agent/session_init.go#L1202) calls
-[delegate restoration](../../agent/delegate_runtime.go#L2905), whose
-[resource error handling](../../agent/delegate_runtime.go#L3069) propagates the
+[delegate restoration](../../agent/delegate_restore_idle.go), whose
+[resource error handling](../../agent/delegate_bootstrap.go) propagates the
 operational error. `delegate_resource_bootstrap_test.go` tests parent failure
 while leaving the child resumable, including EACCES/EIO scenarios.
 

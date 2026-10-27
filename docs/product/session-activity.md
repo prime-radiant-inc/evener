@@ -305,7 +305,7 @@ root as its owner. `evener/delegate/updated` reaches the root's thread and the
 thread of each live ancestor subagent, so an open subagent conversation keeps its
 rows current. A released ancestor gets no live updates; its next thread read
 lists the rows afresh. The [status roster](../../agent/status.go) and the
-[update routing](../../agent/delegate_runtime.go) define this boundary.
+[update routing](../../agent/delegate_activity_report.go) define this boundary.
 
 The [delegate projection](../../agent/session_activity_delegates.go),
 [recorded producer outcomes](../../agent/testdata/subagentwire/outcomes.json)
