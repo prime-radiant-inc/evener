@@ -141,59 +141,8 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 		ReceiverSessionID:  strings.TrimSpace(a.ReceiverSessionID),
 		ReceiverDelegateID: strings.TrimSpace(a.ReceiverDelegateID),
 	}
-	if a.Clear && jm.hasWatchClearState(key) {
-		return jm.clearWatch(key)
-	}
-	if err := jm.validateWatchTarget(a.Target); err != nil {
-		// Clearing is idempotent regardless of target state: once a job goes
-		// terminal its concrete watch auto-removes, so a clear on that target must
-		// be a no-op success rather than target_terminal. A genuinely-missing
-		// target still returns its original target_not_found.
-		if a.Clear {
-			if _, _, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target); statusErr == nil && terminal {
-				return jm.clearWatch(key)
-			}
-			return watchResult{}, err
-		}
-		// An output_match-only watch on an already-terminal job is served as a
-		// one-shot catch-up scan of retained output rather than rejected (spec
-		// §7.1 "Terminal target"). Any other terminal request, and target_not_found,
-		// keep their original error. terminalWatchTargetStatus resolves the terminal
-		// status directly rather than parsing the error string.
-		if watchArgsIsOutputMatchOnly(a) {
-			status, reason, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target)
-			if statusErr != nil {
-				return watchResult{}, statusErr
-			}
-			if terminal {
-				if sendErr := validateWatchSendArgs(a); sendErr != nil {
-					return watchResult{}, sendErr
-				}
-				return jm.runTerminalCatchup(a, key, status, reason)
-			}
-		}
-		return watchResult{}, err
-	}
-	if err := validateWatchEventArgs(a); err != nil {
-		return watchResult{}, err
-	}
-	if err := validateWatchTriggerShape(a); err != nil {
-		return watchResult{}, err
-	}
-	if a.Clear {
-		return jm.clearWatch(key)
-	}
-	// Session-target shape checks are specific to configureWatch's session targets
-	// (caller, *); a concrete launch target never reaches them, so they stay here
-	// rather than in the shared install validator.
-	if a.OutputMatch != "" && isWatchSessionTarget(a.Target) {
-		if len(a.Events) == 1 && a.Events[0] == "communicate" {
-			return watchResult{}, errors.New("invalid_request: output_match watches concrete job output" + parentObserverRepair(a.ResultTool))
-		}
-		return watchResult{}, errors.New(`invalid_request: output_match watches concrete job output; session-source watches use events and, for assistant.tool, event_filter`)
-	}
-	if a.Send != nil && a.Send.IncludeExcerpt && isWatchSessionTarget(a.Target) {
-		return watchResult{}, errors.New("invalid_request: include_excerpt requires a concrete job target; session-target frames carry bounded event payloads, not output excerpts")
+	if result, done, err := jm.validateWatchRequest(a, key); done {
+		return result, err
 	}
 	// A timer's id is minted here, after the target, event, and shape checks
 	// that reject most creates. The live-timer cap check below can still
@@ -208,6 +157,78 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	if err != nil {
 		return watchResult{}, err
 	}
+	return jm.installWatch(key, cfg, hooks)
+}
+
+// validateWatchRequest runs the checks a request must pass before it is
+// entitled to an id. done reports that the request was answered here, as a
+// clear, a terminal catch-up or a rejection, and result and err are its
+// answer; otherwise the request is a valid install.
+func (jm *jobManager) validateWatchRequest(a watchArgs, key watchKey) (result watchResult, done bool, err error) {
+	if a.Clear && jm.hasWatchClearState(key) {
+		result, err := jm.clearWatch(key)
+		return result, true, err
+	}
+	if err := jm.validateWatchTarget(a.Target); err != nil {
+		// Clearing is idempotent regardless of target state: once a job goes
+		// terminal its concrete watch auto-removes, so a clear on that target must
+		// be a no-op success rather than target_terminal. A genuinely-missing
+		// target still returns its original target_not_found.
+		if a.Clear {
+			if _, _, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target); statusErr == nil && terminal {
+				result, err := jm.clearWatch(key)
+				return result, true, err
+			}
+			return watchResult{}, true, err
+		}
+		// An output_match-only watch on an already-terminal job is served as a
+		// one-shot catch-up scan of retained output rather than rejected (spec
+		// §7.1 "Terminal target"). Any other terminal request, and target_not_found,
+		// keep their original error. terminalWatchTargetStatus resolves the terminal
+		// status directly rather than parsing the error string.
+		if watchArgsIsOutputMatchOnly(a) {
+			status, reason, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target)
+			if statusErr != nil {
+				return watchResult{}, true, statusErr
+			}
+			if terminal {
+				if sendErr := validateWatchSendArgs(a); sendErr != nil {
+					return watchResult{}, true, sendErr
+				}
+				result, err := jm.runTerminalCatchup(a, key, status, reason)
+				return result, true, err
+			}
+		}
+		return watchResult{}, true, err
+	}
+	if err := validateWatchEventArgs(a); err != nil {
+		return watchResult{}, true, err
+	}
+	if err := validateWatchTriggerShape(a); err != nil {
+		return watchResult{}, true, err
+	}
+	if a.Clear {
+		result, err := jm.clearWatch(key)
+		return result, true, err
+	}
+	// Session-target shape checks are specific to configureWatch's session targets
+	// (caller, *); a concrete launch target never reaches them, so they stay here
+	// rather than in the shared install validator.
+	if a.OutputMatch != "" && isWatchSessionTarget(a.Target) {
+		if len(a.Events) == 1 && a.Events[0] == "communicate" {
+			return watchResult{}, true, errors.New("invalid_request: output_match watches concrete job output" + parentObserverRepair(a.ResultTool))
+		}
+		return watchResult{}, true, errors.New(`invalid_request: output_match watches concrete job output; session-source watches use events and, for assistant.tool, event_filter`)
+	}
+	if a.Send != nil && a.Send.IncludeExcerpt && isWatchSessionTarget(a.Target) {
+		return watchResult{}, true, errors.New("invalid_request: include_excerpt requires a concrete job target; session-target frames carry bounded event payloads, not output excerpts")
+	}
+	return watchResult{}, false, nil
+}
+
+// installWatch registers cfg under key, replacing an existing watch or reviving
+// a detached one, and runs the level-trigger attach scan. It takes jm.mu itself.
+func (jm *jobManager) installWatch(key watchKey, cfg *watchConfig, hooks watchConfigureHooks) (watchResult, error) {
 	jm.mu.Lock()
 	if !isWatchSessionTarget(key.Target) && !isWatchableConcreteJobLocked(jm.running[key.Target]) {
 		jm.mu.Unlock()
@@ -237,53 +258,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	}
 	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch replaced", jm.now())
 	if existing != nil {
-		equal := existing.configHash == cfg.configHash
-		if equal && len(detachedCfgs) == 0 {
-			result := watchResultFromConfig(existing, false)
-			jm.mu.Unlock()
-			return result, nil
-		}
-		var targets []watchConfigTerminalSnapshot
-		if !equal {
-			targets = append(targets, watchConfigTerminalSnapshot{
-				key:       key,
-				cfg:       existing,
-				terminal:  watchSendTerminalSnapshotsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now()),
-				endReason: "replaced",
-			})
-		}
-		teardown := watchTeardown{targets: targets, detachedCfgs: detachedCfgs}
-		teardown.markRejectingLocked()
-		dropped := append(terminalSnapshots(targets), detached...)
-		if equal {
-			if err := jm.appendWatchTeardownBatch(detached, nil); err != nil {
-				teardown.rollbackLocked(jm)
-				jm.mu.Unlock()
-				return watchResult{}, err
-			}
-			result := watchResultFromConfig(existing, false)
-			jm.mu.Unlock()
-			jm.removeWatchSendTerminalSnapshots(dropped)
-			jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
-			return result, nil
-		}
-		if err := jm.appendWatchReplacementBatch(cfg, targets, dropped); err != nil {
-			teardown.rollbackLocked(jm)
-			jm.mu.Unlock()
-			return watchResult{}, err
-		}
-		jm.recordWatchEndedLocked(key, existing, "replaced")
-		closeWatchConfig(existing)
-		stop := cfg.initProgressStop()
-		jm.watches[key] = cfg
-		result := watchResultFromConfig(cfg, true)
-		scanData, scan, prepErr := jm.prepareAttachScanLocked(cfg, jm.running[key.Target])
-		jm.mu.Unlock()
-		jm.removeWatchSendTerminalSnapshots(dropped)
-		jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
-		jm.startProgressTimer(key, cfg, stop)
-		result.Fired = jm.completeAttachScan(cfg, key.Target, scanData, scan, prepErr)
-		return result, nil
+		return jm.replaceWatch(key, existing, cfg, detachedCfgs, detached)
 	}
 
 	if len(detachedCfgs) != 0 {
@@ -319,6 +294,59 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	result := watchResultFromConfig(cfg, false)
 	scanData, scan, prepErr := jm.prepareAttachScanLocked(cfg, jm.running[key.Target])
 	jm.mu.Unlock()
+	jm.startProgressTimer(key, cfg, stop)
+	result.Fired = jm.completeAttachScan(cfg, key.Target, scanData, scan, prepErr)
+	return result, nil
+}
+
+// replaceWatch handles a key that already holds a watch: an identical
+// config is a no-op that only settles detached frames, a different one replaces
+// it. The caller holds jm.mu and it is released before this returns.
+func (jm *jobManager) replaceWatch(key watchKey, existing, cfg *watchConfig, detachedCfgs []*watchConfig, detached []watchSendTerminalSnapshot) (watchResult, error) {
+	equal := existing.configHash == cfg.configHash
+	if equal && len(detachedCfgs) == 0 {
+		result := watchResultFromConfig(existing, false)
+		jm.mu.Unlock()
+		return result, nil
+	}
+	var targets []watchConfigTerminalSnapshot
+	if !equal {
+		targets = append(targets, watchConfigTerminalSnapshot{
+			key:       key,
+			cfg:       existing,
+			terminal:  watchSendTerminalSnapshotsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now()),
+			endReason: "replaced",
+		})
+	}
+	teardown := watchTeardown{targets: targets, detachedCfgs: detachedCfgs}
+	teardown.markRejectingLocked()
+	dropped := append(terminalSnapshots(targets), detached...)
+	if equal {
+		if err := jm.appendWatchTeardownBatch(detached, nil); err != nil {
+			teardown.rollbackLocked(jm)
+			jm.mu.Unlock()
+			return watchResult{}, err
+		}
+		result := watchResultFromConfig(existing, false)
+		jm.mu.Unlock()
+		jm.removeWatchSendTerminalSnapshots(dropped)
+		jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
+		return result, nil
+	}
+	if err := jm.appendWatchReplacementBatch(cfg, targets, dropped); err != nil {
+		teardown.rollbackLocked(jm)
+		jm.mu.Unlock()
+		return watchResult{}, err
+	}
+	jm.recordWatchEndedLocked(key, existing, "replaced")
+	closeWatchConfig(existing)
+	stop := cfg.initProgressStop()
+	jm.watches[key] = cfg
+	result := watchResultFromConfig(cfg, true)
+	scanData, scan, prepErr := jm.prepareAttachScanLocked(cfg, jm.running[key.Target])
+	jm.mu.Unlock()
+	jm.removeWatchSendTerminalSnapshots(dropped)
+	jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
 	jm.startProgressTimer(key, cfg, stop)
 	result.Fired = jm.completeAttachScan(cfg, key.Target, scanData, scan, prepErr)
 	return result, nil

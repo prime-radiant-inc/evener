@@ -211,17 +211,55 @@ func TestConfigureWatch_TimerConfigCarriesItsSlotAndFields(t *testing.T) {
 const watchIDMintFunc = "NewWatchID"
 
 // watchCreateValidators are the checks a create must pass before it is entitled
-// to an id, in the order configureWatchWithHooks runs them.
+// to an id. validateWatchRequest runs them; configureWatchWithHooks must call
+// it before the mint.
 var watchCreateValidators = []string{"validateWatchTarget", "validateWatchEventArgs", "validateWatchTriggerShape"}
+
+const (
+	watchCreateOrchestrator   = "configureWatchWithHooks"
+	watchCreateValidationStep = "validateWatchRequest"
+)
+
+// watchConfigFuncCalls parses watch_config.go and returns, for the named
+// function, the position of every call it makes keyed by callee (first call
+// wins) plus the positions of the calls to mintFunc.
+func watchConfigFuncCalls(t *testing.T, fset *token.FileSet, file *ast.File, name, mintFunc string) (first map[string]token.Pos, mints []token.Pos) {
+	t.Helper()
+	var body *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == name {
+			body = fn
+		}
+	}
+	if body == nil {
+		t.Fatalf("%s is gone from watch_config.go: this guard now checks nothing", name)
+	}
+	first = map[string]token.Pos{}
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		callee := calleeName(call.Fun)
+		if callee == mintFunc {
+			mints = append(mints, call.Pos())
+		}
+		if _, seen := first[callee]; !seen {
+			first[callee] = call.Pos()
+		}
+		return true
+	})
+	return first, mints
+}
 
 // TestConfigureWatch_TimerIDIsMintedAfterValidation is a source scan, not a
 // behavior test, because a burned watch id leaves nothing to observe: the ids
 // are random UUIDv7 values from a stateless generator, so a create that mints
 // one and is then rejected moves no counter and opens no gap that a later
 // create's id would show. What CAN be checked is where the mint sits in
-// configureWatchWithHooks — after every validation that can reject a create, so
-// no rejected path reaches it, and the one id still threads into both the key
-// and the config.
+// configureWatchWithHooks — after the validation step that runs every check
+// able to reject a create, so no rejected path reaches it, and the one id still
+// threads into both the key and the config.
 func TestConfigureWatch_TimerIDIsMintedAfterValidation(t *testing.T) {
 	t.Parallel()
 	fset := token.NewFileSet()
@@ -229,42 +267,25 @@ func TestConfigureWatch_TimerIDIsMintedAfterValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse watch_config.go: %v", err)
 	}
-	var body *ast.FuncDecl
-	for _, decl := range file.Decls {
-		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "configureWatchWithHooks" {
-			body = fn
-		}
-	}
-	if body == nil {
-		t.Fatal("configureWatchWithHooks is gone from watch_config.go: this guard now checks nothing")
-	}
-	firstCall := map[string]token.Pos{}
-	var mints []token.Pos
-	ast.Inspect(body, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		name := calleeName(call.Fun)
-		if name == watchIDMintFunc {
-			mints = append(mints, call.Pos())
-		}
-		if _, seen := firstCall[name]; !seen {
-			firstCall[name] = call.Pos()
-		}
-		return true
-	})
+	calls, mints := watchConfigFuncCalls(t, fset, file, watchCreateOrchestrator, watchIDMintFunc)
 	if len(mints) != 1 {
-		t.Fatalf("configureWatchWithHooks calls %s %d times, want exactly one mint for the timer slot", watchIDMintFunc, len(mints))
+		t.Fatalf("%s calls %s %d times, want exactly one mint for the timer slot", watchCreateOrchestrator, watchIDMintFunc, len(mints))
+	}
+	stepPos, ok := calls[watchCreateValidationStep]
+	if !ok {
+		t.Fatalf("%s no longer calls %s: this guard now checks nothing", watchCreateOrchestrator, watchCreateValidationStep)
+	}
+	if mints[0] < stepPos {
+		t.Errorf("%s is minted at %s, before %s at %s: a create rejected by a check burns an id",
+			watchIDMintFunc, fset.Position(mints[0]), watchCreateValidationStep, fset.Position(stepPos))
+	}
+	stepCalls, stepMints := watchConfigFuncCalls(t, fset, file, watchCreateValidationStep, watchIDMintFunc)
+	if len(stepMints) != 0 {
+		t.Errorf("%s mints an id: only %s may, after validation", watchCreateValidationStep, watchCreateOrchestrator)
 	}
 	for _, validator := range watchCreateValidators {
-		pos, ok := firstCall[validator]
-		if !ok {
-			t.Fatalf("configureWatchWithHooks no longer calls %s: this guard now checks nothing", validator)
-		}
-		if mints[0] < pos {
-			t.Errorf("%s is minted at %s, before %s at %s: a create rejected by that check burns an id",
-				watchIDMintFunc, fset.Position(mints[0]), validator, fset.Position(pos))
+		if _, ok := stepCalls[validator]; !ok {
+			t.Fatalf("%s no longer calls %s: this guard now checks nothing", watchCreateValidationStep, validator)
 		}
 	}
 }
