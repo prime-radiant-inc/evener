@@ -1295,13 +1295,15 @@ test.each(["collapse", "reopen"] as const)(
 );
 
 test.each([
-  { intent: "continue", recorded: false },
-  { intent: "cancel", recorded: false },
-  { intent: "continue", recorded: true },
-  { intent: "cancel", recorded: true },
+  { intent: "continue", recorded: false, opening: "none" },
+  { intent: "cancel", recorded: false, opening: "none" },
+  { intent: "continue", recorded: true, opening: "none" },
+  { intent: "cancel", recorded: true, opening: "none" },
+  { intent: "continue", recorded: true, opening: "before page" },
+  { intent: "continue", recorded: true, opening: "after page" },
 ])(
-  "saved child restoration owns the next accepted page only while active: $intent, recorded=$recorded",
-  async ({ intent, recorded }) => {
+  "saved child restoration owns the next accepted page only while active: $intent, recorded=$recorded, opening=$opening",
+  async ({ intent, recorded, opening }) => {
     const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
     const entities = buildEntityView({
       sessionRef: model.ref,
@@ -1313,7 +1315,7 @@ test.each([
     const strip = {
       ...projectComicDelegates(model, entities)[0]!,
       ownerRef: "local:test",
-      childRef: `local:continuation-${intent}-${recorded}`,
+      childRef: `local:continuation-${intent}-${recorded}-${opening}`,
     };
     const turn = (id: string, entry: number) => ({
       id: recorded ? "child-turn" : id,
@@ -1407,10 +1409,27 @@ test.each([
       );
     if (intent === "cancel")
       fireEvent.wheel(mounted.container.querySelector("[data-comic-scroll]")!.firstElementChild!, { deltaY: -100 });
+    if (opening !== "none") {
+      publishLocalOpening(strip.childRef, true);
+      expect(threadsStore.getState().localOpenings.has(strip.childRef)).toBe(true);
+      if (opening === "before page") publishLocalOpening(strip.childRef, false);
+    }
     await act(async () => acceptFirst({ ...authority, data: [turn("middle", 56)], nextCursor: "56" }));
     await waitFor(() =>
       expect(childState.readers.get(JSON.stringify(position.path))?.history.loadingOlder).toBe(false),
     );
+    if (opening === "after page") {
+      expect(requests).toEqual(["96"]);
+      expect(
+        childState.readers.get(JSON.stringify(position.path))?.entries.some((value) => value.id === "middle"),
+      ).toBe(true);
+      expect(readComicPosition("local:test")).toEqual(position);
+      publishLocalOpening(strip.childRef, false);
+      await waitFor(() => expect(requests).toEqual(["96", "56"]));
+      await waitFor(() =>
+        expect(childState.readers.get(JSON.stringify(position.path))?.history.loadingOlder).toBe(false),
+      );
+    }
     expect(requests).toEqual(intent === "continue" ? ["96", "56"] : ["96"]);
     const child = childState.readers.get(JSON.stringify(position.path))!;
     expect(child.entries.some((value) => value.id === "middle")).toBe(true);
