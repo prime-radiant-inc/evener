@@ -358,26 +358,15 @@ func (e *LocalExecutionEnvironment) writeFileAs(tool, path string, data []byte, 
 // read-only filesystem, a nonempty directory — is surfaced, so a delete that did
 // not happen is never reported as success (issue #2376).
 func (e *LocalExecutionEnvironment) RemovePath(path string) error {
-	if sfs := e.sandbox(); sfs != nil {
-		defer sfs.release()
-		if err := e.requireLiveSandboxRootForRelative(sfs, "apply_patch", path); err != nil {
-			return err
-		}
-		return sfs.remove("apply_patch", e.resolve(path))
-	}
-	abs := e.resolve(path)
-	if sfs := e.scratchSandboxFor(abs); sfs != nil {
-		defer sfs.release()
-		return sfs.remove("apply_patch", abs)
-	}
-	if err := e.requireLiveWorkingDirForRelative(path); err != nil {
-		return err
-	}
-	abs, err := e.resolveWrite(path)
+	t, err := e.fileTarget("apply_patch", path, targetWrite)
 	if err != nil {
 		return err
 	}
-	if err := e.filesystem().Remove(abs); err != nil && !isAbsentRemove(err) {
+	defer t.release()
+	if t.sfs != nil {
+		return t.sfs.remove("apply_patch", t.abs)
+	}
+	if err := e.filesystem().Remove(t.abs); err != nil && !isAbsentRemove(err) {
 		return fmt.Errorf("remove %s: %w", path, err)
 	}
 	return nil
