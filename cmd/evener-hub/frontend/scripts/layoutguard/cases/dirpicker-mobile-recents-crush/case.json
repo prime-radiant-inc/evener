@@ -1,0 +1,30 @@
+{
+  "name": "dirpicker-mobile-recents-crush",
+  "description": "the directory picker on a phone: a long recent list must not collapse the browse pane (breadcrumbs, path input, Folders, New folder) into an unusable sliver; both columns scroll inside the bounded body, the panel stays within the viewport, and the footer buttons stay reachable",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/button/button.module.css",
+    "widgets/dialog/dialog.module.css",
+    "widgets/input/input.module.css",
+    "widgets/directorypicker/directorypicker.module.css"
+  ],
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  },
+  "mutation": {
+    "declaration": "directorypicker.module.css: the mobile .recents { flex: 0 1 40% } (bounded share of the browser row) - reverting it to flex: 0 1 auto (content-sized basis) lets a full recents list absorb the whole row deficit and crush the browse pane above into a sliver (assertion: path input no longer inside the browse pane's box)",
+    "verified": "2026-10-27",
+    "expect": "fail",
+    "note": "Reproduces the reported phone screenshot: the picker opened from the session setup's working-directory row, with a full recents list crowding out navigation and folder creation. The browse pane's basis, not its shrink factor, is what decides the split under a deficit: basis 0 gives the browse pane no share to shrink from, and a content-sized recents basis (~930px at 15 rows) always outbids it."
+  },
+  "allowlist": {
+    ".panel": "the picker's .panel composes dialog.module.css's .panel, and the harness's panel element carries both rules exactly as the composed production class does",
+    ".body": "OverlayPanel renders the body element with both the dialog .body class and the picker's bodyClassName, so the harness's class=\"body\" carries both rules exactly as production does",
+    ".input": "the picker's .input composes input.module.css's .input, and the harness's input element carries both rules exactly as the composed production class does",
+    ".footer": "the harness locally mirrors the dialog .footer wrapper as .panelFooter so the picker's .footer rule never restyles the wrapper; the inner .footer div keeps the picker's own class name and additionally picks up dialog's de-scoped padding/border-top (a taller footer row and a shorter body than production - a stricter, not looser, direction for the containment assertions)"
+  }
+}
