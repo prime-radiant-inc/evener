@@ -1,9 +1,10 @@
 import type { NavigationReadParams } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, assert, expect, test, vi } from "vitest";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { ComicPicker } from "./ComicPicker";
 
@@ -272,6 +273,176 @@ test.each(["current", "recent", "archived"] as const)(
   },
 );
 
+const recoveryCases = [
+  { scenario: "terminal page", failed: [4], remaining: 0 },
+  { scenario: "nonterminal page", failed: [4], remaining: 2 },
+  { scenario: "earlier page with healthy later page", failed: [2], remaining: 2 },
+  { scenario: "multiple pages", failed: [2, 4], remaining: 0 },
+  { scenario: "initial project", failed: [0], remaining: 0 },
+];
+test.each(
+  (["current", "recent", "archived"] as const).flatMap((tier) =>
+    (["refresh", "reconnect"] as const).flatMap((recovery) =>
+      recoveryCases.map((scenario) => ({ tier, recovery, ...scenario })),
+    ),
+  ),
+)(
+  "$tier $scenario failure during $recovery retains rows and retries the exact resource",
+  async ({ tier, recovery, failed, remaining }) => {
+    const client = new FakeClient("ready");
+    const initialize = await client.connect();
+    const calls: NavigationReadParams[] = [];
+    let revision = 1;
+    const failures = new Set<number>();
+    let retryGate: ReturnType<typeof deferred<void>> | undefined;
+    const rows = (...ids: string[]) => ids.map((id) => ({ ref: `local:${id}`, children: [] }));
+    client.on("evener/navigation/read", async (params) => {
+      calls.push(params);
+      const snapshot = (data: unknown) => wireSnapshot(params, data, `"revision-${revision}"`, revision);
+      if (params.resource === "manifest")
+        return snapshot(
+          manifest({ catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } } }),
+        );
+      if (params.resource === "catalog")
+        return snapshot({ projects: [{ key: "recovery", name: "Recovery fixture", session_count: 7 }], remaining: 0 });
+      if (params.resource === "project" || params.resource === "project_page") {
+        const offset = params.resource === "project" ? 0 : params.offset;
+        if (failures.has(offset ?? 0)) throw new Error("scripted transport failure");
+        await retryGate?.promise;
+        if (params.resource === "project") {
+          const response = snapshot({ key: "recovery", [tier]: { sessions: rows("a", `initial-${revision}`) } });
+          const data = response.data as { metadata: Record<string, unknown> };
+          return { ...response, data: { ...data, metadata: { ...data.metadata, [`${tier}_remaining`]: 4 } } };
+        }
+        if (offset === 2) return snapshot({ sessions: rows("a", `middle-${revision}`), remaining: 2 });
+        if (offset === 4)
+          return snapshot({
+            sessions: revision === 1 ? rows("a", "tail-1") : rows("a", `tail-${revision}`, "bonus"),
+            remaining: revision === 1 ? remaining : 1,
+          });
+        if (offset === 7) return snapshot({ sessions: rows("final"), remaining: 0 });
+      }
+      throw new Error(`unexpected navigation read ${JSON.stringify(params)}`);
+    });
+    const resource = (offset: number) =>
+      navigationStore
+        .getState()
+        .resources.get(
+          keyID(
+            offset === 0
+              ? { kind: "project", projectKey: "recovery" }
+              : { kind: "project_page", projectKey: "recovery", tier, offset, limit: 50 },
+          ),
+        );
+    act(() => initNavigation(client, capability()));
+    const selected: string[] = [];
+    const mounted = render(<ComicPicker onSelect={(ref) => selected.push(ref)} />);
+    try {
+      const project = await screen.findByRole("button", { name: "Recovery fixture" });
+      act(() => project.click());
+      const region = () => screen.getByRole("region", { name: `Recovery fixture ${tier}` });
+      const more = () => within(region()).getByRole("button", { name: `More ${tier}` });
+      await waitFor(() => expect(resource(0)?.loadedRevision).toBe(1));
+      for (const offset of [2, 4]) {
+        act(() => more().click());
+        await waitFor(() => expect(resource(offset)?.loadedRevision).toBe(1));
+      }
+      const selectRows = (initial: number, middle: number, tail: number) => {
+        selected.length = 0;
+        for (const button of within(within(region()).getByRole("list")).getAllByRole("button")) button.click();
+        expect(selected).toEqual([
+          "local:a",
+          `local:initial-${initial}`,
+          `local:middle-${middle}`,
+          `local:tail-${tail}`,
+          ...(tail === 2 ? ["local:bonus"] : []),
+        ]);
+      };
+      selectRows(1, 1, 1);
+      const retained = new Map(failed.map((offset) => [offset, resource(offset)?.data]));
+      revision = 2;
+      for (const offset of failed) failures.add(offset);
+      calls.length = 0;
+      await act(async () => {
+        if (recovery === "refresh")
+          client.emitNotification({
+            method: "evener/navigation/invalidated",
+            params: {
+              generationId: "generation_test",
+              sequence: 1,
+              targets: [{ kind: "project", projectKey: "recovery", revision }],
+            },
+          });
+        else {
+          client.emitStateChange("reconnecting");
+          client.emitReady({ ...initialize, navigation: { ...capability(), sequence: 2 } });
+        }
+        await vi.waitFor(() => {
+          for (const offset of [0, 2, 4]) {
+            expect(resource(offset)?.loading).toBe(false);
+            if (failures.has(offset)) {
+              expect(resource(offset)?.error).toBeTruthy();
+              expect(resource(offset)?.data).toBe(retained.get(offset));
+            } else expect(resource(offset)?.loadedRevision).toBe(2);
+          }
+        });
+      });
+      expect(
+        calls
+          .filter((call) => call.resource === "project_page")
+          .map((call) => call.offset)
+          .sort(),
+      ).toEqual([2, 4]);
+      const visibleRevision = (offset: number) => (failures.has(offset) ? 1 : 2);
+      selectRows(visibleRevision(0), visibleRevision(2), visibleRevision(4));
+      expect(project.getAttribute("aria-expanded")).toBe("true");
+      expect(screen.queryAllByRole("alert")).toHaveLength(failed.length);
+      for (const offset of failed) {
+        calls.length = 0;
+        retryGate = deferred<void>();
+        const visible = [visibleRevision(0), visibleRevision(2), visibleRevision(4)] as const;
+        failures.delete(offset);
+        act(() => {
+          const alert = screen.getAllByRole("alert")[0];
+          assert(alert);
+          within(alert).getByRole("button", { name: /Retry/ }).click();
+        });
+        await waitFor(() => expect(calls).toHaveLength(1));
+        expect(calls[0]).toMatchObject(
+          offset === 0
+            ? { resource: "project", projectKey: "recovery" }
+            : { resource: "project_page", projectKey: "recovery", tier, offset, limit: 50 },
+        );
+        selectRows(...visible);
+        if (offset === 4) expect(within(region()).queryByRole("button", { name: `More ${tier}` })).toBeNull();
+        await act(async () => retryGate?.resolve());
+        await waitFor(() => expect(resource(offset)?.loadedRevision).toBe(2));
+        expect(resource(offset)?.error).toBeNull();
+        expect(resource(offset)?.data).not.toBe(retained.get(offset));
+        selectRows(visibleRevision(0), visibleRevision(2), visibleRevision(4));
+        expect(screen.queryAllByRole("alert")).toHaveLength(failures.size);
+      }
+      expect(within(region()).queryByRole("button", { name: "local:initial-1" })).toBeNull();
+      expect(within(region()).queryByRole("button", { name: "local:middle-1" })).toBeNull();
+      expect(within(region()).queryByRole("button", { name: "local:tail-1" })).toBeNull();
+      calls.length = 0;
+      act(() => more().click());
+      const final = await within(region()).findByRole("button", { name: "local:final" });
+      expect(calls).toHaveLength(1);
+      // The recovered last page has three raw rows, but only two new visible refs.
+      expect(calls[0]).toMatchObject({ resource: "project_page", projectKey: "recovery", tier, offset: 7, limit: 50 });
+      selected.length = 0;
+      final.click();
+      expect(selected).toEqual(["local:final"]);
+      expect(within(region()).queryByRole("button", { name: `More ${tier}` })).toBeNull();
+    } finally {
+      mounted.unmount();
+      client.close();
+      retryGate?.resolve();
+    }
+  },
+);
+
 test("a shallow root retains an explicitly supplied child ref until project expansion", async () => {
   const calls: NavigationReadParams[] = [];
   const childRef = "local:child-of-parent-034l-ref";
@@ -421,7 +592,7 @@ test("a failed project page retries once per offset and follows returned continu
   expect(within(current()).getByRole("button", { name: "First" })).toBeDefined();
   expect(within(current()).getByRole("alert")).toBeDefined();
   await act(async () => {
-    const retry = within(current()).getByRole("button", { name: "More current" });
+    const retry = within(current()).getByRole("button", { name: "Retry current page" });
     retry.click();
     retry.click();
     await flush();
