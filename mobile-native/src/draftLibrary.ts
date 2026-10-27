@@ -1,4 +1,5 @@
 import { DraftDocument } from "./draftDocument";
+import type { DraftSubmissionLedger } from "./draftHandoffLedger";
 import type { DraftDestination, DraftRepository } from "./draftRepository";
 
 export type DraftStorage = Pick<
@@ -19,6 +20,7 @@ export class DraftLibrary {
 		private repository: () => DraftStorage,
 		private createImageId: () => string = () =>
 			`reissue-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+		private submissionLedger?: () => DraftSubmissionLedger,
 	) {}
 
 	open(destination: DraftDestination): DraftDocument {
@@ -29,7 +31,14 @@ export class DraftLibrary {
 		}
 		let document = sessions.get(destination.sessionRef);
 		if (!document) {
-			document = new DraftDocument(this.repository, destination, this.createImageId);
+			document = new DraftDocument(
+				this.repository,
+				destination,
+				this.createImageId,
+				undefined,
+				undefined,
+				this.submissionLedger,
+			);
 			sessions.set(destination.sessionRef, document);
 		}
 		return document;
@@ -106,7 +115,7 @@ export class DraftLibrary {
 		this.pending.delete(this.handoffKey(to));
 		destination.adopt(snapshot.record);
 		if (destination !== source) {
-			source.retireInto(destination);
+			source.retire();
 			this.rememberRetired(from.hubId, source);
 			const sessions = this.hubs.get(from.hubId);
 			if (sessions?.get(from.sessionRef) === source) sessions.delete(from.sessionRef);

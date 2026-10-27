@@ -21,6 +21,7 @@ import type {
 	DraftRecord,
 	DraftRepository,
 } from "./draftRepository";
+import type { DraftSubmissionLedger } from "./draftHandoffLedger";
 import type { RecoveryResendCommit } from "./mutationOutboxStorage";
 
 function sameSources(owned: readonly string[] | undefined, supplied: readonly string[]): boolean {
@@ -153,11 +154,6 @@ export class DraftDocument {
 	 * draft, while an already pending submission still settles onward. */
 	private retired = false;
 	private unsavedImages = new Map<string, DraftImageData>();
-	// A resumed identity's document that this retired one settles through. A
-	// submission already in flight outlives its screen, and its completion must
-	// clear the capture at the destination that now owns the record.
-	private successor: DraftDocument | undefined;
-
 	imagePreviews(images: DraftImage[] = this.snapshot.record.images ?? []): InputAttachment[] {
 		return images.map((image) => {
 			const pending = this.unsavedImages.get(image.id);
@@ -178,6 +174,10 @@ export class DraftDocument {
 		private createCaptureToken: () => string = Crypto.randomUUID,
 		private createParkId: () => string = () =>
 			`park-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+		/** The durable submission obligations a handoff inherits. A submission
+		 * records one before transport and resolves it when it settles, so a
+		 * chain can wait for its completion without in-memory forwarding. */
+		private submissionLedger?: () => DraftSubmissionLedger,
 	) {
 		this.retry();
 	}
@@ -261,7 +261,6 @@ export class DraftDocument {
 	forget() {
 		this.forgotten = true;
 		this.retired = true;
-		this.successor = undefined;
 		this.unsavedImages.clear();
 		this.update({
 			record: { draft: "", unconfirmed: null },
@@ -278,12 +277,9 @@ export class DraftDocument {
 		this.update({ record, loaded: true, submitting: false, error: null });
 	}
 
-	/** Retire this document after a handoff. Ordinary edits stop here, while any
-	 * later settlement for its in-flight submission belongs to the document that
-	 * inherited the record. */
-	retireInto(successor: DraftDocument): void {
-		if (successor === this) return;
-		this.successor = successor;
+	/** Retire this document after a handoff. Ordinary edits stop here; an
+	 * in-flight submission settles through the durable obligation it recorded. */
+	retire(): void {
 		this.retired = true;
 		this.unsavedImages.clear();
 	}
@@ -563,6 +559,10 @@ export class DraftDocument {
 			},
 			false,
 		);
+		// Durable before any transport call: a handoff edge that inherits this
+		// submission must wait for its completion instead of settling without the
+		// completion markers.
+		this.submissionLedger?.().beginSubmission(draftCaptureToken, this.destination);
 		this.update({ submitting: true });
 		try {
 			const context: ConversationMutationContext = {
@@ -578,7 +578,10 @@ export class DraftDocument {
 				...(metadata?.recoveryIds?.length ? { recoverySourceIds: [...metadata.recoveryIds] } : {}),
 				draftCaptureToken,
 			};
-			if (!(await operation(text, inputImages, context))) return false;
+			if (!(await operation(text, inputImages, context))) {
+				this.submissionLedger?.().resolveSubmission(draftCaptureToken, "failed");
+				return false;
+			}
 			if (builtinCommand) {
 				const current = this.snapshot.record;
 				if (
@@ -600,7 +603,7 @@ export class DraftDocument {
 						},
 						draftCaptureToken,
 					);
-				}
+				} else this.submissionLedger?.().resolveSubmission(draftCaptureToken, "completed", metadata?.recoveryIds ?? []);
 			} else if (!metadata?.recoveryIds?.length && this.snapshot.record.unconfirmedCaptureToken === draftCaptureToken)
 				this.completeSubmission(
 					{
@@ -612,6 +615,7 @@ export class DraftDocument {
 					},
 					draftCaptureToken,
 				);
+			else this.submissionLedger?.().resolveSubmission(draftCaptureToken, "completed");
 			return true;
 		} catch (error) {
 			// A proven local refusal made no durable row and no request. Clear only
@@ -620,7 +624,10 @@ export class DraftDocument {
 			// keep their existing uncertain recovery. Route through the handoff
 			// chain so a submission that outlived a retirement clears the capture
 			// where the record now lives.
-			if (!(error instanceof MutationNotSentError)) throw error;
+			if (!(error instanceof MutationNotSentError)) {
+				this.submissionLedger?.().resolveSubmission(draftCaptureToken, "failed");
+				throw error;
+			}
 			if (this.snapshot.record.unconfirmedCaptureToken === draftCaptureToken)
 				this.completeSubmission(
 					{
@@ -631,6 +638,7 @@ export class DraftDocument {
 						unconfirmedCaptureToken: undefined,
 					},
 					draftCaptureToken,
+					"failed",
 				);
 			return "not-sent";
 		} finally {
@@ -638,40 +646,20 @@ export class DraftDocument {
 		}
 	}
 
-	/** Route a completed submission to the document that inherited the record
-	 * during a handoff. Only the capture this submission owns is cleared; the
-	 * successor's current draft, images, selections and newer capture stay. */
-	private completeSubmission(record: DraftRecord, captureToken: string): void {
-		if (this.successor) this.successor.forwardCompletion(record, captureToken);
-		else this.persist(record, true);
-	}
-
-	/** Follow the whole handoff chain: A's completion must reach the document
-	 * that currently owns the record, not an intermediate retired destination. */
-	private forwardCompletion(record: DraftRecord, captureToken: string): void {
-		if (this.successor) this.successor.forwardCompletion(record, captureToken);
-		else this.acceptSubmissionCompletion(record, captureToken);
-	}
-
-	private acceptSubmissionCompletion(settled: DraftRecord, captureToken: string): void {
-		const current = this.snapshot.record;
-		const next: DraftRecord = { ...current };
-		if (current.unconfirmedCaptureToken === captureToken) {
-			next.unconfirmed = null;
-			next.unconfirmedImages = undefined;
-			next.unconfirmedComposer = undefined;
-			next.unconfirmedCaptureToken = undefined;
-		}
-		const completed = settled.completedCommandRecoveryIds ?? [];
-		if (completed.length)
-			next.completedCommandRecoveryIds = [...new Set([...(current.completedCommandRecoveryIds ?? []), ...completed])];
-		const released = settled.releasedRecoveryIds ?? [];
-		if (released.length) next.releasedRecoveryIds = [...new Set([...(current.releasedRecoveryIds ?? []), ...released])];
-		try {
-			this.persist(next, true);
-		} catch {
-			/* The destination keeps its work; the composer's Retry owns the failure. */
-		}
+	/** Resolve the submission's durable obligation, then write the record only if
+	 * this document still owns its destination. A retired document's completion
+	 * lives in the ledger for the handoff to deliver. */
+	private completeSubmission(
+		record: DraftRecord,
+		captureToken: string,
+		state: "completed" | "failed" = "completed",
+	): void {
+		this.submissionLedger?.().resolveSubmission(
+			captureToken,
+			state,
+			state === "completed" ? (record.completedCommandRecoveryIds ?? []) : [],
+		);
+		if (!this.retired) this.persist(record, true);
 	}
 
 	/** Clear only the unconfirmed composition whose exact submission token a

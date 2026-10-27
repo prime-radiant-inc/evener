@@ -1,0 +1,234 @@
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { DraftLibrary } from "./draftLibrary";
+import type { DraftHandoffEndpoint } from "./draftHandoffLedger";
+import type { DraftDocument } from "./draftDocument";
+import { DraftRepository } from "./draftRepository";
+import { MutationOutboxSQLite } from "./mutationOutboxStorage";
+import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
+
+// The ledger's default id source is expo-crypto through the storage adapter;
+// the counter makes chain and edge ids stable across assertions.
+let expoCryptoCalls = 0;
+vi.mock("expo-crypto", () => ({
+	randomUUID: () => `uuid-${++expoCryptoCalls}`,
+	getRandomValues: (array: Uint8Array) => array,
+}));
+
+const databases: SqliteDoubleDatabase[] = [];
+afterEach(() => {
+	for (const db of databases.splice(0)) db.close();
+});
+
+const endpoint = (sessionRef: string): DraftHandoffEndpoint => ({ hubId: "hub", sessionRef });
+
+/** The composite target key every native mutation row and retarget uses. */
+const targetKey = (sessionRef: string): string => JSON.stringify(["hub", sessionRef]);
+
+function setup() {
+	const mutations = openSqliteSyncDouble();
+	databases.push(mutations.database);
+	let next = 0;
+	const storage = new MutationOutboxSQLite(mutations.port, {
+		createMutationId: () => `mutation-${++next}`,
+		now: () => 1000,
+	});
+	const drafts = openSqliteSyncDouble();
+	databases.push(drafts.database);
+	const repository = new DraftRepository(drafts.port);
+	const library = new DraftLibrary(
+		() => repository,
+		undefined,
+		() => storage.handoffLedger,
+	);
+	return { storage, storageLedger: storage.handoffLedger, repository, library };
+}
+
+/** A resume records the identity change in the retarget savepoint even when no
+ * mutation row moves. */
+function resume(storage: MutationOutboxSQLite, from: string, to: string): void {
+	storage.retarget(targetKey(from), {
+		ref: targetKey(to),
+		wireRef: to,
+		threadId: `thread-${to}`,
+		instanceId: `instance-${to}`,
+	});
+}
+
+function pendingSubmission(document: DraftDocument) {
+	let settle!: (sent: boolean) => void;
+	const submitted = document.submit(
+		() =>
+			new Promise<boolean>((resolve) => {
+				settle = resolve;
+			}),
+	);
+	return { submitted, settle: (sent: boolean) => settle(sent) };
+}
+
+describe("handoff chain obligations", () => {
+	test("records an identity change even when no mutation row moves", () => {
+		const { storage, storageLedger } = setup();
+		expect(resume(storage, "a", "b")).toBeUndefined();
+		const graph = storageLedger.readGraph();
+		expect(graph.edges).toMatchObject([{ from: endpoint("a"), to: endpoint("b"), state: "pending" }]);
+	});
+
+	test("one document records one submission obligation at a time", async () => {
+		const { library, storageLedger } = setup();
+		const document = library.open(endpoint("a"));
+		document.edit("current");
+		const first = pendingSubmission(document);
+		expect(storageLedger.readGraph().obligations).toHaveLength(1);
+
+		// A second send or a built-in command cannot start while the first is in
+		// flight, so it records no second obligation.
+		expect(await document.submitBuiltinCommand(async () => true)).toBeUndefined();
+		expect(storageLedger.readGraph().obligations).toHaveLength(1);
+
+		first.settle(true);
+		await first.submitted;
+		expect(storageLedger.readGraph().obligations).toMatchObject([{ state: "completed" }]);
+	});
+
+	test("an open obligation blocks settlement and refusal of its edge", async () => {
+		const { library, repository, storage, storageLedger } = setup();
+		const document = library.open(endpoint("a"));
+		document.edit("current");
+		const first = pendingSubmission(document);
+		const token = repository.read(endpoint("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		resume(storage, "a", "b");
+		const edge = storageLedger.readGraph().edges[0];
+		expect(edge.obligations).toEqual([token]);
+		expect(() => storageLedger.settleEdge(edge.edgeId, [], "hash")).toThrow(/open obligation/);
+		expect(() => storageLedger.refuseEdge(edge.edgeId, [])).toThrow(/open obligation/);
+		expect(storageLedger.readGraph().edges[0].state).toBe("pending");
+
+		first.settle(true);
+		await first.submitted;
+		expect(storageLedger.readGraph().obligations[0].state).toBe("completed");
+		storageLedger.settleEdge(edge.edgeId, [], "hash");
+		expect(storageLedger.readGraph().edges[0].state).toBe("settled");
+	});
+
+	test("a new edge carries the chain's open obligations from more than one origin", async () => {
+		const { library, repository, storage, storageLedger } = setup();
+		const source = library.open(endpoint("a"));
+		source.edit("one");
+		const atA = pendingSubmission(source);
+		const tokenA = repository.read(endpoint("a")).unconfirmedCaptureToken;
+		if (tokenA === undefined) throw new Error("missing capture token at a");
+		resume(storage, "a", "b");
+
+		const middle = library.open(endpoint("b"));
+		middle.edit("two");
+		const atB = pendingSubmission(middle);
+		const tokenB = repository.read(endpoint("b")).unconfirmedCaptureToken;
+		if (tokenB === undefined) throw new Error("missing capture token at b");
+		resume(storage, "b", "c");
+
+		const graph = storageLedger.readGraph();
+		const ab = graph.edges.find((edge) => edge.from.sessionRef === "a");
+		const bc = graph.edges.find((edge) => edge.from.sessionRef === "b");
+		if (ab === undefined || bc === undefined) throw new Error("missing chain edges");
+		expect(bc.chainId).toBe(ab.chainId);
+		expect([...bc.obligations].sort()).toEqual([tokenA, tokenB].sort());
+		expect(
+			graph.obligations
+				.filter((obligation) => obligation.chainId === ab.chainId)
+				.map((obligation) => obligation.obligationId)
+				.sort(),
+		).toEqual([tokenA, tokenB].sort());
+
+		atA.settle(true);
+		atB.settle(true);
+		await Promise.all([atA.submitted, atB.submitted]);
+		expect(storageLedger.readGraph().obligations.every((obligation) => obligation.state === "completed")).toBe(true);
+	});
+
+	test("a submission at a refused hop's destination rides the next hop", async () => {
+		const { library, repository, storage, storageLedger } = setup();
+		resume(storage, "a", "b");
+		const ab = storageLedger.readGraph().edges[0];
+		// The destination already owns work, so the hop is refused, not retried.
+		storageLedger.refuseEdge(ab.edgeId, []);
+
+		repository.write(endpoint("b"), {
+			draft: "occupied",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-b"] },
+		});
+		const atB = library.open(endpoint("b"));
+		let finish!: () => void;
+		const submitted = atB.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		const token = repository.read(endpoint("b")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token at b");
+
+		resume(storage, "b", "c");
+		const graph = storageLedger.readGraph();
+		const bc = graph.edges.find((edge) => edge.from.sessionRef === "b");
+		if (bc === undefined) throw new Error("missing redirected edge");
+		expect(bc.chainId).toBe(ab.chainId);
+		expect(bc.obligations).toEqual([token]);
+
+		finish();
+		await submitted;
+		const completed = storageLedger.readGraph().obligations.find((obligation) => obligation.obligationId === token);
+		expect(completed).toMatchObject({ state: "completed", completedCommandIds: ["recovered-b"] });
+
+		storageLedger.refuseEdge(bc.edgeId, [
+			{
+				chainId: bc.chainId,
+				destination: endpoint("c"),
+				recoveryId: "recovered-b",
+				disposition: "completed",
+				edgeId: bc.edgeId,
+			},
+		]);
+		expect(storageLedger.readGraph().deliveries).toMatchObject([
+			{ destination: endpoint("c"), recoveryId: "recovered-b", disposition: "completed" },
+		]);
+	});
+
+	test("one obligation reaches the terminal hop and is not reattached after it resolves", async () => {
+		const { library, repository, storage, storageLedger } = setup();
+		const source = library.open(endpoint("a"));
+		source.edit("current");
+		const first = pendingSubmission(source);
+		const token = repository.read(endpoint("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		resume(storage, "a", "b");
+		resume(storage, "b", "c");
+
+		let graph = storageLedger.readGraph();
+		expect(graph.edges.filter((edge) => edge.obligations.includes(token))).toHaveLength(2);
+		first.settle(true);
+		await first.submitted;
+		storageLedger.resolveSubmission(token, "completed");
+		storageLedger.resolveSubmission(token, "completed");
+
+		resume(storage, "c", "d");
+		graph = storageLedger.readGraph();
+		expect(graph.obligations).toHaveLength(1);
+		expect(graph.obligations[0]).toMatchObject({ obligationId: token, state: "completed" });
+		const cd = graph.edges.find((edge) => edge.from.sessionRef === "c");
+		expect(cd?.obligations).toEqual([]);
+	});
+
+	test("a predecessor waits for the edge that continues its chain", () => {
+		const { storage, storageLedger } = setup();
+		resume(storage, "a", "b");
+		resume(storage, "b", "c");
+		const [ab, bc] = storageLedger.readGraph().edges;
+		expect(ab.dependencies).toEqual([bc.edgeId]);
+		expect(() => storageLedger.settleEdge(ab.edgeId, [], "hash")).toThrow(/waits on/);
+		storageLedger.settleEdge(bc.edgeId, [], "hash");
+		storageLedger.settleEdge(ab.edgeId, [], "hash");
+		expect(storageLedger.readGraph().edges.map((edge) => edge.state)).toEqual(["settled", "settled"]);
+	});
+});
