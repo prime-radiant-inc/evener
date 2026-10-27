@@ -997,11 +997,7 @@ func TestSession_NoTranscriptWithoutStateDir(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	// The transcript field should be nil.
 	if sess.transcript != nil {
@@ -1146,10 +1142,7 @@ func TestSubagent_TranscriptHasParentLinkage(t *testing.T) {
 	defer sess.Close()
 
 	// Drain the event channel so Close doesn't block.
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	// Read the transcript and verify parent linkage fields.
 	files, _ := filepath.Glob(filepath.Join(stateDir, schema.SessionsSubdir, "*.transcript.jsonl"))
@@ -1187,10 +1180,7 @@ func TestRootSession_TranscriptHasEmptyParentFields(t *testing.T) {
 	}
 	defer sess.Close()
 
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	files, _ := filepath.Glob(filepath.Join(stateDir, schema.SessionsSubdir, "*.transcript.jsonl"))
 	if len(files) != 1 {
@@ -1223,10 +1213,7 @@ func TestSubagent_DepthSetFromConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	if sess.depth != 3 {
 		t.Errorf("sess.depth = %d, want 3", sess.depth)
@@ -1331,8 +1318,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	// TRIPWIRE: every model step here is scripted and answered in-process with
 	// no I/O; the full two-input lifecycle normally completes in well under a
 	// second. 30s only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 
 	// First input: reads big file, fills context.
 	out1, err := sess.ProcessInput(ctx, "read the big file", nil)

@@ -49,7 +49,7 @@ checklist in `docs/developing-evener/agentic-testing.md`; never touch a real hub
      30 is the web's own page size (`OLDER_TURNS_PAGE_SIZE`,
      `stores/threads.ts:621`; params at `:623-625`).
 
-   Param and response field names are `appwire/types.go:768-801`:
+   Param and response field names are `appwire/types_turn.go#ThreadReadParams`:
    `ThreadReadParams.TurnLimit` → `ThreadReadResponse.OlderCursor` →
    `ThreadTurnsListParams.Cursor/Limit` → `ThreadTurnsListResponse.Data/NextCursor`.
    Send frames as `{"id":N,"method":…,"params":…}` with **no `jsonrpc`

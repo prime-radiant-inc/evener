@@ -7,7 +7,7 @@
 // on this phone, under evener.native.note-draft.<hubId>, until it does
 // (Review Focus 5).
 import type { NotesHumanSetResponse, ThreadModel } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import type { SyncStringStorage } from "../syncStringStorage";
 
 /** The daemon clamps a note to 1,000 runes (agent/session_notes.go:29); the

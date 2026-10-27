@@ -14,13 +14,13 @@ again with no job identity: the only identity a send result carries is
 
 **Identity and transport.** Stable `delegate` creation returns
 `delegate_id` / `child_session_id` / `transcript_ref` and no `job_id`
-field at all (`agent/session_tools.go#stableDelegateCreateResult`);
+field at all (`agent/session_tools_delegate.go#stableDelegateCreateResult`);
 passing `max_wait_ms` to creation is rejected outright with
 `invalid_request: delegate creation does not accept max_wait_ms`
-(`agent/session_tools.go#stableDelegateCreateTool`). `delegate_send`'s own
+(`agent/session_tools_delegate.go#stableDelegateCreateTool`). `delegate_send`'s own
 result carries no job field either — `sendMessageResult`
 (`agent/job_delegate.go#sendMessageResult`) and its wire form
-`delegateSendResult` (`agent/session_tools_jobs.go#delegateSendResult`)
+`delegateSendResult` (`agent/session_tools_delegate_send.go#delegateSendResult`)
 have `delegate_id`, `transcript_ref`, `action`, `status`; neither declares
 `job_id`, `started_job_id`, `current_job_id`, or `latest_job_id`, and
 nothing in the tree emits any of those four names on this path. There is
@@ -35,7 +35,7 @@ returns `errDelegateNotControllable`
 `not_controllable: delegate`) for ANY unrecognized id, and the resulting
 `sendMessageResult` has `DelegateID` empty
 (`agent/job_delegate.go#sendMessageFailed`), so
-`stableDelegateSendTool` (`agent/session_tools.go#stableDelegateSendTool`)
+`stableDelegateSendTool` (`agent/session_tools_delegate.go#stableDelegateSendTool`)
 returns that bare error with no result JSON at all. The string
 `job_id is a job/turn handle` is real, but it lives only on the internal
 WATCH delivery validator

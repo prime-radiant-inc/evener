@@ -140,17 +140,6 @@ func TestWatchBudgetClearedMessage(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// callbackWatchesCancelledAtRestartMessage constant
-// ---------------------------------------------------------------------------
-
-func TestCallbackWatchesCancelledAtRestartMessage(t *testing.T) {
-	t.Parallel()
-	if !strings.Contains(callbackWatchesCancelledAtRestartMessage, "agent restarted") {
-		t.Fatalf("expected 'agent restarted' in constant")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // normalizeWatchSource
 // ---------------------------------------------------------------------------
 

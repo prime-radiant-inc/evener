@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ModelListResponse, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import type { ModelListResponse, ThreadModel } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -9,6 +9,7 @@ import { beforeEach, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { ModelSwitch } from "./ModelSwitch";
@@ -34,22 +35,6 @@ test("the trigger exposes the full model label when its visible value truncates"
   expect(trigger.getAttribute("title")).toBe("anthropic/claude-opus-5");
   expect(trigger.textContent).toContain("anthropic/claude-opus-5");
 });
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -201,7 +186,7 @@ test.each([
 });
 
 // A mid-turn switch is the one case the daemon itself refuses (Conflict, see
-// server/appwire_runtime.go's handleAppThreadModelSet). The refusal belongs to
+// server/appwire_thread_settings.go's handleAppThreadModelSet). The refusal belongs to
 // the wire and surfaces as a toast, not as a control the user can't press -
 // pre-emptively disabling it was the client guessing at an answer only the
 // daemon has, and it took the switch away from every cold session too.

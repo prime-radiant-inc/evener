@@ -990,13 +990,13 @@ func mergeActivityRecords(durable []*jobstore.JobRecord, live map[string]*jobsto
 				rec = liveRec
 			}
 		}
-		merged = append(merged, cloneActivityRecord(rec))
+		merged = append(merged, rec.Clone())
 	}
 
 	liveOnly := make([]*jobstore.JobRecord, 0, len(liveByID))
 	for jobID, rec := range liveByID {
 		if _, durable := durableIndex[jobID]; !durable {
-			liveOnly = append(liveOnly, cloneActivityRecord(rec))
+			liveOnly = append(liveOnly, rec.Clone())
 		}
 	}
 	sort.Slice(liveOnly, func(i, j int) bool {
@@ -1015,26 +1015,6 @@ func mergeActivityRecords(durable []*jobstore.JobRecord, live map[string]*jobsto
 		merged[at] = rec
 	}
 	return merged
-}
-
-func cloneActivityRecord(rec *jobstore.JobRecord) *jobstore.JobRecord {
-	if rec == nil {
-		return nil
-	}
-	clone := *rec
-	if rec.EndedAt != nil {
-		ended := *rec.EndedAt
-		clone.EndedAt = &ended
-	}
-	if rec.ExitCode != nil {
-		exit := *rec.ExitCode
-		clone.ExitCode = &exit
-	}
-	if rec.LastActivity != nil {
-		last := *rec.LastActivity
-		clone.LastActivity = &last
-	}
-	return &clone
 }
 
 func activityRecordBefore(left, right *jobstore.JobRecord) bool {

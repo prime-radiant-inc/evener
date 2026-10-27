@@ -35,12 +35,8 @@ func nestedOneOfArgs() map[string]any {
 func TestExplainSchemaError_NestedOneOfNamesBranches(t *testing.T) {
 	const loc = "properties/opts/oneOf/0/required"
 	msg := ExplainSchemaError("my_tool", nestedOneOfParams(), nestedOneOfArgs(), "opts", loc)
-	if strings.Contains(msg, "wrong type or value") {
-		t.Fatalf("nested oneOf explained as a wrong value (issue #624): %q", msg)
-	}
-	if !strings.Contains(msg, "oneOf constraint") {
-		t.Fatalf("message must name the oneOf constraint: %q", msg)
-	}
+	notMsg(t, msg, "wrong type or value", "nested oneOf explained as a wrong value (issue #624)")
+	wantMsg(t, msg, "oneOf constraint", "message must name the oneOf constraint")
 	for _, want := range []string{`"opts"`, `send all of "x"`, `send all of "y"`, `{"opts": {"x": "..."}}`} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("message missing %q: %q", want, msg)
@@ -52,9 +48,7 @@ func TestExplainSchemaError_NestedOneOfNamesBranches(t *testing.T) {
 // produces before trimming) must resolve the same as its trimmed form.
 func TestExplainSchemaError_NestedOneOfAcceptsLeadingSlash(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", nestedOneOfParams(), nestedOneOfArgs(), "opts", "/properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, "oneOf constraint") {
-		t.Fatalf("leading-slash keyword location was not resolved: %q", msg)
-	}
+	wantMsg(t, msg, "oneOf constraint", "leading-slash keyword location was not resolved")
 }
 
 // A present field whose direct constraint fails must keep the generic
@@ -65,10 +59,6 @@ func TestExplainSchemaError_DirectConstraintWinsOverUnrelatedOneOf(t *testing.T)
 	optsSchema := params["properties"].(map[string]any)["opts"].(map[string]any)
 	optsSchema["minProperties"] = 2
 	msg := ExplainSchemaError("my_tool", params, map[string]any{"opts": map[string]any{}}, "opts", "properties/opts/minProperties")
-	if !strings.Contains(msg, "wrong type or value") {
-		t.Fatalf("direct constraint should stay generic: %q", msg)
-	}
-	if strings.Contains(msg, "oneOf") {
-		t.Fatalf("unrelated oneOf leaked into a direct-constraint failure: %q", msg)
-	}
+	wantMsg(t, msg, "wrong type or value", "direct constraint should stay generic")
+	notMsg(t, msg, "oneOf", "unrelated oneOf leaked into a direct-constraint failure")
 }

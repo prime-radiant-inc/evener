@@ -1,5 +1,5 @@
 import type { NavigationSessionSummary, Source } from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
+import { errorText, LOCAL_HOST } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { type CSSProperties, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -9,7 +9,6 @@ import {
   useArchivedLists,
 } from "../../stores/archivedList";
 import { useConnectionStore } from "../../stores/connection";
-import { LOCAL_HOST } from "../../stores/hostRouting";
 import { selectAttentionSummary, selectDisplaySources } from "../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";

@@ -869,6 +869,15 @@ func TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails(t *testing.
 			seconds: "32.28",
 		},
 		{
+			// A parent that builds one live stack per subtest: its wall time is the
+			// sum of three runner-bound stack starts (6.8s typical, 15.3-16.9s on a
+			// loaded runner), so a class ceiling measures the runner.
+			name:    "multi-stack E2E parent warns",
+			pkg:     "primeradiant.com/evener/cmd/evener-hub",
+			test:    "TestE2E_RetireOverlappedByAnotherOwnershipAction",
+			seconds: "16.86",
+		},
+		{
 			// The same class's remaining members stay strict: moving one member
 			// off must not quiet the class.
 			name:     "kept session-activity member still fails",

@@ -333,8 +333,7 @@ func TestDrainAbandonsStopRequestedDelegateGoneUnresponsive(t *testing.T) {
 	// TRIPWIRE: the driver single-steps a frozen fake clock with hand-
 	// synchronized channels; nothing here waits on real I/O or a real clock.
 	// 30s only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	d := newStallDriver(ctx, f.root)
 	d.releaseKick(t)
 	d.assertParked(t, "an unexpired stop request is not permission to abandon")

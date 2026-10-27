@@ -8,7 +8,7 @@ import {
 } from "@evener/appwire-client/state/extensions";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { WireError } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { MarketplaceDetail } from "../MarketplaceBrowser";
 import { alertRequests, render, testIDSuffixes } from "../renderNative.testkit";
 import type { HubRoutes } from "./hubSheetContext";

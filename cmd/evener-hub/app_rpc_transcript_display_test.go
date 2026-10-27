@@ -115,10 +115,7 @@ func TestHubRPCTranscriptDisplayPatchPostApplyErrorStillBroadcasts(t *testing.T)
 	}
 	// The error must carry the APPLIED canonical value so the requesting
 	// client reconciles from it rather than treating its write as rejected.
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
-		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
-	}
+	wire := requireWireError(t, err, appwire.CodeInternalError)
 	dataJSON, merr := json.Marshal(wire.Data)
 	if merr != nil {
 		t.Fatal(merr)
@@ -144,11 +141,7 @@ func TestHubRPCTranscriptDisplayPatchPostApplyErrorStillBroadcasts(t *testing.T)
 func TestHubRPCTranscriptDisplayPatchRawUnknownFieldRejectedWithoutNotification(t *testing.T) {
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{HubStateRoot: t.TempDir()})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	config := appwire.TranscriptDisplayShippedDefaults().Desktop.Config
 	raw, err := json.Marshal(map[string]any{
@@ -279,9 +272,7 @@ func TestHubRPCTranscriptDisplayPatchPersistsAcrossRestart(t *testing.T) {
 	root := t.TempDir()
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{HubStateRoot: root})
 	client := dialHubRPC(t, hub)
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	defaults := appwire.TranscriptDisplayShippedDefaults()
 	desktop := defaults.Desktop.Config
 	desktop.Content.Level = appwire.TranscriptLevelFull
@@ -306,9 +297,7 @@ func TestHubRPCTranscriptDisplayPatchPersistsAcrossRestart(t *testing.T) {
 	defer hub.Close()
 	client = dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	var got appwire.TranscriptDisplayDefaults
 	if err := client.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayGet, appwire.EmptyParams{}, &got); err != nil {
 		t.Fatalf("GET after restart: %v", err)
@@ -396,10 +385,7 @@ func assertNoTranscriptDisplayNotification(t *testing.T, client *appwire.Client)
 
 func assertTranscriptDisplayWireCode(t *testing.T, err error, code int) {
 	t.Helper()
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != code {
-		t.Fatalf("error = %T %v, want wire code %d", err, err, code)
-	}
+	requireWireError(t, err, code)
 }
 
 func equalTranscriptDisplayDefaults(a, b appwire.TranscriptDisplayDefaults) bool {

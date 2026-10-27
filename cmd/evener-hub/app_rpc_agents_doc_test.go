@@ -21,11 +21,7 @@ func TestHubRPCAgentsDocGetReportsAMissingFile(t *testing.T) {
 	root := t.TempDir()
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{LaunchConfigRoot: root})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	var got appwire.AgentsDocResponse
 	if err := client.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocGet, appwire.EmptyParams{}, &got); err != nil {
@@ -44,11 +40,7 @@ func TestHubRPCAgentsDocGetReadsAnExistingFile(t *testing.T) {
 	}
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{LaunchConfigRoot: root})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	var got appwire.AgentsDocResponse
 	if err := client.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocGet, appwire.EmptyParams{}, &got); err != nil {
@@ -72,11 +64,7 @@ func TestHubRPCAgentsDocGetReportsABlankFileAsExisting(t *testing.T) {
 	}
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{LaunchConfigRoot: root})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	var got appwire.AgentsDocResponse
 	if err := client.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocGet, appwire.EmptyParams{}, &got); err != nil {
@@ -142,11 +130,7 @@ func TestHubRPCAgentsDocSetReplacesThePreviousContent(t *testing.T) {
 	root := t.TempDir()
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{LaunchConfigRoot: root})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	for _, content := range []string{"first\n", "second\n", ""} {
 		var result appwire.AgentsDocResponse
 		if err := client.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocSet, appwire.AgentsDocSetParams{Content: content}, &result); err != nil {
@@ -518,11 +502,7 @@ func TestThreadStartHandsSpawnedSessionsThePathSettingsEdits(t *testing.T) {
 
 	hub := newHubRPCTestServer(t, cfg)
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	var settings appwire.AgentsDocResponse
 	if err := client.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocGet, appwire.EmptyParams{}, &settings); err != nil {
 		t.Fatalf("get: %v", err)
@@ -571,11 +551,7 @@ func TestHubRPCAgentsDocRefusesWithoutAConfigRoot(t *testing.T) {
 		CredsStore:   newTestCredentialsStore(t),
 	})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	var got appwire.AgentsDocResponse
 	err := client.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocGet, appwire.EmptyParams{}, &got)

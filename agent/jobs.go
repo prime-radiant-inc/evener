@@ -909,7 +909,7 @@ func (jm *jobManager) liveJobRecords() map[string]*jobstore.JobRecord {
 		if !run.durableStarted {
 			continue
 		}
-		rec := cloneJobRecord(run.rec)
+		rec := run.rec.Clone()
 		// OutputBytes on the live record is only stamped at terminal; a running
 		// job's listing reports the live lifetime output count instead of 0.
 		if rec.Status == jobstore.StatusRunning && run.output != nil {
@@ -933,7 +933,7 @@ func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, i
 		if !keepListedJobRow(rec, filter, jm.sessionID) {
 			continue
 		}
-		jobs = append(jobs, cloneJobRecord(rec))
+		jobs = append(jobs, rec.Clone())
 	}
 	sort.Slice(jobs, func(i, j int) bool {
 		if jobs[i].StartedAt.Equal(jobs[j].StartedAt) {
@@ -1175,7 +1175,7 @@ func (jm *jobManager) recordForRead(jobID string) (run *runningJob, rec *jobstor
 	run = jm.running[jobID]
 	var snapshot *jobstore.JobRecord
 	if run != nil {
-		snapshot = cloneJobRecord(run.rec)
+		snapshot = run.rec.Clone()
 	}
 	jm.mu.Unlock()
 	if run != nil {
@@ -1384,7 +1384,7 @@ func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 }
 
 func (jm *jobManager) stopRunningJobLocked(jobID string, run *runningJob) (*jobstore.JobRecord, *jobStopReceipt, func(), error) {
-	rec := cloneJobRecord(run.rec)
+	rec := run.rec.Clone()
 	receipt := &jobStopReceipt{manager: jm, jobID: jobID, run: run}
 	if run.finalize != nil || run.terminal != nil || run.rec.Status.IsTerminal() {
 		return rec, receipt, nil, nil
@@ -1459,7 +1459,7 @@ func (jm *jobManager) stopWithReceipt(jobID string) (*jobstore.JobRecord, *jobSt
 	if rec == nil {
 		return nil, nil, errJobNotFound(jobID)
 	}
-	return cloneJobRecord(rec), nil, nil
+	return rec.Clone(), nil, nil
 }
 
 func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason string, exitCode *int) error {
@@ -2087,12 +2087,4 @@ func grepOutputFile(path string, re *regexp.Regexp, limitBytes int, rec *jobstor
 			return checkOutputTotalForRecord(rec, total)
 		})
 	})
-}
-
-func cloneJobRecord(rec *jobstore.JobRecord) *jobstore.JobRecord {
-	if rec == nil {
-		return nil
-	}
-	clone := *rec
-	return &clone
 }

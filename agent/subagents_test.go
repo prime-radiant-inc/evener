@@ -568,8 +568,7 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 	// TRIPWIRE: adapter is a scripted in-process call, no real I/O; this
 	// normally completes in well under a second. 30s only fires on a genuine
 	// hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 
 	// Non-blocking spawn; the first run (adapter step 0) completes immediately.
 	created := spawnRuntimeDelegate(t, sess, delegateArgs{Task: "timestamp test"})

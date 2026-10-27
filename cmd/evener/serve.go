@@ -269,7 +269,7 @@ func defaultServeDeps() serveDeps {
 		getwd:      os.Getwd, ensureConfigDirs: cmdutil.EnsureUserConfigDirs,
 		resolveMeta: cmdutil.ResolveSessionMeta, newClient: newUnloggedServeLLMClient,
 		attachAPILogger: serveAttachSessionAPILogger,
-		buildProfile:    buildInitialProfile, applyCheap: applyFastCheapModel,
+		buildProfile:    buildInitialProfile, applyCheap: cmdutil.ApplyFastCheapModel,
 		newSession: agent.NewSession, restoreSession: agent.RestoreSessionFromMetaWithConfig,
 		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
 			var lc net.ListenConfig
@@ -744,7 +744,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if effort.Set {
 		sessionCfg.ReasoningEffort = effort.Value
 	}
-	if err := configureSandbox(&sessionCfg, *sandboxMode, *sandboxNet); err != nil {
+	if err := cmdutil.ConfigureSandbox(&sessionCfg, *sandboxMode, *sandboxNet); err != nil {
 		return err
 	}
 	// Engage enforcement for a FRESH session from the flag-set mode. A resume
@@ -2173,30 +2173,6 @@ func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmd
 		return profile, nil, nil
 	}
 	return profile, &agent.StartupModelListing{Instance: modelRef.Provider, Listing: listing}, nil
-}
-
-// errFastCheapProviderUnavailable identifies a --fast-cheap-model provider the
-// client cannot route a side call to.
-var errFastCheapProviderUnavailable = errors.New("is not configured or has no credential")
-
-// applyFastCheapModel sets the auxiliary cheap model for side calls. The ref is
-// "provider/model" to route side calls to a different provider instance than the
-// active model, or a bare "model" to keep the active provider. A cross-provider
-// cheap provider must be registered in the client (i.e. configured AND
-// credentialed) — that is what actually lets the side call route, unlike a
-// config-only check which is credential-blind.
-func applyFastCheapModel(profile *provider.Profile, raw string, client *llm.Client) (*provider.Profile, error) {
-	if profile == nil || strings.TrimSpace(raw) == "" {
-		return profile, nil
-	}
-	raw = strings.TrimSpace(raw)
-	if cheapProvider, model, ok := strings.Cut(raw, "/"); ok && cheapProvider != "" && model != "" && cheapProvider != profile.ID() {
-		if !client.HasProvider(cheapProvider) {
-			return nil, fmt.Errorf("--fast-cheap-model provider %q %w (active provider %q); available providers: %s",
-				cheapProvider, errFastCheapProviderUnavailable, profile.ID(), strings.Join(client.ProviderNames(), ", "))
-		}
-	}
-	return provider.WithCheapModel(profile, raw), nil
 }
 
 // applyVisionModel validates the --vision-model ref against the registered

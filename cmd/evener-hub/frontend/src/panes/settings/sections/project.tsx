@@ -2,9 +2,8 @@
 // The directory comes from ?cwd=; the selected host comes from the settings route.
 
 import type { LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
-import { friendlyErrorMessage } from "@evener/appwire-client";
+import { friendlyErrorMessage, LOCAL_HOST } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
 import { Button, InlineNotice, Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";

@@ -86,7 +86,7 @@ test("skill selections with a non-empty queue route to drain (anything + non-emp
 // --- isTurnActive: the interrupt/steer busy predicate -------------------
 // The thread status is the daemon's own answer to "is this session working",
 // and the one the hub derives the steer/interrupt capabilities from
-// (server/appwire_runtime.go appCapabilitiesLocked). Nothing else feeds it: the
+// (server/appwire_thread_projection.go appCapabilitiesLocked). Nothing else feeds it: the
 // transcript's activeTurnId is cleared and re-set across an inline turn
 // boundary while the status stays active (the boundary test below).
 

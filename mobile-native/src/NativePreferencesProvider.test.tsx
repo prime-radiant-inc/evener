@@ -130,6 +130,17 @@ function mountProvider() {
 	};
 }
 
+// The connection the flap tests keep rewriting: this hub's profile over the
+// given client, ready or closed, mounted (or re-rendered) through the probe.
+function mountWithReadyClient(client: AppwireClient) {
+	harness.connection = { activeProfile: { id: "hub-a" }, client, state: "ready" };
+	return mountProvider();
+}
+
+function adoptClosedClient(client: AppwireClient) {
+	harness.connection = { activeProfile: { id: "hub-a" }, client, state: "closed" };
+}
+
 async function settleConnection(connection: ReturnType<typeof clientFixture>) {
 	await act(async () => {
 		await connection.connected;
@@ -318,12 +329,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 	it("reconciles a readable replacement into the retained snapshot while the same-hub client waits", async () => {
 		writeDraft("hub-a", "{not json");
 		const first = clientFixture();
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: first.client,
-			state: "ready",
-		};
-		const mounted = mountProvider();
+		const mounted = mountWithReadyClient(first.client);
 		await settleConnection(first);
 		const confirmed = mounted.current.snapshot?.keybindings.confirmed;
 		expect(confirmed).toEqual({ version: 1, revision: 1, rules: [] });
@@ -335,11 +341,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 			writeUncertain: true,
 		});
 		const replacement = clientFixture({ deferred: true });
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: replacement.client,
-			state: "closed",
-		};
+		adoptClosedClient(replacement.client);
 		mounted.rerender();
 
 		expect(mounted.current.model).toBeNull();
@@ -461,12 +463,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 			writeUncertain: false,
 		});
 		const first = clientFixture();
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: first.client,
-			state: "ready",
-		};
-		const mounted = mountProvider();
+		const mounted = mountWithReadyClient(first.client);
 		await settleConnection(first);
 
 		writeDraft("hub-a", "{not json");
@@ -542,22 +539,13 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 	it("clears the retained unreadable projection after a failed same-hub replacement removes the record", async () => {
 		writeDraft("hub-a", "{not json");
 		const first = clientFixture();
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: first.client,
-			state: "ready",
-		};
-		const mounted = mountProvider();
+		const mounted = mountWithReadyClient(first.client);
 		await settleConnection(first);
 		const confirmed = mounted.current.snapshot?.keybindings.confirmed;
 		expect(mounted.current.snapshot?.keybindings.storageUnavailable).toBe(true);
 
 		const replacement = clientFixture({ failed: true });
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: replacement.client,
-			state: "closed",
-		};
+		adoptClosedClient(replacement.client);
 		mounted.rerender();
 		let outcome: unknown;
 		act(() => {
@@ -587,12 +575,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 			writeUncertain: false,
 		});
 		const first = clientFixture({ keybindingsError: true });
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: first.client,
-			state: "ready",
-		};
-		const mounted = mountProvider();
+		const mounted = mountWithReadyClient(first.client);
 		await settleConnection(first);
 		expect(mounted.current.snapshot?.keybindings).toMatchObject({
 			draft: { revision: 1, rules: [] },
@@ -602,11 +585,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 
 		const replacement = clientFixture({ failed: true });
 		harness.storage.throwOnGet = true;
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: replacement.client,
-			state: "closed",
-		};
+		adoptClosedClient(replacement.client);
 		mounted.rerender();
 
 		expect(mounted.current.snapshot?.keybindings).toMatchObject({
@@ -636,11 +615,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 		});
 
 		harness.values.delete(draftKey("hub-a"));
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: replacement.client,
-			state: "closed",
-		};
+		adoptClosedClient(replacement.client);
 		mounted.rerender();
 		expect(mounted.current.snapshot?.keybindings).toMatchObject({
 			draft: null,
@@ -654,12 +629,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 	it("preserves the hub source after unreadable discard and absent replacement", async () => {
 		writeDraft("hub-a", "{not json");
 		const first = clientFixture();
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: first.client,
-			state: "ready",
-		};
-		const mounted = mountProvider();
+		const mounted = mountWithReadyClient(first.client);
 		await settleConnection(first);
 		expect(mounted.current.snapshot?.keybindings).toMatchObject({
 			draftError: expect.any(String),
@@ -686,11 +656,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 		});
 
 		const replacement = clientFixture({ failed: true });
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: replacement.client,
-			state: "closed",
-		};
+		adoptClosedClient(replacement.client);
 		mounted.rerender();
 		expect(mounted.current.model).toBeNull();
 		expect(mounted.current.snapshot?.keybindings).toMatchObject({
@@ -707,12 +673,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 	it("clears an initial genuine storage failure when a replacement read succeeds", async () => {
 		harness.storage.throwOnGet = true;
 		const first = clientFixture();
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: first.client,
-			state: "ready",
-		};
-		const mounted = mountProvider();
+		const mounted = mountWithReadyClient(first.client);
 		await settleConnection(first);
 		expect(mounted.current.snapshot?.keybindings).toMatchObject({
 			draftError: expect.any(String),
@@ -723,11 +684,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 
 		harness.storage.throwOnGet = false;
 		const replacement = clientFixture({ failed: true });
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: replacement.client,
-			state: "closed",
-		};
+		adoptClosedClient(replacement.client);
 		mounted.rerender();
 		expect(mounted.current.snapshot?.keybindings).toMatchObject({
 			draftError: null,
@@ -742,12 +699,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 	it("clears a draft source while preserving a simultaneous hub source", async () => {
 		writeDraft("hub-a", "{not json");
 		const first = clientFixture({ keybindingsError: true });
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: first.client,
-			state: "ready",
-		};
-		const mounted = mountProvider();
+		const mounted = mountWithReadyClient(first.client);
 		await settleConnection(first);
 		await act(async () => {
 			await mounted.current.model?.refresh();
@@ -767,11 +719,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 			writeUncertain: false,
 		});
 		const replacement = clientFixture({ failed: true });
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: replacement.client,
-			state: "closed",
-		};
+		adoptClosedClient(replacement.client);
 		mounted.rerender();
 		expect(mounted.current.snapshot?.keybindings).toMatchObject({
 			draft: { revision: 2, rules: [] },
@@ -792,23 +740,14 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 			writeUncertain: false,
 		});
 		const first = clientFixture();
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: first.client,
-			state: "ready",
-		};
-		const mounted = mountProvider();
+		const mounted = mountWithReadyClient(first.client);
 		await settleConnection(first);
 		const confirmed = mounted.current.snapshot?.keybindings.confirmed;
 		const draft = mounted.current.snapshot?.keybindings.draft;
 
 		const replacement = clientFixture({ failed: true });
 		harness.storage.throwOnGet = true;
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: replacement.client,
-			state: "closed",
-		};
+		adoptClosedClient(replacement.client);
 		mounted.rerender();
 
 		expect(mounted.current.model).toBeNull();
@@ -847,12 +786,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 			writeUncertain: false,
 		});
 		const first = clientFixture();
-		harness.connection = {
-			activeProfile: { id: "hub-a" },
-			client: first.client,
-			state: "ready",
-		};
-		const mounted = mountProvider();
+		const mounted = mountWithReadyClient(first.client);
 		await settleConnection(first);
 		const oldModel = mounted.current.model;
 		expect(mounted.current.model?.getSnapshot().keybindings.draft).not.toBeNull();

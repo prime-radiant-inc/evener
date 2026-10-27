@@ -339,10 +339,7 @@ func TestArchiveSetRemovesTheSessionsScratchTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSessionUpdatedAt(t, filepath.Join(projects, project.ID), sessionID, project.CanonicalPath, time.Now())
-	past := hubcore.NewPastIndex(filepath.Join(projects, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projects, "*"))
 	cfg := hubcore.WebConfig{Archive: archive, HubStateRoot: t.TempDir(), Past: past}
 	cfg.ScratchReconcile = func() { reconcileArchivedScratch(cfg.Past, cfg.Archive, cfg.Roster, time.Now()) }
 	web := NewWebServer(cfg)
@@ -430,10 +427,7 @@ func TestReconcileArchivedScratchFollowsEveryArchiveRule(t *testing.T) {
 		}
 		trees[name] = mintEndedScratchTree(t, id, "CHILD1")
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
 	roster.Refresh()
 	if _, ok := roster.Find(ids["live and archived"]); !ok {
@@ -503,10 +497,7 @@ func TestReconcileFindsAnArchivedTreeInTheDaemonsTempDir(t *testing.T) {
 	if err := schema.SaveSessionMeta(filepath.Join(projects, project.ID), meta); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(projects, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projects, "*"))
 	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
 	if err := archive.Set("", "session", sessionID, true, time.Now()); err != nil {
 		t.Fatal(err)
@@ -534,10 +525,7 @@ func TestScratchReconcilerRunServesAKick(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSessionUpdatedAt(t, filepath.Join(projects, project.ID), sessionID, project.CanonicalPath, time.Now())
-	past := hubcore.NewPastIndex(filepath.Join(projects, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projects, "*"))
 	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
 	if err := archive.Set("", "session", sessionID, true, time.Now()); err != nil {
 		t.Fatal(err)

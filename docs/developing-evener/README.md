@@ -134,7 +134,7 @@ config, so every worktree runs its own checkout's hooks. The one hook today is
 `scripts/hooks/pre-commit`: it formats the staged TypeScript and re-stages it,
 so formatting never reaches review as a finding.
 
-- `mobile-native/src` and `mobile/src` go through mobile-native's Biome
+- `mobile-native/src` goes through mobile-native's Biome
   (`format --write`); `cmd/evener-hub/frontend/src` and
   `appwire-client/typescript` go through the frontend's (`check --write` with
   the linter off, which also organizes imports). Each runs from its own tree

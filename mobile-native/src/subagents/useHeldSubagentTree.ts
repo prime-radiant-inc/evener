@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { holdSubagentTree, type SubagentTree, type SubagentTreeSnapshot, subagentTree } from "./subagentTree";
 
 /** Which coordinator's subagent tree: its session ref and thread. */

@@ -1074,10 +1074,7 @@ func TestTurnStartDoesNotRetryRecoveryRejectionAfterExplicitResume(t *testing.T)
 func TestHubForceStopRejectsRequestsQueuedBeforeRecovery(t *testing.T) {
 	stateDir, runDir := filepath.Join(t.TempDir(), "queued-recovery-0000000000"), t.TempDir()
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := hubcore.NewPastIndex(stateDir)
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, stateDir)
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: exitedPID(t), SessionID: sessionID, ThreadID: sessionID, StateDir: stateDir, StartedAt: time.Now()})
 	var events []string
 	var resumes atomic.Int32
@@ -1721,10 +1718,7 @@ func TestForceStopExpectedDaemonStaleClearAlias(t *testing.T) {
 		return &forceStopProcess{events: &events}, nil
 	})}
 	err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:post-clear", ExpectedDaemon: &expected}, nil)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("stale clear alias err=%v, want conflict", err)
-	}
+	requireWireError(t, err, appwire.CodeConflict)
 	if len(events) != 0 {
 		t.Fatalf("stale clear alias reached the process: %v", events)
 	}
@@ -1753,10 +1747,7 @@ func TestForceStopExpectedDaemonRejectsPIDReuse(t *testing.T) {
 		return &forceStopProcess{events: &events}, nil
 	})}
 	err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:reused", ExpectedDaemon: &expected}, nil)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("PID reuse err=%v, want conflict", err)
-	}
+	requireWireError(t, err, appwire.CodeConflict)
 	if len(events) != 0 {
 		t.Fatalf("PID reuse identity signaled the restarted process: %v", events)
 	}
@@ -1785,10 +1776,7 @@ func TestForceStopExpectedDaemonRejectsProtocolChange(t *testing.T) {
 		return &forceStopProcess{events: &events}, nil
 	})}
 	err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:proto", ExpectedDaemon: &expected}, nil)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("protocol change err=%v, want conflict", err)
-	}
+	requireWireError(t, err, appwire.CodeConflict)
 	if len(events) != 0 {
 		t.Fatalf("protocol-change identity signaled the replacement: %v", events)
 	}
@@ -1859,10 +1847,7 @@ func TestForceStopExpectedDaemonMaliciousArbitraryInput(t *testing.T) {
 		return &forceStopProcess{events: &events}, nil
 	})}
 	err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:victim", ExpectedDaemon: &malicious}, nil)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("malicious identity err=%v, want conflict", err)
-	}
+	requireWireError(t, err, appwire.CodeConflict)
 	if len(events) != 0 {
 		t.Fatalf("malicious identity opened the victim process: %v", events)
 	}

@@ -79,7 +79,7 @@ with the vanilla frontend (`660376f78`).
   returns the identical list. Falsify: no `outputImages` after reload (the
   image was live-only — the regression); a duplicate entry appearing on the
   second read (enrichment not idempotent); a `url` containing `://`; or any
-  embedded bytes/base64 — `appwire.OutputImage` (`appwire/types.go:730-738`)
+  embedded bytes/base64 — `appwire.OutputImage` (`appwire/types_turn.go#OutputImage`)
   has no field to carry them, so that could only mean the wire type changed.
 - **Step 4 (bytes)**: 200 with an image `Content-Type`. `/doc/image` re-reads
   the file off disk inside the cwd boundary each time (`doc_serve.go:84-127`),

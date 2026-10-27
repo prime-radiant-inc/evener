@@ -21,13 +21,13 @@ func TestLiveWatchRowsForSessionsAnswersThePageInOneWalk(t *testing.T) {
 
 	root.jobManager.mu.Lock()
 	root.jobManager.watches[watchKey{Target: "job_root"}] = &watchConfig{
-		id: "watch-root", watchID: "watch-root", sourcePublic: "self", target: "job_root",
+		watchID: "watch-root", sourcePublic: "self", target: "job_root",
 		createdAt: frozenTestTime,
 	}
 	root.jobManager.mu.Unlock()
 	grandchild.jobManager.mu.Lock()
 	grandchild.jobManager.watches[watchKey{Target: "job_grandchild"}] = &watchConfig{
-		id: "watch-grandchild", watchID: "watch-grandchild", sourcePublic: "self", target: "job_grandchild",
+		watchID: "watch-grandchild", sourcePublic: "self", target: "job_grandchild",
 		createdAt: frozenTestTime,
 	}
 	grandchild.jobManager.mu.Unlock()
@@ -72,7 +72,7 @@ func TestLiveWatchesForDescendantReturnsChildsOwnWatch(t *testing.T) {
 
 	child.jobManager.mu.Lock()
 	child.jobManager.watches[watchKey{Target: "job_child"}] = &watchConfig{
-		id: "watch-child", watchID: "watch-child", sourcePublic: "self", target: "job_child",
+		watchID: "watch-child", sourcePublic: "self", target: "job_child",
 		createdAt: frozenTestTime,
 	}
 	child.jobManager.mu.Unlock()
@@ -104,7 +104,7 @@ func TestLiveWatchesForDescendantFindsNestedDescendant(t *testing.T) {
 
 	grandchild.jobManager.mu.Lock()
 	grandchild.jobManager.watches[watchKey{Target: "job_grandchild"}] = &watchConfig{
-		id: "watch-grandchild", watchID: "watch-grandchild", sourcePublic: "self", target: "job_grandchild",
+		watchID: "watch-grandchild", sourcePublic: "self", target: "job_grandchild",
 		createdAt: frozenTestTime,
 	}
 	grandchild.jobManager.mu.Unlock()
@@ -126,7 +126,7 @@ func TestLiveWatchesForDescendantExcludesRootReceiverWatch(t *testing.T) {
 
 	child.jobManager.mu.Lock()
 	child.jobManager.watches[watchKey{Target: "job_child", ReceiverSessionID: root.ID()}] = &watchConfig{
-		id: "watch-for-root", watchID: "watch-for-root", sourcePublic: "self", target: "job_child",
+		watchID: "watch-for-root", sourcePublic: "self", target: "job_child",
 		receiverSessionID: root.ID(), createdAt: frozenTestTime,
 	}
 	child.jobManager.mu.Unlock()
@@ -156,13 +156,13 @@ func TestLiveWatchesForSessionAnswersForRootAndDescendant(t *testing.T) {
 
 	root.jobManager.mu.Lock()
 	root.jobManager.watches[watchKey{Target: "job_root"}] = &watchConfig{
-		id: "watch-root", watchID: "watch-root", sourcePublic: "self", target: "job_root",
+		watchID: "watch-root", sourcePublic: "self", target: "job_root",
 		createdAt: frozenTestTime,
 	}
 	root.jobManager.mu.Unlock()
 	child.jobManager.mu.Lock()
 	child.jobManager.watches[watchKey{Target: "job_child"}] = &watchConfig{
-		id: "watch-child", watchID: "watch-child", sourcePublic: "self", target: "job_child",
+		watchID: "watch-child", sourcePublic: "self", target: "job_child",
 		createdAt: frozenTestTime,
 	}
 	child.jobManager.mu.Unlock()
@@ -257,13 +257,13 @@ func TestDetailedStatusWatchesStayOffTheDescendantManagers(t *testing.T) {
 
 	root.jobManager.mu.Lock()
 	root.jobManager.watches[watchKey{Target: "job_root"}] = &watchConfig{
-		id: "watch-root", watchID: "watch-root", sourcePublic: "self", target: "job_root",
+		watchID: "watch-root", sourcePublic: "self", target: "job_root",
 		createdAt: frozenTestTime,
 	}
 	root.jobManager.mu.Unlock()
 	child.jobManager.mu.Lock()
 	child.jobManager.watches[watchKey{Target: "job_child", ReceiverSessionID: root.ID()}] = &watchConfig{
-		id: "watch-for-root", watchID: "watch-for-root", sourcePublic: "self", target: "job_child",
+		watchID: "watch-for-root", sourcePublic: "self", target: "job_child",
 		receiverSessionID: root.ID(), createdAt: frozenTestTime,
 	}
 	child.jobManager.mu.Unlock()

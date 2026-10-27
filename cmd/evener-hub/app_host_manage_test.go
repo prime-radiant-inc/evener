@@ -2027,10 +2027,7 @@ func TestHostManageAddRefusesAHeldGateWithTheTypedBusyError(t *testing.T) {
 		t.Fatalf("TryAcquire: %v", err)
 	}
 	_, err = m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "held", Address: "held.example"}})
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("Add against a held gate = %T (%v), want the conflict-class refusal", err, err)
-	}
+	wire := requireWireError(t, err, appwire.CodeConflict)
 	data, ok := wire.Data.(appwire.ErrorData)
 	if !ok || data.EvenerErrorInfo != appwire.ErrorHostBusyTransient {
 		t.Fatalf("busy data = %#v, want %q", wire.Data, appwire.ErrorHostBusyTransient)

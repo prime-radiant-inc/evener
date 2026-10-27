@@ -40,7 +40,7 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   // thread/model/set when it has to (app_model.go's setThreadModelWithResume),
   // so a user never has to know whether their session is "running" to pick its
   // next model. The turn-in-flight refusal stays where it belongs - the daemon
-  // answers Conflict for a switch mid-turn (server/appwire_runtime.go's
+  // answers Conflict for a switch mid-turn (server/appwire_thread_settings.go's
   // handleAppThreadModelSet) and handlePick surfaces that as a toast. Gating on
   // a client-side turn predicate here made the client guess at an answer only
   // the daemon has, and it took the switch away from every cold session too.

@@ -4,7 +4,7 @@
 // hits wait for S14.
 import type { NavigationProjectSummary, SearchResponse, SearchResult } from "@evener/appwire-client";
 import { attentionState, groupSearchResults, type GroupedSearchRow } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { reconnectDelay } from "../hubConnection";
 import type { BoardState } from "./attention";
 

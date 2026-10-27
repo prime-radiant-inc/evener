@@ -458,10 +458,7 @@ func TestThreadLifecycleLoggingHandlerSpawnerCorrelation(t *testing.T) {
 	workingDir := t.TempDir()
 	stateDir := hubtest.ProjectDir(t, filepath.Join(dir, "projects"), "logging")
 	id := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := hubcore.NewPastIndex(filepath.Join(dir, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(dir, "projects", "*"))
 	bin := filepath.Join(dir, "fake-evener")
 	writeFakeEvener(t, bin, fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = launch-check ]; then\n  printf '%%s' '{\"protocol\":%q,\"launch_flags\":[\"api-log\"]}'\n  exit 0\nfi\nexit 19\n", appwire.ProtocolVersion))
 	runDir := filepath.Join(dir, "run")

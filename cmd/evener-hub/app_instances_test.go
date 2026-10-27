@@ -535,10 +535,7 @@ func TestInstances_CreateRejectsDuplicateName(t *testing.T) {
 	err := f.ctl.Create(params)
 	// The name collides with an existing entry, matching the Conflict class
 	// hubDirsCreate and the pin-section store use for the same "taken" shape.
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("second Create = %v, want a Conflict wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeConflict)
 }
 
 // TestInstances_EditImplicitWritesShadowingEntry is spec §11.3: editing an
@@ -711,10 +708,7 @@ base_url = "http://127.0.0.1:9/v1"
 	if !strings.Contains(err.Error(), "standalone") {
 		t.Fatalf("Edit = %v, want the refusal to name the instance", err)
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("Edit = %v, want an InvalidParams wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
 
 	// The file must be exactly as it was: not left mid-write, not carrying
 	// the rejected clear.
@@ -765,10 +759,7 @@ func TestInstances_EditRejectsUnknownInstance(t *testing.T) {
 	// A name that resolves to nothing is the caller's to fix, the same shape
 	// as Create's unknown-base-provider check (#717/#748) — InvalidParams,
 	// not an internal fault.
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("Edit = %v, want an InvalidParams wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
 }
 
 // TestInstances_RemoveRefusesImplicitInstance: an environment-backed instance
@@ -783,10 +774,7 @@ func TestInstances_RemoveRefusesImplicitInstance(t *testing.T) {
 	if refusal, ok := errors.AsType[*environmentBackedError](err); !ok || refusal.remedy != (removalRemedy{kind: remedyUnsetVariable, variable: "GROQ_API_KEY"}) {
 		t.Fatalf("Remove = %v, want the refusal to name the variable that creates the instance", err)
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("Remove = %v, want an InvalidParams wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
 }
 
 // listedInstance reports whether a listing still carries a row under name.
@@ -1094,10 +1082,7 @@ func TestInstances_RemoveRejectsUnknownInstance(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "nowhere") {
 		t.Fatalf("Remove = %v, want an unknown-instance error", err)
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("Remove = %v, want an InvalidParams wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
 }
 
 // TestInstances_RemoveRejectsAnInvalidName: a name the grammar refuses is
@@ -1107,10 +1092,7 @@ func TestInstances_RemoveRejectsUnknownInstance(t *testing.T) {
 func TestInstances_RemoveRejectsAnInvalidName(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "Bad/Name"})
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("Remove = %v, want an InvalidParams wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
 }
 
 func TestInstances_RemoveDeletesEntryStoreKeyAndOAuthRecord(t *testing.T) {
@@ -1491,10 +1473,7 @@ func TestInstances_EditRefusesAnEndpointItsCallerDidNotSee(t *testing.T) {
 	if err == nil {
 		t.Fatal("Edit renamed the replacement for a form opened on a different endpoint")
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("Edit = %v, want a conflict wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeConflict)
 	if _, ok := f.ctl.reg.Get().Instance("personal"); ok {
 		t.Fatal("the refused rename landed anyway")
 	}
@@ -2035,10 +2014,7 @@ func TestInstances_SetDefaultWritesDefault(t *testing.T) {
 	}
 	// Same class as Edit's unknown-instance refusal (#717/#748): the name the
 	// caller sent is theirs to fix, not a fault of the hub's own state.
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("SetDefault = %v, want an InvalidParams wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
 }
 
 // The two tests below pin one rule for the writes that name an instance:
@@ -2346,10 +2322,7 @@ func TestInstances_ApiKeySetRefusesAKeyForARemovedInstance(t *testing.T) {
 	}
 	// The name the caller sent is theirs to fix, like every other refusal of an
 	// unknown instance (#717/#748).
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("ApiKeySet = %v, want an InvalidParams wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
 	if v, ok := f.store.Get("work"); ok {
 		t.Fatalf("stored key = %q, want nothing stored for a name nothing curates", v)
 	}
@@ -2593,10 +2566,7 @@ func TestInstances_EditAndRenameNeedNoKeyWhenNothingIsAsserted(t *testing.T) {
 	if err == nil {
 		t.Fatal("an asserted edit must refuse while the hub cannot resolve the endpoint")
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("asserted edit = %v, want a conflict refusal", err)
-	}
+	requireWireError(t, err, appwire.CodeConflict)
 	if got := entry(t, f.ctl.List(), "work"); got.APIKeyEnv != "PORTKEY_KEY" {
 		t.Fatalf("apiKeyEnv = %q, want the refused asserted edit to change nothing", got.APIKeyEnv)
 	}
@@ -3149,10 +3119,7 @@ func TestInstances_ApiKeySetRefusesAnEndpointItsCallerDidNotSee(t *testing.T) {
 	if err == nil {
 		t.Fatal("ApiKeySet stored a key against an endpoint its caller no longer sees")
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("ApiKeySet = %v, want a conflict wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeConflict)
 	if v, ok := f.store.Get("work"); ok {
 		t.Fatalf("stored key = %q, want nothing stored for the stale endpoint", v)
 	}
@@ -3707,10 +3674,7 @@ func TestInstances_EditRefusesAnAPIKeyEnvThatIsNotAVariableName(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "sk-live-abc"})
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("Edit = %v, want an InvalidParams wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
 	if strings.Contains(err.Error(), "sk-live-abc") {
 		t.Fatalf("the refusal echoed the value: %v", err)
 	}
@@ -3756,10 +3720,7 @@ func TestInstances_EditRefusesALiteralStandingBesideAReference(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", CredentialHeader: "Authorization=Bearer supersecret $PORTKEY_KEY"})
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("Edit = %v, want an InvalidParams wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
 	if p := authoredEntry(t, f.tomlPath, "work"); len(p.CredentialHeaders) != 0 {
 		t.Fatalf("a refused header was written: %v", p.CredentialHeaders)
 	}
@@ -3778,10 +3739,7 @@ func TestInstances_CreateRefusesALiteralStandingBesideAReference(t *testing.T) {
 	err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer supersecret $PORTKEY_KEY",
 	})
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("Create = %v, want an InvalidParams wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
 	if l, exists, _ := registry.ReadConfigFile(f.tomlPath); exists {
 		if _, authored := l.Providers["work"]; authored {
 			t.Fatal("a refused create authored [providers.work]")
@@ -3876,10 +3834,7 @@ func TestInstances_EditRefusesALiteralCredentialHeader(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", CredentialHeader: "Authorization=Bearer sk-literal"})
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("Edit = %v, want an InvalidParams wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
 	if p := authoredEntry(t, f.tomlPath, "work"); len(p.CredentialHeaders) != 0 {
 		t.Fatalf("a refused header was written: %v", p.CredentialHeaders)
 	}
@@ -4418,10 +4373,7 @@ base_url = "http://127.0.0.1:9/v1"
 
 	err := ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "openai"})
 
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("Edit = %v, want an InvalidParams wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
 
 	p := authoredEntry(t, tomlPath, "work")
 	if p.Transport.BaseURL != "http://127.0.0.1:9/v1" || p.Protocol != "openai-chat" {
@@ -4632,10 +4584,7 @@ func TestInstances_EditRenameRejectsAnInvalidName(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "Bad/Name"})
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("Edit = %v, want an InvalidParams wire error", err)
-	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
 	authoredEntry(t, f.tomlPath, "work")
 }
 

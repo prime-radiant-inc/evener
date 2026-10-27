@@ -313,6 +313,21 @@ func (e MissingMutationFieldError) Error() string {
 	return e.Field + " is required"
 }
 
+// mutationRequiredFields lists, per mutation method, the identity and
+// precondition fields ValidateMutationParams requires.
+var mutationRequiredFields = map[string][]string{
+	MethodTurnStart:                {"clientMutationId", "expectedInstanceId"},
+	MethodTurnSteer:                {"clientMutationId", "expectedInstanceId"},
+	MethodTurnInterrupt:            {"clientMutationId", "expectedInstanceId"},
+	MethodTurnQueue:                {"clientMutationId", "expectedInstanceId"},
+	MethodTurnDrainAsSteer:         {"clientMutationId", "expectedInstanceId", "expectedQueueRevision"},
+	MethodTurnPromoteQueuedAsSteer: {"clientMutationId", "expectedInstanceId", "expectedEntryId"},
+	MethodTurnCancelQueued:         {"clientMutationId", "expectedInstanceId", "expectedEntryId"},
+	MethodThreadClear:              {"clientMutationId", "expectedInstanceId"},
+	MethodNotesHumanSet:            {"clientMutationId", "expectedInstanceId"},
+	MethodUrlsRemove:               {"clientMutationId", "expectedInstanceId"},
+}
+
 // ValidateMutationParams enforces the flag-day v2 identity and precondition
 // fields before a mutation reaches either Hub or daemon handlers.
 func ValidateMutationParams(method string, raw json.RawMessage) error {
@@ -320,18 +335,7 @@ func ValidateMutationParams(method string, raw json.RawMessage) error {
 	// applies to whatever the session is running. What remains required is the
 	// identity every retry-safe mutation needs, plus the preconditions that name
 	// a real object rather than a moment in time.
-	required := map[string][]string{
-		MethodTurnStart:                {"clientMutationId", "expectedInstanceId"},
-		MethodTurnSteer:                {"clientMutationId", "expectedInstanceId"},
-		MethodTurnInterrupt:            {"clientMutationId", "expectedInstanceId"},
-		MethodTurnQueue:                {"clientMutationId", "expectedInstanceId"},
-		MethodTurnDrainAsSteer:         {"clientMutationId", "expectedInstanceId", "expectedQueueRevision"},
-		MethodTurnPromoteQueuedAsSteer: {"clientMutationId", "expectedInstanceId", "expectedEntryId"},
-		MethodTurnCancelQueued:         {"clientMutationId", "expectedInstanceId", "expectedEntryId"},
-		MethodThreadClear:              {"clientMutationId", "expectedInstanceId"},
-		MethodNotesHumanSet:            {"clientMutationId", "expectedInstanceId"},
-		MethodUrlsRemove:               {"clientMutationId", "expectedInstanceId"},
-	}[method]
+	required := mutationRequiredFields[method]
 	if len(required) == 0 {
 		return nil
 	}

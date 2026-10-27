@@ -4,7 +4,7 @@
 // A cwd that does not exist yet is not a failure: the outcome offers the
 // in-form Create&start dialog instead.
 import type { AppwireClientLike } from "@evener/appwire-client";
-import { hostRequest } from "../../stores/hostRouting";
+import { hostRequest } from "@evener/appwire-client";
 
 export type PreflightOutcome =
   | { kind: "ok" }

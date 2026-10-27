@@ -1,5 +1,4 @@
 import type { HostRow } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -7,6 +6,7 @@ import { connectionStore } from "../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../stores/extensions";
 import { hostsStore } from "../../../stores/hosts";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { SkillsDirsHostScope } from "./skillsDirs";
@@ -27,12 +27,6 @@ function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
   };
 }
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();
@@ -51,7 +45,7 @@ afterEach(() => {
 });
 
 test("with this hub selected the section issues the plain launch calls and never the proxy", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/launch/getLayer", () => ({ skillsDirs: ["/controller/skills"] }));
   fake.on("evener/host/request", () => {
@@ -65,7 +59,7 @@ test("with this hub selected the section issues the plain launch calls and never
 });
 
 test("a remote selection shows that host's own skill directories, never the controller's", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/launch/getLayer", () => {
     throw new Error("a remote selection must not read this hub's launch layer");
@@ -85,7 +79,7 @@ test("a remote selection shows that host's own skill directories, never the cont
 });
 
 test("adding a skill directory writes that host's layer through the proxy, never this hub's", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/launch/setLayer", () => {
     throw new Error("a remote selection must not write this hub's launch layer");

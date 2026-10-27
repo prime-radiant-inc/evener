@@ -84,19 +84,34 @@ func TestInspectTranscriptHeaderStatError(t *testing.T) {
 	t.Skip("stat error after successful open is not portable to test")
 }
 
+// writeOversizedLineFile returns a file whose first line exceeds
+// transcript.DefaultMaxLineBytes. It is sparse: the reader needs the length, not
+// 128 MiB of written bytes, which cost seconds on a loaded runner.
+func writeOversizedLineFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "oversized.jsonl")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const size = transcript.DefaultMaxLineBytes + 10
+	if err := file.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	// The reader reports the overlong line once it reaches the newline.
+	if _, err := file.WriteAt([]byte{'\n'}, size-1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 // TestInspectTranscriptHeaderReadError covers the ReadLine error path in
 // inspectTranscriptHeader by providing a file with an oversized line.
 func TestInspectTranscriptHeaderReadError(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "oversized.jsonl")
-	// Write a line that exceeds DefaultMaxLineBytes.
-	big := make([]byte, transcript.DefaultMaxLineBytes+10)
-	for i := range big {
-		big[i] = 'x'
-	}
-	big[len(big)-1] = '\n'
-	if err := os.WriteFile(path, big, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	path := writeOversizedLineFile(t)
 	_, _, err := inspectTranscriptHeader(path)
 	if err == nil {
 		t.Fatalf("inspectTranscriptHeader with oversized line should error")
@@ -130,15 +145,7 @@ func TestPrepareTranscriptStatError(t *testing.T) {
 
 // TestPrepareTranscriptReadError covers the ReadLine error path.
 func TestPrepareTranscriptReadError(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "oversized.jsonl")
-	big := make([]byte, transcript.DefaultMaxLineBytes+10)
-	for i := range big {
-		big[i] = 'x'
-	}
-	big[len(big)-1] = '\n'
-	if err := os.WriteFile(path, big, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	path := writeOversizedLineFile(t)
 	_, err := prepareTranscript(path)
 	if err == nil {
 		t.Fatalf("prepareTranscript with oversized line should error")

@@ -49,10 +49,7 @@ func TestDescribeImage_ClampsEffortToProfileLevels(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	desc := sess.describeImage(context.Background(), tool.ExecResult{
 		ImageData:      []byte("fake-png-bytes"),
@@ -88,10 +85,7 @@ func TestDescribeImage_UsesLowEffortIndependentOfSession(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { sess.Close() })
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	if err := sess.persistToolResults(context.Background(), []llm.ToolCallData{{ID: "c1", Name: "read_file"}}, []tool.ExecResult{{
 		CallID: "c1", ToolName: "read_file", ImageData: []byte("png"), ImageMediaType: "image/png",
@@ -157,18 +151,14 @@ func TestPersistToolResults_VisionSteeringIncludesLatencyAndUsage(t *testing.T) 
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { sess.Close() })
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	imagePath := filepath.Join(dir, "image.png")
 	if err := os.WriteFile(imagePath, validPNGFixture(t), 0o600); err != nil {
 		t.Fatalf("write image fixture: %v", err)
 	}
 	// TRIPWIRE: scripted in-process provider and local fixture; only fires on a genuine turn-loop hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "inspect the image", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -229,18 +219,14 @@ func TestPersistToolResults_VisionSteeringOmitsAbsentUsage(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { sess.Close() })
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	imagePath := filepath.Join(dir, "image.png")
 	if err := os.WriteFile(imagePath, validPNGFixture(t), 0o600); err != nil {
 		t.Fatalf("write image fixture: %v", err)
 	}
 	// TRIPWIRE: scripted in-process provider and local fixture; only fires on a genuine turn-loop hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "inspect the image", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

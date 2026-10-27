@@ -1,5 +1,5 @@
 import type { HostRow, LaunchOptionSchemaResponse } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -7,6 +7,7 @@ import { connectionStore } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
 import { resetLaunchConfigHostStoresForTests, resetLaunchConfigStoreForTests } from "../../../stores/launchConfig";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { ProjectHostScope } from "./project";
 import { shownReasons } from "./reasonTestUtils";
@@ -29,12 +30,6 @@ function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
     removed: false,
     ...overrides,
   };
-}
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
 }
 
 function setQueryCwd(cwd: string | null): void {
@@ -102,7 +97,7 @@ afterEach(() => {
 
 test("with this hub selected the section issues the plain launch calls and never the proxy", async () => {
   setQueryCwd("/repo");
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/launch/schema", () => SCHEMA);
   fake.on("evener/launch/getLayer", (params) =>
@@ -127,7 +122,7 @@ test("with this hub selected the section issues the plain launch calls and never
 
 test("selecting a remote host shows THAT host's project layer, never the controller's", async () => {
   setQueryCwd("/repo");
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   // The controller's own handlers are booby-trapped: reaching any of them while
   // beta is selected is a host-scoping bug.
@@ -160,7 +155,7 @@ test("selecting a remote host shows THAT host's project layer, never the control
 
 test("a remote save writes that host's project layer through the proxy, never this hub's", async () => {
   setQueryCwd("/repo");
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/launch/setLayer", () => {
     throw new Error("a remote selection must not write this hub's layer");
@@ -200,7 +195,7 @@ test("a remote save writes that host's project layer through the proxy, never th
 
 test("browsing a path field on a remote host completes against THAT host, never the controller", async () => {
   setQueryCwd("/repo");
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   // The form's browse helpers must follow the selected host's store, not the
   // controller singleton: reaching the controller's own path handlers here is
@@ -247,7 +242,7 @@ test("browsing a path field on a remote host completes against THAT host, never 
 // editing.
 test("switching hosts keeps the route's ?cwd=, re-scoping the same project to the new host", async () => {
   setQueryCwd("/repo");
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/launch/schema", () => SCHEMA);
   fake.on("evener/launch/getLayer", (params) =>
@@ -286,7 +281,7 @@ test("switching hosts keeps the route's ?cwd=, re-scoping the same project to th
 // host that stays attached gives it no other way out.
 test("a failed refresh keeps the project form and the draft, and a retry clears the notice", async () => {
   setQueryCwd("/repo");
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let attached = true;
   let refuse = false;
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached })] }));
@@ -345,7 +340,7 @@ test("a launch-config change for the selected host re-reads the project layer an
   vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   setQueryCwd("/repo");
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let agent = "beta-agent";
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", (params) => {

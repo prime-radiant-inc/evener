@@ -36,19 +36,7 @@ import (
 // key and runs in the ordinary suite, which is the point -- a test only this
 // package's e2e set can reach is a test nobody runs.
 func TestE2E_HubAndDaemon(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, _ := startE2EHubStack(t)
 
 	// A daemon of our own, on the hub's HOME/XDG_STATE_HOME so they share
 	// $XDG_STATE_HOME/evener/run, started exactly as a user would. The hub

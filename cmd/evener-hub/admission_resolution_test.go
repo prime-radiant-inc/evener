@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -46,10 +47,7 @@ func TestSourceForThreadNilRegistryIsQuiet(t *testing.T) {
 
 func TestSourceForThreadInvalidRefPreservesInvalidParams(t *testing.T) {
 	_, err := sourceForThread(appsource.NewRegistry(), "bad-ref", "")
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("invalid ref error = %v, want InvalidParams", err)
-	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
 }
 
 func TestHubAdmissionStableOwnerChangeSucceeds(t *testing.T) {
@@ -66,7 +64,7 @@ func testHubAdmissionInventoryChange(t *testing.T, sameOwner bool) {
 		if sameOwner && swapped.Load() {
 			id = "next"
 		}
-		appserver.Subscribe(ctx, id)
+		appserver.SubscribeWithAdmission(ctx, id, false)
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: id, SessionID: id, Evener: appwire.EvenerThread{Ref: "local:" + id}}}, nil
 	})
 	upstream := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
@@ -161,7 +159,7 @@ func TestHubUnsubscribeAcceptedExtraField(t *testing.T) {
 	defer cancel()
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		appserver.Subscribe(ctx, "current")
+		appserver.SubscribeWithAdmission(ctx, "current", false)
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "current", SessionID: "current", Evener: appwire.EvenerThread{Ref: "local:current"}}}, nil
 	})
 	upstream := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
@@ -197,5 +195,76 @@ func TestHubUnsubscribeAcceptedExtraField(t *testing.T) {
 	server.BroadcastAll("test/alias-barrier", map[string]any{})
 	if got := aliasMethodCountUntilBarrier(t, client, "test/stale-extra"); got != 0 {
 		t.Errorf("stale extra-field delivery=%d, want 0", got)
+	}
+}
+
+// The hub resolver maps what it cannot resolve onto a disposition per request
+// shape: a subscribing read of a ref no source serves is refused as unavailable,
+// and an undecodable thread/read or thread/unsubscribe body is an invalid
+// request.
+func TestHubAdmissionDispositionsWithoutASource(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
+	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer wire.Close()
+	client := dialHubRPC(t, wire)
+	defer client.Close()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:unserved", Subscribe: true})
+	requireWireError(t, err, appwire.CodeUnavailable)
+
+	err = client.Request(ctx, appwire.MethodThreadRead, json.RawMessage(`"not an object"`), nil)
+	requireWireError(t, err, appwire.CodeInvalidParams)
+
+	err = client.Request(ctx, appwire.MethodThreadUnsubscribe, json.RawMessage(`"not an object"`), nil)
+	requireWireError(t, err, appwire.CodeInvalidParams)
+}
+
+// An unsubscribe for a ref whose source has since left the inventory still
+// withdraws the subscription the hub registered under that ref.
+func TestHubUnsubscribeOfUnresolvedRefWithdrawsItsSubscription(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		appserver.SubscribeWithAdmission(ctx, "current", false)
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "current", SessionID: "current", Evener: appwire.EvenerThread{Ref: "local:current"}}}, nil
+	})
+	upstream := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer upstream.Close()
+	var gone atomic.Bool
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		if gone.Load() {
+			return nil
+		}
+		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{SourceID: "local", ThreadID: "stable", SessionID: "current", WorkspaceRef: "local:stable", Endpoint: upstream.URL, Protocol: appwire.ProtocolVersion}}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer wire.Close()
+	client := dialHubRPC(t, wire)
+	defer client.Close()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:stable", Subscribe: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := server.SubscriberCount("local:stable"); got != 1 {
+		t.Fatalf("subscribers before unsubscribe = %d, want 1", got)
+	}
+
+	gone.Store(true)
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: "local:stable"}); err != nil {
+		t.Fatalf("unsubscribe of an unresolved ref: %v", err)
+	}
+	if got := server.SubscriberCount("local:stable"); got != 0 {
+		t.Fatalf("subscribers after unsubscribe = %d, want 0", got)
 	}
 }

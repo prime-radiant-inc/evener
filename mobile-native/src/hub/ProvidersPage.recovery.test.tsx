@@ -8,7 +8,7 @@ import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification } from "@evener/appwire-client";
 import { ErrorEndpointConflict, WireError } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { ProvidersStack as ProvidersPage } from "./providersPageTestUtils";
 import { render, screenConnection, testIDSuffixes, unmountMountedTrees } from "../renderNative.testkit";
 

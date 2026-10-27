@@ -41,10 +41,7 @@ func TestSession_SetReasoningEffort_FlushesMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	defer sess.Close()
 
 	sessID := sess.ID()
@@ -74,10 +71,7 @@ func TestSession_SetModel_FlushesMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	defer sess.Close()
 
 	sessID := sess.ID()
@@ -104,10 +98,7 @@ func TestSession_SetModel_NoOpAfterClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	sessID := sess.ID()
 	sess.Close()
 
@@ -581,8 +572,7 @@ func TestSession_PreCompactHookOnlyRunsWhenCompactionEmits(t *testing.T) {
 	// is wired through a real (non-mocked) hooks.Runner; this case asserts
 	// the hook must NOT fire without a compaction boundary, so no hook
 	// subprocess actually runs here. Only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -628,8 +618,7 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 	// is a real `echo` subprocess that actually fires at the compaction
 	// boundary (asserted via countHookStarts below); only fires on a
 	// genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

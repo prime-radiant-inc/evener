@@ -20,6 +20,21 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+// newTestLocalDaemonSource serves a local-daemon source over the given HTTP
+// server's endpoint, advertising the th_1/sess_1 live entry this package's
+// relay and paging scenarios key on.
+func newTestLocalDaemonSource(httpServer *httptest.Server) *LocalDaemonSource {
+	return NewLocalDaemonSource("local", func() []rendezvous.Entry {
+		return []rendezvous.Entry{{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws" + httpServer.URL[len("http"):],
+			SourceID:  "local",
+			ThreadID:  "th_1",
+			SessionID: "sess_1",
+		}}
+	}, httpServer.Client())
+}
+
 func TestRelaySessionHealthyRejoinUsesCanonicalConnection(t *testing.T) {
 	entry := rendezvous.Entry{
 		Protocol:  appwire.ProtocolVersion,
@@ -294,15 +309,7 @@ func fuzzScenarioLocalDaemonSourceReadThreadMapsEOFDuringHandshake(t *testing.T)
 	}))
 	defer httpServer.Close()
 
-	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
-		return []rendezvous.Entry{{
-			Protocol:  appwire.ProtocolVersion,
-			Endpoint:  "ws" + httpServer.URL[len("http"):],
-			SourceID:  "local",
-			ThreadID:  "th_1",
-			SessionID: "sess_1",
-		}}
-	}, httpServer.Client())
+	source := newTestLocalDaemonSource(httpServer)
 
 	_, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"})
 	if err == nil {
@@ -319,15 +326,7 @@ func fuzzScenarioLocalDaemonSourceReadThreadReturnsCallerCtxCancellation(t *test
 	}))
 	defer httpServer.Close()
 
-	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
-		return []rendezvous.Entry{{
-			Protocol:  appwire.ProtocolVersion,
-			Endpoint:  "ws" + httpServer.URL[len("http"):],
-			SourceID:  "local",
-			ThreadID:  "th_1",
-			SessionID: "sess_1",
-		}}
-	}, httpServer.Client())
+	source := newTestLocalDaemonSource(httpServer)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -432,15 +431,7 @@ func fuzzScenarioLocalDaemonSourceReadsThreadOverAppWire(t *testing.T) {
 	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	defer httpServer.Close()
 
-	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
-		return []rendezvous.Entry{{
-			Protocol:  appwire.ProtocolVersion,
-			Endpoint:  "ws" + httpServer.URL[len("http"):],
-			SourceID:  "local",
-			ThreadID:  "th_1",
-			SessionID: "sess_1",
-		}}
-	}, httpServer.Client())
+	source := newTestLocalDaemonSource(httpServer)
 
 	resp, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"})
 	if err != nil {
@@ -471,15 +462,7 @@ func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	defer httpServer.Close()
 
-	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
-		return []rendezvous.Entry{{
-			Protocol:  appwire.ProtocolVersion,
-			Endpoint:  "ws" + httpServer.URL[len("http"):],
-			SourceID:  "local",
-			ThreadID:  "th_1",
-			SessionID: "sess_1",
-		}}
-	}, httpServer.Client())
+	source := newTestLocalDaemonSource(httpServer)
 
 	ctx := context.Background()
 	list, err := source.ListJobs(ctx, appwire.JobsListParams{Ref: "local:th_1", Continuation: "next-page"})
@@ -533,15 +516,7 @@ func fuzzScenarioLocalDaemonSourceDrainUsesInputShapeDirectly(t *testing.T) {
 	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	defer httpServer.Close()
 
-	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
-		return []rendezvous.Entry{{
-			Protocol:  appwire.ProtocolVersion,
-			Endpoint:  "ws" + httpServer.URL[len("http"):],
-			SourceID:  "local",
-			ThreadID:  "th_1",
-			SessionID: "sess_1",
-		}}
-	}, httpServer.Client())
+	source := newTestLocalDaemonSource(httpServer)
 
 	_, err := source.DrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "sess_1", ExpectedQueueRevision: 0, Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "composer payload"}}})
 	if err != nil {
@@ -575,15 +550,7 @@ func fuzzScenarioLocalDaemonSourceReadThreadIncludesQueue(t *testing.T) {
 	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	defer httpServer.Close()
 
-	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
-		return []rendezvous.Entry{{
-			Protocol:  appwire.ProtocolVersion,
-			Endpoint:  "ws" + httpServer.URL[len("http"):],
-			SourceID:  "local",
-			ThreadID:  "th_1",
-			SessionID: "sess_1",
-		}}
-	}, httpServer.Client())
+	source := newTestLocalDaemonSource(httpServer)
 
 	resp, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"})
 	if err != nil {
@@ -1019,15 +986,7 @@ func fuzzScenarioLocalDaemonSourceSubscribeThreadRequestsSubscription(t *testing
 	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	defer httpServer.Close()
 
-	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
-		return []rendezvous.Entry{{
-			Protocol:  appwire.ProtocolVersion,
-			Endpoint:  "ws" + httpServer.URL[len("http"):],
-			SourceID:  "local",
-			ThreadID:  "th_1",
-			SessionID: "sess_1",
-		}}
-	}, httpServer.Client())
+	source := newTestLocalDaemonSource(httpServer)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1087,15 +1046,7 @@ func fuzzScenarioLocalDaemonSourceSubscribeThreadPreservesInitializeWireError(t 
 	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	defer httpServer.Close()
 
-	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
-		return []rendezvous.Entry{{
-			Protocol:  appwire.ProtocolVersion,
-			Endpoint:  "ws" + httpServer.URL[len("http"):],
-			SourceID:  "local",
-			ThreadID:  "th_1",
-			SessionID: "sess_1",
-		}}
-	}, httpServer.Client())
+	source := newTestLocalDaemonSource(httpServer)
 
 	_, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"})
 	var wire appwire.WireError
@@ -1115,15 +1066,7 @@ func fuzzScenarioLocalDaemonSourceSubscribeThreadPreservesThreadReadWireError(t 
 	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	defer httpServer.Close()
 
-	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
-		return []rendezvous.Entry{{
-			Protocol:  appwire.ProtocolVersion,
-			Endpoint:  "ws" + httpServer.URL[len("http"):],
-			SourceID:  "local",
-			ThreadID:  "th_1",
-			SessionID: "sess_1",
-		}}
-	}, httpServer.Client())
+	source := newTestLocalDaemonSource(httpServer)
 
 	_, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"})
 	var wire appwire.WireError
@@ -1161,15 +1104,7 @@ func fuzzScenarioLocalDaemonSourceStartTurnMapsDroppedTransportToMutationOutcome
 	}))
 	defer httpServer.Close()
 
-	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
-		return []rendezvous.Entry{{
-			Protocol:  appwire.ProtocolVersion,
-			Endpoint:  "ws" + httpServer.URL[len("http"):],
-			SourceID:  "local",
-			ThreadID:  "th_1",
-			SessionID: "sess_1",
-		}}
-	}, httpServer.Client())
+	source := newTestLocalDaemonSource(httpServer)
 
 	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "sess_1", Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
 	var wire appwire.WireError

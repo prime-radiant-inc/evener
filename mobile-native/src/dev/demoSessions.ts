@@ -906,7 +906,7 @@ const NO_CAPABILITIES: ThreadCapabilities = {
 };
 
 // A session's capabilities as the hub advertises them for its status:
-// - live, a daemon's set (server/appwire_runtime.go's appCapabilitiesLocked),
+// - live, a daemon's set (server/appwire_thread_projection.go's appCapabilitiesLocked),
 //   with Send only while it rests and Clear as clearAvailable says;
 // - shut down, the hub's past-session set (cmd/evener-hub/app_threadread.go's
 //   pastThreadCapabilities), since sending resumes it;
@@ -1221,7 +1221,7 @@ function restartRequiredError(clientMutationId: string): WireError {
 
 // A notes change must reach a session that takes shared notes, and name the
 // instance it read. A stale instance is refused as the daemon refuses it
-// (server/appwire_runtime.go, appwire.MutationNotAccepted). A shut-down
+// (server/appwire_thread_settings.go, appwire.MutationNotAccepted). A shut-down
 // session is resumed to take it, as the hub's setNotesHumanWithResume and
 // removeURLWithResume do (cmd/evener-hub/app_session_resume.go).
 function requireSharedNotes(thread: Thread, expectedInstanceId: string, clientMutationId: string, now: number): void {

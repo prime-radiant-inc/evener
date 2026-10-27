@@ -130,7 +130,7 @@ HUB=http://127.0.0.1:$PORT
 
 - **Step 2 (server)**: `state=active` with a non-empty `active_turn_id` and
   `capabilities.steer:true`. Falsify: `steer:false` while a turn is running —
-  the capability gate (`server/appwire_runtime.go:1047`) regressed and no UI
+  the capability gate (`server/appwire_thread_projection.go#appCapabilitiesLocked`) regressed and no UI
   path can steer.
 - **Step 3 (hydration)**: `[data-testid="composer-steer"]` is present, as is
   `composer-stop`, and `location.port` is your hub's. Falsify: the Steer

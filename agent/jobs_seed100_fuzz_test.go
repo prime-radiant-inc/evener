@@ -138,7 +138,6 @@ func seed100Jobs(t *testing.T, text string) {
 		t.Fatal(err)
 	}
 	_, _, _, _ = readClosedJobOutput(path, &jobstore.JobRecord{Status: jobstore.StatusCompleted, OutputBytes: 99}, 2, false)
-	_ = cloneJobRecord(nil)
 
 	jm.abandonRunningJob("missing")
 	jm.closeStoreOnly()
@@ -211,7 +210,7 @@ func seed100JobTools(t *testing.T, text string) {
 	for failAt := 1; failAt <= 6; failAt++ {
 		reg := tool.NewRegistry()
 		fault := &seed100Registrar{failAt: failAt}
-		_ = registerJobToolsWithRegistrar(reg, fault, newSession(t), nil)
+		_ = registerJobToolsWith(reg, fault.Register, newSession(t))
 	}
 	for _, fn := range []func() (any, error){
 		func() (any, error) { return jobWatchTool(nil, nil, 1) },

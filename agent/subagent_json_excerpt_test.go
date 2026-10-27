@@ -87,8 +87,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	// TRIPWIRE: parent and child adapters are scripted in-process calls with no
 	// real I/O; this normally completes in well under a second. 30s only fires
 	// on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	res := sess.createDelegate(ctx, delegateArgs{Task: "write the report", DelegationAllowance: new(0)})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
@@ -238,8 +237,7 @@ func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 	// TRIPWIRE: parent and child adapters are scripted in-process calls with no
 	// real I/O; this normally completes in well under a second. 30s only fires
 	// on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	res := sess.createDelegate(ctx, delegateArgs{Task: "track the child task", DelegationAllowance: new(0)})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)

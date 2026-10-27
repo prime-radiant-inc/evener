@@ -1,5 +1,5 @@
 import type { LaunchConfigLayer, LaunchOption, MCPServerSpec } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { LaunchEnvironmentEditor } from "./LaunchEnvironmentEditor";
 import { LaunchFallbackEditor } from "./LaunchFallbackEditor";
 import { LaunchResourceEditor } from "./LaunchResourceEditor";

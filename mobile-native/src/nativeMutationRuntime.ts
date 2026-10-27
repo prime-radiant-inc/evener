@@ -23,14 +23,14 @@ import {
 	type QueuedMessageStorage,
 	type SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
-import { READ_ITEM_LIMIT } from "../../mobile/src/services/conversation";
+import { READ_ITEM_LIMIT } from "./conversation/services/conversation";
 import {
 	type ConversationMutationAdmission,
 	type ConversationMutationKind,
 	type ConversationMutationRequest,
 	type ConversationMutationSubmitter,
 	MutationNotSentError,
-} from "../../mobile/src/state/conversationMutation";
+} from "./conversation/state/conversationMutation";
 import { MutationOutboxSQLite, type RecoveryResendCommit } from "./mutationOutboxStorage";
 import { isSqliteStorageFailure, type SqliteSync } from "./sqliteSync";
 

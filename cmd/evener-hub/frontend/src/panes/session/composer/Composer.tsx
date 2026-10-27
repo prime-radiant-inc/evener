@@ -62,12 +62,12 @@ import {
 } from "../../../stores/liveControls";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
+import type { ResumeOnlySignals } from "../../../stores/recoveryFence";
 import {
   captureRecoveryStopBarrier,
   hasBlockedUnknown,
   hasQueuedNonSend,
   type InputAttachment,
-  type ResumeOnlySignals,
   threadsStore,
   useThreadsStore,
 } from "../../../stores/threads";

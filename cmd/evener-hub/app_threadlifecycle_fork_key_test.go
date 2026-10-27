@@ -58,19 +58,11 @@ func TestHubRPCThreadForkAtItemKeyCutsThatEntry(t *testing.T) {
 	// Three entries: 1 = USER "first task", 2 = ASSISTANT "first reply",
 	// 3 = USER "second task".
 	parentID := buildRPCParentSession(t, stateDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	thirdEntryKey := transcriptindex.ItemKey("turn_3", appwire.ThreadItemPosition{Entry: 3, Item: 0})
 	resp, err := appwiretest.ThreadFork(context.Background(), client, appwire.ThreadForkParams{
@@ -173,19 +165,11 @@ func TestHubRPCThreadForkAtItemKeyCutsNewFormatEntry(t *testing.T) {
 	if err := writeNewFormatForkParentSession(t, stateDir, parentID); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	// Entry 3 (ordinal 2) is the second USER_INPUT entry, minted under its own
 	// new-format turn id "t_second" rather than a legacy turn_<entryIndex>.

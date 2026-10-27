@@ -198,6 +198,12 @@ establish range coverage or own persisted turn metadata.
 
 ## Transcript reader reducer helpers
 
+`reducer.ts` holds the transcript reducer. The warning fold (`foldWarningParams`,
+`joinWarningParts`, the bounded raw-frame fallback) lives in `warningFold.ts`, a
+leaf module the reducer imports and that imports nothing from it. Further
+reducer pieces follow the same rule: a split-out module never imports
+`reducer.ts`.
+
 `mergeTranscriptReaderWindow(model, turns)` folds actual bounded local reader
 rows into `model.history` with the reducer's ordinary versioned merge rules.
 Equal/newer cached item versions can restore payload over identity-only history

@@ -36,7 +36,7 @@ import {
 	runGatedMutation,
 } from "@evener/appwire-client/state/extensions";
 import { compactDuration } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { isReady } from "../connectionDisplay";
 import { destructiveButton } from "../haptics";
 import { INSTALLED_PLUGINS_FAILED, MarketplaceBrowser } from "../MarketplaceBrowser";

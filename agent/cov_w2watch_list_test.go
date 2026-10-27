@@ -15,10 +15,10 @@ func TestW2Watch_watchListToolResultVisibleToSession(t *testing.T) {
 	jm := newTestJM(t) // sessionID "S1"
 
 	// Two live watches share a source so the sort tie-breaks on watch id.
-	liveA := &watchConfig{id: "wa", watchID: "wa", sourcePublic: "same", target: "job_a"}
-	liveB := &watchConfig{id: "wb", watchID: "wb", sourcePublic: "same", target: "job_b"}
+	liveA := &watchConfig{watchID: "wa", sourcePublic: "same", target: "job_a"}
+	liveB := &watchConfig{watchID: "wb", sourcePublic: "same", target: "job_b"}
 	// A watch owned by another receiver session is invisible.
-	hidden := &watchConfig{id: "wh", watchID: "wh", sourcePublic: "aaa", target: "job_h", receiverSessionID: "OTHER"}
+	hidden := &watchConfig{watchID: "wh", sourcePublic: "aaa", target: "job_h", receiverSessionID: "OTHER"}
 
 	jm.mu.Lock()
 	jm.watches[watchKey{Target: "job_a"}] = liveA
@@ -28,10 +28,10 @@ func TestW2Watch_watchListToolResultVisibleToSession(t *testing.T) {
 	// terminalFlush: a visible detached config with a fresh watch id is included;
 	// one whose watch id is already active is skipped; one with an empty watch id
 	// is skipped; one owned by another session is skipped by visibility.
-	flushFresh := &watchConfig{id: "wf", watchID: "wf", sourcePublic: "zzz", target: "job_f"}
-	flushDup := &watchConfig{id: "wa", watchID: "wa", sourcePublic: "same", target: "job_a"}
-	flushBlank := &watchConfig{id: "", watchID: "", sourcePublic: "blank", target: "job_x"}
-	flushHidden := &watchConfig{id: "wy", watchID: "wy", sourcePublic: "yyy", target: "job_y", receiverSessionID: "OTHER"}
+	flushFresh := &watchConfig{watchID: "wf", sourcePublic: "zzz", target: "job_f"}
+	flushDup := &watchConfig{watchID: "wa", sourcePublic: "same", target: "job_a"}
+	flushBlank := &watchConfig{watchID: "", sourcePublic: "blank", target: "job_x"}
+	flushHidden := &watchConfig{watchID: "wy", sourcePublic: "yyy", target: "job_y", receiverSessionID: "OTHER"}
 	jm.terminalFlush = map[*watchConfig]bool{flushFresh: true, flushDup: true, flushBlank: true, flushHidden: true}
 
 	jm.watchHistory = []watchHistoryEntry{
@@ -66,8 +66,8 @@ func TestW2Watch_watchListToolResultForReceiverWatchIDTieBreak(t *testing.T) {
 	jm := newTestJM(t)
 	const rsID, rdID = "RS", "RD"
 
-	a := &watchConfig{id: "wa", watchID: "wa", sourcePublic: "same", target: "job_a", receiverSessionID: rsID, receiverDelegateID: rdID}
-	b := &watchConfig{id: "wb", watchID: "wb", sourcePublic: "same", target: "job_b", receiverSessionID: rsID, receiverDelegateID: rdID}
+	a := &watchConfig{watchID: "wa", sourcePublic: "same", target: "job_a", receiverSessionID: rsID, receiverDelegateID: rdID}
+	b := &watchConfig{watchID: "wb", sourcePublic: "same", target: "job_b", receiverSessionID: rsID, receiverDelegateID: rdID}
 	jm.mu.Lock()
 	jm.watches[watchKey{Target: "job_a", ReceiverSessionID: rsID, ReceiverDelegateID: rdID}] = a
 	jm.watches[watchKey{Target: "job_b", ReceiverSessionID: rsID, ReceiverDelegateID: rdID}] = b

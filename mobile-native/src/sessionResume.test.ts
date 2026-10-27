@@ -1,8 +1,8 @@
 import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import type { Thread, WebSocketLike } from "@evener/appwire-client";
-import { createConversationService } from "../../mobile/src/services/conversation";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { createConversationService } from "./conversation/services/conversation";
+import { createConversationStore } from "./conversation/state/conversation";
 import { createHubClient } from "./connection";
 import { SessionControls } from "./sessionControls";
 

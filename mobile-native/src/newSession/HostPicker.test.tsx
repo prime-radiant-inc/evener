@@ -2,7 +2,7 @@ import type { HostRow } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import { createNewSessionService } from "../../../mobile/src/services/newSession";
+import { createNewSessionService } from "../conversation/services/newSession";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";

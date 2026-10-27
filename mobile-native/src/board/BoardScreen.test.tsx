@@ -32,7 +32,7 @@ import { manifest, wireSnapshot } from "@evener/appwire-client/testing/navigatio
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import {
 	alertRequests,
 	playedHaptics,
