@@ -435,6 +435,36 @@ describe("useThreadsStore.resolveEscalation", () => {
     expect(pendingIds()).toEqual([]);
   });
 
+  // Reads are answered concurrently, so a read issued after the confirming one
+  // can still carry a snapshot taken before the daemon dropped the escalation.
+  test("a later-issued read answered after a confirming read does not bring the resolve back", async () => {
+    const fake = connectFakeClient();
+    const answers: Array<(response: ThreadReadResponse) => void> = [];
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        answers.push((response) => resolve({ ...response, requestGeneration }));
+      });
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+
+    const watched = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await vi.waitFor(() => expect(answers).toHaveLength(1));
+    const tracked = threadsStore.getState().refreshThread("ref_a");
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    answers[0]?.(readCarrying([], undefined));
+    await watched;
+    answers[1]?.(readCarrying(["esc_1"], undefined));
+    await tracked;
+
+    expect(pendingIds()).toEqual([]);
+  });
+
   test("a superseded read answered after the resolve is still discarded", async () => {
     const fake = connectFakeClient();
     let answerRead: (response: ThreadReadResponse) => void = () => {};

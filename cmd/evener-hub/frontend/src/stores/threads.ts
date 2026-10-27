@@ -5161,31 +5161,18 @@ function resolvedEscalationsFor(ref: string): Set<string> {
 // after the read was issued are kept: the read says nothing of them. Saved
 // history is not a live snapshot and confirms nothing.
 //
-// Forgetting waits until every read issued before the confirming one has
-// settled, and each response is stripped of resolved ids on arrival, before any
-// adopter sees it, so an older read can never restore what a newer one forgot.
-// The Set is trimmed in place; the transcript repository holds this same Set.
-interface ThreadReadFence {
-  settled: boolean;
-  confirmed: string[];
-}
-const threadReadFencesByRef = new Map<string, ThreadReadFence[]>();
+// Reads are answered out of order and adopted after they return, so a confirmed
+// id is forgotten only while no read for the ref is in flight and no hydration
+// is still adopting a response; each response is also stripped of resolved ids
+// on arrival. The Set is trimmed in place; the transcript repository holds this
+// same Set.
+const threadReadsByRef = new Map<string, { inFlight: number; confirmed: Set<string> }>();
 
-// Confirmed ids are forgotten once every older read has settled and no
-// hydration for the ref is still adopting a response (the hydration is retired
-// after adoption), so an adopter still holding an older response can filter it.
 function forgetConfirmedEscalations(ref: string): void {
-  if (pendingThreadHydrations.has(ref) || pendingWatchedHydrations.has(ref)) return;
-  const fences = threadReadFencesByRef.get(ref) ?? [];
-  while (fences[0]?.settled) {
-    for (const escalationId of fences.shift()?.confirmed ?? []) resolvedEscalationsByRef.get(ref)?.delete(escalationId);
-  }
-  if (fences.length === 0) threadReadFencesByRef.delete(ref);
-}
-
-function settleThreadReadFence(ref: string, fence: ThreadReadFence): void {
-  fence.settled = true;
-  forgetConfirmedEscalations(ref);
+  const reads = threadReadsByRef.get(ref);
+  if (!reads || reads.inFlight > 0 || pendingThreadHydrations.has(ref) || pendingWatchedHydrations.has(ref)) return;
+  for (const escalationId of reads.confirmed) resolvedEscalationsByRef.get(ref)?.delete(escalationId);
+  threadReadsByRef.delete(ref);
 }
 
 function readThreadForgettingConfirmed(
@@ -5194,24 +5181,30 @@ function readThreadForgettingConfirmed(
   params: Parameters<ThreadSubscriptionLease["read"]>[0],
 ): ReturnType<ThreadSubscriptionLease["read"]> {
   const resolvedAtIssue = [...(resolvedEscalationsByRef.get(ref) ?? [])];
-  const fence: ThreadReadFence = { settled: false, confirmed: [] };
-  threadReadFencesByRef.set(ref, [...(threadReadFencesByRef.get(ref) ?? []), fence]);
+  const reads = threadReadsByRef.get(ref) ?? { inFlight: 0, confirmed: new Set<string>() };
+  threadReadsByRef.set(ref, reads);
+  reads.inFlight += 1;
+  const settle = () => {
+    reads.inFlight -= 1;
+    forgetConfirmedEscalations(ref);
+  };
   return lease.read(params).then(
     (response) => {
       const evener = response.thread.evener;
       const advertised = evener?.pendingEscalations ?? [];
       if (evener?.mutationStateAuthoritative === true) {
         const advertisedIds = new Set(advertised.map((e) => e.escalationId));
-        fence.confirmed = resolvedAtIssue.filter((escalationId) => !advertisedIds.has(escalationId));
+        for (const escalationId of resolvedAtIssue)
+          if (!advertisedIds.has(escalationId)) reads.confirmed.add(escalationId);
       }
       const resolved = resolvedEscalationsByRef.get(ref);
       const kept = resolved ? advertised.filter((e) => !resolved.has(e.escalationId)) : advertised;
-      settleThreadReadFence(ref, fence);
+      settle();
       if (!evener || kept.length === advertised.length) return response;
       return { ...response, thread: { ...response.thread, evener: { ...evener, pendingEscalations: kept } } };
     },
     (error) => {
-      settleThreadReadFence(ref, fence);
+      settle();
       throw error;
     },
   );
@@ -8836,7 +8829,7 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
   resolvedEscalationsByRef.clear();
-  threadReadFencesByRef.clear();
+  threadReadsByRef.clear();
   for (const route of productionEntryRoutes.values()) retireEntryTranscriptRoute(route);
   productionEntryRoutes.clear();
   productionEntryCache?.close();
