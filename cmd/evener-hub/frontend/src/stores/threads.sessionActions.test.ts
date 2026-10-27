@@ -8711,10 +8711,8 @@ test("a storage-blocked ref refuses a queued record's Retry press", async () => 
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
 });
 
-// Reviewer B finding 3: the recovery-resend branch (a failed turn's Retry,
-// QueueStrip's retry) bypasses the send funnel and would otherwise park on the
-// Send-resumes face with no driver. The resend now runs resumeFencedForSend
-// after its durable write, exactly as the send funnel does.
+// Recovery resend bypasses the send funnel, but must still drive the resume
+// after its durable write and preserve the resent row through completion.
 test("a recovery resend on a Send-resumes ref parks and drives the resume", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
@@ -8746,10 +8744,35 @@ test("a recovery resend on a Send-resumes ref parks and drives the resume", asyn
   expect(recovery).toBeDefined();
   if (!recovery) throw new Error("expected the recovery row to be durable");
   await refreshPendingTurnsProjection(ref);
-  fake.on("thread/resume", () => new Promise<never>(() => {}));
-  await resendRecoveryMutation(recovery.clientMutationId, ref, "send", "retry me", []);
+  const resume = deferred<ThreadReadResponse>();
+  const resumeRequested = nextHandledRequest(fake, "thread/resume", () => resume.promise);
+  const result = await resendRecoveryMutation(recovery.clientMutationId, ref, "send", "retry me", []);
+  expect(result.status).toBe("sent");
+  if (result.status !== "sent") throw new Error("expected a durable resent row");
+  // The resend resolves at durability, not at the async resume's RPC boundary.
+  await resumeRequested;
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  expect(await storage.listOutbox(ref)).toMatchObject([
+    { clientMutationId: result.record.clientMutationId, attempted: false },
+  ]);
+  const completion = threadsStore.getState().resumeSession(ref);
+  fake.on("thread/read", () => readResponse(ref));
+  const sent = nextHandledRequest(fake, "turn/start", (params) => ({
+    receipt: mutationReceipt(params.clientMutationId),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  resume.resolve(readResponse(ref));
+  await completion;
+  expect(await sent).toMatchObject({
+    ref,
+    clientMutationId: result.record.clientMutationId,
+    input: [{ type: "text", text: "retry me" }],
+  });
+  await waitFor(async () => expect(await storage.listOutbox(ref)).toEqual([]));
+  expect(await storage.listRecovery(ref)).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
 });
 
 // The drive is idempotent per ref: a second send landing while the first
@@ -8964,24 +8987,20 @@ test("a send enqueued during a held identity-changing resume follows the resumed
   // Hold the resumed ref's hydration read, so a second send can land while the
   // drive is between its first snapshot and its final pass.
   let holdToRead = false;
-  let toReadHeld = false;
-  let releaseToRead!: () => void;
-  fake.on("thread/read", (params) => {
+  const hydrationEntered = deferred<void>();
+  const hydration = deferred<void>();
+  fake.on("thread/read", async (params) => {
     if (params.ref !== toRef) return fromShape();
+    const response = toShape();
     if (holdToRead) {
       holdToRead = false;
-      toReadHeld = true;
-      return new Promise<ReturnType<typeof toShape>>((resolve) => {
-        releaseToRead = () => resolve(toShape());
-      });
+      hydrationEntered.resolve();
+      await hydration.promise;
     }
-    return toShape();
+    return response;
   });
-  let resolveResume!: (response: ReturnType<typeof toShape>) => void;
-  const heldResume = new Promise<ReturnType<typeof toShape>>((resolve) => {
-    resolveResume = resolve;
-  });
-  fake.on("thread/resume", () => heldResume);
+  const resume = deferred<ThreadReadResponse>();
+  const resumeRequested = nextHandledRequest(fake, "thread/resume", () => resume.promise);
   const starts: string[] = [];
   fake.on("turn/start", (params) => {
     starts.push(String(params.ref));
@@ -8996,26 +9015,43 @@ test("a send enqueued during a held identity-changing resume follows the resumed
   expect(threadsStore.getState().restartBlockingObligations.has(fromRef)).toBe(true);
   // First send parks and starts the drive, which is held at the resume RPC.
   await threadsStore.getState().send(fromRef, "one");
-  await flushIndexedDBUntil(() => false);
+  await resumeRequested;
+  const completion = threadsStore.getState().resumeSession(fromRef);
+  const [first] = await storage.listOutbox(fromRef);
+  if (!first) throw new Error("expected the first send to be durable");
   expect(starts).toEqual([]);
   // Release the resume but hold the resumed ref's hydration read, so the drive
   // is in flight when the second send lands.
   holdToRead = true;
-  resolveResume(toShape());
-  await flushIndexedDBUntil(() => toReadHeld);
-  // The first row moved in the drive's first snapshot and drains under the new
-  // ref while the resumed hydration is held.
-  await flushIndexedDBUntil(() => starts.length >= 1);
-  expect(starts).toEqual([toRef]);
+  resume.resolve(toShape());
+  await hydrationEntered.promise;
+  // The first row moved, but the resume owner still fences its destination.
+  expect(await storage.listOutbox(toRef)).toMatchObject([
+    { clientMutationId: first.clientMutationId, attempted: false },
+  ]);
+  expect(starts).toEqual([]);
   await threadsStore.getState().send(fromRef, "two");
-  await flushIndexedDBUntil(() => false);
-  expect(starts).toEqual([toRef]);
+  const [second] = await storage.listOutbox(fromRef);
+  if (!second) throw new Error("expected the late send to be durable");
+  expect(second.clientMutationId).not.toBe(first.clientMutationId);
+  expect(second.attempted).toBe(false);
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(starts).toEqual([]);
   // Release the hydration: the final pass moves the late row to the new ref and
   // both drain there.
-  releaseToRead();
-  await flushIndexedDBUntil(() => starts.length >= 2);
+  hydration.resolve();
+  await completion;
+  await waitFor(async () => {
+    expect(starts).toEqual([toRef, toRef]);
+    expect(await storage.listOutbox(fromRef)).toEqual([]);
+    expect(await storage.listOutbox(toRef)).toEqual([]);
+  });
   expect(starts).toEqual([toRef, toRef]);
-  expect(await storage.listOutbox(fromRef)).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === "turn/start").map((call) => call.params)).toMatchObject([
+    { ref: toRef, clientMutationId: first.clientMutationId, input: [{ type: "text", text: "one" }] },
+    { ref: toRef, clientMutationId: second.clientMutationId, input: [{ type: "text", text: "two" }] },
+  ]);
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
 });
 
 // Two concurrent resume triggers (the notice's Resume press racing a send) share
@@ -9928,10 +9964,8 @@ test("a stale drain pass does not clear a later drive's swap registration", asyn
   }
 });
 
-// The harder order of the same property: the resume's OWN post-resume hydration
-// is held open, and the resync tail and a ready discovery each run first. Either
-// may send the parked row; releasing the held refresh afterwards must not send a
-// second. One turn/start total, whatever order the three triggers release in.
+// Resync and ready can reconcile first, but only the explicit resume owner's
+// completion releases its parked row. The competing tails must not duplicate it.
 test("the parked Send-resumes row dispatches exactly once when the resync and ready tails release before the resume's own refresh", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
@@ -9939,8 +9973,8 @@ test("the parked Send-resumes row dispatches exactly once when the resync and re
   const ref = "local:exactly-once-held-refresh";
   let resumed = false;
   let holdRefreshRead = false;
-  let refreshReadHeld = false;
-  let releaseRefreshRead!: () => void;
+  const hydrationEntered = deferred<void>();
+  const hydration = deferred<void>();
   const fenced = () =>
     readResponse(ref, {
       status: { type: "notLoaded" },
@@ -9957,15 +9991,14 @@ test("the parked Send-resumes row dispatches exactly once when the resync and re
       status: { type: "idle" },
       evener: { ref, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
     });
-  fake.on("thread/read", () => {
+  fake.on("thread/read", async () => {
+    const response = resumed ? idle() : fenced();
     if (holdRefreshRead) {
       holdRefreshRead = false;
-      refreshReadHeld = true;
-      return new Promise<ReturnType<typeof idle>>((resolve) => {
-        releaseRefreshRead = () => resolve(resumed ? idle() : fenced());
-      });
+      hydrationEntered.resolve();
+      await hydration.promise;
     }
-    return resumed ? idle() : fenced();
+    return response;
   });
   fake.on("thread/resume", () => {
     resumed = true;
@@ -9986,18 +10019,49 @@ test("the parked Send-resumes row dispatches exactly once when the resync and re
   await threadsStore.getState().ensureThread(ref);
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
   await threadsStore.getState().send(ref, "hello");
-  await flushIndexedDBUntil(() => refreshReadHeld);
+  await hydrationEntered.promise;
+  const completion = threadsStore.getState().resumeSession(ref);
+  const [parked] = await storage.listOutbox(ref);
+  if (!parked) throw new Error("expected the send to remain durable during hydration");
   // The parked row cannot dispatch while the resume's refresh is held.
   expect(sends).toBe(0);
-  // The other two tails release first; each may clear the obligation and send.
+  // Resync clears the recovery obligation, but not the explicit resume owner.
+  const resyncRead = nextHandledRequest(fake, "thread/read", () => idle());
   fake.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: `thr_${ref}` } });
-  notifyReadyForMutationDispatch([ref]);
-  await flushIndexedDBUntil(() => sends >= 1);
+  await resyncRead;
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false));
+  // Observe the real dispatcher's storage tail, not an arbitrary delay, before
+  // asserting that the ready trigger also leaves the parked row unattempted.
+  const readyTail = deferred<void>();
+  const listOptimistic = storage.listOptimistic.bind(storage);
+  const observeTail = vi.spyOn(storage, "listOptimistic").mockImplementation(async (target) => {
+    const rows = await listOptimistic(target);
+    if (target === ref) readyTail.resolve();
+    return rows;
+  });
+  try {
+    notifyReadyForMutationDispatch([ref]);
+    await readyTail.promise;
+  } finally {
+    observeTail.mockRestore();
+  }
+  expect(sends).toBe(0);
+  expect(await storage.listOutbox(ref)).toMatchObject([
+    { clientMutationId: parked.clientMutationId, attempted: false },
+  ]);
+  // Releasing the owner must deliver without another ready or resync trigger.
+  hydration.resolve();
+  await completion;
+  await waitFor(async () => {
+    expect(sends).toBe(1);
+    expect(await storage.listOutbox(ref)).toEqual([]);
+  });
   expect(sends).toBe(1);
-  // Release the held refresh: its reconciliation must not send a second.
-  releaseRefreshRead();
-  await flushIndexedDBUntil(() => false);
-  expect(sends).toBe(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start").map((call) => call.params)).toMatchObject([
+    { ref, clientMutationId: parked.clientMutationId, input: [{ type: "text", text: "hello" }] },
+  ]);
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(threadsStore.getState().resumeFailures.has(ref)).toBe(false);
 });
 
 // The fixture's refusal message: one constant shared by every fake throw
