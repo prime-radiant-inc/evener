@@ -4302,7 +4302,13 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 
 	// Source production precedes spending the one-shot or its delivery budget.
 	// A refused append leaves the same registration eligible for its next tick.
-	if err := jm.produceCallbackNotifications(notifications); err != nil {
+	var productionErr error
+	notifications, productionErr = jm.produceCallbackNotifications(notifications)
+	if productionErr != nil {
+		jm.dispatchProducedWatchSends()
+		if jm.retirementOwner == nil && jm.delegateController == nil {
+			jm.enqueueNotifications(notifications)
+		}
 		return true
 	}
 	for _, d := range jm.snapshotWatchSendFrames(deliveries) {
@@ -4456,8 +4462,20 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 // Source persistence precedes firing lifecycle transitions. The caller pumps
 // canonical receiver custody after this source-side work completes.
 func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.WatchSendState, cfg *watchConfig, ok bool, err error) {
+	state, cfg, ok, notice, err := jm.recordWatchSendForBatch(d)
+	if notice != nil {
+		jm.enqueueWatchNotifications([]jobNotification{*notice})
+		jm.kick()
+	}
+	return state, cfg, ok, err
+}
+
+// recordWatchSendForBatch returns any co-produced budget notice to the caller.
+// Callback production owns that notice until its matched-event batch routes,
+// while standalone sends publish it through recordWatchSend above.
+func (jm *jobManager) recordWatchSendForBatch(d watchSendDelivery) (state jobstore.WatchSendState, cfg *watchConfig, ok bool, notice *jobNotification, err error) {
 	if d.cfg == nil || (d.send == nil && !d.callback) || !jm.isCurrentWatchSendDelivery(d) {
-		return jobstore.WatchSendState{}, nil, false, nil
+		return jobstore.WatchSendState{}, nil, false, nil, nil
 	}
 	target := runtimeMessageAliasCaller
 	var terr error
@@ -4484,26 +4502,33 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 			jm.rememberUnpersistedTerminalPendingWatchSend(d.cfg, state)
 		}
 		if !persisted {
-			return jobstore.WatchSendState{}, nil, false, perr
+			return jobstore.WatchSendState{}, nil, false, nil, perr
 		}
 		// The pending event (and any durable prefix of its co-generated
 		// group) is already journaled and committed to the runtime map:
 		// surface the persisted state with ok=true alongside the failure
 		// instead of a ghost ok=false that hides the durable prefix.
-		return persistedState, d.cfg, true, perr
+		return persistedState, d.cfg, true, nil, perr
 	}
 	if !persisted {
-		return jobstore.WatchSendState{}, nil, false, nil
+		return jobstore.WatchSendState{}, nil, false, nil, nil
 	}
 	state = persistedState
-	jm.finishProducedWatchFiring(d.cfg)
+	jm.mu.Lock()
+	budget := d.cfg.budgetTripped
+	jm.mu.Unlock()
+	if budget {
+		if n, ended := jm.autoClearWatchOverBudgetNotification(d.cfg); ended {
+			notice = &n
+		}
+	}
 	if terr != nil {
-		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, terr.Error())
+		return jobstore.WatchSendState{}, nil, false, notice, jm.dropWatchSend(state, d.cfg, terr.Error())
 	}
 	if rejected, err := jm.rejectRunawayWatchSend(d.cfg, state); rejected {
-		return jobstore.WatchSendState{}, nil, false, err
+		return jobstore.WatchSendState{}, nil, false, notice, err
 	}
-	return state, d.cfg, true, nil
+	return state, d.cfg, true, notice, nil
 }
 
 // The persisted, post-coalescing depth owns this decision on every attempt,
@@ -6576,10 +6601,10 @@ func limitWatchText(s string, maxChars int) string {
 }
 
 func (jm *jobManager) enqueueWatchNotifications(notifications []jobNotification) {
-	if err := jm.produceCallbackNotifications(notifications); err != nil {
-		jm.kick()
-		return
-	}
+	var err error
+	notifications, err = jm.produceCallbackNotifications(notifications)
+	// A failed member cannot hide source work already persisted by this batch.
+	// Dispatch healthy IDs and route its successful legacy prefix before retry.
 	jm.dispatchProducedWatchSends()
 	var legacy []jobNotification
 	for _, n := range notifications {
@@ -6588,13 +6613,18 @@ func (jm *jobManager) enqueueWatchNotifications(notifications []jobNotification)
 		}
 	}
 	jm.enqueueNotifications(jm.routeWatchNotifications(legacy))
+	if err != nil {
+		jm.kick()
+	}
 }
 
-func (jm *jobManager) produceCallbackNotifications(notifications []jobNotification) error {
+func (jm *jobManager) produceCallbackNotifications(notifications []jobNotification) ([]jobNotification, error) {
+	var produced []jobNotification
 	var errs []error
 	for _, n := range notifications {
 		cfg := n.callbackConfig
 		if cfg == nil {
+			produced = append(produced, n)
 			continue
 		}
 		jm.mu.Lock()
@@ -6616,15 +6646,26 @@ func (jm *jobManager) produceCallbackNotifications(notifications []jobNotificati
 		d.allowAfterTerminalExpiry = true
 		jm.mu.Unlock()
 		d.frame = (&Session{}).formatJobNotificationReminder([]deliverableJobNotification{{notification: n}})
-		if _, _, ok, err := jm.recordWatchSend(d); err != nil {
+		_, _, ok, notice, err := jm.recordWatchSendForBatch(d)
+		if ok {
+			produced = append(produced, n)
+		}
+		if err != nil {
 			errs = append(errs, err)
-			continue
 		} else if !ok {
 			errs = append(errs, errDelegateTargetBusy)
-			continue
+		}
+		if notice != nil {
+			// The notice has a distinct durable key. Persist it without recursively
+			// routing or kicking the batch whose final firing produced it.
+			extra, extraErr := jm.produceCallbackNotifications([]jobNotification{*notice})
+			produced = append(produced, extra...)
+			if extraErr != nil {
+				errs = append(errs, extraErr)
+			}
 		}
 	}
-	return errors.Join(errs...)
+	return produced, errors.Join(errs...)
 }
 
 // noteProducedWatchFiringLocked spends a firing only after its source append.
@@ -6680,7 +6721,7 @@ func (jm *jobManager) routeWatchNotifications(notifications []jobNotification) [
 	var unproduced []jobNotification
 	for _, n := range notifications {
 		if n.callbackConfig != nil && (jm.retirementOwner != nil || jm.delegateController != nil) {
-			if err := jm.produceCallbackNotifications([]jobNotification{n}); err != nil {
+			if _, err := jm.produceCallbackNotifications([]jobNotification{n}); err != nil {
 				jm.kick()
 			}
 			continue

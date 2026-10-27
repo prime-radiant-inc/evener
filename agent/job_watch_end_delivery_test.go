@@ -260,3 +260,155 @@ func TestWatchBudgetRetryDoesNotProduceCondition51(t *testing.T) {
 		}
 	}
 }
+
+// A budget-notice append failure must not hide its already durable final firing.
+// The existing source retry, not another event or user input, owns the failed ID.
+func TestWatchCallbackBatchPartialNoticeFailure(t *testing.T) {
+	t.Parallel()
+	clock := agenttest.NewFakeClock()
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("partial-batch-response-648") }}}
+	s := newSession(t, withAdapter(adapter), withConfig(SessionConfig{StateDir: t.TempDir(), clock: clock}))
+	jm := s.jobManager
+	res, err := jm.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}, Note: "partial-batch-729"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(res.WatchID)
+	if ok {
+		cfg.deliveries, cfg.conditionFires = watchDeliveryBudget-1, watchDeliveryBudget-1
+	}
+	jm.mu.Unlock()
+	if !ok {
+		t.Fatal("watch missing")
+	}
+	var fail atomic.Bool
+	fail.Store(true)
+	injected := errors.New("notice append unavailable")
+	appendEvent := jm.appendEvent
+	var failed jobstore.WatchSendState
+	var failures atomic.Int32
+	jm.appendEvent = func(ev jobstore.Event) error {
+		if ev.Kind == jobstore.EventWatchSendPending && ev.WatchSend.TriggerReason == "budget_exhausted" && fail.Load() {
+			failed = *ev.WatchSend
+			failures.Add(1)
+			return injected
+		}
+		return appendEvent(ev)
+	}
+	jm.mu.Lock()
+	notification := jm.watchNotificationFromWatch(cfg, "", "event: COMMUNICATE", nil)
+	jm.mu.Unlock()
+	// Exercise this callback batch alone, without a second producer's tail pump.
+	jm.enqueueWatchNotifications([]jobNotification{notification})
+	source := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+	if len(source) != 1 || source[0].WatchSend.TriggerReason != "event: COMMUNICATE" || failures.Load() == 0 {
+		t.Fatalf("partial scenario did not fire: rows=%d failures=%d", len(source), failures.Load())
+	}
+	firing := *source[0].WatchSend
+	firingID := fmt.Sprintf("watch:%s:%d", firing.DeliveryID, firing.UpdateSeq)
+	budgetID := fmt.Sprintf("watch:%s:%d", failed.DeliveryID, failed.UpdateSeq)
+	if failed.DeliveryID == "" || failed.DeliveryID == firing.DeliveryID || failed.Key == firing.Key {
+		t.Fatal("failed budget notice lost its separate identity")
+	}
+	requireWatchSettlement(t, jm, firing, 1)
+	ids, err := s.pendingNotificationIDs()
+	if err != nil || !equalNotificationIDs(ids, []string{firingID}) {
+		t.Fatalf("healthy source did not progress: ids=%v error=%v", ids, err)
+	}
+	requireCallbackBatchReceipts(t, s, []string{firingID}, 0)
+	jm.mu.Lock()
+	retry, pending, fires := jm.watchTransportRetry.active, len(cfg.pending), cfg.conditionFires
+	jm.mu.Unlock()
+	if !retry || pending != 1 || fires != watchDeliveryBudget || jm.watchCount() != 0 {
+		t.Fatalf("failed debt not retained: retry=%t pending=%d fires=%d live=%d", retry, pending, fires, jm.watchCount())
+	}
+	fail.Store(false)
+	clock.Advance(jobNotificationRetryInitialDelay)
+	clock.Drain()
+	source = producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+	if len(source) != 2 || source[1].WatchSend.DeliveryID != failed.DeliveryID || source[1].WatchSend.UpdateSeq != failed.UpdateSeq || source[1].WatchSend.Key != failed.Key {
+		t.Fatalf("timed retry changed failed source identity: %+v", source)
+	}
+	ids, err = s.pendingNotificationIDs()
+	if err != nil || !equalNotificationIDs(ids, []string{firingID, budgetID}) {
+		t.Fatalf("retry custody=%v error=%v", ids, err)
+	}
+	for _, state := range []jobstore.WatchSendState{firing, failed} {
+		requireWatchSettlement(t, jm, state, 1)
+		requireCallbackBatchSource(t, s, state)
+	}
+	requireCallbackBatchReceipts(t, s, ids, 0)
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests=%d want1", len(requests))
+	}
+	requireCallbackBatchRequest(t, s, requests[0], ids)
+	requireCallbackBatchReceipts(t, s, ids, 1)
+	jm.dispatchProducedWatchSends()
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	requireCallbackBatchReceipts(t, s, ids, 1)
+	if len(adapter.Requests()) != 1 || jm.hasPendingWatchSends() {
+		t.Fatal("retry duplicated accepted ID or left source debt")
+	}
+	t.Logf("partial notice failures=%d healthy=%s recovered same ID=%s, accepted once and observed once", failures.Load(), firingID, budgetID)
+}
+
+// Synthetic canonical events have per-ID custody/replay obligations, not a
+// global one-raw-handoff promise outside automatic completion's owner hold.
+func TestWatchCanonicalStandaloneBudgetCustody(t *testing.T) {
+	t.Parallel()
+	s, adapter := newTerminalFlushSession(t, true)
+	adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("standalone-response-193") }}
+	res, err := s.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.jobManager.mu.Lock()
+	_, cfg, _ := s.jobManager.watchConfigByIDLocked(res.WatchID)
+	cfg.deliveries, cfg.conditionFires = watchDeliveryBudget-1, watchDeliveryBudget-1
+	s.jobManager.mu.Unlock()
+	onSessionEventKD(s.jobManager, events.EventCommunicate, events.CommunicateData{Message: "standalone-event-583"})
+	source := producerSourceEvents(t, s.jobManager, jobstore.EventWatchSendPending)
+	if len(source) != 2 {
+		t.Fatalf("source rows=%d want2", len(source))
+	}
+	ids := make([]string, 0, 2)
+	for i, event := range source {
+		state := *event.WatchSend
+		if state.Key.WatchID != res.WatchID || (i == 0 && state.TriggerReason != "event: COMMUNICATE") || (i == 1 && state.TriggerReason != "budget_exhausted") {
+			t.Fatalf("unexpected source fact: %+v", state)
+		}
+		ids = append(ids, fmt.Sprintf("watch:%s:%d", state.DeliveryID, state.UpdateSeq))
+		requireWatchSettlement(t, s.jobManager, state, 1)
+		requireCallbackBatchSource(t, s, state)
+	}
+	if source[0].WatchSend.DeliveryID == source[1].WatchSend.DeliveryID || source[0].WatchSend.Key == source[1].WatchSend.Key {
+		t.Fatal("budget overwrote final firing")
+	}
+	requireCallbackBatchReceipts(t, s, ids, 0)
+	s.jobManager.dispatchProducedWatchSends()
+	requireCallbackBatchReceipts(t, s, ids, 0)
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests=%d want1 when drain begins after both custody transfers", len(requests))
+	}
+	requireCallbackBatchRequest(t, s, requests[0], ids)
+	requireCallbackBatchReceipts(t, s, ids, 1)
+	s.jobManager.dispatchProducedWatchSends()
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	requireCallbackBatchReceipts(t, s, ids, 1)
+	if len(adapter.Requests()) != 1 {
+		t.Fatal("replay duplicated provider execution")
+	}
+}

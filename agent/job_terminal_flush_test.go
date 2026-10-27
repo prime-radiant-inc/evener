@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -31,13 +32,14 @@ func newTerminalFlushSession(t *testing.T, persistent bool) (*Session, *fakeAdap
 func TestTerminalFlushHandoff(t *testing.T) {
 	// Serial: diagnostic capture replaces the default logger through session cleanup.
 	for _, tc := range []struct {
-		name      string
-		self, end bool
-		watches   int
+		name              string
+		self, end, budget bool
+		watches           int
 	}{
-		{"self-event", true, false, 1},
-		{"end-notice", false, true, 1},
-		{"both", true, true, 2},
+		{"self-event", true, false, false, 1},
+		{"end-notice", false, true, false, 1},
+		{"both", true, true, false, 2},
+		{"budget-at-completion", true, false, true, 2},
 	} {
 		for _, persistent := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/persistent=%t", tc.name, persistent), func(t *testing.T) {
@@ -56,12 +58,40 @@ func TestTerminalFlushHandoff(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				if tc.budget {
+					jm.mu.Lock()
+					for _, cfg := range jm.watches {
+						cfg.deliveries, cfg.conditionFires = watchDeliveryBudget-1, watchDeliveryBudget-1
+					}
+					jm.mu.Unlock()
+				}
+				var beforeResponse [][]schema.Turn
+				var beforeSource []string
 				for range 4 {
-					a.steps = append(a.steps, func(llm.Request) llm.Response { return finalResponse("terminal-response-327") })
+					a.steps = append(a.steps, func(llm.Request) llm.Response {
+						s.mu.Lock()
+						beforeResponse = append(beforeResponse, append([]schema.Turn(nil), s.history...))
+						s.mu.Unlock()
+						records, err := jm.store.Load()
+						if err == nil && records[jobID] != nil {
+							beforeSource = append(beforeSource, string(records[jobID].NotifyState))
+						}
+						return finalResponse("terminal-response-327")
+					})
 				}
 				wake := make(chan struct{}, 1)
 				var wakes atomic.Int32
+				var wakeMu sync.Mutex
+				var handoffs [][]string
+				var handoffErrors []error
 				s.SetNotifyFunc(func() {
+					ids, err := s.pendingNotificationIDs()
+					wakeMu.Lock()
+					handoffs = append(handoffs, ids)
+					if err != nil {
+						handoffErrors = append(handoffErrors, err)
+					}
+					wakeMu.Unlock()
 					wakes.Add(1)
 					select {
 					case wake <- struct{}{}:
@@ -155,6 +185,11 @@ func TestTerminalFlushHandoff(t *testing.T) {
 				if len(fold.order) != tc.watches+1 || fold.order[tc.watches] != shellID {
 					t.Fatalf("canonical order=%v, want source watches then exact shell %s", fold.order, shellID)
 				}
+				wakeMu.Lock()
+				if len(handoffErrors) != 0 || len(handoffs) != 1 || !equalNotificationIDs(handoffs[0], fold.order) {
+					t.Errorf("handoff IDs=%v errors=%v, want one ordered batch %v", handoffs, handoffErrors, fold.order)
+				}
+				wakeMu.Unlock()
 				for _, id := range fold.order {
 					if _, ok := fold.observed[id]; !ok {
 						t.Errorf("no successful observation for %s", id)
@@ -179,6 +214,25 @@ func TestTerminalFlushHandoff(t *testing.T) {
 				independentSource := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
 				if len(independentSource) != tc.watches {
 					t.Fatalf("independent source count=%d want%d", len(independentSource), tc.watches)
+				}
+				if len(beforeResponse) != 1 || len(beforeSource) != 1 || beforeSource[0] != string(jobstore.NotifyDelivered) {
+					t.Errorf("pre-response requests=%d source states=%v, want one delivered source", len(beforeResponse), beforeSource)
+				}
+				if len(beforeResponse) > 0 {
+					requireCallbackBatchTurnCounts(t, beforeResponse[0], fold.order, 0)
+				}
+				requireCallbackBatchReceipts(t, s, fold.order, 1)
+				if tc.budget {
+					firing, budget := *independentSource[0].WatchSend, *independentSource[1].WatchSend
+					if firing.TriggerReason != "event: JOB_FINISHED" || budget.TriggerReason != "budget_exhausted" || firing.Key == budget.Key || firing.DeliveryID == budget.DeliveryID {
+						t.Fatalf("completion lost distinct firing/budget facts: firing=%+v budget=%+v", firing, budget)
+					}
+					if jm.watchCount() != 0 {
+						t.Fatal("budget watch remains live")
+					}
+					for _, event := range independentSource {
+						requireWatchSettlement(t, jm, *event.WatchSend, 1)
+					}
 				}
 				for i, event := range independentSource {
 					state := event.WatchSend
