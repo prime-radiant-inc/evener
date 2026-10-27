@@ -526,6 +526,22 @@ describe("durable handoff library", () => {
 		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
 	});
 
+	test("an unavailable mutation store keeps ordinary draft access working", () => {
+		const { repository, library } = setup();
+		const unavailable = library(() => {
+			throw new Error("mutation store unavailable");
+		});
+		// Opening, editing, and querying all read an unreachable ledger as no
+		// ledger instead of taking draft access down with it.
+		const document = unavailable.open(destination("a"));
+		document.edit("current");
+		expect(repository.read(destination("a")).draft).toBe("current");
+		expect(unavailable.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(unavailable.hasPendingHandoff(destination("b"))).toBe(false);
+		expect(unavailable.openObligationRecoveryIds(destination("a"))).toEqual(new Set());
+		expect(() => unavailable.retryPendingHandoffs()).not.toThrow();
+	});
+
 	test("a refusal write failure leaves the hop pending until the ledger accepts it", () => {
 		const { ledger, repository, library } = setup();
 		repository.write(destination("a"), {

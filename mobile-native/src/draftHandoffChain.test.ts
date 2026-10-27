@@ -831,4 +831,113 @@ describe("handoff chain obligations", () => {
 			}),
 		).toBe("already-restored");
 	});
+
+	test("a failed resolution on a live source is retried once storage recovers", async () => {
+		const { storageLedger, repository } = setup();
+		// The occupied destination keeps the source live: no transfer retires it.
+		repository.write(endpoint("b"), { draft: "b work", unconfirmed: null });
+		const failing = flaky(storageLedger, "resolveSubmission", 1);
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => failing,
+		);
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const source = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		// The edge is recorded; the occupied destination turns the transfer
+		// away, so the source stays live and its hop stays pending.
+		expect(library.handoff(endpoint("a"), endpoint("b"))).toBe(false);
+		expect(storageLedger.readGraph().edges).toMatchObject([{ state: "pending" }]);
+
+		// The command completes while its resolution write fails: the obligation
+		// stays open and the chain stays blocked.
+		finish();
+		await submitted;
+		expect(storageLedger.readGraph().obligations).toMatchObject([{ state: "open" }]);
+
+		// The retry pass flushes the live source too, so the recovered store
+		// accepts the resolution and the handoff stops waiting on it.
+		library.retryPendingHandoffs();
+		expect(storageLedger.readGraph().obligations).toMatchObject([
+			{ state: "completed", completedCommandIds: ["recovered-a"] },
+		]);
+		expect(storageLedger.readGraph().edges.every((edge) => edge.state !== "pending")).toBe(true);
+		expect(repository.read(endpoint("b")).completedCommandRecoveryIds).toEqual(["recovered-a"]);
+	});
+
+	test("a failed forwarding write is retried once the row owner saves again", async () => {
+		const { storage, storageLedger, repository } = setup();
+		// The row owner's first save fails once.
+		let failWrite = true;
+		const flakyRepository = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "write" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (failWrite && (args[0] as { sessionRef?: string } | undefined)?.sessionRef === "c") {
+							failWrite = false;
+							throw new Error("save failed");
+						}
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		const library = new DraftLibrary(
+			() => flakyRepository,
+			undefined,
+			() => storageLedger,
+		);
+		const intent = (note: string): MutationIntent => ({
+			targetRef: targetKey("a"),
+			threadId: "thread-a",
+			method: "notes/human/set",
+			payload: { ref: "a", expectedInstanceId: "instance-a", note },
+			attachments: [],
+			optimisticDisplay: null,
+		});
+		await storage.enqueueIntent(intent("drives the retarget"));
+		const captured = await storage.enqueueIntent(intent("recovered command input"));
+		await storage.transferToRecovery(captured.clientMutationId, "editing");
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: [captured.clientMutationId] },
+		});
+		repository.write(endpoint("b"), { draft: "b work", unconfirmed: null });
+		const source = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		resume(storage, "a", "b");
+		resume(storage, "b", "c");
+		library.retryPendingHandoffs();
+		finish();
+		await submitted;
+
+		// The first forwarding write fails, so the settlement stays pending.
+		library.retryPendingHandoffs();
+		expect(storageLedger.readGraph().edges.find((edge) => edge.from.sessionRef === "a")?.state).toBe("pending");
+
+		// The next pass retries the row owner's own save - preserving its live
+		// record - and the forwarded markers land.
+		library.retryPendingHandoffs();
+		expect(repository.read(endpoint("c")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
+		expect(storageLedger.readGraph().edges.find((edge) => edge.from.sessionRef === "a")?.state).toBe("settled");
+	});
 });

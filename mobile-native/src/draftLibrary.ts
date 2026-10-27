@@ -81,7 +81,7 @@ export class DraftLibrary {
 	 */
 	handoff(from: DraftDestination, to: DraftDestination): boolean {
 		if (sameDestination(from, to)) return true;
-		const ledger = this.handoffLedger?.();
+		const ledger = this.availableHandoffLedger();
 		if (ledger === undefined) return false;
 		const pending = this.pendingEdge(ledger, from, to);
 		if (pending !== undefined) return this.applyEdge(ledger, pending);
@@ -109,8 +109,13 @@ export class DraftLibrary {
 	 * then attempt the graph's order. An edge that stays pending blocks the
 	 * edges that depend on it. */
 	retryPendingHandoffs(): void {
-		const ledger = this.handoffLedger?.();
+		const ledger = this.availableHandoffLedger();
 		if (ledger === undefined) return;
+		// A failed resolution write leaves its obligation open and the whole
+		// chain blocked; a live source whose transfer an occupied destination
+		// turned away needs the flush just as much as a retired one.
+		for (const sessions of this.hubs.values())
+			for (const document of sessions.values()) document.flushObligationResolutions();
 		// A retired document can still hold a resolution its ledger write missed.
 		for (const documents of this.retired.values()) for (const document of documents) document.retry();
 		const load = readHandoffGraph(ledger);
@@ -187,7 +192,7 @@ export class DraftLibrary {
 	}
 
 	hasPendingHandoff(to: DraftDestination): boolean {
-		const ledger = this.handoffLedger?.();
+		const ledger = this.availableHandoffLedger();
 		if (ledger === undefined) return false;
 		const load = readHandoffGraph(ledger);
 		if (load.state !== "ready") return false;
@@ -514,7 +519,12 @@ export class DraftLibrary {
 		for (const rowOwner of rowOwners) {
 			const document = this.open(rowOwner);
 			let current = document.getSnapshot();
-			if (!current.loaded) {
+			// An unloaded row owner, or one whose last save failed, retries its
+			// own persistence first - the retry preserves the live record's
+			// edits and images - so a single failed forwarding write does not
+			// leave the predecessor pending forever when nothing else repairs
+			// this identity.
+			if (!current.loaded || current.error !== null) {
 				document.retry();
 				current = document.getSnapshot();
 			}
@@ -539,7 +549,7 @@ export class DraftLibrary {
 	/** Recovery sources of submissions still running on this destination's chain.
 	 * The screen must not restore those rows while their obligation is open. */
 	openObligationRecoveryIds(destination: DraftDestination): Set<string> {
-		const ledger = this.handoffLedger?.();
+		const ledger = this.availableHandoffLedger();
 		if (ledger === undefined) return new Set();
 		let graph;
 		try {
@@ -571,7 +581,7 @@ export class DraftLibrary {
 	/** Apply a resolved completion to the record of one destination before it is
 	 * opened. Idempotent: the capture token is cleared once. */
 	private applyObligationsFor(destination: DraftDestination): void {
-		const ledger = this.handoffLedger?.();
+		const ledger = this.availableHandoffLedger();
 		if (ledger === undefined) return;
 		let graph;
 		try {
@@ -640,6 +650,18 @@ export class DraftLibrary {
 			return "unowned";
 		}
 		return "delivered";
+	}
+
+	/** The handoff ledger, when its store can be reached. Acquiring it can
+	 * initialize the mutation runtime and open its database, and an unavailable
+	 * mutation store must not take draft access down with it: a failure reads as
+	 * no ledger - an unavailable graph - so ordinary draft access continues. */
+	private availableHandoffLedger(): DraftHandoffLedger | undefined {
+		try {
+			return this.handoffLedger?.();
+		} catch {
+			return undefined;
+		}
 	}
 
 	private tryClean(ledger: DraftHandoffLedger, edgeId: string): void {

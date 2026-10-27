@@ -873,7 +873,12 @@ export class DraftDocument {
 		}
 	}
 
-	private flushObligationResolutions(): void {
+	/** Retry every obligation write this document still owes the ledger: a
+	 * failed begin or resolution from a submission that already went out. The
+	 * library calls this on live and retired documents before planning
+	 * handoffs, so a transient store failure does not leave an open obligation
+	 * blocking its chain after storage recovers. */
+	flushObligationResolutions(): void {
 		for (const [captureToken, recoveryIds] of [...this.unrecordedCaptures]) {
 			try {
 				this.submissionLedger?.().beginSubmission(captureToken, this.destination, recoveryIds);
