@@ -1094,6 +1094,19 @@ test("the originating source drops a preserved row a peer consumed during the po
     expect(
       (await storage.listRecovery(ref)).filter((row) => row.clientMutationId !== original.clientMutationId),
     ).toEqual([]);
+
+    // The consumed composition is not rewritten as an ordinary draft either:
+    // a reload restores nothing, and the next Send starts from an empty
+    // composer instead of re-delivering content the peer already has.
+    expect(readComposerDraft(ref).text).toBe("");
+    source.dispose();
+    const remounted = createTestComposerSource(ref, undefined, "pane-a");
+    try {
+      expect(readRecoverySelection(ref, remounted.recoverySelectionOwnerId)).toBeUndefined();
+      expect(remounted.getSnapshot().text).toBe("");
+    } finally {
+      remounted.dispose();
+    }
   } finally {
     storage.releaseRefresh.resolve();
     source.dispose();

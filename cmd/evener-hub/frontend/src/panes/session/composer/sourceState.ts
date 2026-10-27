@@ -909,6 +909,8 @@ export function createComposerSourceState(
             const emptyAtRefusal = refusalComposition === null || compositionIsEmpty(refusalComposition);
             let preserved: MutationRecoveryRecord | undefined;
             let destinationOwnsNewer = false;
+            let preservedBeforeRevalidation: MutationRecoveryRecord | undefined;
+            let consumedAfterPreservation = false;
             beginPendingPreservation(recoverySelectionOwnerId, clientMutationId);
             try {
               preserved =
@@ -941,7 +943,12 @@ export function createComposerSourceState(
               // composition, so re-read the durable row with the same
               // validation every adoption uses and drop what no longer
               // matches.
+              preservedBeforeRevalidation = preserved;
               preserved = preserved === undefined ? undefined : await revalidatePreservedRecord(preserved);
+              // A row that existed before the read and is gone or changed
+              // after it was consumed by a peer - sent or discarded - not a
+              // preservation failure.
+              consumedAfterPreservation = preserved === undefined && preservedBeforeRevalidation !== undefined;
               if (!disposalIncorporated) {
                 // A disposal that lands during that read leaves the pane's
                 // newest work - typing and settled attachments gained while
@@ -980,6 +987,19 @@ export function createComposerSourceState(
                   keepSelection: destinationOwnsNewer,
                 });
               } else if (emptyAtRefusal) {
+                setActiveRecoveryId(null);
+              } else if (
+                consumedAfterPreservation &&
+                preservedBeforeRevalidation !== undefined &&
+                recoveryCompositionFingerprint(liveComposition()) ===
+                  recoveryCompositionFingerprint(recordComposition(preservedBeforeRevalidation))
+              ) {
+                // The preserved row was sent or discarded by a peer. Retiring
+                // the lease must not rewrite the consumed composition as an
+                // ordinary draft: a reload would restore it, and the next
+                // Send would deliver content the peer already has a second
+                // time. Newer local edits still fall back to the draft
+                // below.
                 setActiveRecoveryId(null);
               } else {
                 // Preservation failed, so nothing durable carries the images.
