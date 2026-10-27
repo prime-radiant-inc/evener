@@ -252,12 +252,12 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 				endReason: "replaced",
 			})
 		}
-		markWatchConfigSnapshotsRejectingLocked(targets)
-		markWatchConfigsRejectingLocked(detachedCfgs)
+		teardown := watchTeardown{targets: targets, detachedCfgs: detachedCfgs}
+		teardown.markRejectingLocked()
 		dropped := append(terminalSnapshots(targets), detached...)
 		if equal {
 			if err := jm.appendWatchTeardownBatch(detached, nil); err != nil {
-				rollbackWatchConfigsRejectingLocked(jm, detachedCfgs)
+				teardown.rollbackLocked(jm)
 				jm.mu.Unlock()
 				return watchResult{}, err
 			}
@@ -268,8 +268,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 			return result, nil
 		}
 		if err := jm.appendWatchReplacementBatch(cfg, targets, dropped); err != nil {
-			rollbackWatchConfigSnapshotsRejectingLocked(jm, targets)
-			rollbackWatchConfigsRejectingLocked(jm, detachedCfgs)
+			teardown.rollbackLocked(jm)
 			jm.mu.Unlock()
 			return watchResult{}, err
 		}
