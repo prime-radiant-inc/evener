@@ -547,7 +547,13 @@ export function createComposerSourceState(
   // replacement composer already made. Preservation may have committed under a
   // resumed ref; the destination composer reads the selection there.
   function rememberPreservedSelection(preserved: MutationRecoveryRecord, staleId: string): boolean {
-    if (preserved.clientMutationId === staleId) return false;
+    // An identical-composition preservation returns the stale row itself,
+    // which another tab may have retargeted to a resumed ref by then. Under
+    // the same ref there is nothing to publish; under a resumed one the
+    // destination's selection and seat mapping still must be recorded - a
+    // disposed source can never run the reconciliation a live one would, and a
+    // reopen would otherwise select an older peer recovery.
+    if (preserved.clientMutationId === staleId && preserved.targetRef === ref) return false;
     const targetRef = preserved.targetRef;
     const current = readRecoverySelection(targetRef, recoverySelectionOwnerId);
     if (current !== undefined && current !== staleId) return false;

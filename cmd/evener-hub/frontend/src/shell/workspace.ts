@@ -1181,6 +1181,12 @@ export function substituteAttentionPane(
   if (paneRef !== null && pane.composerSeatId === undefined) {
     pane.composerSeatId = placeComposerSeat(paneRef, state.panes);
   }
+  // The committed substitution is focused, so it owns its conversation's
+  // mapping even when it restores a seat the pane already held: while this
+  // pane was parked, an ordinary reopening of the same conversation can have
+  // pointed the ref at that later pane's seat, and a reload must reconstruct
+  // the focused pane's selection instead.
+  if (paneRef !== null) writePaneRefSeat(pane);
   // Like retype ownership transfer, install runtime bindings before observers
   // can capture the newly committed presentation.
   bind(pane);

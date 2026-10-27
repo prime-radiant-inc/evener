@@ -131,6 +131,41 @@ test("restoring a departed main reader displaces the host's welcome fallback", (
   expect(restored.focusedPaneId).toBe(a);
 });
 
+test("restoring a parked pane reclaims its conversation's seat mapping", () => {
+  installLocalStorage(new MemoryStorage());
+  const state = workspaceStore.getState();
+  const a = state.openPane("session", { ref: "local:parked-a" });
+  const original = workspaceStore.getState().panes.find((pane) => pane.id === a);
+  if (!original?.composerSeatId) throw new Error("original pane lacks its seat");
+  writeRecoverySelection("local:parked-a", composerSelectionScope(original.composerSeatId), "original-row");
+  const origin = captureAttentionPlacement();
+  if (!origin) throw new Error("missing origin entry");
+
+  // Attention navigation parks the original; a nested reopening creates a
+  // second pane on the same conversation and takes over the mapping.
+  const destination = presentAttentionTarget("local:parked-b");
+  if (!destination) throw new Error("missing attention destination");
+  expect(original.slot).toBe("parked");
+  const secondId = state.openPane("session", { ref: "local:parked-a" });
+  const second = workspaceStore.getState().panes.find((pane) => pane.id === secondId);
+  if (!second?.composerSeatId) throw new Error("second pane lacks its seat");
+  writeRecoverySelection("local:parked-a", composerSelectionScope(second.composerSeatId), "second-row");
+  expect(readRefComposerSeat("local:parked-a")).toBe(second.composerSeatId);
+
+  // Browser Back restores the original pane with its existing seat: the
+  // focused pane must own the conversation mapping again.
+  expect(restoreAttentionPlacement(origin)).toBe(true);
+  expect(workspaceStore.getState().focusedPaneId).toBe(a);
+  expect(readRefComposerSeat("local:parked-a")).toBe(original.composerSeatId);
+
+  resetWorkspaceStoreForTests();
+  const reopenedId = workspaceStore.getState().openPane("session", { ref: "local:parked-a" });
+  const reopened = workspaceStore.getState().panes.find((pane) => pane.id === reopenedId);
+  if (!reopened?.composerSeatId) throw new Error("reopened pane lacks its seat");
+  expect(reopened.composerSeatId).toBe(original.composerSeatId);
+  expect(readRecoverySelection("local:parked-a", composerSelectionScope(reopened.composerSeatId))).toBe("original-row");
+});
+
 // A drill keeps the same pane and lifetime but reads a different leaf, so the
 // entry that owns that pane still describes the reader. If it fell invalid, its
 // route would be treated as ordinary and AppShell would reopen the pre-drill

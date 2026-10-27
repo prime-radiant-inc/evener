@@ -1172,6 +1172,78 @@ test("clearing the composer during a held preservation discards the stale row", 
   }
 });
 
+// An identical-composition preservation returns the stale row itself, which
+// another tab may have retargeted to a resumed identity without changing a
+// byte. The destination's selection and seat mapping must still be recorded:
+// the disposed source can never run the reconciliation a live one would, and
+// a reopen of the resumed conversation would otherwise select an older peer
+// recovery.
+test("an identical-composition preservation under a resumed ref records the destination", async () => {
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  setMutationStorageForTests(storage);
+  const oldRef = "local:identical-old";
+  const resumed = "local:identical-new";
+  const original = await storage.enqueueIntent({
+    targetRef: oldRef,
+    method: "turn/start",
+    payload: { ref: oldRef, input: [{ type: "text", text: "same composition" }] },
+    attachments: [],
+    composerText: "same composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "same composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(oldRef, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    // Another tab advances the row's revision without changing its
+    // composition, then retargets it to a resumed identity.
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "same composition" }],
+      [],
+      "same composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+    );
+    await peer.retargetOutbox(oldRef, resumed, { threadId: "thread-new", instanceId: "instance-new" });
+
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, "same composition", [], []);
+    await storage.reached.promise;
+    // The pane closes before the preservation settles, so the destination
+    // records this pass writes are the only ones that land.
+    source.dispose();
+    storage.release.resolve();
+    await saving;
+
+    expect(readRecoverySelection(resumed, source.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+    expect(readRefComposerSeat(resumed)).toBe("pane-a");
+  } finally {
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
 // retargetOutbox moved the row to the resumed ref while preservation waited.
 // Another pane then consumed that row, so the destination cannot be read from
 // the row itself: it must resolve independently of the row's survival.
