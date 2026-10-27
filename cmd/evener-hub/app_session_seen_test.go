@@ -132,3 +132,37 @@ func TestRunMainWiresTheSeenMarkerStore(t *testing.T) {
 func markSeenForTest(store *hubcore.SessionSeenStore, source, sessionID string, through time.Time) (bool, error) {
 	return store.MarkBatch([]hubcore.SessionSeenMark{{Source: source, SessionID: sessionID, SeenThrough: through}})
 }
+
+// Archive and favorite decisions bust the tree memo and invalidate navigation
+// across loaded projects once the hub is up.
+func TestRunMainWiresNavigationInvalidationToArchiveAndFavorite(t *testing.T) {
+	_, cfg, deps := newTraceMainTestDeps(t)
+	var web *WebServer
+	deps.afterWeb = func(created *WebServer) { web = created }
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	if web == nil || web.cfg.Archive == nil || web.cfg.Favorite == nil || web.cfg.Inputs == nil {
+		t.Fatal("the hub started without its archive, favorite or inputs-version wiring")
+	}
+	for name, change := range map[string]func() error{
+		"archive":  func() error { return web.cfg.Archive.Set("", "session", "01A", true, time.Now()) },
+		"favorite": func() error { return web.cfg.Favorite.Set("", "session", "01A", true, time.Now()) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			inputsBefore := web.cfg.Inputs.Load()
+			_, epochBefore, _ := web.navigation.snapshotPendingHint()
+			if err := change(); err != nil {
+				t.Fatal(err)
+			}
+			if web.cfg.Inputs.Load() <= inputsBefore {
+				t.Fatal("the change did not bump the inputs version")
+			}
+			hint, epochAfter, _ := web.navigation.snapshotPendingHint()
+			if epochAfter <= epochBefore || !hint.AllLoadedProjects {
+				t.Fatalf("the change did not invalidate navigation across loaded projects: hint=%+v epoch %d -> %d", hint, epochBefore, epochAfter)
+			}
+		})
+	}
+}

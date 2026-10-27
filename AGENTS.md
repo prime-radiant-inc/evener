@@ -251,14 +251,18 @@ loading them, since each opens a socket the moment its body runs.
   RoboRev supplies it: a few minutes after its combined review names the PR's
   head, the roborev-primeradiant app approves when nothing is medium or above
   and requests changes otherwise. A push dismisses the approval until the new
-  head is reviewed. Once every CI check is green and RoboRev has approved, add
-  the PR to main's merge queue: `gh pr merge <N> --repo
-  prime-radiant-inc/evener --squash`. The queue tests it on top of main and
-  the PRs ahead of it and merges it when the required checks pass there, so do
-  not merge `origin/main` into the branch just to catch up. Never use `--auto`.
-  Pushing to a queued PR removes it from the queue; if the queue drops the PR
-  for a failing check, fix the cause and enqueue again. Handle 'low' findings
-  immediately in a fast-follow PR.
+  head is reviewed. Once every CI check is green and RoboRev has approved
+  (`gh pr view <N> --json reviewDecision` says `APPROVED`), add the PR to
+  main's merge queue and wait for the outcome:
+  `scripts/ops/merge-enqueue.sh --pr <N> --wait 570`, repeated while it
+  prints `MERGEQ timeout`. Do not use `gh pr merge --squash` for this: it
+  falls back to auto-merge, which the repo disallows. The queue tests the PR
+  on top of main and the PRs ahead of it and merges it when the required
+  checks pass there, so do not merge `origin/main` into the branch just to
+  catch up. Pushing to a queued PR removes it from the queue. `MERGEQ
+  dropped` means a check failed on the queue's candidate: read it, fix the
+  cause (or, for an unrelated known flake, note it on the PR), and enqueue
+  again. Handle 'low' findings immediately in a fast-follow PR.
 - **Refuted findings.** RoboRev never reads rebuttals, so a PR whose
   remaining medium-or-above findings you have conclusively refuted on the PR
   keeps its requested changes. That case alone is an admin merge: merge
