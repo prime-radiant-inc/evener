@@ -99,3 +99,31 @@ func optionalTimeArg(args map[string]any, key string) (*time.Time, error) {
 	}
 	return &t, nil
 }
+
+// stringListArg decodes an optional array-of-strings argument, converting each
+// element with parse. Absent is (nil, nil); a present value that is not an
+// array of strings, including null, is an error, as is any element parse
+// rejects.
+func stringListArg[T any](args map[string]any, key string, parse func(string) (T, error)) ([]T, error) {
+	raw, ok := args[key]
+	if !ok {
+		return nil, nil
+	}
+	values, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be an array", key)
+	}
+	out := make([]T, 0, len(values))
+	for _, value := range values {
+		s, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s values must be strings", key)
+		}
+		item, err := parse(s)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
