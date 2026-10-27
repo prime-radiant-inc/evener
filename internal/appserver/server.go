@@ -45,7 +45,10 @@ type Server struct {
 	wrapWebSocketTransport func(webSocketTransport) webSocketTransport
 	// sendWriteTimeout is webSocketWriteTimeout, overridable by tests that
 	// drive the write-timeout cascade without waiting 30 seconds.
-	sendWriteTimeout               time.Duration
+	sendWriteTimeout time.Duration
+	// Subscription registration takes its locks in one order:
+	// Connection.hydrationMu, projectionMu, deliveryMu, Connection.admissionMu.
+	// No path may take one out of that order.
 	projectionMu                   sync.Mutex
 	deliveryMu                     sync.Mutex
 	nextHydrationGeneration        uint64

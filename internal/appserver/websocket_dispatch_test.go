@@ -612,11 +612,11 @@ func TestServeWebSocketHydrationThenMutationDeliversEveryNotificationExactlyOnce
 
 func TestServeWebSocketReadAdmissionCanceledByFollowingUnsubscribe(t *testing.T) {
 	const threadID = "th_admission"
-	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local", SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local", SubscriptionAdmissionResolver: func(msg appwire.Message) SubscriptionAdmissionResolution {
 		if msg.Request != nil && msg.Request.Method == appwire.MethodThreadRead {
-			return threadID, true
+			return SubscriptionAdmissionResolution{Key: threadID, Intent: SubscriptionAdmissionResolved}
 		}
-		return "", false
+		return SubscriptionAdmissionResolution{Intent: SubscriptionAdmissionNotSubscribe}
 	}})
 	notifier := NewNotifier(16)
 	entered := make(chan struct{})
@@ -691,11 +691,11 @@ func TestServeWebSocketUnsubscribeWaitsThroughSubscriptionRegistration(t *testin
 	captureResolved := make(chan error, 1)
 	server := NewServer(ServerConfig{
 		ServerName: "test-server", SourceID: "local",
-		SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
+		SubscriptionAdmissionResolver: func(msg appwire.Message) SubscriptionAdmissionResolution {
 			if msg.Request != nil && msg.Request.Method == appwire.MethodThreadRead {
-				return threadID, true
+				return SubscriptionAdmissionResolution{Key: threadID, Intent: SubscriptionAdmissionResolved}
 			}
-			return "", false
+			return SubscriptionAdmissionResolution{Intent: SubscriptionAdmissionNotSubscribe}
 		},
 	})
 	server.beforeSubscriptionBeginBuffered = func() {

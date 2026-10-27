@@ -460,18 +460,10 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 	var secondaryKey string
 	var resolved bool
 	intent := SubscriptionAdmissionNotSubscribe
-	if resolve := c.server.cfg.SubscriptionAdmissionResolverV2; resolve != nil && msg.Request != nil && c.isInitialized() && (msg.Request.Method == appwire.MethodThreadRead || msg.Request.Method == appwire.MethodThreadUnsubscribe) {
+	if resolve := c.server.cfg.SubscriptionAdmissionResolver; resolve != nil && msg.Request != nil && c.isInitialized() && (msg.Request.Method == appwire.MethodThreadRead || msg.Request.Method == appwire.MethodThreadUnsubscribe) {
 		var result SubscriptionAdmissionResolution
-		result, resolverPanic = safeResolveAdmissionV2(c.server, resolve, msg)
+		result, resolverPanic = safeResolveAdmission(c.server, resolve, msg)
 		resolvedKey, secondaryKey, resolved, intent = result.Key, result.SecondaryKey, result.Intent == SubscriptionAdmissionResolved, result.Intent
-	} else if resolve := c.server.cfg.SubscriptionAdmissionResolver; resolve != nil && msg.Request != nil && c.isInitialized() && (msg.Request.Method == appwire.MethodThreadRead || msg.Request.Method == appwire.MethodThreadUnsubscribe) {
-		resolvedKey, resolved, resolverPanic = safeResolveAdmission(c.server, resolve, msg)
-		if msg.Request.Method == appwire.MethodThreadRead && threadReadAdmissionEligible(msg.Request.Params) {
-			intent = SubscriptionAdmissionResolved
-			if !resolved || resolvedKey == "" {
-				intent = SubscriptionAdmissionUnresolved
-			}
-		}
 	}
 	if resolverPanic {
 		ctx = context.WithValue(ctx, subscriptionAdmissionResolverPanicContextKey{}, true)
@@ -481,14 +473,14 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 	if msg.Request != nil && msg.Request.Method == appwire.MethodThreadUnsubscribe && c.isInitialized() {
 		if (resolved || intent == SubscriptionAdmissionUnresolved) && resolvedKey != "" {
 			c.cancelSubscriptionAdmissions(resolvedKey)
-			ctx = context.WithValue(ctx, subscriptionLifecycleContextKey{}, resolvedKey)
+			target := unsubscribeTarget{key: resolvedKey}
 			if secondaryKey != "" && secondaryKey != resolvedKey {
 				c.cancelSubscriptionAdmissions(secondaryKey)
 				if intent == SubscriptionAdmissionUnresolved {
-					ctx = context.WithValue(ctx, subscriptionLifecycleContextKeysKey{}, []string{resolvedKey, secondaryKey})
-					ctx = context.WithValue(ctx, subscriptionUnresolvedContextKey{}, true)
+					target.aliasKey = secondaryKey
 				}
 			}
+			ctx = context.WithValue(ctx, unsubscribeTargetContextKey{}, target)
 		}
 	}
 	if msg.Request != nil && concurrentDispatchMethod(msg.Request.Method) && c.isInitialized() {
@@ -531,18 +523,7 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 	c.handleAndEnqueue(ctx, msg)
 }
 
-func safeResolveAdmission(server *Server, resolve func(appwire.Message) (string, bool), msg appwire.Message) (key string, ok, panicked bool) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			server.panicLogf("appserver: panic resolving subscription admission for %s: %v\n%s", methodOf(msg), recovered, debug.Stack())
-			key, ok, panicked = "", false, true
-		}
-	}()
-	key, ok = resolve(msg)
-	return key, ok, false
-}
-
-func safeResolveAdmissionV2(server *Server, resolve func(appwire.Message) SubscriptionAdmissionResolution, msg appwire.Message) (result SubscriptionAdmissionResolution, panicked bool) {
+func safeResolveAdmission(server *Server, resolve func(appwire.Message) SubscriptionAdmissionResolution, msg appwire.Message) (result SubscriptionAdmissionResolution, panicked bool) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			server.panicLogf("appserver: panic resolving subscription admission for %s: %v\n%s", methodOf(msg), recovered, debug.Stack())

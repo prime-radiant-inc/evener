@@ -389,16 +389,16 @@ func NewServer(cfg ServerConfig) *Server {
 			ServerName: "evener-serve",
 			Version:    buildinfo.Version(),
 			SourceID:   "local",
-			SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
+			SubscriptionAdmissionResolver: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 				params, ok := decodeSubscriptionAdmissionParams(msg)
 				if !ok {
-					return "", false
+					return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
 				}
 				threadID, target := runtime.appReadTarget(params)
 				if threadID == "" {
-					return "", false
+					return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionUnresolved}
 				}
-				return target, true
+				return appserver.SubscriptionAdmissionResolution{Key: target, Intent: appserver.SubscriptionAdmissionResolved}
 			},
 			Features: appwire.FeatureSet{
 				ThreadList:        true,
