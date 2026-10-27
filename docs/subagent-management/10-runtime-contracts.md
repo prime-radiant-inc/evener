@@ -36,7 +36,7 @@ Declarative workflow templates are intentionally not specified here. Agent `task
 
 These current files are the implementation surface this contract should cite and preserve where possible:
 
-- Job/delegate model-facing tools: `agent/session_tools_jobs.go`, `agent/job_delegate.go`, `agent/internal/tool/definitions.go`.
+- Job/delegate model-facing tools: `agent/session_tools_jobs.go` (with `session_tools_job_watch.go`, `session_tools_job_list.go`, `session_tools_job_status_stop.go`, `session_tools_delegate_send.go`), `agent/job_delegate.go`, `agent/internal/tool/definitions.go`.
 - Subagent runtime and policy checks: `agent/subagents.go`.
 - Subagent in-memory manager/status: `agent/subagent_manager.go`, `agent/status.go`.
 - Subagent policy tests, including grant-tool rejection: `agent/plugin_agents_integration_test.go`.
