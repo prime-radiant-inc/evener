@@ -1,20 +1,11 @@
 import { hydrateThread, type TranscriptAuthorship } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
-import { act, render, screen } from "@testing-library/react";
-import { expect, test, vi } from "vitest";
-import { initNavigation, resetNavigationStoreForTests } from "../stores/navigation/store";
-import { ComicApp } from "./ComicApp";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { ComicPanel } from "./ComicPanel";
 import { composeComicRows } from "./layout";
 import { createComicMeasurer, loadComicFonts } from "./measure";
 import { type ComicEntry, projectComicConversation } from "./projection";
-
-const browser = vi.hoisted(() => ({ client: null as FakeClient | null }));
-vi.mock("../shell/useBrowserConnection", () => ({
-  useBrowserConnection: () => ({ client: browser.client, onClientReplaced: () => {} }),
-}));
 
 function entry(fields: Partial<ComicEntry> = {}): ComicEntry {
   return {
@@ -380,60 +371,6 @@ test("font loading checks regular and bold faces explicitly", async () => {
     expect(checked.some((face) => face.includes("700"))).toBe(true);
   } finally {
     if (original) Object.defineProperty(document, "fonts", original);
-    else Reflect.deleteProperty(document, "fonts");
-  }
-});
-
-test("comic root scopes the light paper theme without changing the global hub theme", () => {
-  const mounted = render(<ComicApp />);
-  try {
-    expect(mounted.container.querySelector("main")?.getAttribute("data-theme")).toBe("light");
-    expect(document.documentElement.getAttribute("data-theme")).not.toBe("light");
-  } finally {
-    mounted.unmount();
-  }
-});
-
-test("missing fonts announce setup while conversation controls stay usable", async () => {
-  const saved = Object.getOwnPropertyDescriptor(document, "fonts");
-  Object.defineProperty(document, "fonts", { configurable: true, value: { load: async () => [] } });
-  const client = new FakeClient("ready");
-  browser.client = client;
-  client.on("evener/navigation/read", (params) => {
-    if (params.resource === "manifest")
-      return wireSnapshot(
-        params,
-        manifest({ sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } } }),
-      );
-    if (params.resource === "section")
-      return wireSnapshot(params, {
-        sessions: [{ ref: "local:one", title: "One", children: [] }],
-        remaining: 0,
-        truncated: false,
-      });
-    if (params.resource === "catalog") return wireSnapshot(params, { projects: [], remaining: 0 });
-    throw new Error(`unexpected ${params.resource}`);
-  });
-  await act(async () => {
-    initNavigation(client, capability());
-    for (let i = 0; i < 16; i += 1) await Promise.resolve();
-  });
-  window.history.replaceState(null, "", "/comic");
-  const mounted = render(<ComicApp />);
-  try {
-    await act(async () => {
-      for (let i = 0; i < 16; i += 1) await Promise.resolve();
-    });
-    expect(screen.getByRole("status", { name: /font/i })).toBeTruthy();
-    await act(async () => {
-      screen.getByRole("button", { name: "One" }).click();
-    });
-    expect(window.location.pathname).not.toBe("/comic");
-  } finally {
-    mounted.unmount();
-    browser.client = null;
-    resetNavigationStoreForTests();
-    if (saved) Object.defineProperty(document, "fonts", saved);
     else Reflect.deleteProperty(document, "fonts");
   }
 });

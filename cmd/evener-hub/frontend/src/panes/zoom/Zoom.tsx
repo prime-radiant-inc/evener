@@ -177,7 +177,7 @@ function ScopeConversation({
                     content
                   )
                 }
-                conversationFooter={state === "live" ? footer : null}
+                conversationFooter={footer}
               />
             )}
           />
