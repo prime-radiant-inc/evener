@@ -82,7 +82,7 @@ let restoreHydrationRetryScheduler: (() => void) | null = null;
 
 test("collapsing a Comic child retains an independent foreground hydration owner", async () => {
   const root = "local:root";
-  const model = hydrateThread(readResponse(root), root, 0);
+  const model = hydrateThread(readResponse(root, { sessionId: "root" }), root, 0);
   const entities = buildEntityView({
     sessionRef: root,
     tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
