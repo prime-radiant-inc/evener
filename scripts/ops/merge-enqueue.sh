@@ -12,8 +12,9 @@
 #   scripts/ops/merge-enqueue.sh --pr N [--wait SECONDS] [--jump] [--repo OWNER/NAME]
 #
 # --wait polls every 30s until the PR merges, leaves the queue, or SECONDS
-# pass. --jump puts the PR at the front of the queue (admins only; for a fix
-# the queue itself is waiting on). --repo defaults to prime-radiant-inc/evener.
+# pass. --jump puts the PR at the front of the queue as it is enqueued (admins
+# only; for a fix the queue itself is waiting on); it refuses an already
+# queued PR. --repo defaults to prime-radiant-inc/evener.
 #
 # Output (last line is the outcome):
 #   MERGEQ queued position=P            (no --wait)
@@ -38,6 +39,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$repo" ] && [ -n "$pr" ] || usage
+case "$wait" in ''|*[!0-9]*) echo "--wait takes whole seconds, got: $wait" >&2; usage ;; esac
 
 # status prints "STATE MERGE_SHA POSITION QUEUE_STATE" from one query, so the
 # PR's state and its queue entry are read at the same instant ("-" for absent
@@ -71,6 +73,10 @@ if [ "$pos" = "-" ]; then
   refresh
   if [ "$st" = "MERGED" ]; then echo "MERGEQ merged sha=$sha"; exit 0; fi
   if [ "$pos" = "-" ]; then echo "MERGEQ enqueue failed: no queue entry after enqueueing (state=$st)" >&2; exit 2; fi
+elif [ "$jump" = true ]; then
+  # jump rides on the enqueue call, which a queued PR does not get.
+  echo "MERGEQ jump refused: PR is already queued at position $pos; remove it from the queue first" >&2
+  exit 2
 fi
 echo "MERGEQ queued position=$pos"
 [ "$wait" -gt 0 ] || exit 0
