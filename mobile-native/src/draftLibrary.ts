@@ -1,12 +1,14 @@
-import { DraftDocument } from "./draftDocument";
+import { captureInFlight, type DraftCompletionDelivery, DraftDocument, mergeCompletion } from "./draftDocument";
 import type {
 	DraftHandoffDelivery,
 	DraftHandoffEdge,
 	DraftHandoffLedger,
+	DraftHandoffGraph,
 	DraftSubmissionObligation,
 } from "./draftHandoffLedger";
-import { orderHandoffGraph, readHandoffGraph, terminalDestination } from "./draftHandoffGraph";
-import type { DraftDestination, DraftRecord, DraftRepository } from "./draftRepository";
+import { clearsCapture } from "./draftHandoffLedger";
+import { type HandoffOrdering, orderHandoffGraph, readHandoffGraph, terminalDestination } from "./draftHandoffGraph";
+import type { DraftComposerMetadata, DraftDestination, DraftRecord, DraftRepository } from "./draftRepository";
 
 export type DraftStorage = Pick<
 	DraftRepository,
@@ -49,9 +51,7 @@ export class DraftLibrary {
 				undefined,
 				undefined,
 				this.handoffLedger,
-				(terminal, record) => {
-					this.hubs.get(terminal.hubId)?.get(terminal.sessionRef)?.adopt(record);
-				},
+				(terminal, completion) => this.deliverCompletionAt(terminal, completion),
 			);
 			sessions.set(destination.sessionRef, document);
 		}
@@ -100,8 +100,21 @@ export class DraftLibrary {
 		for (const documents of this.retired.values()) for (const document of documents) document.retry();
 		const load = readHandoffGraph(ledger);
 		if (load.state !== "ready") return;
+		// A reconciled obligation unblocks the edges waiting on it, so the
+		// ordering must read the graph that exists after the reconciliation.
+		if (this.reconcileAbandonedObligations(ledger, load.graph)) {
+			const fresh = readHandoffGraph(ledger);
+			if (fresh.state !== "ready") return;
+			this.cleanFinished(ledger, fresh.graph);
+			this.attemptOrderedHandoffs(ledger, orderHandoffGraph(fresh));
+			return;
+		}
 		this.cleanFinished(ledger, load.graph);
 		const ordering = orderHandoffGraph(load);
+		this.attemptOrderedHandoffs(ledger, ordering);
+	}
+
+	private attemptOrderedHandoffs(ledger: DraftHandoffLedger, ordering: HandoffOrdering): void {
 		if (ordering.state !== "ready") return;
 		const blocked = new Set<string>();
 		for (const edge of ordering.order) {
@@ -122,6 +135,27 @@ export class DraftLibrary {
 			if (fresh.graph.edges.find((entry) => entry.edgeId === edge.edgeId)?.state === "pending")
 				blocked.add(edge.edgeId);
 		}
+	}
+
+	/** An obligation a previous process left open has no live submission to
+	 * resolve it: the promise died with that process, and nothing in this one
+	 * holds its capture in flight. Resolve each as failed — the state that
+	 * releases the chain's in-flight ownership while leaving the capture's
+	 * uncertain input recoverable — so edges stop waiting for a completion that
+	 * cannot arrive and destination recovery stops suppressing its sources. */
+	private reconcileAbandonedObligations(ledger: DraftHandoffLedger, graph: DraftHandoffGraph): boolean {
+		let reconciled = false;
+		for (const obligation of graph.obligations) {
+			if (obligation.state !== "open" || captureInFlight(obligation.obligationId)) continue;
+			try {
+				ledger.resolveSubmission(obligation.obligationId, "failed");
+				reconciled = true;
+			} catch {
+				// The store that cannot accept the resolution keeps the obligation
+				// open; the next retry reconciles it again.
+			}
+		}
+		return reconciled;
 	}
 
 	hasPendingHandoff(to: DraftDestination): boolean {
@@ -222,11 +256,20 @@ export class DraftLibrary {
 					return mayDecide ? this.settle(ledger, edge, destination, current.record, edge.deliveredHash) : true;
 				return mayDecide ? this.refuse(ledger, edge, source) : false;
 			}
-			if (destinationNow === edge.deliveredHash)
-				return mayDecide ? this.settle(ledger, edge, destination, current.record, edge.deliveredHash) : true;
+			// A matching composition fingerprint alone is not proof the transfer
+			// landed: the fingerprint excludes unconfirmed content, selections, and
+			// completion markers, so a source holding only those fingerprints
+			// exactly like a destination that never received anything. Demand
+			// the destination's durable record prove the capture and metadata
+			// identity too.
+			if (destinationNow === edge.deliveredHash) {
+				if (this.transferProven(ledger, edge, snapshot.record))
+					return mayDecide ? this.settle(ledger, edge, destination, current.record, edge.deliveredHash) : true;
+			}
 			if (compositionFingerprint(snapshot.record) !== edge.deliveredHash)
 				return mayDecide ? this.refuse(ledger, edge, source) : false;
-			// The intended write never landed; fall through and compose again.
+			// The intended write never landed (or cannot be proven); fall
+			// through and compose again.
 		}
 		if (isOccupied(current.record)) return mayDecide ? this.refuse(ledger, edge, source) : false;
 
@@ -266,6 +309,46 @@ export class DraftLibrary {
 			if (sessions?.get(edge.from.sessionRef) === source) sessions.delete(edge.from.sessionRef);
 		}
 		return mayDecide ? this.settle(ledger, edge, destination, snapshot.record, intended) : true;
+	}
+
+	/** Durable evidence that an uncomposed edge's transfer actually landed. The
+	 * composition fingerprint excludes captures, selections, and completion
+	 * markers, and the source record can still mutate after delivery — the
+	 * completion clears its capture and merges ids wherever the record then
+	 * lived — so proof comes from the destination's durable record read against
+	 * the edge's own obligations, never from the source alone. */
+	private transferProven(ledger: DraftHandoffLedger, edge: DraftHandoffEdge, source: DraftRecord): boolean {
+		let graph: DraftHandoffGraph;
+		try {
+			graph = ledger.readGraph();
+		} catch {
+			return false;
+		}
+		let delivered: DraftRecord;
+		try {
+			delivered = this.repository().read(edge.to);
+		} catch {
+			return false;
+		}
+		const obligations = edge.obligations
+			.map((obligationId) => graph.obligations.find((row) => row.obligationId === obligationId))
+			.filter((row): row is DraftSubmissionObligation => row !== undefined);
+		// A completion merges these ids into whichever record it clears, so the
+		// source can carry them without the destination ever having received
+		// them at delivery time.
+		const carried = new Set([
+			...(delivered.completedCommandRecoveryIds ?? []),
+			...(delivered.releasedRecoveryIds ?? []),
+			...(delivered.recoveryResendAcks ?? []),
+			...obligations.flatMap((row) => [...row.completedCommandIds, ...row.releasedRecoveryIds]),
+		]);
+		return (
+			sameSelections(source.composer, delivered.composer) &&
+			(source.completedCommandRecoveryIds ?? []).every((id) => carried.has(id)) &&
+			(source.releasedRecoveryIds ?? []).every((id) => carried.has(id)) &&
+			(source.recoveryResendAcks ?? []).every((id) => carried.has(id)) &&
+			captureProven(source, delivered, obligations)
+		);
 	}
 
 	private refuse(ledger: DraftHandoffLedger, edge: DraftHandoffEdge, source: DraftDocument): boolean {
@@ -367,24 +450,33 @@ export class DraftLibrary {
 	/** The recovery pass: every resolved completion still waiting on a capture is
 	 * applied to the record that owns it. */
 	private applyCompletion(obligation: DraftSubmissionObligation, terminal: DraftDestination): void {
+		this.deliverCompletionAt(terminal, {
+			captureToken: obligation.obligationId,
+			completedCommandIds: obligation.completedCommandIds,
+			releasedRecoveryIds: obligation.releasedRecoveryIds,
+		});
+	}
+
+	/** Merge a delivered completion into the terminal's live document when one
+	 * is open, so its unsaved edits and pending image data survive through the
+	 * document's own persistence path. Without a live document, the persisted
+	 * record at the terminal is authoritative. */
+	private deliverCompletionAt(terminal: DraftDestination, completion: DraftCompletionDelivery): boolean {
 		const open = this.hubs.get(terminal.hubId)?.get(terminal.sessionRef);
+		if (open?.getSnapshot().loaded) return open.adoptCompletion(completion);
 		let current: DraftRecord;
-		if (open?.getSnapshot().loaded) current = open.getSnapshot().record;
-		else {
-			try {
-				current = this.repository().read(terminal);
-			} catch {
-				return;
-			}
-		}
-		if (current.unconfirmedCaptureToken !== obligation.obligationId) return;
-		const next = mergeCompletion(current, obligation);
 		try {
-			this.repository().write(terminal, next);
+			current = this.repository().read(terminal);
 		} catch {
-			return;
+			return false;
 		}
-		open?.adopt(next);
+		if (current.unconfirmedCaptureToken !== completion.captureToken) return false;
+		try {
+			this.repository().write(terminal, mergeCompletion(current, completion));
+		} catch {
+			return false;
+		}
+		return true;
 	}
 
 	private tryClean(ledger: DraftHandoffLedger, edgeId: string): void {
@@ -449,12 +541,6 @@ function releasedSources(record: DraftRecord): string[] {
 	];
 }
 
-/** A completed submission, or a proven local refusal, owns the destination
- * capture. A plain failed operation leaves it recoverable. */
-function clearsCapture(state: DraftSubmissionObligation["state"]): boolean {
-	return state === "completed" || state === "not-sent";
-}
-
 function deliveriesFor(
 	edge: DraftHandoffEdge,
 	completed: readonly string[],
@@ -476,24 +562,6 @@ function deliveriesFor(
 			edgeId: edge.edgeId,
 		})),
 	];
-}
-
-/** Clear a resolved submission's capture and merge the ids it delivered. */
-function mergeCompletion(record: DraftRecord, obligation: DraftSubmissionObligation): DraftRecord {
-	const next: DraftRecord = {
-		...record,
-		unconfirmed: null,
-		unconfirmedImages: undefined,
-		unconfirmedComposer: undefined,
-		unconfirmedCaptureToken: undefined,
-	};
-	if (obligation.completedCommandIds.length)
-		next.completedCommandRecoveryIds = [
-			...new Set([...(record.completedCommandRecoveryIds ?? []), ...obligation.completedCommandIds]),
-		];
-	if (obligation.releasedRecoveryIds.length)
-		next.releasedRecoveryIds = [...new Set([...(record.releasedRecoveryIds ?? []), ...obligation.releasedRecoveryIds])];
-	return next;
 }
 
 /** A destination that holds any composition, marker, or parked work refuses a
@@ -537,4 +605,62 @@ function compositionFingerprint(record: DraftRecord): string {
 		hash = Math.imul(hash, 16777619);
 	}
 	return `${(hash >>> 0).toString(16)}-${canonical.length}`;
+}
+
+/** Selections the composition fingerprint leaves out. */
+function sameSelections(
+	source: DraftComposerMetadata | undefined,
+	delivered: DraftComposerMetadata | undefined,
+): boolean {
+	return (
+		JSON.stringify(source?.skillNames ?? []) === JSON.stringify(delivered?.skillNames ?? []) &&
+		JSON.stringify(source?.commandNames ?? []) === JSON.stringify(delivered?.commandNames ?? []) &&
+		JSON.stringify(source?.mentions ?? []) === JSON.stringify(delivered?.mentions ?? [])
+	);
+}
+
+function capturePresent(record: DraftRecord): boolean {
+	return (
+		record.unconfirmed !== null ||
+		record.unconfirmedCaptureToken !== undefined ||
+		(record.unconfirmedImages?.length ?? 0) > 0 ||
+		record.unconfirmedComposer !== undefined
+	);
+}
+
+/** Proof that the destination's durable record accounts for every capture the
+ * edge carried. The capture's token is unique, so the destination holding one
+ * of this edge's tokens proves the transfer. A capture absent from both sides
+ * is proven only when its own obligation durably resolved as completed or
+ * not-sent, the only states that consume one; a capture the source still holds
+ * is not consumed, so an empty destination proves nothing and the hop composes
+ * again. */
+function captureProven(
+	source: DraftRecord,
+	delivered: DraftRecord,
+	obligations: readonly DraftSubmissionObligation[],
+): boolean {
+	if (capturePresent(delivered)) {
+		const token = delivered.unconfirmedCaptureToken;
+		// The destination holds a capture: proof only when it is one this edge
+		// carried — the source's own token, or an obligation of this edge.
+		if (token === undefined) return sameCaptureRest(source, delivered);
+		return (
+			(token === source.unconfirmedCaptureToken && sameCaptureRest(source, delivered)) ||
+			obligations.some((row) => row.obligationId === token)
+		);
+	}
+	if (capturePresent(source)) return false;
+	// Neither side shows a capture: every capture this edge carried must have
+	// been consumed by a durable resolution.
+	return obligations.every((row) => clearsCapture(row.state));
+}
+
+/** The unconfirmed content of two records, compared without their tokens. */
+function sameCaptureRest(source: DraftRecord, delivered: DraftRecord): boolean {
+	return (
+		source.unconfirmed === delivered.unconfirmed &&
+		JSON.stringify(source.unconfirmedImages ?? []) === JSON.stringify(delivered.unconfirmedImages ?? []) &&
+		JSON.stringify(source.unconfirmedComposer ?? null) === JSON.stringify(delivered.unconfirmedComposer ?? null)
+	);
 }

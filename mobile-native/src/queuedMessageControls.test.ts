@@ -255,6 +255,69 @@ test("a migrated resend receipt reconciles under the resumed ref and clears its 
 	expect(f.repository.read(resumedDestination)).toEqual({ draft: "", unconfirmed: null });
 });
 
+test("an open obligation's capture survives resend reconciliation at an adopted destination", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	f.document.edit("current");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	f.document.edit("edited recovered text");
+
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage.handoffLedger,
+	);
+	const source = library.open(destination);
+	let finish!: () => void;
+	const submitted = source.submitBuiltinCommand(
+		() =>
+			new Promise<boolean>((resolve) => {
+				finish = () => resolve(true);
+			}),
+	);
+	// Another waiting message is what drives the resume and moves the
+	// claimed row's recovery to the resumed identity.
+	await f.enqueue();
+
+	const resumedRef = "session-resumed";
+	const resumedKey = nativeMutationTargetKey(destination.hubId, resumedRef);
+	const resumedDestination = { hubId: destination.hubId, sessionRef: resumedRef };
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: resumedKey,
+			wireRef: resumedRef,
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toHaveLength(1);
+	expect(library.handoff(destination, resumedDestination)).toBe(true);
+	const resumed = library.open(resumedDestination);
+	// The adopted destination is not submitting; only the ledger shows that
+	// the command is still running.
+	expect(resumed.getSnapshot().submitting).toBe(false);
+
+	// The screen's recovery effect order: retry, read the open obligations,
+	// then reconcile with those exclusions.
+	library.retryPendingHandoffs();
+	const pendingObligations = library.openObligationRecoveryIds(resumedDestination);
+	expect(pendingObligations).toEqual(new Set([captured]));
+	await reconcileEditedResends(f.runtime, resumedKey, resumed, pendingObligations);
+	// The still-running command keeps its capture...
+	expect(resumed.getSnapshot().record).toMatchObject({ unconfirmed: "edited recovered text" });
+
+	// ...so its completion attaches and records the command's sources.
+	finish();
+	await submitted;
+	expect(resumed.getSnapshot().record).toMatchObject({
+		unconfirmed: null,
+		completedCommandRecoveryIds: [captured],
+	});
+	expect(f.repository.read(resumedDestination)).toMatchObject({
+		unconfirmed: null,
+		completedCommandRecoveryIds: [captured],
+	});
+});
+
 test("successful built-in completion durably cleans only captured sources without replay", async () => {
 	const f = fixture();
 	const captured = await f.enqueue();

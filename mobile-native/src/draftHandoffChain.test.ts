@@ -315,11 +315,10 @@ describe("handoff chain obligations", () => {
 		]);
 	});
 
-	test("a failing obligation write leaves the composer usable and records the failure", async () => {
+	test("an unavailable obligation ledger does not stop an ordinary send", async () => {
 		const { repository } = setup();
 		let token: string | undefined;
 		const resolved: [string, string][] = [];
-		let failBegin = true;
 		const library = new DraftLibrary(
 			() => repository,
 			undefined,
@@ -327,7 +326,7 @@ describe("handoff chain obligations", () => {
 				submissionLedger({
 					beginSubmission: (obligationId: string) => {
 						token = obligationId;
-						if (failBegin) throw new Error("ledger unavailable");
+						throw new Error("ledger unavailable");
 					},
 					resolveSubmission: (obligationId: string, state: "completed" | "failed") => {
 						resolved.push([obligationId, state]);
@@ -336,14 +335,10 @@ describe("handoff chain obligations", () => {
 		);
 		const document = library.open(endpoint("a"));
 		document.edit("current");
-		await expect(document.submit(async () => true)).rejects.toThrow(/ledger unavailable/);
-		expect(token).toBeDefined();
-		expect(resolved).toEqual([[token, "failed"]]);
-		// The submission never reached the transport: its uncertain capture is
-		// rolled back and the composer can send again.
-		expect(repository.read(endpoint("a"))).toMatchObject({ draft: "current", unconfirmed: null });
-		failBegin = false;
 		let sent = false;
+		// The send still reaches the transport's direct-request path: the
+		// uncertainty capture is already durable, so an obligation store that
+		// cannot record the submission does not stop it.
 		expect(
 			await document.submit(async () => {
 				sent = true;
@@ -351,6 +346,11 @@ describe("handoff chain obligations", () => {
 			}),
 		).toBe(true);
 		expect(sent).toBe(true);
+		expect(token).toBeDefined();
+		// The resolution still records the outcome for the next ledger write.
+		expect(resolved).toEqual([[token, "completed"]]);
+		// The spent capture is cleared locally: the message went out.
+		expect(repository.read(endpoint("a"))).toEqual({ draft: "", unconfirmed: null });
 	});
 
 	test("a failed obligation resolution is retried on the next document reload", async () => {
@@ -414,5 +414,40 @@ describe("handoff chain obligations", () => {
 		expect(storageLedger.readGraph().obligations).toMatchObject([
 			{ state: "completed", completedCommandIds: ["recovered-a"] },
 		]);
+	});
+
+	test("retrying a failed obligation resolution preserves the failed capture", async () => {
+		const { storageLedger, repository } = setup();
+		const failing = flaky(storageLedger, "resolveSubmission", 1);
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => failing,
+		);
+		const document = library.open(endpoint("a"));
+		document.edit("current");
+		document.addImage({ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" });
+		// The transport fails after the uncertain capture is durable, and the
+		// resolution write fails too, so the failed resolution is queued.
+		expect(await document.submit(async () => false)).toBe(false);
+		const token = repository.read(endpoint("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		expect(storageLedger.readGraph().obligations).toMatchObject([{ state: "open" }]);
+
+		document.retry();
+		// The queued failed resolution commits...
+		expect(storageLedger.readGraph().obligations).toMatchObject([{ state: "failed" }]);
+		// ...but a failed operation's capture stays recoverable: the retry
+		// must not clear the capture or delete its image references.
+		const retained = repository.read(endpoint("a"));
+		expect(retained).toMatchObject({ unconfirmed: "current[image 1]", unconfirmedCaptureToken: token });
+		expect(retained.unconfirmedImages).toEqual([{ id: "photo", marker: 1, mediaType: "image/png" }]);
+		expect(repository.imageInputs(endpoint("a"), [{ id: "photo", marker: 1, mediaType: "image/png" }])).toEqual([
+			expect.objectContaining({ data: "AQID" }),
+		]);
+		expect(document.getSnapshot().record).toMatchObject({
+			unconfirmed: "current[image 1]",
+			unconfirmedCaptureToken: token,
+		});
 	});
 });

@@ -65,6 +65,7 @@ export async function reconcileEditedResends(
 	runtime: NativeMutationRuntime,
 	targetKey: string,
 	document: DraftDocument,
+	excluded: ReadonlySet<string> = new Set(),
 ): Promise<void> {
 	const previous = reconciliations.get(document);
 	const current = (previous ?? Promise.resolve())
@@ -84,6 +85,12 @@ export async function reconcileEditedResends(
 			if (!ready(document, targetKey)) return;
 			const sourceIds = document.getSnapshot().record.unconfirmedComposer?.recoveryIds;
 			if (!sourceIds?.length) return;
+			// A source whose submission is still running on this chain belongs to
+			// the ledger's open obligation until it completes. Restoring or
+			// settling it here would clear the capture the completion needs to
+			// attach, so an open obligation owns this whole capture: skip the
+			// restore-capable steps and let the completion reconcile it.
+			if (sourceIds.some((id) => excluded.has(id))) return;
 			const receipt = await runtime.readRecoveryResend(targetKey, sourceIds);
 			if (!ready(document, targetKey)) return;
 			if (receipt) {

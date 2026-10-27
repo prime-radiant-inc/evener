@@ -2977,15 +2977,19 @@ function ConversationScreenView({
 		void (async () => {
 			const runtime = getNativeMutationRuntime();
 			drafts.retryPendingHandoffs();
-			await reconcileEditedResends(runtime, targetKey, document);
-			const retained = await runtime.read(targetKey);
-			const handoffPending = drafts.hasPendingHandoff({
+			// A row whose submission is still running on this chain must not be
+			// restored; the ledger's open obligation owns it until it completes.
+			// That ownership applies to the resend reconciliation too: a
+			// destination adopted mid-command shows submitting: false, so only
+			// this exclusion keeps the reconciliation from restoring the running
+			// command's sources and clearing the capture its completion needs.
+			const pendingObligations = drafts.openObligationRecoveryIds({
 				hubId: route.params.hubId,
 				sessionRef: route.params.ref,
 			});
-			// A row whose submission is still running on this chain must not be
-			// restored; the ledger's open obligation owns it until it completes.
-			const pendingObligations = drafts.openObligationRecoveryIds({
+			await reconcileEditedResends(runtime, targetKey, document, pendingObligations);
+			const retained = await runtime.read(targetKey);
+			const handoffPending = drafts.hasPendingHandoff({
 				hubId: route.params.hubId,
 				sessionRef: route.params.ref,
 			});

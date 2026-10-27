@@ -49,6 +49,13 @@ export interface DraftHandoffEdge {
  * `failed` never reached a decision and leaves the capture recoverable. */
 export type DraftSubmissionState = "open" | "completed" | "not-sent" | "failed";
 
+/** A completed submission, or a proven local refusal, owns the destination
+ * capture. A plain failed operation leaves it recoverable, so a resolution in
+ * that state must never clear one. */
+export function clearsCapture(state: DraftSubmissionState): boolean {
+	return state === "completed" || state === "not-sent";
+}
+
 export interface DraftSubmissionObligation {
 	obligationId: string;
 	/** Null until the first retarget adopts an unclaimed submission. */

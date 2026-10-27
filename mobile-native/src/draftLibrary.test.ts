@@ -185,6 +185,53 @@ describe("drafts across navigation", () => {
 		});
 	});
 
+	it("a completion preserves a destination's unsaved edits and pending image", async () => {
+		const { library, repository, db } = setup();
+		const from = { hubId: "one", sessionRef: "old" };
+		const to = { hubId: "one", sessionRef: "resumed" };
+		const source = library.open(from);
+		source.edit("pending message");
+		let settle!: (sent: boolean) => void;
+		const submitted = source.submit(
+			() =>
+				new Promise<boolean>((resolve) => {
+					settle = resolve;
+				}),
+		);
+		const token = repository.read(from).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing source capture token");
+		expect(library.handoff(from, to)).toBe(true);
+
+		// The destination holds newer unsaved edits and a pending image after a
+		// failed save; the completion must merge into that live document instead
+		// of replacing it with the older persisted record.
+		const destination = library.open(to);
+		db.exec(
+			"CREATE TRIGGER reject_resumed BEFORE UPDATE ON drafts WHEN NEW.session_ref = 'resumed' BEGIN SELECT RAISE(ABORT, 'full'); END",
+		);
+		destination.edit("edited after the handoff");
+		destination.addImage({ id: "late-photo", marker: 1, mediaType: "image/png", data: "AQID" });
+		expect(destination.getSnapshot().error).not.toBeNull();
+		db.exec("DROP TRIGGER reject_resumed");
+
+		settle(true);
+		await submitted;
+		expect(destination.getSnapshot().record).toMatchObject({
+			draft: "edited after the handoff[image 1]",
+			unconfirmed: null,
+			images: [{ id: "late-photo", marker: 1, mediaType: "image/png" }],
+		});
+		expect(destination.getSnapshot().error).toBeNull();
+		expect(repository.read(to)).toMatchObject({
+			draft: "edited after the handoff[image 1]",
+			unconfirmed: null,
+		});
+		expect(repository.read(to).unconfirmedCaptureToken).toBeUndefined();
+		expect(repository.imageInputs(to, [{ id: "late-photo", marker: 1, mediaType: "image/png" }])).toEqual([
+			expect.objectContaining({ data: "AQID" }),
+		]);
+	});
+
 	it("leaves a destination with selection-only metadata untouched", () => {
 		const { library, repository } = setup();
 		const from = { hubId: "one", sessionRef: "old" };

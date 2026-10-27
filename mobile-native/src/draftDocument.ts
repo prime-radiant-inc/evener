@@ -14,6 +14,7 @@ import type { MutationRecoveryRecord } from "@evener/appwire-client/state/mutati
 import { type ConversationMutationContext, MutationNotSentError } from "./conversation/state/conversationMutation";
 import type { DraftImage, DraftImageData } from "./draftImages";
 import { restoreUnconfirmedDraft } from "./draftRecovery";
+import { clearsCapture } from "./draftHandoffLedger";
 import type {
 	DraftComposerMetadata,
 	DraftDestination,
@@ -24,6 +25,24 @@ import type {
 import type { DraftHandoffLedger } from "./draftHandoffLedger";
 import { terminalDestination } from "./draftHandoffGraph";
 import type { RecoveryResendCommit } from "./mutationOutboxStorage";
+
+/** A resolved submission's completion: the capture it clears and the ids it
+ * delivered at the identity that owns the record now. */
+export interface DraftCompletionDelivery {
+	captureToken: string;
+	completedCommandIds: readonly string[];
+	releasedRecoveryIds: readonly string[];
+}
+
+/** Capture tokens of submissions this process started and has not yet
+ * resolved durably. The set is process state, never durable: a process that
+ * dies takes its in-flight submissions with it, so a durable open obligation
+ * whose token is not registered here was abandoned by a previous process. */
+const inFlightCaptures = new Set<string>();
+
+export function captureInFlight(token: string): boolean {
+	return inFlightCaptures.has(token);
+}
 
 function sameSources(owned: readonly string[] | undefined, supplied: readonly string[]): boolean {
 	return (
@@ -118,6 +137,24 @@ function composition(text: string, images: DraftImage[] = [], metadata?: DraftCo
 	};
 }
 
+/** Clear a resolved submission's capture and merge the ids it delivered. */
+export function mergeCompletion(record: DraftRecord, completion: DraftCompletionDelivery): DraftRecord {
+	const next: DraftRecord = {
+		...record,
+		unconfirmed: null,
+		unconfirmedImages: undefined,
+		unconfirmedComposer: undefined,
+		unconfirmedCaptureToken: undefined,
+	};
+	if (completion.completedCommandIds.length)
+		next.completedCommandRecoveryIds = [
+			...new Set([...(record.completedCommandRecoveryIds ?? []), ...completion.completedCommandIds]),
+		];
+	if (completion.releasedRecoveryIds.length)
+		next.releasedRecoveryIds = [...new Set([...(record.releasedRecoveryIds ?? []), ...completion.releasedRecoveryIds])];
+	return next;
+}
+
 function parkedRecoveryIds(parks: readonly DraftParkedComposition[] | undefined): string[] {
 	return (parks ?? []).flatMap((parked) => parked.composer?.recoveryIds ?? []);
 }
@@ -186,9 +223,10 @@ export class DraftDocument {
 		 * records one before transport and resolves it when it settles, so a
 		 * chain can wait for its completion without in-memory forwarding. */
 		private submissionLedger?: () => DraftHandoffLedger,
-		/** Adopt a delivered completion into the destination document the library
-		 * already holds open. */
-		private adoptTerminal?: (destination: DraftDestination, record: DraftRecord) => void,
+		/** Deliver a resolved submission's completion at the terminal identity.
+		 * The library merges it into the live document it holds there, so the
+		 * destination's unsaved edits and pending image data survive. */
+		private deliverCompletionTo?: (terminal: DraftDestination, completion: DraftCompletionDelivery) => boolean,
 	) {
 		this.retry();
 	}
@@ -297,6 +335,23 @@ export class DraftDocument {
 		this.flushObligationResolutions();
 		this.retired = true;
 		this.unsavedImages.clear();
+	}
+
+	/** Merge a delivered completion into this live document. The merge starts
+	 * from the live record and persists through the normal save path, so
+	 * unsaved edits survive and pending image data is written with the
+	 * completion instead of being cleared. False when this document is not the
+	 * capture's owner, or the save fails and the completion must be retried. */
+	adoptCompletion(completion: DraftCompletionDelivery): boolean {
+		const { record, loaded } = this.snapshot;
+		if (this.forgotten || this.retired || !loaded) return false;
+		if (record.unconfirmedCaptureToken !== completion.captureToken) return false;
+		try {
+			this.persist(mergeCompletion(record, completion), true);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	/** Keep recovered sources out of automatic restore while leaving them
@@ -591,14 +646,21 @@ export class DraftDocument {
 			false,
 		);
 		this.update({ submitting: true });
-		let submissionStarted = false;
 		try {
 			// Durable before any transport call: a handoff edge that inherits this
 			// submission must wait for its completion instead of settling without
 			// the completion markers. A failure resolves as failed and keeps its
 			// original error.
-			this.submissionLedger?.().beginSubmission(draftCaptureToken, this.destination, metadata?.recoveryIds ?? []);
-			submissionStarted = true;
+			try {
+				this.submissionLedger?.().beginSubmission(draftCaptureToken, this.destination, metadata?.recoveryIds ?? []);
+				inFlightCaptures.add(draftCaptureToken);
+			} catch {
+				// An unavailable obligation store must not stop an ordinary send:
+				// the uncertainty capture is already durable, so the input stays
+				// recoverable while the message goes out. No handoff can wait for
+				// this submission, because the ledger that would carry the
+				// obligation is what is failing.
+			}
 			const context: ConversationMutationContext = {
 				composer: {
 					text,
@@ -659,7 +721,6 @@ export class DraftDocument {
 			// chain so a submission that outlived a retirement clears the capture
 			// where the record now lives.
 			if (!(error instanceof MutationNotSentError)) {
-				if (!submissionStarted) this.restoreUnstartedSubmission(record);
 				this.resolveObligation(draftCaptureToken, "failed");
 				throw error;
 			}
@@ -716,6 +777,7 @@ export class DraftDocument {
 		try {
 			this.submissionLedger?.().resolveSubmission(captureToken, state, completedCommandIds, releasedRecoveryIds);
 			this.unresolvedResolutions.delete(captureToken);
+			inFlightCaptures.delete(captureToken);
 			return true;
 		} catch {
 			this.unresolvedResolutions.set(captureToken, {
@@ -737,6 +799,7 @@ export class DraftDocument {
 					resolution.releasedRecoveryIds,
 				);
 				this.unresolvedResolutions.delete(captureToken);
+				inFlightCaptures.delete(captureToken);
 				this.deliverCompletion(captureToken, resolution.completedCommandIds, resolution.releasedRecoveryIds);
 			} catch {
 				// Still failing; keep it queued and leave the obligation open.
@@ -744,20 +807,11 @@ export class DraftDocument {
 		}
 	}
 
-	/** A submission whose obligation could not be recorded never reached the
-	 * transport. Put the durable record back to the pre-submit composition so the
-	 * composer is usable and a second submit can start. */
-	private restoreUnstartedSubmission(record: DraftRecord): void {
-		try {
-			this.persist(record, true);
-		} catch {
-			// Storage is failing; the uncertain record stays and Retry owns it.
-		}
-	}
-
 	/** Clear this submission's capture at the identity that owns the record now.
-	 * A missing graph or a failed write leaves the resolved obligation for the
-	 * library's reconciliation pass; the completion is never dropped. */
+	 * Only a completed submission or a proven local refusal owns the capture: a
+	 * failed operation leaves its capture recoverable, so delivery never clears
+	 * it. A missing graph or a failed write leaves the resolved obligation for
+	 * the library's reconciliation pass; the completion is never dropped. */
 	private deliverCompletion(
 		captureToken: string,
 		completedCommandIds: readonly string[],
@@ -772,43 +826,41 @@ export class DraftDocument {
 			return false;
 		}
 		const obligation = graph.obligations.find((entry) => entry.obligationId === captureToken);
-		if (obligation === undefined) return false;
+		if (obligation === undefined || !clearsCapture(obligation.state)) return false;
 		const terminal = terminalDestination(graph.edges, obligation.origin, obligation.chainId ?? undefined);
+		const completion: DraftCompletionDelivery = { captureToken, completedCommandIds, releasedRecoveryIds };
 		const self = terminal.hubId === this.destination.hubId && terminal.sessionRef === this.destination.sessionRef;
-		let current: DraftRecord;
-		if (self && this.snapshot.loaded) current = this.snapshot.record;
-		else {
+		if (self && this.snapshot.loaded) {
+			const current = this.snapshot.record;
+			if (current.unconfirmedCaptureToken !== captureToken) return false;
+			const next = mergeCompletion(current, completion);
 			try {
-				current = this.repository().read(terminal);
+				this.repository().write(terminal, next);
 			} catch {
 				return false;
 			}
+			this.update({ record: next });
+			return true;
 		}
-		if (current.unconfirmedCaptureToken !== captureToken) return false;
-		const next: DraftRecord = {
-			...current,
-			unconfirmed: null,
-			unconfirmedImages: undefined,
-			unconfirmedComposer: undefined,
-			unconfirmedCaptureToken: undefined,
-			...(completedCommandIds.length
-				? {
-						completedCommandRecoveryIds: [
-							...new Set([...(current.completedCommandRecoveryIds ?? []), ...completedCommandIds]),
-						],
-					}
-				: {}),
-			...(releasedRecoveryIds.length
-				? { releasedRecoveryIds: [...new Set([...(current.releasedRecoveryIds ?? []), ...releasedRecoveryIds])] }
-				: {}),
-		};
+		// The completion belongs to another identity. Its live document owns any
+		// unsaved edits and pending image bytes the persisted record cannot see,
+		// so the library merges the completion through that document's own
+		// persistence path.
+		if (this.deliverCompletionTo?.(terminal, completion)) return true;
+		// Without a live document the persisted record at the terminal is
+		// authoritative.
+		let current: DraftRecord;
 		try {
-			this.repository().write(terminal, next);
+			current = this.repository().read(terminal);
 		} catch {
 			return false;
 		}
-		if (self) this.update({ record: next });
-		else this.adoptTerminal?.(terminal, next);
+		if (current.unconfirmedCaptureToken !== captureToken) return false;
+		try {
+			this.repository().write(terminal, mergeCompletion(current, completion));
+		} catch {
+			return false;
+		}
 		return true;
 	}
 
