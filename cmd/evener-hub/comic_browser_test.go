@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	sandboxpkg "primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -49,6 +50,9 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 	}
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := sandboxpkg.ResolveNamed("workspace-write", nil, (sandboxpkg.RealProber{}).Probe(), t.TempDir(), nil); err != nil {
+		t.Fatalf("Comic browser guard requires an enforcing workspace-write sandbox (Linux: bubblewrap with usable user namespaces): %v", err)
 	}
 	requireFreshDist(t)
 	fixture := skillGuardSetup(t)

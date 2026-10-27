@@ -175,7 +175,10 @@ func TestSkillBrowserDaemonHelper(t *testing.T) {
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- runServeWithDeps(args, deps) }()
 
-	entry := waitForSkillBrowserRendezvous(t, cfg.RunDir)
+	entry, err := waitForSkillBrowserRendezvous(cfg.RunDir, serveDone)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	controls := newSkillBrowserControls(cfg.ControlPath, adapter)
 	controls.startTurn = func(ctx context.Context, prompt string) error {
@@ -379,11 +382,11 @@ func isolateSkillBrowserHelperEnv(t *testing.T, cfg skillBrowserHelperConfig) {
 // waitForSkillBrowserRendezvous waits for THIS process's own rendezvous entry
 // (both browser-guard helpers share one run dir, so the entry is matched by
 // PID, not by first-found). Filesystem notifications instead of sleep-polling,
-// mirroring waitForServeTestRendezvous.
-func waitForSkillBrowserRendezvous(t *testing.T, runDir string) rendezvous.Entry {
-	t.Helper()
+// mirroring waitForServeTestRendezvous. A daemon that exits before registering
+// reports its startup error instead of waiting out the readiness deadline.
+func waitForSkillBrowserRendezvous(runDir string, serveDone <-chan error) (rendezvous.Entry, error) {
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
-		t.Fatalf("mkdir run dir %s: %v", runDir, err)
+		return rendezvous.Entry{}, fmt.Errorf("mkdir run dir %s: %w", runDir, err)
 	}
 	pid := os.Getpid()
 	find := func() (rendezvous.Entry, bool) {
@@ -396,35 +399,39 @@ func waitForSkillBrowserRendezvous(t *testing.T, runDir string) rendezvous.Entry
 		return rendezvous.Entry{}, false
 	}
 	if e, ok := find(); ok {
-		return e
+		return e, nil
 	}
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		t.Fatalf("new watcher: %v", err)
+		return rendezvous.Entry{}, fmt.Errorf("new watcher: %w", err)
 	}
 	defer watcher.Close()
 	if err := watcher.Add(runDir); err != nil {
-		t.Fatalf("watch %s: %v", runDir, err)
+		return rendezvous.Entry{}, fmt.Errorf("watch %s: %w", runDir, err)
 	}
 	// Close the TOCTOU window the same way waitForServeTestRendezvous does.
 	if e, ok := find(); ok {
-		return e
+		return e, nil
 	}
 	deadline := time.After(20 * time.Second)
 	for {
 		select {
+		case err := <-serveDone:
+			if err != nil {
+				return rendezvous.Entry{}, fmt.Errorf("serve daemon exited before registering rendezvous: %w", err)
+			}
+			return rendezvous.Entry{}, fmt.Errorf("serve daemon exited before registering rendezvous")
 		case _, ok := <-watcher.Events:
 			if !ok {
-				t.Fatal("rendezvous watcher closed unexpectedly")
+				return rendezvous.Entry{}, fmt.Errorf("rendezvous watcher closed unexpectedly")
 			}
 			if e, found := find(); found {
-				return e
+				return e, nil
 			}
 		case werr := <-watcher.Errors:
-			t.Fatalf("rendezvous watcher error: %v", werr)
+			return rendezvous.Entry{}, fmt.Errorf("rendezvous watcher error: %w", werr)
 		case <-deadline:
-			t.Fatalf("this helper's rendezvous entry never appeared in %s after 20s", runDir)
-			return rendezvous.Entry{}
+			return rendezvous.Entry{}, fmt.Errorf("this helper's rendezvous entry never appeared in %s after 20s", runDir)
 		}
 	}
 }
