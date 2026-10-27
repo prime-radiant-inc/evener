@@ -26,7 +26,7 @@ plus the resumable follow-up path through `delegate_send`.
 
 - Creation returns a `delegate_id` and no job identity of any kind — a
   stable delegate is addressed only by `delegate_id`
-  (`agent/session_tools.go#stableDelegateCreateResult`), which is also
+  (`agent/session_tools_delegate.go#stableDelegateCreateResult`), which is also
   the only handle `job_stop` and `delegate_send` accept for it.
 - A confirmed `job_stop` on a delegate returns `status` `idle` — the
   reusable resource's lifecycle, which has only `running` and `idle`

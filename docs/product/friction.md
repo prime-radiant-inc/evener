@@ -1145,7 +1145,7 @@ are explicitly never parked.
 **Evidence.** [Registry dispatch](../../agent/internal/tool/registry.go#L719) and
 [breaker state](../../agent/internal/tool/breaker.go#L280) own the fingerprint and
 park. The production bypass is a
-[sandbox-approved rerun](../../agent/session_tools.go#L950). Existing
+[sandbox-approved rerun](../../agent/session_tools.go#L403). Existing
 `TestBreakerDispatch_IdenticalFailureNudgesThenParks`,
 `TestBreakerDispatch_ParkedResultDoesNotUnparkTheNextCall` and
 `TestBreakerDispatch_IdenticalSuccessLoopIsNeverParked` specify those contracts.

@@ -8,9 +8,9 @@ non-consuming.
 **Identity.** A delegate is not a job and is not addressed like one.
 `delegate` creation is asynchronous, returns `delegate_id` /
 `child_session_id` / `transcript_ref` and no `job_id`
-(`agent/session_tools.go#stableDelegateCreateResult`), and rejects
+(`agent/session_tools_delegate.go#stableDelegateCreateResult`), and rejects
 `max_wait_ms` outright with `invalid_request: delegate creation does not
-accept max_wait_ms` (`agent/session_tools.go#stableDelegateCreateTool`).
+accept max_wait_ms` (`agent/session_tools_delegate.go#stableDelegateCreateTool`).
 `read_transcript`'s own description is normative here: "A stable
 delegate's session ref reads its conversation; delegates never use job:
 refs", and a `job:<job_id>` ref "reads shell output only". There is no

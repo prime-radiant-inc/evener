@@ -123,7 +123,7 @@ terminal `communicate(end_turn:true)` callbacks.
   delivery=<delivery_id>`, which the parent receives as an `<delegate-notification>` block. It should not emit visible assistant text in that
   turn. `delegate_send(to="caller")` is NOT the callback path: it is rejected
   with an `invalid_request` error that points at `communicate`
-  (`agent/session_tools.go#stableDelegateSendTool`) and delivers nothing.
+  (`agent/session_tools_delegate.go#stableDelegateSendTool`) and delivers nothing.
   An observer that never calls the terminal `communicate` never delivers
   the callback packet; score that as prompt noncompliance, not a
   watch-delivery failure.

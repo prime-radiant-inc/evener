@@ -16,10 +16,10 @@ judges outcome.
 
 **Identity and transport.** Stable `delegate` creation is asynchronous
 and returns `delegate_id` / `child_session_id` / `transcript_ref` and no
-`job_id` at all (`agent/session_tools.go#stableDelegateCreateResult`);
+`job_id` at all (`agent/session_tools_delegate.go#stableDelegateCreateResult`);
 passing `max_wait_ms` is rejected outright with
 `invalid_request: delegate creation does not accept max_wait_ms`
-(`agent/session_tools.go#stableDelegateCreateTool`), so there is no
+(`agent/session_tools_delegate.go#stableDelegateCreateTool`), so there is no
 foreground delegate creation to read a result from. Delegate generations
 create no job records ("Durable job records" "Delegate generations never
 create job records."), so `read_transcript(transcript_ref="job:<id>")`
