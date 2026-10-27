@@ -587,7 +587,7 @@ have a separately chosen lifetime outside session-owned job supervision.
 
 The normal shutdown path already marks and signals owned jobs in
 [closeRuntimeState](../../agent/jobs.go), followed by tracked process-group
-[cleanup](../../agent/execenv/local.go#L1330). After an abrupt loss, the restored
+[cleanup](../../agent/execenv/local.go#L485). After an abrupt loss, the restored
 job record's `runtime_lost` status describes lost supervision; it does not by
 itself prove that every OS process was terminated.
 
