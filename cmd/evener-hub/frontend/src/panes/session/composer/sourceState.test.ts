@@ -891,7 +891,7 @@ test("adoption defers while the destination is sending its restored row", async 
       { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
     );
 
-    const saving = source.queueRecoveryPersistence(original.clientMutationId, "local preserved composition", [], []);
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, "row composition", [], []);
     await storage.reached.promise;
     await peer.retargetOutbox(oldRef, resumed, { threadId: "thread-new", instanceId: "instance-new" });
     const retargeted = await storage.getRecovery(original.clientMutationId);
@@ -1174,6 +1174,117 @@ test("an immediate adoption still adopts a preserved row no peer changed", async
   } finally {
     detachEditor();
     replacement.dispose();
+    storage.close();
+  }
+});
+
+// Preservation publishes the preserved row as the destination's stored
+// selection before the adoption waits on a submission or the durable read.
+// When the destination's user types while that adoption is deferred, dropping
+// it is right - but the stored selection still named the preserved row, so a
+// reload restored the older preserved composition instead of the typed work.
+// The drop must reclaim the selection for the active row the newer edits
+// autosave onto.
+test("typing during a deferred adoption reclaims the selection for the edited row", async () => {
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  setMutationStorageForTests(storage);
+  const ref = "local:reclaim-selection";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "row composition" }] },
+    attachments: [],
+    composerText: "row composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const staleRow = await storage.getRecovery(original.clientMutationId);
+  if (!staleRow) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const replacement = createTestComposerSource(ref, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  const scope = composerSelectionScope("pane-a");
+  try {
+    await source.activateRecovery(staleRow);
+    // A peer advances the row so the source's next save is refused into
+    // preservation.
+    const peerRow = await peer.getRecovery(original.clientMutationId);
+    if (!peerRow) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRow) },
+    );
+    // The replacement restores the advanced row and starts sending it.
+    const advanced = await storage.getRecovery(original.clientMutationId);
+    if (!advanced) throw new Error("missing advanced recovery fixture");
+    await replacement.activateRecovery(advanced);
+    const releaseSend = beginRecoverySubmission(original.clientMutationId);
+
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, "local preserved composition", [], []);
+    await storage.reached.promise;
+    storage.release.resolve();
+    await saving;
+    await flushPendingTurnsProjectionForTests();
+    // The delayed preservation selected the preserved row; the adoption
+    // deferred behind the held send.
+    const preserved = (await storage.listRecovery(ref)).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    expect(preserved).toMatchObject({ targetRef: ref, composerText: "row composition" });
+    expect(readRecoverySelection(ref, scope)).toBe(preserved?.clientMutationId);
+    expect(replacement.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+
+    // The user types while the send is held.
+    replacement.editText("newer local work");
+    releaseSend();
+    await flushPendingTurnsProjectionForTests();
+    // The newer typing dropped the adoption; the stored selection was
+    // reclaimed for the row those edits live on.
+    expect(replacement.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+    expect(readRecoverySelection(ref, scope)).toBe(original.clientMutationId);
+
+    // The newer work autosaves onto the active row.
+    await replacement.queueRecoveryPersistence(original.clientMutationId, "newer local work", [], []);
+    const saved = await storage.getRecovery(original.clientMutationId);
+    expect(saved).toMatchObject({ composerText: "newer local work" });
+
+    // A remount restores the selection: the typed work, not the older
+    // preserved composition.
+    replacement.dispose();
+    const remounted = createTestComposerSource(ref, undefined, "pane-a");
+    try {
+      expect(readRecoverySelection(ref, remounted.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+      const restored = await storage.getRecovery(original.clientMutationId);
+      if (!restored) throw new Error("missing restored row");
+      expect(restored.composerText).toBe("newer local work");
+      await remounted.activateRecovery(restored);
+      expect(remounted.getSnapshot().text).toBe("newer local work");
+    } finally {
+      remounted.dispose();
+    }
+  } finally {
+    source.dispose();
+    replacement.dispose();
+    peer.close();
     storage.close();
   }
 });

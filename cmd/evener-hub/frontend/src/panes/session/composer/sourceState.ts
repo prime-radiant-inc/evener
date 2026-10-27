@@ -601,7 +601,7 @@ export function createComposerSourceState(
     staleId: string,
     preserved: MutationRecoveryRecord,
   ): Promise<void> {
-    if (!adoptionGuardsSettled(targetRef, staleId)) return;
+    if (!adoptionGuardsSettled(targetRef, staleId, preserved.clientMutationId)) return;
     if (deferAdoptionIfBusy(targetRef, staleId, preserved)) return;
     const current = await revalidatePreservedRecord(preserved);
     if (current === undefined) return;
@@ -609,7 +609,7 @@ export function createComposerSourceState(
     // re-run every guard. A newer deferral that claimed the slot while the
     // read was in flight wins and this adoption drops.
     if (deferredAdoption !== null) return;
-    if (!adoptionGuardsSettled(targetRef, staleId)) return;
+    if (!adoptionGuardsSettled(targetRef, staleId, current.clientMutationId)) return;
     if (deferAdoptionIfBusy(targetRef, staleId, current)) return;
     const recovered = recoveryComposerDraft(current);
     const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
@@ -631,7 +631,7 @@ export function createComposerSourceState(
     }
   }
 
-  function adoptionGuardsSettled(targetRef: string, staleId: string): boolean {
+  function adoptionGuardsSettled(targetRef: string, staleId: string, pendingPreservedId: string): boolean {
     if (disposed || ref !== targetRef) return false;
     if (currentRecoveryId() !== staleId) return false;
     if (operations.hasPending) return false;
@@ -639,7 +639,19 @@ export function createComposerSourceState(
     // this composer's visible work. Adoption must not replace that work before
     // activation's await returns and merges it.
     if (state.getState().recoveryActivating) return false;
-    if (userEditEpoch !== selectionUserEditEpoch) return false;
+    if (userEditEpoch !== selectionUserEditEpoch) {
+      // Newer typing invalidated this adoption. The preservation already
+      // published the preserved row as this ref's stored selection, while
+      // the composer's newer edits autosave onto its active row - a reload
+      // would restore the older preserved composition instead of them.
+      // Reclaim the selection for the active row, but only when the stored
+      // choice still names this adoption's preserved row, never a newer
+      // selection someone else published meanwhile.
+      if (readRecoverySelection(targetRef, recoverySelectionOwnerId) === pendingPreservedId) {
+        writeRecoverySelection(targetRef, recoverySelectionOwnerId, staleId);
+      }
+      return false;
+    }
     if (activationIncorporatedWork) return false;
     return true;
   }
