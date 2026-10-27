@@ -59,6 +59,7 @@ export type ComicTurnErrorEntry = ComicEntryFields & {
 export type ComicEntry = ComicItemEntry | ComicTurnErrorEntry;
 
 export type ComicProjectionContext = {
+  ownerRef?: string;
   assistant?: ComicPersona;
   parent?: ComicPersona;
   entities?: ReadonlyMap<string, EntityView>;
@@ -160,7 +161,7 @@ export function projectComicConversation(
         if (item.toolName === "delegate_send" || item.toolName === "job_send_message") {
           const target = delegateSendTarget(item);
           const raw = isDelegateSendResult(item.raw) ? item.raw : undefined;
-          const persona = delegatePersona(model.ref, target, context.entities, raw?.transcript_ref);
+          const persona = delegatePersona(context.ownerRef ?? model.ref, target, context.entities, raw?.transcript_ref);
           const historical = delegateSendEarlierResponses(item);
           const response = delegateSendResponse(item);
           const sourceLabel = persona
@@ -250,7 +251,12 @@ export function projectComicConversation(
               const notification = fragment.notification;
               const persona =
                 notification.type === "delegate"
-                  ? delegatePersona(model.ref, notification.delegateId, context.entities, notification.transcriptRef)
+                  ? delegatePersona(
+                      context.ownerRef ?? model.ref,
+                      notification.delegateId,
+                      context.entities,
+                      notification.transcriptRef,
+                    )
                   : undefined;
               entries.push({
                 ...base,

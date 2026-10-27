@@ -150,7 +150,7 @@ test("looks up the end anchor once per render when presentation changes without 
 });
 
 test("indexes each reader once and reuses its entries across visible rows and presentation changes", async () => {
-  const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+  const model = hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0);
   const entities = buildEntityView({
     sessionRef: model.ref,
     tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
@@ -1040,7 +1040,7 @@ test.each(["movement", "latest", "unmount"])("local opening completion respects 
 });
 
 test("settles a missing nested source only when its own local opening completes", async () => {
-  const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+  const model = hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0);
   const entities = buildEntityView({
     sessionRef: model.ref,
     tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
@@ -1194,7 +1194,7 @@ test("selection cancels missing-source demand before another page can be request
 });
 
 test("does not attach parent end to trailing child output", async () => {
-  const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+  const model = hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0);
   const entities = buildEntityView({
     sessionRef: model.ref,
     tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
@@ -1229,7 +1229,7 @@ test("does not attach parent end to trailing child output", async () => {
 });
 
 test("restores only the saved child path and pages its absent source, not the parent", async () => {
-  const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+  const model = hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0);
   const entities = buildEntityView({
     sessionRef: model.ref,
     tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
@@ -1287,7 +1287,7 @@ test.each(["collapse", "reopen"] as const)(
   "nested %s supersedes a pointer awaiting a valid layout",
   async (boundary) => {
     const fixture = subagentOutcomesDelegatesResponse();
-    const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+    const model = hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0);
     const entities = buildEntityView({
       sessionRef: model.ref,
       tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
@@ -1302,6 +1302,7 @@ test.each(["collapse", "reopen"] as const)(
     const client = new FakeClient("ready");
     client.on("thread/read", (p) => ({
       thread: wireThread(p.ref, {
+        sessionId: p.ref?.slice(p.ref.indexOf(":") + 1),
         turns: [
           {
             id: "t",
@@ -1320,7 +1321,7 @@ test.each(["collapse", "reopen"] as const)(
     }));
     client.on("thread/unsubscribe", () => ({}));
     client.on("evener/thread/activity/read", (p) => ({
-      context: { ...fixture.context, ref: p.ref },
+      context: { ...fixture.context, ref: p.ref, sessionId: p.ref.slice(p.ref.indexOf(":") + 1) },
       scope: "session",
       delegates: { known: true, total: p.ref === strip.childRef ? 1 : 0, active: 0, failed: 0, completed: 0 },
       jobs: { known: true, total: 0, active: 0, failed: 0, completed: 0 },
@@ -1329,7 +1330,7 @@ test.each(["collapse", "reopen"] as const)(
     client.on("evener/thread/delegates/list", (p) => ({
       ...fixture,
       scope: "session",
-      context: { ...fixture.context, ref: p.ref },
+      context: { ...fixture.context, ref: p.ref, sessionId: p.ref.slice(p.ref.indexOf(":") + 1) },
       delegates:
         p.ref === strip.childRef
           ? [{ ...fixture.delegates[0]!, ownerRef: strip.childRef, delegateId: "dlg_nested", childRef: leafRef }]
@@ -1413,7 +1414,7 @@ test.each([
 ])(
   "saved child restoration owns the next accepted page only while active: $intent, recorded=$recorded, opening=$opening, delivery=$delivery",
   async ({ intent, recorded, opening, delivery }) => {
-    const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+    const model = hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0);
     const entities = buildEntityView({
       sessionRef: model.ref,
       tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
@@ -1678,7 +1679,7 @@ test.each([
 test.each(["failure", "success"] as const)(
   "latest retires only Comic child demand before delayed %s",
   async (settlement) => {
-    const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+    const model = hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0);
     const entities = buildEntityView({
       sessionRef: model.ref,
       tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
@@ -1695,6 +1696,7 @@ test.each(["failure", "success"] as const)(
     const client = new FakeClient("ready");
     client.on("thread/read", (p) => ({
       thread: wireThread(p.ref, {
+        sessionId: p.ref?.slice(p.ref.indexOf(":") + 1),
         turns: [
           {
             id: "current",

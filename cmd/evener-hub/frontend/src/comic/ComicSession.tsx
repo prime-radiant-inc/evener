@@ -2,6 +2,7 @@ import type { ThreadModel } from "@evener/appwire-client";
 import { type ReactNode, useMemo } from "react";
 import type { useTranscriptReader } from "../panes/session/transcript/useTranscript";
 import { ComicTranscript } from "./ComicTranscript";
+import { comicSessionRef } from "./comicSessionIdentity";
 import { projectComicConversation } from "./projection";
 import { useComicActivity } from "./useComicActivity";
 import type { useComicReader } from "./useComicReader";
@@ -26,7 +27,10 @@ export function ComicSessionContent({
 }) {
   const activity = useComicActivity(sessionRef, model);
   const entries = useMemo(() => projectComicConversation(model, activity.context), [model, activity.context]);
-  const subchats = useComicSubchats(sessionRef, reader.position);
+  const subchats = useComicSubchats(sessionRef, {
+    sessionRef: comicSessionRef(model),
+    ownerRef: activity.context.ownerRef ?? comicSessionRef(model),
+  });
   const root = useMemo(
     () => ({ ref: sessionRef, path: [], entries, history, activity }),
     [sessionRef, entries, history, activity],

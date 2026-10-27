@@ -10,6 +10,7 @@ import {
 } from "@evener/appwire-client";
 import { delegateStableState } from "../panes/session/transcript/tools/subagentModuleStore";
 import { type ComicPersona, comicDelegateKey, comicDelegatePersona } from "./cast";
+import { comicSessionRef } from "./comicSessionIdentity";
 import { COMIC_TRANSCRIPT_CONFIG, type ComicProjectionContext } from "./projection";
 
 export type ComicDelegateStrip = {
@@ -26,11 +27,12 @@ export type ComicDelegateStrip = {
 export function projectComicDelegates(
   model: ThreadModel,
   entities: ReadonlyMap<string, EntityView>,
+  ownerRef = comicSessionRef(model),
 ): readonly ComicDelegateStrip[] {
   const strips = new Map<string, ComicDelegateStrip>();
   for (const entity of entities.values()) {
-    if (entity.kind !== "delegate" || entity.ownerRef !== model.ref || !entity.open.ref) continue;
-    if (findEntityView(entities, "delegate", entity.logicalId, model.ref) !== entity) continue;
+    if (entity.kind !== "delegate" || entity.ownerRef !== ownerRef || !entity.open.ref) continue;
+    if (findEntityView(entities, "delegate", entity.logicalId, ownerRef) !== entity) continue;
     const key = comicDelegateKey(entity.ownerRef, entity.logicalId);
     strips.set(entity.logicalId, {
       key,
@@ -51,7 +53,7 @@ export function projectComicDelegates(
       if (entry.kind !== "item" && entry.kind !== "critical") continue;
       const item = entry.item;
       if (item.type === "commandExecution" && item.toolName === "delegate") {
-        const { parsed, stable } = delegateStableState(item, false, model.ref, model, entities);
+        const { parsed, stable } = delegateStableState(item, false, ownerRef, model, entities);
         if (stable && typeof parsed?.delegate_id === "string")
           place(
             parsed.delegate_id,

@@ -6,7 +6,7 @@ import { composeComicFlow, findComicFlowAnchorRow } from "./comicRows";
 import { projectComicDelegates } from "./delegates";
 import type { ComicReaderSnapshot, ComicSubchatState } from "./useComicSubchats";
 
-const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+const model = hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0);
 const entities = buildEntityView({
   sessionRef: model.ref,
   tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,

@@ -1,5 +1,5 @@
 import "fake-indexeddb/auto";
-import { type ThreadReadResponse, WireError } from "@evener/appwire-client";
+import { type ThreadReadResponse, type ThreadTurnsListResponse, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { subagentOutcomesDelegatesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
@@ -7,14 +7,24 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { readComposerDraftSnapshot, writeComposerDraft } from "../panes/session/composer/draft";
 import { CommittedSession } from "../panes/session/testing/CommittedSession";
-import { resetTranscriptPagingForTests } from "../panes/session/transcript/useTranscript";
+import { pagingByRef } from "../panes/session/transcript/transcriptPaging";
+import * as transcript from "../panes/session/transcript/useTranscript";
+import {
+  resetTranscriptPagingForTests,
+  type UseTranscriptResult,
+  useTranscriptReader,
+} from "../panes/session/transcript/useTranscript";
 import { ClientProvider } from "../shell/clientContext";
 import { navigate, paneToURL } from "../shell/routing";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
+import { acquireSessionActivity, sessionActivitySnapshot } from "../stores/sessionActivity";
 import { installHydrationRetrySchedulerForTests, resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../stores/transcriptDisplay";
+import { useThreadModel } from "../stores/useThreadModel";
 import { readComicPosition, writeComicPosition } from "./readerPosition";
+import { useComicActivity } from "./useComicActivity";
+import * as comicReader from "./useComicReader";
 
 function page(ref: string) {
   return (
@@ -23,6 +33,219 @@ function page(ref: string) {
     </ClientProvider>
   );
 }
+
+test.each(["local", "remote"])(
+  "Clear under a stable %s alias retires only its expanded descendant owners",
+  async (host) => {
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute("data-index") ? 40 : 1000;
+    });
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(760);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(1000);
+    const fixture = subagentOutcomesDelegatesResponse();
+    const root = `${host}:clear-owner`;
+    const child = `${host}:clear-child`;
+    const grandchild = `${host}:clear-grandchild`;
+    const replacementChild = `${host}:replacement-child`;
+    let sessionId = "clear-owner";
+    let instanceId = "instance-old";
+    const contextFor = (ref: string) => ({
+      ...fixture.context,
+      ref: ref === root ? `${host}:${sessionId}` : ref,
+      sessionId: ref === root ? sessionId : ref.slice(ref.indexOf(":") + 1),
+      rootRef: ref === root ? `${host}:${sessionId}` : root,
+    });
+    const client = new FakeClient("ready");
+    client.on("thread/read", (p) => {
+      if (!p.ref) throw new Error("fixture requires a routing ref");
+      return {
+        thread: wireThread(p.ref, {
+          id: p.ref === root ? "stable-wire-thread" : `wire-${p.ref}`,
+          sessionId: contextFor(p.ref).sessionId,
+          evener: { ...wireThread(p.ref).evener, instanceId },
+          turns: [
+            {
+              id: "turn",
+              status: "completed",
+              itemsView: "full",
+              items: [{ id: "answer", type: "agentMessage", text: `CONTENT_${p.ref}` }],
+            },
+          ],
+        }),
+        ...(p.ref === root ? {} : { olderCursor: "older" }),
+      };
+    });
+    client.on("thread/unsubscribe", () => ({}));
+    const counts = { known: true, total: 1, active: 0, failed: 0, completed: 1 };
+    client.on("evener/thread/activity/read", (p) => ({
+      context: contextFor(p.ref),
+      scope: "session",
+      delegates: counts,
+      jobs: counts,
+      watches: counts,
+    }));
+    client.on("evener/thread/delegates/list", (p) => ({
+      ...fixture,
+      context: contextFor(p.ref),
+      scope: "session",
+      delegates:
+        p.ref === grandchild
+          ? []
+          : fixture.delegates.slice(0, 1).map((row) => ({
+              ...row,
+              ownerRef: contextFor(p.ref).ref,
+              rootRef: contextFor(p.ref).rootRef,
+              childRef: p.ref === root ? (sessionId === "clear-owner" ? child : replacementChild) : grandchild,
+            })),
+    }));
+    const pages = new Map<string, (value: ThreadTurnsListResponse) => void>();
+    client.on("thread/turns/list", (p) => {
+      if (!p.ref) throw new Error("fixture requires a routing ref");
+      const ref = p.ref;
+      return new Promise<ThreadTurnsListResponse>((resolve) => {
+        pages.set(ref, resolve);
+      });
+    });
+    const handles = new Map<string, Map<string, ReturnType<typeof comicReader.useComicReader>>>();
+    const histories = new Map<string, UseTranscriptResult>();
+    const actualTranscript = transcript.useTranscriptReader;
+    vi.spyOn(transcript, "useTranscriptReader").mockImplementation((ref, reader) => {
+      const history = actualTranscript(ref, reader);
+      histories.set(reader.id, history);
+      return history;
+    });
+    const actual = comicReader.useComicReader;
+    vi.spyOn(comicReader, "useComicReader").mockImplementation((ref, seat) => {
+      const handle = actual(ref, seat);
+      const readers = handles.get(ref) ?? new Map();
+      readers.set(handle.reader.id, handle);
+      handles.set(ref, readers);
+      return handle;
+    });
+    let independent!: UseTranscriptResult;
+    function Independent() {
+      const model = useThreadModel(child);
+      const reader = comicReader.useComicReader(child);
+      independent = useTranscriptReader(child, reader.reader);
+      return model ? <IndependentActivity model={model} /> : null;
+    }
+    function IndependentActivity({ model }: { model: NonNullable<UseTranscriptResult["model"]> }) {
+      useComicActivity(child, model);
+      return null;
+    }
+    connectionStore.getState().connect(client);
+    const mounted = render(page(root));
+    const expand = async (ref: string) => {
+      await waitFor(() => expect(mounted.container.querySelector(`[data-comic-child-ref="${ref}"]`)).not.toBeNull());
+      const strip = mounted.container.querySelector<HTMLElement>(`[data-comic-child-ref="${ref}"]`)!;
+      fireEvent.click(within(strip).getByRole("button", { name: /expand/i }));
+      document.getSelection()?.removeAllRanges();
+      await waitFor(() => expect(handles.get(ref)?.size).toBe(1));
+    };
+    await expand(child);
+    await expand(grandchild);
+    const ownedChild = [...handles.get(child)!.values()][0]!;
+    const ownedGrandchild = [...handles.get(grandchild)!.values()][0]!;
+    const other = render(<Independent />);
+    await waitFor(() => expect(independent.hasOlder).toBe(true));
+    act(() => {
+      histories.get(ownedChild.reader.id)!.loadOlderReportingError();
+      histories.get(ownedGrandchild.reader.id)!.loadOlderReportingError();
+      independent.loadOlderReportingError();
+    });
+    await waitFor(() => expect(pages.has(child)).toBe(true));
+    await waitFor(() => expect(pages.has(grandchild)).toBe(true));
+    const lease = acquireSessionActivity(client, root);
+    try {
+      await act(async () => {
+        await lease.store.refresh("delegates");
+      });
+      expect(ownedChild.reader.alive).toBe(true);
+      expect(ownedGrandchild.reader.alive).toBe(true);
+      // An instance restart is not a new logical session and must retain expansion.
+      instanceId = "instance-restarted";
+      await act(async () =>
+        client.emitNotification({
+          method: "evener/thread/resync",
+          params: { ref: root, threadId: "stable-wire-thread" },
+        }),
+      );
+      await waitFor(() => expect(threadsStore.getState().threads.get(root)?.instanceId).toBe(instanceId));
+      expect(ownedChild.reader.alive).toBe(true);
+      expect(ownedGrandchild.reader.alive).toBe(true);
+      sessionId = "replacement-owner";
+      client.on("thread/clear", (params) => ({
+        ref: root,
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          disposition: "applied",
+          threadId: "stable-wire-thread",
+          instanceId: "instance-replacement",
+          projectionState: "reflected",
+        },
+        thread: wireThread(root, {
+          id: "stable-wire-thread",
+          sessionId,
+          evener: { ...wireThread(root).evener, instanceId: "instance-replacement" },
+        }),
+      }));
+      await act(async () => {
+        await threadsStore.getState().clearThread(root);
+      });
+      await waitFor(() => expect(threadsStore.getState().threads.get(root)?.imageSessionId).toBe(sessionId));
+      await waitFor(() => expect(ownedChild.reader.alive).toBe(false));
+      expect(ownedGrandchild.reader.alive).toBe(false);
+      expect(pagingByRef.get(child)?.paneConsumers.has(ownedChild.reader.id)).toBe(false);
+      expect(pagingByRef.get(grandchild)?.paneConsumers.has(ownedGrandchild.reader.id)).toBe(false);
+      expect(pagingByRef.get(child)?.paneConsumers.size).toBe(1);
+      expect(sessionActivitySnapshot(client, grandchild, "session")).toBeNull();
+      expect(sessionActivitySnapshot(client, child, "session")).not.toBeNull();
+      expect([...handles.get(child)!.values()].filter((handle) => handle.reader.alive)).toHaveLength(1);
+      expect(independent.loadingOlder).toBe(true);
+      const callsBefore = client.calls.length;
+      await act(async () => {
+        await histories.get(ownedGrandchild.reader.id)!.loadOlder();
+        pages.get(grandchild)!({ data: [] });
+      });
+      expect(client.calls.slice(callsBefore).some((call) => call.method === "thread/turns/list")).toBe(false);
+      await waitFor(() => expect(threadsStore.getState().threads.has(grandchild)).toBe(false));
+      expect(
+        client.calls.filter((call) => call.method === "thread/unsubscribe").map((call) => call.params),
+      ).toContainEqual({ ref: grandchild });
+      await act(async () => {
+        pages.get(child)!({
+          data: [
+            {
+              id: "older",
+              status: "completed",
+              itemsView: "full",
+              items: [{ id: "older-answer", type: "agentMessage", text: "INDEPENDENT_OLDER" }],
+            },
+          ],
+        });
+      });
+      await waitFor(() => expect(independent.hasOlder).toBe(false));
+      expect(
+        independent.model?.turns.some((turn) => turn.items.some((item) => item.text === "INDEPENDENT_OLDER")),
+      ).toBe(true);
+      expect(threadsStore.getState().threads.get(root)?.ref).toBe(root);
+      expect(
+        client.calls.filter((call) => call.method === "thread/unsubscribe").map((call) => call.params),
+      ).not.toContainEqual({ ref: child });
+      await act(async () => {
+        await lease.store.refresh("delegates");
+      });
+      await expand(replacementChild);
+      expect([...handles.get(replacementChild)!.values()].some((handle) => handle.reader.alive)).toBe(true);
+      expect(ownedChild.reader.alive).toBe(false);
+      expect(ownedGrandchild.reader.alive).toBe(false);
+    } finally {
+      lease.release();
+      other.unmount();
+      mounted.unmount();
+    }
+  },
+);
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetTranscriptDisplayStoreForTests();
@@ -101,6 +324,7 @@ test.each(["deleted", "recoverable", "repairing", "superseded"] as const)(
     const client = new FakeClient("ready");
     const response = (ref: string): ThreadReadResponse => ({
       thread: wireThread(ref, {
+        sessionId: ref === root ? fixture.context.sessionId : `sess_${ref}`,
         turns: [
           {
             id: `turn-${ref}`,
@@ -122,7 +346,11 @@ test.each(["deleted", "recoverable", "repairing", "superseded"] as const)(
     });
     client.on("thread/unsubscribe", () => ({}));
     client.on("evener/thread/activity/read", (p) => ({
-      context: { ...fixture.context, ref: p.ref },
+      context: {
+        ...fixture.context,
+        ref: p.ref,
+        sessionId: p.ref === root ? fixture.context.sessionId : `sess_${p.ref}`,
+      },
       scope: "session",
       delegates: { known: true, total: p.ref === root ? 3 : 0, active: 0, failed: 0, completed: 0 },
       jobs: { known: false, total: 0, active: 0, failed: 0, completed: 0 },
@@ -130,7 +358,11 @@ test.each(["deleted", "recoverable", "repairing", "superseded"] as const)(
     }));
     client.on("evener/thread/delegates/list", (p) => ({
       ...fixture,
-      context: { ...fixture.context, ref: p.ref },
+      context: {
+        ...fixture.context,
+        ref: p.ref,
+        sessionId: p.ref === root ? fixture.context.sessionId : `sess_${p.ref}`,
+      },
       scope: "session",
       delegates:
         p.ref === root

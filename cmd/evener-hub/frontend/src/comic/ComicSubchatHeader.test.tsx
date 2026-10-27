@@ -7,7 +7,7 @@ import { ComicSubchatHeader } from "./ComicSubchatHeader";
 import { projectComicDelegates } from "./delegates";
 
 test("opens the authoritative child route and returns focus on collapse without inline actions", () => {
-  const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+  const model = hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0);
   const entities = buildEntityView({
     sessionRef: model.ref,
     tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
