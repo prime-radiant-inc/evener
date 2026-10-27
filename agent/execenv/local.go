@@ -559,16 +559,10 @@ func (e *LocalExecutionEnvironment) ReadFileCtx(ctx context.Context, path string
 	return out, err
 }
 
-// ReadFileAndBytes is ReadFile that also returns the whole file's bytes as
-// this read loaded them, for a caller that must record exactly what the read
-// saw. The bytes are the complete file even when offset and limit select only
-// some of its lines; on error they are nil.
-func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *int, limitLines *int) (string, []byte, error) {
-	return e.ReadFileAndBytesCtx(context.Background(), path, offsetLine, limitLines)
-}
-
-// ReadFileAndBytesCtx is ReadFileAndBytes with the caller's context threaded to
-// the read (see ReadFileCtx).
+// ReadFileAndBytesCtx is ReadFileCtx that also returns the whole file's bytes
+// as this read loaded them, for a caller that must record exactly what the
+// read saw. The bytes are the complete file even when offset and limit select
+// only some of its lines; on error they are nil.
 func (e *LocalExecutionEnvironment) ReadFileAndBytesCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, []byte, error) {
 	abs := e.resolve(path)
 	var b []byte
@@ -764,13 +758,7 @@ func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (stri
 // replaceAll is true, oldString must match exactly once. It returns a summary
 // of the number of replacements made.
 func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newString string, replaceAll bool) (string, error) {
-	return e.EditFileWith(path, oldString, newString, replaceAll, nil)
-}
-
-// EditFileWith is EditFile, except that finish, when not nil, turns the
-// edited bytes into the bytes written, inside the same read and write.
-func (e *LocalExecutionEnvironment) EditFileWith(path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {
-	return e.EditFileWithCtx(context.Background(), path, oldString, newString, replaceAll, finish)
+	return e.EditFileWithCtx(context.Background(), path, oldString, newString, replaceAll, nil)
 }
 
 // EditFileCtx is EditFile with the caller's context threaded to its read, so a
@@ -780,8 +768,8 @@ func (e *LocalExecutionEnvironment) EditFileCtx(ctx context.Context, path string
 	return e.EditFileWithCtx(ctx, path, oldString, newString, replaceAll, nil)
 }
 
-// EditFileWithCtx is EditFileWith with the caller's context threaded to its
-// read, so a cancelled edit ends a read parked on a stream.
+// EditFileWithCtx is EditFileCtx, except that finish, when not nil, turns the
+// edited bytes into the bytes written, inside the same read and write.
 func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {
 	sfs := e.sandbox()
 	sandboxArm := sfs != nil
