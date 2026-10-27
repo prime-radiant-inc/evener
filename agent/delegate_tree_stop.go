@@ -1015,7 +1015,7 @@ func waitForDelegateStopProgress(ctx context.Context, stop *delegateStopState) e
 // delegate stop progress. Tests store it to prove the reconcile driver is parked
 // before a close wakes it; empty in production. An atomic pointer keeps the read
 // in waitForDelegateStopProgress race-free against a test storing or clearing
-// the hook, the same convention as ObserveCloseStopJoin.
+// the hook, the same convention as ObserveCloseStopJoinBudget.
 var observeDelegateStopWait atomic.Pointer[func()]
 
 func executeDelegateCancelPlan(plan delegateCancelPlan) {
