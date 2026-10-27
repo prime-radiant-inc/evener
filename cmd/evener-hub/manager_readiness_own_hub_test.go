@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -152,11 +153,9 @@ func TestE2E_ManagerReadinessOwnHubFirstInputSSH(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tool := range []string{"job_list", "job_status"} {
-		if !acceptanceHasTool(turns, tool) {
-			t.Fatalf("saved B Manager history lacks %s: %v", tool, managerItemSummary(turns))
-		}
-	}
+	assertSavedManagerResults(t, turns, managerRef,
+		map[string]string{localRef: localTarget.Thread.Evener.InstanceID, remoteRef: remoteTarget.Thread.Evener.InstanceID},
+		map[string]string{localRef: localTarget.Thread.Evener.InstanceID, remoteRef: remoteTarget.Thread.Evener.InstanceID})
 }
 
 func TestE2E_ManagerReadinessOwnHubFirstInput(t *testing.T) {
@@ -222,8 +221,80 @@ func TestE2E_ManagerReadinessOwnHubFirstInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !acceptanceHasTool(turns, "job_list") || !acceptanceHasTool(turns, "job_status") {
-		t.Fatalf("first-turn Manager operations missing from saved history: %v", managerItemSummary(turns))
+	assertSavedManagerResults(t, turns, managerRef,
+		map[string]string{managerRef: started.Thread.Evener.InstanceID},
+		map[string]string{managerRef: started.Thread.Evener.InstanceID})
+}
+
+func assertSavedManagerResults(t *testing.T, turns []appwire.Turn, managerRef string, discoveryTargets, readTargets map[string]string) {
+	t.Helper()
+	resultsByTool := make(map[string][]appwire.SessionOperationResponse)
+	for _, turn := range turns {
+		calls := make(map[string]appwire.ThreadItem)
+		for _, item := range turn.Items {
+			if item.ToolName == "job_list" || item.ToolName == "job_status" {
+				if item.CallID == "" {
+					t.Fatalf("saved %s item has no CallID: %+v", item.ToolName, item)
+				}
+				if item.ArgumentsJSON != "" {
+					calls[item.CallID] = item
+				}
+			}
+		}
+		for _, result := range turn.Items {
+			call, ok := calls[result.CallID]
+			if !ok || result.ToolName != call.ToolName || result.Output == "" {
+				continue
+			}
+			var response appwire.SessionOperationResponse
+			if err := json.Unmarshal([]byte(result.Output), &response); err != nil {
+				t.Fatalf("decode saved %s result for CallID %q: %v; output=%q", call.ToolName, result.CallID, err, result.Output)
+			}
+			resultsByTool[call.ToolName] = append(resultsByTool[call.ToolName], response)
+		}
+	}
+
+	discoveries := resultsByTool["job_list"]
+	if len(discoveries) != 1 || discoveries[0].Discover == nil || discoveries[0].Actor.Kind != "manager" || discoveries[0].Actor.ManagerRef != managerRef {
+		t.Fatalf("saved discovery result count/actor/payload = %+v, want one Manager discovery", discoveries)
+	}
+	found := make(map[string]string)
+	for _, thread := range discoveries[0].Discover.Threads.Data {
+		if _, wanted := discoveryTargets[thread.Evener.Ref]; wanted {
+			if _, duplicate := found[thread.Evener.Ref]; duplicate {
+				t.Fatalf("saved discovery duplicated target %q", thread.Evener.Ref)
+			}
+			found[thread.Evener.Ref] = thread.Evener.InstanceID
+		}
+	}
+	for ref, instanceID := range discoveryTargets {
+		if instanceID == "" || found[ref] != instanceID {
+			t.Fatalf("saved discovery target %q instance=%q, want %q; payload=%+v", ref, found[ref], instanceID, discoveries[0].Discover.Threads.Data)
+		}
+	}
+
+	reads := resultsByTool["job_status"]
+	if len(reads) != len(readTargets) {
+		t.Fatalf("saved read result count=%d, want %d: %+v", len(reads), len(readTargets), reads)
+	}
+	readInstances := make(map[string]string)
+	for _, response := range reads {
+		if response.Read == nil || response.Actor.Kind != "manager" || response.Actor.ManagerRef != managerRef {
+			t.Fatalf("saved read result has wrong payload/actor: %+v", response)
+		}
+		thread := response.Read.Thread
+		if _, wanted := readTargets[thread.Evener.Ref]; !wanted {
+			t.Fatalf("saved read returned unexpected target %q: %+v", thread.Evener.Ref, response)
+		}
+		if _, duplicate := readInstances[thread.Evener.Ref]; duplicate {
+			t.Fatalf("saved read duplicated target %q", thread.Evener.Ref)
+		}
+		readInstances[thread.Evener.Ref] = thread.Evener.InstanceID
+	}
+	for ref, instanceID := range readTargets {
+		if instanceID == "" || readInstances[ref] != instanceID {
+			t.Fatalf("saved read target %q instance=%q, want %q", ref, readInstances[ref], instanceID)
+		}
 	}
 }
 
