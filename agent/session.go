@@ -109,6 +109,7 @@ type Session struct {
 	id                     string
 	cfg                    SessionConfig
 	delegateController     *delegateTreeController
+	quietWatch             delegateQuietWatchHost
 	delegateRootSessionID  string
 	owningDelegateID       string
 	ownsDelegateController bool
@@ -286,6 +287,23 @@ type Session struct {
 	// subagents (subagentManager.mu / per-child sub.mu), taskStore
 	// (TaskStore.mu — note it may be SHARED with child sessions when
 	// ShareTasksWithChildren is set), and transcript (transcript.Writer.mu).
+	//
+	// LOCK ORDER (outermost first; a lock to the left is taken before any to its
+	// right and never while holding one to its right):
+	//   responseSideEffectsMu > mu          (Close takes both)
+	//   restMu > delegateDeliveryMu > mu
+	//   metaSaveMu > mu                     (maybeAutoSave)
+	//   goalUpdateMu > mu, notesUpdateMu > mu (emit runs after mu is released)
+	// drainAbandonedMu and childCommittedSendMu are leaves: nothing is taken under
+	// them.
+	//
+	// Every field whose comment says "Guarded by mu" (or s.mu) is guarded by mu;
+	// that includes the rest fields restGeneration, restOwedGeneration,
+	// restBeforeInput, quietRestBeforeInput, endReasonBeforeInput and
+	// resumeQuietRest. restMu does not guard those fields: it makes a rest's
+	// transition and its STATUS_SETTLED emit atomic against restGeneration moving.
+	// The group below is the original core set; later fields carry their own
+	// guard in their field comment.
 	//
 	// mu guards: history, state, closing, turns, turnBudgetWarningEmitted,
 	//   modelResponses, totalRounds,
