@@ -32,7 +32,6 @@ vi.mock("react-native-gesture-handler", async () =>
 	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
 );
 vi.mock("expo-clipboard", () => ({ setStringAsync: native.setStringAsync }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 // Attachments are not under test here, and the image leaf drags in the
 // connection stack (expo-secure-store and the rest).
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));

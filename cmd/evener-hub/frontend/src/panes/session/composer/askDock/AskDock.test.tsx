@@ -1,13 +1,14 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ConnectionState, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type { ConnectionState, Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
+import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
 import { connectionStore } from "../../../../stores/connection";
 import {
   putThreadModel,
@@ -16,28 +17,13 @@ import {
   subscribeMutationPersistence,
   threadsStore,
 } from "../../../../stores/threads";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../../threadTestUtils";
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../composerFocus";
 import { AskDock, AskDockAnnouncements } from "./AskDock";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 import { ackAskUserCall, askArgs, ONE_QUESTION } from "./askDockTestUtils";
 
 // --- fixtures (mirrors askDockStore.test.ts's own harness) ---------------
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testThread(ref: string): Thread {
   return {
@@ -334,12 +320,7 @@ test("has no residual askDockStore state for this ref after the batch settles an
   const fake = connectFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     turn: { id: "turn_2", status: "inProgress", itemsView: "" },
   }));
   const { unmount } = render(<AskDock ref="ref_a" />);
@@ -1338,12 +1319,7 @@ test("a send that empties the dock requests composer focus", async () => {
   const fake = connectFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     turn: { id: "turn_2", status: "inProgress", itemsView: "" },
   }));
   // The composerFocus store's only read seam is its hook (composerFocus.ts),
@@ -1371,12 +1347,7 @@ test("a send that empties the dock requests focus only at the dock's own seat", 
   const fake = connectFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     turn: { id: "turn_2", status: "inProgress", itemsView: "" },
   }));
   // Two seats share the ref, like an ordinary pane and an embedded column:

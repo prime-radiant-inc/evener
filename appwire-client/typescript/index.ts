@@ -547,7 +547,6 @@ export {
   decodeCurrentTranscriptState,
   decodeTranscriptItem,
   encodeTranscriptItem,
-  foldWarningParams,
   hydrateThread,
   ITEM_OMISSION_TOLERANT_FIELDS,
   imageSessionRouteForSession,
@@ -558,7 +557,6 @@ export {
   itemIdentityMatches,
   itemTextPresence,
   joinedReasoningParagraphs,
-  joinWarningParts,
   markItemIdentityOnly,
   markItemTextOmitted,
   mergeOlderItemPage,
@@ -587,6 +585,19 @@ export {
   type RetryEligibilityReason,
   retryEligibility,
 } from "./retryEligibility";
+export type {
+  PluginPreviewLoadState,
+  PluginPreviewReadArgs,
+  ScopedHostReadInputs,
+  ScopedHostReadSnapshot,
+  ScopedHostReadStore,
+  ScopedReadState,
+} from "./scopedHostRead";
+export {
+  createScopedHostReadStore,
+  pluginPreviewReadInputs,
+  SCOPED_HOST_READ_DEBOUNCE_MS,
+} from "./scopedHostRead";
 export type { GroupedSearch, GroupedSearchRow } from "./searchGrouping";
 export { countSearchMatches, groupSearchResults } from "./searchGrouping";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
@@ -805,7 +816,6 @@ export type {
   HubTranscriptDisplayDefault,
   LegacyPreferenceKey,
   LegacyPreferenceValues,
-  LegacyPreferenceWrites,
   TranscriptDisplayAdvancedV1,
   TranscriptDisplayCategory,
   TranscriptDisplayConfigV1,
@@ -822,7 +832,6 @@ export {
   contentSummary,
   contentVectorForConfig,
   decodeLocalConfig,
-  dualWriteLegacyPreferences,
   encodeLocalConfig,
   fromWireConfig,
   fromWireDefault,
@@ -830,7 +839,6 @@ export {
   HOOK_EXIT_DETAILS,
   LEGACY_PREF_KEYS,
   legacyConfigFromValues,
-  legacyWritesFromConfig,
   makeTranscriptDisplayConfig,
   normalizeConfig,
   normalizeContent,
@@ -893,6 +901,7 @@ export {
   STEERING_KINDS,
   THREAD_ITEM_EVENT_KINDS,
 } from "./types.gen";
+export { foldWarningParams, joinWarningParts } from "./warningFold";
 export type { WarningWords } from "./warnings";
 export {
   attentionWarningNotice,

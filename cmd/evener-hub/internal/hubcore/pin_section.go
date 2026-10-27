@@ -14,7 +14,8 @@ import (
 
 	"github.com/spf13/afero"
 	"golang.org/x/text/cases"
-	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -606,12 +607,20 @@ func newPinSectionID() (string, error) {
 	return hex.EncodeToString(raw[:]), nil
 }
 
+// isSQLiteRetryable reports a lock conflict another connection can clear:
+// SQLITE_BUSY, SQLITE_LOCKED, or an extended code of either (such as
+// SQLITE_BUSY_SNAPSHOT, which busy_timeout does not wait out). The primary
+// result code is the low byte of the extended code.
 func isSQLiteRetryable(err error) bool {
-	if err == nil {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
 		return false
 	}
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "database is locked") || strings.Contains(s, "sqlite_busy") || strings.Contains(s, "sqlite_locked") || strings.Contains(s, "busy")
+	switch sqliteErr.Code() & 0xff {
+	case sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED:
+		return true
+	}
+	return false
 }
 
 func isSQLiteUniqueNameConflict(err error) bool {

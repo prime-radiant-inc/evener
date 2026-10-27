@@ -336,9 +336,21 @@ type comparison struct {
 	partial bool
 }
 
+// assertionHelpers names package-local test assertion helpers that compare a
+// subject against a hardcoded literal: wantMsg(t, msg, want, desc) and
+// notMsg(t, msg, want, desc) in agent/internal/tool/repair. The helper keeps
+// the literal out of the comparison shape comparisons() recognizes, so the
+// call sites are collected here instead. A new helper of this shape must be
+// added to this set, or the prose assertions it wraps stay unbudgeted.
+var assertionHelpers = map[string]bool{
+	"wantMsg": true,
+	"notMsg":  true,
+}
+
 // comparisons returns the text checks node n itself makes: strings.Contains
 // and its kin, == and != against a string (on either side), and
-// regexp.MustCompile(...).MatchString.
+// regexp.MustCompile(...).MatchString. Helper calls whose name is in
+// assertionHelpers count their call-site literal against their subject.
 func comparisons(n ast.Node) []comparison {
 	check := func(e, subject ast.Expr, core func(string) string) []comparison {
 		lit, complete, ok := stringLit(e)
@@ -350,6 +362,9 @@ func comparisons(n ast.Node) []comparison {
 	same := func(s string) string { return s }
 	switch n := n.(type) {
 	case *ast.CallExpr:
+		if id, ok := n.Fun.(*ast.Ident); ok && assertionHelpers[id.Name] && len(n.Args) == 4 {
+			return check(n.Args[2], n.Args[1], same)
+		}
 		if pkg, fn := selector(n.Fun); pkg == "strings" && copyComparers[fn] && len(n.Args) == 2 {
 			return check(n.Args[1], n.Args[0], same)
 		}

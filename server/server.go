@@ -311,9 +311,7 @@ type Server struct {
 	urlsRemoveFunc           func(outerID, id string) (bool, error)
 	compactFunc              func(context.Context) error
 	clearFunc                func(context.Context, appwire.ThreadClearParams) error
-	clearJournalPath         string
-	clearRecords             map[string]threadClearRecord
-	clearJournalErr          error
+	clearJournal             threadClearJournalFile
 	modelFunc                func(string) error
 	visionModelFunc          func(string) error
 	nameFunc                 func(string) error
@@ -389,16 +387,16 @@ func NewServer(cfg ServerConfig) *Server {
 			ServerName: "evener-serve",
 			Version:    buildinfo.Version(),
 			SourceID:   "local",
-			SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
+			SubscriptionAdmissionResolver: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 				params, ok := decodeSubscriptionAdmissionParams(msg)
 				if !ok {
-					return "", false
+					return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
 				}
 				threadID, target := runtime.appReadTarget(params)
 				if threadID == "" {
-					return "", false
+					return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionUnresolved}
 				}
-				return target, true
+				return appserver.SubscriptionAdmissionResolution{Key: target, Intent: appserver.SubscriptionAdmissionResolved}
 			},
 			Features: appwire.FeatureSet{
 				ThreadList:        true,
@@ -422,17 +420,12 @@ func NewServer(cfg ServerConfig) *Server {
 		appHistories:        newAppHistories(),
 		appDescendants:      make(map[string]*appDescendantProjection),
 		appTaskPublications: make(map[string]taskPublicationCursor),
-		clearJournalPath:    threadClearJournalPath(cfg.StateDir),
-		clearRecords:        make(map[string]threadClearRecord),
+		clearJournal:        openThreadClearJournal(cfg.StateDir),
 		inputCh:             make(chan InputMessage, 1),
 		hubToken:            strings.TrimSpace(cfg.HubToken),
 		sameOrigin:          httpguard.NewSameOriginPolicy(cfg.AllowedHost),
 	}
 	runtime = s
-	s.clearRecords, s.clearJournalErr = loadThreadClearJournal(s.clearJournalPath)
-	if s.clearRecords == nil {
-		s.clearRecords = make(map[string]threadClearRecord)
-	}
 	s.registerAppWireHandlers()
 	s.mux.HandleFunc("/rpc", s.appServer.ServeWebSocket)
 	return s
@@ -475,13 +468,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mux.ServeHTTP(w, r)
-}
-
-// SetStatus replaces the full session status.
-func (s *Server) SetStatus(info StatusInfo) {
-	s.mu.Lock()
-	s.status = info
-	s.mu.Unlock()
 }
 
 // GetStatus returns the current session status.

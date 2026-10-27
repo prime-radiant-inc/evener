@@ -3,7 +3,7 @@
 // recovered connection may serve rows that changed while it was away, so its
 // store drops every list then; a screen still showing one reads it again.
 import { type ArchivedListStore, createArchivedListStore } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 
 const stores = new WeakMap<ConversationClientLike, ArchivedListStore>();
 

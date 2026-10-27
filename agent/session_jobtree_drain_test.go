@@ -851,8 +851,7 @@ func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
 
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a
 	// genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	result, err := sess.DrainJobTree(ctx)
 	if err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
@@ -948,8 +947,7 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 
 	// TRIPWIRE: scripted in-process adapter steps for both the root and the
 	// delegate child, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.DrainJobTree(ctx); err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
 	}
@@ -1028,8 +1026,7 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 	releaseShell()
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a
 	// genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	result, err := sess.DrainJobTree(ctx)
 	if err != nil {
 		t.Fatalf("DrainJobTree: %v", err)

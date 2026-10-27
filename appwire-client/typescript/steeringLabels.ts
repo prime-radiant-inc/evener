@@ -25,7 +25,6 @@ export type LabelledSteeringKind = Exclude<SteeringKind, SuppressedSteeringKind 
 export const STEERING_KIND_LABELS: Readonly<Record<LabelledSteeringKind, string>> = {
   interrupted: "Interrupted",
   "interrupted-salvage": "Interrupted draft",
-  "agent-message": "Message sent",
   "hook-context": "Hook context",
   // Context a hook added just before the history was compacted.
   "precompact-hook": "Hook context before compacting",

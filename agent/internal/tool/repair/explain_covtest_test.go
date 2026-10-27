@@ -27,90 +27,37 @@ func TestConstraintMessage_MinLength(t *testing.T) {
 	}
 }
 
-// TestConstraintMessage_MinLengthLimitNotInt covers the schemaInt failure
-// path for minLength: minLength is not a number, so
-// constraintMessage returns "" and falls back to generic.
-func TestConstraintMessage_MinLengthLimitNotInt(t *testing.T) {
-	params := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"name": map[string]any{"type": "string", "minLength": "bad"},
-		},
-		"required": []string{"name"},
+// TestConstraintMessage_UnparsableConstraintDeclinesToConstrain covers the
+// schemaInt failure path of every limit keyword (the limit is not a number)
+// and the empty-enum path: constraintMessage returns "" for each, which is
+// what makes ExplainSchemaError fall back to its generic message - a limit
+// it cannot parse names no constraint at all.
+func TestConstraintMessage_UnparsableConstraintDeclinesToConstrain(t *testing.T) {
+	cases := []struct {
+		name    string
+		field   string
+		keyword string
+		prop    map[string]any
+		args    map[string]any
+	}{
+		{"minLength limit not an int", "name", "minLength", map[string]any{"type": "string", "minLength": "bad"}, map[string]any{"name": "hi"}},
+		{"maxLength limit not an int", "name", "maxLength", map[string]any{"type": "string", "maxLength": true}, map[string]any{"name": "hi"}},
+		{"maxItems limit not an int", "items", "maxItems", map[string]any{"type": "array", "maxItems": "bad"}, map[string]any{"items": []any{1, 2}}},
+		{"minItems limit not an int", "items", "minItems", map[string]any{"type": "array", "minItems": "bad"}, map[string]any{"items": []any{1, 2}}},
+		{"enum with no values", "color", "enum", map[string]any{"type": "string", "enum": []any{}}, map[string]any{"color": "red"}},
 	}
-	args := map[string]any{"name": "hi"}
-	got := ExplainSchemaError("my_tool", params, args, "name", "minLength")
-	// Falls back to generic message since limit is not an int.
-	if !strings.Contains(got, "wrong type or value") {
-		t.Fatalf("got:\n%s\nwant fallback to generic", got)
-	}
-}
-
-// TestConstraintMessage_MaxLengthLimitNotInt covers the schemaInt failure
-// for maxLength.
-func TestConstraintMessage_MaxLengthLimitNotInt(t *testing.T) {
-	params := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"name": map[string]any{"type": "string", "maxLength": true},
-		},
-		"required": []string{"name"},
-	}
-	args := map[string]any{"name": "hi"}
-	got := ExplainSchemaError("my_tool", params, args, "name", "maxLength")
-	if !strings.Contains(got, "wrong type or value") {
-		t.Fatalf("got:\n%s\nwant fallback to generic", got)
-	}
-}
-
-// TestConstraintMessage_MaxItemsLimitNotInt covers the schemaInt failure
-// for maxItems.
-func TestConstraintMessage_MaxItemsLimitNotInt(t *testing.T) {
-	params := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"items": map[string]any{"type": "array", "maxItems": "bad"},
-		},
-		"required": []string{"items"},
-	}
-	args := map[string]any{"items": []any{1, 2}}
-	got := ExplainSchemaError("my_tool", params, args, "items", "maxItems")
-	if !strings.Contains(got, "wrong type or value") {
-		t.Fatalf("got:\n%s\nwant fallback to generic", got)
-	}
-}
-
-// TestConstraintMessage_MinItemsLimitNotInt covers the schemaInt failure
-// for minItems.
-func TestConstraintMessage_MinItemsLimitNotInt(t *testing.T) {
-	params := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"items": map[string]any{"type": "array", "minItems": "bad"},
-		},
-		"required": []string{"items"},
-	}
-	args := map[string]any{"items": []any{1, 2}}
-	got := ExplainSchemaError("my_tool", params, args, "items", "minItems")
-	if !strings.Contains(got, "wrong type or value") {
-		t.Fatalf("got:\n%s\nwant fallback to generic", got)
-	}
-}
-
-// TestConstraintMessage_EnumEmpty covers the empty-enum path:
-// enum is present but empty, so constraintMessage returns "".
-func TestConstraintMessage_EnumEmpty(t *testing.T) {
-	params := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"color": map[string]any{"type": "string", "enum": []any{}},
-		},
-		"required": []string{"color"},
-	}
-	args := map[string]any{"color": "red"}
-	got := ExplainSchemaError("my_tool", params, args, "color", "enum")
-	if !strings.Contains(got, "wrong type or value") {
-		t.Fatalf("got:\n%s\nwant fallback to generic", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := map[string]any{
+				"type":       "object",
+				"properties": map[string]any{tc.field: tc.prop},
+				"required":   []string{tc.field},
+			}
+			got := constraintMessage("my_tool", params, tc.field, tc.field, tc.keyword, tc.args, tc.field, nil)
+			if got != "" {
+				t.Fatalf("constraintMessage(%q) = %q, want it to decline to constrain", tc.keyword, got)
+			}
+		})
 	}
 }
 
@@ -557,24 +504,6 @@ func TestExplainSchemaError_PresentFieldWithContainerPath(t *testing.T) {
 	got := ExplainSchemaError("ask_user", params, args, "questions/0/header", "maxLength")
 	if !strings.Contains(got, "questions[0].header") {
 		t.Fatalf("got:\n%s\nwant 'questions[0].header'", got)
-	}
-}
-
-// TestExplainSchemaError_PresentFieldUnhandledKeyword covers the
-// present-field path with an unhandled keyword: falls back to
-// generic message.
-func TestExplainSchemaError_PresentFieldUnhandledKeyword(t *testing.T) {
-	params := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"val": map[string]any{"type": "string"},
-		},
-		"required": []string{"val"},
-	}
-	args := map[string]any{"val": "hello"}
-	got := ExplainSchemaError("my_tool", params, args, "val", "pattern")
-	if !strings.Contains(got, "wrong type or value") {
-		t.Fatalf("got:\n%s\nwant 'wrong type or value'", got)
 	}
 }
 

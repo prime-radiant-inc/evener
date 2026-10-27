@@ -698,7 +698,7 @@ describe("the live overlay", () => {
       expect(laid?.transcriptKey).toBeUndefined();
       expect(next.overlay?.[notice.key]).toBe(notice);
       if (!next.history) throw new Error("missing history");
-      // mobile/src/state/conversation.ts's rehydrate calls
+      // mobile-native/src/conversation/state/conversation.ts's rehydrate calls
       // withSyncedHistoryTurns with these already-laid display turns.
       next = { ...next, history: { ...next.history, turns: next.turns } };
       next = applyNotification(next, upserted(unrelated), NOW);

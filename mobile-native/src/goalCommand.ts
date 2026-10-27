@@ -1,4 +1,4 @@
-import type { ConversationGoalActions } from "../../mobile/src/services/conversation";
+import type { ConversationGoalActions } from "./conversation/services/conversation";
 import { composerCommand } from "./composerCommand";
 import type { DraftDocument } from "./draftDocument";
 

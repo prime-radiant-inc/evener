@@ -19,7 +19,7 @@ import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { isMobileViewport, subscribeMobileViewport } from "../shell/useIsMobile";
 import { connectionStore } from "./connection";
-import { dualWriteTranscriptDisplayLegacy, migrateLegacyTranscriptDisplay, readTranscriptDisplayLocal } from "./prefs";
+import { migrateLegacyTranscriptDisplay, readTranscriptDisplayLocal, retireLegacyTranscriptKeys } from "./prefs";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createBrowserSync } from "./transcriptDisplay/crossTabSync";
 import { browserDraftStorage } from "./transcriptDisplay/draftStorage";
@@ -28,7 +28,6 @@ import {
   readPresentation,
   removeLocal,
   reportStorageResult,
-  verifyLegacyWrite,
   writeLocal,
   writePresentation,
 } from "./transcriptDisplay/localStore";
@@ -524,7 +523,6 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
       reportStorageResult(
         (message) => transcriptDisplayStore.setState({ storageWarning: message }),
         writePresentation(layout, value),
-        true,
       );
       browserSync.broadcastPresentation(layout, value);
     },
@@ -546,9 +544,7 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
       publishEffectiveTransition(state, { ...state, local }, () => transcriptDisplayStore.setState({ local }), layout);
       const encoded = encodeLocalConfig(config);
       const localOK = writeLocal(layout, encoded);
-      dualWriteTranscriptDisplayLegacy(config);
-      const legacyOK = verifyLegacyWrite(config);
-      reportStorageResult((message) => transcriptDisplayStore.setState({ storageWarning: message }), localOK, legacyOK);
+      reportStorageResult((message) => transcriptDisplayStore.setState({ storageWarning: message }), localOK);
       browserSync.broadcastLocal(layout, encoded);
     },
     clearLocal: (layout) => {
@@ -557,10 +553,8 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
       delete local[layout];
       publishEffectiveTransition(state, { ...state, local }, () => transcriptDisplayStore.setState({ local }), layout);
       const localOK = removeLocal(layout);
-      const fallback = resolveEffectiveConfig({ local: undefined, hub: state.hub[layout], layout });
-      dualWriteTranscriptDisplayLegacy(fallback);
-      const legacyOK = verifyLegacyWrite(fallback);
-      reportStorageResult((message) => transcriptDisplayStore.setState({ storageWarning: message }), localOK, legacyOK);
+      retireLegacyTranscriptKeys();
+      reportStorageResult((message) => transcriptDisplayStore.setState({ storageWarning: message }), localOK);
       browserSync.broadcastLocal(layout, null);
     },
     effective: (layout): TranscriptDisplayConfigV1 => {

@@ -42,7 +42,7 @@ func lookupDaemonOwner(ctx context.Context, cfg hubcore.WebConfig, ref, threadID
 		if err != nil {
 			return hubcore.LiveEntry{}, false, err
 		}
-		if parsed.SourceID != "local" {
+		if parsed.SourceID != appwire.LocalSourceID {
 			return hubcore.LiveEntry{}, false, nil
 		}
 		threadID = parsed.ThreadID
@@ -250,7 +250,7 @@ func refreshDaemonRestartRequiredError(ctx context.Context, cfg hubcore.WebConfi
 		if err != nil {
 			return appwire.InvalidParams(err.Error())
 		}
-		if parsed.SourceID != "local" {
+		if parsed.SourceID != appwire.LocalSourceID {
 			return nil
 		}
 	}

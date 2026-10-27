@@ -66,3 +66,10 @@ export function saveExpansion(overrides: ReadonlyMap<string, boolean>): void {
     // Best-effort, same rationale as stores/prefs.ts's writeRaw.
   }
 }
+
+// Section-fold keys. Archived is the only one that starts collapsed; every
+// other tier is where you expect to find your work.
+export const LIVE_SECTION_KEY = "section:live";
+export const PROJECTS_SECTION_KEY = "section:projects";
+export const TEST_RUNS_SECTION_KEY = "section:test_runs";
+export const ARCHIVED_SECTION_KEY = "section:archived";

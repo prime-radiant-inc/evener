@@ -8,7 +8,7 @@ import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification } from "@evener/appwire-client";
 import { ErrorEndpointConflict, WireError } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { ProvidersStack as ProvidersPage } from "./providersPageTestUtils";
 import { render, screenConnection, testIDSuffixes, unmountMountedTrees } from "../renderNative.testkit";
 
@@ -38,7 +38,6 @@ vi.mock("expo-web-browser", () => ({
 	openBrowserAsync: async () => ({ type: "dismiss" }),
 	dismissBrowser: async () => ({ type: "dismiss" }),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 // Shown once, as a page that stays in front.
 vi.mock("@react-navigation/native", async () => {

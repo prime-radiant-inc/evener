@@ -4,15 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 // TestHubRelayViewSwitchDeliversEachDeltaOnce probes the delivery layer for
@@ -44,14 +41,7 @@ func TestHubRelayViewSwitchDeliversEachDeltaOnce(t *testing.T) {
 		deliveries: deliveries,
 	}
 	source := &relaySessionTestSource{thread: thread, lease: lease}
-	sources := appsource.NewRegistry()
-	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources)
-	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
-	defer hub.Close()
+	hub := newRelayTestServer(t, source)
 
 	clientA := dialHubRPC(t, hub)
 	defer clientA.Close()

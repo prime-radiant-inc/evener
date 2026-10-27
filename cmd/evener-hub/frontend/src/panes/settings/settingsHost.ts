@@ -6,9 +6,10 @@
 // route carries it - serialized into `?host=<name>` (omitted for local, so
 // today's URLs are unchanged), restored from the URL, and carried across every
 // app-built settings navigation (shell/routing.ts's navigate).
+
+import { isLocalHost } from "@evener/appwire-client";
 import { useCallback, useEffect } from "react";
 import { HOST_QUERY_PARAM, navigate, paneToURL, urlToPane } from "../../shell/routing";
-import { isLocalHost } from "../../stores/hostRouting";
 import {
   adoptSettingsHostFromURL,
   setSettingsHost,

@@ -462,10 +462,7 @@ inherit_models_matching = ["gpt-5*"]
 	if err != nil || kept.Synthesized {
 		t.Fatalf("mine/gpt-5-nano must resolve as an inherited catalog row: res=%+v err=%v", kept, err)
 	}
-	dropped, err := r.Resolve("mine/gpt-4o")
-	if err != nil {
-		t.Fatal(err)
-	}
+	dropped := mustResolve(t, r, "mine/gpt-4o")
 	if !dropped.Synthesized {
 		t.Fatalf("mine/gpt-4o must not resolve as a catalog row once the glob dropped it: %+v", dropped)
 	}
@@ -884,10 +881,7 @@ func TestLoad_UnresolvedUserVarWarnsAndStops(t *testing.T) {
 	if !slices.Contains(warns, "unresolved variable AWS_REGION_PROD") {
 		t.Fatalf("resolveBaseURL warnings = %v", warns)
 	}
-	res, err := r.Resolve("bedrock/anthropic.claude-sonnet-5")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "bedrock/anthropic.claude-sonnet-5")
 	if !slices.Contains(res.Warnings, "unresolved variable AWS_REGION_PROD") {
 		t.Fatalf("Resolve warnings = %v", res.Warnings)
 	}

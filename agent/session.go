@@ -129,8 +129,7 @@ type Session struct {
 	// lastDroppedModelFallbacks records the cfg.ModelFallbacks entries dropped
 	// by the most recent SetModel's post-switch revalidation (entries that no
 	// longer validate against the new profile). Nil until a switch drops any.
-	// Surfaced via DroppedModelFallbacksFromLastSwitch for a later marker
-	// warning line; this type does not build that marker itself.
+	// The model-switch marker surfaces it as a warning line.
 	lastDroppedModelFallbacks []string
 	// httpClient issues the web_fetch HTTP GET. Nil means the production default
 	// (http.DefaultClient); tests set it on their own session to serve a fabricated
@@ -280,7 +279,7 @@ type Session struct {
 	//
 	// The turn loop (ProcessInput → processOneInput) is the primary owner of
 	// most mutable state. External callers — SetModel/SetReasoningEffort,
-	// Steer/Enqueue/DrainAsSteer, Snapshot/State/DetailedStatus, and Close —
+	// Steer, the client-mutation queue handlers, Snapshot/State/DetailedStatus, and Close —
 	// run on other goroutines and race it, so the primitives below guard the
 	// shared fields. Several collaborators carry their OWN locks and are NOT
 	// covered by mu: contextMgr (contextmgr.Manager.mu), reg (tool.Registry.mu),
@@ -295,7 +294,7 @@ type Session struct {
 	//   env so the two never observe a torn intermediate state), the mutable
 	//   cfg knobs (ReasoningEffort, command timeouts, MaxToolRoundsPerInput),
 	//   cachedSystemPrompt, cachedToolDefs, the comm communicate-result,
-	//   steeringQueue, activeProvenance, followups, inputQueue,
+	//   steeringQueue, activeProvenance, inputQueue,
 	//   loopDetectionCount, the task* reminder counters, depth, the goalInTurn
 	//   flag and kickFunc callback, the naming name-state, envTracker,
 	//   envContextState, currentRoundRecorder, salvagedTurnRound, and the worktree
@@ -488,7 +487,6 @@ type Session struct {
 	// mu.
 	steeringParked   bool
 	visionTurnOwners []*struct{ _ byte }
-	followups        []string
 
 	// activeProvenance is the causal provenance carried by the input currently
 	// being processed. It is stamped onto every event the turn emits, reset to
@@ -509,7 +507,7 @@ type Session struct {
 	// composer can queue image-bearing messages alongside text.
 	inputQueue []queuedInput
 	// queueEventsMu makes an inputQueue mutation and its EventQueueChanged emit
-	// atomic to external observers (Enqueue/DrainAsSteer/pop/pushQueueHead).
+	// atomic to external observers (the client-mutation queue handlers/pop/pushQueueHead).
 	// LOCK ORDER: queueEventsMu > mu.
 	queueEventsMu sync.Mutex
 	// publishedQueueRevision is guarded by queueEventsMu and prevents a late
@@ -1622,7 +1620,7 @@ func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.
 // unrepresentableHistoryKinds), or when the target model fails live
 // membership validation (see validateModelSwitchMembership). On a successful
 // switch, cfg.ModelFallbacks entries that no longer validate against the new
-// profile are dropped; see DroppedModelFallbacksFromLastSwitch.
+// profile are dropped and reported in the model-switch marker.
 func (s *Session) SetModel(model string) error {
 	release, admissionErr := s.beginRetirementMutation("admission")
 	if admissionErr != nil {
@@ -1910,16 +1908,6 @@ func buildModelSwitchMarkerText(p modelSwitchMarkerParams) string {
 		lines = append(lines, fmt.Sprintf("Warning: dropped model fallbacks no longer valid for %s: %s", p.nextProfile.ID(), strings.Join(p.droppedFallbacks, ", ")))
 	}
 	return strings.Join(lines, "\n")
-}
-
-// DroppedModelFallbacksFromLastSwitch returns the cfg.ModelFallbacks entries
-// dropped by the most recent SetModel call's post-switch revalidation (nil if
-// none were dropped, or no switch has occurred yet). A later marker (Task 5)
-// surfaces this as a warning line; this method only exposes the names.
-func (s *Session) DroppedModelFallbacksFromLastSwitch() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.lastDroppedModelFallbacks
 }
 
 // Rename sets a user-chosen session title. It records NameSource="user" so the

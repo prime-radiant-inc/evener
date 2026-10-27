@@ -180,14 +180,11 @@ func TestHubRPCSubscribedPastReadReceivesIndependentResume(t *testing.T) {
 	workingDir := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		appserver.Subscribe(ctx, sessionID)
+		appserver.SubscribeWithAdmission(ctx, sessionID, false)
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -218,17 +215,8 @@ func TestHubRPCSubscribedPastReadReceivesIndependentResume(t *testing.T) {
 	roster := hubcore.NewRoster(runDir, nil)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	reader := dialHubRPC(t, hub)
-	defer reader.Close()
-	if _, err := reader.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	client := dialHubRPCInitialized(t, hub)
+	reader := dialHubRPCInitialized(t, hub)
 	saved, err := reader.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, Subscribe: true})
 	if err != nil || len(saved.Thread.Turns) != 2 || saved.BootGeneration != appwire.DaemonlessBootGeneration {
 		t.Fatalf("saved history=%+v err=%v", saved, err)
@@ -276,10 +264,7 @@ func TestHubRPCRetainedReadKeepsCapturedCandidate(t *testing.T) {
 	oldWorkingDir := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-a-0000000000")
 	id := buildRPCParentSessionWithWorkingDir(t, stateDir, oldWorkingDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
 	newWorkingDir := t.TempDir()
@@ -293,11 +278,7 @@ func TestHubRPCRetainedReadKeepsCapturedCandidate(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	reader := dialHubRPC(t, hub)
-	defer reader.Close()
-	if _, err := reader.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	reader := dialHubRPCInitialized(t, hub)
 	response, err := reader.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + id, Subscribe: true, IncludeTurns: true})
 	if err != nil {
 		t.Fatal(err)
@@ -316,11 +297,7 @@ func TestHubRPCUnknownRetainedTargetDoesNotSubscribe(t *testing.T) {
 	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir()}, registry)
 	hub := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	_, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:missing", Subscribe: true})
 	if err == nil || !strings.Contains(err.Error(), "missing source session") {
 		t.Fatalf("unknown target error=%v", err)

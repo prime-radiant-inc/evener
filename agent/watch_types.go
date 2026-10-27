@@ -195,9 +195,8 @@ type watchKey struct {
 }
 
 type watchConfig struct {
-	// id is a stable per-session handle for this watch, assigned at install and
-	// preserved across idempotent re-configure; a replacement gets a fresh id.
-	id                 string
+	// watchID is a stable per-session handle for this watch, assigned at install
+	// and preserved across idempotent re-configure; a replacement gets a fresh id.
 	watchID            string
 	configHash         string
 	sourcePublic       string

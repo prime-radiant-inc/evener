@@ -4,7 +4,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { AnyNotification } from "@evener/appwire-client";
 import { act } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { seenMarkers } from "../board/nativeBoardMemory";
 import { renderHook, settleMicrotasks } from "../renderNative.testkit";
 import { othersNeedingYou } from "./fleetOrder";

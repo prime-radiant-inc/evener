@@ -197,7 +197,7 @@ func (s *session) stopInFlightRound(ctx context.Context) {
 // compact rewrites this session's conversation the way evener's context
 // compaction does: the older turns are folded into a user-role checkpoint and
 // the most recent messages are kept verbatim
-// (agent/internal/contextmgr/context_manager.go, PreserveRecentTurns).
+// (agent/internal/contextmgr/manager.go, PreserveRecentTurns).
 //
 // It keeps the exact shape measured against a live hub + daemon after a
 // thread/compact/start: system prompt, a "[CONTEXT SUMMARY]" user message,

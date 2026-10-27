@@ -814,15 +814,16 @@ func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
 // and all, with every record it makes already lost. The refusal has to stand in
 // front of every turn, not only the first.
 //
-// A follow-up is the shape that reaches the model: its user turn is recorded
-// through the buffered door (session_lifecycle.go's appendTurn), which warns and
-// continues. A drained queue message is claimed durably first ("append claimed
-// user input"), so that path already refuses ahead of the model on its own.
+// A pending job notification is the shape that reaches the model: its turn is
+// recorded through the buffered door (session_lifecycle.go's appendTurn), which
+// warns and continues. A drained queue message is claimed durably first
+// ("append claimed user input"), so that path already refuses ahead of the model
+// on its own.
 func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
 	t.Parallel()
 	var requests atomic.Int32
 	// Three: the turn that emits the environment, the turn whose own record
-	// poisons the writer, and the follow-up that must never run.
+	// poisons the writer, and the notification turn that must never run.
 	steps := countingFinalResponses(&requests, 3)
 	sess := newTestSessionForEnvctx(t, withSteps(steps...))
 	sendOneUserInput(t, sess, "first")
@@ -839,7 +840,7 @@ func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
 		armEnvironmentPartialWriteAfter(fs, 2)
 		return agenttest.FinalResponse("ok")
 	}
-	sess.FollowUp("runs behind the poisoning")
+	sess.enqueueJobNotification(watchNotification("job_behind_poisoning", "output_match: done"))
 	drainPendingEvents(sess)
 
 	_, err := sess.ProcessInput(t.Context(), "poisons mid-turn", nil)
@@ -847,12 +848,15 @@ func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
 		t.Fatalf("turn behind the poisoning = %v, want an error wrapping transcript.ErrWriterPoisoned", err)
 	}
 	if got := requests.Load(); got != 2 {
-		t.Fatalf("model requests = %d, want the follow-up never to have run", got)
+		t.Fatalf("model requests = %d, want the notification turn never to have run", got)
 	}
-	// A turn ran and nothing is left waiting, so this is the shape where the
-	// session really is idle and the emission says idle.
-	if end := assertRefusalEndedTheInput(t, sess, drainPendingEvents(sess)); end.State != string(SessionIdle) {
-		t.Fatalf("session-end state = %q, want the %q a settled turn with nothing pending leaves", end.State, SessionIdle)
+	if got := sess.peekNotifications(); got != 1 {
+		t.Fatalf("pending notifications after the refusal = %d, want the one still waiting", got)
+	}
+	// The notification the refusal kept is work still pending, so the session is
+	// not idle and the emission must not claim it is.
+	if end := assertRefusalEndedTheInput(t, sess, drainPendingEvents(sess)); end.State != string(SessionProcessing) {
+		t.Fatalf("session-end state = %q, want the %q a still-pending notification leaves", end.State, SessionProcessing)
 	}
 }
 

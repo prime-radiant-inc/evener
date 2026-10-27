@@ -372,14 +372,55 @@ func auditFixture(t *testing.T) (base, tripSID, healthySID string) {
 	return base, tripSID, healthySID
 }
 
-func TestRunAudit_DedupAndSummary(t *testing.T) {
-	base, tripSID, healthySID := auditFixture(t)
-	rb := mustParseFixtureRunbook(t)
-
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{tripSID, healthySID}})
+// runFixtureAudit parses the fixture runbook and audits base with opts,
+// failing the test on any audit error.
+func runFixtureAudit(t *testing.T, base string, opts AuditOpts) AuditResult {
+	t.Helper()
+	res, err := RunAudit(base, mustParseFixtureRunbook(t), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return res
+}
+
+// runTimeoutFinding returns the fixture runbook's run-timeout Finding — the
+// one check every seeded session trips — failing the test when it is absent.
+func runTimeoutFinding(t *testing.T, res AuditResult) *Finding {
+	t.Helper()
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			return &res.Findings[i]
+		}
+	}
+	t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	return nil
+}
+
+// writeDuplicateSIDAuditSessions seeds the same session id, tripping the
+// fixture's run-timeout check, into two named project buckets.
+func writeDuplicateSIDAuditSessions(t *testing.T, base, nameA, nameB, sid string) {
+	t.Helper()
+	for _, name := range []string{nameA, nameB} {
+		writeAuditSession(t, stateHomeBucket(base, name), sid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sid))
+	}
+}
+
+// seedRunTimeoutSessions writes n distinct sessions that each trip the
+// fixture runbook's run-timeout check into bucket, returning their sids.
+func seedRunTimeoutSessions(t *testing.T, bucket string, n int) []string {
+	t.Helper()
+	sids := make([]string, n)
+	for i := range sids {
+		sids[i] = newSessionsTestSID(t)
+		writeAuditSession(t, bucket, sids[i], oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sids[i]))
+	}
+	return sids
+}
+
+func TestRunAudit_DedupAndSummary(t *testing.T) {
+	base, tripSID, healthySID := auditFixture(t)
+
+	res := runFixtureAudit(t, base, AuditOpts{Sessions: []string{tripSID, healthySID}})
 	if res.SessionsChecked != 2 {
 		t.Fatalf("SessionsChecked = %d, want 2", res.SessionsChecked)
 	}
@@ -421,11 +462,7 @@ func TestRunAudit_DedupAndSummary(t *testing.T) {
 
 func TestRunAudit_HealthySessionEmitsZeroFindings(t *testing.T) {
 	base, _, healthySID := auditFixture(t)
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{healthySID}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Sessions: []string{healthySID}})
 	if len(res.Findings) != 0 {
 		t.Errorf("Findings = %+v, want none — a healthy run emits zero findings", res.Findings)
 	}
@@ -442,11 +479,7 @@ func TestRunAudit_DedupAcrossMultipleSessions(t *testing.T) {
 	thirdSID := newSessionsTestSID(t)
 	writeAuditSession(t, bucket, thirdSID, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(thirdSID))
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{tripSID, healthySID, thirdSID}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Sessions: []string{tripSID, healthySID, thirdSID}})
 	if res.SessionsChecked != 3 {
 		t.Fatalf("SessionsChecked = %d, want 3", res.SessionsChecked)
 	}
@@ -590,11 +623,7 @@ func TestRunAudit_APIHealthMetricsAreAddressable(t *testing.T) {
 
 func TestRunAudit_UnreadableExplicitSessionSurfacedNotSkipped(t *testing.T) {
 	base, tripSID, _ := auditFixture(t)
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{tripSID, "02wMz5TxvEMoJEDTDGOTix"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Sessions: []string{tripSID, "02wMz5TxvEMoJEDTDGOTix"}})
 	if len(res.Unreadable) != 1 {
 		t.Fatalf("Unreadable = %+v, want 1 (the nonexistent session, never silently dropped)", res.Unreadable)
 	}
@@ -614,11 +643,7 @@ func TestRunAudit_SinceSurfacesSweepUnreadable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	if len(res.Unreadable) != 1 || res.Unreadable[0].SessionID != sidA {
 		t.Fatalf("Unreadable = %+v, want sidA listed (the sweep's unreadable session, surfaced the same way `sessions` surfaces it)", res.Unreadable)
 	}
@@ -646,11 +671,7 @@ func TestRunAudit_SinceAuditsLegacyNamedBuckets(t *testing.T) {
 	writeSessionsFixtureSession(t, legacyBucket, sidA,
 		transcript.Header{CreatedAt: time.Now(), Model: "m"}, nil, schema.SessionMeta{Model: "m"}, nil, time.Now())
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	if res.SessionsChecked != 1 {
 		t.Fatalf("SessionsChecked = %d, want 1 — the legacy-named bucket's session must be audited", res.SessionsChecked)
 	}
@@ -684,10 +705,7 @@ func TestRunAudit_LegacyBucketEvidenceNamesSessions(t *testing.T) {
 	writeAuditSession(t, legacyBucket, sidB, fourIdenticalFailingShellTurns(), fiveRunTimeoutJobsFor(sidB))
 
 	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	if res.SessionsChecked != 2 {
 		t.Fatalf("SessionsChecked = %d, want 2", res.SessionsChecked)
 	}
@@ -763,10 +781,7 @@ func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
 	}
 
 	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	// Base-immune: hash1/hash2 are ValidateProjectID-valid, so refFor
 	// already emitted proj: refs before FU2 — both rows always audited
 	// here. The test guards that followSelector keeps routing them via
@@ -784,15 +799,7 @@ func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
 	}
 	// The run-timeout check trips in both; evidence must name each by its
 	// bucket-qualified proj: ref, not collapse to one bare-id entry.
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding: %+v", res.Findings)
-	}
+	runTimeout := runTimeoutFinding(t, res)
 	if len(runTimeout.Evidence.SessionRefs) != 2 {
 		t.Fatalf("run-timeout finding SessionRefs = %v, want 2 (one proj: ref per bucket)", runTimeout.Evidence.SessionRefs)
 	}
@@ -830,16 +837,9 @@ func TestRunAudit_DuplicateSIDAcrossBucketsBareIDFallback(t *testing.T) {
 	base := t.TempDir()
 	// Both names fail safeTokenForRepro: backslash is a path separator, so
 	// followSelector falls back to the bare session id.
-	bucketA := stateHomeBucket(base, "back\\slash-a")
-	bucketB := stateHomeBucket(base, "back\\slash-b")
-	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
-	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeDuplicateSIDAuditSessions(t, base, "back\\slash-a", "back\\slash-b", sidA)
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	// The bare id is ambiguous across the two buckets: both rows Unreadable.
 	if res.SessionsChecked != 0 {
 		t.Fatalf("SessionsChecked = %d, want 0 — the bare id is ambiguous across two safeTokenForRepro-unsafe buckets, so both rows must land Unreadable", res.SessionsChecked)
@@ -929,11 +929,7 @@ func TestRunAudit_ColonNamedBucketRoundTripsViaProjRef(t *testing.T) {
 	bucket := stateHomeBucket(base, "a:b")
 	writeAuditSession(t, bucket, sidA, fourIdenticalFailingShellTurns(), fiveRunTimeoutJobsFor(sidA))
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	if res.SessionsChecked != 1 {
 		t.Fatalf("SessionsChecked = %d, want 1", res.SessionsChecked)
 	}
@@ -980,16 +976,10 @@ func TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs(t *testing.T) {
 	base := t.TempDir()
 	// Hex-style legacy bucket names: shell- and comma-safe, but fail
 	// ValidateProjectID (no readable-<10 base62> structure).
-	bucketA := stateHomeBucket(base, "0123456789abcdef")
-	bucketB := stateHomeBucket(base, "fedcba9876543210")
-	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
-	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeDuplicateSIDAuditSessions(t, base, "0123456789abcdef", "fedcba9876543210", sidA)
 
 	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	// Both rows must audit — the hex names are safe enough for proj: refs.
 	if res.SessionsChecked != 2 {
 		t.Fatalf("SessionsChecked = %d, want 2 — hex-named legacy buckets should both audit via proj: refs", res.SessionsChecked)
@@ -998,15 +988,7 @@ func TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs(t *testing.T) {
 		t.Fatalf("Unreadable = %+v, want none", res.Unreadable)
 	}
 	// Evidence must name each by its bucket-qualified proj: ref.
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding: %+v", res.Findings)
-	}
+	runTimeout := runTimeoutFinding(t, res)
 	// SessionRefs carries the honest session identifier: the bare session
 	// id (the proj:<hex>:<sid> form is rejected by agent-side read_transcript
 	// because ValidateProjectID fails for hex names — finding 3). The bare
@@ -1068,12 +1050,8 @@ func TestRunAudit_ExplicitProjSelectorForLegacyBucket(t *testing.T) {
 	bucket2 := stateHomeBucket(base, "fedcba9876543210")
 	writeAuditSession(t, bucket2, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
 
-	rb := mustParseFixtureRunbook(t)
 	sel := "proj:0123456789abcdef:" + sidA
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Sessions: []string{sel}})
 	// The explicitly selected session must audit — the selector already
 	// resolved via Locate, so RunAudit must not discard it.
 	if res.SessionsChecked != 1 {
@@ -1086,15 +1064,7 @@ func TestRunAudit_ExplicitProjSelectorForLegacyBucket(t *testing.T) {
 	if len(res.Findings) == 0 {
 		t.Fatalf("no findings — the run-timeout check should trip")
 	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding: %+v", res.Findings)
-	}
+	runTimeout := runTimeoutFinding(t, res)
 	// SessionRefs carries the honest bare sid (the proj:<hex>:<sid>
 	// form is rejected by agent-side read_transcript — finding 3).
 	if len(runTimeout.Evidence.SessionRefs) != 1 || runTimeout.Evidence.SessionRefs[0] != sidA {
@@ -1143,15 +1113,7 @@ func TestRunAudit_ExplicitUnsafeSelectorEmitsSafeEvidence(t *testing.T) {
 			if len(res.Findings) == 0 {
 				t.Fatalf("no findings — the run-timeout check should trip")
 			}
-			var runTimeout *Finding
-			for i := range res.Findings {
-				if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-					runTimeout = &res.Findings[i]
-				}
-			}
-			if runTimeout == nil {
-				t.Fatalf("no run-timeout finding: %+v", res.Findings)
-			}
+			runTimeout := runTimeoutFinding(t, res)
 			dc := runTimeout.Evidence.DoctorCommand
 			prefix := "evener doctor audit --runbook fixture-runbook --sessions "
 			if !strings.HasPrefix(dc, prefix) {
@@ -1193,21 +1155,14 @@ func TestRunAudit_ExplicitAmbiguousUnsafeBucketOmitsNonReproducingToken(t *testi
 	// Locate accept proj:<name>:<sid>) but fail safeTokenForRepro (space
 	// word-breaks in a shell line), both containing the same session id.
 	// The bare sid is ambiguous across the two buckets.
-	bucketA := stateHomeBucket(base, "has space-a")
-	bucketB := stateHomeBucket(base, "has space-b")
-	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
-	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeDuplicateSIDAuditSessions(t, base, "has space-a", "has space-b", sidA)
 
-	rb := mustParseFixtureRunbook(t)
 	// Explicitly select the session in bucketA via proj:<unsafe-name>:<sid>.
 	// parseSelector accepts the space-containing name via projectTokenOK
 	// (space is not a path separator or NUL), and Locate resolves it via
 	// locateInBucket.
 	sel := "proj:" + "has space-a" + ":" + sidA
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Sessions: []string{sel}})
 	// The explicitly selected session must be audited (reading via the
 	// user's selector is honored).
 	if res.SessionsChecked != 1 {
@@ -1219,15 +1174,7 @@ func TestRunAudit_ExplicitAmbiguousUnsafeBucketOmitsNonReproducingToken(t *testi
 	if len(res.Findings) == 0 {
 		t.Fatal("no findings — the run-timeout check should trip")
 	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding: %+v", res.Findings)
-	}
+	runTimeout := runTimeoutFinding(t, res)
 	dc := runTimeout.Evidence.DoctorCommand
 
 	// The DoctorCommand must not carry a token that cannot reproduce the
@@ -1268,32 +1215,17 @@ func TestRunAudit_AllNonReproducibleOmitsEmptySessionsFlag(t *testing.T) {
 	base := t.TempDir()
 	// Two unsafe buckets with the same sid — explicit selection of one
 	// makes it non-reproducible (bare sid ambiguous across buckets).
-	bucketA := stateHomeBucket(base, "has space-a")
-	bucketB := stateHomeBucket(base, "has space-b")
-	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
-	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeDuplicateSIDAuditSessions(t, base, "has space-a", "has space-b", sidA)
 
-	rb := mustParseFixtureRunbook(t)
 	sel := "proj:has space-a:" + sidA
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Sessions: []string{sel}})
 	if res.SessionsChecked != 1 {
 		t.Fatalf("SessionsChecked = %d, want 1 — the explicitly selected session must be audited", res.SessionsChecked)
 	}
 	if len(res.Findings) == 0 {
 		t.Fatal("no findings — the run-timeout check should trip")
 	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding: %+v", res.Findings)
-	}
+	runTimeout := runTimeoutFinding(t, res)
 	dc := runTimeout.Evidence.DoctorCommand
 	// When all sessions are non-reproducible, DoctorCommand must be empty
 	// (round 9 finding 2: no # shell comment, which cmd.exe ignores). When
@@ -1328,34 +1260,19 @@ func TestRunAudit_DistinctSessionsSharingSIDAcrossUnsafeBucketsEachCounted(t *te
 	base := t.TempDir()
 	// Two unsafe buckets with the same sid: both explicitly selected, both
 	// non-reproducible (bare sid ambiguous across the two buckets).
-	bucketA := stateHomeBucket(base, "has space-a")
-	bucketB := stateHomeBucket(base, "has space-b")
-	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
-	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeDuplicateSIDAuditSessions(t, base, "has space-a", "has space-b", sidA)
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{
+	res := runFixtureAudit(t, base, AuditOpts{Sessions: []string{
 		"proj:has space-a:" + sidA,
 		"proj:has space-b:" + sidA,
 	}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if res.SessionsChecked != 2 {
 		t.Fatalf("SessionsChecked = %d, want 2 — both explicitly selected sessions must be audited", res.SessionsChecked)
 	}
 	if len(res.Findings) == 0 {
 		t.Fatal("no findings — the run-timeout check should trip")
 	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding: %+v", res.Findings)
-	}
+	runTimeout := runTimeoutFinding(t, res)
 	// The summary count must reflect 2 sessions, not 1 (appendUniqueString
 	// collapses the shared bare SID, but both sessions were audited).
 	for _, s := range res.Summary {
@@ -1387,28 +1304,13 @@ func TestRunAudit_SessionRefsHonestFormForNonCanonicalBuckets(t *testing.T) {
 	base := t.TempDir()
 	// Hex-style legacy bucket names: shell- and comma-safe, but fail
 	// ValidateProjectID (no readable-<10 base62> structure).
-	bucketA := stateHomeBucket(base, "0123456789abcdef")
-	bucketB := stateHomeBucket(base, "fedcba9876543210")
-	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
-	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeDuplicateSIDAuditSessions(t, base, "0123456789abcdef", "fedcba9876543210", sidA)
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	if res.SessionsChecked != 2 {
 		t.Fatalf("SessionsChecked = %d, want 2 — hex-named legacy buckets should both audit via proj: refs", res.SessionsChecked)
 	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding: %+v", res.Findings)
-	}
+	runTimeout := runTimeoutFinding(t, res)
 	// SessionRefs must carry the honest session identifier: the bare
 	// session id. The proj:<hex>:<sid> form is rejected by the agent's
 	// transcript tools (ValidateProjectID fails for hex names), so it must
@@ -1455,29 +1357,13 @@ func TestRunAudit_DoctorCommandCappedAtEvidenceSessionRefCap(t *testing.T) {
 	bucket := stateHomeBucket(base, hash1)
 	const extra = 5
 	total := evidenceSessionRefCap + extra
-	sids := make([]string, total)
-	for i := range sids {
-		sids[i] = newSessionsTestSID(t)
-		writeAuditSession(t, bucket, sids[i], oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sids[i]))
-	}
+	seedRunTimeoutSessions(t, bucket, total)
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	if res.SessionsChecked != total {
 		t.Fatalf("SessionsChecked = %d, want %d", res.SessionsChecked, total)
 	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding: %+v", res.Findings)
-	}
+	runTimeout := runTimeoutFinding(t, res)
 	dc := runTimeout.Evidence.DoctorCommand
 	// DoctorCommand is a pure runnable command (round 9 finding 2: no #
 	// shell comment). Extract the --sessions value directly.
@@ -1513,11 +1399,7 @@ func TestRunAudit_SessionsAndSinceMutuallyExclusive(t *testing.T) {
 // not this package's usual snake_case.
 func TestFinding_JSONContractShape(t *testing.T) {
 	base, tripSID, healthySID := auditFixture(t)
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{tripSID, healthySID}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Sessions: []string{tripSID, healthySID}})
 	if len(res.Findings) == 0 {
 		t.Fatal("no findings to check shape of")
 	}
@@ -1549,11 +1431,7 @@ func TestFinding_JSONContractShape(t *testing.T) {
 
 func TestRenderAudit_SummaryTableFindingsManualUnreadable(t *testing.T) {
 	base, tripSID, healthySID := auditFixture(t)
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{tripSID, healthySID, "02wMz5TxvEMoJEDTDGOTix"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Sessions: []string{tripSID, healthySID, "02wMz5TxvEMoJEDTDGOTix"}})
 	out := RenderAudit(res)
 	for _, want := range []string{
 		"fixture-runbook", "sessions_checked=2", "findings=2",
@@ -1570,11 +1448,7 @@ func TestRenderAudit_SummaryTableFindingsManualUnreadable(t *testing.T) {
 
 func TestRenderAudit_HealthyRunSaysSo(t *testing.T) {
 	base, _, healthySID := auditFixture(t)
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{healthySID}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Sessions: []string{healthySID}})
 	out := RenderAudit(res)
 	if !strings.Contains(out, "healthy") {
 		t.Errorf("rendered audit for a healthy session should say so:\n%s", out)
@@ -1596,10 +1470,7 @@ func TestRunAudit_R9F1_SinceUnsafeBucketCollisionAudited(t *testing.T) {
 	// fail safeTokenForRepro ($ is a shell metacharacter), so followSelector
 	// falls back to the bare session id. The bare id is ambiguous across
 	// the two buckets, so both rows currently land Unreadable.
-	bucketA := stateHomeBucket(base, "dollar$bucket-a")
-	bucketB := stateHomeBucket(base, "dollar$bucket-b")
-	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
-	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeDuplicateSIDAuditSessions(t, base, "dollar$bucket-a", "dollar$bucket-b", sidA)
 
 	// Verify Locate accepts the bucket-qualified form for these names.
 	if _, err := Locate(base, "proj:dollar$bucket-a:"+sidA); err != nil {
@@ -1609,11 +1480,7 @@ func TestRunAudit_R9F1_SinceUnsafeBucketCollisionAudited(t *testing.T) {
 		t.Fatalf("Locate should accept proj:dollar$bucket-b:%s but got: %v", sidA, err)
 	}
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	// After the fix, both sessions must be audited, not Unreadable.
 	if res.SessionsChecked != 2 {
 		t.Fatalf("SessionsChecked = %d, want 2 — both colliding unsafe-bucket sessions must be audited via the bucket-qualified internal read selector (round 9 finding 1)", res.SessionsChecked)
@@ -1633,32 +1500,17 @@ func TestRunAudit_R9F2_DoctorCommandRunnableOrEmpty(t *testing.T) {
 	base := t.TempDir()
 	// Two unsafe buckets with the same sid — explicit selection makes the
 	// bare sid ambiguous, so all sessions are non-reproducible.
-	bucketA := stateHomeBucket(base, "has space-a")
-	bucketB := stateHomeBucket(base, "has space-b")
-	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
-	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeDuplicateSIDAuditSessions(t, base, "has space-a", "has space-b", sidA)
 
-	rb := mustParseFixtureRunbook(t)
 	sel := "proj:has space-a:" + sidA
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Sessions: []string{sel}})
 	if res.SessionsChecked != 1 {
 		t.Fatalf("SessionsChecked = %d, want 1", res.SessionsChecked)
 	}
 	if len(res.Findings) == 0 {
 		t.Fatal("no findings — the run-timeout check should trip")
 	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding: %+v", res.Findings)
-	}
+	runTimeout := runTimeoutFinding(t, res)
 	dc := runTimeout.Evidence.DoctorCommand
 	// DoctorCommand must NOT start with # — cmd.exe does not treat # as a
 	// comment and would attempt to execute it.
@@ -1691,23 +1543,11 @@ func TestRunAudit_R9F2_DoctorCommandNoShellCommentInRunnable(t *testing.T) {
 	writeAuditSession(t, bucketSafe, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
 	writeAuditSession(t, bucketUnsafe, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	if res.SessionsChecked != 2 {
 		t.Fatalf("SessionsChecked = %d, want 2", res.SessionsChecked)
 	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding: %+v", res.Findings)
-	}
+	runTimeout := runTimeoutFinding(t, res)
 	dc := runTimeout.Evidence.DoctorCommand
 	// DoctorCommand must be a pure runnable command with no # comment.
 	if strings.Contains(dc, "#") {
@@ -1731,29 +1571,13 @@ func TestRunAudit_R9F3_DescriptionEmitsCapMarker(t *testing.T) {
 	bucket := stateHomeBucket(base, hash1)
 	const extra = 5
 	total := evidenceSessionRefCap + extra
-	sids := make([]string, total)
-	for i := range sids {
-		sids[i] = newSessionsTestSID(t)
-		writeAuditSession(t, bucket, sids[i], oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sids[i]))
-	}
+	seedRunTimeoutSessions(t, bucket, total)
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	if res.SessionsChecked != total {
 		t.Fatalf("SessionsChecked = %d, want %d", res.SessionsChecked, total)
 	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding: %+v", res.Findings)
-	}
+	runTimeout := runTimeoutFinding(t, res)
 	// The Description must carry a cut marker when the session count exceeds
 	// the cap. Currently the marker is unreachable because SessionRefs is
 	// truncated before joinSessionRefs.
@@ -1814,17 +1638,10 @@ func TestRunAudit_R10F2_EmptyDoctorCommandAlwaysSerialized(t *testing.T) {
 	base := t.TempDir()
 	// Two unsafe buckets with the same sid: all sessions non-reproducible,
 	// so DoctorCommand is empty.
-	bucketA := stateHomeBucket(base, "has space-a")
-	bucketB := stateHomeBucket(base, "has space-b")
-	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
-	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeDuplicateSIDAuditSessions(t, base, "has space-a", "has space-b", sidA)
 
-	rb := mustParseFixtureRunbook(t)
 	sel := "proj:has space-a:" + sidA
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Sessions: []string{sel}})
 	if len(res.Findings) == 0 {
 		t.Fatal("no findings")
 	}
@@ -1864,10 +1681,7 @@ func TestRunAudit_R10F3_DescriptionSharedBudgetForReproAndNonRepro(t *testing.T)
 	// followSelector emits proj:hash1:<sid>, all resolve via Locate.
 	reproBucket := stateHomeBucket(base, hash1)
 	const reproCount = 150
-	for range reproCount {
-		s := newSessionsTestSID(t)
-		writeAuditSession(t, reproBucket, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
-	}
+	seedRunTimeoutSessions(t, reproBucket, reproCount)
 
 	// 100 non-reproducible sessions across two unsafe buckets sharing
 	// the same sid: followSelector falls back to bare sid, ambiguous
@@ -1882,24 +1696,12 @@ func TestRunAudit_R10F3_DescriptionSharedBudgetForReproAndNonRepro(t *testing.T)
 		writeAuditSession(t, nonReproBucketB, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
 	}
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	totalSessions := reproCount + nonReproPairs*2
 	if res.SessionsChecked != totalSessions {
 		t.Fatalf("SessionsChecked = %d, want %d", res.SessionsChecked, totalSessions)
 	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding")
-	}
+	runTimeout := runTimeoutFinding(t, res)
 	desc := runTimeout.Description
 	// The Description must not exceed a single 200-entry budget for
 	// session references. Currently joinSessionRefs emits up to 200
@@ -1952,23 +1754,11 @@ func TestRunAudit_R11F1_NoSpuriousCapMarkerForAllNonRepro(t *testing.T) {
 		_ = i
 	}
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	if res.SessionsChecked != 6 {
 		t.Fatalf("SessionsChecked = %d, want 6", res.SessionsChecked)
 	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding")
-	}
+	runTimeout := runTimeoutFinding(t, res)
 	desc := runTimeout.Description
 	// The Description must NOT contain a spurious ref-portion cap marker
 	// ("…and N more") when all sessions are non-reproducible. Those refs
@@ -2008,24 +1798,12 @@ func TestRunAudit_R11F3_CommandSideOmissionWithDedupedSessionRefs(t *testing.T) 
 		writeAuditSession(t, bucketB, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
 	}
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	const totalSessions = sids * 2
 	if res.SessionsChecked != totalSessions {
 		t.Fatalf("SessionsChecked = %d, want %d", res.SessionsChecked, totalSessions)
 	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding")
-	}
+	runTimeout := runTimeoutFinding(t, res)
 	desc := runTimeout.Description
 	// The reproducible-over-cap omission is disclosed once by the
 	// reproducible-portion cap marker (joinSessionRefs' "…and N more").
@@ -2083,23 +1861,11 @@ func TestRunAudit_R12F1_NoCollidingBareSidInSessionRefs(t *testing.T) {
 	// only the canonical session (enumerateBuckets skips hex buckets).
 	writeAuditSession(t, canonicalBucket, sid, oneCleanReadFileTurns(), nil)
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
 	if res.SessionsChecked != 2 {
 		t.Fatalf("SessionsChecked = %d, want 2", res.SessionsChecked)
 	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding")
-	}
+	runTimeout := runTimeoutFinding(t, res)
 
 	// The colliding bare sid must NOT appear in SessionRefs. The
 	// agent-side resolver would silently resolve it to the wrong
@@ -2136,10 +1902,7 @@ func TestRunAudit_R12F2_NoMalformedNonReproClauseAtZeroBudget(t *testing.T) {
 	// 200 reproducible sessions in a canonical bucket (fill the cap).
 	reproBucket := stateHomeBucket(base, hash1)
 	const reproCount = 200
-	for range reproCount {
-		s := newSessionsTestSID(t)
-		writeAuditSession(t, reproBucket, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
-	}
+	seedRunTimeoutSessions(t, reproBucket, reproCount)
 	// 2 non-reproducible sessions in unsafe buckets sharing one sid
 	// (bare sid ambiguous across the two unsafe buckets).
 	nonReproBucketA := stateHomeBucket(base, "has space-a")
@@ -2148,20 +1911,8 @@ func TestRunAudit_R12F2_NoMalformedNonReproClauseAtZeroBudget(t *testing.T) {
 	writeAuditSession(t, nonReproBucketA, nonReproSid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(nonReproSid))
 	writeAuditSession(t, nonReproBucketB, nonReproSid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(nonReproSid))
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding")
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
+	runTimeout := runTimeoutFinding(t, res)
 	desc := runTimeout.Description
 	// The non-reproducible portion must not contain a malformed clause
 	// with no session listed (empty list + trailing parenthetical).
@@ -2215,23 +1966,11 @@ func TestRunAudit_R13F2_ResolveBucketsErrorFailsClosed(t *testing.T) {
 	}
 	t.Cleanup(func() { globProjectBuckets = originalGlob })
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{"proj:0123456789abcdef:" + sid}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Sessions: []string{"proj:0123456789abcdef:" + sid}})
 	if res.SessionsChecked != 1 {
 		t.Fatalf("SessionsChecked = %d, want 1", res.SessionsChecked)
 	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding")
-	}
+	runTimeout := runTimeoutFinding(t, res)
 	// On resolveBuckets error, the bare sid must NOT appear in SessionRefs —
 	// fail closed. The error means we could not verify the sid is safe.
 	for _, ref := range runTimeout.Evidence.SessionRefs {
@@ -2306,25 +2045,10 @@ func TestRunAudit_R14F2_NoDoubleReportReproducibleOmission(t *testing.T) {
 	bucket := stateHomeBucket(base, hash1)
 	const extra = 1
 	total := evidenceSessionRefCap + extra
-	for range total {
-		s := newSessionsTestSID(t)
-		writeAuditSession(t, bucket, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
-	}
+	seedRunTimeoutSessions(t, bucket, total)
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding")
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
+	runTimeout := runTimeoutFinding(t, res)
 	desc := runTimeout.Description
 	// The omission MUST be disclosed (joinSessionRefs' "…and N more" marker).
 	if !strings.Contains(desc, "more") {
@@ -2354,23 +2078,11 @@ func TestRunAudit_SessionLocationsForNonReproducible(t *testing.T) {
 	writeAuditSession(t, bucketA, sid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sid))
 	writeAuditSession(t, bucketB, sid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sid))
 
-	rb := mustParseFixtureRunbook(t)
 	// The --since sweep resolves both sessions via readSelector (bucket-
 	// qualified), but the emission selector falls back to the bare sid, so
 	// both land as non-reproducible.
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding: %+v", res.Findings)
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
+	runTimeout := runTimeoutFinding(t, res)
 	// DoctorCommand must stay honest: nothing is reproducible.
 	if dc := runTimeout.Evidence.DoctorCommand; dc != "" {
 		t.Errorf("DoctorCommand = %q, want empty (all sessions non-reproducible)", dc)
@@ -2419,10 +2131,7 @@ func TestRunAudit_SessionLocationsShareNonReproBudget(t *testing.T) {
 	// 150 reproducible sessions fill most of the shared 200-slot budget.
 	reproBucket := stateHomeBucket(base, hash1)
 	const reproCount = 150
-	for range reproCount {
-		s := newSessionsTestSID(t)
-		writeAuditSession(t, reproBucket, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
-	}
+	seedRunTimeoutSessions(t, reproBucket, reproCount)
 	// 100 non-reproducible sessions (50 sids across two shell-unsafe buckets).
 	const nonReproPairs = 50
 	bucketA := stateHomeBucket(base, "has space-a")
@@ -2433,20 +2142,8 @@ func TestRunAudit_SessionLocationsShareNonReproBudget(t *testing.T) {
 		writeAuditSession(t, bucketB, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
 	}
 
-	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var runTimeout *Finding
-	for i := range res.Findings {
-		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
-			runTimeout = &res.Findings[i]
-		}
-	}
-	if runTimeout == nil {
-		t.Fatalf("no run-timeout finding")
-	}
+	res := runFixtureAudit(t, base, AuditOpts{Since: 24 * time.Hour})
+	runTimeout := runTimeoutFinding(t, res)
 	// The shared budget leaves evidenceSessionRefCap - reproCount slots for
 	// non-reproducible sessions; SessionLocations must list exactly those.
 	wantNonReproListed := evidenceSessionRefCap - reproCount

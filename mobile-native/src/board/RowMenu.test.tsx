@@ -16,7 +16,6 @@ import { FreshDot } from "../reader/FreshDot";
 const navigation = vi.hoisted(() => ({ goBack: vi.fn(), dispatch: vi.fn() }));
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => navigation,
 	usePreventRemove: () => {},

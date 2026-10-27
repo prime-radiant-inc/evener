@@ -405,7 +405,7 @@ func (s *WebServer) handleManifest(w http.ResponseWriter, r *http.Request) {
 }
 
 func localAppRef(threadID string) string {
-	return appwire.Ref{SourceID: "local", ThreadID: threadID}.String()
+	return appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: threadID}.String()
 }
 
 func appRefFromRouteID(id string) string {
@@ -420,12 +420,12 @@ func isLocalRouteID(id string) bool {
 	if err != nil {
 		return identifier.ValidateSessionID(id) == nil
 	}
-	return ref.SourceID == "local" && identifier.ValidateSessionID(ref.ThreadID) == nil
+	return ref.SourceID == appwire.LocalSourceID && identifier.ValidateSessionID(ref.ThreadID) == nil
 }
 
 func canonicalRouteID(id string) string {
 	ref, err := appwire.ParseRef(id)
-	if err != nil || ref.SourceID != "local" {
+	if err != nil || ref.SourceID != appwire.LocalSourceID {
 		return id
 	}
 	return ref.ThreadID

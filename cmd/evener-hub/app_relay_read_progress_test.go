@@ -364,7 +364,7 @@ func TestHubRelayRoutePublicationUnblocksPendingDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	replacement.ReplaceAppIdentity(identity.WithBootGeneration("1"), nil)
-	replacement.SetStatus(daemonserver.StatusInfo{SessionID: replacementID, State: "idle"})
+	seedDaemonStatus(replacement, daemonserver.StatusInfo{SessionID: replacementID, State: "idle"})
 	replacement.RecordDescendantAppEvent(replacementID, events.SessionEvent{Kind: events.EventSessionStart, SessionID: childID, Data: events.SessionStartData{}})
 	gateArmed, gateEntered, releaseGate := installRelayProgressGate(f.ctx, replacement)
 	replacementHTTP := httptest.NewServer(http.HandlerFunc(replacement.AppServer().ServeWebSocket))
@@ -583,7 +583,7 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 		t.Fatal(err)
 	}
 	daemon.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
-	daemon.SetStatus(daemonserver.StatusInfo{SessionID: rootID, State: "idle"})
+	seedDaemonStatus(daemon, daemonserver.StatusInfo{SessionID: rootID, State: "idle"})
 	daemon.RecordDescendantAppEvent(rootID, events.SessionEvent{
 		Kind: events.EventSessionStart, SessionID: childID, Data: events.SessionStartData{},
 	})

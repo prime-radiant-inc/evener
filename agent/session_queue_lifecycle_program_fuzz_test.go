@@ -111,11 +111,6 @@ func qlifRunProgram(t *testing.T, data []byte) string {
 			drained := s.drainSteering()
 			s.prependSteering(drained)
 			fmt.Fprintf(&trace, "d:%d;", len(drained))
-		case 6:
-			if err := s.FollowUp(text); err != nil {
-				t.Fatal(err)
-			}
-			fmt.Fprintf(&trace, "f:%q;", s.popFollowUp())
 		case 7:
 			preview := s.QueuePreview()
 			if len(preview) > 0 {

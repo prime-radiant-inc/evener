@@ -5,10 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
+
+	"primeradiant.com/evener/gittest"
 )
 
 // makeGitRunner builds a GitRunner rooted at repoRoot, wired directly to a
@@ -67,106 +68,6 @@ var predicateRepoTemplate struct {
 	err  error
 }
 
-type predicateGitRunner func(string, ...string) (string, error)
-
-type predicateMaintenanceProbe struct {
-	ready                chan struct{}
-	release              chan struct{}
-	exited               chan struct{}
-	publishedWhileActive bool
-	mutatorErr           error
-}
-
-func newPredicateMaintenanceProbe() *predicateMaintenanceProbe {
-	return &predicateMaintenanceProbe{
-		ready:   make(chan struct{}),
-		release: make(chan struct{}),
-		exited:  make(chan struct{}),
-	}
-}
-
-func predicateMaintenanceAutoEnabled(args []string) bool {
-	enabled := true
-	for i := 0; i < len(args); i++ {
-		var config string
-		switch {
-		case args[i] == "-c" && i+1 < len(args):
-			config = args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "-c"):
-			config = args[i][2:]
-		default:
-			continue
-		}
-		key, value, ok := strings.Cut(config, "=")
-		if !ok || !strings.EqualFold(strings.TrimSpace(key), "maintenance.auto") {
-			continue
-		}
-		switch strings.ToLower(strings.TrimSpace(value)) {
-		case "false", "0", "no", "off":
-			enabled = false
-		default:
-			enabled = true
-		}
-	}
-	return enabled
-}
-
-func predicateQuiescentCommitArgs(args []string) []string {
-	commit := slices.Index(args, "commit")
-	if commit < 0 {
-		return args
-	}
-	quiescent := make([]string, 0, len(args)+2)
-	quiescent = append(quiescent, args[:commit]...)
-	quiescent = append(quiescent, "-c", "maintenance.auto=false")
-	return append(quiescent, args[commit:]...)
-}
-
-func (p *predicateMaintenanceProbe) run(underlyingRunner predicateGitRunner) predicateGitRunner {
-	return func(dir string, args ...string) (string, error) {
-		commit := slices.Contains(args, "commit")
-		maintenanceAutoEnabled := commit && predicateMaintenanceAutoEnabled(args)
-		realArgs := args
-		if maintenanceAutoEnabled {
-			realArgs = predicateQuiescentCommitArgs(args)
-		}
-		out, err := underlyingRunner(dir, realArgs...)
-		if err != nil {
-			return out, err
-		}
-		if maintenanceAutoEnabled {
-			go func() {
-				lock := filepath.Join(dir, ".git", "objects", "maintenance.lock")
-				p.mutatorErr = os.WriteFile(lock, []byte("maintenance\n"), 0o644)
-				close(p.ready)
-				if p.mutatorErr != nil {
-					close(p.exited)
-					return
-				}
-				<-p.release
-				p.mutatorErr = os.Remove(lock)
-				close(p.exited)
-			}()
-			<-p.ready
-		}
-		return out, nil
-	}
-}
-
-func (p *predicateMaintenanceProbe) published() {
-	select {
-	case <-p.ready:
-		select {
-		case <-p.exited:
-		default:
-			p.publishedWhileActive = true
-		}
-		close(p.release)
-	default:
-	}
-}
-
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if predicateRepoTemplate.root != "" {
@@ -193,7 +94,7 @@ func initRepo(t *testing.T) (root, initialSHA string) {
 	return root, predicateRepoTemplate.sha
 }
 
-func buildPredicateRepoTemplate(run predicateGitRunner) (root, initialSHA string, err error) {
+func buildPredicateRepoTemplate(run gittest.Runner) (root, initialSHA string, err error) {
 	base, err := os.MkdirTemp("", "evener-worktree-predicate-template-*")
 	if err != nil {
 		return "", "", err
@@ -228,8 +129,8 @@ func buildPredicateRepoTemplate(run predicateGitRunner) (root, initialSHA string
 }
 
 func TestPredicateFixturePublishesAfterSeedMaintenance(t *testing.T) {
-	probe := newPredicateMaintenanceProbe()
-	root, _, err := buildPredicateRepoTemplate(probe.run(runGitRaw))
+	probe := gittest.NewMaintenanceProbe()
+	root, _, err := buildPredicateRepoTemplate(probe.Run(runGitRaw))
 	if root != "" {
 		dir := filepath.Dir(root)
 		t.Cleanup(func() {
@@ -246,84 +147,18 @@ func TestPredicateFixturePublishesAfterSeedMaintenance(t *testing.T) {
 	if err := os.CopyFS(destination, os.DirFS(root)); err != nil {
 		t.Fatalf("copy repo template: %v", err)
 	}
-	probe.published()
+	probe.Published()
 
 	select {
-	case <-probe.ready:
-		<-probe.exited
+	case <-probe.Ready:
+		<-probe.Exited
 	default:
 	}
-	if probe.mutatorErr != nil {
-		t.Fatalf("maintenance mutator: %v", probe.mutatorErr)
+	if probe.MutatorErr != nil {
+		t.Fatalf("maintenance mutator: %v", probe.MutatorErr)
 	}
-	if probe.publishedWhileActive {
+	if probe.PublishedWhileActive {
 		t.Fatal("fixture publication overlapped the post-commit maintenance mutator")
-	}
-}
-
-func TestPredicateMaintenanceProbeUsesEffectiveBoolean(t *testing.T) {
-	tests := []struct {
-		name   string
-		args   []string
-		active bool
-	}{
-		{name: "false", args: []string{"-c", "maintenance.auto=false", "commit"}},
-		{name: "zero", args: []string{"-c", "maintenance.auto=0", "commit"}},
-		{name: "no", args: []string{"-c", "maintenance.auto=no", "commit"}},
-		{name: "off", args: []string{"-c", "maintenance.auto=off", "commit"}},
-		{name: "case insensitive false", args: []string{"-c", "maintenance.auto=FaLsE", "commit"}},
-		{name: "last false", args: []string{"-c", "maintenance.auto=true", "-c", "maintenance.auto=0", "commit"}},
-		{name: "true", args: []string{"-c", "maintenance.auto=true", "commit"}, active: true},
-		{name: "last true", args: []string{"-c", "maintenance.auto=0", "-c", "maintenance.auto=on", "commit"}, active: true},
-		{name: "absent", args: []string{"commit"}, active: true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			probe := newPredicateMaintenanceProbe()
-			dir := t.TempDir()
-			if err := os.MkdirAll(filepath.Join(dir, ".git", "objects"), 0o755); err != nil {
-				t.Fatalf("mkdir objects: %v", err)
-			}
-			var gotArgs []string
-			wrapped := probe.run(func(_ string, args ...string) (string, error) {
-				gotArgs = slices.Clone(args)
-				return "", nil
-			})
-			result := make(chan error, 1)
-			go func() {
-				_, err := wrapped(dir, test.args...)
-				result <- err
-			}()
-			if test.active {
-				<-probe.ready
-				probe.published()
-				if err := <-result; err != nil {
-					t.Fatalf("probe run: %v", err)
-				}
-				<-probe.exited
-				if probe.mutatorErr != nil {
-					t.Fatalf("maintenance mutator: %v", probe.mutatorErr)
-				}
-				if !probe.publishedWhileActive {
-					t.Fatal("expected publication overlap")
-				}
-				if !slices.Contains(gotArgs, "maintenance.auto=false") {
-					t.Fatalf("real runner args = %v, missing quiescent config", gotArgs)
-				}
-				return
-			}
-			if err := <-result; err != nil {
-				t.Fatalf("probe run: %v", err)
-			}
-			select {
-			case <-probe.ready:
-				t.Fatal("suppressed config launched synthetic maintenance")
-			default:
-			}
-			if !slices.Equal(gotArgs, test.args) {
-				t.Fatalf("real runner args = %v, want %v", gotArgs, test.args)
-			}
-		})
 	}
 }
 

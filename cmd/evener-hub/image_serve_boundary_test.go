@@ -58,10 +58,7 @@ func newImageBoundaryFixture(t *testing.T) imageBoundaryFixture {
 		t.Fatal(err)
 	}
 
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),

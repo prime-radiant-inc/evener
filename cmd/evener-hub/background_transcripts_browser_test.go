@@ -134,10 +134,7 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 	if err := roster.RefreshAndWait(ctx); err != nil {
 		t.Fatalf("roster refresh: %v", err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(fixture.stateRoot, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatalf("past index rebuild: %v", err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(fixture.stateRoot, "projects", "*"))
 	tokenBytes := make([]byte, 16)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		t.Fatalf("mint auth token: %v", err)

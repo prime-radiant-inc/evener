@@ -8,7 +8,7 @@ import type { ComponentProps } from "react";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import type { InstanceListResponse } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { TaskList, TasksSheet } from "./TasksSheet";
 import { hasTestID, withTestID } from "./markerTestUtils";
 import {

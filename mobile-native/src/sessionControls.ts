@@ -7,7 +7,7 @@ import type {
 	ConversationModelCatalog,
 	ConversationRecoveryActions,
 	ConversationService,
-} from "../../mobile/src/services/conversation";
+} from "./conversation/services/conversation";
 
 type Operation =
 	| "rename"

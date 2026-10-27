@@ -8,7 +8,7 @@
 // docs/superpowers/plans/wave4-report.md for the measured frame-budget
 // numbers this half's sibling produced.
 
-import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type { AnyNotification, Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { applyNotification } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { buildFloodChunks, buildFloodStream, hydrateFloodModel } from "@evener/appwire-client/testing/tokenFlood";
@@ -19,6 +19,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests } from "../../stores/threads";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../threadTestUtils";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import { CommittedSession as Session } from "./testing/CommittedSession";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./transcript/types";
@@ -109,22 +110,6 @@ describe("token-flood: 10k-delta correctness", () => {
 // enclosing turn object, show the isolation holding across repeated commits
 // rather than a single one.
 const SESSION_FLOOD_SIZE = 10;
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function floodThread(ref: string): Thread {
   return {

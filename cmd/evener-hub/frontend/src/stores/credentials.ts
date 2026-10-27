@@ -13,7 +13,7 @@ import type {
   InstanceEntry,
   ProviderDescriptor,
 } from "@evener/appwire-client";
-import { friendlyErrorMessage } from "@evener/appwire-client";
+import { friendlyErrorMessage, hostRequest, isLocalHost } from "@evener/appwire-client";
 import {
   type CredentialInstancesState,
   createCredentialInstancesStore,
@@ -27,7 +27,6 @@ import {
   onConnectionNotification,
   useConnectionStore,
 } from "./connection";
-import { hostRequest, isLocalHost } from "./hostRouting";
 import { HOST_GATE_TIMEOUT_MS, type HostsLoadState, hostsStore, isConfiguredHost, useHostsStore } from "./hosts";
 import { ownClientId } from "./mutationClientIdentity";
 

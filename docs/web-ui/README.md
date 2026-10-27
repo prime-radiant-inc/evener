@@ -40,11 +40,12 @@ Design documentation for the web hub (`cmd/evener-hub`).
 - **[parity/](parity/)** — the behaviour-parity checklists the React rewrite was
   graded against, mined from the legacy hub before it was deleted. The code they
   cite is gone, so their `path:line` citations no longer resolve; they survive
-  because thirteen live source comments cite *them* for why a behaviour is the
+  because live source comments cite *them* for why a behaviour is the
   way it is, and every wave plan used them as its acceptance floor.
-- **[specs/](specs/)** — two dated feasibility designs (multi-pane workspace,
-  observer auto-open). Point-in-time; the multi-pane one is still named as
-  source of truth by its implementation plan.
+- **[specs/](specs/)** — dated, point-in-time designs and surveys (multi-pane
+  workspace, observer auto-open, transcript density, steering ghost,
+  keybinding system). The multi-pane one is still named as source of truth by
+  its implementation plan.
 
 ## New session and first-run provider setup
 

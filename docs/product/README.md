@@ -42,7 +42,7 @@ changes; keep implementation history in Git and pull requests.
 ## Compatibility
 
 Users upgrade at different times and skip versions. Daemons outlive the hub
-that spawned them ([`appwire/types.go`](../../appwire/types.go) explains why a
+that spawned them ([`appwire/types_protocol.go`](../../appwire/types_protocol.go) explains why a
 hub restart leaves older daemons attached), so version skew is routine rather
 than an error state. The direction of the skew decides who adapts:
 

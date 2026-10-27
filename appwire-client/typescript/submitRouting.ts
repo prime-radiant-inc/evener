@@ -73,7 +73,7 @@ export function decideSteerRoute(opts: {
 // so the status alone is never late in that direction.
 //
 // Capabilities are the harness's. The hub's `steer`, `interrupt` and `queue`
-// are harness support alone (server/appwire_runtime.go appCapabilitiesLocked;
+// are harness support alone (server/appwire_thread_projection.go appCapabilitiesLocked;
 // none folds the status in, so an idle client can still tell a harness that
 // supports an action from one that cannot, #1363, #1375). This derivation
 // applies the status for all of them, so every action below reads one rule and

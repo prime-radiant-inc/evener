@@ -51,46 +51,6 @@ func TestCovDeliverHookUserMessage_Empty(t *testing.T) {
 	}
 }
 
-// TestCovFollowUp_Empty covers the empty-text and closed guards in FollowUp.
-func TestCovFollowUp_Empty(t *testing.T) {
-	t.Parallel()
-	s := &Session{}
-	// Empty message — should not add.
-	if err := s.FollowUp(""); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.FollowUp("  "); err != nil {
-		t.Fatal(err)
-	}
-	s.mu.Lock()
-	if len(s.followups) != 0 {
-		t.Fatalf("expected 0 followups, got %d", len(s.followups))
-	}
-	s.mu.Unlock()
-
-	// Non-empty — should add.
-	if err := s.FollowUp("do something"); err != nil {
-		t.Fatal(err)
-	}
-	s.mu.Lock()
-	if len(s.followups) != 1 || s.followups[0] != "do something" {
-		t.Fatalf("expected 1 followup 'do something', got %v", s.followups)
-	}
-	s.mu.Unlock()
-
-	s.mu.Lock()
-	s.state = SessionClosed
-	s.mu.Unlock()
-	if err := s.FollowUp("ignored after close"); err != nil {
-		t.Fatal(err)
-	}
-	s.mu.Lock()
-	if len(s.followups) != 1 || s.followups[0] != "do something" {
-		t.Fatalf("closed session changed followups: %v", s.followups)
-	}
-	s.mu.Unlock()
-}
-
 // TestCovRouteSystemNotification_NilSession covers the nil-session guard
 // in routeSystemNotification.
 func TestCovRouteSystemNotification_NilSession(t *testing.T) {

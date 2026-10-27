@@ -5,6 +5,22 @@ import (
 	"testing"
 )
 
+// wantMsg asserts msg contains want; desc names the expectation on failure.
+func wantMsg(t *testing.T, msg, want, desc string) {
+	t.Helper()
+	if !strings.Contains(msg, want) {
+		t.Fatalf("%s: %q", desc, msg)
+	}
+}
+
+// notMsg asserts msg does not contain want; desc names the expectation on failure.
+func notMsg(t *testing.T, msg, want, desc string) {
+	t.Helper()
+	if strings.Contains(msg, want) {
+		t.Fatalf("%s: %q", desc, msg)
+	}
+}
+
 // nestedEnumBranchParams nests a oneOf inside `opts` whose first branch
 // narrows the enum on a property that the enclosing schema also declares with a
 // broader enum. A branch failure must surface the conditional rule, not the
@@ -37,18 +53,10 @@ func TestExplainSchemaError_NestedBranchConstraintWinsOverEnclosingEnum(t *testi
 	msg := ExplainSchemaError("my_tool", nestedEnumBranchParams(),
 		map[string]any{"opts": map[string]any{"a": "y"}},
 		"opts/a", "properties/opts/oneOf/0/properties/a/enum")
-	if strings.Contains(msg, `allowed values: "x", "y"`) {
-		t.Fatalf("branch-narrowed enum reported from the enclosing broader enum: %q", msg)
-	}
-	if !strings.Contains(msg, "oneOf constraint") {
-		t.Fatalf("must surface the conditional rule, not the enclosing enum: %q", msg)
-	}
-	if !strings.Contains(msg, `argument "opts"`) {
-		t.Fatalf("must be scoped to the combinator's container (opts): %q", msg)
-	}
-	if !strings.Contains(msg, `"a" must be one of "x"`) {
-		t.Fatalf("must name the branch's narrowed enum: %q", msg)
-	}
+	notMsg(t, msg, `allowed values: "x", "y"`, "branch-narrowed enum reported from the enclosing broader enum")
+	wantMsg(t, msg, "oneOf constraint", "must surface the conditional rule, not the enclosing enum")
+	wantMsg(t, msg, `argument "opts"`, "must be scoped to the combinator's container (opts)")
+	wantMsg(t, msg, `"a" must be one of "x"`, "must name the branch's narrowed enum")
 }
 
 // nestedDeepBranchParams nests a oneOf inside `opts` whose branch constrains a
@@ -83,15 +91,9 @@ func TestExplainSchemaError_NestedBranchFailureScopedToCombinatorContainer(t *te
 	msg := ExplainSchemaError("my_tool", nestedDeepBranchParams(),
 		map[string]any{"opts": map[string]any{"a": 1}},
 		"opts/a", "properties/opts/oneOf/0/properties/a/minimum")
-	if strings.Contains(msg, `"opts.a"`) {
-		t.Fatalf("deep leaf path used as the combinator's container: %q", msg)
-	}
-	if !strings.Contains(msg, `argument "opts"`) {
-		t.Fatalf("must be scoped to the combinator's container (opts): %q", msg)
-	}
-	if !strings.Contains(msg, `Example: {"opts": {"a": 5}}`) {
-		t.Fatalf("Example must be the container's structural shape with a branch-valid value: %q", msg)
-	}
+	notMsg(t, msg, `"opts.a"`, "deep leaf path used as the combinator's container")
+	wantMsg(t, msg, `argument "opts"`, "must be scoped to the combinator's container (opts)")
+	wantMsg(t, msg, `Example: {"opts": {"a": 5}}`, "Example must be the container's structural shape with a branch-valid value")
 }
 
 // nestedItemOneOfParams nests a oneOf inside the items schema of an array
@@ -122,23 +124,13 @@ func TestExplainSchemaError_NestedOneOfInArrayItem(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", nestedItemOneOfParams(),
 		map[string]any{"opts": []any{map[string]any{"z": 1}}},
 		"opts/0", "properties/opts/items/oneOf/0/required")
-	if strings.Contains(msg, "missing required argument") {
-		t.Fatalf("array item reported as a missing argument (issue #624 review): %q", msg)
-	}
-	if !strings.Contains(msg, "oneOf constraint") {
-		t.Fatalf("must surface the conditional rule: %q", msg)
-	}
-	if !strings.Contains(msg, `argument "opts[0]"`) {
-		t.Fatalf("must name the array item: %q", msg)
-	}
+	notMsg(t, msg, "missing required argument", "array item reported as a missing argument (issue #624 review)")
+	wantMsg(t, msg, "oneOf constraint", "must surface the conditional rule")
+	wantMsg(t, msg, `argument "opts[0]"`, "must name the array item")
 	// Finding 4: the Example must be a structural array of objects, not a
 	// single key literally named "opts[0]".
-	if !strings.Contains(msg, `Example: {"opts": [{"x": "..."}]}`) {
-		t.Fatalf("Example must render the array item structurally: %q", msg)
-	}
-	if strings.Contains(msg, `{"opts[0]"`) {
-		t.Fatalf("Example quoted the display path as one key: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": [{"x": "..."}]}`, "Example must render the array item structurally")
+	notMsg(t, msg, `{"opts[0]"`, "Example quoted the display path as one key")
 }
 
 // nestedPointerParams names the combinator's property with a "/" (JSON Pointer
@@ -166,12 +158,8 @@ func TestExplainSchemaError_NestedOneOfDecodesPointerEscapes(t *testing.T) {
 		msg := ExplainSchemaError("my_tool", nestedPointerParams(),
 			map[string]any{"a/b": map[string]any{"z": 1}},
 			"a~1b", "properties/a~1b/oneOf/0/required")
-		if !strings.Contains(msg, "oneOf constraint") {
-			t.Fatalf("slash property name not decoded: %q", msg)
-		}
-		if !strings.Contains(msg, `argument "a/b"`) {
-			t.Fatalf("display path must decode ~1 to /: %q", msg)
-		}
+		wantMsg(t, msg, "oneOf constraint", "slash property name not decoded")
+		wantMsg(t, msg, `argument "a/b"`, "display path must decode ~1 to /")
 	})
 	t.Run("tilde", func(t *testing.T) {
 		params := map[string]any{
@@ -189,12 +177,8 @@ func TestExplainSchemaError_NestedOneOfDecodesPointerEscapes(t *testing.T) {
 		msg := ExplainSchemaError("my_tool", params,
 			map[string]any{"a~b": map[string]any{"z": 1}},
 			"a~0b", "properties/a~0b/oneOf/0/required")
-		if !strings.Contains(msg, "oneOf constraint") {
-			t.Fatalf("tilde property name not decoded: %q", msg)
-		}
-		if !strings.Contains(msg, `argument "a~b"`) {
-			t.Fatalf("display path must decode ~0 to ~: %q", msg)
-		}
+		wantMsg(t, msg, "oneOf constraint", "tilde property name not decoded")
+		wantMsg(t, msg, `argument "a~b"`, "display path must decode ~0 to ~")
 	})
 }
 
@@ -221,15 +205,9 @@ func TestExplainSchemaError_NestedOneOfOverMatch(t *testing.T) {
 	if strings.Contains(msg, "Branch 0 requires") || strings.Contains(msg, "Branch 1 requires") {
 		t.Fatalf("nested over-match rendered satisfied branch requirements: %q", msg)
 	}
-	if !strings.Contains(msg, `argument "opts" matched more than one branch`) {
-		t.Fatalf("message must name the nested over-match: %q", msg)
-	}
-	if !strings.Contains(msg, "satisfy exactly one") {
-		t.Fatalf("message must give the recovery direction: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("over-match message must not append an example matching zero branches: %q", msg)
-	}
+	wantMsg(t, msg, `argument "opts" matched more than one branch`, "message must name the nested over-match")
+	wantMsg(t, msg, "satisfy exactly one", "message must give the recovery direction")
+	notMsg(t, msg, "Example:", "over-match message must not append an example matching zero branches")
 }
 
 // A property-scoped oneOf that over-matches inside a root oneOf branch is still
@@ -252,9 +230,7 @@ func TestExplainSchemaError_NestedOneOfOverMatchUnderRootBranch(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"a": "x"}},
 		"opts", "oneOf/0/properties/opts/oneOf")
-	if !strings.Contains(msg, `argument "opts" matched more than one branch`) {
-		t.Fatalf("property-scoped over-match under a root branch not named: %q", msg)
-	}
+	wantMsg(t, msg, `argument "opts" matched more than one branch`, "property-scoped over-match under a root branch not named")
 	if strings.Contains(msg, "Branch 1 requires") || strings.Contains(msg, "Example:") {
 		t.Fatalf("over-match must not enumerate branches or add an Example: %q", msg)
 	}
@@ -282,9 +258,7 @@ func TestExplainSchemaError_NestedOneOfInsideRootBranch(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"z": 1}},
 		"opts", "oneOf/0/properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, "oneOf constraint") {
-		t.Fatalf("nested oneOf inside a root branch not explained: %q", msg)
-	}
+	wantMsg(t, msg, "oneOf constraint", "nested oneOf inside a root branch not explained")
 	for _, want := range []string{`argument "opts"`, `send all of "x"`, `send all of "y"`} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("message missing %q: %q", want, msg)
@@ -299,9 +273,7 @@ func TestExplainSchemaError_NestedBranchExampleHonorsBranchEnum(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", nestedEnumBranchParams(),
 		map[string]any{"opts": map[string]any{"a": "y"}},
 		"opts/a", "properties/opts/oneOf/0/properties/a/enum")
-	if !strings.Contains(msg, `Example: {"opts": {"a": "x"}}`) {
-		t.Fatalf("Example must use the branch's accepted enum value: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"a": "x"}}`, "Example must use the branch's accepted enum value")
 }
 
 // A branch const is rendered as its own JSON literal.
@@ -324,9 +296,7 @@ func TestExplainSchemaError_NestedBranchExampleHonorsConst(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"a": 1}},
 		"opts/a", "properties/opts/oneOf/0/properties/a/const")
-	if !strings.Contains(msg, `Example: {"opts": {"a": 7}}`) {
-		t.Fatalf("Example must use the branch's const value: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"a": 7}}`, "Example must use the branch's const value")
 }
 
 // When no required-list branch yields a value that satisfies its constraints,
@@ -349,12 +319,8 @@ func TestExplainSchemaError_NestedBranchExampleOmittedWhenUnbuildable(t *testing
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"a": "z"}},
 		"opts", "properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, "oneOf constraint") {
-		t.Fatalf("message must still explain the combinator: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("Example must be omitted when no branch value can be constructed: %q", msg)
-	}
+	wantMsg(t, msg, "oneOf constraint", "message must still explain the combinator")
+	notMsg(t, msg, "Example:", "Example must be omitted when no branch value can be constructed")
 }
 
 // Finding 4: an object property named "0" is a key, not an array element — the
@@ -375,15 +341,9 @@ func TestExplainSchemaError_NumericPropertyNameStaysObjectKey(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"0": map[string]any{"z": 1}},
 		"0", "properties/0/oneOf/0/required")
-	if strings.Contains(msg, `argument "[0]"`) {
-		t.Fatalf("numeric object property rendered as an array index: %q", msg)
-	}
-	if !strings.Contains(msg, `argument "0"`) {
-		t.Fatalf("message must name the object key 0: %q", msg)
-	}
-	if !strings.Contains(msg, `Example: {"0": {"x": "..."}}`) {
-		t.Fatalf("Example must render 0 as an object key: %q", msg)
-	}
+	notMsg(t, msg, `argument "[0]"`, "numeric object property rendered as an array index")
+	wantMsg(t, msg, `argument "0"`, "message must name the object key 0")
+	wantMsg(t, msg, `Example: {"0": {"x": "..."}}`, "Example must render 0 as an object key")
 }
 
 // Second review: a const/enum candidate must also satisfy the property's other
@@ -412,12 +372,8 @@ func TestExplainSchemaError_EnumExampleHonorsSiblingNumericBound(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"a": 1}},
 		"opts/a", "properties/opts/oneOf/0/properties/a/enum")
-	if strings.Contains(msg, `Example: {"opts": {"a": 1}}`) {
-		t.Fatalf("Example used an enum candidate that violates the branch minimum: %q", msg)
-	}
-	if !strings.Contains(msg, `Example: {"opts": {"a": 10}}`) {
-		t.Fatalf("Example must use the enum candidate that satisfies the bound: %q", msg)
-	}
+	notMsg(t, msg, `Example: {"opts": {"a": 1}}`, "Example used an enum candidate that violates the branch minimum")
+	wantMsg(t, msg, `Example: {"opts": {"a": 10}}`, "Example must use the enum candidate that satisfies the bound")
 }
 
 // When no enum/const candidate satisfies the sibling constraints, the Example
@@ -448,9 +404,7 @@ func TestExplainSchemaError_EnumExampleOmittedWhenNoCandidateValid(t *testing.T)
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"a": 1}},
 		"opts/a", "properties/opts/oneOf/0/properties/a/enum")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("Example must be omitted when no enum candidate satisfies the constraints: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "Example must be omitted when no enum candidate satisfies the constraints")
 }
 
 // Second review: a fractional numeric minimum must be rendered faithfully, not
@@ -473,9 +427,7 @@ func TestExplainSchemaError_NumericExamplePreservesFractionalMinimum(t *testing.
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 1.0}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `Example: {"opts": {"n": 0.5}}`) {
-		t.Fatalf("fractional minimum truncated instead of preserved: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"n": 0.5}}`, "fractional minimum truncated instead of preserved")
 }
 
 // An integer property with a fractional minimum takes the smallest satisfying
@@ -498,9 +450,7 @@ func TestExplainSchemaError_IntegerExampleCeilsFractionalMinimum(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 1}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `Example: {"opts": {"n": 1}}`) {
-		t.Fatalf("fractional minimum for an integer must ceil to 1: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"n": 1}}`, "fractional minimum for an integer must ceil to 1")
 }
 
 // Third review, finding 1: a candidate must satisfy BOTH schemas' enum sets.
@@ -531,12 +481,8 @@ func TestExplainSchemaError_ExampleUsesCrossSchemaEnumIntersection(t *testing.T)
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"a": 2}},
 		"opts/a", "properties/opts/oneOf/0/properties/a/enum")
-	if strings.Contains(msg, `Example: {"opts": {"a": 2}}`) {
-		t.Fatalf("Example used a value the holder's enum rejects: %q", msg)
-	}
-	if !strings.Contains(msg, `Example: {"opts": {"a": 3}}`) {
-		t.Fatalf("Example must use the cross-schema enum intersection value: %q", msg)
-	}
+	notMsg(t, msg, `Example: {"opts": {"a": 2}}`, "Example used a value the holder's enum rejects")
+	wantMsg(t, msg, `Example: {"opts": {"a": 3}}`, "Example must use the cross-schema enum intersection value")
 }
 
 // A const from one schema that the other schema's enum rejects must not be
@@ -562,9 +508,7 @@ func TestExplainSchemaError_ExampleOmitsConstRejectedByOtherEnum(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"a": 1}},
 		"opts/a", "properties/opts/oneOf/0/properties/a/const")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("Example must be omitted when the const violates the other schema's enum: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "Example must be omitted when the const violates the other schema's enum")
 }
 
 // Third review, finding 2: a multipleOf smaller than a fixed absolute epsilon
@@ -586,9 +530,7 @@ func TestExplainSchemaError_ExampleSnapsToSubToleranceMultiple(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 1.0}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `Example: {"opts": {"n": 0.000000001}}`) {
-		t.Fatalf("Example must snap to a declared multiple, not the off-grid bound: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"n": 0.000000001}}`, "Example must snap to a declared multiple, not the off-grid bound")
 }
 
 // Third review, finding 3: the Example must also carry the holder's own
@@ -615,9 +557,7 @@ func TestExplainSchemaError_ExampleIncludesHolderRequiredProperties(t *testing.T
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"mode": "m", "a": 1}},
 		"opts/a", "properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `Example: {"opts": {"a": 0, "mode": "..."}}`) {
-		t.Fatalf("Example must include the holder's required property: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"a": 0, "mode": "..."}}`, "Example must include the holder's required property")
 }
 
 // Third review, finding 4: type "null" must render the null literal, not a
@@ -638,9 +578,7 @@ func TestExplainSchemaError_ExampleRendersNullType(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": nil}},
 		"opts/n", "properties/opts/oneOf/0/properties/n/type")
-	if !strings.Contains(msg, `Example: {"opts": {"n": null}}`) {
-		t.Fatalf("null type must render the null literal: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"n": null}}`, "null type must render the null literal")
 }
 
 // A nullable union renders its non-null member's value.
@@ -660,9 +598,7 @@ func TestExplainSchemaError_ExampleRendersNullableUnion(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 1}},
 		"opts/n", "properties/opts/oneOf/0/properties/n/type")
-	if !strings.Contains(msg, `Example: {"opts": {"n": 0}}`) {
-		t.Fatalf("nullable union must render the non-null member: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"n": 0}}`, "nullable union must render the non-null member")
 }
 
 // A union with no single non-null member cannot be rendered faithfully, so the
@@ -683,9 +619,7 @@ func TestExplainSchemaError_ExampleOmittedForAmbiguousUnionType(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 1}},
 		"opts/n", "properties/opts/oneOf/0/properties/n/type")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("ambiguous union type must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "ambiguous union type must omit the Example")
 }
 
 // Fourth review, finding 1: a generated value must satisfy BOTH schemas'
@@ -708,9 +642,7 @@ func TestExplainSchemaError_ExampleOmittedOnHolderBranchTypeConflict(t *testing.
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 1}},
 		"opts/n", "properties/opts/oneOf/0/properties/n/type")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("holder/branch type conflict must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "holder/branch type conflict must omit the Example")
 }
 
 // When the holder requires an integer and the branch only requires a number
@@ -733,9 +665,7 @@ func TestExplainSchemaError_ExamplePrefersIntegerWhenEitherSchemaRequiresIt(t *t
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 1}},
 		"opts/n", "properties/opts/oneOf/0/properties/n/minimum")
-	if !strings.Contains(msg, `Example: {"opts": {"n": 1}}`) {
-		t.Fatalf("integer-requiring holder must yield an integral Example: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"n": 1}}`, "integer-requiring holder must yield an integral Example")
 }
 
 // Fourth review, finding 2: an integer property with a fractional multipleOf
@@ -756,12 +686,8 @@ func TestExplainSchemaError_IntegerExampleStaysIntegralWithFractionalMultiple(t 
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 1}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `Example: {"opts": {"n": 7}}`) {
-		t.Fatalf("integer multipleOf must yield an integral multiple: %q", msg)
-	}
-	if strings.Contains(msg, `Example: {"opts": {"n": 1.4}}`) {
-		t.Fatalf("integer property rendered a non-integral value: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"n": 7}}`, "integer multipleOf must yield an integral multiple")
+	notMsg(t, msg, `Example: {"opts": {"n": 1.4}}`, "integer property rendered a non-integral value")
 }
 
 // Fourth review, finding 3: object-level constraints on the holder can make a
@@ -782,9 +708,7 @@ func TestExplainSchemaError_ExampleOmittedWhenMinPropertiesUnmet(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"a": 1}},
 		"opts/a", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("minProperties-unmet example must be omitted: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "minProperties-unmet example must be omitted")
 }
 
 // A branch-only required property under a holder that forbids additional
@@ -806,9 +730,7 @@ func TestExplainSchemaError_ExampleOmittedWhenAdditionalPropertiesForbid(t *test
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"extra": 1}},
 		"opts/extra", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("additionalProperties-forbidden example must be omitted: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "additionalProperties-forbidden example must be omitted")
 }
 
 // Fifth review, finding 1: an object-level combinator this file cannot evaluate
@@ -855,9 +777,7 @@ func TestExplainSchemaError_ExampleOmittedOnUnevaluableObjectCombinator(t *testi
 			msg := ExplainSchemaError("my_tool", params,
 				map[string]any{"opts": map[string]any{"a": 1}},
 				"opts", "properties/opts/oneOf/0/required")
-			if strings.Contains(msg, "Example:") {
-				t.Fatalf("unevaluable object combinator must omit the Example: %q", msg)
-			}
+			notMsg(t, msg, "Example:", "unevaluable object combinator must omit the Example")
 		})
 	}
 }
@@ -878,9 +798,7 @@ func TestExplainSchemaError_ExampleOmittedForNestedObjectRequirement(t *testing.
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"a": map[string]any{}}},
 		"opts/a", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("nested required object must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "nested required object must omit the Example")
 }
 
 // Fifth review, finding 3: multipleOf requires exact divisibility; a near-miss
@@ -904,9 +822,7 @@ func TestExplainSchemaError_ExampleRejectsNearMultipleCandidate(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 1.0000000005}},
 		"opts/n", "properties/opts/oneOf/0/properties/n/multipleOf")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("a near-multiple candidate must not be emitted as an Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "a near-multiple candidate must not be emitted as an Example")
 }
 
 // Sixth review, finding 1: a magnitude-relative tolerance wrongly treats a
@@ -931,9 +847,7 @@ func TestExplainSchemaError_ExampleRejectsLargeFractionalMultiple(t *testing.T) 
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 1000000000000.5}},
 		"opts/n", "properties/opts/oneOf/0/properties/n/multipleOf")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("large fractional multiple must not be emitted: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "large fractional multiple must not be emitted")
 }
 
 // Sixth review, finding 3: a structural example is an object, so a holder or
@@ -951,9 +865,7 @@ func TestExplainSchemaError_ExampleOmittedWhenHolderTypeRejectsObject(t *testing
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": []any{}},
 		"opts", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("array-typed holder must not emit an object example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "array-typed holder must not emit an object example")
 }
 
 // Sixth review, finding 4: unevaluatedProperties cannot be decided from a
@@ -973,9 +885,7 @@ func TestExplainSchemaError_ExampleOmittedOnUnevaluatedProperties(t *testing.T) 
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"a": 1}},
 		"opts", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("unevaluatedProperties must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "unevaluatedProperties must omit the Example")
 }
 
 // Sixth review, finding 5: with only an upper bound, the multipleOf snap must go
@@ -996,9 +906,7 @@ func TestExplainSchemaError_UpperBoundOnlySnapsDownward(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 1}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `Example: {"opts": {"n": 4}}`) {
-		t.Fatalf("upper-bound-only multiple must snap down to 4: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"n": 4}}`, "upper-bound-only multiple must snap down to 4")
 }
 
 // Seventh review, finding 1: an explicitly empty enum admits no value, so no
@@ -1037,9 +945,7 @@ func TestExplainSchemaError_ExampleOmittedForEmptyEnum(t *testing.T) {
 			msg := ExplainSchemaError("my_tool", params,
 				map[string]any{"opts": map[string]any{"n": "v"}},
 				"opts/n", "properties/opts/oneOf/0/required")
-			if strings.Contains(msg, "Example:") {
-				t.Fatalf("empty enum must omit the Example: %q", msg)
-			}
+			notMsg(t, msg, "Example:", "empty enum must omit the Example")
 		})
 	}
 }
@@ -1069,9 +975,7 @@ func TestExplainSchemaError_EmptyEnumInSiblingArmDoesNotSuppressExample(t *testi
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"b": "v"}},
 		"opts", "properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `Example: {"opts": {"b": "..."}}`) {
-		t.Fatalf("a satisfiable sibling branch must still yield an Example: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"b": "..."}}`, "a satisfiable sibling branch must still yield an Example")
 }
 
 // Seventh review, finding 2: an object-valued const/enum candidate must satisfy
@@ -1093,9 +997,7 @@ func TestExplainSchemaError_ObjectConstCandidateValidatedAgainstRequired(t *test
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": map[string]any{}}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("object const candidate missing required keys must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "object const candidate missing required keys must omit the Example")
 }
 
 // Eighth review, finding 1: a property schema written as the boolean false
@@ -1118,9 +1020,7 @@ func TestExplainSchemaError_ExampleOmittedForFalsePropertySchema(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": "v"}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("false property schema must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "false property schema must omit the Example")
 }
 
 // A boolean true property schema is unconstrained and still yields an Example.
@@ -1140,9 +1040,7 @@ func TestExplainSchemaError_TruePropertySchemaStillYieldsExample(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": "v"}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `Example: {"opts": {"n": "..."}}`) {
-		t.Fatalf("boolean true property schema must still yield an Example: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"n": "..."}}`, "boolean true property schema must still yield an Example")
 }
 
 // Eighth review, finding 2: an array candidate is declined when the schema
@@ -1166,9 +1064,7 @@ func TestExplainSchemaError_ExampleRejectsArrayCandidateWithUnevaluatedItems(t *
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": []any{float64(1)}}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("unevaluatedItems array candidate must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "unevaluatedItems array candidate must omit the Example")
 }
 
 // Eighth review, finding 3: the multipleOf snap must use exact decimal
@@ -1189,9 +1085,7 @@ func TestExplainSchemaError_SnappingIsDecimalExact(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 1.0}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `Example: {"opts": {"n": 0.3}}`) {
-		t.Fatalf("decimal-exact snapping must yield 0.3: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"n": 0.3}}`, "decimal-exact snapping must yield 0.3")
 }
 
 // Ninth review, finding 1: the Example must be a complete document, preserving
@@ -1214,9 +1108,7 @@ func TestExplainSchemaError_ExampleIncludesRootRequiredFields(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"task": "t", "opts": map[string]any{"z": 1}},
 		"opts", "properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `Example: {"opts": {"x": "..."}, "task": "..."}`) {
-		t.Fatalf("Example must preserve the root's required fields: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"x": "..."}, "task": "..."}`, "Example must preserve the root's required fields")
 }
 
 // Ninth review, finding 2: a one-element array Example cannot satisfy an
@@ -1241,9 +1133,7 @@ func TestExplainSchemaError_ExampleOmittedWhenArrayCardinalityUnsatisfiable(t *t
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": []any{map[string]any{"z": 1}, map[string]any{"z": 2}}},
 		"opts/1", "properties/opts/items/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("array-cardinality-unsatisfiable Example must be omitted: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "array-cardinality-unsatisfiable Example must be omitted")
 }
 
 // Tenth review, finding 1: a required root property must be filled with a value
@@ -1300,9 +1190,7 @@ func TestExplainSchemaError_IntermediateAncestorRequiredSiblingFilled(t *testing
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"request": map[string]any{"task": "run", "opts": map[string]any{"z": 1}}},
 		"request/opts", "properties/request/properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `"request": {"opts": {"x": "..."}, "task": "run"}`) {
-		t.Fatalf("intermediate ancestor's required sibling must be filled: %q", msg)
-	}
+	wantMsg(t, msg, `"request": {"opts": {"x": "..."}, "task": "run"}`, "intermediate ancestor's required sibling must be filled")
 }
 
 // Tenth review, finding 3: a typed const (map[string]string) must be validated
@@ -1324,9 +1212,7 @@ func TestExplainSchemaError_TypedConstCandidateValidatedRecursively(t *testing.T
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": map[string]any{}}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("typed const violating required must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "typed const violating required must omit the Example")
 }
 
 // The same typed const that DOES satisfy the constraints must still be emitted,
@@ -1349,9 +1235,7 @@ func TestExplainSchemaError_TypedConstCandidateAcceptedWhenValid(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": map[string]any{"x": "ok"}}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `Example: {"opts": {"n": {"x":"ok"}}}`) {
-		t.Fatalf("a valid typed const must still yield an Example: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"n": {"x":"ok"}}}`, "a valid typed const must still yield an Example")
 }
 
 // Eleventh review, finding 1: a typed container whose json.Marshal differs from
@@ -1386,9 +1270,7 @@ func TestExplainSchemaError_TypedContainerEncodingMismatchOmitted(t *testing.T) 
 			msg := ExplainSchemaError("my_tool", params,
 				map[string]any{"opts": map[string]any{"n": tc.constValue}},
 				"opts/n", "properties/opts/oneOf/0/required")
-			if strings.Contains(msg, "Example:") {
-				t.Fatalf("encoding-mismatched typed container must omit the Example: %q", msg)
-			}
+			notMsg(t, msg, "Example:", "encoding-mismatched typed container must omit the Example")
 		})
 	}
 }
@@ -1412,9 +1294,7 @@ func TestExplainSchemaError_ExampleOmittedWhenAncestorMinPropertiesUnmet(t *test
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"z": 1}},
 		"opts", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("ancestor minProperties-unmet Example must be omitted: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "ancestor minProperties-unmet Example must be omitted")
 }
 
 // Eleventh review, finding 3: a nested oneOf inside a root oneOf branch must
@@ -1443,9 +1323,7 @@ func TestExplainSchemaError_ExampleSatisfiesEnclosingRootOneOfBranch(t *testing.
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"task": "run", "opts": map[string]any{"z": 1}},
 		"opts", "oneOf/0/properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `Example: {"opts": {"x": "..."}, "task": "run"}`) {
-		t.Fatalf("Example must satisfy the enclosing root oneOf branch: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"x": "..."}, "task": "run"}`, "Example must satisfy the enclosing root oneOf branch")
 }
 
 // Eleventh review, finding 4: an integer candidate above 2^53 cannot be
@@ -1471,9 +1349,7 @@ func TestExplainSchemaError_LargeIntegerCandidateWithNumericConstraintOmitted(t 
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": bigOdd}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("precision-losing integer candidate must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "precision-losing integer candidate must omit the Example")
 }
 
 // Twelfth review, finding 1: when the root and the selected root oneOf branch
@@ -1503,9 +1379,7 @@ func TestExplainSchemaError_ExampleMergesRootAndBranchPropertyConstraints(t *tes
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"task": "run", "opts": map[string]any{"z": 1}},
 		"opts", "oneOf/0/properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `"task": "run"`) {
-		t.Fatalf("Example must satisfy the branch's narrowing of the root property: %q", msg)
-	}
+	wantMsg(t, msg, `"task": "run"`, "Example must satisfy the branch's narrowing of the root property")
 }
 
 // Twelfth review, finding 2: a typed container nested inside an otherwise
@@ -1529,9 +1403,7 @@ func TestExplainSchemaError_NestedTypedContainerEncodingMismatchOmitted(t *testi
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": map[string]any{"data": []byte{1}}}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("nested encoding-mismatched container must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "nested encoding-mismatched container must omit the Example")
 }
 
 // Twelfth review, finding 3: completing the selected root oneOf branch must not
@@ -1562,9 +1434,7 @@ func TestExplainSchemaError_ExampleOmittedWhenRepairOverMatchesRootOneOf(t *test
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"task": "run", "opts": map[string]any{"z": 1}},
 		"opts", "oneOf/0/properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("over-matching completed Example must be omitted: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "over-matching completed Example must be omitted")
 }
 
 // Thirteenth review, finding 1: a typed nil container marshals to null, so it
@@ -1586,9 +1456,7 @@ func TestExplainSchemaError_TypedNilContainerNotConflatedWithEmpty(t *testing.T)
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": map[string]any{"data": []any{}}}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("typed nil container must not be conflated with empty: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "typed nil container must not be conflated with empty")
 }
 
 // Thirteenth review, finding 2: the terminal property is constrained by every
@@ -1618,9 +1486,7 @@ func TestExplainSchemaError_ExampleOmittedWhenTerminalPropertyOverlaps(t *testin
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"task": "run", "opts": map[string]any{"z": 1}},
 		"opts", "oneOf/0/properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("terminal property declared by root and branch must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "terminal property declared by root and branch must omit the Example")
 }
 
 // Thirteenth review, finding 3: an array-level enum/const cannot be satisfied by
@@ -1645,9 +1511,7 @@ func TestExplainSchemaError_ExampleOmittedForArrayLevelEnum(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": []any{map[string]any{"z": 1}}},
 		"opts/0", "properties/opts/items/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("array-level enum must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "array-level enum must omit the Example")
 }
 
 // Thirteenth review, finding 4: every Go numeric type must be validated; an
@@ -1668,9 +1532,7 @@ func TestExplainSchemaError_Int32CandidateWithMultipleOfValidated(t *testing.T) 
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": int32(3)}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("int32 candidate violating multipleOf must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "int32 candidate violating multipleOf must omit the Example")
 }
 
 // Fourteenth review: integer const/enum comparison must be exact, so a uint64
@@ -1696,9 +1558,7 @@ func TestExplainSchemaError_LargeIntegerConstEnumComparedExactly(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": big}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("conflicting large integer const/enum must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "conflicting large integer const/enum must omit the Example")
 }
 
 // Fifteenth review: a property schema carrying if/then/else (or the other
@@ -1724,9 +1584,7 @@ func TestExplainSchemaError_ExampleOmittedForConditionalPropertySchema(t *testin
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": "..."}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("conditional property schema must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "conditional property schema must omit the Example")
 }
 
 // Sixteenth review, finding 1: a mixed integer/float comparison must be exact.
@@ -1749,9 +1607,7 @@ func TestExplainSchemaError_MixedIntegerFloatComparedExactly(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": uint64(1)<<53 + 1}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("mixed integer/float comparison must be exact: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "mixed integer/float comparison must be exact")
 }
 
 // Sixteenth review, finding 2: a boolean property declaration is a constraint;
@@ -1780,9 +1636,7 @@ func TestExplainSchemaError_BooleanPropertyDeclarationBlocksExample(t *testing.T
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"sub": map[string]any{"z": 1}}},
 		"opts/sub", "oneOf/0/properties/opts/properties/sub/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("root's false property declaration must block the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "root's false property declaration must block the Example")
 }
 
 // Sixteenth review, finding 3: a conditional (if/then) numeric property must
@@ -1807,9 +1661,7 @@ func TestExplainSchemaError_ConditionalNumericPropertyOmitted(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 0}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("conditional numeric property must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "conditional numeric property must omit the Example")
 }
 
 // A conditional array candidate must be declined too.
@@ -1834,9 +1686,7 @@ func TestExplainSchemaError_ConditionalArrayCandidateOmitted(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": []any{float64(1)}}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("conditional array candidate must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "conditional array candidate must omit the Example")
 }
 
 // A conditional on the enclosing array must decline the one-element example.
@@ -1861,9 +1711,7 @@ func TestExplainSchemaError_ConditionalArrayAncestorOmitted(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": []any{map[string]any{"z": 1}}},
 		"opts/0", "properties/opts/items/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("conditional enclosing array must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "conditional enclosing array must omit the Example")
 }
 
 // Seventeenth review, Medium 1: a bound that does not survive the float64
@@ -1889,9 +1737,7 @@ func TestExplainSchemaError_InexactFloatBoundOmitted(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 0.1}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("inexact float bound must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "inexact float bound must omit the Example")
 }
 
 // Seventeenth review, Low: a bound beyond int64's exact range must not be
@@ -1916,9 +1762,7 @@ func TestExplainSchemaError_HugeBoundSnapOmitted(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 1e20}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("a huge bound must omit the Example rather than snap: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "a huge bound must omit the Example rather than snap")
 }
 
 // Seventeenth review, Medium 3: a oneOf nested behind an anyOf/allOf/not
@@ -1981,9 +1825,7 @@ func TestExplainSchemaError_DeepestNestedOneOfIsHolder(t *testing.T) {
 			t.Fatalf("deepest oneOf must be the holder; message missing %q: %q", want, msg)
 		}
 	}
-	if strings.Contains(msg, `send all of "alt"`) {
-		t.Fatalf("message enumerated the outer oneOf's branches: %q", msg)
-	}
+	notMsg(t, msg, `send all of "alt"`, "message enumerated the outer oneOf's branches")
 }
 
 // Eighteenth review, Medium 1: a scalar oneOf (const/enum/type arms, no
@@ -2030,12 +1872,8 @@ func TestExplainSchemaError_NestedLeafConstraintNamed(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"a": "not-an-int"}},
 		"opts/a", "properties/opts/oneOf/0/properties/a/type")
-	if !strings.Contains(msg, `failing branch constraint is "type"`) {
-		t.Fatalf("branch-internal leaf constraint not named: %q", msg)
-	}
-	if strings.Contains(msg, "not the argument's own type or value") {
-		t.Fatalf("message denied the leaf constraint it should name: %q", msg)
-	}
+	wantMsg(t, msg, `failing branch constraint is "type"`, "branch-internal leaf constraint not named")
+	notMsg(t, msg, "not the argument's own type or value", "message denied the leaf constraint it should name")
 }
 
 // Eighteenth review, Medium 3: a root oneOf the path did not descend through
@@ -2060,9 +1898,7 @@ func TestExplainSchemaError_ExampleOmittedWhenRootOneOfUntraversed(t *testing.T)
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"z": 1}},
 		"opts", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("Example ignoring an untraversed root oneOf must be omitted: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "Example ignoring an untraversed root oneOf must be omitted")
 }
 
 // Eighteenth review, Low: an exclusive bound still admits interior values, so
@@ -2083,9 +1919,7 @@ func TestExplainSchemaError_ExclusiveMinimumExampleGenerated(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 1}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `Example: {"opts": {"n": 1}}`) {
-		t.Fatalf("exclusiveMinimum must still yield an interior Example: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"n": 1}}`, "exclusiveMinimum must still yield an interior Example")
 }
 
 // An exclusiveMaximum alone admits interior values below it.
@@ -2105,9 +1939,7 @@ func TestExplainSchemaError_ExclusiveMaximumExampleGenerated(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": -1}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if !strings.Contains(msg, `Example: {"opts": {"n": -1}}`) {
-		t.Fatalf("exclusiveMaximum must still yield an interior Example: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"opts": {"n": -1}}`, "exclusiveMaximum must still yield an interior Example")
 }
 
 // Eighteenth review, Medium: a const on a required property is not rendered by
@@ -2132,12 +1964,8 @@ func TestExplainSchemaError_ConstOnRequiredPropertyNamed(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"a": 1}},
 		"opts/a", "properties/opts/oneOf/0/properties/a/const")
-	if !strings.Contains(msg, `failing branch constraint is "const"`) {
-		t.Fatalf("const on a required property not named: %q", msg)
-	}
-	if strings.Contains(msg, "not the argument's own type or value") {
-		t.Fatalf("message denied the value constraint it should name: %q", msg)
-	}
+	wantMsg(t, msg, `failing branch constraint is "const"`, "const on a required property not named")
+	notMsg(t, msg, "not the argument's own type or value", "message denied the value constraint it should name")
 }
 
 // Nineteenth review, Medium 1: a walk that traversed an anyOf/allOf/not left
@@ -2164,12 +1992,8 @@ func TestExplainSchemaError_ExampleOmittedWhenApplicatorTraversed(t *testing.T) 
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"sub": map[string]any{"z": 1}}},
 		"opts/sub", "properties/opts/anyOf/0/properties/sub/oneOf/0/required")
-	if !strings.Contains(msg, "oneOf constraint") {
-		t.Fatalf("combinator should still be explained: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("Example after traversing an applicator must be omitted: %q", msg)
-	}
+	wantMsg(t, msg, "oneOf constraint", "combinator should still be explained")
+	notMsg(t, msg, "Example:", "Example after traversing an applicator must be omitted")
 }
 
 // Nineteenth review, Medium 2: a property schema constrained only by
@@ -2191,9 +2015,7 @@ func TestExplainSchemaError_DynamicRefPropertyOmitted(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"n": 1}},
 		"opts/n", "properties/opts/oneOf/0/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("a $dynamicRef-constrained property must omit the Example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "a $dynamicRef-constrained property must omit the Example")
 }
 
 // Nineteenth review, Medium 1 (demonstration): a oneOf nested inside a `not`
@@ -2215,10 +2037,6 @@ func TestExplainSchemaError_ExampleOmittedWhenNotTraversed(t *testing.T) {
 	msg := ExplainSchemaError("my_tool", params,
 		map[string]any{"opts": map[string]any{"z": 1}},
 		"opts", "properties/opts/not/oneOf/0/required")
-	if !strings.Contains(msg, "oneOf constraint") {
-		t.Fatalf("combinator should still be explained: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("Example inside a traversed `not` must be omitted: %q", msg)
-	}
+	wantMsg(t, msg, "oneOf constraint", "combinator should still be explained")
+	notMsg(t, msg, "Example:", "Example inside a traversed `not` must be omitted")
 }

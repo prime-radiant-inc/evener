@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"path/filepath"
@@ -283,6 +284,20 @@ func adapterInstance(name string) registry.Provider {
 		Base: "openai-compatible", APIKey: "test",
 		Transport: registry.Transport{BaseURL: "http://" + name + ".test.invalid/v1"},
 	}
+}
+
+// --- turn driving ---
+
+// tripwireCtx returns the standard turn context for scripted-adapter tests.
+func tripwireCtx(t *testing.T) context.Context {
+	t.Helper()
+	// TRIPWIRE: scripted in-process adapter, no real I/O; the 30-second
+	// ceiling only fires on a genuine hang, not on scheduler contention
+	// under a loaded suite. Cancel is registered with t.Cleanup, so the
+	// context lives for the whole test exactly as a deferred cancel would.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	return ctx
 }
 
 // --- deterministic clock ---

@@ -173,8 +173,7 @@ func TestExplicitNameReuseSameSHADifferentBytes(t *testing.T) {
 		}
 	}
 	writeCatalog()
-	m := NewManager(t.TempDir())
-	ctx := context.Background()
+	m, ctx := newManagerCtx(t)
 	if _, err := m.AddMarketplace(ctx, "acme", Source{Kind: SourceDirectory, Path: catalogDir}); err != nil {
 		t.Fatal(err)
 	}

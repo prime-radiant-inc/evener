@@ -1,4 +1,4 @@
-import { LOCAL_HOST } from "../../../stores/hostRouting";
+import { LOCAL_HOST } from "@evener/appwire-client";
 import { DirListSetting } from "./dirListSetting";
 
 export interface PluginsDirsSectionProps {

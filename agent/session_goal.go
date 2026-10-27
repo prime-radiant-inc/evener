@@ -408,7 +408,7 @@ func (s *Session) settleGoalOnIdle() bool {
 // no-op when there is no active goal, and — critically — when err is a genuine
 // user /interrupt: the goal stays active and resumes after the next completed
 // turn (spec §6). The discriminator is the interruptDrainConfig bool, not the
-// WithQueuedInputDrainOnInterrupt marker (which is installed on every turn ctx and
+// WithQueuedInputDrainOnInterruptHandler marker (which is installed on every turn ctx and
 // so discriminates nothing); a DeadlineExceeded or provider error routes the goal
 // to blocked while the session remains available for later input.
 //

@@ -24,7 +24,7 @@ Its fixtures use the six raw-page fields: `offsetBytes`, `bytesReturned`,
 The [current status](../docs/design/mobile/status.md), [remaining work](../docs/design/mobile/ios-v1-remaining.md) and [acceptance index](../docs/design/mobile/acceptance.md) distinguish implementation from current-artifact qualification. The full development plan and dated evidence remain on branch `live-concepts-plan2-integrate` at checkpoint `04ae937af`.
 
 Run `make test-native` from the repository root after installing native dependencies.
-It bundles the real iOS entry point through Metro, then runs app and shared-session
+It bundles the real iOS entry point through Metro, then runs the app
 tests, native TypeScript checks, script import checks and Biome. The
 [testing guide](../docs/developing-evener/testing.md#the-native-gate-bundles-the-app)
 explains why the bundle is required alongside tests and type checking. The

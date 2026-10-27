@@ -4,10 +4,9 @@ import WebSocket from "ws";
 import type { NavigationReadParams, WebSocketLike, SessionDelegatesResponse } from "@evener/appwire-client";
 import { decodeActivityRead } from "@evener/appwire-client";
 import { type MutationOptimisticRecord, reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
-import { createConversationService } from "../../mobile/src/services/conversation";
-import { createNewSessionService } from "../../mobile/src/services/newSession";
-import { createActivityStore } from "../../mobile/src/state/activity";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { createConversationService } from "./conversation/services/conversation";
+import { createNewSessionService } from "./conversation/services/newSession";
+import { createConversationStore } from "./conversation/state/conversation";
 import { createDemoHub } from "../scripts/demo-hub.mjs";
 import { createHubClient } from "./connection";
 import { type DemoFleetOptions, demoSessionId, fleetSessionRef, fleetSessions } from "./dev/demoFleet.js";
@@ -625,7 +624,6 @@ describe("native demonstration hub", () => {
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		const service = createConversationService(client);
 		const store = createConversationStore();
-		const sink = createActivityStore().getState();
 		const statusChanged = (status: string) =>
 			new Promise<void>((resolve) => {
 				const unsubscribe = store.subscribe((state) => {
@@ -636,7 +634,7 @@ describe("native demonstration hub", () => {
 			});
 		try {
 			await client.connect();
-			await store.getState().openProjected(service, sink, "demo:playground");
+			await store.getState().openProjected(service, "demo:playground");
 			const active = statusChanged("active");
 			store.getState().setDraft("Scripted mobile turn");
 			await store.getState().send(service, [{ type: "text", text: store.getState().draft }]);

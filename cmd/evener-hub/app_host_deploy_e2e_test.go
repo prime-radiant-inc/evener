@@ -125,12 +125,7 @@ func TestHostDeployNoEvenerE2E(t *testing.T) {
 	hubBin, version := deployE2EHubBinary(t, repoRoot)
 	t.Logf("controller build: %s (version %q); host target %s/%s", hubBin, version, goos, goarch)
 
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
+	provider := newFakeLLMProvider(t)
 	staged := stageDeployArtifact(t, repoRoot, goos, goarch)
 
 	runID := hostDeployRunID()

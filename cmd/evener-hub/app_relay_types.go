@@ -185,7 +185,7 @@ func subscribeRelayRecovery(ctx context.Context, source appsource.Source, params
 //
 // Every other thread/status/changed already carries the action set that goes
 // with the status it announces, stamped by the daemon at its own notification
-// egress (server/appwire_runtime.go's stampCapabilitiesOnStatusChange). The
+// egress (server/appwire_status_stamps.go's stampCapabilitiesOnStatusChange). The
 // close frame deliberately carries none, and rightly so: what a thread can
 // still be asked to do once its daemon is gone is not the daemon's to say. It
 // is this hub's — the next read is answered from the past index and a send

@@ -5,7 +5,7 @@
 # Install with `make hooks`. Each tree is formatted by its own pinned Biome and
 # config, run from that tree's directory (never from the repo root, where
 # `npx biome` resolves an unrelated package and checks nothing):
-#   mobile-native/src, mobile/src              -> mobile-native's Biome
+#   mobile-native/src                          -> mobile-native's Biome
 #   cmd/evener-hub/frontend/src,
 #   appwire-client/typescript                  -> the frontend's Biome
 #
@@ -97,7 +97,7 @@ format_tree() {
 if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
 	echo "pre-commit: merge in progress; not formatting (run 'npm run format' in the tree if needed)." >&2
 else
-	native_files=$(formattable '(mobile-native|mobile)/src/')
+	native_files=$(formattable 'mobile-native/src/')
 	web_files=$(formattable '(cmd/evener-hub/frontend/src|appwire-client/typescript)/')
 
 	failed=0

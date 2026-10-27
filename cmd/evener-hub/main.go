@@ -1200,16 +1200,10 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	}
 	if err == nil {
 		// Only a path the operator named is a promise to load a file; the
-		// default path is allowed to be absent. fs.Visit reports the flags that
-		// were actually set, so the two are distinguishable after parsing.
-		fs.Visit(func(f *flag.Flag) {
-			switch f.Name {
-			case "config":
-				opts.configExplicit = true
-			case "addr":
-				opts.addrPresent = true
-			}
-		})
+		// default path is allowed to be absent.
+		set := setFlagNames(fs)
+		opts.configExplicit = set["config"]
+		opts.addrPresent = set["addr"]
 	}
 	// Validate the deploy flags where they are read: a bad path fails startup
 	// naming the flag rather than surfacing at the first attach as a deploy

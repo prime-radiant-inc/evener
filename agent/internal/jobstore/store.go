@@ -948,19 +948,7 @@ func cloneFoldJobs(in map[string]*JobRecord) map[string]*JobRecord {
 	}
 	out := make(map[string]*JobRecord, len(in))
 	for k, r := range in {
-		if r == nil {
-			out[k] = nil
-			continue
-		}
-		c := *r
-		c.LastActivity = clonePtr(r.LastActivity)
-		c.EndedAt = clonePtr(r.EndedAt)
-		c.ExitCode = clonePtr(r.ExitCode)
-		c.StructuredResult = cloneJSONValue(r.StructuredResult)
-		c.StructuredResultValid = clonePtr(r.StructuredResultValid)
-		c.Provenance = cloneCausal(r.Provenance)
-		c.NotificationProvenance = cloneCausal(r.NotificationProvenance)
-		out[k] = &c
+		out[k] = r.Clone()
 	}
 	return out
 }
@@ -971,18 +959,7 @@ func cloneFoldOrdered(in []*JobRecord) []*JobRecord {
 	}
 	out := make([]*JobRecord, len(in))
 	for i, r := range in {
-		if r == nil {
-			continue
-		}
-		c := *r
-		c.LastActivity = clonePtr(r.LastActivity)
-		c.EndedAt = clonePtr(r.EndedAt)
-		c.ExitCode = clonePtr(r.ExitCode)
-		c.StructuredResult = cloneJSONValue(r.StructuredResult)
-		c.StructuredResultValid = clonePtr(r.StructuredResultValid)
-		c.Provenance = cloneCausal(r.Provenance)
-		c.NotificationProvenance = cloneCausal(r.NotificationProvenance)
-		out[i] = &c
+		out[i] = r.Clone()
 	}
 	return out
 }

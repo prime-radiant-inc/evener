@@ -1,8 +1,8 @@
 // @vitest-environment node
 
 import type { HostRow, MarketplaceEntry } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore } from "./connection";
 import { extensionsInstanceForHost, extensionsStore, resetExtensionsStoreForTests } from "./extensions";
 import { hostsStore } from "./hosts";
@@ -11,12 +11,6 @@ import { hostsStore } from "./hosts";
 // and global launch-layer cores for the selected host. Local is the app's one
 // singleton byte-for-byte; a remote host gets its own instance over
 // evener/host/request, whose data never lands in the controller's store.
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 const MARKETPLACE: MarketplaceEntry = {
   name: "acme-plugins",
@@ -48,7 +42,7 @@ afterEach(() => {
 });
 
 test("the local hub resolves to the controller's own store and issues the plain call", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE] }));
   fake.on("evener/host/request", () => {
     throw new Error("the local hub must never route through the proxy");
@@ -62,7 +56,7 @@ test("the local hub resolves to the controller's own store and issues the plain 
 });
 
 test("a remote host's marketplace list is read through evener/host/request", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/request", () => ({ marketplaces: [MARKETPLACE] }) as never);
 
   await extensionsInstanceForHost("beta").store.getState().fetchMarketplaces();
@@ -73,7 +67,7 @@ test("a remote host's marketplace list is read through evener/host/request", asy
 });
 
 test("a remote host's data never lands in the controller's own store", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/request", () => ({ marketplaces: [MARKETPLACE] }) as never);
 
   const beta = extensionsInstanceForHost("beta");
@@ -86,7 +80,7 @@ test("a remote host's data never lands in the controller's own store", async () 
 });
 
 test("a remote plugin mutation goes through the proxy, never this hub's plugins", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/request", () => ({ plugins: [] }) as never);
   fake.on("evener/plugin/install", () => {
     throw new Error("a remote selection must not mutate this hub's plugins");
@@ -103,7 +97,7 @@ test("a remote plugin mutation goes through the proxy, never this hub's plugins"
 });
 
 test("a remote launch-layer write goes through the proxy, never this hub's setLayer", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/request", () => ({ effective: {}, layers: {}, provenance: {} }) as never);
   fake.on("evener/launch/setLayer", () => {
     throw new Error("a remote selection must not write this hub's launch layer");
@@ -126,7 +120,7 @@ test("a remote launch-layer write goes through the proxy, never this hub's setLa
 });
 
 test("a remote host's path helpers go through the proxy too", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/request", () => ({ path: "/opt", valid: true }) as never);
 
   await extensionsInstanceForHost("beta").store.getState().validatePath("/opt", "dir");
@@ -154,7 +148,7 @@ test("resetExtensionsStoreForTests drops a per-host instance so it is rebuilt fr
 test.each([{ address: "new.example:22" }, { address: "old.example:22", incarnationId: "replacement" }])(
   "a host re-registered under the same name is rebuilt, never served the previous registration's data (%j)",
   async (replacement) => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let reads = 0;
     fake.on("evener/host/request", () => {
       reads += 1;
@@ -212,7 +206,7 @@ test("an attach report on an unchanged registration keeps the instance", () => {
 // nothing replaces them - and a caller is handed the shared refusing store
 // rather than one that would read that host's catalogs.
 test("a host the registry reports gone keeps no instance and refuses instead of dialing", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/request", () => ({ marketplaces: [MARKETPLACE] }) as never);
   hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "beta.example:22" })] } });
   await extensionsInstanceForHost("beta").store.getState().fetchMarketplaces();
@@ -246,7 +240,7 @@ async function reconnect(): Promise<void> {
 // renders its own note for a host that is gone instead of the body, so no pane
 // calls this accessor for it again.
 test("a host removed while a pane is mounted is evicted, so nothing of it survives", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/request", () => ({ marketplaces: [MARKETPLACE] }) as never);
   hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", attached: true })] } });
   const mounted = extensionsInstanceForHost("beta");

@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/spf13/afero"
 
@@ -180,15 +179,11 @@ func TestMidSessionHookPersistsHookCompletedTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	// TRIPWIRE: the adapter is scripted in-process, but the UserPromptSubmit
 	// hook is a real `exit 5` subprocess run through exec.CommandContext;
 	// only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -330,10 +325,7 @@ func TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(sess.Close)
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	if err := sess.reg.Register(tool.RegisteredTool{
 		Definition: llm.ToolDefinition{
 			Name:        "hook_probe",
@@ -350,8 +342,7 @@ func TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest(t *testing.T) {
 	// TRIPWIRE: the adapter is scripted in-process, but the PreToolUse hook
 	// is a real `exit 0` subprocess run through exec.CommandContext; only
 	// fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	out, err := sess.ProcessInput(ctx, "run the probe", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)

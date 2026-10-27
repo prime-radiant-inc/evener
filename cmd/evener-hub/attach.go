@@ -77,16 +77,9 @@ func parseAttachOptions(args []string, stderr io.Writer) (attachOptions, error) 
 	if fs.NArg() != 0 {
 		return opts, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	// fs.Visit reports the flags that were actually set, so a path the operator
-	// named is distinguishable from the implicit default before it is loaded.
-	fs.Visit(func(f *flag.Flag) {
-		switch f.Name {
-		case "config":
-			opts.configExplicit = true
-		case "hub-url":
-			opts.urlPresent = true
-		}
-	})
+	set := setFlagNames(fs)
+	opts.configExplicit = set["config"]
+	opts.urlPresent = set["hub-url"]
 	if !opts.stdio {
 		return opts, errors.New("attach requires --stdio")
 	}

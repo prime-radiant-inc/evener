@@ -167,7 +167,7 @@ func (jm *jobManager) recordWatchEndedLocked(key watchKey, cfg *watchConfig, rea
 		sendTo = ""
 	}
 	jm.watchHistory = append(jm.watchHistory, watchHistoryEntry{
-		id:                 cfg.id,
+		id:                 cfg.watchID,
 		source:             cfg.sourcePublic,
 		target:             cfg.target,
 		condition:          watchConditionSummary(cfg),

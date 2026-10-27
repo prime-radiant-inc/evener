@@ -1,3 +1,5 @@
+import { appliedReceipt } from "../mutationReceiptTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES, type TestThreadOverrides, testThread } from "../threadTestUtils";
 import { acquireSessionActivity } from "./sessionActivity";
 import { activitySummary } from "./sessionActivityTestUtils";
 import "fake-indexeddb/auto";
@@ -6,9 +8,6 @@ import type {
   ConnectionState,
   MethodName,
   MethodTypes,
-  QueueState,
-  Thread,
-  ThreadCapabilities,
   ThreadReadResponse,
   ThreadTurnsListResponse,
   TurnQueueResponse,
@@ -90,53 +89,6 @@ function nextHandledRequest<M extends MethodName>(
 // this task's report - which fires each owner-wait arm and requires the
 // matching test to fail - is what would catch it.
 const settleCallerContinuations = nextMacrotask;
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
-  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
-};
-
-function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
-  const { evener, ...threadOverrides } = overrides;
-  const threadID = threadOverrides.id ?? `thr_${ref}`;
-  return {
-    id: threadID,
-    sessionId: `sess_${ref}`,
-    preview: "test",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "idle" },
-    cwd: "/tmp/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: {
-      ref,
-      instanceId: threadID,
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      ...evener,
-      queue: { revision: 0, ...evener?.queue },
-    },
-    ...threadOverrides,
-  };
-}
 
 function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   return { thread: testThread(ref, overrides) };
@@ -243,12 +195,7 @@ async function flushIndexedDBUntil(done: () => boolean, maxTurns = 30): Promise<
 }
 
 function mutationReceipt(clientMutationId: string, disposition = "applied") {
-  return {
-    clientMutationId,
-    disposition,
-    threadId: "thr_ref_a",
-    projectionState: "reflected",
-  };
+  return appliedReceipt(clientMutationId, "thr_ref_a", { disposition });
 }
 
 // The hydration retry scheduler is injected so every retry in this suite is

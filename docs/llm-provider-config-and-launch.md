@@ -78,7 +78,7 @@ api_key = "..."
 
 A section name matches either a curated implicit provider's id (`anthropic`,
 `openai`, `openrouter`, …) or a custom instance name defined in
-`providers.toml` — the store no longer keys off a provider *type*.
+`providers.toml` — the store does not key off a provider *type*.
 
 The store's file entry under the instance name is step 3 of the [credential
 resolution order](llm-providers.md#credential-resolution-order); see that
@@ -139,9 +139,8 @@ The rules that matter in practice:
 - A variable that is unset or empty counts as missing, and `${NAME:-default}`
   fills a missing one (POSIX `:-` semantics); `$$` writes a literal `$`.
   A `${...}` reference name must match `[A-Za-z_][A-Za-z0-9_]*` — anything
-  else is a load error. MCP config used to look such brace texts up
-  verbatim, so `${MY-VAR}` or `${MY.VAR}` used to expand; the shared
-  grammar now refuses them.
+  else is a load error, so the shared grammar refuses `${MY-VAR}` and
+  `${MY.VAR}` instead of looking such brace texts up verbatim.
 - Commands run with the process environment, no TTY, a closed stdin, and a
   30-second timeout. Each process caches successful results by command text
   until one minute before a readable JWT `exp`, or for five minutes if there
@@ -177,7 +176,7 @@ and `openai-codex` (OAuth only).
 One JSON file per instance: `<state-root>/auth/<instance>.json`. The
 `evener openai` CLI and the hub's OAuth flow operate on `openai-codex` by
 default now, so a fresh sign-in writes `auth/openai-codex.json`. A record's
-validity no longer special-cases "openai-ness" by content — only by which
+validity does not special-case "openai-ness" by content — only by which
 transport the named instance is on (`Transport.Auth ==
 oauth-openai-codex`).
 
@@ -273,8 +272,7 @@ before.
 
 **Implicit instances are computed identically and independently by every
 process** from the same inputs — the environment and the credentials store.
-The hub no longer injects the launched instance's key into the child the
-way it used to: the subprocess environment carries process-coordination
+The hub does not inject the launched instance's key into the child: the subprocess environment carries process-coordination
 vars (`EVENER_HUB_SPAWNED=1`, `EVENER_RUN_DIR`, `EVENER_STATE_DIR`,
 `EVENER_HUB_TOKEN`), the two config-path variables above, and any per-launch
 env overrides (sorted, last-write-wins) — no provider credential. The child
@@ -349,7 +347,7 @@ First run `evener migrate --dry-run --verbose` and review the paths. Stop writer
 when you'd rather rewrite the file yourself — the release notes and the
 load-error message both point here.
 
-**Missing variables no longer prevent the whole file from loading.** An unset
+**Missing variables do not prevent the whole file from loading.** An unset
 variable in `api_key` resolves to an empty credential with a warning; the request
 fails when a credential is required. An unset variable in `headers` drops that
 header. Both cases were load-time errors in the old schema. Check each instance's
@@ -415,7 +413,7 @@ intentionally overlaps
   Moonshot's platform key.
 - Moonshot's platform key is now `MOONSHOT_API_KEY`.
 - `GLM_API_KEY` is now `ZHIPU_API_KEY`.
-- No longer read at all: `KIMI_CODING_API_KEY`, `KIMI_BASE_URL`,
+- Not read at all: `KIMI_CODING_API_KEY`, `KIMI_BASE_URL`,
   `KIMI_CODING_BASE_URL`, `GLM_BASE_URL`, `GEMINI_BASE_URL` (now
   `GOOGLE_BASE_URL`), `OPENAI_CHATGPT_BASE_URL` (now
   `OPENAI_CODEX_BASE_URL`), `OPENAI_COMPATIBLE_PROVIDER_QUIRKS`.
@@ -467,7 +465,7 @@ explanation — this is the same fact, not restated differently there).
 path. `evener providers list` and the hub diagnostics print `user layer:
 none (EVENER_PROVIDERS_CONFIG is empty)` so the state is visible.
 
-**`gemini` is no longer accepted** as an alias of `google` in model
+**`gemini` is not accepted** as an alias of `google` in model
 references.
 
 None of this is detected or translated at runtime, and none of the old
@@ -479,4 +477,4 @@ files are renamed or deleted.
   resolution, wire protocols, and the implicit provider table.
 - [`ollama.md`](ollama.md) — running Evener against a local Ollama server.
 - [`superpowers/specs/2026-08-28-provider-registry-design.md`](superpowers/specs/2026-08-28-provider-registry-design.md)
-  — the registry design: data model, layers, resolution, and the flag day.
+  — the registry design: data model, layers, and resolution.

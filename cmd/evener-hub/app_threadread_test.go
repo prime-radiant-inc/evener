@@ -450,10 +450,7 @@ func seedPastSessionWithSkillFixtures(t *testing.T) (hubcore.WebConfig, hubcore.
 		t.Fatal(err)
 	}
 	indexPastTranscriptForTest(t, stateDir, sessionID)
-	idx := hubcore.NewPastIndex(filepath.Join(root, "state", "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "state", "projects", "*"))
 	entry, ok := idx.Find(sessionID)
 	if !ok {
 		t.Fatal("past entry not found")
@@ -726,10 +723,7 @@ func TestPastThreadReadDoesNotReconcileStableDelegateFromActivationJob(t *testin
 	}
 	writeHistoricalJobLog(t, filepath.Join(stateDir, "sessions", parentID, "jobs.jsonl"), now, "job_A")
 
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	thread, ok := requirePastThreadForRead(t, hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + parentID, IncludeTurns: true})
 	if !ok {
 		t.Fatal("past thread not found")
@@ -787,10 +781,7 @@ func TestPastThreadReadProjectsThinkingFromTranscript(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	thread, ok := requirePastThreadForRead(t, hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true})
 	if !ok {
 		t.Fatal("past thread not found")
@@ -857,10 +848,7 @@ func TestPastThreadReadProjectsToolResultOutputImages(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	thread, ok := requirePastThreadForRead(t, hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true})
 	if !ok {
 		t.Fatal("past thread not found")
@@ -1061,7 +1049,7 @@ func TestPastEntryThread_CarriesCostTotal(t *testing.T) {
 //
 // The short-circuit is scoped to Name only, not Preview: Preview is this
 // wire object's own full-text field (unaffected, still the raw-ID fallback,
-// matching the live-thread path in appwire_runtime.go and the TUI's own
+// matching the live-thread path in server/appwire_thread_projection.go and the TUI's own
 // Name-then-Preview-then-SessionID chain), and SessionDisplayName itself
 // stays untouched because eight other callers want its bare-ID last resort
 // (see nodeTitle's doc comment).
@@ -1116,10 +1104,7 @@ func runningSubagentProjectionConfigWithState(t *testing.T, childState string) (
 			t.Fatal(err)
 		}
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	var states map[string]string
 	if childState != "" {
 		states = map[string]string{childID: childState}
@@ -1236,10 +1221,7 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 		t.Fatal(err)
 	}
 	indexPastTranscriptForTest(t, stateDir, sessionID)
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	return hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemLimit: 40}
 }
 
@@ -1272,10 +1254,7 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	entry, ok := idx.Find(sessionID)
 	if !ok {
 		t.Fatal("past entry not found")
@@ -1430,10 +1409,7 @@ func TestPastThreadTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
 // source's caller out of local session state.
 func TestPastThreadForRead_PastGateMisses(t *testing.T) {
 	cfg, sessionID, _ := seedPastSessionWithTasks(t, nil)
-	emptyIndex := hubcore.NewPastIndex(filepath.Join(t.TempDir(), "projects", "*"))
-	if _, err := emptyIndex.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	emptyIndex := newRebuiltPastIndex(t, filepath.Join(t.TempDir(), "projects", "*"))
 
 	for _, tc := range []struct {
 		name   string
@@ -1895,10 +1871,7 @@ func seedPastItemPagingThread(t *testing.T) (hubcore.WebConfig, hubcore.PastEntr
 		t.Fatal(err)
 	}
 	indexPastTranscriptForTest(t, stateDir, sessionID)
-	index := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := index.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	index := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	entry, ok := index.Find(sessionID)
 	if !ok {
 		t.Fatal("past item-paging entry not found")
@@ -2113,11 +2086,7 @@ func TestThreadReadPastSessionSkipsFullTurnProjection(t *testing.T) {
 
 	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	defer wire.Close()
-	client := dialHubRPC(t, wire)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, wire)
 	read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 		Ref: ref, IncludeTurns: true, ItemsView: "full", ItemLimit: 40,
 	})

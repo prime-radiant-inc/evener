@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, renderHook, screen, waitFor, within } from "@t
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { ALL_CAPABILITIES as CAPS } from "../../threadTestUtils";
 import "../../panes/sessionPanels";
 import "../../panes/session";
 import { ACTIONS, rebindAction, restoreDefaultBinding, WireError } from "@evener/appwire-client";
@@ -12,7 +13,6 @@ import type {
   ItemModel,
   NavigationSessionSummary,
   SearchResult,
-  ThreadCapabilities,
   ThreadModel,
   ThreadReadResponse,
   TurnModel,
@@ -55,22 +55,6 @@ import {
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
 });
-
-const CAPS: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;

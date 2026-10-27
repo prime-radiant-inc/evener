@@ -911,6 +911,35 @@ func rollbackWatchConfigSnapshotsRejectingLocked(jm *jobManager, targets []watch
 	}
 }
 
+// watchTeardown is the set of configs a teardown freezes while its end is
+// persisted: the live watches being ended and the detached configs whose
+// pending frames are being dropped. Each site keeps its own persist call and
+// failure policy; the mark and the rollback are what they share.
+type watchTeardown struct {
+	targets      []watchConfigTerminalSnapshot
+	detachedCfgs []*watchConfig
+}
+
+// markRejectingLocked freezes delivery on every config in the teardown. The
+// caller holds jm.mu.
+func (t watchTeardown) markRejectingLocked() {
+	markWatchConfigSnapshotsRejectingLocked(t.targets)
+	markWatchConfigsRejectingLocked(t.detachedCfgs)
+}
+
+// rollbackLocked re-enables delivery on the configs that are still where the
+// teardown found them. The caller holds jm.mu.
+func (t watchTeardown) rollbackLocked(jm *jobManager) {
+	rollbackWatchConfigSnapshotsRejectingLocked(jm, t.targets)
+	rollbackWatchConfigsRejectingLocked(jm, t.detachedCfgs)
+}
+
+func (t watchTeardown) rollback(jm *jobManager) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	t.rollbackLocked(jm)
+}
+
 func (jm *jobManager) closeWatchConfigSnapshots(targets []watchConfigTerminalSnapshot) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()

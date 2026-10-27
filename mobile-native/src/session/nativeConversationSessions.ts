@@ -1,9 +1,9 @@
 // One app-owned conversation binding per (hub, ref). Every mounted view of a
 // session borrows the same entry: its conversation store, durable mutation
-// host and stable submitter, conversation service, activity store and sink,
-// display/config subscription and read actor. The first committed attachment
-// creates the inert entry; only a matching ready client starts a host/service
-// and the entry's one authoritative read. The last release closes the entry,
+// host and stable submitter, conversation service, display/config
+// subscription and read actor. The first committed attachment creates the
+// inert entry; only a matching ready client starts a host/service and the
+// entry's one authoritative read. The last release closes the entry,
 // never the process mutation runtime.
 //
 // This is not an admission coordinator: it holds no attempts, acceptance
@@ -11,13 +11,12 @@
 // Retry's owners stay the store's canonical read validity and the durable
 // pending projection.
 import type { AppwireClientLike, TranscriptDisplayConfigV1 } from "@evener/appwire-client";
-import { createActivityStore } from "../../../mobile/src/state/activity";
-import { createConversationStore, type LiveActivitySink } from "../../../mobile/src/state/conversation";
+import { createConversationStore } from "../conversation/state/conversation";
 import {
 	createConversationMutationPendingPort,
 	type ConversationMutationSubmitter,
-} from "../../../mobile/src/state/conversationMutation";
-import { createConversationService } from "../../../mobile/src/services/conversation";
+} from "../conversation/state/conversationMutation";
+import { createConversationService } from "../conversation/services/conversation";
 import { createDurableSubmitter, createNativeMutationHost, type NativeMutationHost } from "../nativeMutationHost";
 import {
 	getNativeMutationRuntime,
@@ -31,7 +30,6 @@ import { type DetailLevels, displayForLevel } from "./detailLevels";
 import { detailLevels as levelsForHub } from "./nativeDetailLevels";
 
 export type NativeConversationStore = ReturnType<typeof createConversationStore>;
-export type NativeConversationActivity = ReturnType<typeof createActivityStore>;
 /** The service factory's complete return type: screens need the recovery,
  * catalog, clear and fork actions as well as the base conversation verbs. The
  * entry hands out this exact object; no per-view adapter narrows it. */
@@ -57,9 +55,6 @@ export interface NativeConversationSession {
 	/** The stable submitter the store admits mutations through, shared so a
 	 * view's command and steer paths use the same live host lookup. */
 	readonly mutationSubmitter: ConversationMutationSubmitter;
-	readonly activity: NativeConversationActivity;
-	/** The exact sink object every open/read of this entry binds. */
-	readonly activitySink: LiveActivitySink;
 	/** The one live host/target registration, or null while offline. */
 	readonly liveHost: NativeMutationHost | null;
 	/** The one live service for the current client binding, or null offline. */
@@ -107,8 +102,6 @@ class SessionEntry implements NativeConversationSession {
 	readonly key: string;
 	readonly store: NativeConversationStore;
 	readonly mutationSubmitter: ConversationMutationSubmitter;
-	readonly activity: NativeConversationActivity;
-	readonly activitySink: LiveActivitySink;
 	readonly readActor: NativeConversationReadActor;
 
 	#runtime: () => NativeMutationRuntime;
@@ -156,9 +149,6 @@ class SessionEntry implements NativeConversationSession {
 		this.#levels = options.levels;
 		this.#hubConfig = options.hubDisplayConfig;
 		this.#displayConfig = displayForLevel(this.#levels.get(this.ref), this.#hubConfig).config;
-		const activity = createActivityStore();
-		this.activity = activity;
-		this.activitySink = activity.getState();
 		this.mutationSubmitter = createDurableSubmitter(() => this.#liveHost);
 		this.store = createConversationStore({
 			mutationHubId: this.hubId,
@@ -294,7 +284,6 @@ class SessionEntry implements NativeConversationSession {
 		this.store.getState().close();
 		service?.close();
 		host?.dispose();
-		this.activity.getState().reset();
 		try {
 			const flushed = this.#flushOutbox();
 			if (flushed !== undefined) void Promise.resolve(flushed).catch(() => undefined);
@@ -377,8 +366,8 @@ class SessionEntry implements NativeConversationSession {
 		const state = this.store.getState();
 		const read =
 			state.ref === this.ref && state.conversation !== null
-				? state.resumeProjected(service, this.activitySink, this.ref)
-				: state.openProjected(service, this.activitySink, this.ref);
+				? state.resumeProjected(service, this.ref)
+				: state.openProjected(service, this.ref);
 		// Keep every read this entry started in the settle chain: a replaced or
 		// retired binding's late reply is exactly what a caller may need to await.
 		this.#readSettled = Promise.allSettled([this.#readSettled, read]).then(() => undefined);
@@ -493,8 +482,7 @@ class SessionEntry implements NativeConversationSession {
 		const state = this.store.getState();
 		// A failed refresh did not retire this open binding. Reopening it would
 		// fence ordinary mutations still awaiting admission or a direct reply.
-		const read =
-			state.status === "open" ? state.ensureLatest() : state.resumeProjected(service, this.activitySink, this.ref);
+		const read = state.status === "open" ? state.ensureLatest() : state.resumeProjected(service, this.ref);
 		void read.then(settle, settle);
 	}
 

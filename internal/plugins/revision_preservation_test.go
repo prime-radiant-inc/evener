@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+
+	"primeradiant.com/evener/gittest"
 )
 
 // publishedRevisionFixture keeps the original install's files and directory
@@ -22,9 +24,7 @@ type publishedRevisionFixture struct {
 
 func newPublishedRevisionFixture(t *testing.T, unversioned bool) publishedRevisionFixture {
 	t.Helper()
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	root := t.TempDir()
 	pluginRepo := filepath.Join(root, "plugin")
 	writePlugin(t, pluginRepo, "widget", map[string]string{
@@ -48,8 +48,7 @@ func newPublishedRevisionFixture(t *testing.T, unversioned bool) publishedRevisi
 		t.Fatal(err)
 	}
 	makeGitRepo(t, marketRepo, "README.md", "market")
-	m := NewManager(t.TempDir())
-	ctx := context.Background()
+	m, ctx := newManagerCtx(t)
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: marketRepo}); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +91,7 @@ func TestPublishedRevisionSurvivesRevisit(t *testing.T) {
 		t.Fatalf("upgrade did not advance: %+v", middle)
 	}
 	middleTree := snapshotMigrationTree(t, middle.InstallPath)
-	gitIn(t, f.source, "reset", "--hard", oldSHA)
+	gittest.Run(t, f.source, "reset", "--hard", oldSHA)
 	revisit, err := f.manager.Upgrade(context.Background(), "widget", "acme")
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +194,7 @@ func TestPublishedRevisionSurvivesPublicationFailure(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					gitIn(t, f.source, "reset", "--hard", f.entry.GitCommitSha)
+					gittest.Run(t, f.source, "reset", "--hard", f.entry.GitCommitSha)
 				}
 				fault.inject(t, f) // package-wide seams: these subtests must stay serial.
 				var err error

@@ -27,7 +27,7 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 	if err != nil {
 		return appwire.SessionDeleteResponse{}, appwire.InvalidParams(err.Error())
 	}
-	if ref.SourceID != "local" {
+	if ref.SourceID != appwire.LocalSourceID {
 		return appwire.SessionDeleteResponse{}, appwire.InvalidParams("only local sessions can be deleted")
 	}
 	threadID := ref.ThreadID

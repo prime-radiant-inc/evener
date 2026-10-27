@@ -147,7 +147,7 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 	if _, required, err := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); err != nil || !required {
 		return appwire.ThreadReadResponse{}, false, err
 	}
-	source, ok := sources.Source("local")
+	source, ok := sources.Source(appwire.LocalSourceID)
 	if !ok {
 		return appwire.ThreadReadResponse{}, false, nil
 	}
@@ -314,7 +314,7 @@ func pastItemPageFromWindow(entry hubcore.PastEntry, window transcriptindex.Wind
 // incarnation they were read from, so a cursor from before a rebuild is stale.
 func pastCursorIdentity(entry hubcore.PastEntry, incarnation string) appitempaging.CursorIdentity {
 	return appitempaging.CursorIdentity{
-		ThreadRef:         appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String(),
+		ThreadRef:         appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: entry.Meta.ID}.String(),
 		Incarnation:       incarnation,
 		ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
 	}
@@ -543,7 +543,7 @@ func localPastThreadID(params appwire.ThreadReadParams) (string, bool) {
 		if err != nil {
 			return "", false
 		}
-		if ref.SourceID != "local" {
+		if ref.SourceID != appwire.LocalSourceID {
 			return "", false
 		}
 		return ref.ThreadID, true
@@ -558,7 +558,7 @@ func localPastThreadID(params appwire.ThreadReadParams) (string, bool) {
 func liveThreadCanMergeLocalPast(live appwire.Thread) bool {
 	if live.Evener.Ref != "" {
 		ref, err := appwire.ParseRef(live.Evener.Ref)
-		return err == nil && ref.SourceID == "local"
+		return err == nil && ref.SourceID == appwire.LocalSourceID
 	}
 	if live.Source != "" {
 		return live.Source == "local"
@@ -581,9 +581,9 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 		case live.Evener.Ref != "":
 			params.Ref = live.Evener.Ref
 		case live.ID != "":
-			params.Ref = appwire.Ref{SourceID: "local", ThreadID: live.ID}.String()
+			params.Ref = appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: live.ID}.String()
 		case live.SessionID != "":
-			params.Ref = appwire.Ref{SourceID: "local", ThreadID: live.SessionID}.String()
+			params.Ref = appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: live.SessionID}.String()
 		}
 	}
 	entry, ok := pastEntryForRead(cfg, params)
@@ -756,7 +756,7 @@ func attachPastThreadSkillCatalog(entry hubcore.PastEntry, thread appwire.Thread
 // stable-ref client is advertised a fork the RPC refuses.
 func hubCanForkThread(cfg hubcore.WebConfig, thread appwire.Thread) bool {
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
-	if err != nil || ref.SourceID != "local" {
+	if err != nil || ref.SourceID != appwire.LocalSourceID {
 		return false
 	}
 	return !hubForkLiveDelegateFenced(cfg, ref.ThreadID)
@@ -779,7 +779,7 @@ func hubForkLiveDelegateFenced(cfg hubcore.WebConfig, threadID string) bool {
 // session's own daemon is holding it behind recovery.
 //
 // NOTHING IN THE TREE EMITS IT. The daemon's status egress builds
-// appwire.ThreadStatus with a Type and no flags (server/appwire_runtime.go's
+// appwire.ThreadStatus with a Type and no flags (server/appwire_thread_projection.go's
 // appCapabilities path, internal/appprojector's threadStatus), and appwire
 // defines no constant for it, so this spelling has one side. It is named here
 // rather than left as a literal so the hub's own uses cannot be spelled apart,
@@ -807,7 +807,7 @@ func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread, owne
 		return true
 	}
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
-	if err != nil || ref.SourceID != "local" {
+	if err != nil || ref.SourceID != appwire.LocalSourceID {
 		return false
 	}
 	return hubForkIdentityFenced(cfg, ref.ThreadID, owner)
@@ -871,7 +871,7 @@ func hubArtifactsDir(cfg hubcore.WebConfig, ref string) string {
 // (the same signal fork is fenced on).
 func hubPagesBefore(cfg hubcore.WebConfig, ref string) bool {
 	parsed, err := appwire.ParseRef(ref)
-	return err == nil && parsed.SourceID == "local" && !hubForkLiveDelegateFenced(cfg, parsed.ThreadID)
+	return err == nil && parsed.SourceID == appwire.LocalSourceID && !hubForkLiveDelegateFenced(cfg, parsed.ThreadID)
 }
 
 // applyHubForkCapability projects the hub's fork authority after the common
@@ -915,7 +915,7 @@ func hubPagesBefore(cfg hubcore.WebConfig, ref string) bool {
 // could not verify.
 func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
-	if err != nil || ref.SourceID != "local" {
+	if err != nil || ref.SourceID != appwire.LocalSourceID {
 		if err != nil {
 			// An invalid ref cannot establish hub ownership. Never preserve a
 			// source-provided action for an identity the hub cannot parse.
@@ -1095,10 +1095,10 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		name = hubcore.ShortID(strings.TrimSpace(entry.Meta.ID))
 	}
 	cwd := entry.Meta.EnvInfo.WorkingDir
-	ref := appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String()
+	ref := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: entry.Meta.ID}.String()
 	parentRef := ""
 	if entry.Meta.ParentSessionID != "" {
-		parentRef = appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ParentSessionID}.String()
+		parentRef = appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: entry.Meta.ParentSessionID}.String()
 	}
 	kind := "session"
 	if entry.Meta.IsSubagent {

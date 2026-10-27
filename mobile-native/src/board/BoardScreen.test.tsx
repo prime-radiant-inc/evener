@@ -32,7 +32,7 @@ import { manifest, wireSnapshot } from "@evener/appwire-client/testing/navigatio
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import {
 	alertRequests,
 	playedHaptics,
@@ -135,7 +135,6 @@ vi.mock("expo-crypto", () => ({
 	randomUUID: () => `change-${Math.random()}`,
 	getRandomValues: (array: Uint8Array) => array,
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
 vi.mock("expo-secure-store", () => ({

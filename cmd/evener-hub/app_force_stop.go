@@ -55,7 +55,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if err != nil {
 		return appwire.InvalidParams("force stop requires a local session ref")
 	}
-	if ref.SourceID != "local" {
+	if ref.SourceID != appwire.LocalSourceID {
 		return forceStopRemoteThread(ctx, cfg, params, sources, ref)
 	}
 	if cfg.RunDir == "" || cfg.ResumeLocks == nil {
@@ -216,7 +216,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		return err
 	}
 	if sources != nil {
-		if source, ok := sources.Source("local"); ok {
+		if source, ok := sources.Source(appwire.LocalSourceID); ok {
 			if local, ok := source.(*appsource.LocalDaemonSource); ok {
 				release := local.BeginRecovery(entry)
 				defer release()
@@ -953,7 +953,7 @@ func forceStopEntry(runDir, sessionID string, controller daemonprocess.Controlle
 		if entry.SessionID != sessionID && entry.ThreadID != sessionID && entry.WorkspaceRef != "local:"+sessionID {
 			continue
 		}
-		if entry.SourceID != "" && entry.SourceID != "local" {
+		if entry.SourceID != "" && entry.SourceID != appwire.LocalSourceID {
 			return rendezvous.Entry{}, errors.New("daemon claims a foreign session source")
 		}
 		if found {
@@ -982,7 +982,7 @@ func forceStopEntry(runDir, sessionID string, controller daemonprocess.Controlle
 
 func forceStopAliases(entry rendezvous.Entry) []string {
 	aliases := []string{entry.SessionID, entry.ThreadID}
-	if workspace, err := appwire.ParseRef(entry.WorkspaceRef); err == nil && workspace.SourceID == "local" {
+	if workspace, err := appwire.ParseRef(entry.WorkspaceRef); err == nil && workspace.SourceID == appwire.LocalSourceID {
 		aliases = append(aliases, workspace.ThreadID)
 	}
 	slices.Sort(aliases)

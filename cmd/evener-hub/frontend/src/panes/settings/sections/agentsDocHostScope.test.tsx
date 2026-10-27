@@ -1,5 +1,4 @@
 import type { AgentsDocResponse, HostRow } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -8,9 +7,10 @@ import {
   resetAgentsDocHostInstancesForTests,
   resetAgentsDocStoreForTests,
 } from "../../../stores/agentsDoc";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { AgentsDocHostScope } from "./agentsDoc";
@@ -38,18 +38,12 @@ const CONTROLLER_DOC: AgentsDocResponse = {
   content: "# controller\n",
 };
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 function editor(): HTMLTextAreaElement {
   return screen.getByRole("textbox", { name: "AGENTS.md contents" }) as HTMLTextAreaElement;
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetAgentsDocStoreForTests();
   resetAgentsDocHostInstancesForTests();
   resetToastStoreForTests();
@@ -62,12 +56,12 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetAgentsDocHostInstancesForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   window.history.pushState({}, "", "/");
 });
 
 test("with this hub selected the section issues the plain agentsDoc calls and never the proxy", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/settings/agentsDoc/get", () => CONTROLLER_DOC);
   fake.on("evener/host/request", () => {
@@ -86,7 +80,7 @@ test("with this hub selected the section issues the plain agentsDoc calls and ne
 });
 
 test("a remote selection shows AND changes that host's own file, never this hub's", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/settings/agentsDoc/get", () => {
     throw new Error("a remote selection must not read this hub's AGENTS.md");
@@ -138,7 +132,7 @@ test("a remote selection shows AND changes that host's own file, never this hub'
 // sync that reads the draft and baseline still belonging to the host the user
 // left reads the new document as "changed on disk" and blanks the editor.
 test("switching to a host whose document is already cached shows that host's document", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/settings/agentsDoc/get", () => CONTROLLER_DOC);
   fake.on("evener/host/request", (params) => {
@@ -174,7 +168,7 @@ test("switching to a host whose document is already cached shows that host's doc
 // baseline while the draft reset empties the draft - leaving Save armed over an
 // empty body, to write it to the host just switched to.
 test("switching hosts never arms Save over an empty body", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/settings/agentsDoc/get", () => CONTROLLER_DOC);
   fake.on("evener/host/request", (params) => {

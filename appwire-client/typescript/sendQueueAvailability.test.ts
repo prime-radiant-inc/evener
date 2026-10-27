@@ -22,7 +22,7 @@ function caps(overrides: Partial<ThreadCapabilities> = {}): ThreadCapabilities {
 }
 
 // The capability set a real daemon publishes for an IDLE thread, read off
-// server/appwire_runtime.go's appCapabilities with every optional callback
+// server/appwire_thread_projection.go's appCapabilities with every optional callback
 // wired: Send is !active; Steer, Interrupt and Queue advertise harness support
 // (#1363, #1375) and do not move with `active`, so an idle live daemon
 // advertises all three; Clear and ForkFromTurn are hardcoded false.

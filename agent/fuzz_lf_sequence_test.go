@@ -47,10 +47,9 @@ func FuzzLifecycleSequence(f *testing.F) {
 		{Ops: []opRecord{
 			{Code: int(opProcessInput), Script: []int{int(kindReadFile), int(kindGrep), int(kindGlob), int(kindShell), int(kindText), int(kindFinal)}, Text: "work"},
 		}},
-		// Multi-turn conversation with an awaiting turn then a follow-up + enqueue.
+		// Multi-turn conversation with an awaiting turn, its reply, then an enqueue.
 		{Ops: []opRecord{
 			{Code: int(opProcessInput), Script: []int{int(kindText), int(kindAwait)}, Text: "q1"},
-			{Code: int(opFollowUp), Text: "more"},
 			{Code: int(opProcessInput), Script: []int{int(kindFinal)}, Text: "q2"},
 			{Code: int(opEnqueue), Text: "q3"},
 		}},

@@ -1474,28 +1474,30 @@ func TestRemoveWithAConfiguredPathAndNoFilePurgesTokensLive(t *testing.T) {
 	}
 }
 
-// TestNoConfigRemovalLeavesTokensWhenTheStagedCommitFails pins L1: the
-// no-cross-file purge rides the commit, so a staged write that refuses leaves
-// the token in place for the retry.
-func TestNoConfigRemovalLeavesTokensWhenTheStagedCommitFails(t *testing.T) {
+// TestRemovalLeavesTokensWhenTheHubTOMLIsCorrupt pins that a hub.toml the hub
+// cannot read refuses the removal's write, and the refused commit leaves the
+// token in place for the retry.
+func TestRemovalLeavesTokensWhenTheHubTOMLIsCorrupt(t *testing.T) {
 	entry := pipelineEntry("keep", 2)
 	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
 		pipelineToken(t, store, "keep", 2)
 	})
-	registry, err := hostreg.New([]hostreg.Host{entry})
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
+	m := fixture.manager(t)
+	corrupt := []byte("[[hosts\nname = \"keep\"\n")
+	if err := os.WriteFile(fixture.configPath, corrupt, 0o600); err != nil {
+		t.Fatalf("corrupt hub.toml: %v", err)
 	}
-	m := newHubHostManager(nil, nil, hubcore.WebConfig{
-		RemoteHostRegistry: registry,
-		RemoteHostOpsStore: fixture.store,
-	}, "", registry, nil)
-	m.cfg.store.poison(errors.New("injected store-load failure"))
 	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err == nil {
-		t.Fatal("the poisoned store's removal succeeded")
+		t.Fatal("the removal over a corrupt hub.toml succeeded")
 	}
 	if _, ok := m.cfg.ops.OutstandingToken("keep"); !ok {
 		t.Fatal("a failed staged commit purged the token")
+	}
+	if got, err := os.ReadFile(fixture.configPath); err != nil || !bytes.Equal(got, corrupt) {
+		t.Fatalf("the refused removal rewrote the corrupt hub.toml: %q, %v", got, err)
+	}
+	if _, live := m.cfg.hosts.Get("keep"); !live {
+		t.Fatal("the refused removal dropped the live host")
 	}
 }
 

@@ -474,7 +474,9 @@ async function runOutputPagingJourney(fixture) {
   await wait(`document.querySelector(${q(row(fixture.outputJobId))}) !== null`, 'separate real output owner is listed');
   await driver.click(row(fixture.outputJobId));
   await latest('SPLIT_é_');
-  const initialGeometry = await state();
+  // The latest page lands on the wire before the list renders it and scrolls to
+  // its end; a wheel sent before that is undone by the pending restoration.
+  const initialGeometry = await wait(`(() => { const value=${stateExpr}; return value?.first && value.following ? value : null; })()`, 'opening latest renders its visible rows at the real bottom');
   const firstHistory = await backward();
   assert.ok(page(firstHistory).offsetBytes < page(outputCalls()[0]).offsetBytes);
   assert.equal(initialGeometry.following,true,'opening latest follows the real bottom');

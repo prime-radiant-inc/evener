@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
@@ -68,9 +67,7 @@ func TestRestoredNeedsResponseHeldByWorkInFlightStillOwesItsRest(t *testing.T) {
 	working.mu.Lock()
 	working.running = false
 	working.mu.Unlock()
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
 		t.Fatalf("filtered wake: %v", err)
 	}

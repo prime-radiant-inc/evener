@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { MutationNotSentError } from "../../mobile/src/state/conversationMutation";
+import { MutationNotSentError } from "./conversation/state/conversationMutation";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";

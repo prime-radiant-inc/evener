@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"primeradiant.com/evener/gittest"
 )
 
 // A superseded migrated revision remains readable after its parent namespace is
@@ -52,9 +54,9 @@ func historicalSharedCacheAfterUpgrade(t *testing.T) (*Manager, []migrationTree,
 			t.Fatal(err)
 		}
 	}
-	gitIn(t, repo, "add", "plugins/widget")
-	gitIn(t, repo, "commit", "-q", "-m", "publish B package")
-	wantSHA := gitIn(t, repo, "rev-parse", "HEAD:plugins/widget")
+	gittest.Run(t, repo, "add", "plugins/widget")
+	gittest.Run(t, repo, "commit", "-q", "-m", "publish B package")
+	wantSHA := gittest.Run(t, repo, "rev-parse", "HEAD:plugins/widget")
 	wantPackage := snapshotMigrationTree(t, plugin)
 
 	m := NewManager(t.TempDir())

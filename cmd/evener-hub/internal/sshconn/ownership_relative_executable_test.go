@@ -96,7 +96,7 @@ func TestOwnerRelativeExecutableDeployOnly(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				got, after, err := m.DeployForOperation(t.Context(), host, facts, false, nil)
+				got, after, err := m.DeployForOperation(t.Context(), host, facts, false, nil, nil)
 				if different {
 					if !errors.Is(err, errOwnerSelectionMismatch) || writes != 0 {
 						t.Fatalf("different executable accepted: err=%v writes=%d", err, writes)

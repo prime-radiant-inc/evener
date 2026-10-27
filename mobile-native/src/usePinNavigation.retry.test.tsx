@@ -7,7 +7,7 @@
 // app's failed reads use.
 import { act } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { reconnectDelay } from "./hubConnection";
 import { usePinNavigation } from "./usePinNavigation";

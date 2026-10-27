@@ -6,6 +6,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
 import { connectionStore } from "../../../../stores/connection";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import type { MutationOutboxRecord } from "../../../../stores/mutationOutbox";
@@ -1089,12 +1090,7 @@ test("an applied pending receipt settles transport without dropping optimistic s
   fake.on("turn/start", async (params) => {
     await receiptGate;
     return {
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "pending",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a", { projectionState: "pending" }),
       turn: { id: "turn_1", status: "inProgress", itemsView: "full" },
     };
   });

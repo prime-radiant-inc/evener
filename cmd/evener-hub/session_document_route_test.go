@@ -100,9 +100,7 @@ func TestDocFileRouteReadsARemoteSessionThroughItsHost(t *testing.T) {
 	host := sessionDocumentServer(t, cwd)
 	client := dialHubRPC(t, host)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	controller := controllerOverHost(t, hubcore.WebConfig{}, client)
 
 	resp, body := getRemoteDoc(t, controller, "plans%2Fplan.md", nil)

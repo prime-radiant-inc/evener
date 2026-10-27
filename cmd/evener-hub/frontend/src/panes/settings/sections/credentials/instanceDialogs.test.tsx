@@ -9,9 +9,10 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { enterText } from "../../../../textEntryTestUtils";
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
@@ -21,12 +22,6 @@ import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanc
 // The dialogs' outcomes, read from their markers: the inline refusal by its
 // data-reason and the toasts by kind, never by the words either shows.
 const alertReason = (): string | null => screen.getByRole("alert").getAttribute("data-reason");
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {
@@ -75,7 +70,7 @@ const VERTEX_EXPRESS = provider({
 });
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   // Each test reads the toasts its own actions raised.
   resetToastStoreForTests();
@@ -85,20 +80,20 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   cleanup();
 });
 
 describe("AddInstanceDialog", () => {
   test("Base provider select is populated from availableProviders", () => {
-    connectFakeClient();
+    connectReadyFakeClient();
     render(<AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX]} onCancel={() => {}} onSuccess={() => {}} />);
     const select = screen.getByLabelText("Base provider") as HTMLSelectElement;
     expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "anthropic", "google-vertex-anthropic"]);
   });
 
   test("a provider's display name is used as its option label when present", () => {
-    connectFakeClient();
+    connectReadyFakeClient();
     render(
       <AddInstanceDialog
         availableProviders={[provider({ id: "anthropic", name: "Anthropic" })]}
@@ -110,13 +105,13 @@ describe("AddInstanceDialog", () => {
   });
 
   test("no variable inputs until a base with vars is selected", () => {
-    connectFakeClient();
+    connectReadyFakeClient();
     render(<AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX]} onCancel={() => {}} onSuccess={() => {}} />);
     expect(screen.queryByLabelText("GOOGLE_VERTEX_PROJECT")).toBeNull();
   });
 
   test("selecting a base renders one input per vars entry, labeled by name", async () => {
-    connectFakeClient();
+    connectReadyFakeClient();
     const varsEnvOnly = provider({ id: "vars-env-only", varsEnv: ["LEGACY_ENV"] });
     render(
       <AddInstanceDialog
@@ -140,7 +135,7 @@ describe("AddInstanceDialog", () => {
   // disagree here - a locale sort puts EXTRA_ONE first, ignoring the
   // underscore, while "S" is below "_" by code point.
   test("variable rows are ordered by code point, as the sheet orders them", async () => {
-    connectFakeClient();
+    connectReadyFakeClient();
     const extras = provider({ id: "extras", vars: { EXTRAS: "EXTRAS_ENV", EXTRA_ONE: "EXTRA_ONE_ENV" } });
     render(<AddInstanceDialog availableProviders={[extras]} onCancel={() => {}} onSuccess={() => {}} />);
     await userEvent.setup().selectOptions(screen.getByLabelText("Base provider"), "extras");
@@ -149,7 +144,7 @@ describe("AddInstanceDialog", () => {
   });
 
   test("google-vertex-express renders only its own base-URL override, no project or location", async () => {
-    connectFakeClient();
+    connectReadyFakeClient();
     render(
       <AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX_EXPRESS]} onCancel={() => {}} onSuccess={() => {}} />,
     );
@@ -160,7 +155,7 @@ describe("AddInstanceDialog", () => {
   });
 
   test("google-vertex-express's base-URL override is sent under its template key, not the env var name", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/create", (params) => {
       expect(params).toEqual({
         name: "vertex-express",
@@ -183,7 +178,7 @@ describe("AddInstanceDialog", () => {
   });
 
   test("switching base providers clears the previous base's variable inputs and values", async () => {
-    connectFakeClient();
+    connectReadyFakeClient();
     const user = userEvent.setup();
     render(<AddInstanceDialog availableProviders={[BEDROCK, VERTEX]} onCancel={() => {}} onSuccess={() => {}} />);
     await user.selectOptions(screen.getByLabelText("Base provider"), "amazon-bedrock");
@@ -194,7 +189,7 @@ describe("AddInstanceDialog", () => {
   });
 
   test("client-side validation: Base provider required, then Name required", async () => {
-    connectFakeClient();
+    connectReadyFakeClient();
     const user = userEvent.setup();
     render(<AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={() => {}} />);
     await user.click(screen.getByRole("button", { name: "Create" }));
@@ -205,7 +200,7 @@ describe("AddInstanceDialog", () => {
   });
 
   test("a credential header without $ is rejected client-side, with no RPC", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const create = vi.fn();
     fake.on("evener/instance/create", create);
     const user = userEvent.setup();
@@ -219,7 +214,7 @@ describe("AddInstanceDialog", () => {
   });
 
   test("a credential header with $ is accepted and sent verbatim", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/create", (params) => {
       expect(params).toEqual({
         name: "work",
@@ -240,7 +235,7 @@ describe("AddInstanceDialog", () => {
   });
 
   test("api-key-env sends the bare variable name", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/create", (params) => {
       expect(params).toEqual({
         name: "work",
@@ -261,7 +256,7 @@ describe("AddInstanceDialog", () => {
   });
 
   test("variable inputs are sent trimmed, with blank ones omitted", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/create", (params) => {
       expect(params).toEqual({
         name: "vertex",
@@ -282,7 +277,7 @@ describe("AddInstanceDialog", () => {
   });
 
   test("submit calls instanceCreate and, on success, toasts + calls onSuccess", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/create", (params) => {
       expect(params).toEqual({ name: "work", base: "anthropic", baseUrl: "https://x", originClientId: "test-tab" });
       // The hub's create returns the full updated listing, so the applied
@@ -309,7 +304,7 @@ describe("AddInstanceDialog", () => {
   // The guided flow steers on the created row, so success must not be reported
   // against a listing a concurrent read already threw away.
   test("a superseded create reconciles the listing before success is reported", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const WORK2 = instance({ name: "work2", providerId: "anthropic" });
     const WITHOUT_WORK2: InstanceListResponse = { instances: [], availableProviders: [] };
     const WITH_WORK2: InstanceListResponse = { instances: [WORK2], availableProviders: [] };
@@ -365,7 +360,7 @@ describe("AddInstanceDialog", () => {
   // not-ready/reload state) takes the unconfirmed create through its callback
   // instead of the dialog claiming success or blocking on a re-confirm.
   test("an unconfirmed create hands off to the consumer's recovery without a success toast", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const WORK2 = instance({ name: "work2", providerId: "anthropic" });
     const WITHOUT_WORK2: InstanceListResponse = { instances: [], availableProviders: [] };
     const WITH_WORK2: InstanceListResponse = { instances: [WORK2], availableProviders: [] };
@@ -417,7 +412,7 @@ describe("AddInstanceDialog", () => {
   // A dropped connection must not silently dead-end the retry: handleSubmit
   // reports a rejected read inline, and "Check again" fails the same way.
   test("Check again reports a dropped connection instead of dead-ending", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const WORK2 = instance({ name: "work2", providerId: "anthropic" });
     const WITHOUT_WORK2: InstanceListResponse = { instances: [], availableProviders: [] };
     const WITH_WORK2: InstanceListResponse = { instances: [WORK2], availableProviders: [] };
@@ -452,7 +447,7 @@ describe("AddInstanceDialog", () => {
     await waitFor(() => expect(alertReason()).toBe("unconfirmed"));
 
     await act(async () => {
-      connectionStore.setState({ state: "idle", client: null });
+      resetConnectionStoreForTests();
     });
     await user.click(screen.getByRole("button", { name: "Check again" }));
     // The dropped connection makes the read reject, which is an unapplied
@@ -467,7 +462,7 @@ describe("AddInstanceDialog", () => {
   // The applied path is not automatically a confirmation either: the store's
   // own listing is the applied response, and it must actually hold the row.
   test("a create whose applied listing omits the row is not reported as success", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const WITHOUT_WORK2: InstanceListResponse = { instances: [], availableProviders: [] };
     fake.on("evener/instance/list", () => WITHOUT_WORK2);
     await act(async () => {
@@ -495,7 +490,7 @@ describe("AddInstanceDialog", () => {
   // name is not evidence this create authored anything. Confirming against it
   // would steer the guided flow to a row the create never wrote.
   test("an implicit row with the created name does not confirm a create", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const IMPLICIT_WORK2 = instance({ name: "work2", providerId: "anthropic", implicit: true });
     const WITH_IMPLICIT: InstanceListResponse = { instances: [IMPLICIT_WORK2], availableProviders: [] };
     fake.on("evener/instance/create", () => WITH_IMPLICIT);
@@ -528,7 +523,7 @@ describe("AddInstanceDialog", () => {
   // Without a consumer recovery callback, the unconfirmed implicit row leaves
   // the dialog open on its own re-confirm path rather than claiming success.
   test("an implicit row with the created name keeps the dialog open unconfirmed", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const IMPLICIT_WORK2 = instance({ name: "work2", providerId: "anthropic", implicit: true });
     const WITH_IMPLICIT: InstanceListResponse = { instances: [IMPLICIT_WORK2], availableProviders: [] };
     fake.on("evener/instance/create", () => WITH_IMPLICIT);
@@ -551,7 +546,7 @@ describe("AddInstanceDialog", () => {
   // The positive control: the entry a create actually authors (implicit:
   // false) still confirms the create.
   test("an authored row with the created name still confirms the create", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const AUTHORED_WORK2 = instance({ name: "work2", providerId: "anthropic", implicit: false });
     const WITH_AUTHORED: InstanceListResponse = { instances: [AUTHORED_WORK2], availableProviders: [] };
     fake.on("evener/instance/create", () => WITH_AUTHORED);
@@ -574,7 +569,7 @@ describe("AddInstanceDialog", () => {
   // same authored-row rule: a listing holding only the implicit row is not
   // confirmation either.
   test("a reconciled listing holding only an implicit row does not confirm the create", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const IMPLICIT_WORK2 = instance({ name: "work2", providerId: "anthropic", implicit: true });
     const WITHOUT_WORK2: InstanceListResponse = { instances: [], availableProviders: [] };
     const WITH_IMPLICIT: InstanceListResponse = { instances: [IMPLICIT_WORK2], availableProviders: [] };
@@ -623,7 +618,7 @@ describe("AddInstanceDialog", () => {
   // re-confirms the listing instead of re-issuing the create, which already
   // landed on the host.
   test("a superseded create whose reconciled listing never shows the row stays open unconfirmed", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const WORK2 = instance({ name: "work2", providerId: "anthropic" });
     const WITHOUT_WORK2: InstanceListResponse = { instances: [], availableProviders: [] };
     const WITH_WORK2: InstanceListResponse = { instances: [WORK2], availableProviders: [] };
@@ -675,7 +670,7 @@ describe("AddInstanceDialog", () => {
   // retry while the read keeps losing the race and confirm the row is really
   // in the listing before steering the guided flow on it.
   test("a create whose reconcile read loses the race retries before reporting success", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const WORK2 = instance({ name: "work2", providerId: "anthropic" });
     const WITHOUT_WORK2: InstanceListResponse = { instances: [], availableProviders: [] };
     const WITH_WORK2: InstanceListResponse = { instances: [WORK2], availableProviders: [] };
@@ -749,7 +744,7 @@ describe("AddInstanceDialog", () => {
   });
 
   test("a create failure shows an inline error and a 'Create failed' toast, without calling onSuccess", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/create", () => {
       throw new Error("name already exists");
     });
@@ -776,7 +771,7 @@ describe("AddInstanceDialog", () => {
   // create that is not a failed create - nothing was sent - and the raw store
   // message names the store's internals rather than what the user can do.
   test("a create from the previous connection's listing is refused with the change and keeps the draft", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => ({
       instances: [instance({ name: "work", providerId: "anthropic" })],
       availableProviders: [ANTHROPIC],
@@ -827,7 +822,7 @@ describe("AddInstanceDialog", () => {
   });
 
   test("Protocol and Surface default to inherit and are sent only when chosen", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/create", (params) => {
       expect(params).toEqual({
         name: "work",
@@ -860,7 +855,7 @@ describe("AddInstanceDialog", () => {
 
 describe("ApiKeyDialog", () => {
   test("submitting an empty (trimmed) value silently cancels - no RPC", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const setKey = vi.fn();
     fake.on("evener/auth/apiKey/set", setKey);
     const onCancel = vi.fn();
@@ -880,7 +875,7 @@ describe("ApiKeyDialog", () => {
   });
 
   test("a non-empty key calls authApiKeySet, refreshes, toasts, and calls onSuccess", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/auth/apiKey/set", (params) => {
       expect(params).toEqual({ provider: "work", value: "sk-secret", originClientId: "test-tab" });
       return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
@@ -912,7 +907,7 @@ describe("ApiKeyDialog", () => {
   // fingerprint is what the write asserts, and a mismatch refuses the save
   // before any RPC, clears the field, and says why.
   test("a name that resolves to a different endpoint refuses the save, clears the value, and shows an error", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const setKey = vi.fn();
     fake.on("evener/auth/apiKey/set", setKey);
     const user = userEvent.setup();
@@ -944,7 +939,7 @@ describe("ApiKeyDialog", () => {
   // dialog opened against, the captured fingerprint is what the write asserts,
   // not a live value read at submit time.
   test("an unchanged destination submits the captured fingerprint", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/auth/apiKey/set", (params) => {
       expect(params).toEqual({
         provider: "work",
@@ -983,7 +978,7 @@ describe("ApiKeyDialog", () => {
   // expectation to the row on screen so the retype saves against the
   // destination the user can see.
   test("a fingerprint gained while the dialog is open refuses the save and re-anchors to the row", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const setKey = vi.fn(() => ({
       provider: "work",
       supported: true,
@@ -1044,7 +1039,7 @@ describe("ApiKeyDialog", () => {
   // checked, so it is refused locally before any RPC, and the typed value is
   // kept for the retry the message asks for.
   test("a destination with no fingerprint refuses the save before any RPC", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const setKey = vi.fn();
     fake.on("evener/auth/apiKey/set", setKey);
     const user = userEvent.setup();
@@ -1067,7 +1062,7 @@ describe("ApiKeyDialog", () => {
   // that does not omit empty strings (or a fixture) carries; both spellings
   // mean "the row shows none" and both are refused.
   test("an explicit empty fingerprint on a destination refuses the save", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const setKey = vi.fn();
     fake.on("evener/auth/apiKey/set", setKey);
     const user = userEvent.setup();
@@ -1094,7 +1089,7 @@ describe("ApiKeyDialog", () => {
   // is the "nothing shown, nothing to assert" case - the hub accepts a write
   // with no assertion there - so the dialog must still submit it.
   test("a row with no destination still submits with no assertion", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/auth/apiKey/set", (params) => {
       expect(params).toEqual({ provider: "work", value: "sk-secret", originClientId: "test-tab" });
       return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
@@ -1123,7 +1118,7 @@ describe("ApiKeyDialog", () => {
   // the save must refuse rather than assert a fingerprint the row no longer
   // carries.
   test("a captured fingerprint that the row no longer carries refuses the save", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const setKey = vi.fn();
     fake.on("evener/auth/apiKey/set", setKey);
     const user = userEvent.setup();
@@ -1157,7 +1152,7 @@ describe("ApiKeyDialog", () => {
   // re-typed value asserts the row the dialog is displaying instead of being
   // refused forever against the endpoint that is already gone.
   test("a value re-entered after a refusal asserts the row the dialog now displays", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/auth/apiKey/set", () => ({
       provider: "work",
       supported: true,
@@ -1221,7 +1216,7 @@ describe("ApiKeyDialog", () => {
   // review. Reported as a generic save failure it left the dialog retrying a
   // dead assertion until something else refreshed.
   test("a hub endpoint-refusal drops the secret, re-reads the listing, and re-anchors to the row now on screen", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const MOVED = instance({ name: "work", providerId: "anthropic", endpointFingerprint: "fp-changed" });
     fake.on("evener/instance/list", () => ({ instances: [MOVED], availableProviders: [] }));
     let attempts = 0;
@@ -1309,7 +1304,7 @@ describe("ApiKeyDialog", () => {
   // assertion, which would let the retype land on whatever the name resolves to
   // next, unverified.
   test("a hub endpoint-refusal whose row is gone reports the change and saves nothing", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
     fake.on("evener/auth/apiKey/set", () => {
       throw new WireError(
@@ -1364,7 +1359,7 @@ describe("ApiKeyDialog", () => {
   // the same recovery, and the user never sees the store's internal words or a
   // "Save failed" toast for a save that was deliberately not sent.
   test("a save from the previous connection's listing is refused, re-reads, and re-anchors to the row now on screen", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const MOVED = instance({ name: "work", providerId: "anthropic", endpointFingerprint: "fp-changed" });
     fake.on("evener/instance/list", () => ({ instances: [MOVED], availableProviders: [] }));
     await credentialsStore.getState().fetch();
@@ -1447,7 +1442,7 @@ describe("ApiKeyDialog", () => {
   });
 
   test("a saved key whose listing read is lost is still reported as saved", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let save!: (value: AuthStatusResponse) => void;
     fake.on(
       "evener/auth/apiKey/set",
@@ -1474,7 +1469,7 @@ describe("ApiKeyDialog", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     // Dropped connection during the save: the credential write succeeded, and
     // the follow-up listing read rejecting must not turn it into "Save failed".
-    connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    resetConnectionStoreForTests();
     await act(async () =>
       save({ provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false }),
     );
@@ -1483,7 +1478,7 @@ describe("ApiKeyDialog", () => {
   });
 
   test("a failure shows an inline error and a 'Save failed' toast", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/auth/apiKey/set", () => {
       throw new Error("rejected");
     });
@@ -1507,7 +1502,7 @@ describe("ApiKeyDialog", () => {
   });
 
   test("the API key input is type=password", () => {
-    connectFakeClient();
+    connectReadyFakeClient();
     render(
       <ApiKeyDialog
         instance={instance({ name: "work", providerId: "anthropic" })}
@@ -1522,7 +1517,7 @@ describe("ApiKeyDialog", () => {
 
 describe("CredentialJsonDialog", () => {
   test("submitting an empty (trimmed) value silently cancels - no RPC", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const setJson = vi.fn();
     fake.on("evener/auth/credentialJson/set", setJson);
     const onCancel = vi.fn();
@@ -1542,7 +1537,7 @@ describe("CredentialJsonDialog", () => {
   });
 
   test("a pasted JSON calls credentialJson/set with the instance name, refreshes, toasts, and calls onSuccess", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const json = '{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}';
     fake.on("evener/auth/credentialJson/set", (params) => {
       expect(params).toEqual({ provider: "vertex", value: json, originClientId: "test-tab" });
@@ -1570,7 +1565,7 @@ describe("CredentialJsonDialog", () => {
   });
 
   test("a rejected paste shows the server's message inline", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/auth/credentialJson/set", () => {
       throw new Error("not a Google credential JSON: unexpected end of JSON input");
     });

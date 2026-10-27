@@ -9,8 +9,8 @@ run:
 # split per FILE. tagliatelle's overrides are per PACKAGE, so the main
 # .golangci.yml cannot: it can only switch the whole package, or exclude the
 # files and enforce nothing there — which is what it did, dropping the
-# camelCase requirement on 20 files including production appwire_runtime.go and
-# appwire_turns.go.
+# camelCase requirement on 20 files including the production server/appwire_*.go
+# files.
 #
 # This config is the other half. It flips package `server` to camelCase and
 # throws away every finding outside server/appwire_, so the only thing it can

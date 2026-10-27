@@ -652,7 +652,7 @@ func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThrea
 	readGenerations := make(map[string]uint64)
 	remoteHosts := remoteHostNames(s.cfg)
 	for _, source := range s.sources.All() {
-		if source.ID() == "local" {
+		if source.ID() == appwire.LocalSourceID {
 			continue
 		}
 		// Row ownership follows the generation at READ time, not at walk
@@ -1074,7 +1074,7 @@ func (s *WebServer) apiTreeSources() []hubapi.Source {
 		return sources
 	}
 	for _, source := range s.sources.All() {
-		if source.ID() == "local" {
+		if source.ID() == appwire.LocalSourceID {
 			continue
 		}
 		sources = append(sources, hubapi.Source{
@@ -1211,7 +1211,7 @@ func canonicalSessionDecisionID(raw string) (id string, remote bool) {
 	switch {
 	case err != nil:
 		return raw, false
-	case ref.SourceID == "local":
+	case ref.SourceID == appwire.LocalSourceID:
 		return ref.ThreadID, false
 	default:
 		return ref.String(), true
@@ -1220,7 +1220,7 @@ func canonicalSessionDecisionID(raw string) (id string, remote bool) {
 
 func favoriteSessionAliases(id string) []string {
 	aliases := []string{id}
-	if ref, err := appwire.ParseRef(id); err == nil && ref.SourceID == "local" {
+	if ref, err := appwire.ParseRef(id); err == nil && ref.SourceID == appwire.LocalSourceID {
 		aliases = append(aliases, ref.ThreadID, "local:"+ref.ThreadID)
 	} else if !strings.Contains(id, ":") {
 		aliases = append(aliases, "local:"+id)
@@ -1269,7 +1269,7 @@ func favoriteRemoteOwnerships(threads []appwire.Thread) map[string]favoriteRemot
 	ownerships := make(map[string]favoriteRemoteOwnership)
 	for _, thread := range threads {
 		ref, ok := appThreadTreeRef(thread)
-		if !ok || ref.SourceID == "local" {
+		if !ok || ref.SourceID == appwire.LocalSourceID {
 			continue
 		}
 		sourceID := strings.TrimSpace(thread.Source)

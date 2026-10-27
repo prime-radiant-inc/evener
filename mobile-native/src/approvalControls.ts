@@ -1,5 +1,5 @@
 import type { SandboxEscalationRequested } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 
 // The dock re-reads the session on its own after this, so it names nothing
 // to press. A new decision may still be tried while it stands: the hub refuses

@@ -9,8 +9,8 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { isResumeOnly } from "./recoveryFence";
 import {
-  isResumeOnly,
   notifyReadyForMutationDispatch,
   productionEntryTranscriptForTests,
   resetThreadsStoreForTests,

@@ -57,7 +57,8 @@ import {
   recoveryFence,
 } from "../../../stores/liveControls";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
-import { hasQueuedNonSend, type ResumeOnlySignals, useThreadsStore } from "../../../stores/threads";
+import type { ResumeOnlySignals } from "../../../stores/recoveryFence";
+import { hasQueuedNonSend, useThreadsStore } from "../../../stores/threads";
 import {
   Button,
   ConfirmDialog,

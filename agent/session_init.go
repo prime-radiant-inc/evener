@@ -866,15 +866,10 @@ type RestoreSessionConfig struct {
 	artifactStoreInherited bool
 }
 
-// RestoreSessionFromMeta creates a Session from a SessionMeta, recovering
-// history exclusively from the transcript JSONL. If no transcript exists,
-// the session starts with empty history (no snapshot fallback).
-func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, stateDir string) (*Session, error) {
-	return RestoreSessionFromMetaWithConfig(client, profile, env, meta, RestoreSessionConfig{StateDir: stateDir})
-}
-
-// RestoreSessionFromMetaWithConfig is RestoreSessionFromMeta with explicit
-// runtime-only restore configuration.
+// RestoreSessionFromMetaWithConfig creates a Session from a SessionMeta,
+// recovering history exclusively from the transcript JSONL. If no transcript
+// exists, the session starts with empty history (no snapshot fallback).
+// restoreCfg carries the runtime-only restore configuration.
 func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, restoreCfg RestoreSessionConfig) (*Session, error) {
 	if err := requireSessionDeps(client, profile, env); err != nil {
 		return nil, err

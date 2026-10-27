@@ -18,9 +18,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import type { AppwireClientLike, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { createConversationService } from "../../mobile/src/services/conversation";
-import { createConversationStore, type ConversationPendingSubmission } from "../../mobile/src/state/conversation";
-import { createActivityStore } from "../../mobile/src/state/activity";
+import { createConversationService } from "./conversation/services/conversation";
+import { createConversationStore, type ConversationPendingSubmission } from "./conversation/state/conversation";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { createDurableSubmitter, createNativeMutationHost } from "./nativeMutationHost";
@@ -146,7 +145,7 @@ async function open(
 ) {
 	client.on("thread/read", () => ({ thread: makeThread() }) as ThreadReadResponse);
 	await host.start();
-	await store.getState().openProjected(service, createActivityStore().getState(), "ref-1");
+	await store.getState().openProjected(service, "ref-1");
 }
 
 test("a rejected production send is admitted durably and lands a recovery row the panel surfaces", async () => {
@@ -295,7 +294,7 @@ test("a failed host startup keeps the registration so a later admission still di
 	// retried start has a bound client to dispatch for.
 	expect(host.beginRead("ref-1")).toBeDefined();
 
-	await store.getState().openProjected(service, createActivityStore().getState(), "ref-1");
+	await store.getState().openProjected(service, "ref-1");
 	store.getState().setDraft("retry after failure");
 	await store.getState().send(service, [{ type: "text", text: "retry after failure" }]);
 

@@ -18,7 +18,7 @@ import type {
   ThreadStartParams,
   ThreadStartResponse,
 } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { HOST_DEPENDENT_DISCOVERY_METHODS, SCOPED_HOST_READ_DEBOUNCE_MS, WireError } from "@evener/appwire-client";
 import type { ResourceState } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -30,7 +30,6 @@ import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
-import { HOST_DEPENDENT_DISCOVERY_METHODS } from "../../stores/hostRouting";
 import { hostsStore } from "../../stores/hosts";
 import { ownClientId } from "../../stores/mutationClientIdentity";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -53,7 +52,6 @@ import {
   setDraftField,
   spawnDraftsStore,
 } from "./spawnDrafts";
-import { SCOPED_HOST_READ_DEBOUNCE_MS } from "./useScopedHostRead";
 
 let modelListOverride: ModelDescriptor[] | null = null;
 

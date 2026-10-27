@@ -22,6 +22,21 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+// newRelayTestServer serves a hub app server over the given source on a
+// fresh httptest WebSocket server, closed at test end.
+func newRelayTestServer(t *testing.T, source appsource.Source) *httptest.Server {
+	t.Helper()
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	t.Cleanup(hub.Close)
+	return hub
+}
+
 func TestHubAtomicRejoinUsesRelaySessionRead(t *testing.T) {
 	thread := appwire.Thread{
 		ID:        "thread-atomic",
@@ -45,20 +60,9 @@ func TestHubAtomicRejoinUsesRelaySessionRead(t *testing.T) {
 		lease:  lease,
 	}
 
-	sources := appsource.NewRegistry()
-	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources)
-	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
-	defer hub.Close()
+	hub := newRelayTestServer(t, source)
 
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 		Ref:       thread.Evener.Ref,
 		Subscribe: true,
@@ -112,7 +116,7 @@ func TestHubRelayEndsWithItsServer(t *testing.T) {
 	observeHubRelay = func(got *hubRelay) { relays = got }
 	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir()}, sources)
 	observeHubRelay = nil
-	server.NewConnection("subscriber").Subscribe("remote:thread")
+	seedSubscription(t, server, "remote:thread")
 	if err := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, thread); err != nil {
 		t.Fatalf("startRelay: %v", err)
 	}
@@ -151,7 +155,7 @@ func TestHubRelayInitialSubscribeEndsWithItsServer(t *testing.T) {
 	observeHubRelay = func(got *hubRelay) { relays = got }
 	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir()}, sources)
 	observeHubRelay = nil
-	server.NewConnection("subscriber").Subscribe("remote:thread")
+	seedSubscription(t, server, "remote:thread")
 	started := make(chan error, 1)
 	go func() {
 		started <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, thread)
@@ -206,11 +210,7 @@ func TestHubRelayCanonicalEndsWithItsServer(t *testing.T) {
 	appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
@@ -383,14 +383,7 @@ func TestHubRelayReconnectRoutesOneResyncThroughCanonicalListener(t *testing.T) 
 			return appwire.ParseRef(rootRef)
 		},
 	}
-	sources := appsource.NewRegistry()
-	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources)
-	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
-	defer hub.Close()
+	hub := newRelayTestServer(t, source)
 	root := dialHubRPC(t, hub)
 	defer root.Close()
 	child := dialHubRPC(t, hub)
@@ -469,14 +462,7 @@ func TestHubRelayDaemonGoneResyncReachesEveryRouteWithItsOwnRef(t *testing.T) {
 			return appwire.ParseRef(rootRef)
 		},
 	}
-	sources := appsource.NewRegistry()
-	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources)
-	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
-	defer hub.Close()
+	hub := newRelayTestServer(t, source)
 	root := dialHubRPC(t, hub)
 	defer root.Close()
 	child := dialHubRPC(t, hub)
@@ -569,11 +555,7 @@ func TestHubRelayPublicationGuardTimeoutBroadcastsResync(t *testing.T) {
 	}, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
@@ -683,14 +665,7 @@ func TestHubRelayDoesNotPromoteAMalformedDaemonResync(t *testing.T) {
 			return appwire.ParseRef(rootRef)
 		},
 	}
-	sources := appsource.NewRegistry()
-	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources)
-	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
-	defer hub.Close()
+	hub := newRelayTestServer(t, source)
 	root := dialHubRPC(t, hub)
 	defer root.Close()
 	child := dialHubRPC(t, hub)
@@ -838,14 +813,7 @@ func TestHubRelayDaemonGoneReachesARouteBoundDuringTheFanOut(t *testing.T) {
 			return appwire.ParseRef(rootRef)
 		},
 	}
-	sources := appsource.NewRegistry()
-	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources)
-	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
-	defer hub.Close()
+	hub := newRelayTestServer(t, source)
 	root := dialHubRPC(t, hub)
 	defer root.Close()
 	child := dialHubRPC(t, hub)
@@ -1059,11 +1027,7 @@ func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {
 	}, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 		Ref:       thread.Evener.Ref,
@@ -1116,14 +1080,7 @@ func TestHubAtomicRejoinWritesResponseBeforePostCutNotification(t *testing.T) {
 			deliveries: deliveries,
 		},
 	}
-	sources := appsource.NewRegistry()
-	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources)
-	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
-	defer hub.Close()
+	hub := newRelayTestServer(t, source)
 
 	transport, err := appwire.DialWebSocket(context.Background(), "ws"+hub.URL[len("http"):]+"/rpc", hub.Client())
 	if err != nil {
@@ -1141,9 +1098,7 @@ func TestHubAtomicRejoinWritesResponseBeforePostCutNotification(t *testing.T) {
 	client.Start(context.Background())
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	if frame := <-frames; frame.err != nil || frame.message.Response == nil {
 		t.Fatalf("initialize frame = %+v, want response", frame)
 	}
@@ -1230,11 +1185,7 @@ func TestHubAtomicRejoinDoesNotConfirmSnapshotWhenLiveHandoffCannotPrepare(t *te
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 		Ref:       thread.Evener.Ref,
 		Subscribe: true,
@@ -1870,11 +1821,7 @@ func TestHubRelayRemapFencesOldFanoutBeforeBroadcast(t *testing.T) {
 	appServer := newHubAppServer(cfg, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if _, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: downstreamRef, Subscribe: true}); err != nil {
 		t.Fatalf("initial ThreadRead: %v", err)
 	}
@@ -2598,11 +2545,7 @@ func TestHubRelayRemapRetainsAuthoritativeRouteDuringReplacementRead(t *testing.
 	appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: downstreamRef, Subscribe: true}); err != nil {
 		t.Fatalf("initial ThreadRead: %v", err)
 	}
@@ -2863,19 +2806,8 @@ func TestHubRelayRemapMovesDownstreamAndTargetRouteOwnership(t *testing.T) {
 			return routeAwareTestLease(newLeaseValue), nil
 		},
 	}
-	sources := appsource.NewRegistry()
-	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources)
-	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	hub := newRelayTestServer(t, source)
+	client := dialHubRPCInitialized(t, hub)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: downstreamRef, Subscribe: true}); err != nil {
 		t.Fatalf("old ThreadRead: %v", err)
 	}
@@ -3048,11 +2980,7 @@ func TestHubAtomicRejoinExcludesDeletionAtHandoffPrepareBoundary(t *testing.T) {
 	}, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	_, readErr := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 		Ref:       ref,
@@ -3103,11 +3031,7 @@ func TestHubAtomicRelayPublicationStopsAfterDeletionWins(t *testing.T) {
 	}, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 		Ref:       ref,
 		Subscribe: true,
@@ -3181,11 +3105,7 @@ func TestHubRelayPublicationWaitsForHeldTargetAlias(t *testing.T) {
 	}, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 		Ref:       ref,
 		Subscribe: true,
@@ -3582,11 +3502,7 @@ func TestHubRelayPendingFrameWakesOnARoutePublishItRaced(t *testing.T) {
 	appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: downstreamRef, Subscribe: true}); err != nil {
 		t.Fatalf("initial ThreadRead: %v", err)
 	}

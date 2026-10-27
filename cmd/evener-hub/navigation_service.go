@@ -1591,7 +1591,7 @@ func (key navigationResourceKey) Semantic() navigationResourceKey {
 // unknown ids have no hop, so their aliases resolve to gone.
 func (w *WebServer) navigationSubagentParent(ref string) (parent, kind string, ok bool) {
 	parsed, err := appwire.ParseRef(ref)
-	if err != nil || parsed.SourceID != "local" {
+	if err != nil || parsed.SourceID != appwire.LocalSourceID {
 		return "", "", false
 	}
 	id := parsed.ThreadID

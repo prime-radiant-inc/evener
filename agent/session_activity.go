@@ -555,7 +555,7 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 				jm := runtime.jobManager
 				jm.mu.Lock()
 				for _, cfg := range jm.watches {
-					if cfg != nil && cfg.id == id {
+					if cfg != nil && cfg.watchID == id {
 						proven = true
 						if watchOneShotHasFired(cfg) {
 							result.Watches.Completed++

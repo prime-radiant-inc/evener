@@ -65,8 +65,7 @@ func TestStableDelegateWorktree_DisposeGateCatchesReceiverRoutedWatch(t *testing
 		ReceiverDelegateID: id,
 	}
 	cfg := &watchConfig{
-		id:                 "w1",
-		watchID:            "watch-1",
+		watchID:            "w1",
 		target:             "job_source",
 		send:               &watchSendArgs{To: stableWatchReceiverTarget},
 		receiverSessionID:  childSessionID,
