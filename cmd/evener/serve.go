@@ -400,58 +400,16 @@ func armInterruptRunner(setRunner, setCancel func()) {
 
 func runServeWithDeps(args []string, deps serveDeps) error {
 	fs := deps.newFlagSet("serve", flag.ExitOnError)
+	lf := registerLaunchFlags(fs)
 	addr := fs.String("addr", "127.0.0.1:9131", "listen address")
-	model := fs.String("model", "", "LLM model identifier (provider/model)")
-	fastCheapModel := fs.String("fast-cheap-model", "", "auxiliary model for side calls (naming, summarization, web fetch); 'provider/model' may use a different provider than --model, or a bare 'model' for the active provider")
-	visionModel := fs.String("vision-model", "", "vision side-channel model: 'off' disables image description, 'provider/model' or bare 'model' routes it (default: the session model)")
-	workDir := fs.String("dir", "", "working directory")
-	stateDir := fs.String("state-dir", "", "override runtime state directory")
-	disableMemory := fs.Bool("disable-memory", false, "disable native memory for this session, including on resume")
 	runDirFlag := fs.String("run-dir", "", "override rendezvous run directory")
-	resume := fs.String("resume", "", "resume a previous session by ID")
-	resumeLast := fs.Bool("resume-last", false, "resume the most recent session")
-	systemPrompt := fs.String("system-prompt", "", "path to a custom system prompt file")
-	var systemPromptAppend cmdutil.StringSliceFlag
-	fs.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
-	systemPromptAsUser := fs.Bool("system-prompt-as-user", false, "deliver system prompt as first user message")
-	maxRounds := fs.Int("max-rounds", -1, "max tool rounds per input (-1=default, 0=unlimited)")
-	maxSubagentDepth := fs.Int("max-subagent-depth", -1, "max subagent nesting depth")
-	maxConcurrentDelegates := fs.Int("max-concurrent-delegates", -1, "max concurrently running delegate turns per session tree (default: 50)")
-	maxRetainedTerminal := fs.Int("max-retained-terminal", -1, "max retained terminal delegate records per session (default: 2048)")
-	shareTaskStore := fs.Bool("share-task-store", false, "share task list between parent and child sessions")
-	resultToolName := fs.String("result-tool-name", "", "override the result tool name")
-	reasoningEffort := fs.String("reasoning-effort", "", "reasoning effort: minimal|low|medium|high|xhigh|max|none")
-	exportATIF := fs.String("export-atif", "", "export ATIF trajectory to this path")
-	exportATIFProviderHandles := fs.String("export-atif-provider-handles", "", "ATIF provider handle export mode: redacted|raw-local (default: redacted)")
-	contextStrategy := fs.String("context-strategy", "", "context management strategy")
-	outputSchema := fs.String("output-schema", "", "inline JSON Schema applied to the communicate tool's output field")
-	verbose := fs.Bool("verbose", false, "emit NDJSON events to stderr")
 	appReplaySize := fs.Int("app-replay-size", 0, "AppWire notification replay ring size (default 1000)")
 	nonInteractive := fs.Bool("non-interactive", false, "mark this daemon session as headless/non-interactive")
-	agentName := fs.String("agent", "", "agent persona name (default: default)")
-	var skillsDirs cmdutil.StringSliceFlag
-	fs.Var(&skillsDirs, "skills-dir", "extra skill directory (repeatable)")
-	var mcpServers cmdutil.StringSliceFlag
-	fs.Var(&mcpServers, "mcp", "MCP server (repeatable)")
-	var mcpConfigs cmdutil.StringSliceFlag
-	fs.Var(&mcpConfigs, "mcp-config", "path to .mcp.json file (repeatable)")
-	var pluginDirs cmdutil.StringSliceFlag
-	fs.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
 	pluginRoot := fs.String("plugin-root", "", "internal plugin registry root override")
 	agentsDoc := fs.String("agents-doc", "", "personal AGENTS.md loaded ahead of project docs (default: <user config root>/AGENTS.md)")
-	var enabledPlugins pluginSelectionFlag
-	fs.Var(&enabledPlugins, "enabled-plugins", "comma-separated plugin names to enable (empty selects none)")
 	var modelFallbacks cmdutil.StringSliceFlag
 	fs.Var(&modelFallbacks, "model-fallback", "fallback model (provider/model) tried on permanent provider errors (repeatable)")
-	providerIdleTimeout := fs.String("provider-idle-timeout", "", "Provider response-byte idle duration (default: 10m; no total request limit)")
 	daemonIdleTimeout := fs.Duration("daemon-idle-timeout", 0, "retire this daemon after continuous proven inactivity (default: 0 = automatic retirement disabled; the Hub passes its configured value)")
-	openAIResponsesContinuation := fs.String("openai-responses-continuation", "", "OpenAI Responses continuation mode: off|auto (default: off)")
-	sandboxMode := fs.String("sandbox", "off", "sandbox mode: off (default), read-only, workspace-write, or restricted")
-	sandboxNet := fs.String("sandbox-net", "on", "sandbox network egress on|off (default on; only applies with a non-off --sandbox mode)")
-	apiLog := fs.String("api-log", "off", "durable API request logging on|off (default off; on records every provider request and response to <state-dir>/sessions/<id>.api.jsonl)")
-	cpuProfile := fs.String("cpu-profile", "", "write CPU profile to file")
-	traceFile := fs.String("trace", "", "write execution trace to file")
-
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: evener serve [flags]\n\n")
 		fmt.Fprintf(os.Stderr, "Start evener as an app-wire JSON-RPC server.\n\n")
@@ -466,7 +424,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return fmt.Errorf("--daemon-idle-timeout must not be negative (got %v)", *daemonIdleTimeout)
 	}
 	pluginManager := plugins.NewManager(*pluginRoot)
-	if err := rejectPluginSelectionWithResume(enabledPlugins.Value(), *resume, *resumeLast); err != nil {
+	if err := rejectPluginSelectionWithResume(lf.enabledPlugins.Value(), *lf.resume, *lf.resumeLast); err != nil {
 		return err
 	}
 	// Signal handling, installed before the first thing that can wait on
@@ -503,8 +461,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return pluginManager.ResolveForLaunch(ctx, explicit, enabled)
 		}
 	}
-	resolvedPlugins, resolveErr := resolvePlugins(ctx, []string(pluginDirs), enabledPlugins.Value())
-	if fatal := fatalLaunchPluginError(resolveErr, enabledPlugins.Value()); fatal != nil {
+	resolvedPlugins, resolveErr := resolvePlugins(ctx, []string(lf.pluginDirs), lf.enabledPlugins.Value())
+	if fatal := fatalLaunchPluginError(resolveErr, lf.enabledPlugins.Value()); fatal != nil {
 		return fatal
 	}
 	if resolveErr != nil {
@@ -514,24 +472,24 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := resolvedPlugins.ValidateSelection(); err != nil {
 		return err
 	}
-	if _, err := agent.ParseProviderIdleTimeout(*providerIdleTimeout); err != nil {
+	if _, err := agent.ParseProviderIdleTimeout(*lf.providerIdleTimeout); err != nil {
 		return err
 	}
-	apiLogEnabled, apiLogErr := parseAPILog(*apiLog)
+	apiLogEnabled, apiLogErr := parseAPILog(*lf.apiLog)
 	if apiLogErr != nil {
 		return apiLogErr
 	}
-	resolvedOpenAIResponsesContinuation := resolveOpenAIResponsesContinuation(*openAIResponsesContinuation, nil)
+	resolvedOpenAIResponsesContinuation := resolveOpenAIResponsesContinuation(*lf.openAIResponsesContinuation, nil)
 
-	if *cpuProfile != "" {
-		stop, err := deps.startCPUProfile(*cpuProfile)
+	if *lf.cpuProfile != "" {
+		stop, err := deps.startCPUProfile(*lf.cpuProfile)
 		if err != nil {
 			return fmt.Errorf("CPU profile: %w", err)
 		}
 		defer stop()
 	}
-	if *traceFile != "" {
-		stop, err := deps.startTrace(*traceFile)
+	if *lf.traceFile != "" {
+		stop, err := deps.startTrace(*lf.traceFile)
 		if err != nil {
 			return fmt.Errorf("trace: %w", err)
 		}
@@ -546,7 +504,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	defer stopPprof()
 
 	// Resolve working directory.
-	wd := *workDir
+	wd := *lf.workDir
 	if wd == "" {
 		var err error
 		wd, err = deps.getwd()
@@ -574,7 +532,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// Resolve state directory.
 	// Priority: --state-dir flag > EVENER_STATE_DIR env > XDG-computed default.
 	var project identifier.Project
-	sd := *stateDir
+	sd := *lf.stateDir
 	if sd == "" {
 		sd = envvars.EVENERStateDir.Getenv()
 	}
@@ -592,18 +550,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return fmt.Errorf("resolve absolute state directory: %w", stateDirErr)
 	}
 	sd = absoluteStateDir
-	resuming := *resume != "" || *resumeLast
+	resuming := *lf.resume != "" || *lf.resumeLast
 	var resumedMeta schema.SessionMeta
 	if resuming {
 		var metaErr error
-		resumedMeta, metaErr = deps.resolveMeta(sd, *resume, *resumeLast)
+		resumedMeta, metaErr = deps.resolveMeta(sd, *lf.resume, *lf.resumeLast)
 		if metaErr != nil {
 			return metaErr
 		}
 		// An implicit --resume-last that lands on a delegate resolves to the
 		// newest resumable root, so a recently-touched delegate does not make it
 		// useless; an explicit id is still refused below.
-		if *resume == "" && *resumeLast && resumedMeta.IsSubagent {
+		if *lf.resume == "" && *lf.resumeLast && resumedMeta.IsSubagent {
 			if root, ok := latestResumableRootMeta(sd); ok {
 				resumedMeta = root
 			}
@@ -623,15 +581,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	var modelRef cmdutil.ModelRef
 	var err error
 	if resuming {
-		modelRef, err = cmdutil.ResolveResumeModelRef(*model, envvars.EVENERModel.Getenv(), resumeProvider, resumeModel)
+		modelRef, err = cmdutil.ResolveResumeModelRef(*lf.model, envvars.EVENERModel.Getenv(), resumeProvider, resumeModel)
 	} else {
-		modelRef, err = cmdutil.ResolveModelRef(*model, envvars.EVENERModel.Getenv(), "", "")
+		modelRef, err = cmdutil.ResolveModelRef(*lf.model, envvars.EVENERModel.Getenv(), "", "")
 	}
 	if err != nil {
 		return err
 	}
 
-	effort, err := cmdutil.ResolveReasoningEffort(*reasoningEffort, envvars.EVENERReasoningEffort.Getenv())
+	effort, err := cmdutil.ResolveReasoningEffort(*lf.reasoningEffort, envvars.EVENERReasoningEffort.Getenv())
 	if err != nil {
 		return err
 	}
@@ -667,15 +625,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if resuming {
 		profileCtx = llm.WithAPILogContext(ctx, resumedMeta.ID)
 	}
-	profile, startupListing, err := deps.buildProfile(profileCtx, client, modelRef, *outputSchema)
+	profile, startupListing, err := deps.buildProfile(profileCtx, client, modelRef, *lf.outputSchema)
 	if err != nil {
 		return err
 	}
-	profile, err = deps.applyCheap(profile, *fastCheapModel, client)
+	profile, err = deps.applyCheap(profile, *lf.fastCheapModel, client)
 	if err != nil {
 		return err
 	}
-	visionModelVal, err := applyVisionModel(profile, *visionModel, client)
+	visionModelVal, err := applyVisionModel(profile, *lf.visionModel, client)
 	if err != nil {
 		return err
 	}
@@ -694,11 +652,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if !resuming {
 		memoryProjectID = resolveMemoryProjectID(env, os.Stderr)
 	}
-	memoryStateRoot := memoryStateRootForLaunch(*disableMemory || (resuming && resumedMeta.Config.DisableMemory), os.Stderr)
+	memoryStateRoot := memoryStateRootForLaunch(*lf.disableMemory || (resuming && resumedMeta.Config.DisableMemory), os.Stderr)
 	sessionCfg := agent.SessionConfig{
 		MemoryStateRoot: memoryStateRoot,
 		MemoryProjectID: memoryProjectID,
-		DisableMemory:   *disableMemory,
+		DisableMemory:   *lf.disableMemory,
 		// The session tree lives exactly as long as this daemon does. Shutdown
 		// waits for the input loop before it closes the session, so work that
 		// runs synchronously on that loop -- a Notification hook, which runs
@@ -706,45 +664,45 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// only cancellation it ever sees arrives after the wait it is holding
 		// up. A turn is already cancelled directly (turnCtx derives from ctx).
 		LifetimeContext:             ctx,
-		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(*maxRounds),
-		ShareTasksWithChildren:      *shareTaskStore,
-		ResultToolName:              *resultToolName,
+		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(*lf.maxRounds),
+		ShareTasksWithChildren:      *lf.shareTaskStore,
+		ResultToolName:              *lf.resultToolName,
 		StateDir:                    sd,
 		AcquireSessionOwnership:     reserveSession,
 		Project:                     project,
-		SystemPromptFile:            *systemPrompt,
-		SystemPromptAppend:          []string(systemPromptAppend),
+		SystemPromptFile:            *lf.systemPrompt,
+		SystemPromptAppend:          []string(lf.systemPromptAppend),
 		AgentsDocPath:               *agentsDoc,
-		AgentName:                   *agentName,
-		SkillsDirs:                  []string(skillsDirs),
-		MCPConfigFiles:              []string(mcpConfigs),
-		MCPInline:                   []string(mcpServers),
+		AgentName:                   *lf.agentName,
+		SkillsDirs:                  []string(lf.skillsDirs),
+		MCPConfigFiles:              []string(lf.mcpConfigs),
+		MCPInline:                   []string(lf.mcpServers),
 		PluginDirs:                  resolvedPlugins.SelectedDirs,
-		ContextStrategy:             *contextStrategy,
-		ExportATIFPath:              *exportATIF,
-		ExportATIFProviderHandles:   *exportATIFProviderHandles,
+		ContextStrategy:             *lf.contextStrategy,
+		ExportATIFPath:              *lf.exportATIF,
+		ExportATIFProviderHandles:   *lf.exportATIFProviderHandles,
 		VisionModel:                 visionModelVal,
 		NonInteractive:              *nonInteractive,
-		SystemPromptAsUser:          *systemPromptAsUser,
+		SystemPromptAsUser:          *lf.systemPromptAsUser,
 		ModelFallbacks:              []string(modelFallbacks),
 		OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
-		ProviderIdleTimeout:         *providerIdleTimeout,
+		ProviderIdleTimeout:         *lf.providerIdleTimeout,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
 	}
-	if *maxSubagentDepth >= 0 {
-		sessionCfg.MaxSubagentDepth = *maxSubagentDepth
+	if *lf.maxSubagentDepth >= 0 {
+		sessionCfg.MaxSubagentDepth = *lf.maxSubagentDepth
 	}
-	if *maxConcurrentDelegates >= 0 {
-		sessionCfg.MaxConcurrentDelegateTurns = *maxConcurrentDelegates
+	if *lf.maxConcurrentDelegates >= 0 {
+		sessionCfg.MaxConcurrentDelegateTurns = *lf.maxConcurrentDelegates
 	}
-	if *maxRetainedTerminal >= 0 {
-		sessionCfg.MaxRetainedTerminal = *maxRetainedTerminal
+	if *lf.maxRetainedTerminal >= 0 {
+		sessionCfg.MaxRetainedTerminal = *lf.maxRetainedTerminal
 	}
 	if effort.Set {
 		sessionCfg.ReasoningEffort = effort.Value
 	}
-	if err := cmdutil.ConfigureSandbox(&sessionCfg, *sandboxMode, *sandboxNet); err != nil {
+	if err := cmdutil.ConfigureSandbox(&sessionCfg, *lf.sandbox, *lf.sandboxNet); err != nil {
 		return err
 	}
 	// Engage enforcement for a FRESH session from the flag-set mode. A resume
@@ -771,7 +729,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if resuming {
 		sess, err = deps.restoreSession(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
 			MemoryStateRoot:             sessionCfg.MemoryStateRoot,
-			DisableMemory:               *disableMemory,
+			DisableMemory:               *lf.disableMemory,
 			LifetimeContext:             ctx,
 			StateDir:                    sd,
 			Project:                     project,
@@ -781,7 +739,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			OwnershipAlreadyAcquired:    true,
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
 			OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
-			ProviderIdleTimeout:         *providerIdleTimeout,
+			ProviderIdleTimeout:         *lf.providerIdleTimeout,
 			AgentsDocPath:               *agentsDoc,
 		})
 		if err != nil {
@@ -797,7 +755,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				return fmt.Errorf("set reasoning effort: %w", err)
 			}
 		}
-		reportServeResume(os.Stderr, resumedMeta, modelRef, resumeProvider, resumeModel, strings.TrimSpace(*model) != "")
+		reportServeResume(os.Stderr, resumedMeta, modelRef, resumeProvider, resumeModel, strings.TrimSpace(*lf.model) != "")
 	} else {
 		sess, err = deps.newSession(client, profile, env, sessionCfg)
 		if err != nil {
@@ -1210,7 +1168,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// authoritative consumer, so it must never block: see verboseEventTee.
 	var eventObserver func(events.SessionEvent)
 	var closeEventObserver func()
-	if *verbose {
+	if *lf.verbose {
 		verboseOut := deps.verboseOut
 		if verboseOut == nil {
 			verboseOut = os.Stderr
@@ -1935,7 +1893,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		InstanceID:   getSession().ID(),
 		WorkingDir:   wd,
 		StateDir:     sd,
-		Agent:        *agentName,
+		Agent:        *lf.agentName,
 		Model:        modelRef.Model,
 		Provider:     modelRef.Provider,
 		HubToken:     hubToken,

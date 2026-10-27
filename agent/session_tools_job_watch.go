@@ -463,8 +463,7 @@ type jobWatchInspectToolResult struct {
 	Condition string `json:"condition,omitempty"`
 	// Note rides beside the Condition string: note text is free prose that
 	// may itself contain delimiter-looking text ("; events: [...]"), which
-	// the flattened Condition grammar cannot carry unambiguously (RoboRev PR
-	// #954). Readers prefer this field and fall back to the note: clause.
+	// the flattened Condition grammar cannot carry unambiguously. Readers prefer this field and fall back to the note: clause.
 	Note       string `json:"note,omitempty"`
 	Deliveries int    `json:"deliveries,omitempty"`
 	CreatedAt  string `json:"created_at,omitempty"`

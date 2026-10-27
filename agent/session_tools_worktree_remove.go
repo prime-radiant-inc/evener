@@ -204,8 +204,7 @@ func (s *Session) guardRemoveLiveWork(target string, force bool) ([]string, erro
 	// here, ahead of steps 5-7 (which can still refuse), would let a call
 	// that ultimately refuses have already destroyed retained-idle lanes.
 	// The cascade actually runs just before step 8, once steps 5-7 have all
-	// passed (code-review finding I1;
-	// TestWorktreeRemove_Force_CascadeRunsAfterOwnGatesPass pins it). Each
+	// passed. Each
 	// cascaded dispose keeps its OWN gates: it always runs with force=false,
 	// forceDirty=false, so an unmerged or dirty lane still refuses on
 	// dispose's own terms — remove's `force` means "run the sanctioned
@@ -244,8 +243,7 @@ func readRemoveProvenance(metaDir, name, target string, porcelain []worktree.Por
 	// unlocked lane has no live owner — the occupancy lock is the real safety,
 	// committed work is protected by the merge gate (step 9), and uncommitted
 	// work by the force_dirty gate (step 6). Refusing routine cross-session
-	// cleanup there was the dominant real-world friction (F1 ergonomics
-	// finding) with little safety value, so the lane proceeds.
+	// cleanup there was the dominant real-world friction, with little safety value, so the lane proceeds.
 	sc, scErr := worktree.ReadSidecar(metaDir, name)
 	hasSidecar := scErr == nil
 	// The lane's git branch. The sidecar names it for a parent-named delegate
@@ -273,10 +271,9 @@ func readRemoveProvenance(metaDir, name, target string, porcelain []worktree.Por
 func guardRemoveDirty(run worktree.GitRunner, target string, forceDirty bool) error {
 	// Dirtiness preflight (force_dirty:false only). Gated on its OWN
 	// flag, not force, so forcing past an ownership/merge gate cannot
-	// collaterally discard an uncommitted edit unwarned (F3 ergonomics
-	// finding: an agent forcing past a provenance refusal would otherwise
-	// never see this — the more destructive condition was masked behind the
-	// less destructive one). Nothing above has mutated s.env or removed
+	// collaterally discard an uncommitted edit unwarned: an agent forcing past a provenance refusal would otherwise
+	// never see this, the more destructive condition masked behind the less
+	// destructive one. Nothing above has mutated s.env or removed
 	// anything yet, so a refusal here leaves s.env unchanged (spec §5 remove
 	// step 6).
 	if !forceDirty {
@@ -330,7 +327,7 @@ func (s *Session) restoreFromRemovedWorktree(run worktree.GitRunner, rt removeTa
 // returns result as is.
 func (s *Session) disposeRetainedIdleBeforeRemove(ctx context.Context, run worktree.GitRunner, rt removeTarget, branch string, forceCascadeDlgIDs []string) (result WorktreeRemoveResult, finished bool, err error) {
 	name, target := rt.name, rt.path
-	// Force-cascade execution (deferred from step 4; code-review finding I1):
+	// Force-cascade execution (deferred from step 4):
 	// steps 5-7 above are remove's OWN non-cascade refusal gates on target,
 	// and none of them is destructive to a retained-idle lane (step 7 only
 	// swaps this session's OWN env pointer — already accepted as recoverable
@@ -338,8 +335,7 @@ func (s *Session) disposeRetainedIdleBeforeRemove(ctx context.Context, run workt
 	// they have ALL passed do we run the sanctioned dispose cascade, so a
 	// call that refuses anywhere above — or a cascaded dispose's own refusal
 	// right here — has never destroyed a lane.
-	// targetIsCascadeLane is a RECORD-based signal (code-review finding
-	// I2): a delegate's own lane is always named exactly its delegate id
+	// targetIsCascadeLane is a RECORD-based signal: a delegate's own lane is always named exactly its delegate id
 	// (spec §9 step 1 — createDelegateWorktree names it `delegateID`), so
 	// target IS one of the lanes the cascade is about to dispose iff
 	// `name` is literally one of the ids we just resolved from live,
@@ -364,7 +360,7 @@ func (s *Session) disposeRetainedIdleBeforeRemove(ctx context.Context, run workt
 	// RESUMED coordinator whose own idle lane came back re-armed to
 	// NotifyPending (armPendingTerminalNotifications) — because
 	// delegateRecordQuiescent no longer counts a session's own undelivered
-	// render as work (WS8 Task 1).
+	// render as work.
 	for _, dlg := range forceCascadeDlgIDs {
 		if _, err := s.worktreeDispose(ctx, dlg, false, false); err != nil {
 			// Name dispose's own force, not remove's: remove's force runs
