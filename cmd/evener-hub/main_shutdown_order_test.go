@@ -31,6 +31,7 @@ type shutdownProbe struct {
 	// state it sees when cancelled, then finishes only after a delay, so a hub
 	// that stopped waiting for background work would move on without it.
 	atBackgroundCancel *shutdownSnapshot
+	atWorkerFinish     *shutdownSnapshot
 	workerFinished     bool
 }
 
@@ -106,6 +107,7 @@ func newShutdownProbeDeps(t *testing.T) (*shutdownProbe, Config, mainDeps) {
 			probe.mu.Unlock()
 			time.Sleep(workerCleanupDelay)
 			probe.mu.Lock()
+			probe.atWorkerFinish = probe.snapshot()
 			probe.workerFinished = true
 			probe.mu.Unlock()
 		})
@@ -199,6 +201,9 @@ func assertShutdownOrder(t *testing.T, probe *shutdownProbe) {
 	}
 	if cancelled.appRPCDrained || cancelled.listenerClosed {
 		t.Errorf("the AppWire server drained or the listener closed before background work was cancelled: %+v", cancelled)
+	}
+	if probe.atWorkerFinish == nil || probe.atWorkerFinish.appRPCDrained {
+		t.Error("the AppWire server began draining before background work finished")
 	}
 	at := probe.atListenerClose
 	if !at.workerFinished {
