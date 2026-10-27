@@ -277,17 +277,18 @@ describe("handoff chain obligations", () => {
 		]);
 	});
 
-	test("a failing obligation write rejects the send and records the failure", async () => {
+	test("a failing obligation write leaves the composer usable and records the failure", async () => {
 		const { repository } = setup();
 		let token: string | undefined;
 		const resolved: [string, string][] = [];
+		let failBegin = true;
 		const library = new DraftLibrary(
 			() => repository,
 			undefined,
 			() => ({
 				beginSubmission: (obligationId: string) => {
 					token = obligationId;
-					throw new Error("ledger unavailable");
+					if (failBegin) throw new Error("ledger unavailable");
 				},
 				resolveSubmission: (obligationId: string, state: "completed" | "failed") => {
 					resolved.push([obligationId, state]);
@@ -299,5 +300,45 @@ describe("handoff chain obligations", () => {
 		await expect(document.submit(async () => true)).rejects.toThrow(/ledger unavailable/);
 		expect(token).toBeDefined();
 		expect(resolved).toEqual([[token, "failed"]]);
+		// The submission never reached the transport: its uncertain capture is
+		// rolled back and the composer can send again.
+		expect(repository.read(endpoint("a"))).toMatchObject({ draft: "current", unconfirmed: null });
+		failBegin = false;
+		let sent = false;
+		expect(
+			await document.submit(async () => {
+				sent = true;
+				return true;
+			}),
+		).toBe(true);
+		expect(sent).toBe(true);
+	});
+
+	test("a failed obligation resolution is retried on the next document reload", async () => {
+		const { repository } = setup();
+		const resolved: [string, string, readonly string[]][] = [];
+		let failResolve = true;
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => ({
+				beginSubmission: () => {},
+				resolveSubmission: (obligationId: string, state: "completed" | "failed", ids: readonly string[] = []) => {
+					if (failResolve) {
+						failResolve = false;
+						throw new Error("write failed");
+					}
+					resolved.push([obligationId, state, ids]);
+				},
+			}),
+		);
+		const document = library.open(endpoint("a"));
+		document.edit("current");
+		expect(await document.submit(async () => true)).toBe(true);
+		// The first resolution write failed and stayed queued.
+		expect(resolved).toEqual([]);
+		document.retry();
+		expect(resolved).toHaveLength(1);
+		expect(resolved[0][1]).toBe("completed");
 	});
 });

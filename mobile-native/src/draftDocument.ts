@@ -154,6 +154,10 @@ export class DraftDocument {
 	 * draft, while an already pending submission still settles onward. */
 	private retired = false;
 	private unsavedImages = new Map<string, DraftImageData>();
+	/** Obligation resolutions a failing ledger write did not commit. They are
+	 * retried on the next submission or document reload in this session; until
+	 * then the open obligation blocks settlement, the safe direction. */
+	private unresolvedResolutions = new Map<string, { state: "completed" | "failed"; completedCommandIds: string[] }>();
 	// A resumed identity's document that this retired one settles through. A
 	// submission already in flight outlives its screen, and its completion must
 	// clear the capture at the destination that now owns the record until the
@@ -249,6 +253,7 @@ export class DraftDocument {
 	}
 	retry = () => {
 		if (this.forgotten || this.retired) return;
+		this.flushObligationResolutions();
 		try {
 			if (this.snapshot.loaded) this.persist(this.snapshot.record, true);
 			else {
@@ -536,6 +541,7 @@ export class DraftDocument {
 		// input instead of text with orphaned markers.
 		const reissuedRecords: DraftImage[] = [];
 		const draftCaptureToken = this.createCaptureToken();
+		this.flushObligationResolutions();
 		if (reissued) {
 			for (const attachment of reissued) {
 				const data: DraftImageData = {
@@ -569,12 +575,14 @@ export class DraftDocument {
 			false,
 		);
 		this.update({ submitting: true });
+		let submissionStarted = false;
 		try {
 			// Durable before any transport call: a handoff edge that inherits this
 			// submission must wait for its completion instead of settling without
 			// the completion markers. A failure resolves as failed and keeps its
 			// original error.
 			this.submissionLedger?.().beginSubmission(draftCaptureToken, this.destination);
+			submissionStarted = true;
 			const context: ConversationMutationContext = {
 				composer: {
 					text,
@@ -635,6 +643,7 @@ export class DraftDocument {
 			// chain so a submission that outlived a retirement clears the capture
 			// where the record now lives.
 			if (!(error instanceof MutationNotSentError)) {
+				if (!submissionStarted) this.restoreUnstartedSubmission(record);
 				this.resolveObligation(draftCaptureToken, "failed");
 				throw error;
 			}
@@ -683,8 +692,31 @@ export class DraftDocument {
 	): void {
 		try {
 			this.submissionLedger?.().resolveSubmission(captureToken, state, completedCommandIds);
+			this.unresolvedResolutions.delete(captureToken);
 		} catch {
-			// The obligation stays open; recovery retries the resolution.
+			this.unresolvedResolutions.set(captureToken, { state, completedCommandIds: [...completedCommandIds] });
+		}
+	}
+
+	private flushObligationResolutions(): void {
+		for (const [captureToken, resolution] of [...this.unresolvedResolutions]) {
+			try {
+				this.submissionLedger?.().resolveSubmission(captureToken, resolution.state, resolution.completedCommandIds);
+				this.unresolvedResolutions.delete(captureToken);
+			} catch {
+				// Still failing; keep it queued and leave the obligation open.
+			}
+		}
+	}
+
+	/** A submission whose obligation could not be recorded never reached the
+	 * transport. Put the durable record back to the pre-submit composition so the
+	 * composer is usable and a second submit can start. */
+	private restoreUnstartedSubmission(record: DraftRecord): void {
+		try {
+			this.persist(record, true);
+		} catch {
+			// Storage is failing; the uncertain record stays and Retry owns it.
 		}
 	}
 
