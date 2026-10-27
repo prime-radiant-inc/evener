@@ -302,7 +302,7 @@ find $HOME/.local/state/evener/projects -name "$SID*" -delete
   summarization) whenever a client is available. Layer 2 short-circuits on a
   short history — `summarizeFold` (which `summarizeWithLLMSteered` calls) returns the input
   unchanged when the history is no longer than `PreserveRecentTurns`
-  (`agent/internal/contextmgr/context_manager.go#summarizeFold`) — which is why this
+  (`agent/internal/contextmgr/context_manager.go#summarizeFold`, `:946-948`) — which is why this
   card's two-turn session sees a fast 204 and why a longer one will not.
   Don't generalize the timing. The default strategy is `compact`
   (`agent/session_init.go:52-54`, selected for an empty `ContextStrategy`,
