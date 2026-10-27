@@ -1,6 +1,6 @@
 import type { Thread, ThreadCapabilities } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { readComicPosition, writeComicPosition } from "../../comic/readerPosition";
@@ -16,11 +16,13 @@ import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } f
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import { ackAskUserCall } from "./composer/askDock/askDockTestUtils";
+import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composer/composerFocus";
 import { readComposerDraft, writeComposerDraft } from "./composer/draft";
 import { resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
+import { requestQuoteInsert, resetQuoteInsertStoreForTests, useQuoteInsertRequest } from "./composer/quoteInsert";
 import { CommittedSession } from "./testing/CommittedSession";
-import { replaceEditorText } from "./testing/editor";
+import { editorCursor, replaceEditorText, selectEditorText } from "./testing/editor";
 import "./testing/editorGeometry";
 import "./index";
 import { captureTranscriptView } from "./transcript/flow/transcriptViewRegistry";
@@ -48,6 +50,8 @@ beforeEach(() => {
   resetNavigationStoreForTests();
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
+  resetComposerFocusStoreForTests();
+  resetQuoteInsertStoreForTests();
   resetTranscriptDisplayStoreForTests();
   storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
@@ -143,6 +147,117 @@ function preservedDraft() {
   return { text, skillNames, commandNames, mentions, activeRecoveryId };
 }
 const editor = () => screen.getByRole("textbox", { name: "Message" });
+
+test.each([
+  ["comic", "prefix"],
+  ["comic", "append"],
+  ["standard", "prefix"],
+] as const)("%s consumes %s insertion once across Standard handoff", async (initialPresentation, placement) => {
+  const original = "/alpha /build kept";
+  writeComposerDraft(ref, {
+    text: original,
+    skillNames: ["alpha"],
+    commandNames: ["build"],
+    mentions: [
+      { kind: "skill", name: "alpha", offset: 0 },
+      { kind: "command", name: "build", offset: 7 },
+    ],
+  });
+  const fake = await setup();
+  await presentation(initialPresentation);
+  await mount(fake);
+  const source = lifetime().composer!;
+  const pending = renderHook(() => useQuoteInsertRequest(ref, paneId));
+  const inserted = placement === "prefix" ? "/review " : "> quoted line\n\n";
+  const expected = placement === "prefix" ? inserted + original : `${original}\n\n${inserted}`;
+  selectEditorText(editor(), original.length);
+  act(() => {
+    requestQuoteInsert(ref, inserted, placement, paneId);
+    requestComposerFocus(ref, paneId);
+  });
+  await waitFor(() => expect(editor().textContent).toBe(expected));
+  expect(document.activeElement).toBe(editor());
+  expect(editorCursor(editor())).toBe(placement === "prefix" ? inserted.length : expected.length);
+  expect(pending.result.current).toBeUndefined();
+  const offset = placement === "prefix" ? inserted.length : 0;
+  expect(source.getSnapshot()).toMatchObject({
+    text: expected,
+    skillNames: ["alpha"],
+    commandNames: ["build"],
+    mentions: [
+      { kind: "skill", name: "alpha", offset },
+      { kind: "command", name: "build", offset: offset + 7 },
+    ],
+  });
+  expect(within(editor()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  const before = preservedDraft();
+  await presentation("standard");
+  expect(lifetime().composer).toBe(source);
+  expect(editor().textContent).toBe(expected);
+  expect(preservedDraft()).toEqual(before);
+  await presentation("comic");
+  expect(editor().textContent).toBe(expected);
+  act(() => requestQuoteInsert(ref, inserted, placement, paneId));
+  const twice = placement === "prefix" ? inserted + expected : expected + inserted;
+  await waitFor(() => expect(editor().textContent).toBe(twice));
+  expect(pending.result.current).toBeUndefined();
+});
+
+test("Comic routes focus only to the addressed of two retained seats for one conversation", async () => {
+  const fake = await setup();
+  await presentation("comic");
+  await act(async () =>
+    render(
+      <ClientProvider client={fake}>
+        <div data-testid="seat-a">
+          <CommittedSession paneId={paneId} params={{ ref }} focused={false} />
+        </div>
+        <div data-testid="seat-b">
+          <CommittedSession paneId="comic-second-seat" params={{ ref }} focused={false} />
+        </div>
+      </ClientProvider>,
+    ),
+  );
+  const first = within(screen.getByTestId("seat-a")).getByRole("textbox", { name: "Message" });
+  const second = within(screen.getByTestId("seat-b")).getByRole("textbox", { name: "Message" });
+  selectEditorText(second, 0);
+  act(() => requestComposerFocus(ref, paneId));
+  expect(document.activeElement).toBe(first);
+  act(() => requestComposerFocus(ref, "comic-second-seat"));
+  expect(document.activeElement).toBe(second);
+});
+
+test("Comic consumes only the addressed insertion with two retained seats", async () => {
+  const fake = await setup();
+  await presentation("comic");
+  await act(async () =>
+    render(
+      <ClientProvider client={fake}>
+        <div data-testid="seat-a">
+          <CommittedSession paneId={paneId} params={{ ref }} focused={false} />
+        </div>
+        <div data-testid="seat-b">
+          <CommittedSession paneId="comic-second-seat" params={{ ref }} focused={false} />
+        </div>
+      </ClientProvider>,
+    ),
+  );
+  const first = within(screen.getByTestId("seat-a")).getByRole("textbox", { name: "Message" });
+  const second = within(screen.getByTestId("seat-b")).getByRole("textbox", { name: "Message" });
+  replaceEditorText(first, "first draft");
+  replaceEditorText(second, "second draft");
+  const pending = renderHook(() => useQuoteInsertRequest(ref));
+  act(() => requestQuoteInsert(ref, "not ours", "prefix", "absent-seat"));
+  expect(first.textContent).toBe("first draft");
+  expect(second.textContent).toBe("second draft");
+  expect(pending.result.current?.target).toBe("absent-seat");
+  act(() => requestQuoteInsert(ref, "/review ", "prefix", paneId));
+  await waitFor(() => expect(first.textContent).toBe("/review first draft"));
+  expect(second.textContent).toBe("second draft");
+  expect(document.activeElement).toBe(first);
+  expect(editorCursor(first)).toBe(8);
+  expect(pending.result.current).toBeUndefined();
+});
 
 test.each([false, true])("Comic Appearance keeps controls and owners with mobile=%s", async (mobile) => {
   vi.stubGlobal("matchMedia", (query: string) => ({
