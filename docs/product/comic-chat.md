@@ -49,7 +49,9 @@ Escape, outside clicks, scrolling outside the reader and window resizing dismiss
 
 Comic and plain views preserve semantic reading positions through reflow. The
 root respects reduced motion and safe-area padding, and shared controls retain
-their keyboard behavior. Narrow-screen checks must reach the question choices,
+their keyboard behavior. Pointer completion and text selection follow the pane's
+document when it moves into a popout or docks back, even with Appearance closed.
+Narrow-screen checks must reach the question choices,
 note and final action, not merely capture their container. Browser viewport and
 safe-area emulation do not establish native touch inertia or device behavior.
 
