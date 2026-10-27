@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { readComicPosition, writeComicPosition } from "../../comic/readerPosition";
+import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
@@ -55,6 +56,7 @@ beforeEach(() => {
 afterEach(async () => {
   await flushPendingTurnsProjectionForTests();
   cleanup();
+  resetChromeStoreForTests();
   resetWorkspaceStoreForTests();
   resetThreadsStoreForTests();
   storage.close();
@@ -162,18 +164,22 @@ test.each([false, true])("Comic Appearance keeps controls and owners with mobile
   fireEvent.click(trigger);
   const popup = screen.getByRole("dialog", { name: "Appearance" });
   expect(within(popup).getAllByRole("combobox")).toHaveLength(3);
+  const readerPort = document.querySelector("[data-comic-scroll]")?.firstElementChild;
+  if (!readerPort) throw Error("missing reader port");
+  fireEvent.scroll(readerPort);
+  expect(screen.queryByRole("dialog", { name: "Appearance" })).toBe(popup);
   const scene = within(popup).getByRole("combobox", { name: "Scene" });
   expect(
     within(scene)
       .getAllByRole("option")
-      .map((o) => o.textContent),
-  ).toEqual(["Room", "Field", "White"]);
+      .map((o) => (o as HTMLOptionElement).value),
+  ).toEqual(["room", "field", "white"]);
   fireEvent.change(scene, { target: { value: "field" } });
   const expression = within(popup).getByRole("combobox", { name: "Human expression" });
   expect(
     within(expression)
       .getAllByRole("option")
-      .map((o) => o.textContent),
+      .map((o) => (o as HTMLOptionElement).value),
   ).toEqual(["neutral", "happy-wave", "angry", "scared", "point", "celebrate"]);
   fireEvent.change(expression, { target: { value: "celebrate" } });
   fireEvent.keyDown(expression, { key: "Escape" });
@@ -188,11 +194,73 @@ test.each([false, true])("Comic Appearance keeps controls and owners with mobile
   expect((screen.getByRole("combobox", { name: "Scene" }) as HTMLSelectElement).value).toBe("field");
   fireEvent.mouseDown(document.body);
   expect(screen.queryByRole("dialog", { name: "Appearance" })).toBeNull();
+  fireEvent.click(trigger);
+  expect(screen.queryByRole("dialog", { name: "Appearance" })).not.toBeNull();
+  const view = trigger.ownerDocument.defaultView;
+  if (!view) throw Error("missing owner window");
+  fireEvent.resize(view);
+  expect(screen.queryByRole("dialog", { name: "Appearance" })).toBeNull();
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
+  fireEvent.click(trigger);
+  expect(screen.queryByRole("dialog", { name: "Appearance" })).not.toBeNull();
+  fireEvent.scroll(document.body);
+  expect(screen.queryByRole("dialog", { name: "Appearance" })).toBeNull();
   expect(lifetime()).toBe(owner);
   expect(lifetime().composer).toBe(composer);
   expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(reads);
   expect(screen.getByRole("button", { name: "Jump to latest" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+});
+
+test("open Comic Appearance follows its pane into a popout and back", async () => {
+  const fake = await setup();
+  const mounted = await mount(fake);
+  await presentation("comic");
+  const owner = lifetime();
+  const composer = owner.composer;
+  const reads = fake.calls.filter((c) => c.method === "thread/read").length;
+  const trigger = screen.getByRole("button", { name: "Appearance" });
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  const popout = frame.contentDocument;
+  if (!popout?.defaultView) throw Error("missing popout window");
+  try {
+    for (const destination of [popout, document]) {
+      const previousWindow = trigger.ownerDocument.defaultView;
+      const destinationWindow = destination.defaultView;
+      if (!previousWindow || !destinationWindow) throw Error("missing pane window");
+      trigger.focus();
+      fireEvent.click(trigger);
+      expect(within(trigger.ownerDocument.body).queryByRole("dialog", { name: "Appearance" })).not.toBeNull();
+      await act(async () => {
+        destination.body.append(mounted.container);
+        chromeStore.getState().setPaneDocumentsFor([paneId], destination);
+      });
+      const popup = await within(destination.body).findByRole("dialog", { name: "Appearance" });
+      fireEvent.resize(previousWindow);
+      expect(within(destination.body).queryByRole("dialog", { name: "Appearance" })).toBe(popup);
+      fireEvent.resize(destinationWindow);
+      expect(within(destination.body).queryByRole("dialog", { name: "Appearance" })).toBeNull();
+      await waitFor(() => expect(destination.activeElement).toBe(trigger));
+      fireEvent.click(trigger);
+      const reopened = within(destination.body).getByRole("dialog", { name: "Appearance" });
+      const readerPort = mounted.container.querySelector("[data-comic-scroll]")?.firstElementChild;
+      if (!readerPort) throw Error("missing reader port");
+      fireEvent.scroll(readerPort);
+      expect(within(destination.body).queryByRole("dialog", { name: "Appearance" })).toBe(reopened);
+      fireEvent.scroll(destination.body);
+      expect(within(destination.body).queryByRole("dialog", { name: "Appearance" })).toBeNull();
+      expect(lifetime()).toBe(owner);
+      expect(lifetime().composer).toBe(composer);
+      expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(reads);
+    }
+  } finally {
+    await act(async () => {
+      document.body.append(mounted.container);
+      chromeStore.getState().setPaneDocumentsFor([paneId], document);
+    });
+    frame.remove();
+  }
 });
 
 test.each([false, true])("Comic keeps one menu with mobile=%s", async (mobile) => {

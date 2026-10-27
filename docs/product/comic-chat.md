@@ -42,6 +42,8 @@ The surrounding interface has no desktop title bars, menu bars or beveled chrome
 On both phones and desktop, **Appearance** opens the View, Scene and expression
 controls in a popup. History controls and Send/Stop stay outside the popup so
 appearance settings do not crowd out the conversation when the keyboard opens.
+Transcript scrolling keeps the popup open because its toolbar stays in place.
+Escape, outside clicks, scrolling outside the reader and window resizing dismiss it.
 
 Comic and plain views preserve semantic reading positions through reflow. The
 root respects reduced motion and safe-area padding, and shared controls retain

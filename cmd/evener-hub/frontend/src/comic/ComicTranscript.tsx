@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import { isAtBottom } from "../panes/session/transcript/flow/scrollMetrics";
+import { useChromeStore } from "../shell/chromeStore";
 import { useIsMobile } from "../shell/useIsMobile";
 import { isEntryTranscriptLocalOpening, olderTranscriptPageKey, threadsStore } from "../stores/threads";
 import {
@@ -115,6 +116,24 @@ export function ComicTranscript({
   const [tailSpace, setTailSpace] = useState(0);
   const [rows, setRows] = useState<readonly ComicFlowRow[]>([]);
   const probe = useRef<ReturnType<typeof createComicMeasurer> | undefined>(undefined);
+  // Dockview moves the existing pane DOM between windows without remounting it.
+  useChromeStore((state) => (appearanceOpen ? state.paneDocuments : null));
+  const appearanceWindow = host.current?.ownerDocument.defaultView;
+  useEffect(() => {
+    const view = appearanceWindow;
+    if (!appearanceOpen || !view) return;
+    const close = () => setAppearanceOpen(false);
+    const onScroll = (event: Event) => {
+      // Reader restoration moves the transcript, not the Appearance trigger.
+      if (event.target !== list.current?.getScrollElement()) close();
+    };
+    view.addEventListener("scroll", onScroll, true);
+    view.addEventListener("resize", close);
+    return () => {
+      view.removeEventListener("scroll", onScroll, true);
+      view.removeEventListener("resize", close);
+    };
+  }, [appearanceOpen, appearanceWindow]);
   const fitsCache = useRef(new Map<string, boolean>());
   const lastPage = useRef<string | undefined>(undefined);
   const snapshots = useMemo(() => new Map([[comicPathKey([]), root], ...subchats.readers]), [root, subchats.readers]);
@@ -622,6 +641,7 @@ export function ComicTranscript({
         <Popover
           open={appearanceOpen}
           onClose={() => setAppearanceOpen(false)}
+          closeOnScroll={false}
           trigger={
             <Button
               variant="link"
