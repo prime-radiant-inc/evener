@@ -150,6 +150,37 @@ func TestRunMainShutsDownInDependencyOrder(t *testing.T) {
 	}
 }
 
+// A signal ends serving first: the signal context cancels background work and
+// the HTTP server's own shutdown closes the listener before runMain unwinds.
+// Whatever the order up to that point, the lock is still released last, after
+// the endpoint record is retired and every shutdown step has finished.
+func TestRunMainReleasesTheLockLastAfterASignal(t *testing.T) {
+	probe, cfg, deps := newShutdownProbeDeps(t)
+	signalCtx, signal := context.WithCancel(t.Context())
+	deps.notifyContext = func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
+		return signalCtx, signal
+	}
+	deps.serve = func(ctx context.Context, srv hubHTTPServer) error {
+		probe.mu.Lock()
+		probe.serveCtx = ctx
+		probe.mu.Unlock()
+		signal()
+		return serveHub(ctx, srv)
+	}
+	if err := runShutdownProbe(cfg, deps); err != nil {
+		t.Fatalf("runMain: %v", err)
+	}
+	probe.mu.Lock()
+	defer probe.mu.Unlock()
+	rel := probe.atRelease
+	if rel == nil || probe.released != 1 {
+		t.Fatalf("lock released %d times", probe.released)
+	}
+	if !rel.listenerClosed || !rel.endpointRetired || !rel.backgroundDone || !rel.appRPCDrained || !rel.workerFinished {
+		t.Errorf("the lock was released with shutdown unfinished: %+v", rel)
+	}
+}
+
 // A failure after the listener is bound unwinds through the same closes: the
 // listener is closed and the lock released, with no endpoint ever published.
 func TestRunMainReleasesListenerAndLockWhenStartupFailsAfterListening(t *testing.T) {
