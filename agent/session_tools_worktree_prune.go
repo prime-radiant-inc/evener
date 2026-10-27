@@ -46,11 +46,11 @@ func (s *Session) worktreePrune(ctx context.Context) (WorktreePruneResult, error
 
 	sweep1Policy := prunePolicy()
 	sweep1Policy.lockFiles = files
-	removed1, skipped1, err := s.worktreePruneSweep1(context.Background(), run, managed, metaDir, sweep1Policy)
+	removed1, skipped1, err := s.collectRegisteredLanes(context.Background(), run, managed, metaDir, sweep1Policy)
 	if err != nil {
 		return WorktreePruneResult{}, err
 	}
-	removed2, skipped2, err := s.worktreePruneSweep2(context.Background(), run, managed, metaDir, prunePolicy())
+	removed2, skipped2, err := s.reconcileOrphanSidecars(context.Background(), run, managed, metaDir, prunePolicy())
 	if err != nil {
 		return WorktreePruneResult{}, err
 	}
@@ -60,7 +60,7 @@ func (s *Session) worktreePrune(ctx context.Context) (WorktreePruneResult, error
 		Skipped: append(skipped1, skipped2...),
 	}
 
-	ran, skipReason, err := worktreePruneSweep3(run, projectDir)
+	ran, skipReason, err := pruneGitRegistry(run, projectDir)
 	if err != nil {
 		return WorktreePruneResult{}, err
 	}
@@ -155,7 +155,7 @@ func prunePolicy() laneSweepPolicy {
 	}
 }
 
-// worktreePruneSweep1 disposes of registered managed worktrees (spec §5
+// collectRegisteredLanes disposes of registered managed worktrees (spec §5
 // prune sweep 1): a worktree is collected (dir + branch + sidecar removed)
 // iff it is unlocked (or carries only this session's own stale marker, which is
 // no obstacle — see staleOwnMarker below), has no live work under it, has a
@@ -166,7 +166,7 @@ func prunePolicy() laneSweepPolicy {
 // aborts (prune) or is reported as a lost race and the sweep continues (P3),
 // per policy.abortOnError. The sweep stops early once ctx is cancelled (the P3
 // close pass's shared budget); prune passes a background ctx.
-func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunner, managed []managedEntry, metaDir string, policy laneSweepPolicy) (removed, skipped []WorktreePruneEntry, err error) {
+func (s *Session) collectRegisteredLanes(ctx context.Context, run worktree.GitRunner, managed []managedEntry, metaDir string, policy laneSweepPolicy) (removed, skipped []WorktreePruneEntry, err error) {
 	for _, e := range managed {
 		if ctxCancelled(ctx) {
 			break
@@ -526,14 +526,14 @@ func disposableReason(run worktree.GitRunner, tip, baseSHA, mergeTarget string) 
 	}
 }
 
-// worktreePruneSweep2 reconciles metadata sidecars with no matching
+// reconcileOrphanSidecars reconciles metadata sidecars with no matching
 // registered worktree (spec §5 prune sweep 2): a sidecar younger than
 // worktree.ReconcileGrace (judged by file mtime) is left alone as
 // possibly-racing-create residue; older ones are resolved per the branch's
 // current state (gone → stale, adopted → sidecar dropped, disposable →
 // branch+sidecar deleted, checked out elsewhere → skipped, unmerged →
 // kept as residue).
-func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunner, managed []managedEntry, metaDir string, policy laneSweepPolicy) (removed, skipped []WorktreePruneEntry, err error) {
+func (s *Session) reconcileOrphanSidecars(ctx context.Context, run worktree.GitRunner, managed []managedEntry, metaDir string, policy laneSweepPolicy) (removed, skipped []WorktreePruneEntry, err error) {
 	registered := make(map[string]bool)
 	for _, e := range managed {
 		registered[e.Name] = true
@@ -681,13 +681,13 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 	return removed, skipped, nil
 }
 
-// worktreePruneSweep3 runs repo-wide `git worktree prune` registry hygiene
+// pruneGitRegistry runs repo-wide `git worktree prune` registry hygiene
 // (spec §5 prune sweep 3) only when every `prunable`-annotated porcelain
 // entry is under the managed directory; a non-managed prunable entry (a
 // user's own sibling worktree, momentarily or permanently absent) makes this
 // deliberately not this tool's call to deregister, and the whole sweep is
 // skipped with a reason naming the entry.
-func worktreePruneSweep3(run worktree.GitRunner, projectDir string) (ran bool, skipReason string, err error) {
+func pruneGitRegistry(run worktree.GitRunner, projectDir string) (ran bool, skipReason string, err error) {
 	out, err := run("worktree", "list", "--porcelain")
 	if err != nil {
 		// Named for this sweep: prune reads the listing twice (sweep 1 and

@@ -240,7 +240,7 @@ func TestWorktreePrune_NotInGitRepo(t *testing.T) {
 }
 
 // TestWorktreePrune_Sweep1ErrorPropagatesWhenGitUnavailable covers
-// worktreePrune's own error-propagation from worktreePruneSweep1 (the FIRST
+// worktreePrune's own error-propagation from collectRegisteredLanes (the FIRST
 // sweep it calls): with git hidden, sweep 1's own `worktree list
 // --porcelain` call fails and worktreePrune must surface that error rather
 // than continuing to sweep 2/3.
@@ -798,7 +798,7 @@ func TestP3CollectLane_BranchProbeFailureIsNotAbsence(t *testing.T) {
 	}
 }
 
-// TestWorktreePruneSweep2_NoMetaDirReturnsCleanly covers worktreePruneSweep2's
+// TestWorktreePruneSweep2_NoMetaDirReturnsCleanly covers reconcileOrphanSidecars's
 // own os.IsNotExist tolerance for ListSidecars: a repo with no managed
 // worktree EVER created has no .meta directory at all, and prune must not
 // treat that as an error.
