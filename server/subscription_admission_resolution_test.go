@@ -15,8 +15,7 @@ func requestOutcome(err error) int {
 	if err == nil {
 		return 0
 	}
-	var wire appwire.WireError
-	if errors.As(err, &wire) {
+	if wire, ok := errors.AsType[appwire.WireError](err); ok {
 		return wire.Code
 	}
 	return -1
