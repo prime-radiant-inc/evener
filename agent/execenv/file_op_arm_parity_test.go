@@ -5,6 +5,7 @@ package execenv
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -107,13 +108,8 @@ func allArmOps(o armOutcome) map[string]armOutcome {
 }
 
 func armWith(base map[string]armOutcome, override map[string]armOutcome) map[string]armOutcome {
-	m := map[string]armOutcome{}
-	for k, v := range base {
-		m[k] = v
-	}
-	for k, v := range override {
-		m[k] = v
-	}
+	m := maps.Clone(base)
+	maps.Copy(m, override)
 	return m
 }
 
