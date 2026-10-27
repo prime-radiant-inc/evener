@@ -1142,6 +1142,69 @@ export function savedSourcePlaced(geometry, expected) {
     sameSource(geometry.point) && Math.abs(geometry.point.y - expected.viewportOffset) <= 2);
 }
 
+export async function sampleCachedReloadRecovery(readTrace, observe, parameters) {
+  const trace=readTrace();
+  const observation=await observe();
+  const relevant=rows=>{
+    const ids=new Set();
+    return rows.filter(row=>{
+      if(row.at<parameters.documentOrigin)return false;
+      if(['Network.webSocketCreated','Network.webSocketClosed'].includes(row.event))return true;
+      if(!row.frame)return false;
+      const frame=JSON.parse(row.frame),key=JSON.stringify([row.connection,frame.id]);
+      if(row.event==='Network.webSocketFrameSent'&&['thread/read','thread/turns/list'].includes(frame.method)&&frame.params.ref===parameters.ref){ids.add(key);return true;}
+      return row.event==='Network.webSocketFrameReceived'&&ids.has(key);
+    });
+  };
+  const wireUnchanged=JSON.stringify(relevant(trace))===JSON.stringify(relevant(readTrace()));
+  const evidence=cachedReloadRecovery({trace,...observation,...parameters});
+  // Never append later replies to an older DOM observation. The next ordinary
+  // until sample will observe the application after its own frozen replies.
+  return {documentOrigin:parameters.documentOrigin,...observation,...evidence,wireUnchanged,ready:evidence.ready&&wireUnchanged};
+}
+
+export function recordReloadEvents(ref) {
+  window.__comicReloadEvents=[];
+  window.__comicReloadInputSeen=false;
+  const inputTypes=['wheel','pointerdown','pointerup','pointercancel','keydown','touchstart','touchmove','touchend'];
+  for(const type of ['scroll','focusin','selectionchange',...inputTypes]) {
+    document.addEventListener(type,event=>{
+      if(inputTypes.includes(event.type))window.__comicReloadInputSeen=true;
+      const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;
+      window.__comicReloadEvents.push({at:performance.now(),type:event.type,trusted:event.isTrusted,scrollTop:port?.scrollTop,selectionInPort:!!port?.contains(document.getSelection()?.anchorNode),saved:JSON.parse(sessionStorage.getItem('evener:comic:position:'+ref)??'null')?.position});
+      if(window.__comicReloadEvents.length>100)window.__comicReloadEvents.shift();
+    },{capture:true,passive:true});
+  }
+}
+
+export function cachedReloadRecovery({trace,documentOrigin,currentDocumentOrigin,ref,geometry,expected,intent,inputSeen}) {
+  const connections=trace.filter(row=>row.event==='Network.webSocketCreated'&&row.at>=documentOrigin);
+  const connection=connections.length===1?connections[0].connection:undefined;
+  const requests=[];
+  const byID=new Map();
+  for(const [index,row] of trace.entries()) {
+    if(!connection||row.connection!==connection||row.at<documentOrigin||!row.frame)continue;
+    const frame=JSON.parse(row.frame);
+    if(row.event==='Network.webSocketFrameSent'&&['thread/read','thread/turns/list'].includes(frame.method)&&frame.params.ref===ref) {
+      const request={connection,request:frame,requestIndex:index};
+      requests.push(request);byID.set(frame.id,request);
+    } else if(row.event==='Network.webSocketFrameReceived'&&byID.has(frame.id)) {
+      Object.assign(byID.get(frame.id),{response:frame,replyIndex:index});
+    }
+  }
+  const success=pair=>!!pair?.response?.result&&!pair.response.error;
+  const hydration=requests.findLast(pair=>pair.request.method==='thread/read'&&pair.request.params.includeTurns===true);
+  // A reply plus cached placement can precede application of the fresh window.
+  // This fixture drops the saved older body, so ensuing page demand witnesses
+  // that application. Await every issued child read/page, not a fixed page count.
+  const pages=requests.filter(pair=>pair.request.method==='thread/turns/list'&&pair.requestIndex>hydration?.replyIndex);
+  const noInput=!inputSeen&&intent.every(event=>!['wheel','pointerdown','pointerup','pointercancel','keydown','touchstart','touchmove','touchend'].includes(event.type));
+  const ready=currentDocumentOrigin===documentOrigin&&!!connection&&
+    !trace.some(row=>row.event==='Network.webSocketClosed'&&row.connection===connection)&&
+    success(hydration)&&pages.length>0&&requests.every(success)&&noInput&&savedSourcePlaced(geometry,expected);
+  return {ready,connection,hydration,pages,requests,noInput};
+}
+
 function readGeometry(point, ref) {
   const port = window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;
   if (!port) return null;
@@ -1520,12 +1583,24 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
   const beforeReload = outgoing.length;
   const paneOwnersBefore=await evaluateHere(`[...document.querySelectorAll('[data-session-actions-ref][data-pane-id]')].map(node=>({ref:node.dataset.sessionActionsRef,pane:node.dataset.paneId,visible:!!node.getClientRects().length}))`);
   if(paneOwnersBefore.some(owner=>owner.ref===grandchild.ref))throw Error('direct descendant pane still owns the reload');
-  const diagnosticScript=await page.send('Page.addScriptToEvaluateOnNewDocument',{source:`window.__comicReloadEvents=[];for(const type of ['scroll','wheel','pointerdown','pointerup','pointercancel','keydown','focusin','selectionchange'])document.addEventListener(type,event=>{const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;window.__comicReloadEvents.push({at:performance.now(),type:event.type,trusted:event.isTrusted,scrollTop:port?.scrollTop,selectionInPort:!!port?.contains(document.getSelection()?.anchorNode),saved:JSON.parse(sessionStorage.getItem('evener:comic:position:'+${JSON.stringify(fixture.refs.live)})??'null')?.position});if(window.__comicReloadEvents.length>100)window.__comicReloadEvents.shift();},{capture:true,passive:true});`});
+  const diagnosticScript=await page.send('Page.addScriptToEvaluateOnNewDocument',{source:`(${recordReloadEvents.toString()})(${JSON.stringify(fixture.refs.live)})`});
   const reloadBefore=await until('immediate pre-reload source placement',()=>evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(saved)},${JSON.stringify(fixture.refs.live)})`),value=>savedSourcePlaced(value,saved));
+  const cachedReloadStart=wireTrace.length;
   await reloadPage(page);
+  const cachedDocumentOrigin=await evaluateHere('performance.timeOrigin');
   try { await measure('later-child-reload'); } finally {
     writeFileSync(`${fixture.evidenceDir}/later-child-restore-checkpoints.json`,JSON.stringify({expected:saved,before:reloadBefore,after:await evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(saved)},${JSON.stringify(fixture.refs.live)})`),paneOwnersBefore,paneOwnersAfter:await evaluateHere(`[...document.querySelectorAll('[data-session-actions-ref][data-pane-id]')].map(node=>({ref:node.dataset.sessionActionsRef,pane:node.dataset.paneId,visible:!!node.getClientRects().length}))`),events:await evaluateHere('window.__comicReloadEvents'),requests:outgoing.slice(beforeReload)},null,2));
     await page.send('Page.removeScriptToEvaluateOnNewDocument',{identifier:diagnosticScript.result.identifier});
+  }
+  let cachedRecovery;
+  try {
+    await until('cached child post-hydration source recovery',async()=>{
+      // Freeze wire evidence first, then measure DOM after those replies.
+      cachedRecovery=await sampleCachedReloadRecovery(()=>wireTrace.slice(cachedReloadStart),()=>evaluateHere(`({currentDocumentOrigin:performance.timeOrigin,geometry:(${readGeometry.toString()})(${JSON.stringify(saved)},${JSON.stringify(fixture.refs.live)}),intent:window.__comicReloadEvents,inputSeen:window.__comicReloadInputSeen})`),{documentOrigin:cachedDocumentOrigin,ref:header.ref,expected:saved});
+      return cachedRecovery;
+    },value=>value.ready);
+  } finally {
+    writeFileSync(`${fixture.evidenceDir}/later-child-cached-recovery.json`,JSON.stringify({expected:saved,...cachedRecovery},null,2));
   }
   if (outgoing.slice(beforeReload).some(frame => frame.method === 'thread/read' && frame.params.ref === grandchild.ref && frame.params.includeTurns !== false)) throw Error('restoration fetched an unopened descendant');
   for (const partial of [true,false]) {

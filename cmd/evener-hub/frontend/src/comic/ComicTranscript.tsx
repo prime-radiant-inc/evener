@@ -117,8 +117,9 @@ export function ComicTranscript({
   const [rows, setRows] = useState<readonly ComicFlowRow[]>([]);
   const probe = useRef<ReturnType<typeof createComicMeasurer> | undefined>(undefined);
   // Dockview moves the existing pane DOM between windows without remounting it.
-  useChromeStore((state) => (appearanceOpen ? state.paneDocuments : null));
-  const appearanceWindow = host.current?.ownerDocument.defaultView;
+  useChromeStore((state) => state.paneDocuments);
+  const ownerDocument = host.current?.ownerDocument;
+  const appearanceWindow = ownerDocument?.defaultView;
   useEffect(() => {
     const view = appearanceWindow;
     if (!appearanceOpen || !view) return;
@@ -372,9 +373,11 @@ export function ComicTranscript({
     if (restoring.current && committed.current) restore(committed.current);
   });
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: DOM adoption changes the listener owner without remounting the port.
   useLayoutEffect(() => {
     const port = list.current?.getScrollElement();
     if (!port) return;
+    const doc = port.ownerDocument;
     let frame = 0;
     let pointer: { id: number; type: string; revision: number; cancelled: boolean } | undefined;
     const cancel = (event?: Event) => {
@@ -483,7 +486,7 @@ export function ComicTranscript({
       captureMovement(port);
     };
     const selection = () => {
-      const selected = document.getSelection();
+      const selected = doc.getSelection();
       // Focusing a disclosure can emit a collapsed selectionchange after its
       // click. That is not a text selection and must not cancel its destination.
       if (selected && !selected.isCollapsed && port.contains(selected.anchorNode)) cancel();
@@ -501,9 +504,9 @@ export function ComicTranscript({
     port.addEventListener("pointerdown", pointerDown);
     port.addEventListener("keydown", key);
     port.addEventListener("scroll", scroll);
-    document.addEventListener("pointerup", pointerEnd);
-    document.addEventListener("pointercancel", pointerEnd);
-    document.addEventListener("selectionchange", selection);
+    doc.addEventListener("pointerup", pointerEnd);
+    doc.addEventListener("pointercancel", pointerEnd);
+    doc.addEventListener("selectionchange", selection);
     return () => {
       cancelAnimationFrame(frame);
       port.removeEventListener("wheel", wheel);
@@ -511,11 +514,11 @@ export function ComicTranscript({
       port.removeEventListener("pointerdown", pointerDown);
       port.removeEventListener("keydown", key);
       port.removeEventListener("scroll", scroll);
-      document.removeEventListener("pointerup", pointerEnd);
-      document.removeEventListener("pointercancel", pointerEnd);
-      document.removeEventListener("selectionchange", selection);
+      doc.removeEventListener("pointerup", pointerEnd);
+      doc.removeEventListener("pointercancel", pointerEnd);
+      doc.removeEventListener("selectionchange", selection);
     };
-  }, [captureMovement, reader]);
+  }, [captureMovement, reader, ownerDocument]);
 
   useEffect(() => {
     if (!restoring.current || moving.current || !rows.length || isOpening()) return;

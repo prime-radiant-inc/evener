@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { comicScenario, delegateLookupStep, savedSourcePlaced, verifyApprovalRecovery, verifyComposerReceipts, verifyRemoteRequests, verifyRecoveryRetirement, verifyResumeAdmission } from './comicguard/run.mjs';
+import { runInNewContext } from 'node:vm';
+import { cachedReloadRecovery, comicScenario, delegateLookupStep, recordReloadEvents, sampleCachedReloadRecovery, savedSourcePlaced, verifyApprovalRecovery, verifyComposerReceipts, verifyRemoteRequests, verifyRecoveryRetirement, verifyResumeAdmission } from './comicguard/run.mjs';
 
 const sourceAnchor = {mode:'away',sessionRef:'local:grandchild',path:['child','grandchild'],entryId:'thought',offset:305,viewportOffset:24.125};
 function placedSource() {
@@ -41,6 +42,91 @@ test('Comic default stays complete with 102 headings, focused roster has only it
 
 const sentFrame=(payload,at=101)=>({event:'Network.webSocketFrameSent',connection:'original',at,frame:JSON.stringify(payload)});
 const receivedFrame=(payload,at=102)=>({...sentFrame(payload,at),event:'Network.webSocketFrameReceived'});
+function cachedRecovery() {
+  return {documentOrigin:100,currentDocumentOrigin:100,ref:sourceAnchor.sessionRef,expected:sourceAnchor,geometry:placedSource(),intent:[{type:'scroll'}],trace:[
+    {event:'Network.webSocketCreated',connection:'original',at:100},
+    sentFrame({id:1,method:'thread/read',params:{ref:sourceAnchor.sessionRef,includeTurns:true}}),
+    receivedFrame({id:1,result:{thread:{}}}),
+    sentFrame({id:2,method:'thread/turns/list',params:{ref:sourceAnchor.sessionRef,cursor:'older'}},103),
+    receivedFrame({id:2,result:{items:[]}},104),
+  ]};
+}
+test('cached recovery accepts post-hydration page completion and the same source without input',()=>{
+  const evidence=cachedReloadRecovery(cachedRecovery());
+  assert.equal(evidence.ready,true);
+  assert.equal(evidence.hydration.request.id,1);
+  assert.equal(evidence.pages.length,1);
+  assert.equal(evidence.pages[0].response.id,2);
+});
+for(const [name,mutate] of [
+  ['cached placement and hydration reply without an application witness',v=>v.trace.splice(3)],
+  ['older page demand before hydration reply',v=>{[v.trace[2],v.trace[3]]=[v.trace[3],v.trace[2]];}],
+  ['failed hydration',v=>editFrame(v.trace[2],p=>{p.error={code:1};})],
+  ['metadata-only read',v=>editFrame(v.trace[1],p=>{p.params.includeTurns=false;})],
+  ['wrong child',v=>editFrame(v.trace[1],p=>{p.params.ref='local:other';})],
+  ['old document connection',v=>{v.trace[0].at=99;}],
+  ['wrong response connection',v=>{v.trace[2].connection='other';}],
+  ['unfinished older page',v=>v.trace.pop()],
+  ['failed older page',v=>editFrame(v.trace[4],p=>{p.error={code:1};})],
+  ['another pending child page',v=>v.trace.push(sentFrame({id:3,method:'thread/turns/list',params:{ref:sourceAnchor.sessionRef}},105))],
+  ['another pending child refresh',v=>v.trace.push(sentFrame({id:3,method:'thread/read',params:{ref:sourceAnchor.sessionRef,includeTurns:true}},105))],
+  ['new document',v=>{v.currentDocumentOrigin=200;}],
+  ['replacement connection',v=>v.trace.push({event:'Network.webSocketCreated',connection:'replacement',at:105})],
+  ['closed connection',v=>v.trace.push({event:'Network.webSocketClosed',connection:'original',at:105})],
+  ['reader input',v=>v.intent.push({type:'wheel'})],
+  ['missing final source',v=>{v.geometry.point=null;}],
+  ['changed saved offset',v=>{v.geometry.saved.offset=0;}],
+])test(`cached recovery rejects ${name}`,()=>{
+  const value=cachedRecovery();mutate(value);
+  assert.equal(cachedReloadRecovery(value).ready,false);
+});
+test('cached recovery waits for all resulting pages without requiring a fixed count',()=>{
+  const value=cachedRecovery();
+  value.trace.push(sentFrame({id:3,method:'thread/turns/list',params:{ref:sourceAnchor.sessionRef}},105),receivedFrame({id:3,result:{items:[]}},106));
+  const evidence=cachedReloadRecovery(value);
+  assert.equal(evidence.ready,true);
+  assert.equal(evidence.pages.length,2);
+});
+for(const [name,event] of [
+  ['child request',sentFrame({id:3,method:'thread/turns/list',params:{ref:sourceAnchor.sessionRef}},105)],
+  ['replacement connection',{event:'Network.webSocketCreated',connection:'replacement',at:105}],
+])test(`cached sample rejects ${name} arriving during DOM observation`,async()=>{
+  const {trace,...parameters}=cachedRecovery();
+  const evidence=await sampleCachedReloadRecovery(()=>trace.slice(),async()=>{
+    trace.push(event);
+    return parameters;
+  },parameters);
+  assert.equal(evidence.ready,false);
+  assert.equal(evidence.wireUnchanged,false);
+});
+test('cached sample never attaches a reply received during observation to earlier geometry',async()=>{
+  const {trace,...parameters}=cachedRecovery();
+  const reply=trace.pop();
+  const evidence=await sampleCachedReloadRecovery(()=>trace.slice(),async()=>{trace.push(reply);return parameters;},parameters);
+  assert.equal(evidence.ready,false);
+  assert.equal(evidence.pages[0].response,undefined);
+  const next=await sampleCachedReloadRecovery(()=>trace.slice(),async()=>parameters,parameters);
+  assert.equal(next.ready,true);
+});
+test('cached sample permits unrelated wire traffic during observation',async()=>{
+  const {trace,...parameters}=cachedRecovery();
+  const evidence=await sampleCachedReloadRecovery(()=>trace.slice(),async()=>{
+    trace.push(sentFrame({id:3,method:'thread/read',params:{ref:'local:other',includeTurns:true}},105));
+    return parameters;
+  },parameters);
+  assert.equal(evidence.ready,true);
+  assert.equal(evidence.wireUnchanged,true);
+});
+for(const type of ['keydown','touchstart','touchmove','touchend'])test(`cached input latch retains ${type} after event detail overflow`,()=>{
+  const document=new EventTarget();
+  const window={__comicRoot:()=>null};
+  runInNewContext(`(${recordReloadEvents.toString()})('local:root')`,{window,document,performance,sessionStorage:{getItem:()=>null}});
+  document.dispatchEvent(new Event(type));
+  for(let i=0;i<101;i++)document.dispatchEvent(new Event('scroll'));
+  assert.equal(window.__comicReloadEvents.length,100);
+  const evidence=cachedReloadRecovery({...cachedRecovery(),intent:window.__comicReloadEvents,inputSeen:window.__comicReloadInputSeen});
+  assert.equal(evidence.ready,false);
+});
 function retirement() {
   return {oldRef:'local:old',connection:'original',acknowledgedAt:100,backIndex:2,documentOrigin:1,currentDocumentOrigin:1,trace:[
     sentFrame({id:1,method:'thread/unsubscribe',params:{ref:'local:old'}}),receivedFrame({id:1,result:{}}),
