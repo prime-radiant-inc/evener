@@ -1356,7 +1356,7 @@ function createEntryTranscriptRepository(
         const lease = syncThreadSubscription(ref, client);
         if (!lease) return Promise.reject(new Error("entry history has no subscription owner"));
         const generation = (fixture.repository?.getSnapshot()?.history?.issuedGeneration ?? 0) + 1;
-        return readThreadTracked(ref, lease, threadReadParams(true, generation, held)).then((result) => {
+        return readThreadForgettingConfirmed(ref, lease, threadReadParams(true, generation, held)).then((result) => {
           if (client !== wiredClient || epoch !== readyEpoch) throw new Error("entry history source was retired");
           return result;
         });
@@ -3872,14 +3872,18 @@ async function readThreadHydration(
   try {
     try {
       if (signal?.aborted) throw new Error("Thread hydration attempt was retired");
-      response = await readThreadTracked(ref, lease, threadReadParams(includeTurns, pending.requestGeneration, held));
+      response = await readThreadForgettingConfirmed(
+        ref,
+        lease,
+        threadReadParams(includeTurns, pending.requestGeneration, held),
+      );
     } catch (err) {
       if (signal?.aborted) throw err;
       if (!shouldRetryWithoutHeldSnapshot(held, err)) throw err;
       // Logical retirement removes this operation before its issued request's
       // physical slot settles. Its still-live signal cannot authorize a retry.
       if (signal?.aborted || (tracked && pendingThreadHydrations.get(ref) !== pending)) throw err;
-      response = await readThreadTracked(
+      response = await readThreadForgettingConfirmed(
         ref,
         lease,
         threadReadParams(includeTurns, pending.requestGeneration, undefined),
@@ -5140,12 +5144,6 @@ function notificationThreadId(n: AnyNotification): string | undefined {
 // which the daemon's snapshot cut does not order: a read issued before the
 // resolve, or one that starts while the approved tool is still rerunning, can
 // carry the escalation. Every model this client builds from a read drops these.
-//
-// A read that was in flight when an escalation was resolved may still carry it,
-// and one that starts later can only carry escalations pending on the daemon,
-// the few most recent. So a ref keeps its latest ids, and drops older ones only
-// while no read for it is in flight.
-export const MAX_RESOLVED_ESCALATIONS_PER_REF = 32;
 const resolvedEscalationsByRef = new Map<string, Set<string>>();
 
 function resolvedEscalationsFor(ref: string): Set<string> {
@@ -5157,32 +5155,23 @@ function resolvedEscalationsFor(ref: string): Set<string> {
   return resolved;
 }
 
-const readsInFlightByRef = new Map<string, number>();
-
-// Every thread/read goes through here so eviction can tell a read that may
-// still carry a resolved escalation is outstanding.
-function readThreadTracked(
+// A read issued after an escalation was resolved that no longer advertises it
+// shows the daemon is done with it (it is dropped when the approved tool's
+// rerun finishes), so that id can never come back and is forgotten. Ids
+// resolved after the read was issued are kept: the read says nothing of them.
+// The Set is trimmed in place; the transcript repository holds this same Set.
+function readThreadForgettingConfirmed(
   ref: string,
   lease: ThreadSubscriptionLease,
   params: Parameters<ThreadSubscriptionLease["read"]>[0],
 ): ReturnType<ThreadSubscriptionLease["read"]> {
-  readsInFlightByRef.set(ref, (readsInFlightByRef.get(ref) ?? 0) + 1);
-  return lease.read(params).finally(() => {
-    const remaining = (readsInFlightByRef.get(ref) ?? 1) - 1;
-    if (remaining > 0) readsInFlightByRef.set(ref, remaining);
-    else readsInFlightByRef.delete(ref);
+  const resolvedAtIssue = [...(resolvedEscalationsByRef.get(ref) ?? [])];
+  return lease.read(params).then((response) => {
+    const advertised = new Set(response.thread.evener?.pendingEscalations?.map((e) => e.escalationId));
+    const resolved = resolvedEscalationsByRef.get(ref);
+    for (const escalationId of resolvedAtIssue) if (!advertised.has(escalationId)) resolved?.delete(escalationId);
+    return response;
   });
-}
-
-// Trims the Set in place: the transcript repository holds this same Set.
-function trimResolvedEscalations(ref: string): void {
-  const resolved = resolvedEscalationsByRef.get(ref);
-  if (!resolved || readsInFlightByRef.has(ref) || pendingThreadHydrations.has(ref) || pendingWatchedHydrations.has(ref))
-    return;
-  for (const oldest of resolved) {
-    if (resolved.size <= MAX_RESOLVED_ESCALATIONS_PER_REF) break;
-    resolved.delete(oldest);
-  }
 }
 
 function withoutResolvedEscalations(ref: string, pending: PendingThreadHydration, model: ThreadModel): ThreadModel {
@@ -5245,7 +5234,6 @@ function retirePendingHydration(
   pending.baseModel = undefined;
   releasePendingHydrationBytes(ref, pending);
   if (isCurrent) pendingHydrations.delete(ref);
-  trimResolvedEscalations(ref);
   pendingHydrationRetirementForTests?.({
     ref,
     retainedNotificationCount,
@@ -8281,10 +8269,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // this one records the resolve itself (see resolvedEscalationsByRef), then
     // folds it through the same routing a broadcast takes for the models and
     // hydrations that are live now.
-    const resolved = resolvedEscalationsFor(ref);
-    resolved.delete(escalationId); // re-adding makes it the newest
-    resolved.add(escalationId);
-    trimResolvedEscalations(ref);
+    resolvedEscalationsFor(ref).add(escalationId);
     const resolvedAnywhere =
       (model !== undefined && resolvedModel !== model) ||
       (watchedModel !== undefined && resolvedWatched !== watchedModel);
@@ -8807,7 +8792,6 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
   resolvedEscalationsByRef.clear();
-  readsInFlightByRef.clear();
   for (const route of productionEntryRoutes.values()) retireEntryTranscriptRoute(route);
   productionEntryRoutes.clear();
   productionEntryCache?.close();
