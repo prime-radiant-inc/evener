@@ -14,7 +14,6 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/agent/task"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
 )
@@ -731,7 +730,7 @@ func taskUpdatedData(summary taskpkg.ListSummary, taskStoreOwnerSessionID string
 	}
 }
 
-func (s *Session) getOrCreateTaskStore() *task.TaskStore {
+func (s *Session) getOrCreateTaskStore() *taskpkg.TaskStore {
 	s.taskStoreOnce.Do(func() {
 		if s.cfg.spawn.sharedTaskStore != nil {
 			s.taskStore = s.cfg.spawn.sharedTaskStore
@@ -741,7 +740,7 @@ func (s *Session) getOrCreateTaskStore() *task.TaskStore {
 		if dir == "" {
 			dir = s.currentEnv().WorkingDirectory()
 		}
-		s.taskStore = task.NewTaskStore(dir, s.id)
+		s.taskStore = taskpkg.NewTaskStore(dir, s.id)
 		_ = s.taskStore.Load()
 	})
 	return s.taskStore
@@ -788,12 +787,12 @@ func (s *Session) maybeInjectTaskReminder() (string, string) {
 // TasksWithError returns one coherent snapshot of the session's task list and
 // its availability error. A nil error with an empty slice is an authoritative
 // empty store; a non-nil error means the aggregate is unavailable.
-func (s *Session) TasksWithError() ([]task.Task, error) {
+func (s *Session) TasksWithError() ([]taskpkg.Task, error) {
 	return s.getOrCreateTaskStore().ViewWithError()
 }
 
 // Tasks returns a snapshot of the session's task list.
-func (s *Session) Tasks() []task.Task {
+func (s *Session) Tasks() []taskpkg.Task {
 	tasks, _ := s.TasksWithError()
 	return tasks
 }
