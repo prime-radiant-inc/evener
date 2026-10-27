@@ -679,7 +679,6 @@ test("a pane disposed during a delayed refusal preserves its newest composition"
     source.dispose();
     storage.release.resolve();
     await saving;
-
     const preserved = (await storage.listRecovery(ref)).find(
       (record) => record.clientMutationId !== original.clientMutationId,
     );
@@ -1650,6 +1649,101 @@ test("a disposed replacement's saved edit keeps its selection", async () => {
     storage.release.resolve();
     source.dispose();
     replacement.dispose();
+    reloaded?.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+// Reopening the replacement before the older preservation settles must not
+// retire the provenance that says this row holds newer work.
+test("a reopened replacement keeps its newer edit over delayed preservation", async () => {
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  setMutationStorageForTests(storage);
+  const oldRef = "local:reopened-edit-old";
+  const resumed = "local:reopened-edit-new";
+  const original = await storage.enqueueIntent({
+    targetRef: oldRef,
+    method: "turn/start",
+    payload: { ref: oldRef, input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(oldRef, undefined, "pane-a");
+  const replacement = createTestComposerSource(resumed, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  let reopened: ReturnType<typeof createTestComposerSource> | undefined;
+  let reloaded: ReturnType<typeof createTestComposerSource> | undefined;
+  try {
+    await source.activateRecovery(recovery);
+    const localText = "older preserved composition";
+    source.editText(localText);
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+    );
+
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, localText, [], []);
+    await storage.reached.promise;
+    await peer.retargetOutbox(oldRef, resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    const retargeted = await storage.getRecovery(original.clientMutationId);
+    if (!retargeted) throw new Error("missing retargeted recovery fixture");
+    replacement.setActiveRecoveryId(retargeted);
+    replacement.editText("newer replacement work");
+    await replacement.queueRecoveryPersistence(original.clientMutationId, "newer replacement work", [], []);
+    replacement.dispose();
+    writeComposerDraft(resumed, { text: "", skillNames: [] });
+
+    // A new source restores the same row while the older preservation waits.
+    reopened = createTestComposerSource(resumed, undefined, "pane-a");
+    expect(reopened.getSnapshot().text).toBe("");
+    const reopenedRecovery = await storage.getRecovery(original.clientMutationId);
+    if (!reopenedRecovery) throw new Error("missing reopened recovery fixture");
+    reopened.updateText("newer replacement work");
+    reopened.setActiveRecoveryId(reopenedRecovery);
+    expect(reopened.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+    expect(readRecoverySelection(resumed, reopened.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+
+    storage.release.resolve();
+    await saving;
+    const preserved = (await storage.listRecovery(resumed)).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    expect(preserved).toMatchObject({ composerText: "older preserved composition" });
+    expect(reopened.getSnapshot().text).toBe("newer replacement work");
+    expect(readRecoverySelection(resumed, reopened.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+    reloaded = createTestComposerSource(resumed, undefined, "pane-a");
+    expect(readRecoverySelection(resumed, reloaded.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+  } finally {
+    storage.release.resolve();
+    source.dispose();
+    replacement.dispose();
+    reopened?.dispose();
     reloaded?.dispose();
     peer.close();
     storage.close();

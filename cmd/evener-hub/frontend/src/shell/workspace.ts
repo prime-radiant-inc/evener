@@ -684,6 +684,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
           // Attach in place: object-keyed edges bind to this record.
           existing.composerSeatId = placeComposerSeat(ref, state.panes, opts?.recoverySelectionFrom);
         }
+        const focused = paramsChanged ? { ...existing, params } : existing;
         if (paramsChanged || focusChanged || seatAdded) {
           set({
             panes: paramsChanged
@@ -694,6 +695,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
             ...(keepFocus ? {} : { focusedPaneId: existing.id }),
           });
         }
+        if (!keepFocus) writePaneRefSeat(focused);
         return existing.id;
       }
     } else {
@@ -714,7 +716,10 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
           }
         }
         const focusChanged = !keepFocus && state.focusedPaneId !== existing.id;
-        if (panes !== state.panes || focusChanged) set({ panes, ...(keepFocus ? {} : { focusedPaneId: existing.id }) });
+        if (panes !== state.panes || focusChanged) {
+          set({ panes, ...(keepFocus ? {} : { focusedPaneId: existing.id }) });
+        }
+        if (!keepFocus) writePaneRefSeat(existing);
         return existing.id;
       }
     }

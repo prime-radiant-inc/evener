@@ -1709,3 +1709,63 @@ test("focus and promote reconcile the conversation seat mapping", () => {
   workspaceStore.getState().promotePane(secondaryId);
   expect(readRefComposerSeat(ref)).toBe(secondary.composerSeatId);
 });
+
+test("opening an existing conversation reconciles its seat mapping", () => {
+  installLocalStorage(new MemoryStorage());
+  const ref = "local:open-existing";
+  const mainId = workspaceStore.getState().replacePrimary("session", { ref });
+  const main = workspaceStore.getState().panes.find((pane) => pane.id === mainId);
+  if (!main?.composerSeatId) throw new Error("main pane lacks its seat");
+  const cascadeId = workspaceStore.getState().openPane("doc", { ref: "doc" });
+  const cascadePane = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!cascadePane) throw new Error("cascade pane missing");
+  expect(
+    workspaceStore.getState().retypePane(cascadePane, "sessionZoom", {
+      ref,
+      source: { type: "session", params: { ref } },
+      edges: [],
+    }),
+  ).toBe(true);
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
+  workspaceStore.getState().focusPane(cascadeId);
+  expect(readRefComposerSeat(ref)).toBe(cascade.composerSeatId);
+
+  expect(workspaceStore.getState().openPane("session", { ref })).toBe(mainId);
+  expect(readRefComposerSeat(ref)).toBe(main.composerSeatId);
+  resetWorkspaceStoreForTests();
+  const reloadedId = workspaceStore.getState().openPane("session", { ref });
+  const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
+  if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
+  expect(reloaded.composerSeatId).toBe(main.composerSeatId);
+});
+
+type SeatTransitionContext = { mainId: string; secondaryId: string; ref: string };
+
+test.each<[string, (context: SeatTransitionContext) => void]>([
+  ["focus", ({ mainId }) => workspaceStore.getState().focusPane(mainId)],
+  ["open", ({ ref }) => void workspaceStore.getState().openPane("session", { ref })],
+  ["close", ({ secondaryId }) => workspaceStore.getState().closePane(secondaryId)],
+  ["replacePrimary", ({ ref }) => void workspaceStore.getState().replacePrimary("session", { ref })],
+])("%s reconciles the conversation seat mapping", (_name, transition) => {
+  installLocalStorage(new MemoryStorage());
+  const ref = `local:transition-${_name}`;
+  const mainId = workspaceStore.getState().replacePrimary("session", { ref });
+  const main = workspaceStore.getState().panes.find((pane) => pane.id === mainId);
+  if (!main?.composerSeatId) throw new Error("main pane lacks its seat");
+  const secondaryId = workspaceStore.getState().openPane("doc", { ref: "doc" });
+  const secondaryPane = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
+  if (!secondaryPane) throw new Error("secondary pane missing");
+  expect(workspaceStore.getState().retypePane(secondaryPane, "session", { ref })).toBe(true);
+  const secondary = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
+  if (!secondary?.composerSeatId) throw new Error("secondary session lacks its seat");
+  expect(readRefComposerSeat(ref)).toBe(secondary.composerSeatId);
+
+  transition({ mainId, secondaryId, ref });
+  expect(readRefComposerSeat(ref)).toBe(main.composerSeatId);
+  resetWorkspaceStoreForTests();
+  const reloadedId = workspaceStore.getState().openPane("session", { ref });
+  const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
+  if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
+  expect(reloaded.composerSeatId).toBe(main.composerSeatId);
+});

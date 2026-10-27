@@ -187,11 +187,15 @@ const liveComposerSources = new Map<string, Set<ComposerSourceState>>();
 // save newer work to the stale row and close before a delayed preservation
 // finishes. Keep which sources recorded newer work against each recovery, with
 // source identity so the preserving source still excludes its own edits. A
-// successor that activates the row has incorporated that work, so its evidence
-// is retired on activation.
+// successor that activates the row has incorporated the evidence that existed
+// then, but an older preservation may still be deciding the seat's selection,
+// so retirement waits until those preservations settle.
 const sourceEditIds = new WeakMap<ComposerSourceState, number>();
 let nextSourceEditId = 1;
-const retainedNewerEdits = new Map<string, Set<number>>();
+let nextEditSequence = 0;
+const retainedNewerEdits = new Map<string, Map<number, number>>();
+const retainedEditBoundaries = new Map<string, number>();
+const pendingPreservations = new Map<string, number>();
 
 function retainedEditKey(scope: string, recoveryId: string): string {
   return `${scope}\u0000${recoveryId}`;
@@ -199,21 +203,46 @@ function retainedEditKey(scope: string, recoveryId: string): string {
 
 function retainNewerEdit(scope: string, recoveryId: string, from: ComposerSourceState): void {
   const key = retainedEditKey(scope, recoveryId);
-  let sourceIds = retainedNewerEdits.get(key);
-  if (sourceIds === undefined) {
-    sourceIds = new Set();
-    retainedNewerEdits.set(key, sourceIds);
+  let evidence = retainedNewerEdits.get(key);
+  if (evidence === undefined) {
+    evidence = new Map();
+    retainedNewerEdits.set(key, evidence);
   }
   let sourceId = sourceEditIds.get(from);
   if (sourceId === undefined) {
     sourceId = nextSourceEditId++;
     sourceEditIds.set(from, sourceId);
   }
-  sourceIds.add(sourceId);
+  evidence.set(sourceId, ++nextEditSequence);
 }
 
 function retireRetainedEdits(scope: string, recoveryId: string): void {
-  retainedNewerEdits.delete(retainedEditKey(scope, recoveryId));
+  const key = retainedEditKey(scope, recoveryId);
+  if ((pendingPreservations.get(key) ?? 0) > 0) return;
+  const evidence = retainedNewerEdits.get(key);
+  if (evidence !== undefined) {
+    const boundary = retainedEditBoundaries.get(key) ?? nextEditSequence;
+    for (const [sourceId, sequence] of evidence) {
+      if (sequence <= boundary) evidence.delete(sourceId);
+    }
+    if (evidence.size === 0) retainedNewerEdits.delete(key);
+  }
+  retainedEditBoundaries.delete(key);
+}
+
+function beginPendingPreservation(scope: string, recoveryId: string): void {
+  const key = retainedEditKey(scope, recoveryId);
+  pendingPreservations.set(key, (pendingPreservations.get(key) ?? 0) + 1);
+}
+
+function endPendingPreservation(scope: string, recoveryId: string): void {
+  const key = retainedEditKey(scope, recoveryId);
+  const remaining = (pendingPreservations.get(key) ?? 0) - 1;
+  if (remaining > 0) pendingPreservations.set(key, remaining);
+  else {
+    pendingPreservations.delete(key);
+    retireRetainedEdits(scope, recoveryId);
+  }
 }
 
 function destinationHasNewerEdits(
@@ -225,7 +254,7 @@ function destinationHasNewerEdits(
   const retained = retainedNewerEdits.get(retainedEditKey(scope, staleId));
   if (retained !== undefined) {
     const exceptId = except === undefined ? undefined : sourceEditIds.get(except);
-    for (const sourceId of retained) {
+    for (const sourceId of retained.keys()) {
       if (sourceId !== exceptId) return true;
     }
   }
@@ -444,6 +473,7 @@ export function createComposerSourceState(
     recoveryBaseRecord = record;
     selectionUserEditEpoch = userEditEpoch;
     if (record !== null && previousRecoveryId !== record.clientMutationId) {
+      retainedEditBoundaries.set(retainedEditKey(recoverySelectionOwnerId, record.clientMutationId), nextEditSequence);
       retireRetainedEdits(recoverySelectionOwnerId, record.clientMutationId);
     }
     reconcileRecoverySeat(record?.targetRef ?? ref);
@@ -702,15 +732,22 @@ export function createComposerSourceState(
             // settled attachments added during this wait.
             const refusalComposition = disposed ? disposalComposition : liveComposition();
             const emptyAtRefusal = refusalComposition === null || compositionIsEmpty(refusalComposition);
-            const preserved =
-              emptyAtRefusal || refusalComposition === null
-                ? undefined
-                : await preserveStaleRecovery(clientMutationId, localDraftRevisionId, refusalComposition);
-            const destinationOwnsNewer =
-              preserved !== undefined &&
-              destinationHasNewerEdits(recoverySelectionOwnerId, preserved.targetRef, clientMutationId, source);
-            if (preserved && rememberPreservedSelection(preserved, clientMutationId)) {
-              notifyPreservedSelection(preserved.targetRef, clientMutationId, preserved);
+            let preserved: MutationRecoveryRecord | undefined;
+            let destinationOwnsNewer = false;
+            beginPendingPreservation(recoverySelectionOwnerId, clientMutationId);
+            try {
+              preserved =
+                emptyAtRefusal || refusalComposition === null
+                  ? undefined
+                  : await preserveStaleRecovery(clientMutationId, localDraftRevisionId, refusalComposition);
+              destinationOwnsNewer =
+                preserved !== undefined &&
+                destinationHasNewerEdits(recoverySelectionOwnerId, preserved.targetRef, clientMutationId, source);
+              if (preserved && rememberPreservedSelection(preserved, clientMutationId)) {
+                notifyPreservedSelection(preserved.targetRef, clientMutationId, preserved);
+              }
+            } finally {
+              endPendingPreservation(recoverySelectionOwnerId, clientMutationId);
             }
             if (
               !disposed &&
