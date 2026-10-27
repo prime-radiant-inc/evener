@@ -3,7 +3,6 @@ package hub
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -19,138 +18,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/execsupport/fsatomic"
 )
-
-// legacyHostSidecarFileName is the retired sidecar beside the selected
-// hub.toml. It is read once by the boot migration — never written — and set
-// aside under legacyHostSidecarAsideSuffix on success.
-const legacyHostSidecarFileName = "hub.hosts.json"
-
-// legacyHostSidecarAsideSuffix names the retired sidecar once its entries are
-// folded into hub.toml: the file is renamed aside, never deleted, so its bytes
-// survive for recovery while a later removal of a name it carried can never
-// resurrect through it.
-const legacyHostSidecarAsideSuffix = ".migrated"
-
-// legacySidecarMigratedKey is the machine-managed key a successful migration
-// records in hub.toml. It is what makes the retirement authoritative rather
-// than only the rename's durability: on a filesystem whose directories cannot
-// be synced (the tolerance hubTOMLSyncDir shares with the hub's other stores), a
-// power loss can bring hub.hosts.json back after the UI has removed a host it
-// carried — and a later boot that finds the marker in hub.toml knows the sidecar
-// has already been folded in, so it ignores the stale file instead of
-// re-merging names the UI removed. The marker rides the same atomic write as the
-// merged host set, so any mutation that survives proves it survived too.
-const legacySidecarMigratedKey = "legacy_sidecar_migrated"
-
-// legacyHostSidecarFile is the on-disk shape of the retired sidecar: entries in
-// add order. It is a migration input only; nothing writes it any more.
-type legacyHostSidecarFile struct {
-	// Hosts is a pointer so the shape gate is one decode: absent and null both
-	// leave it nil, while a present array — empty included — sets it.
-	Hosts *[]legacyHostSidecarFileEntry `json:"hosts"`
-}
-
-// legacyHostSidecarFileEntry is one persisted sidecar entry: the seven
-// HostConfig fields in snake_case (hub.toml's spelling for the same fields)
-// plus the key path. The retired sidecar never crossed the wire, so it follows
-// the repo's snake_case json default; the appwire package's camelCase HostRow
-// is what clients see.
-type legacyHostSidecarFileEntry struct {
-	Name       string   `json:"name"`
-	SSH        string   `json:"ssh"`
-	User       string   `json:"user,omitempty"`
-	EvenerPath string   `json:"evener_path,omitempty"`
-	ConfigPath string   `json:"config_path,omitempty"`
-	Addr       string   `json:"addr,omitempty"`
-	Roots      []string `json:"roots,omitempty"`
-	KeyPath    string   `json:"key_path,omitempty"`
-}
-
-// legacySidecarPathFor returns the retired sidecar's path beside the selected
-// hub.toml: the one-time migration's input. An empty config path (tests,
-// embedders without a file) disables persistence: the store stays memory-only
-// and every method still works.
-func legacySidecarPathFor(configPath string) string {
-	if strings.TrimSpace(configPath) == "" {
-		return ""
-	}
-	return filepath.Join(filepath.Dir(configPath), legacyHostSidecarFileName)
-}
-
-// loadLegacyHostSidecar reads path into entries in file order. A missing file
-// is no sidecar, not an error: a hub that never added a host has no file.
-func loadLegacyHostSidecar(path string) ([]hostreg.Host, error) {
-	if path == "" {
-		return nil, nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read legacy host sidecar: %w", err)
-	}
-	return parseLegacyHostSidecar(data)
-}
-
-// parseLegacyHostSidecar decodes the retired sidecar's bytes in file order: the
-// one-time migration's parse. A present document must
-// carry a "hosts" array: an absent or null field is a load error, not an empty
-// sidecar — a present empty array is the legitimate one. `hosts` is also the
-// only record a sidecar may carry: any other top-level record is a shape this
-// series never shipped, and the migration refuses it (keys named) rather than
-// folding the hosts and silently stripping records the operator may need.
-func parseLegacyHostSidecar(data []byte) ([]hostreg.Host, error) {
-	// The shape gate rides the typed decode: `hosts` must be present and
-	// non-null, which is exactly "the pointer is non-nil" — absent and null
-	// both leave it nil, while a present array (empty included) sets it. A
-	// JSON-valid document without a usable array — {} or {"hosts":null} —
-	// must be a load error, not an empty sidecar: loading it as "no entries"
-	// would let the migration rewrite hub.toml from an empty snapshot,
-	// silently discarding whatever the broken document carried. Loud, file
-	// preserved, the corrupt-file contract.
-	var file legacyHostSidecarFile
-	if err := json.Unmarshal(data, &file); err != nil {
-		return nil, fmt.Errorf("parse legacy host sidecar: %w", err)
-	}
-	if file.Hosts == nil {
-		return nil, errors.New(`parse legacy host sidecar: missing or null "hosts" array`)
-	}
-	// Only `hosts` is a recognized record: a document carrying anything else
-	// fails the migration loudly, with the unrecognized keys named — nothing
-	// merges, both files stay untouched, and the operator archives or repairs
-	// the file. The pre-decision revision sketched a records-bearing sidecar
-	// (tombstones, generations, receipts, remnants, markers); folding its
-	// hosts while ignoring the rest would strip exactly those records.
-	var records map[string]json.RawMessage
-	if err := json.Unmarshal(data, &records); err != nil {
-		return nil, fmt.Errorf("parse legacy host sidecar: %w", err)
-	}
-	var unknown []string
-	for key := range records {
-		if key != "hosts" {
-			unknown = append(unknown, key)
-		}
-	}
-	if len(unknown) > 0 {
-		slices.Sort(unknown)
-		return nil, fmt.Errorf("parse legacy host sidecar: unrecognized records %s — only \"hosts\" is migrated; archive or repair the file (nothing was migrated)", strings.Join(unknown, ", "))
-	}
-	entries := make([]hostreg.Host, 0, len(*file.Hosts))
-	for _, h := range *file.Hosts {
-		entries = append(entries, hostreg.Host{
-			Name:       h.Name,
-			SSH:        h.SSH,
-			User:       h.User,
-			EvenerPath: h.EvenerPath,
-			ConfigPath: h.ConfigPath,
-			Addr:       h.Addr,
-			Roots:      h.Roots,
-			KeyPath:    h.KeyPath,
-		})
-	}
-	return entries, nil
-}
 
 // writeHubTOMLHostsRecords is the one hub.toml writer. It rewrites path in place
 // with the machine-managed banner at its top and entries as its [[hosts]]
@@ -186,9 +53,7 @@ func parseLegacyHostSidecar(data []byte) ([]hostreg.Host, error) {
 // removed-host tombstones, and the pruned markers. The manager's persist path
 // builds the set with deriveHostTOMLRecords (which has already applied
 // retention, capacity, and compaction) and installs the same set on success.
-// migrated records legacySidecarMigratedKey in the same atomic write, so the
-// rewritten file itself says the retired sidecar has been folded in.
-func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, records hostTOMLRecords, migrated bool) error {
+func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, records hostTOMLRecords) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
@@ -292,9 +157,6 @@ func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, record
 		delete(doc, "teardown_attempts")
 	} else {
 		doc["teardown_attempts"] = attemptTables
-	}
-	if migrated {
-		doc[legacySidecarMigratedKey] = true
 	}
 	var buf bytes.Buffer
 	buf.WriteString(hostTOMLBanner)
@@ -401,20 +263,10 @@ func hubTOMLRenameCommitted(err error) bool {
 	return errors.As(err, &post)
 }
 
-// persistHosts rewrites hub.toml durably, refusing while the store is known
-// incomplete (a legacy sidecar that failed to load or migrate): rewriting the
-// file then would clobber the entries that never made it into memory. Callers
-// treat the refusal as fatal (add/remove report it; the entry stays un-exposed
-// or the host stays intact), so the operator hears about the broken file
-// instead of losing it. A failure the rename already committed
-// (hubTOMLPostRenameError) is not a plain refusal — the file holds the new
-// entries — so the callers compensate the live state before reporting it.
-func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change hostPersistChange) error {
-	return m.persistHostsMarked(entries, known, change, false)
-}
-
-// persistHostsMarked is persistHosts with the migration's marker; only the
-// migration passes true. known is the store's pre-mutation snapshot.
+// persistHosts rewrites hub.toml durably. A failure the rename already
+// committed (hubTOMLPostRenameError) is not a plain refusal — the file holds the
+// new entries — so the callers compensate the live state before reporting it.
+// known is the store's pre-mutation snapshot.
 //
 // The write is derive-then-install: the machine-record set is derived once
 // (deriveHostTOMLRecords applies every retention, capacity, and compaction
@@ -424,15 +276,12 @@ func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change host
 // bookkeeping. A capacity refusal (spec §15's `tombstone-capacity`) is mapped
 // onto its wire envelope here, the one choke point every mutation path runs
 // through.
-func (m *hubHostManager) persistHostsMarked(entries, known []hostreg.Host, change hostPersistChange, migrated bool) error {
-	if err := m.cfg.store.poisoned(); err != nil {
-		return fmt.Errorf("hub.toml %s not rewritten: %w (fix the legacy host sidecar or remove its unloaded entries first)", m.cfg.configPath, err)
-	}
+func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change hostPersistChange) error {
 	records, err := m.deriveHostTOMLRecords(entries, known, change)
 	if err != nil {
 		return tombstoneCapacityRefusal(err)
 	}
-	if err := writeHubTOMLHostsRecords(m.cfg.configPath, entries, known, records, migrated); err != nil {
+	if err := writeHubTOMLHostsRecords(m.cfg.configPath, entries, known, records); err != nil {
 		return err
 	}
 	m.cfg.store.installRecords(records)

@@ -115,13 +115,6 @@ type hostStore struct {
 	// boot load seeds it from the file, so a removal that lands before the next
 	// start keeps its high-water record.
 	highWater map[string]HostGeneration
-	// loadErr records why the durable host set cannot be treated as fully
-	// loaded: a legacy sidecar failed to parse or validate, or its one-time
-	// migration failed. While it is set the in-memory snapshot is known
-	// incomplete, so writes refuse — rewriting hub.toml would clobber the
-	// entries that never made it into memory — and add/remove fail loudly
-	// instead of silently losing them.
-	loadErr error
 	// receipts is the durable mutation-receipt set the file carries, keyed by
 	// the five-part scoped key (spec 08 §5/§6; app_host_receipts.go). Boot
 	// loads it from the file's [mutation_receipts] tables, a committed
@@ -314,24 +307,6 @@ func (s *hostStore) installRecords(records hostTOMLRecords) {
 	if records.receipts != nil {
 		s.receipts = records.receipts
 	}
-}
-
-// poison records err as the reason the durable host set is not fully loaded.
-// The first reason wins; later ones only add log lines at the call site.
-func (s *hostStore) poison(err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.loadErr == nil {
-		s.loadErr = err
-	}
-}
-
-// poisoned reports why the durable host set cannot be trusted as fully loaded,
-// or nil when every entry is loaded (or there is nothing to migrate).
-func (s *hostStore) poisoned() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.loadErr
 }
 
 // add inserts entry at the end. Callers hold hostManagerConfig.mu.

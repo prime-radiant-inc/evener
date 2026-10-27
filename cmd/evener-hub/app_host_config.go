@@ -249,13 +249,7 @@ type hostManagerConfig struct {
 // persistence); logf is the hub's logging path for store load problems.
 //
 // The durable host set starts as the registry's boot entries — every host
-// lives in the one machine-managed hub.toml — and a legacy sidecar, when one is
-// present, is folded into hub.toml exactly once (migrateLegacyHostSidecar): its
-// entries join the live set, hub.toml is rewritten with the merged set and the
-// banner, and the retired file is set aside. A sidecar that fails to load or
-// migrate, or a legacy entry that fails validation, is logged here and poisons
-// writes: hub.toml keeps every entry it had until an operator fixes the file,
-// instead of the next rewrite dropping the entries that never loaded.
+// lives in the one machine-managed hub.toml.
 func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cfg hubcore.WebConfig, configPath string, hosts *hostreg.Registry, logf func(format string, args ...any)) *hubHostManager {
 	if hosts == nil {
 		hosts, _ = hostreg.New(nil)
@@ -437,28 +431,17 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 			m.logf("boot finalization of the staged receipt marker for %q refused: %v", name, err)
 		}
 	}
-	migrated, err := m.migrateLegacyHostSidecar()
-	if err != nil {
-		// Loud, not fatal: the hub.toml hosts still serve. The store stays
-		// poisoned so no later rewrite can land before the sidecar's entries
-		// are folded in.
-		m.logf("legacy host sidecar %s not migrated: %v", legacySidecarPathFor(m.cfg.configPath), err)
-		m.cfg.store.poison(err)
-	}
-	if !migrated {
-		// The boot's durable prune: expired tombstones, a tombstone a live
-		// entry consumed, and any record compaction past its bound land in one
-		// atomic write before the hub serves requests (spec §15: "every boot
-		// prunes durably in the same atomic-write posture before serving
-		// requests"; §6: "every `hub.toml` mutation and every boot compacts
-		// markers past either bound in the same atomic write"). A boot with
-		// nothing to prune writes nothing, so an untouched file stays
-		// byte-identical. The migration's own write records every live host's
-		// identity, so only a boot without that write can need the initial
-		// records.
-		if attempted := m.reconcileBootRecords(hasFile, collided); !attempted {
-			m.materializeHostRecords(fileRecords, hasFile)
-		}
+	// The boot's durable prune: expired tombstones, a tombstone a live
+	// entry consumed, and any record compaction past its bound land in one
+	// atomic write before the hub serves requests (spec §15: "every boot
+	// prunes durably in the same atomic-write posture before serving
+	// requests"; §6: "every `hub.toml` mutation and every boot compacts
+	// markers past either bound in the same atomic write"). A boot with
+	// nothing to prune writes nothing, so an untouched file stays
+	// byte-identical. A boot without that write may still owe the initial
+	// identity records.
+	if attempted := m.reconcileBootRecords(hasFile, collided); !attempted {
+		m.materializeHostRecords(fileRecords, hasFile)
 	}
 	// Spec 08b §7's boot passes, in their fixed order, before the
 	// manager serves: the tombstone-derived host-removed pass, the bidirectional
