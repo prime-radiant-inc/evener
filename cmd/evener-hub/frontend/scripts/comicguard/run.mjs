@@ -1179,7 +1179,7 @@ async function rosterJourney(page, fixture, { command, complete, incoming, outgo
     writeFileSync(`${fixture.evidenceDir}/named-route-search.json`,JSON.stringify({target:directChild.ref,steps:namedSearch},null,2));
   }
   const readNamedIdentity = () => evaluateHere(`(() => {const panel=[...document.querySelectorAll('[data-comic-entry]')].find(node=>node.dataset.comicSession===${JSON.stringify(directChild.ref)}&&node.textContent.includes('COMIC_ROSTER_LEAF literal answer'));return panel?.querySelector('[data-comic-identity]')?.textContent;})()`);
-  const directIdentity = await until('named direct child identity', readNamedIdentity, value=>value===`comic-same-name · ${ownedRow.delegateId}`);
+  const directIdentity = await until('named direct child identity', readNamedIdentity, value=>value===`comic-same-name · ${ownedRow.delegateId} · ${fixture.refs.live}`);
   await reloadPage(page, fixture.evidenceDir);
   const refreshedIdentity = await until('named direct child refresh identity', readNamedIdentity, value=>value===directIdentity);
   writeFileSync(`${fixture.evidenceDir}/named-direct.json`, JSON.stringify({directChild,ownedRow,directIdentity,refreshedIdentity},null,2));
@@ -1369,7 +1369,7 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
     const panel=[...document.querySelectorAll('[data-comic-entry]')].find(node=>node.dataset.comicSession===${JSON.stringify(grandchild.ref)}&&node.textContent.includes('COMIC_PARENT_INSTRUCTION literal parent steering'));
     if(panel)return panel.querySelector('[data-comic-identity]')?.textContent;
     const port=document.querySelector('[data-comic-scroll]')?.firstElementChild;if(port){port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:-300}));port.scrollTop-=300;}return null;
-  })()`), value=>value===`comic-named-parent · ${JSON.parse(header.key)[1]}`);
+  })()`), value=>value===`comic-named-parent · ${JSON.parse(header.key)[1]} · ${JSON.parse(header.key)[0]}`);
   writeFileSync(`${fixture.evidenceDir}/named-parent.json`, JSON.stringify({header,grandchild,parentIdentity},null,2));
   await evaluateHere('history.back()');
   await measure('named-parent-back');
@@ -1454,7 +1454,7 @@ async function authorshipJourney(page, fixture, { incoming, outgoing, screenshot
     const baseline=baselines.get(expected.text);
     if(!baseline.identity || baseline.kind!==expected.kind || baseline.speaker!==expected.speaker)throw Error('invalid original author baseline '+JSON.stringify({expected,baseline}));
     if(expected.author.kind==='agent' && (expected.author.delegateId
-      ? !baseline.identity.includes(expected.author.delegateId)||!baseline.identity.includes(expected.author.delegateName)
+      ? !baseline.identity.includes(expected.author.delegateId)||!baseline.identity.includes(expected.author.delegateName)||!baseline.identity.includes(expected.author.ownerRef)
       : !baseline.identity.includes(expected.author.sessionRef)))throw Error('original identity is not qualified '+JSON.stringify({expected,baseline}));
   }
   const observations=[];
