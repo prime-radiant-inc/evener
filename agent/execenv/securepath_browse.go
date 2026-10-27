@@ -585,6 +585,144 @@ func (a *grepAccum) finishWalk(excludedByIgnore, oversized int) string {
 	return out
 }
 
+// grepTreeWalk is the directory walk both native grep arms run: the
+// unsandboxed grepNativeSkipping and the sandboxed sandboxFS.grepNative differ
+// only in the filesystem they walk, whether a masked subtree exists, and how a
+// file named as the target is handled, so each fills in those and calls run.
+type grepTreeWalk struct {
+	ctx         context.Context
+	acc         *grepAccum
+	globFilters []string
+	skip        func(rel string) bool
+	// root is the on-disk directory the walk is rooted at: pseudo-filesystem
+	// directories beneath it are skipped unless root is itself one.
+	root string
+	// ignoreFS is read for .gitignore discovery; budget is shared with the
+	// walk's own listings.
+	ignoreFS fs.FS
+	budget   *GlobBudget
+	// walk visits every entry beneath root; read returns one file's capped bytes
+	// by its path in the walked filesystem.
+	walk func(fn fs.WalkDirFunc) error
+	read func(rel string) ([]byte, error)
+	// masked reports an absolute path the sandbox policy hides; nil off the
+	// sandbox, where nothing is masked.
+	masked func(abs string) bool
+	// namedFile means the walk's single entry is the file the caller named, which
+	// grep reports as ".". largeNamedFile then searches it in bounded windows when
+	// it is past the read cap, instead of leaving it out as an oversize file.
+	namedFile      bool
+	largeNamedFile func(rel string) error
+}
+
+func (w grepTreeWalk) isMasked(abs string) bool { return w.masked != nil && w.masked(abs) }
+
+func (w grepTreeWalk) run() (string, error) {
+	// Never list or read into a masked subtree while collecting .gitignore rules.
+	ignores, err := loadIgnoreSet(w.ctx, w.ignoreFS, func(rel string) bool {
+		abs := filepath.Join(w.root, rel)
+		return w.isMasked(abs) || walkSkipsPseudoDir(w.root, abs)
+	}, w.budget, wholeBaseIgnoreScope())
+	if err != nil {
+		return "", err
+	}
+	excludedByIgnore := 0
+	oversized := 0
+	err = w.walk(func(p string, d fs.DirEntry, walkErr error) error {
+		if cancelErr := w.ctx.Err(); cancelErr != nil {
+			return cancelErr
+		}
+		if walkErr != nil {
+			// loadIgnoreSet's walk above already visits every directory this
+			// one would — its skip set (dot-prefixed, masked and pseudo
+			// directories) is a strict subset of this walk's (which also skips
+			// gitignored ones) — so it always reaches an oversized directory
+			// first on any static tree and this guard cannot be reached that
+			// way. It is reachable only when a directory grows past the entry
+			// bound in the gap between the two passes, which the
+			// *WalkCarriesTheEntriesRefusalWhenADirectoryGrowsAfterIgnoreDiscovery
+			// tests force by stubbing the walk itself to grow the tree after
+			// ignore discovery has already listed it.
+			if _, refused := errors.AsType[*globBudgetError](walkErr); refused {
+				return walkErr
+			}
+			return nil //nolint:nilerr // best-effort grep: skip unreadable / symlink-refused entries and keep walking
+		}
+		// p is the path in the walked filesystem; rel is the name grep matches
+		// rules against and reports, which for a named file is ".".
+		rel := p
+		if w.namedFile {
+			rel = "."
+		}
+		abs := filepath.Join(w.root, p)
+		if w.isMasked(abs) {
+			if d.IsDir() {
+				return fs.SkipDir // never descend into a masked subtree
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if p != "." {
+				if strings.HasPrefix(d.Name(), ".") {
+					return fs.SkipDir
+				}
+				if ignores.matches(rel, true) {
+					excludedByIgnore++
+					return fs.SkipDir
+				}
+				if walkSkipsPseudoDir(w.root, abs) {
+					return fs.SkipDir
+				}
+			}
+			// fs.WalkDir never follows a directory symlink, so this walk cannot
+			// cycle back into itself the way the glob pattern walk's ancestor
+			// check has to guard against — the same reason ignore discovery's own
+			// budget charge is always cycleSafe. Charged only here, once the
+			// masked/dot/gitignore skips above have already passed, so a
+			// directory the walk is about to skip anyway costs nothing.
+			if berr := w.budget.listing(true); berr != nil {
+				return berr
+			}
+			return nil
+		}
+		// Skip hidden and gitignored files
+		if strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+		if ignores.matches(rel, false) {
+			excludedByIgnore++
+			return nil
+		}
+		if selected, selErr := grepFileSelected(d.Name(), rel, w.globFilters, w.skip); !selected {
+			return selErr
+		}
+		data, rerr := w.read(p)
+		if rerr != nil {
+			if cancelErr := w.ctx.Err(); cancelErr != nil {
+				return cancelErr
+			}
+			if errors.Is(rerr, errGrepFileTooLarge) {
+				if w.largeNamedFile != nil {
+					return w.largeNamedFile(p)
+				}
+				oversized++
+			}
+			return nil //nolint:nilerr // best-effort grep: skip unreadable files and keep walking
+		}
+		if w.acc.feed(filepath.FromSlash(rel), data) {
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if err := w.ctx.Err(); err != nil {
+		return "", err
+	}
+	return w.acc.finishWalk(excludedByIgnore, oversized), nil
+}
+
 // grepTruncationNote is the note on a grep result the cap cut short, so a
 // model never reads the results it got as all there are.
 func grepTruncationNote(maxResults int) string {

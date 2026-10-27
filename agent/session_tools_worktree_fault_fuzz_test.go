@@ -729,12 +729,12 @@ func worktreeFaultOperationErrorsProgram(t *testing.T, program []byte) {
 		}
 
 		faults.listErr = errors.New("scripted list failure")
-		if _, _, err := worktreePruneSweep3(faults.run, filepath.Dir(h.managedPath("placeholder"))); err == nil {
+		if _, _, err := pruneGitRegistry(faults.run, filepath.Dir(h.managedPath("placeholder"))); err == nil {
 			t.Fatal("sweep three accepted a failed registry list")
 		}
 		faults.listErr = nil
 		faults.pruneErr = errors.New("scripted prune failure")
-		if _, _, err := worktreePruneSweep3(faults.run, filepath.Dir(h.managedPath("placeholder"))); err == nil {
+		if _, _, err := pruneGitRegistry(faults.run, filepath.Dir(h.managedPath("placeholder"))); err == nil {
 			t.Fatal("sweep three accepted a failed git worktree prune")
 		}
 
