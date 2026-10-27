@@ -262,25 +262,12 @@ func closeStopJoinContext(ctx context.Context) (context.Context, context.CancelF
 	stopCtx, cancel := context.WithTimeout(ctx, budget)
 	if bounded {
 		if stopDeadline, ok := stopCtx.Deadline(); ok {
-			if ObserveCloseStopJoin != nil {
-				ObserveCloseStopJoin(stopDeadline, cascadeDeadline)
-			}
 			if ObserveCloseStopJoinBudget != nil {
 				ObserveCloseStopJoinBudget(stopDeadline, cascadeDeadline, cascadeBudget)
 			}
 		}
 	}
 	return stopCtx, cancel
-}
-
-// CloseStopJoinBudget is the rule closeStopJoinContext bounds a stop join by,
-// given what the cascade has left: half of the close-cascade budget when at least
-// that much remains, else half of the remainder, so a nested stop cannot
-// consume the time its parent has left. EXPORTED so the cmd/evener
-// wedged-delegate run tests check the close tree against this rule rather
-// than a copy of it that can drift.
-func CloseStopJoinBudget(remaining time.Duration) time.Duration {
-	return CloseStopJoinBudgetForCascade(remaining, laneClosePassBudget())
 }
 
 // CloseStopJoinBudgetForCascade applies the stop-join split using the immutable
@@ -297,18 +284,12 @@ func closeStopJoinBudget(remaining, cascadeBudget time.Duration) time.Duration {
 	return budget
 }
 
-// ObserveCloseStopJoin sees every stop join closeStopJoinContext bounds under
-// a cascade deadline -- the stop's own deadline and the cascade's -- when set.
-// It is EXPORTED for cmd/evener's wedged-delegate run tests, which check the
-// close tree's wiring -- that the hopeless stop join is bounded to its half of
-// the budget rather than the whole cascade -- off these two deadlines instead
-// of off wall-clock time, which host load can stretch past any ceiling. Nil in
-// production; the same convention as the close-cascade budget.
-var ObserveCloseStopJoin func(stopDeadline, cascadeDeadline time.Time)
-
 // ObserveCloseStopJoinBudget is the context-independent observation seam for
-// callers that need the exact immutable cascade budget used by a stop join.
-// ObserveCloseStopJoin remains unchanged for compatibility.
+// cmd/evener's wedged-delegate run tests. It sees every stop join
+// closeStopJoinContext bounds under a cascade deadline: the stop's own deadline,
+// the cascade's, and the exact immutable cascade budget. They check the close
+// tree's wiring off these values instead of wall-clock time, which host load can
+// stretch past any ceiling. Nil in production.
 var ObserveCloseStopJoinBudget func(stopDeadline, cascadeDeadline time.Time, cascadeBudget time.Duration)
 
 // touchUnlockLaneTail runs the budget-exempt tail for a lane the close pass could

@@ -103,7 +103,7 @@ function HumanStatus({
 
 // isMissingURLEntryError recognizes the daemon's unknown-url-entry rejection: an
 // invalidParams WireError carrying the "no URL entry with id" contract text
-// (agent/session_notes_rpc.go and server/appwire_turn_handlers.go both build it, and
+// (agent/session_notes_mutations.go and server/appwire_turn_handlers.go both build it, and
 // the agent test TestRemoveSessionURLUnknownIDRejects pins it). The code alone is
 // too broad, since every bad-parameter rejection shares it, so the message is
 // what separates a stale row from a real error.
