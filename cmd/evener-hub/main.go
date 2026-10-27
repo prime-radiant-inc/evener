@@ -479,13 +479,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// observe changed navigation inputs instead of stale state.
 	inputs := &hubcore.InputsVersion{}
 
-	// Wire archive/favorite's content-delta-gated onChange hook (Task 10) to
-	// the shared inputs-version counter, so a decision busts the tree memo.
-	// Past/roster get the same bump below, composed with the
-	// evener/tree/changed broadcast once web (and its appRPC) exists.
+	// Every store's onChange hook bumps the shared inputs-version counter so a
+	// decision busts the tree memo; the hooks are wired below, composed with
+	// the navigation invalidation once web (and its appRPC) exists.
 	bump := inputs.Bump
-	archive.SetOnChange(bump)
-	favorite.SetOnChange(bump)
 
 	// A session's Status transitioning (detected per-id by roster.Refresh)
 	// means its daemon likely just rewrote its own meta.json out-of-process
@@ -845,9 +842,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// keep reporting a host online after it dropped, or keep its rows metas-only
 	// after it reconnected.
 	sshStateInvalidatedNavigation = func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) }
-	if pinSections != nil {
-		pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
-	}
+	pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
 	// A seen mark changes live rows' unseen flag; a mark committed by any
 	// writer, the RPC or a session deletion's scrub, invalidates navigation.
 	sessionSeen.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
