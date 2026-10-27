@@ -1,5 +1,5 @@
 import type { ThreadModel } from "@evener/appwire-client";
-import { useMemo } from "react";
+import { type ReactNode, useMemo } from "react";
 import type { useTranscriptReader } from "../panes/session/transcript/useTranscript";
 import { ComicTranscript } from "./ComicTranscript";
 import { projectComicConversation } from "./projection";
@@ -13,6 +13,7 @@ export function ComicSessionContent({
   history,
   reader,
   mode,
+  appearanceView,
   onOpen,
 }: {
   sessionRef: string;
@@ -20,6 +21,7 @@ export function ComicSessionContent({
   history: ReturnType<typeof useTranscriptReader>;
   reader: ReturnType<typeof useComicReader>;
   mode: "comic" | "plain";
+  appearanceView?: ReactNode;
   onOpen(ref: string): void;
 }) {
   const activity = useComicActivity(sessionRef, model);
@@ -32,7 +34,14 @@ export function ComicSessionContent({
   return (
     <>
       {subchats.lifetimes}
-      <ComicTranscript root={root} subchats={subchats.state} reader={reader} mode={mode} onOpen={onOpen} />
+      <ComicTranscript
+        root={root}
+        subchats={subchats.state}
+        reader={reader}
+        mode={mode}
+        appearanceView={appearanceView}
+        onOpen={onOpen}
+      />
     </>
   );
 }

@@ -1,4 +1,4 @@
-import { evaluate } from "../../../browserGuardCdp.mjs";
+import { evaluate, navigateTo } from "../../../browserGuardCdp.mjs";
 
 const frame = (send) => evaluate(send, "new Promise(resolve => requestAnimationFrame(resolve))");
 
@@ -10,40 +10,8 @@ async function until(send, expression) {
     await frame(send);
   } while (Date.now() < deadline);
   throw Error(
-    `Comic geometry did not settle: ${expression}: ${await evaluate(send, "window.comicGeometryError || document.body.innerHTML")}`,
+    `Comic geometry did not settle: ${expression}: ${await evaluate(send, "window.comicGeometryError || JSON.stringify({ready:!!window.comicGeometry,font:document.querySelector('[data-comic-font]')?.dataset.comicFont,notice:!!document.querySelector('[aria-label=\"Comic font unavailable\"]')})")}`,
   );
-}
-
-function pickerGeometry() {
-  const root = document.querySelector("main");
-  const section = root.querySelector('section[aria-label="live"]');
-  const lastRow = section.querySelector("li:last-child button");
-  const more = section.querySelector(":scope > button");
-  const rect = (node) => {
-    if (!node) return null;
-    const r = node.getBoundingClientRect();
-    const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
-    return {
-      top: r.top,
-      bottom: r.bottom,
-      left: r.left,
-      right: r.right,
-      x: r.x + r.width / 2,
-      y: r.y + r.height / 2,
-      hit: hit === node || node.contains(hit),
-    };
-  };
-  return {
-    height: innerHeight,
-    width: innerWidth,
-    root: rect(root),
-    scrollTop: root.scrollTop,
-    documentScroll: scrollY,
-    overflow: document.documentElement.scrollWidth - innerWidth,
-    rows: section.querySelectorAll("li").length,
-    lastRow: rect(lastRow),
-    more: rect(more),
-  };
 }
 
 function sessionGeometry() {
@@ -55,17 +23,33 @@ function sessionGeometry() {
   };
   const sources = [...document.querySelectorAll("[data-comic-entry]")];
   const source = window.comicGeometry.source;
+  const footer = document.querySelector('[data-testid="pane-footer"]');
   return {
     height: innerHeight,
     width: innerWidth,
-    root: rect(document.querySelector("main")),
+    font: document.querySelector('[data-comic-font]')?.dataset.comicFont,
+    fallbackNotice: rect(document.querySelector('[aria-label="Comic font unavailable"]')),
+    root: rect(document.querySelector("[data-comic-font][data-session-ref]")),
+    host: rect(document.querySelector('[data-geometry-pane]')),
+    shell: rect(document.querySelector('[data-geometry-shell]')),
+    footer: rect(footer),
+    footerContentBottom: footer.getBoundingClientRect().bottom - parseFloat(getComputedStyle(footer).paddingBottom),
+    bodyChildren: [...document.querySelector('[data-pane-scaffold]')?.firstElementChild?.children ?? []].map(node=>({tag:node.tagName,text:node.textContent.slice(0,100),box:rect(node)})),
     composer: rect(document.querySelector("[data-comic-composer]")),
+    liveness: rect(document.querySelector('[data-testid="liveness-line"]')),
+    livenessText: document.querySelector('[data-testid="liveness-line"]')?.textContent,
+    headingColumns: [...document.querySelector('[data-comic-composer]')?.firstElementChild?.children ?? []].map(rect),
+    readerLineHeight: document.querySelector('[data-comic-text]') ? parseFloat(getComputedStyle(document.querySelector('[data-comic-text]')).lineHeight) : null,
     editor: rect(document.querySelector('[role="textbox"]')),
     submit: rect(document.querySelector('[data-testid="composer-submit"]')),
     stop: rect(document.querySelector('[data-testid="composer-stop"]')),
+    controls: [...document.querySelectorAll('button[aria-label="Session actions"]'),
+      [...document.querySelectorAll('button')].find(node=>node.textContent.trim()==='Appearance'),
+      document.querySelector('button[aria-label="Jump to latest"]')].map(node=>({name:node?.getAttribute('aria-label')??node?.textContent,box:rect(node)})),
+    menuCount: document.querySelectorAll('button[aria-label="Session actions"]').length,
     reader: rect(document.querySelector("[data-comic-scroll]")),
     draft: document.querySelector('[role="textbox"]')?.textContent,
-    boxSizing: getComputedStyle(document.querySelector("main")).boxSizing,
+    boxSizing: getComputedStyle(document.querySelector("[data-comic-font][data-session-ref]")).boxSizing,
     overflow: document.documentElement.scrollWidth - innerWidth,
     sourceParts: sources.length,
     literal: sources.every(
@@ -76,10 +60,67 @@ function sessionGeometry() {
   };
 }
 
+async function readerGestures(send, width) {
+  const evidence=[];
+  for(const gesture of width<900?['wheel','touch']:['wheel']) {
+    const before=await evaluate(send, `(() => {
+      const port=document.querySelector('[data-comic-scroll]').firstElementChild;
+      const r=port.getBoundingClientRect();window.comicReaderInput=[];
+      for(const type of ['wheel','touchstart','touchmove','touchend'])port.addEventListener(type,event=>window.comicReaderInput.push({type,trusted:event.isTrusted}),{once:true,passive:true});
+      const text=[...port.querySelectorAll('[data-comic-text]')].map(node=>node.getBoundingClientRect()).filter(rect=>rect.top<r.top).at(-1);
+      return {top:port.scrollTop,max:port.scrollHeight-port.clientHeight,x:r.right-16,y:r.top+r.height/2,height:r.height,sourceDelta:text?text.top-r.top-24:null};
+    })()`);
+    if(before.max<=0 || before.height<=0)throw Error('native reader gesture fixture is not scrollable '+JSON.stringify(before));
+    const direction=before.top>before.max/2?-1:1;
+    if(gesture==='wheel') {
+      if(before.sourceDelta===null)throw Error('no mounted source for trusted wheel target '+JSON.stringify(before));
+      await send('Input.dispatchMouseEvent',{type:'mouseWheel',x:before.x,y:before.y,deltaX:0,deltaY:before.sourceDelta});
+    } else {
+      const travel=Math.min(before.height/3,100);
+      await send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:before.x,y:before.y,id:1}]});
+      for(const step of [0.25,0.5,0.75,1]) {
+        await send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:before.x,y:before.y-direction*travel*step,id:1}]});
+        await frame(send);
+      }
+      await send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    }
+    let after;
+    try { after=await until(send,`(() => {
+      const port=document.querySelector('[data-comic-scroll]').firstElementChild;
+      const saved=JSON.parse(sessionStorage.getItem('evener:comic:position:local:comic-geometry')??'null')?.position;
+      return Math.abs(port.scrollTop-${before.top})>1&&saved?.mode==='away'&&window.comicReaderInput.length?{top:port.scrollTop,saved,events:window.comicReaderInput}:null;
+    })()`); } catch {
+      throw Error('reader gesture did not retain movement '+JSON.stringify({width,gesture,before,after:await evaluate(send,`(() => {const port=document.querySelector('[data-comic-scroll]').firstElementChild;return {top:port.scrollTop,max:port.scrollHeight-port.clientHeight,saved:sessionStorage.getItem('evener:comic:position:local:comic-geometry'),events:window.comicReaderInput};})()`)}));
+    }
+    if(!after.events.every(event=>event.trusted)||!after.events.some(event=>event.type===(gesture==='wheel'?'wheel':'touchmove')))throw Error('reader gesture was not trusted '+JSON.stringify(after));
+    evidence.push({gesture,before,after});
+  }
+  return evidence;
+}
+
+async function appearancePopup(send, bottom) {
+  const snapshot = () => `(() => ({draft:document.querySelector('[role="textbox"]')?.innerHTML,reader:sessionStorage.getItem('evener:comic:position:local:comic-geometry'),height:document.querySelector('[data-comic-scroll]').getBoundingClientRect().height}))()`;
+  const before = await evaluate(send,snapshot());
+  await evaluate(send,`(() => {const button=[...document.querySelectorAll('button')].find(node=>node.textContent.trim()==='Appearance');button.focus();button.click();})()`);
+  const popup = await until(send,`(() => {
+    const popup=document.querySelector('[role="dialog"][aria-label="Appearance"]');if(!popup)return null;
+    const r=popup.getBoundingClientRect();
+    return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:innerWidth,choices:[...popup.querySelectorAll('select')].map(node=>({name:node.labels[0].textContent.trim(),options:[...node.options].map(option=>option.value),hit:node.contains(document.elementFromPoint(node.getBoundingClientRect().x+node.clientWidth/2,node.getBoundingClientRect().y+node.clientHeight/2))}))};
+  })()`);
+  if(popup.left<0||popup.right>popup.width||popup.top<0||popup.bottom>bottom||popup.choices.length!==3||popup.choices.some(choice=>!choice.hit))throw Error('Appearance not confined/reachable '+JSON.stringify({popup,bottom}));
+  if(JSON.stringify(popup.choices.map(choice=>choice.options))!==JSON.stringify([['comic','plain'],['room','field','white'],['neutral','happy-wave','angry','scared','point','celebrate']]))throw Error('Appearance choices changed '+JSON.stringify(popup));
+  await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  await until(send,`!document.querySelector('[role="dialog"][aria-label="Appearance"]')&&document.activeElement?.textContent.trim()==='Appearance'`);
+  const after=await evaluate(send,snapshot());
+  if(JSON.stringify(before)!==JSON.stringify(after))throw Error('Appearance toggle changed draft/source/reader '+JSON.stringify({before,after}));
+  return popup;
+}
+
 function modelToolbarViewport(largeHeight, visibleHeight) {
   // Desktop headless Chrome has no retractable URL bar: vh and dvh resolve
   // equally even with mobile emulation. Record that native fact first. Then
-  // resolve the REAL Comic stylesheet's viewport-unit declarations against
+  // resolve the REAL shell stylesheet's viewport-unit declarations against
   // explicit large/dynamic dimensions, leaving selectors and cascade intact.
   // This tests the CSS constraint, not an actual mobile toolbar implementation.
   const probe = document.createElement("div");
@@ -91,9 +132,9 @@ function modelToolbarViewport(largeHeight, visibleHeight) {
   }
   probe.remove();
   const sheet = [...document.styleSheets].find((sheet) =>
-    sheet.ownerNode?.dataset.viteDevId?.endsWith("/src/comic/comic.module.css"),
+    sheet.ownerNode?.dataset.viteDevId?.endsWith("/src/shell/AppShell.module.css"),
   );
-  if (!sheet) throw Error("real Comic stylesheet missing");
+  if (!sheet) throw Error("real shell stylesheet missing");
   const rules = [...sheet.cssRules].map((rule) => rule.cssText).join("\n");
   const substitutions = [];
   const modeled = rules.replace(/(\d+(?:\.\d+)?)(dvh|svh|lvh|vh)\b/g, (token, amount, unit) => {
@@ -112,85 +153,27 @@ export default async function assert(_measurement, { page }) {
   const { send } = page;
   const failures = [];
   const evidence = [];
-  const readPicker = () => evaluate(send, `(${pickerGeometry})()`);
-  const readSession = () => evaluate(send, `(${sessionGeometry})()`);
+  const readSession = async () => {
+    const value = await evaluate(send, `(${sessionGeometry})()`);
+    if(value.readerLineHeight===null || value.reader.height < value.readerLineHeight)
+      failures.push('reader cannot fit a rendered text line '+JSON.stringify(value));
+    if(value.menuCount!==1 || value.controls.length!==3 || value.controls.some(({box})=>!box?.hit || !reachable(box,value.width,value.footerContentBottom)))
+      failures.push('existing controls unreachable '+JSON.stringify({width:value.width,controls:value.controls,menus:value.menuCount}));
+    return value;
+  };
   const reachable = (box, width, height) =>
     box && box.top >= -1 && box.bottom <= height + 1 && box.left >= -1 && box.right <= width + 1;
 
+  const fixtureURL = await evaluate(send,'location.href');
+  await send('Network.enable');
+  for (const blockedFonts of [false,true]) {
+  await send('Network.setCacheDisabled',{cacheDisabled:true});
+  await send('Network.setBlockedURLs',{urls:blockedFonts?['*/webassets/comic-fonts/*']:[]});
+  await navigateTo(page,fixtureURL);
+  await until(send, `window.comicGeometry && document.querySelector('[data-comic-font]')?.dataset.comicFont === '${blockedFonts?'unavailable':'ready'}'`);
   for (const width of [320, 390, 1360]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height: 620, deviceScaleFactor: 1, mobile: width < 900 });
     await send("Emulation.setTouchEmulationEnabled", { enabled: width < 900 });
-    await evaluate(send, 'window.comicGeometry.render("picker", 0)');
-    await frame(send);
-    const empty = await readPicker();
-    if (empty.rows || empty.overflow > 1 || !reachable(empty.root, width, 620))
-      failures.push(`empty picker ${width}: ${JSON.stringify(empty)}`);
-
-    for (const gesture of width < 900 ? ["wheel", "touch"] : ["wheel"]) {
-      await evaluate(
-        send,
-        'window.comicGeometry.render("picker", 50); document.querySelector("main").scrollTop = 0; window.scrollTo(0, 0)',
-      );
-      await frame(send);
-      const before = await readPicker();
-      if (before.rows !== 50 || before.lastRow.bottom < 620 || before.more.bottom < 620)
-        throw Error(`long picker fixture is not below the fold: ${JSON.stringify(before)}`);
-      // Native input only: never scrollTop/scrollIntoView to make targets reachable.
-      if (gesture === "wheel") {
-        await send("Input.dispatchMouseEvent", { type: "mouseWheel", x: width / 2, y: 400, deltaX: 0, deltaY: 10000 });
-      } else {
-        for (let swipe = 0; swipe < 5; swipe++) {
-          await send("Input.dispatchTouchEvent", {
-            type: "touchStart",
-            touchPoints: [{ x: width - 20, y: 550, id: 1 }],
-          });
-          for (const y of [450, 350, 250, 150, 50]) {
-            await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: width - 20, y, id: 1 }] });
-            await frame(send);
-          }
-          await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-        }
-      }
-      // A native scroll may commit after the CDP reply. Stop at the actual end,
-      // or a short bound that exposes the locked pre-fix document.
-      const deadline = Date.now() + 1500;
-      let after;
-      do {
-        await frame(send);
-        after = await readPicker();
-        if (reachable(after.more, width, 620) && after.more.hit) break;
-      } while (Date.now() < deadline);
-      evidence.push({ width, gesture, before, after });
-      if (
-        !reachable(after.lastRow, width, 620) ||
-        !after.lastRow.hit ||
-        !reachable(after.more, width, 620) ||
-        !after.more.hit ||
-        after.overflow > 1 ||
-        (after.scrollTop <= before.scrollTop && after.documentScroll <= before.documentScroll)
-      ) {
-        failures.push(`picker ${width} ${gesture}: lower row/pagination unreachable ${JSON.stringify(after)}`);
-      } else {
-        await evaluate(send, "window.selectedComicRef = null");
-        await send("Input.dispatchMouseEvent", {
-          type: "mousePressed",
-          x: after.lastRow.x,
-          y: after.lastRow.y,
-          button: "left",
-          clickCount: 1,
-        });
-        await send("Input.dispatchMouseEvent", {
-          type: "mouseReleased",
-          x: after.lastRow.x,
-          y: after.lastRow.y,
-          button: "left",
-          clickCount: 1,
-        });
-        if ((await evaluate(send, "window.selectedComicRef")) !== "local:geometry-49")
-          throw Error("native lower-row selection did not reach the real picker callback");
-      }
-    }
-
     await evaluate(send, 'window.scrollTo(0, 0); window.comicGeometry.render("session")');
     await until(
       send,
@@ -199,6 +182,9 @@ export default async function assert(_measurement, { page }) {
     await evaluate(send, "document.fonts.ready");
     await frame(send);
     const native = await readSession();
+    evidence.push({width,blockedFonts,popup:await appearancePopup(send,620)});
+    if (blockedFonts && (!native.fallbackNotice?.hit || native.fallbackNotice.height<=0))
+      failures.push('blocked fonts did not mount the actual notice '+JSON.stringify(native));
     const checkSession = (name, state) => {
       if (
         state.overflow > 1 ||
@@ -206,6 +192,9 @@ export default async function assert(_measurement, { page }) {
         !state.literal ||
         !state.reader ||
         state.reader.height <= 0 ||
+        state.root.top < state.host.top - 1 ||
+        state.root.bottom > state.host.bottom + 1 ||
+        state.host.top < 24 ||
         ![state.root, state.composer, state.editor, state.submit].every((box) => reachable(box, width, 620))
       )
         failures.push(`${name} ${width}: ${JSON.stringify(state)}`);
@@ -219,10 +208,12 @@ export default async function assert(_measurement, { page }) {
       throw Error(`unexpected native viewport/unit model: ${JSON.stringify(model)}`);
     // Independently resolve the untouched declaration in the native browser.
     await evaluate(send, 'document.getElementById("modeled-toolbar-viewport").remove()');
-    await frame(send);
+    await evaluate(send, 'new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     const restored = await readSession();
     checkSession("restored native session", restored);
     evidence.push({ width, native, model, toolbar, restored });
+    try { evidence.push({width,gestures:await readerGestures(send,width)}); }
+    catch(error) { failures.push(error.message); }
 
     // Keyboard boundary simulation, not physical Safari coverage. The layout
     // viewport stays 620px while visualViewport shrinks and scrolls independently.
@@ -252,7 +243,8 @@ export default async function assert(_measurement, { page }) {
       const bottom = width < 900 ? visibleBottom : 620;
       if (
         state.boxSizing !== "border-box" ||
-        state.root.bottom !== 620 ||
+        state.shell.bottom !== 620 ||
+        Math.abs(state.root.bottom - bottom) > 1 ||
         state.overflow > 1 ||
         state.reader.height <= 0 ||
         !state.sourceParts ||
@@ -261,15 +253,14 @@ export default async function assert(_measurement, { page }) {
         !state.editor.hit ||
         !state.submit.hit ||
         ![state.composer, state.editor, state.submit].every((box) => reachable(box, width, bottom)) ||
-        Math.abs(state.composer.bottom - bottom) > 1
+        Math.abs(state.footer.bottom - bottom) > 1
       ) failures.push(`keyboard ${name} ${width}: expected bottom ${bottom}, ${JSON.stringify(state)}`);
       if ((name === "close" || width >= 900) && Math.abs(state.reader.height - beforeKeyboard.reader.height) > 1)
         failures.push(`keyboard ${name} ${width}: reader height did not restore`);
       evidence.push({ width, keyboard: name, composerBottom: state.composer.bottom, readerHeight: state.reader.height });
     }
     if (width < 900) {
-      // At this height the wrapped controls may exhaust the reader's space.
-      // Input must remain reachable, and closing must restore the source reader.
+      // The compact pane must retain a positive reader even at this height.
       for (const [name, event, values, bottom] of [
         ["short-open", "resize", { height: 360, offsetTop: 0 }, 360],
         ["short-scroll", "scroll", { offsetTop: 40 }, 400],
@@ -280,12 +271,14 @@ export default async function assert(_measurement, { page }) {
         const state = await readSession();
         if (
           state.overflow > 1 ||
+          state.reader.height <= 0 ||
+          !state.sourceParts ||
           state.draft !== draft ||
           !state.literal ||
           !state.editor.hit ||
           !state.submit.hit ||
           ![state.composer, state.editor, state.submit].every((box) => reachable(box, width, bottom)) ||
-          Math.abs(state.composer.bottom - bottom) > 1
+          Math.abs(state.footer.bottom - bottom) > 1
         ) failures.push(`keyboard ${name} ${width}: expected bottom ${bottom}, ${JSON.stringify(state)}`);
         if (name === "short-close" && (
           !state.sourceParts ||
@@ -342,22 +335,23 @@ export default async function assert(_measurement, { page }) {
           await evaluate(send, `window.comicGeometry.viewport(${JSON.stringify(event)}, ${JSON.stringify(values)})`);
           await frame(send);
           const state = await readSession();
+          if(name==='short-open')evidence.push({width,blockedFonts,control,popup:await appearancePopup(send,bottom)});
           if (
             state.boxSizing !== "border-box" ||
-            state.root.bottom !== 620 ||
+            state.shell.bottom !== 620 ||
             state.overflow > 1 ||
             state.draft !== (control === "submit" ? draft : "") ||
             !state.literal ||
             !state.editor.hit ||
             !state[control]?.hit ||
             ![state.composer, state.editor, state[control]].every((box) => reachable(box, width, bottom)) ||
-            Math.abs(state.composer.bottom - bottom) > 1
+            Math.abs(state.footerContentBottom - bottom) > 1
           ) failures.push(`safe-area ${control} ${name} ${width}: expected bottom ${bottom}, ${JSON.stringify(state)}`);
-          if (name !== "short-open" && name !== "short-offset" && (state.reader.height <= 0 || !state.sourceParts))
+          if (state.reader.height <= 0 || !state.sourceParts)
             failures.push(`safe-area ${control} ${name} ${width}: reader collapsed ${JSON.stringify(state)}`);
           if (bottom === 586 && Math.abs(state.reader.height - baseline.reader.height) > 1)
             failures.push(`safe-area ${control} ${name} ${width}: reader did not restore ${JSON.stringify(state)}`);
-          evidence.push({ width, keyboard: `safe-area-${control}-${name}`, composerBottom: state.composer.bottom, readerHeight: state.reader.height });
+          evidence.push({ width, blockedFonts, keyboard: `safe-area-${control}-${name}`, composerBottom: state.composer.bottom, readerHeight: state.reader.height, readerLineHeight:state.readerLineHeight });
         }
       }
       await evaluate(send, "window.comicGeometry.running(false)");
@@ -365,10 +359,13 @@ export default async function assert(_measurement, { page }) {
     }
     await evaluate(send, "window.comicGeometry.restoreViewport()");
   }
+  }
+  await send('Network.setBlockedURLs',{urls:[]});
+  await send('Network.setCacheDisabled',{cacheDisabled:false});
   return {
     pass: !failures.length,
     reason: failures.length
       ? failures.join("\n")
-      : `320/390/1360px empty/long picker, native wheel/touch, lower-row selection and pagination hit-testing, real session/composer within 620px under native and modeled 760px large viewport, simulated visualViewport keyboard open/scroll/pinch/close, draft/source retained and reader restored, browser env safe-area 34px with Send/Stop and 440/360px keyboards without double counting. ${JSON.stringify(evidence.map(({ width, gesture, after, toolbar, keyboard, composerBottom, readerHeight }) => ({ width, gesture, pickerScroll: after?.scrollTop, composerBottom: composerBottom ?? toolbar?.composer.bottom, keyboard, readerHeight })))}`,
+      : `320/390/1360px pane reader, native wheel/touch source movement, real session/composer within 620px under native and modeled 760px large viewport, simulated visualViewport keyboard open/scroll/pinch/close, draft/source retained and reader restored, browser env safe-area 34px with Send/Stop and 440/360px keyboards without double counting. ${JSON.stringify(evidence)}`,
   };
 }

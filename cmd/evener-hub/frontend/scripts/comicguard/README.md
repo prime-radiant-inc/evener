@@ -65,7 +65,8 @@ The original two-minute wrapper and 20-second driver waits remain unchanged.
 Use `EVENER_COMIC_BLOCK_FONTS=1` for this focused diagnostic.
 
 Changed-identity recovery acknowledges an already-exited owned process, then uses
-native Conversations navigation and Back. `resume-fenced.json` records completed
+the normal Settings rail to replace the conversation pane and native Back.
+`resume-fenced.json` records completed
 exact-ref unsubscribe before Back and a fresh non-foldable recovery read on the
 original document/socket. These wire observations alone do not prove acceptance.
 `resume-held.json` records the actual client resume request and authentic response
@@ -84,6 +85,28 @@ reconnect/reload, native no-scroll click, and away/end behavior during streaming
 The provider failure produces a real user item and system error item. Itemless turn
 errors remain component-test evidence, not this runtime scenario.
 
+Entry uses the normal authenticated `/s/<ref>` URL and trusted clicks through
+Session actions → Verbosity → Presentation → Comic. Standard/Comic handoffs
+start on the existing empty author daemon before opening the root history fixture.
+Browser fetch authenticates against the real token endpoint without executing
+its home redirect, which could open and prefetch that root under Standard mode.
+The root handoff follows its original paging/failure/retry proof for the same reason.
+HTTP cache is disabled for the delayed-font root navigation, not the IndexedDB
+transcript cache used by cached/partial/cold child proofs. Handoffs
+require the same URL, document, pane id, session ref, structured editor contents
+and one open RPC socket. Desktop and mobile presentation choices are independent.
+Comic's internal plain mode is a separate accessibility option, not Standard.
+View, Scene and expression changes open the real Appearance popup at every
+viewport size, require viewport containment, and dismiss with Escape and focus
+return. Plain/comic changes in the nested child journey use the same control.
+`presentation-entry.json` records the entry; source-anchor measurements cover
+switching away and back with an expanded nested child. The standalone Comic URL,
+picker pagination and its Conversations action were removed from the product.
+Their assertions are retired, not replaced with invented picker fixtures. Shared
+root-history paging, roster paging and final reader-retirement checks remain.
+The later-history width changes cross the responsive pane remount and retain the
+same source while the shared repository restores locally reclaimed bodies.
+
 The additive child journey asks production `delegate` tools to create an actual
 child and grandchild. Available reasoning is emitted by the scripted provider,
 not inferred from an answer. The child performs real shell rounds to create older
@@ -92,10 +115,20 @@ virtual flow, expands the two levels, measures qualified source coordinates at
 1360, 760, 600, 390 and 320 CSS pixels, reloads, and uses the explicit full-page
 route and Back. It releases held child stream deltas while reading a grandchild,
 checks native Enter expansion and collapse focus, and switches plain/comic views.
+Back retains the direct-page secondary pane. The guard closes that pane through
+its native tab close control, records its owner retirement, and keeps the inline
+grandchild source fixed before later asserting no unopened descendant reload.
 It loads at least three child history pages, relocates the existing expanded strip
 when its causal event arrives, and checks a nonzero later-page source offset through
 disconnect, reconnect, reload and Back. Browser RPC capture rejects `turn/start`
 and `thread/resume` from reads.
+After the cached later-child reload, two additional reloads evict only that child's
+real IndexedDB history: first retaining the newest authentic read fragment, then
+removing its history completely. Each must recover the same literal source offset
+within 2px through at least two distinct successful network page replies.
+`later-child-partial-cache.json` and `later-child-cold-cache.json` record the cache
+boundary and connection-correlated requests and replies. Cache eviction is an
+explicit browser persistence boundary, not store injection or a substituted RPC.
 The control-file producer inputs are separate from browser read traffic.
 The child is named `comic-named-parent` and sends a real `delegate_send` instruction
 to its grandchild. The grandchild's direct page must attribute that instruction
@@ -186,6 +219,6 @@ inspects actual question/tab, composer and approval glyphs in `interaction-fonts
 actual applied receipt has reached Chrome but before the application receives it.
 No receipt or model state is invented. Reload/reconnect resolves the same mutation
 identity, sometimes from canonical history rather than retransmission, while a
-newer draft survives navigation through both clients. Go independently counts one
+newer draft survives Standard/Comic handoffs. Go independently counts one
 recorded input per fixture in the runtime transcript. This scenario is transport
 recovery, not proof of daemon identity-changing resume.
