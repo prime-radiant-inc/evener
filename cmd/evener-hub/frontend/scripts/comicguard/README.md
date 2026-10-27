@@ -28,7 +28,11 @@ or invented child refs are used. The helper and browser are test-owned and clean
 up; the running preview and main hub are untouched. Skips and timeouts are failures.
 The fixture runs the production roster watcher as well as its initial refresh.
 A daemonless child response is not proof that its live subscription attached.
-The complete browser journey retains the original two-minute wrapper deadline.
+The complete journey awaits browser-process completion under the Go test's
+deadline, reserving time to join the browser and stop its four possible daemon
+helpers. Cancellation first sends SIGTERM so the driver can close Chrome, then
+uses the shared bounded forced-stop fallback. Browser condition deadlines remain
+independent tripwires; no elapsed-time check substitutes for completion.
 
 For the independently runnable remote-navigation diagnostic only:
 
@@ -41,7 +45,7 @@ This uses the same real fixture and roster/remote journeys, with an explicit
 `remote-navigation` fixture scenario. It produces 101 real roster leaves and
 checks all their durable inputs and answers. Its activity pages are 50/50/1,
 because it does not run the earlier child journey that gives the full guard its
-102nd heading and 50/50/2 pages. It retains the two-minute wrapper and 20-second
+102nd heading and 50/50/2 pages. It shares the test-owned lifetime and 20-second
 lookup bounds. `remote-route-search.json` records the selected strip identity,
 each lookup's mounted headings and scroll geometry. This is not a full gate or
 evidence for restoration, recovery, root actions or font modes. The registered
@@ -61,7 +65,7 @@ literal seed, but skips unrelated reader, roster, authorship and interaction
 journeys. The default still runs all of them. Both modes share the same durable
 checks: one seed input, one input at each loss boundary, one same-identity input,
 one changed-identity input, two real HubSpawner launches and owned-helper shutdown.
-The original two-minute wrapper and 20-second driver waits remain unchanged.
+The test-owned lifetime and 20-second driver waits also apply here.
 Use `EVENER_COMIC_BLOCK_FONTS=1` for this focused diagnostic.
 
 Changed-identity recovery acknowledges an already-exited owned process, then uses
