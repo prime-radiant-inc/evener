@@ -200,7 +200,7 @@ test.each(["comic", "standard"] as const)(
     assertBlocked();
     act(() => threadsStore.setState((state) => ({ threads: new Map(state.threads).set(ref, model) })));
     assertBlocked();
-    act(() =>
+    await act(async () =>
       threadsStore.setState((state) => ({ threads: new Map(state.threads).set(ref, { ...model, askPending: false }) })),
     );
     expect(message?.closest("[hidden], [inert]")).toBeNull();

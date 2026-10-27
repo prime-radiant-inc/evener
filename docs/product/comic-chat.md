@@ -29,7 +29,9 @@ The seat retains its composer source and identity-recovery owner across switches
 Each presentation retains its reading position; Comic keeps per-seat semantic
 positions and uses session storage for reload. The normal session menu remains
 available, including a way back to Standard while the conversation is loading or
-deleted. Inline child readers remain noninteractive.
+deleted. Session actions also remains available in both presentations while a
+question is pending and message input is hidden. Inline child readers remain
+noninteractive.
 
 ## Presentation and accessibility
 

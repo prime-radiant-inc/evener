@@ -885,6 +885,9 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     reportEditing();
   }
 
+  const sessionChrome = (
+    <MemoizedSessionChrome ref={ref} paneId={paneId} placement="composer" discoverActivity turnVerbs={turnVerbs} />
+  );
   return (
     <div
       className={CLASS.composer}
@@ -939,6 +942,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
           }
         }}
       />
+      {askPending && sessionChrome}
       {/* Staged attachments. One rendering for every state, so nothing here
           swaps element types under a user mid-gesture - AttachmentTile.tsx's
           own header comment has the mechanism and the bug it closed. */}
@@ -1048,13 +1052,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
                         onClick={() => fileInputRef.current?.click()}
                       />
                     </Tooltip>
-                    <MemoizedSessionChrome
-                      ref={ref}
-                      paneId={paneId}
-                      placement="composer"
-                      discoverActivity
-                      turnVerbs={turnVerbs}
-                    />
+                    {!askPending && sessionChrome}
                   </div>
                 }
                 actions={
