@@ -1051,6 +1051,16 @@ describe("current transcript checkpoints", () => {
     // field, so the deferred-page validators cannot drift without a red build.
     const everyItemField: Required<ThreadItem> = {
       type: "toolCall",
+      authorship: {
+        author: {
+          kind: "agent",
+          sessionRef: "local:child",
+          ownerRef: "local:root",
+          delegateId: "dlg_child",
+          delegateName: "Worker",
+        },
+        inherited: true,
+      },
       id: "item_full",
       transcriptKey: "key_full",
       position: { entry: 1, item: 2, sub: 3 },

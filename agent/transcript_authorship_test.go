@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -50,7 +51,7 @@ func TestTranscriptAuthorshipParentInputs(t *testing.T) {
 	})
 	t.Run("create and completed send", func(t *testing.T) {
 		root, client, _ := newDelegateResourceBootstrapSession(t)
-		client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("authorship-answer") }}})
+		client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("authorship-answer") }}})
 		result := root.createDelegate(context.Background(), delegateArgs{Task: "authorship-input", Name: "named-child", DelegationAllowance: new(0)})
 		if result.Err != nil {
 			t.Fatal(result.Err)
@@ -130,7 +131,7 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	middle.appendTurn(schema.TurnToolResults, llm.ToolResult("nested-copy-comm", `{"delivery":"delivered"}`, false))
 	middle.cfg.testOnly.childClientFactory = func() *llm.Client {
 		c := llm.NewClient()
-		c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("nested-answer") }, func(llm.Request) llm.Response { return finalResponse("nested-second-answer") }}})
+		c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("nested-answer") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("nested-second-answer") }}})
 		return c
 	}
 	c := root.delegateController
@@ -329,7 +330,7 @@ func TestTranscriptAuthorshipAcceptedHuman(t *testing.T) {
 func TestTranscriptAuthorshipInternalNudgeAndExplicitHuman(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	bare := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare response")} }
-	fixture.adapter.steps = []func(llm.Request) llm.Response{bare, bare, bare, bare, func(llm.Request) llm.Response { return finalResponse("recovered") }}
+	fixture.adapter.steps = []func(llm.Request) llm.Response{bare, bare, bare, bare, func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") }}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "inspect", 60_000)
 	abortUnpersistedStableDelegateOutcome(t, outcome)
@@ -387,7 +388,7 @@ func TestTranscriptAuthorshipInternalNudgeAndExplicitHuman(t *testing.T) {
 
 func TestTranscriptAuthorshipQueuedExecution(t *testing.T) {
 	s, client, _ := newDelegateResourceBootstrapSession(t)
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("first answer") }, func(llm.Request) llm.Response { return finalResponse("second answer") }}})
+	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("first answer") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("second answer") }}})
 	s.SetClientMutationStartWakeFunc(func() {})
 	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{ClientMutationID: "first", Input: []appwire.InputItem{{Type: "text", Text: "first"}}}); err != nil {
 		t.Fatal(err)

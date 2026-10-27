@@ -5251,7 +5251,7 @@ export const WIRE_FIELD_KEYS = {
   ThreadItemPosition: ["entry", "item", "sub"],
   TurnError: ["message", "additionalDetails", "codexErrorInfo", "source", "title", "hint", "cause"],
   DiagnosticCause: ["kind", "provider", "model", "status"],
-  ThreadItem: ["type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
+  ThreadItem: ["authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
   InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata"],
   InputMention: ["kind", "name", "offset"],
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
