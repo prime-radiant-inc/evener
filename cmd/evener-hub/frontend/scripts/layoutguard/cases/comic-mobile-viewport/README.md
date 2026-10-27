@@ -33,6 +33,13 @@ alongside literal source slices. The 1360px desktop layout must not move. Native
 viewport behavior is restored before the next picker check. `ComicApp.test.tsx`
 separately mounts the real app and regular shell to check hook wiring and cleanup.
 
+A separate mobile sequence opens at height 360, scrolls to offsetTop 40, and
+closes. The editor and Send must remain contained and hit-testable within the
+360/400px visible bottom, with the draft unchanged. The reader may collapse
+while the keyboard is open; closing must restore its original height and literal
+source slices. This supplements, rather than relaxes, the 440px positive-reader
+checks above.
+
 These are browser-API boundary simulations, not physical mobile browser chrome,
 software keyboard, Safari or touch-inertia qualification. The 440px keyboard
 boundary leaves space for the fixture's wrapped mobile headers and composer;

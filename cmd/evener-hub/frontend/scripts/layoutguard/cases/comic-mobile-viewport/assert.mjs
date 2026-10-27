@@ -266,6 +266,33 @@ export default async function assert(_measurement, { page }) {
         failures.push(`keyboard ${name} ${width}: reader height did not restore`);
       evidence.push({ width, keyboard: name, composerBottom: state.composer.bottom, readerHeight: state.reader.height });
     }
+    if (width < 900) {
+      // At this height the wrapped controls may exhaust the reader's space.
+      // Input must remain reachable, and closing must restore the source reader.
+      for (const [name, event, values, bottom] of [
+        ["short-open", "resize", { height: 360, offsetTop: 0 }, 360],
+        ["short-scroll", "scroll", { offsetTop: 40 }, 400],
+        ["short-close", "resize", { height: 620, offsetTop: 0 }, 620],
+      ]) {
+        await evaluate(send, `window.comicGeometry.viewport(${JSON.stringify(event)}, ${JSON.stringify(values)})`);
+        await frame(send);
+        const state = await readSession();
+        if (
+          state.overflow > 1 ||
+          state.draft !== draft ||
+          !state.literal ||
+          !state.editor.hit ||
+          !state.submit.hit ||
+          ![state.composer, state.editor, state.submit].every((box) => reachable(box, width, bottom)) ||
+          Math.abs(state.composer.bottom - bottom) > 1
+        ) failures.push(`keyboard ${name} ${width}: expected bottom ${bottom}, ${JSON.stringify(state)}`);
+        if (name === "short-close" && (
+          !state.sourceParts ||
+          Math.abs(state.reader.height - beforeKeyboard.reader.height) > 1
+        )) failures.push(`keyboard ${name} ${width}: source reader did not restore ${JSON.stringify(state)}`);
+        evidence.push({ width, keyboard: name, composerBottom: state.composer.bottom, readerHeight: state.reader.height });
+      }
+    }
     await evaluate(send, "window.comicGeometry.restoreViewport()");
   }
   return {
