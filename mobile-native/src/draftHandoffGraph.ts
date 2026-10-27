@@ -34,6 +34,7 @@ export function readHandoffGraph(ledger: { readGraph(): DraftHandoffGraph }): Ha
 export function terminalDestination(
 	edges: readonly DraftHandoffEdge[],
 	origin: DraftHandoffEndpoint,
+	chainId?: string,
 ): DraftHandoffEndpoint {
 	const seen = new Set<string>();
 	let current = origin;
@@ -42,7 +43,13 @@ export function terminalDestination(
 		if (seen.has(key)) return current;
 		seen.add(key);
 		const outgoing = edges
-			.filter((edge) => edge.state !== "cleaned" && sameEndpoint(edge.from, current))
+			.filter(
+				(edge) =>
+					(edge.composedAt !== null || edge.resolvedAs === "settled") &&
+					edge.resolvedAs !== "refused" &&
+					(chainId === undefined || edge.chainId === chainId) &&
+					sameEndpoint(edge.from, current),
+			)
 			.sort((a, b) =>
 				a.createdAt === b.createdAt
 					? a.edgeId < b.edgeId
@@ -83,6 +90,7 @@ export function orderHandoffGraph(load: HandoffGraphLoad): HandoffOrdering {
 	const openObligations = new Set(
 		graph.obligations.filter((obligation) => obligation.state === "open").map((obligation) => obligation.obligationId),
 	);
+	const knownObligations = new Set(graph.obligations.map((obligation) => obligation.obligationId));
 	const invalid = new Map<string, HandoffInvalidReason>();
 
 	for (const edge of pending) {
@@ -90,22 +98,7 @@ export function orderHandoffGraph(load: HandoffGraphLoad): HandoffOrdering {
 			if (!byId.has(dependency)) invalid.set(edge.edgeId, "missing-dependency");
 		}
 	}
-	// A dependency that is itself invalid makes the dependent invalid too.
-	let propagated = true;
-	while (propagated) {
-		propagated = false;
-		for (const edge of pending) {
-			if (invalid.has(edge.edgeId)) continue;
-			for (const dependency of edge.dependencies) {
-				const reason = invalid.get(dependency);
-				if (reason !== undefined) {
-					invalid.set(edge.edgeId, reason);
-					propagated = true;
-					break;
-				}
-			}
-		}
-	}
+	propagateInvalid(pending, invalid);
 
 	// Cycle detection over pending dependencies only: a settled dependency is
 	// satisfied and cannot participate in a live cycle.
@@ -127,6 +120,8 @@ export function orderHandoffGraph(load: HandoffGraphLoad): HandoffOrdering {
 		colors.set(edgeId, "done");
 	};
 	for (const edge of pending) visit(edge.edgeId);
+	// A dependent of a cycle member is just as unordered as the cycle itself.
+	propagateInvalid(pending, invalid);
 
 	if (invalid.size > 0) {
 		const ordered = [...invalid.entries()]
@@ -172,7 +167,7 @@ export function orderHandoffGraph(load: HandoffGraphLoad): HandoffOrdering {
 	const blocked: { edgeId: string; reason: HandoffBlockedReason }[] = [];
 	const blockedIds = new Map<string, HandoffBlockedReason>();
 	for (const edge of sorted) {
-		if (edge.obligations.some((obligation) => openObligations.has(obligation))) {
+		if (edge.obligations.some((obligation) => openObligations.has(obligation) || !knownObligations.has(obligation))) {
 			blockedIds.set(edge.edgeId, "obligation");
 			blocked.push({ edgeId: edge.edgeId, reason: "obligation" });
 			continue;
@@ -190,4 +185,23 @@ export function orderHandoffGraph(load: HandoffGraphLoad): HandoffOrdering {
 function compareEdges(a: DraftHandoffEdge, b: DraftHandoffEdge): number {
 	if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
 	return a.edgeId < b.edgeId ? -1 : a.edgeId > b.edgeId ? 1 : 0;
+}
+
+/** An edge inherits its dependency's invalidity, transitively. */
+function propagateInvalid(pending: readonly DraftHandoffEdge[], invalid: Map<string, HandoffInvalidReason>): void {
+	let propagated = true;
+	while (propagated) {
+		propagated = false;
+		for (const edge of pending) {
+			if (invalid.has(edge.edgeId)) continue;
+			for (const dependency of edge.dependencies) {
+				const reason = invalid.get(dependency);
+				if (reason !== undefined) {
+					invalid.set(edge.edgeId, reason);
+					propagated = true;
+					break;
+				}
+			}
+		}
+	}
 }

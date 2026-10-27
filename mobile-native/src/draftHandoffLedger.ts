@@ -38,6 +38,8 @@ export interface DraftHandoffEdge {
 	/** Set after a successful drafts transfer, so a retry decides against the
 	 * destination instead of re-composing from a retired source. */
 	composedAt: number | null;
+	/** The decision a settled/refused edge reached, retained through cleanup. */
+	resolvedAs: "settled" | "refused" | null;
 	supersededBy: string | null;
 	createdAt: number;
 	stateChangedAt: number;
@@ -87,10 +89,6 @@ export interface DraftSubmissionLedger {
 		releasedRecoveryIds?: readonly string[],
 	): void;
 }
-
-/** What a draft document needs to deliver its own completion: record/resolve
- * the obligation and find the chain's terminal identity. */
-export type DraftCompletionLedger = DraftSubmissionLedger & Pick<DraftHandoffLedger, "readGraph">;
 
 export interface DraftHandoffLedger extends DraftSubmissionLedger {
 	/** Called inside the retarget savepoint that moves the mutation rows. */

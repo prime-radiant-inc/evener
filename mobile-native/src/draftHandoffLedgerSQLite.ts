@@ -24,6 +24,7 @@ interface EdgeRow {
 	claim_at: number | null;
 	delivered_hash: string | null;
 	composed_at: number | null;
+	resolved_as: "settled" | "refused" | null;
 	superseded_by: string | null;
 	created_at: number;
 	state_changed_at: number;
@@ -86,6 +87,7 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			 claim_at INTEGER,
 			 delivered_hash TEXT,
 			 composed_at INTEGER,
+			 resolved_as TEXT,
 			 superseded_by TEXT,
 			 created_at INTEGER NOT NULL,
 			 state_changed_at INTEGER NOT NULL)`,
@@ -139,6 +141,7 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 		);
 		// Additive columns for tables an earlier build of this branch created.
 		this.addColumnIfMissing("draft_handoff_edges", "composed_at", "INTEGER");
+		this.addColumnIfMissing("draft_handoff_edges", "resolved_as", "TEXT");
 		this.addColumnIfMissing("draft_submission_obligations", "recovery_ids", "TEXT NOT NULL DEFAULT '[]'");
 		this.addColumnIfMissing("draft_submission_obligations", "released_recovery_ids", "TEXT NOT NULL DEFAULT '[]'");
 	}
@@ -229,6 +232,8 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 		return withSavepoint(this.db, "draft_handoff_edge_insert", () => {
 			const existing = this.edgeByIdentity(input.chainId, input.from, input.to);
 			if (existing !== undefined) {
+				if (existing.state !== "pending")
+					throw new Error(`handoff edge ${existing.edgeId} is already ${existing.state}`);
 				// Merge rather than silently ignore what the caller carried.
 				for (const dependency of input.dependencies ?? []) {
 					if (this.edge(dependency) === undefined) throw new Error(`unknown handoff dependency ${dependency}`);
@@ -333,7 +338,7 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			this.writeDeliveries(edge, deliveries);
 			this.db.runSync(
 				`UPDATE draft_handoff_edges
-				 SET state = 'settled', claim_at = NULL, delivered_hash = ?, state_changed_at = ?
+				 SET state = 'settled', resolved_as = 'settled', claim_at = NULL, delivered_hash = ?, state_changed_at = ?
 				 WHERE edge_id = ?`,
 				deliveredHash,
 				this.#now(),
@@ -374,7 +379,7 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			this.writeDeliveries(edge, deliveries);
 			this.db.runSync(
 				`UPDATE draft_handoff_edges
-				 SET state = 'refused', claim_at = NULL, state_changed_at = ?
+				 SET state = 'refused', resolved_as = 'refused', claim_at = NULL, state_changed_at = ?
 				 WHERE edge_id = ?`,
 				this.#now(),
 				edgeId,
@@ -589,6 +594,7 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			claimAt: row.claim_at,
 			deliveredHash: row.delivered_hash,
 			composedAt: row.composed_at ?? null,
+			resolvedAs: row.resolved_as ?? null,
 			supersededBy: row.superseded_by,
 			createdAt: row.created_at,
 			stateChangedAt: row.state_changed_at,

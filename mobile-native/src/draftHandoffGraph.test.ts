@@ -5,7 +5,7 @@ import type {
 	DraftHandoffGraph,
 	DraftSubmissionObligation,
 } from "./draftHandoffLedger";
-import { type HandoffGraphLoad, orderHandoffGraph, readHandoffGraph } from "./draftHandoffGraph";
+import { type HandoffGraphLoad, orderHandoffGraph, readHandoffGraph, terminalDestination } from "./draftHandoffGraph";
 
 const endpoint = (sessionRef: string): DraftHandoffEndpoint => ({ hubId: "hub", sessionRef });
 
@@ -13,19 +13,28 @@ function edge(
 	edgeId: string,
 	from: string,
 	to: string,
-	options: { dependencies?: string[]; obligations?: string[]; createdAt?: number } = {},
+	options: {
+		dependencies?: string[];
+		obligations?: string[];
+		createdAt?: number;
+		chainId?: string;
+		composed?: boolean;
+		state?: DraftHandoffEdge["state"];
+		resolvedAs?: DraftHandoffEdge["resolvedAs"];
+	} = {},
 ): DraftHandoffEdge {
 	return {
 		edgeId,
-		chainId: "chain",
+		chainId: options.chainId ?? "chain",
 		from: endpoint(from),
 		to: endpoint(to),
-		state: "pending",
+		state: options.state ?? "pending",
 		dependencies: options.dependencies ?? [],
 		obligations: options.obligations ?? [],
 		claimAt: null,
 		deliveredHash: null,
-		composedAt: null,
+		composedAt: options.composed ? (options.createdAt ?? 0) : null,
+		resolvedAs: options.resolvedAs ?? null,
 		supersededBy: null,
 		createdAt: options.createdAt ?? 0,
 		stateChangedAt: options.createdAt ?? 0,
@@ -52,6 +61,41 @@ function load(edges: DraftHandoffEdge[], obligations: DraftSubmissionObligation[
 }
 
 describe("handoff graph ordering", () => {
+	test("routes a completion only through committed, non-refused edges of its chain", () => {
+		const uncomposed = [edge("ab", "a", "b"), edge("bc", "b", "c", { composed: true })];
+		expect(terminalDestination(uncomposed, endpoint("a"), "chain")).toEqual(endpoint("a"));
+
+		const refused = [
+			edge("ab", "a", "b", { composed: true, state: "refused", resolvedAs: "refused" }),
+			edge("bc", "b", "c", { composed: true }),
+		];
+		expect(terminalDestination(refused, endpoint("a"), "chain")).toEqual(endpoint("a"));
+
+		// A cleaned edge that committed the composition still names the terminal.
+		const cleaned = [
+			edge("ab", "a", "b", { composed: true, state: "cleaned", resolvedAs: "settled" }),
+			edge("bc", "b", "c", { composed: true }),
+		];
+		expect(terminalDestination(cleaned, endpoint("a"), "chain")).toEqual(endpoint("c"));
+
+		// A settled edge committed the composition even if the composed marker
+		// write failed; the decision is the durable evidence.
+		const settledWithoutMarker = [
+			edge("ab", "a", "b", { state: "settled", resolvedAs: "settled" }),
+			edge("bc", "b", "c", { composed: true }),
+		];
+		expect(terminalDestination(settledWithoutMarker, endpoint("a"), "chain")).toEqual(endpoint("c"));
+	});
+
+	test("follows only the obligation's chain", () => {
+		const edges = [
+			edge("ab", "a", "b", { composed: true, chainId: "one" }),
+			edge("ac", "a", "c", { composed: true, chainId: "two", createdAt: 1 }),
+		];
+		expect(terminalDestination(edges, endpoint("a"), "one")).toEqual(endpoint("b"));
+		expect(terminalDestination(edges, endpoint("a"), "two")).toEqual(endpoint("c"));
+	});
+
 	test("settles a chain downstream first", () => {
 		const ordering = orderHandoffGraph(load([edge("ab", "a", "b", { dependencies: ["bc"] }), edge("bc", "b", "c")]));
 		expect(ordering).toEqual({
@@ -127,6 +171,28 @@ describe("handoff graph ordering", () => {
 		if (ordering.state !== "invalid") return;
 		expect(ordering.invalid.map((entry) => entry.edgeId).sort()).toEqual(["ab", "bc"]);
 		expect(ordering.invalid.every((entry) => entry.reason === "cycle")).toBe(true);
+	});
+
+	test("marks edges behind a cycle invalid too", () => {
+		const ordering = orderHandoffGraph(
+			load([
+				edge("ab", "a", "b", { dependencies: ["bc"] }),
+				edge("bc", "b", "c", { dependencies: ["cd"] }),
+				edge("cd", "c", "d", { dependencies: ["bc"] }),
+			]),
+		);
+		expect(ordering.state).toBe("invalid");
+		if (ordering.state !== "invalid") return;
+		expect(ordering.invalid.map((entry) => entry.edgeId).sort()).toEqual(["ab", "bc", "cd"]);
+	});
+
+	test("blocks an edge whose obligation was never recorded", () => {
+		const ordering = orderHandoffGraph(load([edge("ab", "a", "b", { obligations: ["missing"] })]));
+		expect(ordering).toEqual({
+			state: "ready",
+			order: [],
+			blocked: [{ edgeId: "ab", reason: "obligation" }],
+		});
 	});
 
 	test("fails closed when the graph read is incomplete", () => {

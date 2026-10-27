@@ -294,4 +294,11 @@ describe("draft handoff ledger", () => {
 		expect(merged.edgeId).toBe(edge.edgeId);
 		expect(merged.obligations).toEqual(["obligation-1"]);
 	});
+
+	test("rejects recreating a settled edge directly", () => {
+		const { ledger } = setup();
+		const edge = ledger.createEdge({ chainId: "chain", from: a, to: b });
+		ledger.settleEdge(edge.edgeId, [], "hash");
+		expect(() => ledger.createEdge({ chainId: "chain", from: a, to: b })).toThrow(/already settled/);
+	});
 });

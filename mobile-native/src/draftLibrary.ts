@@ -325,7 +325,13 @@ export class DraftLibrary {
 		const ids = new Set<string>();
 		for (const obligation of graph.obligations) {
 			if (obligation.state !== "open") continue;
-			if (!sameDestination(terminalDestination(graph.edges, obligation.origin), destination)) continue;
+			if (
+				!sameDestination(
+					terminalDestination(graph.edges, obligation.origin, obligation.chainId ?? undefined),
+					destination,
+				)
+			)
+				continue;
 			for (const id of obligation.recoveryIds) ids.add(id);
 		}
 		return ids;
@@ -344,8 +350,17 @@ export class DraftLibrary {
 		}
 		for (const obligation of graph.obligations) {
 			if (!clearsCapture(obligation.state)) continue;
-			if (!sameDestination(terminalDestination(graph.edges, obligation.origin), destination)) continue;
-			this.applyCompletion(obligation, terminalDestination(graph.edges, obligation.origin));
+			if (
+				!sameDestination(
+					terminalDestination(graph.edges, obligation.origin, obligation.chainId ?? undefined),
+					destination,
+				)
+			)
+				continue;
+			this.applyCompletion(
+				obligation,
+				terminalDestination(graph.edges, obligation.origin, obligation.chainId ?? undefined),
+			);
 		}
 	}
 

@@ -6,7 +6,7 @@ import { DraftRepository } from "./draftRepository";
 import { MutationOutboxSQLite } from "./mutationOutboxStorage";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 import type { MutationIntent } from "@evener/appwire-client/state/mutation";
-import { MutationNotSentError } from "../../mobile/src/state/conversationMutation";
+import { MutationNotSentError } from "./conversation/state/conversationMutation";
 
 // The ledger's default id source is expo-crypto through the storage adapter;
 // the counter makes chain and edge ids stable across assertions.

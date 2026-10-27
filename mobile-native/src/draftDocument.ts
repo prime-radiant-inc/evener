@@ -773,7 +773,7 @@ export class DraftDocument {
 		}
 		const obligation = graph.obligations.find((entry) => entry.obligationId === captureToken);
 		if (obligation === undefined) return false;
-		const terminal = terminalDestination(graph.edges, obligation.origin);
+		const terminal = terminalDestination(graph.edges, obligation.origin, obligation.chainId ?? undefined);
 		const self = terminal.hubId === this.destination.hubId && terminal.sessionRef === this.destination.sessionRef;
 		let current: DraftRecord;
 		if (self && this.snapshot.loaded) current = this.snapshot.record;

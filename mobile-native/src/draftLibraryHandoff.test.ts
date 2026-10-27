@@ -358,6 +358,38 @@ describe("durable handoff library", () => {
 		expect(draftLibrary.openObligationRecoveryIds(destination("b"))).toEqual(new Set());
 	});
 
+	test("a refusal write failure leaves the hop pending until the ledger accepts it", () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "mine",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		repository.write(destination("b"), { draft: "theirs", unconfirmed: null });
+		const flakyLedger = flaky(ledger, "refuseEdge", 1);
+		const draftLibrary = library(() => flakyLedger);
+
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("pending");
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("refused");
+		expect(repository.read(destination("b")).draft).toBe("theirs");
+		expect(repository.read(destination("a")).draft).toBe("mine");
+	});
+
+	test("a cleanup failure leaves the settled edge for the next retry", () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), { draft: "edited", unconfirmed: null });
+		const flakyLedger = flaky(ledger, "cleanEdge", 1);
+		const draftLibrary = library(() => flakyLedger);
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("cleaned");
+	});
+
 	test("an inherited submission's completion reaches a two-hop terminal", async () => {
 		const { ledger, repository, library } = setup();
 		repository.write(destination("a"), {
