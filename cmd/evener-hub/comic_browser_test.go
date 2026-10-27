@@ -43,6 +43,17 @@ func TestComicRecoveryBrowser(t *testing.T) {
 	comicGuardBrowser(t, "recovery")
 }
 
+func comicGuardContext(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	if deadline, ok := t.Deadline(); ok {
+		// Leave room to reap Chrome's driver and stop the two seeded daemons
+		// plus the two real resume launches after the journey ends.
+		deadline = deadline.Add(-backgroundDriverJoinReserve - 4*backgroundHelperStopWait)
+		return context.WithDeadline(t.Context(), deadline)
+	}
+	return context.WithCancel(t.Context())
+}
+
 func comicGuardBrowser(t *testing.T, scenario string) {
 	t.Helper()
 	if testing.Short() {
@@ -93,7 +104,7 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 	}
 	defer func() { daemonProcessCommand = oldCommand }()
 	literal := "COMIC_READ_SOURCE_3f " + strings.Repeat("Literal *asterisks*, `code`, and a source-offset reading point. ", 24)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := comicGuardContext(t)
 	defer cancel()
 	roster := hubcore.NewRoster(fixture.runDir, &hubcore.StatusProber{Timeout: 500 * time.Millisecond})
 	if err := roster.RefreshAndWait(ctx); err != nil {
@@ -277,6 +288,7 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 		}
 	})
 	command := exec.CommandContext(ctx, "node", "scripts/comicguard/run.mjs", "--fixture", inputPath)
+	configureBackgroundDriverCommand(command)
 	command.Dir = filepath.Join(skillGuardRepoRoot(t), "cmd", "evener-hub", "frontend")
 	command.Env = os.Environ()
 	output, err := command.CombinedOutput()
