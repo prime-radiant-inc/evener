@@ -1054,6 +1054,12 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			} else if json.Unmarshal(msg.Request.Params, &params) != nil {
 				return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionInvalid}
 			}
+			// A durably deleted target has no source left to resolve. Let the
+			// read handler return its terminal fence instead of replacing it
+			// with retryable unresolved admission. No subscription can open.
+			if msg.Request.Method == appwire.MethodThreadRead && deletionFenceError(cfg, params.Ref, params.ThreadID, "") != nil {
+				return notSubscribe
+			}
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
 				if _, parseErr := appwire.ParseRef(strings.TrimSpace(params.Ref)); params.Ref != "" && parseErr != nil {
@@ -1316,6 +1322,12 @@ func registerThreadHandlers(
 			if _, err := appwire.ParseRef(params.Ref); err != nil {
 				return appwire.ThreadReadResponse{}, appwire.InvalidParams(err.Error())
 			}
+		}
+		// Deletion is authoritative even when unrelated daemon ownership
+		// cannot be discovered. Keep the locked source check below as well:
+		// deletion may begin after this early terminal check.
+		if err := deletionFenceError(cfg, params.Ref, params.ThreadID, ""); err != nil {
+			return appwire.ThreadReadResponse{}, err
 		}
 		if cfg.Roster != nil {
 			if _, required, ownershipErr := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); required || ownershipErr != nil {
