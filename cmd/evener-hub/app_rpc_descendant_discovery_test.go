@@ -102,7 +102,7 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 	}
 	daemon.WireTranscriptHistory(sess)
 	daemon.ReplaceAppIdentity(prepared.WithRecordedLength(sess.TranscriptRecordedLength()).WithBootGeneration(appwire.BootGeneration(generation)), nil)
-	daemon.SetStatus(daemonserver.StatusInfo{SessionID: rootID, State: "idle", WorkingDir: workDir})
+	seedDaemonStatus(daemon, daemonserver.StatusInfo{SessionID: rootID, State: "idle", WorkingDir: workDir})
 	daemon.SetDescendantTranscriptPathFunc(func(id string) string { return filepath.Join(stateDir, "sessions", id+".transcript.jsonl") })
 	sess.SetDescendantEventFunc(func(event events.SessionEvent) { daemon.RecordDescendantAppEvent(rootID, event) })
 	sess.ConsumeEventsLossless(func(event events.SessionEvent) { daemonserver.BridgeEvent(daemon, event, nil) }, func() {})
