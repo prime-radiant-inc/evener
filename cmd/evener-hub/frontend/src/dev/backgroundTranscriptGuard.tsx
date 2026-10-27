@@ -2,6 +2,7 @@
 // The real app imports its unchanged ordinary stores after the budget boundary is set.
 // No ref selects a fixture route, and no separate transcript database is created.
 import type { TranscriptDisplayConfigV1, ViewportClass } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { installBackgroundTranscriptOptionsForTests } from "../stores/backgroundTranscriptOptions";
 import { SESSION_CACHE_DATABASE_NAME, SESSION_CACHE_DATABASE_VERSION } from "../stores/sessionCacheSchema";
 
@@ -171,9 +172,9 @@ try {
       },
     }),
   });
-  // Dev-only two-tab fencing surface. It exercises the REAL cache clear/delete
-  // paths (threads.clearCachedSessions / markCacheSessionsDeleted), the real
-  // BroadcastChannel propagation and the real IndexedDB across two real tabs.
+  // Dev-only two-tab fencing surface. Deletion uses the production action after
+  // the real daemon exits, so a sibling's fresh read meets a server-side fence,
+  // not merely a cache broadcast while the source session is still readable.
   // It is a guard entry, never a product route: no ref selects a fixture and no
   // separate store is created.
   Object.defineProperty(window, "backgroundTranscriptGuard", {
@@ -187,10 +188,22 @@ try {
         };
       },
       open: (ref: string) => threads.threadsStore.getState().ensureThread(ref),
+      sourceReadOutcome: async (ref: string) => {
+        const client = connection.connectionStore.getState().client;
+        if (!client) throw new Error("No connected client for the deletion proof");
+        try {
+          await client.request("thread/read", { ref, includeTurns: true, subscribe: false });
+          return "readable";
+        } catch (error) {
+          if (!(error instanceof WireError)) throw error;
+          return "rejected";
+        }
+      },
       settle: (ref: string) => threads.settleEntryTranscriptForTests(ref),
       clear: () => threads.clearCachedSessions(),
-      delete: (ref: string) => {
-        threads.markCacheSessionsDeleted([ref]);
+      delete: async (key: string, workingDir: string) => {
+        const { deleteProject } = await import("../shell/rail/actions");
+        return deleteProject(key, workingDir);
       },
     }),
   });
