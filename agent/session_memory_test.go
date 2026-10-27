@@ -2896,7 +2896,7 @@ func TestMemoryOutputRecovery(t *testing.T) {
 
 // This corpus uses the existing toolwire envelope. Every call/result comes
 // from ProcessInput, including retention and read_transcript recovery. Only
-// random capability IDs and runtime timestamps are normalized for recording.
+// random capability/session IDs and runtime timestamps are normalized for recording.
 func TestMemoryGenericDelivery(t *testing.T) {
 	t.Parallel()
 	var items []appwire.ThreadItem
@@ -2979,6 +2979,12 @@ func TestMemoryGenericDelivery(t *testing.T) {
 			projected := apptranscript.ProjectTurn("turn_1", index+arm*4, turn, reg, nil, nil)
 			for i := range projected {
 				projected[i].DurationMS = nil
+				if authorship := projected[i].Authorship; authorship != nil {
+					if authorship.Author.SessionRef != "local:"+s.ID() {
+						t.Fatalf("memory tool author=%+v, want session %s", authorship.Author, s.ID())
+					}
+					authorship.Author.SessionRef = fmt.Sprintf("local:memoryFixture%d", arm+1)
+				}
 			}
 			items = append(items, toolWireRelocated(t, projected, func(text string) string {
 				return strings.ReplaceAll(text, ref, fmt.Sprintf("artifact:memoryFixture%d", arm+1))

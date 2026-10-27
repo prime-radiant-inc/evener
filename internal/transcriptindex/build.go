@@ -422,6 +422,11 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 			return err
 		}
 	case schema.TurnCommunicate:
+		// A dedicated delivery consumes inherited reconstruction even when
+		// its visible message is suppressed as an assistant-text echo.
+		if entry.Communicate != nil {
+			delete(b.commCalls, entry.Communicate.CallID)
+		}
 		echoes, err := b.echoesAwaiting(summary, entry)
 		if err != nil {
 			return err

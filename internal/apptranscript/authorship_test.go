@@ -184,9 +184,10 @@ func TestInheritedCommunicateFreshAndFoldExclusion(t *testing.T) {
 			call := schema.Turn{Format: schema.TurnFormatIdentity, Kind: schema.TurnAssistant,
 				Authorship: &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "origin"}},
 				Message:    llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c", Name: "communicate", Arguments: json.RawMessage(`{"message":"fresh sentinel"}`)}}}}}
-			if kind == "absent-author" {
+			switch kind {
+			case "absent-author":
 				call.Authorship = nil
-			} else if kind == "fold" {
+			case "fold":
 				original := uint64(0)
 				call.OriginalOrdinal = &original
 				call.Authorship.Inherited = true
@@ -225,4 +226,36 @@ func TestAuthorshipProjectionInvalidShapes(t *testing.T) {
 			t.Errorf("%+v projects %+v", author, got)
 		}
 	}
+}
+
+func TestInheritedCommunicateDedicatedDelivery(t *testing.T) {
+	reg := NewToolCallRegistry()
+	author := &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "origin"}, Inherited: true}
+	call := schema.Turn{Format: schema.TurnFormatIdentity, Kind: schema.TurnAssistant, Authorship: author,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "delivered", Name: "communicate", Arguments: json.RawMessage(`{"message":"delivered sentinel"}`)}},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "pending", Name: "communicate", Arguments: json.RawMessage(`{"message":"pending sentinel"}`)}},
+		}}}
+	ProjectEntryParts("turn", 1, call, reg, nil, nil)
+	delivery := schema.Turn{Format: schema.TurnFormatIdentity, Kind: schema.TurnCommunicate, Authorship: author,
+		Communicate: &schema.CommunicateInfo{CallID: "delivered", Message: "delivered sentinel"}}
+	items, _ := ProjectEntryParts("turn", 2, delivery, reg, nil, nil)
+	if len(items) != 1 || items[0].CallID != "delivered" {
+		t.Fatalf("dedicated delivery=%+v", items)
+	}
+	assertAuthorJSON(t, items[0], `{"author":{"kind":"agent","sessionRef":"local:origin"},"inherited":true}`)
+	if len(reg.CommRawArgs) != 1 || len(reg.CommAuthorship) != 1 || reg.CommRawArgs["pending"] == "" || reg.CommAuthorship["pending"] == nil {
+		t.Fatalf("dedicated delivery did not consume only its pending call: %+v", reg)
+	}
+	result := schema.Turn{Format: schema.TurnFormatIdentity, Kind: schema.TurnToolResults,
+		Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "delivered"}}}}}
+	items, _ = ProjectEntryParts("turn", 3, result, reg, nil, nil)
+	if len(items) != 0 {
+		t.Fatalf("result duplicated delivery: %+v", items)
+	}
+	items = flushUnpairedCommunicateItems(reg, "turn")
+	if len(items) != 1 || items[0].CallID != "pending" || items[0].Text != "pending sentinel" {
+		t.Fatalf("unpaired delivery=%+v", items)
+	}
+	assertAuthorJSON(t, items[0], `{"author":{"kind":"agent","sessionRef":"local:origin"},"inherited":true}`)
 }

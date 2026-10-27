@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -53,9 +54,8 @@ func TestTranscriptAuthorshipLiveReplay(t *testing.T) {
 	adapter := &authorshipStreamProvider{release: make(chan struct{})}
 	sess := newMutationReplaySessionWithAdapter(t, adapter)
 	ps := bridgeParitySession(t, sess, sess.StateDir())
-	defer ps.close(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(func() { ps.close(t) })
+	ctx := t.Context()
 	_, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{ClientMutationID: "authorship", ExpectedInstanceID: sess.ID(), Input: []appwire.InputItem{{Type: "text", Text: "question"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -132,6 +132,98 @@ func TestTranscriptAuthorshipLiveReplay(t *testing.T) {
 		}
 	}
 	assertParity(t, "authorship", ps, nil)
+}
+
+func TestTranscriptAuthorshipOrdinaryForkCommunicate(t *testing.T) {
+	adapter := &authorshipStreamProvider{release: make(chan struct{})}
+	close(adapter.release)
+	sess := newMutationReplaySessionWithAdapter(t, adapter)
+	for _, input := range []string{"fork-origin", "fork-target"} {
+		if _, err := sess.ProcessInput(t.Context(), input, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parent := transcriptTurns(t, sess.TranscriptPath())
+	divergence := slices.IndexFunc(parent, func(turn schema.Turn) bool {
+		return turn.Kind == schema.TurnUserInput && turn.Message.Text() == "fork-target"
+	})
+	if divergence < 0 {
+		t.Fatal("missing divergence input")
+	}
+	prefix := parent[:divergence]
+	var exchange []schema.TurnKind
+	deliveryEntry := 0
+	for i, turn := range prefix {
+		switch turn.Kind {
+		case schema.TurnAssistant:
+			for _, part := range turn.Message.Content {
+				if part.ToolCall != nil && part.ToolCall.ID == "authorship-call" {
+					exchange = append(exchange, turn.Kind)
+				}
+			}
+		case schema.TurnCommunicate:
+			if turn.Communicate != nil && turn.Communicate.CallID == "authorship-call" {
+				exchange = append(exchange, turn.Kind)
+				deliveryEntry = i + 1
+			}
+		case schema.TurnToolResults:
+			for _, part := range turn.Message.Content {
+				if part.ToolResult != nil && part.ToolResult.ToolCallID == "authorship-call" && !part.ToolResult.IsError {
+					exchange = append(exchange, turn.Kind)
+				}
+			}
+		}
+	}
+	if !reflect.DeepEqual(exchange, []schema.TurnKind{schema.TurnAssistant, schema.TurnCommunicate, schema.TurnToolResults}) {
+		t.Fatalf("real delivery exchange=%v", exchange)
+	}
+	for _, mode := range []string{"edited", "at-user-turn"} {
+		t.Run(mode, func(t *testing.T) {
+			var childID string
+			var err error
+			if mode == "edited" {
+				childID, err = agent.ForkSession(sess.StateDir(), sess.ID(), divergence+1, "fork-edit", "")
+			} else {
+				var original string
+				childID, original, err = agent.ForkSessionAtUserTurn(sess.StateDir(), sess.ID(), divergence+1, "")
+				if original != "fork-target" {
+					t.Fatalf("fork target=%q", original)
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := schema.SessionTranscriptPath(sess.StateDir(), childID)
+			child := transcriptTurns(t, path)
+			wantEntries := len(prefix)
+			if mode == "edited" {
+				wantEntries++
+			}
+			if len(child) != wantEntries {
+				t.Fatalf("fork entries=%d want=%d", len(child), wantEntries)
+			}
+			for i, source := range prefix {
+				if child[i].Kind != source.Kind || child[i].Authorship == nil || !child[i].Authorship.Inherited {
+					t.Fatalf("copied entry %d=%+v", i, child[i])
+				}
+			}
+			var delivered []appwire.ThreadItem
+			for _, turn := range fileHistoryTurns(t, path) {
+				for _, item := range turn.Items {
+					if item.CallID == "authorship-call" {
+						delivered = append(delivered, item)
+					}
+				}
+			}
+			if len(delivered) != 1 {
+				t.Fatalf("fork delivered %d messages for one call: %+v", len(delivered), delivered)
+			}
+			want := &appwire.TranscriptAuthorship{Author: appwire.TranscriptAuthor{Kind: appwire.TranscriptAuthorAgent, SessionRef: "local:" + sess.ID()}, Inherited: true}
+			if delivered[0].ID != fmt.Sprintf("item_assistant_%d_0", deliveryEntry) || delivered[0].Type != "agentMessage" || delivered[0].Text != "delivered" || !reflect.DeepEqual(delivered[0].Authorship, want) {
+				t.Fatalf("fork delivery=%+v want author=%+v", delivered[0], want)
+			}
+		})
+	}
 }
 
 // The script controls only model responses. Real delegate tools create and
