@@ -787,21 +787,26 @@ func (h *hostSSH) sha256IfFile(path string) string {
 	return fields[0]
 }
 
-// stopHostListener stops the hub this case started and waits briefly for the
-// port to clear, so the directory it runs from can be removed. The port is
-// fixed, so a listener there could be an unrelated process: the kill is gated on
-// the pid's command line naming the private config path this case wrote, so it
-// can only ever target this test's own hub. A kill that fails, or a listener
-// that outlives the wait, is reported rather than logged away — a silent cleanup
-// failure would leave a hub running from a directory the test then removes.
-// Only true permits the caller to remove that directory.
+// stopHostListener stops this case's hub and proves both that its listener is
+// gone and that no process row still has the fixture binary and exact config
+// path. The port is fixed, so a listener there could be unrelated; the kill
+// rechecks both identity markers immediately before signaling. Only true permits
+// the caller to remove the directory the hub ran from.
 func stopHostListener(t *testing.T, host *hostSSH, addr, configPath string) bool {
 	t.Helper()
+	if err := stopHostListenerProof(host, addr, configPath); err != nil {
+		t.Errorf("stopping the deploy check's host hub on %s (config %s): %v", addr, configPath, err)
+		retainHostCleanupRoot(t)
+		return false
+	}
+	return true
+}
+
+func stopHostListenerProof(host *hostSSH, addr, configPath string) error {
 	port := addr[strings.LastIndex(addr, ":")+1:]
 	kill := hostHubKillCommand(addr, configPath)
 	if err := host.tryRun(kill); err != nil {
-		t.Errorf("stopping the deploy check's host hub on %s (config %s): %v", addr, configPath, err)
-		return false
+		return fmt.Errorf("kill command failed: %w", err)
 	}
 	probe := sshconn.ListenerProbeRemote(port)
 	deadline := time.Now().Add(10 * time.Second)
@@ -812,13 +817,16 @@ func stopHostListener(t *testing.T, host *hostSSH, addr, configPath string) bool
 		// listener is gone": returning here is what lets the caller remove the
 		// directory a still-running hub serves from. The timeout below reports the
 		// unproven cleanup.
-		if out, err := host.runStdout(probe); err == nil && hostListenerProbeAbsent(out) {
-			return true
+		out, err := host.runStdout(probe)
+		if err == nil && hostListenerProbeAbsent(out) {
+			processes, processErr := host.runStdout(hostHubProcessProbeCommand(configPath))
+			if processErr == nil && hostHubProcessesAbsent(processes) {
+				return nil
+			}
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	t.Errorf("the deploy check's host hub shutdown on %s is unproved after 10s; retaining its private directory", addr)
-	return false
+	return fmt.Errorf("shutdown on %s is unproved after 10s", addr)
 }
 
 // hostListenerProbeAbsent reports whether out — the answer of the shared
@@ -833,12 +841,25 @@ func hostListenerProbeAbsent(out []byte) bool {
 	return strings.TrimSpace(string(out)) == sshconn.NoListenerMarker
 }
 
+func hostHubProcessProbeCommand(configPath string) string {
+	return "ps -ww -o pid=,command= -A >/dev/null 2>&1 || { echo 'cannot list host processes' >&2; exit 1; }; " +
+		"rows=$(ps -ww -o pid=,command= -A) || exit $?; " +
+		"printf '%s\\n' \"$rows\" | awk -v config=" + shellquote.RemoteWord(configPath) +
+		" -v self=$$ -v parent=$PPID '$2 ~ /evener-real$/ && index($0, config) && $1 != self && $1 != parent { print \"HUB_PID \" $1; found=1 } END { if (!found) print \"HUB_PROCESSES_ABSENT\" }'"
+}
+
+func hostHubProcessesAbsent(out []byte) bool {
+	return strings.TrimSpace(string(out)) == "HUB_PROCESSES_ABSENT"
+}
+
 // hostHubKillCommand is the remote command that stops the hub this case started
 // and nothing else. It lists the pids listening on the case's private port and
-// signals each only when `ps` shows the case's own config path in its command
-// line — the marker the launched host hub was given (hubBootstrapArgv passes
-// --config). The port alone is deliberately not enough: it is a fixed literal, so
-// killing every listener on it could terminate an unrelated process.
+// signals each only when `ps` shows the case's own config path and evener-real
+// executable in its command line — the marker the launched host hub was given
+// (hubBootstrapArgv passes --config). It repeats those checks immediately before
+// the signal to avoid acting on a recycled PID. The port alone is deliberately
+// not enough: it is a fixed literal, so killing every listener on it could
+// terminate an unrelated process.
 //
 // The pids come from the shared listener probe, not a bare `lsof`: that probe
 // falls back to ss and to /proc/net/tcp, so a host without lsof is still probed,
@@ -855,8 +876,11 @@ func hostHubKillCommand(addr, configPath string) string {
 			"if [ $s -ne 0 ]; then echo 'evener-hub deploy check cleanup: no listener probe is available on the host (lsof, ss, and /proc/net/tcp are all missing); refusing to conclude no hub is listening' >&2; exit $s; fi; "+
 			"for pid in $pids; do "+
 			"case \"$pid\" in ''|*[!0-9]*) continue;; esac; "+
-			"if ps -ww -o command= -p \"$pid\" 2>/dev/null | grep -F -e %s >/dev/null; then kill \"$pid\"; fi; done",
-		sshconn.ListenerProbeRemote(port), shellquote.RemoteWord(configPath))
+			"if ps -ww -o command= -p \"$pid\" 2>/dev/null | grep -F -e %s >/dev/null && "+
+			"ps -ww -o command= -p \"$pid\" 2>/dev/null | grep -F -e evener-real >/dev/null && "+
+			"ps -ww -o command= -p \"$pid\" 2>/dev/null | grep -F -e %s >/dev/null && "+
+			"ps -ww -o command= -p \"$pid\" 2>/dev/null | grep -F -e evener-real >/dev/null; then kill \"$pid\"; fi; done",
+		sshconn.ListenerProbeRemote(port), shellquote.RemoteWord(configPath), shellquote.RemoteWord(configPath))
 }
 
 // hostDaemonReapCommand stops every serve daemon this case started from its own
@@ -1058,6 +1082,7 @@ func TestStopHostListenerIgnoresProbeStderr(t *testing.T) {
 		"for a in \"$@\"; do script=\"$a\"; done\n" +
 		"case \"$script\" in\n" +
 		"  *'evener-hub deploy check cleanup'*) exit 0 ;;\n" +
+		"  *'HUB_PROCESSES_ABSENT'*) echo HUB_PROCESSES_ABSENT; exit 0 ;;\n" +
 		"esac\n" +
 		"echo 'lsof: WARNING: can not stat() file system' >&2\n" +
 		"echo " + sshconn.NoListenerMarker + "\n"

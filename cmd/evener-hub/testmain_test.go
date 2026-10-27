@@ -42,6 +42,24 @@ const detachHelperRunDirEnv = "EVENER_HUB_DETACH_HELPER_RUN_DIR"
 // and died before producing a byte, so the browser journey waited out its
 // tripwire.
 const liveStackWarmEnv = "EVENER_HUB_LIVE_STACK_WARM"
+const retainHostCleanupRootMarker = ".evener-host-cleanup-unproven"
+
+func retainHostCleanupRoot(t *testing.T) {
+	t.Helper()
+	root := os.Getenv(sandboxtest.RootVar)
+	if root == "" {
+		t.Errorf("cannot retain unsafe host cleanup state: %s is unset", sandboxtest.RootVar)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(root, retainHostCleanupRootMarker), []byte("hub exit unproved\n"), 0o600); err != nil {
+		t.Errorf("marking HostTemp root %s for retention after unproved host cleanup: %v", root, err)
+	}
+}
+
+func hostCleanupRootMustBeRetained(root string) bool {
+	_, err := os.Stat(filepath.Join(root, retainHostCleanupRootMarker))
+	return err == nil
+}
 
 // outsideCheckoutHelperEnv marks the subprocess TestTestMainWarmsNothingOutside-…
 // launches. That case proves TestMain does not need a checkout to start a
@@ -144,11 +162,22 @@ func TestMain(m *testing.M) {
 	}
 
 	code := m.Run()
-	testEnv.Discard()
-	if err := hostTemp.Discard(); err != nil {
-		fmt.Fprintf(os.Stderr, "evener-hub TestMain: %v\n", err)
-		if code == 0 {
-			code = 1
+	root := os.Getenv(sandboxtest.RootVar)
+	if hostCleanupRootMustBeRetained(root) {
+		fmt.Fprintf(os.Stderr, "evener-hub TestMain: retaining HostTemp root after unproved SSH hub cleanup: %s\n", root)
+	} else {
+		if _, err := os.Stat(filepath.Join(root, retainHostCleanupRootMarker)); !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "evener-hub TestMain: checking SSH cleanup retention marker: %v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+		testEnv.Discard()
+		if err := hostTemp.Discard(); err != nil {
+			fmt.Fprintf(os.Stderr, "evener-hub TestMain: %v\n", err)
+			if code == 0 {
+				code = 1
+			}
 		}
 	}
 	os.Exit(code)
