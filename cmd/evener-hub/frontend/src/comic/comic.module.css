@@ -207,7 +207,7 @@
 @media (max-width: 899px) {
   /* Keep the reader allocated beside the keyboard, without shrinking targets. */
   .controls { gap: var(--space-1); padding: 2px; }
-  .controls label { display: flex; flex-direction: column; font-size: 12px; line-height: 16px; }
+  .controls label { display: flex; flex-direction: column; font-size: var(--font-size-caption); line-height: 16px; }
   .interaction { gap: 2px; padding: 2px; }
 }
 
