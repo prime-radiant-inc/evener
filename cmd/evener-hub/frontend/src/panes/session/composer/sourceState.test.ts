@@ -927,6 +927,180 @@ test("adoption defers while the destination is sending its restored row", async 
   }
 });
 
+// A pending attachment is newer work on the active row too: an image whose
+// encoding is still running when the deferred adoption is flushed used to
+// drop the adoption at the pending guard before the selection reclamation
+// could run, so a reload restored the older preserved composition instead of
+// the work the encoded image settled into.
+test("a pending image encoding reclaims the selection for the active row", async () => {
+  installLocalStorage(new MemoryStorage());
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "local:reclaim-encoding";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "row composition" }] },
+    attachments: [],
+    composerText: "row composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const preservedIntent = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "preserved composition" }] },
+    attachments: [],
+    composerText: "preserved composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "preserved composition" }] },
+  });
+  await storage.transferToRecovery(preservedIntent.clientMutationId, "rejected");
+  const preserved = await storage.getRecovery(preservedIntent.clientMutationId);
+  if (!preserved) throw new Error("missing preserved fixture");
+  const encoding = installControlledImageEncoding();
+  const replacement = createTestComposerSource(ref, undefined, "pane-a");
+  const view = renderHook(() => useAttachments(replacement.editor, replacement.attachments));
+  const scope = composerSelectionScope("pane-a");
+  let unmounted = false;
+  try {
+    act(() => {
+      replacement.setActiveRecoveryId(recovery);
+    });
+    // What the delayed preservation published: the stored selection names
+    // the preserved row while the adoption waits on the held send.
+    writeRecoverySelection(ref, scope, preserved.clientMutationId);
+    const releaseSend = beginRecoverySubmission(original.clientMutationId);
+    void replacement.adoptPreservedSelection(ref, original.clientMutationId, preserved);
+    expect(replacement.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+
+    // The user starts encoding an image while the send is held.
+    act(() => view.result.current.ingestFiles([image()], (message) => pushToast("error", message)));
+    expect(replacement.attachments.getState().items.some((item) => item.pending)).toBe(true);
+    releaseSend();
+    await flushPendingTurnsProjectionForTests();
+    // The pending image dropped the adoption and reclaimed the selection
+    // for the row the encoded image will settle onto.
+    expect(readRecoverySelection(ref, scope)).toBe(original.clientMutationId);
+
+    // The encode settles and autosaves onto the active row.
+    await act(async () => {
+      await encoding.resolve();
+    });
+    await flushPendingTurnsProjectionForTests();
+    await flushPendingTurnsProjectionForTests();
+    const saved = await storage.getRecovery(original.clientMutationId);
+    expect(saved?.composerText).toContain("[image 1]");
+
+    // A remount restores the selection and the image-carrying work, not the
+    // older preserved composition.
+    view.unmount();
+    unmounted = true;
+    replacement.dispose();
+    const remounted = createTestComposerSource(ref, undefined, "pane-a");
+    try {
+      expect(readRecoverySelection(ref, remounted.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+      const restored = await storage.getRecovery(original.clientMutationId);
+      if (!restored) throw new Error("missing restored row");
+      expect(restored.composerText).toContain("[image 1]");
+      await remounted.activateRecovery(restored);
+      expect(remounted.getSnapshot().text).toContain("[image 1]");
+    } finally {
+      remounted.dispose();
+    }
+  } finally {
+    if (!unmounted) view.unmount();
+    replacement.dispose();
+    storage.close();
+  }
+});
+
+// The originating source installs its own preserved record after the
+// preservation's post-commit projection waits. Another pane can consume the
+// row during that wait; installing the captured snapshot would let a later
+// autosave resurrect the removed content, so the originating path validates
+// the durable row the same way every adoption does.
+test("the originating source drops a preserved row a peer consumed during the post-commit wait", async () => {
+  class HeldRefreshStorage extends MutationOutboxIndexedDB {
+    hold = false;
+    readonly refreshReached = deferred<void>();
+    readonly releaseRefresh = deferred<void>();
+
+    override async listRecovery(targetRef?: string): Promise<MutationRecoveryRecord[]> {
+      const rows = await super.listRecovery(targetRef);
+      // Hold the post-commit refresh read that first sees the preserved row.
+      if (this.hold && rows.some((row) => row.clientMutationId !== original.clientMutationId)) {
+        this.refreshReached.resolve();
+        await this.releaseRefresh.promise;
+      }
+      return rows;
+    }
+  }
+  const storage = new HeldRefreshStorage();
+  setMutationStorageForTests(storage);
+  const ref = "local:originating-revalidate";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "row composition" }] },
+    attachments: [],
+    composerText: "row composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    // A peer advances the row so the source's save is refused into
+    // preservation.
+    const peerRow = await peer.getRecovery(original.clientMutationId);
+    if (!peerRow) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRow) },
+    );
+
+    storage.hold = true;
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, "row composition", [], []);
+    await storage.refreshReached.promise;
+    // The preservation committed and its post-commit refresh is held; the
+    // peer consumes the fresh row before the source can install it.
+    const preservedRows = (await peer.listRecovery(ref)).filter(
+      (row) => row.clientMutationId !== original.clientMutationId,
+    );
+    expect(preservedRows).toHaveLength(1);
+    const preservedRow = preservedRows[0];
+    if (!preservedRow) throw new Error("missing preserved row");
+    expect(await peer.discardRecovery(preservedRow.clientMutationId)).toBe(true);
+    storage.releaseRefresh.resolve();
+    await saving;
+    await flushPendingTurnsProjectionForTests();
+
+    // The consumed row is neither installed nor resurrected: the lease
+    // retired and no fresh recovery carries the removed content.
+    expect(source.getSnapshot().activeRecoveryId).toBeNull();
+    expect(
+      (await storage.listRecovery(ref)).filter((row) => row.clientMutationId !== original.clientMutationId),
+    ).toEqual([]);
+  } finally {
+    storage.releaseRefresh.resolve();
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
 // A deferred adoption can wait on another source's submission alone - the
 // destination holds no operation lock of its own, so only the shared
 // submission guard's release can recheck it.

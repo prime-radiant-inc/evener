@@ -324,7 +324,18 @@ function isConversationPaneType(type: PaneTypeId): boolean {
 }
 
 function liveComposerSeats(panes: readonly OpenPaneRecord[]): Set<string> {
-  return new Set(panes.map((pane) => pane.composerSeatId ?? pane.id));
+  const seats = new Set(panes.map((pane) => pane.composerSeatId ?? pane.id));
+  // A pane retyped to a read-only transcript keeps its lifetime's seat in
+  // reserve for its own return to a conversation. A different pane opening
+  // that conversation must not receive the reserved seat: two independent
+  // panes sharing one recovery-selection scope would clobber each other's
+  // stored selection, so placement treats a living pane's retained seat as
+  // taken and hands out a distinct one.
+  const liveIds = new Set(panes.map((pane) => pane.id));
+  for (const [paneId, seat] of retainedComposerSeats) {
+    if (liveIds.has(paneId)) seats.add(seat);
+  }
+  return seats;
 }
 
 // Give a placed pane this tab's stored seat for the conversation. An explicit

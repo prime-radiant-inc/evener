@@ -634,19 +634,20 @@ export function createComposerSourceState(
   function adoptionGuardsSettled(targetRef: string, staleId: string, pendingPreservedId: string): boolean {
     if (disposed || ref !== targetRef) return false;
     if (currentRecoveryId() !== staleId) return false;
-    if (operations.hasPending) return false;
     // An explicit activation is already building the next composition from
     // this composer's visible work. Adoption must not replace that work before
     // activation's await returns and merges it.
     if (state.getState().recoveryActivating) return false;
-    if (userEditEpoch !== selectionUserEditEpoch) {
-      // Newer typing invalidated this adoption. The preservation already
+    if (userEditEpoch !== selectionUserEditEpoch || operations.hasPending) {
+      // Newer local work - typed text, or an attachment whose encoding is
+      // still pending - invalidated this adoption. The preservation already
       // published the preserved row as this ref's stored selection, while
-      // the composer's newer edits autosave onto its active row - a reload
-      // would restore the older preserved composition instead of them.
-      // Reclaim the selection for the active row, but only when the stored
-      // choice still names this adoption's preserved row, never a newer
-      // selection someone else published meanwhile.
+      // the newer work autosaves onto the active row (an encoded image
+      // settles there once its await returns) - a reload would restore the
+      // older preserved composition instead. Reclaim the selection for the
+      // active row, but only when the stored choice still names this
+      // adoption's preserved row, never a newer selection someone else
+      // published meanwhile.
       if (readRecoverySelection(targetRef, recoverySelectionOwnerId) === pendingPreservedId) {
         writeRecoverySelection(targetRef, recoverySelectionOwnerId, staleId);
       }
@@ -898,6 +899,14 @@ export function createComposerSourceState(
                 refusalComposition,
                 preserved,
               );
+              // The post-commit projection waits let another pane consume,
+              // send, or edit the preserved row before this source installs
+              // it. Installing the captured snapshot would let a later
+              // autosave resurrect removed content or restore a superseded
+              // composition, so re-read the durable row with the same
+              // validation every adoption uses and drop what no longer
+              // matches.
+              preserved = preserved === undefined ? undefined : await revalidatePreservedRecord(preserved);
               destinationOwnsNewer =
                 preserved !== undefined &&
                 destinationHasNewerEdits(recoverySelectionOwnerId, preserved.targetRef, clientMutationId, source);

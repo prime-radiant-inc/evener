@@ -1747,6 +1747,41 @@ test("a retained column keeps an independently open owner's seat mapping", () =>
   );
 });
 
+// A pane retyped to a read-only transcript keeps its lifetime's seat in
+// reserve. Another pane opening the same conversation must receive a distinct
+// seat, or the two independent panes would share one recovery-selection scope
+// and clobber each other's stored selection.
+test("reopening a conversation retyped to a transcript receives a distinct seat", () => {
+  installLocalStorage(new MemoryStorage());
+  const ref = "local:retained-seat-reservation";
+  const firstId = workspaceStore.getState().openPane("session", { ref });
+  const first = workspaceStore.getState().panes.find((pane) => pane.id === firstId);
+  if (!first?.composerSeatId) throw new Error("first pane lacks its seat");
+  const seat = first.composerSeatId;
+
+  // The pane becomes a legacy transcript: the lifetime retains the seat, the
+  // pane record loses it.
+  expect(workspaceStore.getState().retypePane(first, "transcript", { ref })).toBe(true);
+  const retyped = workspaceStore.getState().panes.find((pane) => pane.id === firstId);
+  if (!retyped) throw new Error("retyped pane missing");
+  expect(retyped.composerSeatId).toBeUndefined();
+
+  // A different pane reopening that conversation cannot take the reserved
+  // seat.
+  const secondId = workspaceStore.getState().openPane("session", { ref });
+  const second = workspaceStore.getState().panes.find((pane) => pane.id === secondId);
+  if (!second?.composerSeatId) throw new Error("second pane lacks its seat");
+  expect(second.composerSeatId).not.toBe(seat);
+
+  // Returning the original pane to a conversation restores its own retained
+  // seat; both panes keep independent scopes.
+  expect(workspaceStore.getState().retypePane(retyped, "session", { ref })).toBe(true);
+  const returned = workspaceStore.getState().panes.find((pane) => pane.id === firstId);
+  if (!returned?.composerSeatId) throw new Error("returned pane lacks its seat");
+  expect(returned.composerSeatId).toBe(seat);
+  expect(second.composerSeatId).not.toBe(seat);
+});
+
 test("closing a competing seat restores the surviving pane's selection", () => {
   installLocalStorage(new MemoryStorage());
   const ref = "local:surviving-seat";
