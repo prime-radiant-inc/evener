@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -12,7 +11,6 @@ import (
 	"primeradiant.com/evener/agent/events"
 	clockpkg "primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/jobstore"
-	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provenance"
 )
 
@@ -881,30 +879,5 @@ func TestCovProjectJobRecord(t *testing.T) {
 	}
 	if entry.Type != string(jobstore.JobShell) {
 		t.Fatalf("entry.Type = %q, want %q", entry.Type, jobstore.JobShell)
-	}
-}
-
-// TestCovJobToolRegisterFuncRegister covers jobToolRegisterFunc.Register.
-func TestCovJobToolRegisterFuncRegister(t *testing.T) {
-	t.Parallel()
-	called := false
-	f := jobToolRegisterFunc(func(rt tool.RegisteredTool) error {
-		called = true
-		return nil
-	})
-	if err := f.Register(tool.RegisteredTool{}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	if !called {
-		t.Fatal("underlying function should be called")
-	}
-
-	// Error propagation.
-	errSentinel := errors.New("registration failed")
-	f2 := jobToolRegisterFunc(func(rt tool.RegisteredTool) error {
-		return errSentinel
-	})
-	if err := f2.Register(tool.RegisteredTool{}); !errors.Is(err, errSentinel) {
-		t.Fatalf("error = %v, want %v", err, errSentinel)
 	}
 }

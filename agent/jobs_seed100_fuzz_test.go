@@ -210,7 +210,7 @@ func seed100JobTools(t *testing.T, text string) {
 	for failAt := 1; failAt <= 6; failAt++ {
 		reg := tool.NewRegistry()
 		fault := &seed100Registrar{failAt: failAt}
-		_ = registerJobToolsWithRegistrar(reg, fault, newSession(t), nil)
+		_ = registerJobToolsWith(reg, fault.Register, newSession(t))
 	}
 	for _, fn := range []func() (any, error){
 		func() (any, error) { return jobWatchTool(nil, nil, 1) },

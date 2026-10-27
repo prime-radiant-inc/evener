@@ -55,27 +55,19 @@ func clampJobBlockTimeout(ms int) time.Duration {
 var rootOnlyJobControlTools = []string{"delegate"}
 
 func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
+	register := reg.Register
 	if deps != nil && deps.registerTool != nil {
-		return registerJobToolsWithRegistrar(reg, jobToolRegisterFunc(func(registered tool.RegisteredTool) error {
+		register = func(registered tool.RegisteredTool) error {
 			return deps.registerTool(reg, registered)
-		}), s, deps)
+		}
 	}
-	return registerJobToolsWithRegistrar(reg, reg, s, deps)
+	return registerJobToolsWith(reg, register, s)
 }
 
-type jobToolRegisterFunc func(tool.RegisteredTool) error
-
-func (f jobToolRegisterFunc) Register(registered tool.RegisteredTool) error { return f(registered) }
-
-type jobToolRegistrar interface {
-	Register(tool.RegisteredTool) error
-}
-
-// registerJobToolsWithRegistrar keeps production registration on Registry while
-// allowing deterministic failure injection at each registration boundary.
-func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistrar, s *Session, deps *toolDeps) error {
-	_ = deps
-	if err := registrar.Register(tool.RegisteredTool{
+// registerJobToolsWith takes the registration step as a function so tests can
+// inject a failure at each registration boundary.
+func registerJobToolsWith(reg *tool.Registry, register func(tool.RegisteredTool) error, s *Session) error {
+	if err := register(tool.RegisteredTool{
 		Definition: tool.DefJobStatus(), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -86,7 +78,7 @@ func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistra
 	}); err != nil {
 		return err
 	}
-	if err := registrar.Register(tool.RegisteredTool{
+	if err := register(tool.RegisteredTool{
 		Definition: tool.DefJobListNamed(s.resultToolName()), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -97,7 +89,7 @@ func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistra
 	}); err != nil {
 		return err
 	}
-	if err := registrar.Register(tool.RegisteredTool{
+	if err := register(tool.RegisteredTool{
 		Definition: tool.DefJobStop(),
 		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -107,7 +99,7 @@ func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistra
 	}); err != nil {
 		return err
 	}
-	if err := registrar.Register(tool.RegisteredTool{
+	if err := register(tool.RegisteredTool{
 		Definition: tool.DefJobWatchNamed(availableEventKindNames(), s.resultToolName()),
 		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
