@@ -238,7 +238,7 @@ function splitNotificationBlocks(text: string): NotificationBlockFragment[] {
 // (agent/delegate_delivery.go's delegateNotificationContent: kind
 // reported|terminal_error, message as a JSON string, metadata carrying the
 // settled outcome and reason), and its quiet watchdog as one plain sentence
-// (agent/delegate_runtime.go's delegateQuietAttentionContent). Frames recorded
+// (agent/delegate_quiet_watch.go's delegateQuietAttentionContent). Frames recorded
 // before either carried status/event attributes and an "excerpt:" body, and a
 // durable transcript still replays those, so that shape keeps parsing too.
 function parseDelegateNotification(block: string): ParsedNotification | null {
