@@ -570,14 +570,13 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *in
 // ReadFileAndBytesCtx is ReadFileAndBytes with the caller's context threaded to
 // the read (see ReadFileCtx).
 func (e *LocalExecutionEnvironment) ReadFileAndBytesCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, []byte, error) {
-	abs := e.resolve(path)
-	var b []byte
-	var err error
-	sfs := e.sandbox()
-	if sfs == nil {
-		sfs = e.scratchSandboxFor(abs)
+	t, err := e.fileTarget("read_file", path, targetRead)
+	if err != nil {
+		return "", nil, err
 	}
-	defer sfs.release()
+	defer t.release()
+	sfs, abs := t.sfs, t.abs
+	var b []byte
 	if sfs != nil {
 		// Sandboxed or explicitly granted scratch: race-safe fd read
 		// (symlink-refusing, root/denylist-checked).
