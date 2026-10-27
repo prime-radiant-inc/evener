@@ -44,7 +44,7 @@ type VersionedMutationRecoveryRecord = MutationRecoveryRecord & { compositionRev
 // A stale row that still holds exactly the composition a refused pane meant to
 // write already preserves it: duplicating it would give the same unsent work
 // two recovery owners.
-function sameRecoveryComposition(
+export function sameRecoveryComposition(
   record: MutationRecoveryRecord,
   input: readonly InputItem[],
   composerText: string,

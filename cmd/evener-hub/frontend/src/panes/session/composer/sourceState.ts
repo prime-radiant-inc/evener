@@ -1,9 +1,11 @@
-import type { ComposerMention } from "@evener/appwire-client";
+import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import { createStore } from "zustand/vanilla";
 import { ownClientId } from "../../../stores/mutationClientIdentity";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
+import { sameRecoveryComposition } from "../../../stores/mutationOutboxIndexedDB";
 import { createSecureUUID } from "../../../stores/secureUUID";
 import type { InputAttachment } from "../../../stores/threads";
+import { readMutationPersistence } from "../../../stores/threads";
 import { pushToast } from "../../../widgets/toast/store";
 import {
   type AttachmentStore,
@@ -603,7 +605,9 @@ export function createComposerSourceState(
       deferredAdoption = { targetRef, staleId, preserved };
       if (recoverySubmissionsInFlight.has(staleId)) {
         deferredAdoptionUnwatch?.();
-        deferredAdoptionUnwatch = onRecoverySubmissionSettled(staleId, flushDeferredAdoption);
+        deferredAdoptionUnwatch = onRecoverySubmissionSettled(staleId, () => {
+          void flushDeferredAdoption();
+        });
       }
       return;
     }
@@ -634,16 +638,45 @@ export function createComposerSourceState(
     }
   }
 
-  function flushDeferredAdoption(): void {
+  async function flushDeferredAdoption(): Promise<void> {
     if (deferredAdoption === null) return;
     deferredAdoptionUnwatch?.();
     deferredAdoptionUnwatch = null;
     const pending = deferredAdoption;
     deferredAdoption = null;
-    // Re-run every guard: the settled operation may have consumed the row or
-    // installed a different lease meanwhile, in which case the adoption is
-    // dropped rather than applied to a state it no longer describes.
-    adoptPreservedSelection(pending.targetRef, pending.staleId, pending.preserved);
+    // The deferral waited on an operation this source does not own. Re-read
+    // the durable row before installing anything: another pane could edit,
+    // remove, or send the preserved composition while the wait lasted, and the
+    // captured record would re-write that outcome as a fresh recovery. A read
+    // that fails proves nothing about the row, so the adoption is dropped.
+    let current: MutationRecoveryRecord | undefined;
+    try {
+      const { recovery } = await readMutationPersistence(pending.preserved.targetRef);
+      // A newer deferral claimed the slot while the read was in flight; it wins.
+      if (deferredAdoption !== null) return;
+      current = recovery.find((row) => row.clientMutationId === pending.preserved.clientMutationId);
+    } catch {
+      return;
+    }
+    // Drop the adoption when the row was consumed (removed or sent) or its
+    // composition was edited by another pane: the durable row no longer
+    // matches what was captured. A revision bump that kept the composition -
+    // the queue's own metadata consolidation - still adopts. When it matches,
+    // adoptPreservedSelection re-runs every destination guard and can defer
+    // again if a new operation is in flight.
+    if (
+      !current ||
+      !sameRecoveryComposition(
+        current,
+        (pending.preserved.payload.input ?? []) as InputItem[],
+        pending.preserved.composerText ?? "",
+        pending.preserved.composerMentions,
+        pending.preserved.attachments,
+      )
+    ) {
+      return;
+    }
+    adoptPreservedSelection(pending.targetRef, pending.staleId, current);
   }
 
   function notifyPreservedSelection(targetRef: string, staleId: string, preserved: MutationRecoveryRecord): void {
@@ -1163,7 +1196,7 @@ export function createComposerSourceState(
       released = true;
       recoveryOperationHeld = false;
       if (!disposed) state.setState({ recoveryOperationBusy: false });
-      flushDeferredAdoption();
+      void flushDeferredAdoption();
     };
   }
 

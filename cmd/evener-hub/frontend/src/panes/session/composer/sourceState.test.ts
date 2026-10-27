@@ -916,6 +916,7 @@ test("adoption defers while the destination is sending its restored row", async 
     // Once the operation settles, ownership is re-evaluated and adoption lands.
     releaseInFlight();
     releaseOperation();
+    await flushPendingTurnsProjectionForTests();
     expect(replacement.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId);
     expect(replacement.getSnapshot().text).toBe("local preserved composition");
   } finally {
@@ -945,6 +946,17 @@ test("a deferred adoption rechecks when the sending peer's submission settles", 
   await storage.transferToRecovery(original.clientMutationId, "rejected");
   const recovery = await storage.getRecovery(original.clientMutationId);
   if (!recovery) throw new Error("missing recovery fixture");
+  const preservedIntent = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "preserved composition" }] },
+    attachments: [],
+    composerText: "preserved composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "preserved composition" }] },
+  });
+  await storage.transferToRecovery(preservedIntent.clientMutationId, "rejected");
+  const preserved = await storage.getRecovery(preservedIntent.clientMutationId);
+  if (!preserved) throw new Error("missing preserved fixture");
   const sender = createTestComposerSource(ref, undefined, "pane-a");
   const replacement = createTestComposerSource(ref, undefined, "pane-a");
   try {
@@ -953,23 +965,96 @@ test("a deferred adoption rechecks when the sending peer's submission settles", 
     // The peer composer is mid-send on the same row; the replacement holds no
     // operation lock of its own.
     const releaseSend = beginRecoverySubmission(original.clientMutationId);
-    const preserved: typeof recovery = {
-      ...recovery,
-      clientMutationId: "preserved-row",
-      composerText: "preserved composition",
-      payload: { ...recovery.payload, input: [{ type: "text", text: "preserved composition" }] },
-    };
     replacement.adoptPreservedSelection(ref, original.clientMutationId, preserved);
     // Deferred: the lease is untouched while the send is in flight.
     expect(replacement.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
     expect(replacement.getSnapshot().text).toBe("");
     // The send fails; its guard release must recheck the deferred adoption.
     releaseSend();
-    expect(replacement.getSnapshot().activeRecoveryId).toBe("preserved-row");
+    await flushPendingTurnsProjectionForTests();
+    expect(replacement.getSnapshot().activeRecoveryId).toBe(preserved.clientMutationId);
     expect(replacement.getSnapshot().text).toBe("preserved composition");
   } finally {
     sender.dispose();
     replacement.dispose();
+    storage.close();
+  }
+});
+
+// A deferred adoption waits on a submission it does not own. While it waits,
+// another pane can edit or remove the preserved row; installing the captured
+// record would re-write removed or sent content as a fresh recovery. The
+// flush must re-read the row and drop the adoption when it no longer matches
+// what was captured.
+test.each<[string, (peer: MutationOutboxIndexedDB, preserved: MutationRecoveryRecord) => Promise<void>]>([
+  [
+    "edited",
+    async (peer, preserved) => {
+      await peer.updateRecoveryInput(
+        preserved.clientMutationId,
+        [{ type: "text", text: "edited preserved composition" }],
+        [],
+        "edited preserved composition",
+        [],
+        [],
+        undefined,
+        undefined,
+        { [preserved.clientMutationId]: recoveryCompositionRevision(preserved) },
+      );
+    },
+  ],
+  [
+    "removed",
+    async (peer, preserved) => {
+      expect(await peer.discardRecovery(preserved.clientMutationId)).toBe(true);
+    },
+  ],
+])("a deferred adoption drops a preserved row another pane %s while it waited", async (_name, interfere) => {
+  installLocalStorage(new MemoryStorage());
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = `local:defer-${_name}`;
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "row composition" }] },
+    attachments: [],
+    composerText: "row composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const preservedIntent = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "preserved composition" }] },
+    attachments: [],
+    composerText: "preserved composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "preserved composition" }] },
+  });
+  await storage.transferToRecovery(preservedIntent.clientMutationId, "rejected");
+  const preserved = await storage.getRecovery(preservedIntent.clientMutationId);
+  if (!preserved) throw new Error("missing preserved fixture");
+  const replacement = createTestComposerSource(ref, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    replacement.setActiveRecoveryId(recovery);
+    const releaseSend = beginRecoverySubmission(original.clientMutationId);
+    replacement.adoptPreservedSelection(ref, original.clientMutationId, preserved);
+    // Adoption is deferred while the send is in flight.
+    expect(replacement.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+
+    await interfere(peer, preserved);
+    releaseSend();
+    await flushPendingTurnsProjectionForTests();
+    // The captured record no longer describes the preserved row: the
+    // deferred adoption is dropped, and the composer keeps its own lease.
+    expect(replacement.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+    expect(replacement.getSnapshot().text).toBe("");
+  } finally {
+    replacement.dispose();
+    peer.close();
     storage.close();
   }
 });
