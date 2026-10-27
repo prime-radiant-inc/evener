@@ -2,7 +2,7 @@ import type { AnyNotification, AuthStatusResponse } from "@evener/appwire-client
 import { AUTH_STATUSES_REFETCH_DEBOUNCE_MS } from "@evener/appwire-client/state/credentials";
 import { act } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { renderHook, unmountMountedTrees } from "../renderNative.testkit";
 import { AUTH_RETRY_MAX_MS, AUTH_RETRY_MS, useAuthStatuses } from "./useAuthStatuses";
 

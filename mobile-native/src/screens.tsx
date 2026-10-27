@@ -50,8 +50,8 @@ import {
 	type NavigationSessionSummary,
 	translateAttachmentMarkers,
 } from "@evener/appwire-client";
-import { type ConversationState, olderPageKey } from "../../mobile/src/state/conversation";
-import type { ConversationMutationContext } from "../../mobile/src/state/conversationMutation";
+import { type ConversationState, olderPageKey } from "./conversation/state/conversation";
+import type { ConversationMutationContext } from "./conversation/state/conversationMutation";
 import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
 import type { SharedPayload } from "./share/sharePayload";
 import { ApprovalControls } from "./approvalControls";
@@ -151,7 +151,7 @@ import { useFleet } from "./session/useFleet";
 import { GhostRowContext, type GhostRowHost, GhostRowView } from "./session/GhostRows";
 import { TRANSCRIPT_GUTTER_PT } from "./session/transcriptLayout";
 import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
-import type { ConversationMutationSubmitter } from "../../mobile/src/state/conversationMutation";
+import type { ConversationMutationSubmitter } from "./conversation/state/conversationMutation";
 import type { NativeConversationAttachment } from "./session/nativeConversationSessions";
 import { useNativeConversationAttachment } from "./session/NativeConversationSessionsProvider";
 import {

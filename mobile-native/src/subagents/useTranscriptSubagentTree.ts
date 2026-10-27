@@ -1,6 +1,6 @@
 import type { ActivityTree } from "@evener/appwire-client";
 import { useEffect, useRef } from "react";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { type SubagentTreeTarget, useHeldSubagentTree } from "./useHeldSubagentTree";
 
 /** The coordinator's tree a transcript's finished subagent rows read their

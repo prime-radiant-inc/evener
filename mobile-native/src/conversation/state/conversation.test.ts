@@ -37,10 +37,10 @@ import type {
 	PendingTurnEntry,
 } from "@evener/appwire-client/state/mutation";
 import { describe, expect, it, vi } from "vitest";
-import type { ActivityMember, MobileConversation, MobileTimelineItem } from "../../../mobile-native/src/projectedRows";
-import * as project from "../../../mobile-native/src/projectedRows";
-import { projectConversation } from "../../../mobile-native/src/projectedRows";
-import { projectNativeTranscript } from "../../../mobile-native/src/transcriptPresentation";
+import type { ActivityMember, MobileConversation, MobileTimelineItem } from "../../projectedRows";
+import * as project from "../../projectedRows";
+import { projectConversation } from "../../projectedRows";
+import { projectNativeTranscript } from "../../transcriptPresentation";
 import type { ConversationReadProjection, LiveConversationService } from "../services/conversation";
 import {
 	createConversationStore,

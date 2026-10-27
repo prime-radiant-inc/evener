@@ -33,7 +33,7 @@ import type {
 	TurnQueueResponse,
 	TurnStartResponse,
 } from "@evener/appwire-client";
-import * as projectModule from "../../../mobile-native/src/projectedRows";
+import * as projectModule from "../../projectedRows";
 import { createConversationService, type LiveConversationService } from "./conversation";
 
 // Script the same lifecycle-capable client surface used by native consumers.

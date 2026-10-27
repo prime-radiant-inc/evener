@@ -37,8 +37,8 @@ import type {
 	TurnCancelQueuedResponse,
 } from "@evener/appwire-client";
 import { acquireThreadSubscription, hydrateThread, isStaleCursorError } from "@evener/appwire-client";
-import type { MobileConversation } from "../../../mobile-native/src/projectedRows";
-import { projectConversation } from "../../../mobile-native/src/projectedRows";
+import type { MobileConversation } from "../../projectedRows";
+import { projectConversation } from "../../projectedRows";
 
 // The bounded read page limit, centralized so every caller uses the same
 // constant. The retained item cap lives with the shared projection helpers

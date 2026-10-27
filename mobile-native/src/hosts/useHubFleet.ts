@@ -2,7 +2,7 @@
 // Hosts pages; New session's host picker): one hosts controller and one Live
 // reader per client, let go when the client is replaced or the sheet closes.
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { HostsController } from "./hostsController";
 import { LiveSessionsReader } from "./liveCounts";
 

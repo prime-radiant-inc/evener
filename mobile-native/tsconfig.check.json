@@ -4,7 +4,7 @@
     // The native typecheck gate catches an unused import or local (issue
     // #3053), the way the web frontend's Biome gate catches noUnusedImports.
     // tsc reports both under noUnusedLocals, so this one option closes the gap
-    // for mobile-native/src and the shared mobile/src. The existing violations
+    // for mobile-native/src. The existing violations
     // were swept clean, so the gate stays green.
     "noUnusedLocals": true,
     "paths": {
@@ -27,5 +27,5 @@
       "zustand/*": ["./node_modules/zustand/*"]
     }
   },
-  "include": ["**/*", "../mobile/src"]
+  "include": ["**/*"]
 }

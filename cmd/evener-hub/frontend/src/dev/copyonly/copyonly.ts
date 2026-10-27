@@ -64,10 +64,9 @@ export interface Inventory {
 
 /**
  * The TypeScript trees: tests in them are scanned, and their non-test sources
- * are the production corpus. mobile/src is the shared tree mobile-native
- * typechecks and tests.
+ * are the production corpus.
  */
-const TS_TREES = ["cmd/evener-hub/frontend/src/", "mobile-native/", "mobile/src/", "appwire-client/typescript/"];
+const TS_TREES = ["cmd/evener-hub/frontend/src/", "mobile-native/", "appwire-client/typescript/"];
 const TS_SOURCE = /\.(ts|tsx|mts)$/;
 const TEST_FILE = /\.(test|spec)\./;
 /** Test support: never production copy. */

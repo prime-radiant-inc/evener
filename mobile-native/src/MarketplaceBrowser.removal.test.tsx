@@ -20,7 +20,7 @@ import {
 	createMarketplacesStore,
 	createPluginsStore,
 } from "@evener/appwire-client/state/extensions";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { MarketplaceBrowser, MarketplaceDetail } from "./MarketplaceBrowser";
 import { ErrorMessage } from "./ui";
 import { hasTestID } from "./markerTestUtils";

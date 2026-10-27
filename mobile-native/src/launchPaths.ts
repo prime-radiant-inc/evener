@@ -1,5 +1,5 @@
 import { type LaunchOption, validatePathListAdd } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 
 export async function addLaunchPath(
 	client: ConversationClientLike,

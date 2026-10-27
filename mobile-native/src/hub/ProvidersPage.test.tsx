@@ -17,7 +17,7 @@ import {
 	type InstanceListResponse,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { ProviderSignIn } from "../providerSignIn";
 import { recordClientReadyHub } from "../connectionIdentity";
 import { RECONNECTING_AFTER_MS } from "../board/connectionStatus";

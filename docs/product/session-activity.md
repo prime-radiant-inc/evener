@@ -979,7 +979,7 @@ object later returns; accepted model evidence remains useful during disconnect.
 [Stop-request display records](../../mobile-native/src/subagents/stopRequests.ts)
 use the authoritative child ref and raw delegate ID, so another source's equal
 ID cannot acquire that request's label or suppress its stop control.
-[Conversation reads](../../mobile/src/services/conversation.ts) and
+[Conversation reads](../../mobile-native/src/conversation/services/conversation.ts) and
 [session links](../../mobile-native/src/session/sessionMessage.ts) use the same
 additive thread lease as activity, preserving another holder when a screen closes.
 

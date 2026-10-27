@@ -37,7 +37,7 @@ import {
 } from "react-native";
 import Animated from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { useConnection } from "../ConnectionProvider";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";

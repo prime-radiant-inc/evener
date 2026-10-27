@@ -2,7 +2,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import type { ModelListResponse, Thread } from "@evener/appwire-client";
-import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
+import { type ConversationClientLike, createConversationService } from "./conversation/services/conversation";
 import { SessionControls } from "./sessionControls";
 
 async function boundary(actions: {

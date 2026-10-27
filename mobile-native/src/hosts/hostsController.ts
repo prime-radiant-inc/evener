@@ -14,7 +14,7 @@ import {
 	type HostMutations,
 	type HostRow,
 } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 
 const noMutationIds = (): string => {
 	throw new Error("HostsController: editing or removing a host needs a mutation id source");

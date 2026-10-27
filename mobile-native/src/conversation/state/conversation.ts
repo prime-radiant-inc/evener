@@ -59,12 +59,7 @@ import {
 	reconcilePendingEntries,
 } from "@evener/appwire-client/state/mutation";
 import { create } from "zustand";
-import type {
-	ActivityMember,
-	BoundText,
-	MobileConversation,
-	MobileTimelineItem,
-} from "../../../mobile-native/src/projectedRows";
+import type { ActivityMember, BoundText, MobileConversation, MobileTimelineItem } from "../../projectedRows";
 import {
 	activityIdentity,
 	attachmentSourceId,
@@ -79,7 +74,7 @@ import {
 	timelineIdentities,
 	timelineIdentity,
 	truncateText,
-} from "../../../mobile-native/src/projectedRows";
+} from "../../projectedRows";
 
 // Re-exported where they have always been imported from: the bounds are the row
 // shape's, and the row module (mobile-native/src/projectedRows.ts, the D24-6
@@ -89,7 +84,7 @@ export {
 	RETAINED_ITEM_CAP,
 	TRUNCATION_MARKER,
 	truncateText,
-} from "../../../mobile-native/src/projectedRows";
+} from "../../projectedRows";
 
 import type {
 	ConversationReadProjection,

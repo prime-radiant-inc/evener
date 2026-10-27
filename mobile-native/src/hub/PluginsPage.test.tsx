@@ -24,7 +24,7 @@ import {
 } from "@evener/appwire-client";
 import { HubWriteBusyError, MARKETPLACE_REFETCH_DEBOUNCE_MS } from "@evener/appwire-client/state/extensions";
 import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { fonts } from "../design/tokens";
 import { AddMarketplace, MarketplaceDetail } from "../MarketplaceBrowser";
 import { PluginsPage } from "./PluginsPage";

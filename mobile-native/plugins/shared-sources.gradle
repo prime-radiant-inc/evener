@@ -2,7 +2,7 @@
 // outside the native app.
 // Track them so Gradle cannot reuse a bundle made from older shared sources.
 tasks.matching { it.name.startsWith("createBundle") && it.name.endsWith("JsAndAssets") }.configureEach {
-    inputs.files(fileTree("../../../mobile/src"), fileTree(dir: "../../../appwire-client/typescript", excludes: ["node_modules/**"]))
+    inputs.files(fileTree(dir: "../../../appwire-client/typescript", excludes: ["node_modules/**"]))
         .withPropertyName("evenerSharedSources")
         .withPathSensitivity(PathSensitivity.RELATIVE)
 }

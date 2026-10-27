@@ -71,7 +71,7 @@ func cleanPackageImportTree() map[string]string {
 	return map[string]string{
 		"cmd/evener-hub/frontend/src/app.ts":  "import { WireError } from \"@evener/appwire-client\";\n",
 		"mobile-native/src/screen.tsx":        "import { AppwireClient } from \"@evener/appwire-client\";\n",
-		"mobile/src/state.ts":                 "import { hasItemFailure } from \"@evener/appwire-client\";\n",
+		"mobile-native/src/conversation/state.ts": "import { hasItemFailure } from \"@evener/appwire-client\";\n",
 		"mobile-native/scripts/check-hub.mts": "import type { WebSocketLike } from \"@evener/appwire-client\";\n",
 		"mobile-native/vitest.config.mts":     "const shared = new URL(\"../appwire-client/typescript/index.ts\", import.meta.url);\n",
 	}
@@ -94,7 +94,7 @@ func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
 		line    string
 		expects string
 	}{
-		{"mobile/src/relativeDir.ts", "import type { WireError } from \"../../appwire-client/typescript/errors\";\n", "by path"},
+		{"mobile-native/src/conversation/relativeDir.ts", "import type { WireError } from \"../../appwire-client/typescript/errors\";\n", "by path"},
 		{"cmd/evener-hub/frontend/src/oldProtocol.ts", "import type { WireError } from \"./protocol/errors\";\n", "by path"},
 		{"mobile-native/scripts/movedOut.mts", "import type { W } from \"../../cmd/evener-hub/frontend/src/protocol/transport\";\n", "no longer exists"},
 		{"cmd/evener-hub/frontend/src/backtick.ts", "const reducer = await import(`../../protocol/reducer`);\n", "by path"},
@@ -211,7 +211,7 @@ func TestPackageImportPathsCheckIgnoresPathTextOutsideASpecifier(t *testing.T) {
 // A tree that is not there sweeps nothing and says nothing, which reads as a
 // pass. The gate has to refuse to run instead.
 func TestPackageImportPathsCheckRefusesAMissingTree(t *testing.T) {
-	for _, missing := range []string{"cmd/evener-hub/frontend/src", "mobile-native", "mobile/src"} {
+	for _, missing := range []string{"cmd/evener-hub/frontend/src", "mobile-native"} {
 		t.Run(missing, func(t *testing.T) {
 			t.Parallel()
 			files := cleanPackageImportTree()
@@ -287,7 +287,7 @@ func TestPackageImportPathsCheckSweepsEveryExtensionTheBundlersResolve(t *testin
 		"mobile-native/src/legacyScreen.jsx",
 		"mobile-native/scripts/seed.cjs",
 		"mobile-native/scripts/seed.mjs",
-		"mobile/src/legacyState.cts",
+		"mobile-native/src/legacyState.cts",
 		"cmd/evener-hub/frontend/src/legacyBridge.js",
 	}
 	files := cleanPackageImportTree()

@@ -11,7 +11,7 @@ import {
 	optionSupportsLayer,
 } from "@evener/appwire-client";
 import type { LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { LaunchFieldEditor } from "./LaunchFieldEditor";
 import { scalarKinds } from "./launchScalar";
