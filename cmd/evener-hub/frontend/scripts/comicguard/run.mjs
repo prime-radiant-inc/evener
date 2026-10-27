@@ -1019,7 +1019,7 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
   const frames = () => wireTrace.slice(start).filter(row => row.frame).map(row => JSON.parse(row.frame));
   const snapshot = () => evaluateHere(`(() => {
     const editor = document.querySelector('[role="textbox"][aria-label="Message"]');
-    return {ref:window.__comicRoot()?.dataset.sessionRef, text:editor?.textContent, focused:document.activeElement===editor, selected:document.getSelection()?.toString(), controls:[...window.__comicRoot()?.querySelectorAll('[data-comic-composer] button')].map(button=>({text:button.textContent,disabled:button.disabled})), questions:document.querySelectorAll('[role="tab"]').length, approvals:document.querySelectorAll('[aria-label="Sandbox approval"]').length};
+    return {ref:window.__comicRoot()?.dataset.sessionRef, text:editor?.textContent, focused:document.activeElement===editor, selected:document.getSelection()?.toString(), controls:[...window.__comicRoot()?.querySelectorAll('[data-comic-composer] button')].map(button=>({text:button.textContent,disabled:button.disabled})), questions:window.__comicRoot()?.querySelectorAll('[data-ask-response-dock] [role="tab"]').length, approvals:document.querySelectorAll('[aria-label="Sandbox approval"]').length};
   })()`);
   const button = async selector => until('interaction control ' + selector, () => evaluateHere(`(() => {const button=document.querySelector(${JSON.stringify(selector)});if(!button||button.disabled)return false;button.click();return true;})()`));
   const visibleButton = async pattern => until('interaction action ' + pattern, () => evaluateHere(`(() => {const button=[...document.querySelectorAll('button')].find(button=>new RegExp(${JSON.stringify(pattern)},'i').test(button.textContent)&&!button.disabled);if(!button)return false;button.click();return true;})()`));
@@ -1034,7 +1034,7 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
   await until('interaction provider configured', () => records().some(row => row.event === 'background-phase-ack' && row.phase === 'comic-interactions-ready'));
   await inspectActionFonts(page,fixture,'composer-action',['[data-testid="composer-submit"]']);
   await send('COMIC_INTERACTION_ASK');
-  await until('real multi-question ask', () => evaluateHere(`document.querySelector('[role="tabpanel"]')?.textContent.includes('COMIC_QUESTION_SINGLE')`));
+  await until('real multi-question ask', () => evaluateHere(`(() => {const dock=window.__comicRoot()?.querySelector('[data-ask-response-dock]');return dock?.querySelectorAll('[role="tab"]').length===2 && dock.querySelector('[role="tabpanel"]')?.textContent.includes('COMIC_QUESTION_SINGLE');})()`));
   if (!await evaluateHere(`window.__comicRoot()?.querySelector('[data-comic-composer] form')?.hasAttribute('inert')`)) throw Error('ordinary input active while answering');
   await screenshot('interactions-question');
   await pendingViewportJourney(page, fixture, 'question', '[data-ask-response-dock]', screenshot);
