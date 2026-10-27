@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"maps"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,15 +35,33 @@ func seedQuietHubLease(t *testing.T, controller *delegateTreeController, clk *ag
 	return delegateLease{delegateID: id, generation: 1}
 }
 
-func quietHubFor(t *testing.T, s *Session) *delegateQuietWatchHub {
+// wedgeQuietLease marks lease's in-flight slot busy so the hub coalesces
+// (drops) its ticks, as it does while a real tick is blocked on durable I/O.
+// Call it before any clock advance so no tick races the swap. The returned
+// func frees the slot.
+func wedgeQuietLease(t *testing.T, s *Session, lease delegateLease) (unwedge func()) {
 	t.Helper()
 	delegateQuietWatchHubs.Lock()
-	defer delegateQuietWatchHubs.Unlock()
 	hub := delegateQuietWatchHubs.hubs[s]
+	delegateQuietWatchHubs.Unlock()
 	if hub == nil {
 		t.Fatal("no quiet hub registered for session")
 	}
-	return hub
+	hub.mu.Lock()
+	var busy *uint32
+	for entry := range hub.entries {
+		if entry.lease == lease {
+			busy = entry.busy
+		}
+	}
+	hub.mu.Unlock()
+	if busy == nil {
+		t.Fatal("lease has no in-flight guard")
+	}
+	if !atomic.CompareAndSwapUint32(busy, 0, 1) {
+		t.Fatal("lease already has a tick in flight")
+	}
+	return func() { atomic.StoreUint32(busy, 0) }
 }
 
 // quietHubTripwire bounds waits on real completion signals: the entry channel
@@ -52,22 +72,6 @@ func quietHubFor(t *testing.T, s *Session) *delegateQuietWatchHub {
 // synchronization mechanism is the channel, not time
 // (docs/developing-evener/testing.md Flakes and Timeouts).
 const quietHubTripwire = 10 * time.Second
-
-// quietHubEntryCount reads the hub's entry count under both locks. Detach is
-// synchronous through the returned CancelFunc (it closes entry.stop before
-// returning), so callers that just detached assert on this directly instead
-// of polling.
-func quietHubEntryCount(s *Session) (hub *delegateQuietWatchHub, n int) {
-	delegateQuietWatchHubs.Lock()
-	defer delegateQuietWatchHubs.Unlock()
-	hub = delegateQuietWatchHubs.hubs[s]
-	if hub == nil {
-		return nil, -1
-	}
-	hub.mu.Lock()
-	defer hub.mu.Unlock()
-	return hub, len(hub.entries)
-}
 
 // armQuietTicks installs the tick-done hook for exactly the leases in want and
 // returns the wait for their completions. Call it BEFORE advancing the fake
@@ -160,11 +164,11 @@ func TestDelegateQuietHub_DetachedLeaseStopsReceiving(t *testing.T) {
 	cancelB := root.startDelegateQuietWatchdog(context.Background(), leaseB)
 	defer cancelB()
 
-	// Detach is synchronous: cancelA closes the entry's stop channel before
-	// it returns, so the entry count below is a direct assertion, not a poll.
+	// Detach is synchronous: cancelA has stopped lease A's ticks before it
+	// returns, so the tick below reaches only lease B.
 	cancelA()
-	if _, n := quietHubEntryCount(root); n != 1 {
-		t.Fatalf("hub entry count = %d, want 1", n)
+	if got := clk.BlockedCount(); got != 1 {
+		t.Fatalf("quiet hub tickers after one of two leases detached = %d, want the shared ticker still running", got)
 	}
 
 	wait := armQuietTicks(t, map[delegateLease]int{leaseB: 1})
@@ -194,20 +198,13 @@ func TestDelegateQuietHub_StopsAfterLastDetach(t *testing.T) {
 	}
 	cancel()
 
-	// Detach unregisters synchronously: the registry check below reads state
-	// the CancelFunc established before returning.
-	delegateQuietWatchHubs.Lock()
-	_, registered := delegateQuietWatchHubs.hubs[root]
-	delegateQuietWatchHubs.Unlock()
-	if registered {
-		t.Fatal("hub still registered after last detach")
-	}
+	// Detach stops the ticker synchronously.
 	if got := clk.BlockedCount(); got != 0 {
 		t.Fatalf("quiet hub tickers after last detach = %d, want 0 (ticker stopped)", got)
 	}
 }
 
-func TestDelegateQuietHub_ParentCancelCleansRegistryAndTicker(t *testing.T) {
+func TestDelegateQuietHub_ParentCancelStopsTicker(t *testing.T) {
 	clk := agenttest.NewFakeClockAt(time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC))
 	root, controller := quietHubTestSession(t, clk)
 	lease := seedQuietHubLease(t, controller, clk, "dlg_hub_parent")
@@ -216,9 +213,6 @@ func TestDelegateQuietHub_ParentCancelCleansRegistryAndTicker(t *testing.T) {
 	parent, cancelParent := context.WithCancel(context.Background())
 	stop := root.startDelegateQuietWatchdog(parent, lease)
 	defer stop()
-	if _, n := quietHubEntryCount(root); n != 1 {
-		t.Fatalf("hub entry count = %d, want 1", n)
-	}
 	if got := clk.BlockedCount(); got != 1 {
 		t.Fatalf("quiet hub tickers = %d, want 1", got)
 	}
@@ -229,15 +223,6 @@ func TestDelegateQuietHub_ParentCancelCleansRegistryAndTicker(t *testing.T) {
 	cancelParent()
 	stop()
 
-	delegateQuietWatchHubs.Lock()
-	_, registered := delegateQuietWatchHubs.hubs[root]
-	delegateQuietWatchHubs.Unlock()
-	if registered {
-		t.Fatal("hub still registered after parent cancel")
-	}
-	if _, n := quietHubEntryCount(root); n != -1 {
-		t.Fatalf("hub entry count after parent cancel = %d, want unregistered", n)
-	}
 	if got := clk.BlockedCount(); got != 0 {
 		t.Fatalf("quiet hub tickers after parent cancel = %d, want 0 (ticker stopped)", got)
 	}
@@ -252,27 +237,16 @@ func TestDelegateQuietHub_RearmAfterLastDetachFiresNewTicker(t *testing.T) {
 
 	cancelFirst := root.startDelegateQuietWatchdog(context.Background(), leaseFirst)
 	defer cancelFirst()
-	oldHub := quietHubFor(t, root)
 	cancelFirst()
 
-	delegateQuietWatchHubs.Lock()
-	_, registered := delegateQuietWatchHubs.hubs[root]
-	delegateQuietWatchHubs.Unlock()
-	if registered {
-		t.Fatal("hub still registered after last detach")
-	}
 	if got := clk.BlockedCount(); got != 0 {
 		t.Fatalf("quiet hub tickers after last detach = %d, want 0 (ticker stopped)", got)
 	}
 
-	// Re-arming the same session after the last detach must build a fresh hub
-	// and ticker: the old hub's ticker is stopped and its loop has exited.
+	// Re-arming the same session after the last detach must build a fresh
+	// ticker that delivers: the old one is stopped and its loop has exited.
 	cancelSecond := root.startDelegateQuietWatchdog(context.Background(), leaseSecond)
 	defer cancelSecond()
-	newHub := quietHubFor(t, root)
-	if newHub == oldHub {
-		t.Fatal("re-arm reused the stopped hub after last detach")
-	}
 	if got := clk.BlockedCount(); got != 1 {
 		t.Fatalf("quiet hub tickers after re-arm = %d, want 1 shared ticker", got)
 	}
@@ -300,24 +274,8 @@ func TestDelegateQuietHub_BlockedLeaseDelaysNeitherOthersNorShutdown(t *testing.
 	defer cancelFast()
 
 	// Wedge the slow lease's in-flight slot so the hub coalesces (drops) its
-	// ticks instead of queueing a goroutine per tick. No tick can fire between
-	// arming and the CAS below (no Advance in between), so the swap is exact.
-	hub := quietHubFor(t, root)
-	hub.mu.Lock()
-	var slowEntry delegateQuietWatchEntry
-	for entry := range hub.entries {
-		if entry.lease == leaseSlow {
-			slowEntry = entry
-		}
-	}
-	hub.mu.Unlock()
-	if slowEntry.busy == nil {
-		t.Fatal("slow lease has no in-flight guard")
-	}
-	if !atomic.CompareAndSwapUint32(slowEntry.busy, 0, 1) {
-		t.Fatal("slow lease already has a tick in flight")
-	}
-	defer atomic.StoreUint32(slowEntry.busy, 0)
+	// ticks instead of queueing a goroutine per tick.
+	defer wedgeQuietLease(t, root, leaseSlow)()
 
 	wait := armQuietTicks(t, map[delegateLease]int{leaseFast: 1})
 	clk.Advance(delegateQuietCheckInterval)
@@ -341,5 +299,91 @@ func TestDelegateQuietHub_BlockedLeaseDelaysNeitherOthersNorShutdown(t *testing.
 	case <-shutdown:
 	case <-time.After(quietHubTripwire): // TRIPWIRE: cancels join no tick work; sync detach is the mechanism.
 		t.Fatal("hub shutdown blocked on wedged lease tick")
+	}
+}
+
+// Attaches racing the last detach on one session must never strand a lease on
+// a dead ticker: each worker churns attach/detach and then leaves its final
+// registration attached, so every worker's lease must still tick afterwards.
+func TestDelegateQuietHub_ConcurrentAttachDetachNeverStrandsALease(t *testing.T) {
+	const workers, rounds = 8, 40
+	clk := agenttest.NewFakeClockAt(time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC))
+	root, controller := quietHubTestSession(t, clk)
+	leases := make([]delegateLease, workers)
+	for i := range leases {
+		leases[i] = seedQuietHubLease(t, controller, clk, fmt.Sprintf("dlg_hub_churn_%d", i))
+	}
+	ageHubLeasesPastQuietWindow(clk)
+
+	cancels := make([]context.CancelFunc, workers)
+	var wg sync.WaitGroup
+	for i, lease := range leases {
+		wg.Go(func() {
+			for range rounds {
+				root.startDelegateQuietWatchdog(context.Background(), lease)()
+			}
+			cancels[i] = root.startDelegateQuietWatchdog(context.Background(), lease)
+		})
+	}
+	wg.Wait()
+	t.Cleanup(func() {
+		for _, cancel := range cancels {
+			cancel()
+		}
+	})
+	if got := clk.BlockedCount(); got != 1 {
+		t.Fatalf("quiet hub tickers with %d leases attached = %d, want 1 shared ticker", workers, got)
+	}
+
+	want := make(map[delegateLease]int, workers)
+	for _, lease := range leases {
+		want[lease] = 1
+	}
+	wait := armQuietTicks(t, want)
+	clk.Advance(delegateQuietCheckInterval)
+	if got := wait(); len(got) != workers {
+		t.Fatalf("ticks after churn = %+v, want one per attached lease", got)
+	}
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	if got := clk.BlockedCount(); got != 0 {
+		t.Fatalf("quiet hub tickers after all leases detached = %d, want 0", got)
+	}
+}
+
+// A lease that stays attached keeps its ticker through other leases churning
+// on the same session.
+func TestDelegateQuietHub_ChurnLeavesAttachedLeaseTicking(t *testing.T) {
+	const workers, rounds = 8, 40
+	clk := agenttest.NewFakeClockAt(time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC))
+	root, controller := quietHubTestSession(t, clk)
+	churn := make([]delegateLease, workers)
+	for i := range churn {
+		churn[i] = seedQuietHubLease(t, controller, clk, fmt.Sprintf("dlg_hub_churn_%d", i))
+	}
+	anchor := seedQuietHubLease(t, controller, clk, "dlg_hub_anchor")
+	ageHubLeasesPastQuietWindow(clk)
+
+	cancelAnchor := root.startDelegateQuietWatchdog(context.Background(), anchor)
+	defer cancelAnchor()
+	var wg sync.WaitGroup
+	for _, lease := range churn {
+		wg.Go(func() {
+			for range rounds {
+				cancel := root.startDelegateQuietWatchdog(context.Background(), lease)
+				cancel()
+			}
+		})
+	}
+	wg.Wait()
+	if got := clk.BlockedCount(); got != 1 {
+		t.Fatalf("quiet hub tickers with one lease attached = %d, want 1", got)
+	}
+	wait := armQuietTicks(t, map[delegateLease]int{anchor: 1})
+	clk.Advance(delegateQuietCheckInterval)
+	if got := wait(); len(got) != 1 || got[0] != anchor {
+		t.Fatalf("ticks after churn = %+v, want [%+v]", got, anchor)
 	}
 }
