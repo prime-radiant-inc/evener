@@ -950,6 +950,7 @@ type Session struct {
 	readFilesMu sync.RWMutex
 
 	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
+	// Guarded by mu; read and written only in session_end.go.
 	sessionEndEmitted bool
 
 	naming sessionName
