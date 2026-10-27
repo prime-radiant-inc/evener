@@ -23,6 +23,8 @@ func samePtr[T comparable](a, b *T) bool {
 }
 
 func TestOptionalStringArg(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		args    map[string]any
@@ -50,6 +52,8 @@ func TestOptionalStringArg(t *testing.T) {
 }
 
 func TestOptionalBoolArg(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		args    map[string]any
@@ -77,6 +81,8 @@ func TestOptionalBoolArg(t *testing.T) {
 }
 
 func TestOptionalWholeIntArg(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		args    map[string]any
@@ -108,6 +114,8 @@ func TestOptionalWholeIntArg(t *testing.T) {
 }
 
 func TestOptionalTimeArg(t *testing.T) {
+	t.Parallel()
+
 	want := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	tests := []struct {
 		name    string
@@ -136,6 +144,8 @@ func TestOptionalTimeArg(t *testing.T) {
 }
 
 func TestWatchIntArg(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		args    map[string]any
@@ -166,6 +176,8 @@ func TestWatchIntArg(t *testing.T) {
 }
 
 func TestWatchStringArg(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		args    map[string]any
@@ -192,6 +204,8 @@ func TestWatchStringArg(t *testing.T) {
 }
 
 func TestLenientStringArg(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		args map[string]any
@@ -212,6 +226,8 @@ func TestLenientStringArg(t *testing.T) {
 }
 
 func TestLenientOptionalIntArg(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		args map[string]any
@@ -238,6 +254,8 @@ func TestLenientOptionalIntArg(t *testing.T) {
 // stringArrayArg reads null as absent, while the status and type helpers
 // reject it.
 func TestStringListArgs(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		args        map[string]any
@@ -284,6 +302,8 @@ func TestStringListArgs(t *testing.T) {
 }
 
 func TestJobStatusArrayArgKeepsOrder(t *testing.T) {
+	t.Parallel()
+
 	statuses, err := jobStatusArrayArg(map[string]any{"k": []any{"completed", "running"}}, "k")
 	if err != nil {
 		t.Fatal(err)
