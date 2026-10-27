@@ -5,7 +5,7 @@ The agent's `urls_add` tool (`agent/internal/tool/definitions.go:DefUrlsAdd`,
 agent tool name `urls_add` — tool names cannot contain slashes, so the wire
 RPC `urls/add` and the tool differ in spelling) appends entries the Notes
 panel renders as links; the human's `urls/remove`
-(`appwire/types_thread.go#UrlsRemoveParams`, daemon `agent/session_notes_rpc.go:RemoveSessionURL`)
+(`appwire/types_thread.go#UrlsRemoveParams`, daemon `agent/session_notes_mutations.go:RemoveSessionURL`)
 removes one by id; the `evener/urls/updated` push keeps every client
 converged; and the removed id stays discoverable from the panel (step 5 pins
 the web panel's answer).
@@ -156,7 +156,7 @@ ref off the resulting `/s/local:<SID>` path, and wait for `idle` (poll `thread/r
    no state, so assert nothing about the list from the response itself); the
    fresh read carries only `[]` (both links gone). A second `urls/remove`
    with the same id now fails `InvalidParams` (unknown id maps to
-   InvalidParams, `agent/session_notes_rpc.go:72-76` via
+   InvalidParams, `agent/session_notes_mutations.go` RemoveSessionURL via
    `TestRemoveSessionURLDaemonPath`) — that refusal is the store telling you
    the first removal stuck, not a new failure.
 
@@ -184,7 +184,7 @@ ref off the resulting `/s/local:<SID>` path, and wait for `idle` (poll `thread/r
    (or find the `NOTES_CONTEXT` turns in the transcript JSONL and read one
    `user` message body). **Expected:** while both links were set, the block
    rendered each as a `Link:` line — `Link: spec
-   (https://example.com/notes-spec)` (`agent/session_notes_rpc.go:134-140`,
+   (https://example.com/notes-spec)` (`agent/session_notes_context.go` formatNotesLinkLine,
    pinned by `TestNotesContextBlockContainsNotesAndURLs`) — and after step
    4's removal the next block (if any turn runs after it) no longer carries
    the removed URL. Human URL removals reach the agent even though the wire

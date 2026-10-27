@@ -567,7 +567,7 @@ func resolvedOwnershipTarget(cfg hubcore.WebConfig, ref, threadID string) string
 // trim it, at its own handler boundary, before a receipt or a refusal ever names
 // it (server/appwire_turn_handlers.go's handleAppTurn* and appwire_thread_clear.go's handleAppThreadClear set
 // params.ClientMutationID = strings.TrimSpace(params.ClientMutationID), and
-// agent/session_notes_rpc.go does the same). A byte-exact hub comparison would
+// agent/session_notes_mutations.go does the same). A byte-exact hub comparison would
 // therefore fail to see a padded caller id (" mut-1 ") in the normalized id the
 // daemon named ("mut-1"), and treat a known rejection or deletion as if it
 // belonged to someone else.

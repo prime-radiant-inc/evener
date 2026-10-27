@@ -67,7 +67,7 @@ function isAckedAskUserItem(item: ItemModel): boolean {
 // isUserAuthoredSteer answers one wire-level question: is this steering item
 // the human speaking, as opposed to the daemon injecting one on its own
 // (SteeringSourceUser) or a human-note update recorded through the same
-// source (session_notes_rpc.go's steeringOrigin machinery stamps a note
+// source (session_notes_selfecho.go's steeringOrigin machinery stamps a note
 // SteeringKindHumanNote even though a human wrote it - writing a note is not
 // the human speaking through the transcript). Shared with web layoutRoles.ts,
 // which asks the same wire question for its own, unrelated reason (routing

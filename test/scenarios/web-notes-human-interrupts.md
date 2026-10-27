@@ -2,7 +2,7 @@
 
 **What this covers**: the human whiteboard path end to end on the web
 surface. `notes/human/set` (`appwire/types_thread.go#NotesHumanSetParams`,
-`agent/session_notes_rpc.go:SetHumanNote`) stores the note, emits
+`agent/session_notes_mutations.go:SetHumanNote`) stores the note, emits
 `evener/notes/updated`, and injects a steer that interrupts the running turn;
 the projector labels the steering divider `Human note`
 (`appwire-client/typescript/steeringLabels.ts:44`, kind `human-note` on the wire); the Notes panel's
@@ -28,7 +28,7 @@ work. It exercises four things in one run:
   `clientMutationId` + `expectedInstanceId` (`appwire/types_thread.go#NotesHumanSetParams`).
 - **The human-note steer interrupts the model loop** — `executeAtomic`
   durably accepts the canonical note, one typed pending steering entry and
-  the receipt together (`agent/session_notes_rpc.go:SetHumanNote`). One
+  the receipt together (`agent/session_notes_mutations.go:SetHumanNote`). One
   `clientMutationId` survives dispatch, retry, receipt reconciliation and
   ordinary pending-steering delivery; a retry cannot enqueue a second entry.
 - **The divider label comes from the wire, not the prose** — the steering
@@ -231,7 +231,7 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
    (or count `kind == "NOTES_CONTEXT"` turns in the transcript JSONL).
    **Expected:** at most one `NOTES_CONTEXT` turn per model round since the
    note was set — the projection is append-only per call
-   (`agent/session_notes_rpc.go:161-167` `maybeAppendNotesContext`), the same
+   (`agent/session_notes_projection.go` `maybeAppendNotesContext`), the same
    growth shape as the existing per-round steering appends. It must grow at
    most linearly in rounds, and an empty store must append nothing
    (`notesContextBlock` returns `""`, pinned by
