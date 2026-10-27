@@ -14,6 +14,7 @@ import {
   type ThreadModel,
   type TurnModel,
 } from "./model";
+import { joinDelegateState, revisionOf } from "./stableDelegate";
 import { isValidTranscriptRef } from "./steeringNotifications";
 import type {
   AnyNotification,
@@ -54,21 +55,10 @@ function cloneStableDelegate(delegate: EvenerDelegateInfo): EvenerDelegateInfo {
   };
 }
 
-function laterActivity(current: string | undefined, incoming: string | undefined): string | undefined {
-  if (!incoming) return current;
-  if (!current) return incoming;
-  const currentMillis = Date.parse(current);
-  const incomingMillis = Date.parse(incoming);
-  if (Number.isNaN(incomingMillis)) return current;
-  if (Number.isNaN(currentMillis) || incomingMillis > currentMillis) return incoming;
-  return current;
-}
-
 function mergeStableDelegate(current: EvenerDelegateInfo, incoming: EvenerDelegateInfo): EvenerDelegateInfo {
-  const activity = laterActivity(current.latestActivityAt, incoming.latestActivityAt);
-  const state = incoming.projectionRevision > current.projectionRevision ? cloneStableDelegate(incoming) : current;
-  if (activity === state.latestActivityAt) return state;
-  return { ...state, latestActivityAt: activity };
+  const incomingWins = revisionOf(incoming.projectionRevision) > revisionOf(current.projectionRevision);
+  const joined = joinDelegateState(incoming, current, incomingWins);
+  return incomingWins ? cloneStableDelegate(joined) : joined;
 }
 
 function upsertStableDelegate(
@@ -3408,13 +3398,11 @@ function itemIdentity(item: Pick<ItemModel, "id" | "transcriptKey">): string {
 // new here", not "cleared" — appwire's own nil/non-nil-empty/non-empty rule
 // (imagesToItemImagesForSession, outputImagesToItemImages): an omitted field
 // (undefined) leaves the held value standing, an explicit empty list or
-// string is authoritative like any other value. The same list the mobile
-// store's rehydrate reconciliation already carries (conversation.ts's
-// SNAPSHOT_AUTHORITY_FIELDS) for the fresh-read merge; mergeReplacedItem is
-// where a live history/updated frame needs the identical rule, since
-// mergeHistory otherwise replaces an item wholesale on every higher-version
-// re-issue.
-const ITEM_OMISSION_TOLERANT_FIELDS = [
+// string is authoritative like any other value. mergeReplacedItem applies it
+// to a live history/updated frame, since mergeHistory otherwise replaces an
+// item wholesale on every higher-version re-issue; the phone store's
+// rehydrate reconciliation reads the same list for the fresh-read merge.
+export const ITEM_OMISSION_TOLERANT_FIELDS = [
   "images",
   "outputImages",
   "output",
@@ -4817,6 +4805,39 @@ export function applyOverlayEndForTranscriptHandoff<M extends ThreadModel>(
     return { ...remaining, ...pruneCoveredOverlay(model.history?.turns ?? [], ended) };
   });
   return publicModel<M>(next);
+}
+
+// The known thread-scalar notifications: applyNotificationToThread's own case
+// for each just restamps one scalar field (and lastFrameAt), never `turns`.
+// History/updated, the overlay/* cases (which do touch turns),
+// evener/thread/resync (its own clause) and warning (its own drop rule) are
+// not named. Everything else, including a forward-compat method this client
+// has no case for, is transcript-shaped.
+const THREAD_SCALAR_ONLY_METHODS: ReadonlySet<string> = new Set([
+  "thread/queueChanged",
+  "thread/status/changed",
+  "thread/model/changed",
+  "thread/reasoning-effort/changed",
+  "evener/goal/updated",
+  "evener/notes/updated",
+  "evener/urls/updated",
+  "thread/vision-model/changed",
+  "evener/task/updated",
+  "evener/thread/name/changed",
+  "evener/sandbox/escalation/requested",
+  "evener/sandbox/escalation/resolved",
+  "evener/job/started",
+  "evener/job/finished",
+  "evener/delegate/updated",
+  "evener/jobs/treeUpdated",
+  "evener/thread/modelRetry",
+]);
+
+/** Whether a frame may change the thread's `turns`. A denylist on purpose: a
+ * method nobody classified counts as transcript-shaped, so a consumer that
+ * treats a frame leaving `turns` untouched as a gap errs toward refetching. */
+export function notificationTouchesTranscript(method: string): boolean {
+  return !THREAD_SCALAR_ONLY_METHODS.has(method);
 }
 
 function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotification, now: number): M {

@@ -550,7 +550,7 @@ type hubRelayProgressFixture struct {
 	ctx           context.Context
 	daemon        *daemonserver.Server
 	source        *appsource.LocalDaemonSource
-	relays        hubRelayFunctions
+	relays        *hubRelay
 	open          func() *appwire.Client
 	idleDeleted   <-chan string
 	gateArmed     *atomic.Bool
@@ -567,13 +567,13 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	t.Cleanup(cancel)
 
-	var relays hubRelayFunctions
+	var relays *hubRelay
 	var pendingWait atomic.Bool
-	previousFunctions, previousWait := observeHubRelayFunctions, observeHubRelayWait
-	observeHubRelayFunctions = func(f hubRelayFunctions) { relays = f }
+	previousFunctions, previousWait := observeHubRelay, observeHubRelayWait
+	observeHubRelay = func(f *hubRelay) { relays = f }
 	observeHubRelayWait = func() { pendingWait.Store(true) }
 	t.Cleanup(func() {
-		observeHubRelayFunctions, observeHubRelayWait = previousFunctions, previousWait
+		observeHubRelay, observeHubRelayWait = previousFunctions, previousWait
 	})
 
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})

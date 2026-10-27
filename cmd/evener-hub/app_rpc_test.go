@@ -1209,7 +1209,7 @@ func TestDeletionFenceRejectsRelayBeforeSubscribe(t *testing.T) {
 		ResumeLocks:   hubcore.NewResumeLocks(),
 	}
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
-	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	relays := newHubRelay(server, cfg, appsource.NewRegistry())
 
 	err = relays.startRelay(context.Background(), source, appwire.ThreadReadParams{Ref: ref}, source.thread)
 	if !isTargetDeletedError(err) {
@@ -1246,7 +1246,7 @@ func TestDeletionFenceCanCommitDuringInitialRelayIOAndBlocksPublication(t *testi
 		ResumeLocks:   resumeLocks,
 	}
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
-	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	relays := newHubRelay(server, cfg, appsource.NewRegistry())
 
 	relayErr := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{Ref: ref}, source.thread)
 	result := <-source.probed
@@ -1289,7 +1289,7 @@ func TestDeletionFenceCanCommitDuringRecoveryRelayIOAndStopsPublication(t *testi
 		ResumeLocks:   resumeLocks,
 	}
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
-	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	relays := newHubRelay(server, cfg, appsource.NewRegistry())
 	defer relays.stopRelay("local:" + threadID)
 
 	if err := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{Ref: ref}, source.thread); err != nil {
@@ -1336,16 +1336,16 @@ func TestDeletionFenceTurnStartDoesNotWaitForRelayWhileOwningTarget(t *testing.T
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	var relays hubRelayFunctions
-	previousObserveFunctions := observeHubRelayFunctions
-	observeHubRelayFunctions = func(got hubRelayFunctions) {
+	var relays *hubRelay
+	previousObserveFunctions := observeHubRelay
+	observeHubRelay = func(got *hubRelay) {
 		relays = got
 	}
 	t.Cleanup(func() {
-		observeHubRelayFunctions = previousObserveFunctions
+		observeHubRelay = previousObserveFunctions
 	})
 	server := newHubAppServer(cfg, sources)
-	observeHubRelayFunctions = previousObserveFunctions
+	observeHubRelay = previousObserveFunctions
 	defer relays.stopRelay("local:" + threadID)
 
 	waiterJoined := make(chan struct{}, 1)
@@ -5120,7 +5120,7 @@ func TestHubRelayStopDuringInitializationCancelsSharedHandleAndAllowsFreshStart(
 		}
 	}
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
-	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	relays := newHubRelay(server, cfg, appsource.NewRegistry())
 
 	startResults := make(chan error, 2)
 	go func() {
@@ -5217,7 +5217,7 @@ func TestHubRelayKeyStopKeepsCanonicalSiblingAndListener(t *testing.T) {
 			return appwire.ParseRef(rootRef)
 		},
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),
@@ -5272,7 +5272,7 @@ func TestHubRelayKeyStopDefersFinalTeardownForInFlightCommand(t *testing.T) {
 		closeHook:  func() { close(leaseClosed) },
 	}
 	source := &relaySessionTestSource{lease: lease}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),
@@ -5365,7 +5365,7 @@ func TestHubRelayPostStopCommandWaitsForFreshGeneration(t *testing.T) {
 			return routeAwareTestLease(freshLease), nil
 		},
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),
@@ -5520,7 +5520,7 @@ func TestHubRelayStopCoversOverlappingPendingGenerations(t *testing.T) {
 			return routeAwareTestLease(freshLease), nil
 		},
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),
@@ -5684,7 +5684,7 @@ func TestHubRelayCanonicalStopRetiresOnlyNamedHandle(t *testing.T) {
 			return routeAwareTestLease(leaseA), nil
 		},
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),
@@ -5752,7 +5752,7 @@ func TestHubRelayCanonicalStopRetainsBusyPublishedHandleUntilFreshGeneration(t *
 			return routeAwareTestLease(freshLease), nil
 		},
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-busy", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),
@@ -5898,7 +5898,7 @@ func TestHubRelayCanonicalStopRetainsOverlappingPendingStates(t *testing.T) {
 			return routeAwareTestLease(freshLease), nil
 		},
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-pending", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),
@@ -6012,7 +6012,7 @@ func TestHubRelayCanonicalStopWaitsForInitializingAcquire(t *testing.T) {
 			return routeAwareTestLease(freshLease), nil
 		},
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-initializing", SourceID: "local"}),
 		hubcore.WebConfig{}, appsource.NewRegistry(),
 	)
@@ -6116,7 +6116,7 @@ func TestHubRelayCanonicalStopInitializingAcquireErrorUnblocksFreshGeneration(t 
 			return routeAwareTestLease(freshLease), nil
 		},
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-initializing-error", SourceID: "local"}),
 		hubcore.WebConfig{}, appsource.NewRegistry(),
 	)
@@ -6199,7 +6199,7 @@ func TestHubRelayCanonicalStopRetainsInitializingHandleUntilListenCancellationRe
 			return routeAwareTestLease(freshLease), nil
 		},
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-initializing-listen", SourceID: "local"}),
 		hubcore.WebConfig{}, appsource.NewRegistry(),
 	)
@@ -6284,7 +6284,7 @@ func TestHubRelayInitiatingRequestCancellationStopsInitialSubscribeAndAllowsFres
 		}
 	}
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
-	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	relays := newHubRelay(server, cfg, appsource.NewRegistry())
 	defer releaseInitial.Do(func() { close(initialRelease) })
 	defer relays.stopRelay("codex:" + threadID)
 
@@ -6408,7 +6408,7 @@ func TestHubRelaySurvivesInitiatingRequestCancellationAfterAttachment(t *testing
 	cfg := hubcore.WebConfig{}
 	cfg.RelayHooks.RegisterSubscription = func(context.Context, string, bool) bool { return true }
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
-	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	relays := newHubRelay(server, cfg, appsource.NewRegistry())
 	defer relays.stopRelay("codex:" + threadID)
 
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
@@ -6466,7 +6466,7 @@ func TestHubRelayStoppedInitializerRejectsSuccessfulSubscribeAndLeavesReplacemen
 		}
 	}
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
-	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	relays := newHubRelay(server, cfg, appsource.NewRegistry())
 
 	oldResult := make(chan error, 1)
 	go func() {
@@ -6572,7 +6572,7 @@ func TestHubRelayStopImmediatelyAfterReadinessAllowsFreshStart(t *testing.T) {
 		}
 	}
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
-	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	relays := newHubRelay(server, cfg, appsource.NewRegistry())
 	initialResult := make(chan error, 1)
 	go func() {
 		initialResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
@@ -6660,7 +6660,7 @@ func TestHubRelayStopBeforeLaunchCommitPreventsSupervisorAndAllowsFreshStart(t *
 		}
 	}
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
-	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	relays := newHubRelay(server, cfg, appsource.NewRegistry())
 
 	oldResult := make(chan error, 1)
 	go func() {
@@ -6735,7 +6735,7 @@ func TestHubRelayInitialRegistrationFailureCancelsAndAllowsFreshStart(t *testing
 		return len(registrationCalls) > 1
 	}
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
-	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	relays := newHubRelay(server, cfg, appsource.NewRegistry())
 
 	err := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
 	if !errors.Is(err, context.Canceled) {
@@ -6775,7 +6775,7 @@ func TestHubRelayExistingRegistrationFailureDoesNotReportAttachment(t *testing.T
 		return <-registrationResults
 	}
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
-	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	relays := newHubRelay(server, cfg, appsource.NewRegistry())
 
 	if err := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread); err != nil {
 		t.Fatalf("initial startRelay: %v", err)

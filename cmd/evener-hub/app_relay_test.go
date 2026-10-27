@@ -108,10 +108,10 @@ func TestHubRelayEndsWithItsServer(t *testing.T) {
 	source := &exactRPCSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: thread}, canceled: make(chan struct{})}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	var relays hubRelayFunctions
-	observeHubRelayFunctions = func(got hubRelayFunctions) { relays = got }
+	var relays *hubRelay
+	observeHubRelay = func(got *hubRelay) { relays = got }
 	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir()}, sources)
-	observeHubRelayFunctions = nil
+	observeHubRelay = nil
 	server.NewConnection("subscriber").Subscribe("remote:thread")
 	if err := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, thread); err != nil {
 		t.Fatalf("startRelay: %v", err)
@@ -147,10 +147,10 @@ func TestHubRelayInitialSubscribeEndsWithItsServer(t *testing.T) {
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	var relays hubRelayFunctions
-	observeHubRelayFunctions = func(got hubRelayFunctions) { relays = got }
+	var relays *hubRelay
+	observeHubRelay = func(got *hubRelay) { relays = got }
 	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir()}, sources)
-	observeHubRelayFunctions = nil
+	observeHubRelay = nil
 	server.NewConnection("subscriber").Subscribe("remote:thread")
 	started := make(chan error, 1)
 	go func() {
@@ -1183,7 +1183,7 @@ func TestHubAtomicRejoinRejectsSnapshotWithoutLiveHandoff(t *testing.T) {
 		thread: thread,
 		lease:  lease,
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),
@@ -1266,7 +1266,7 @@ func TestHubAtomicRejoinCaptureFailureAbortsPreparedHandoff(t *testing.T) {
 		}},
 		handoff: handoff,
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),
@@ -1308,7 +1308,7 @@ func TestHubTurnStartPreparesCanonicalRelaySession(t *testing.T) {
 		thread: thread,
 		lease:  lease,
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 		hubcore.WebConfig{RelayHooks: hubcore.RelayLifecycleHooks{
 			RegisterSubscription: func(context.Context, string, bool) bool {
@@ -1381,7 +1381,7 @@ func TestHubTurnStartStopsBeforeMutationWhenRelayHandoffCannotCommit(t *testing.
 				lease:  lease,
 			}
 			registered := false
-			relays := newHubRelayFunctions(
+			relays := newHubRelay(
 				appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 				hubcore.WebConfig{RelayHooks: hubcore.RelayLifecycleHooks{
 					RegisterSubscription: func(context.Context, string, bool) bool {
@@ -1444,7 +1444,7 @@ func TestHubLifecycleRelaySetupUsesCanonicalRelaySession(t *testing.T) {
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 		hubcore.WebConfig{},
 		sources,
@@ -1500,7 +1500,7 @@ func TestHubRelayIdleRetirementYieldsToConcurrentActorCommand(t *testing.T) {
 	idleEntered := make(chan struct{})
 	releaseIdle := make(chan struct{})
 	var idleOnce sync.Once
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 		hubcore.WebConfig{RelayHooks: hubcore.RelayLifecycleHooks{
 			IdleExit: func(string) {
@@ -1672,7 +1672,7 @@ func TestHubRelayBlockedActorDoesNotBlockUnrelatedThread(t *testing.T) {
 		id:     "local-b",
 		lease:  fastLease,
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),
@@ -1749,7 +1749,7 @@ func TestHubRelayStaleRelayKeyReleaseDoesNotAffectReplacement(t *testing.T) {
 			return routeAwareTestLease(replacementLease), nil
 		},
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),
@@ -1988,7 +1988,7 @@ func TestHubRelayCanceledRemapStopsWaitingForPublicationDrain(t *testing.T) {
 			<-releasePublication
 		})
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "publication-drain-cancel", SourceID: "local"}),
 		cfg, appsource.NewRegistry(),
 	)
@@ -2098,7 +2098,7 @@ func TestHubRelayRouteCallbackPanicRestoresDisplacedOwnershipAndReleasesCommand(
 			restoredOnce.Do(func() { close(restoredRouteEntered) })
 		}
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "hub-route-panic", SourceID: "local"}),
 		cfg, appsource.NewRegistry(),
 	)
@@ -2206,7 +2206,7 @@ func TestHubRelayPostReadFailureAbortsReturnedHandoffBeforeRelease(t *testing.T)
 			resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
 			acquireRelay: func(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) { return lease, nil },
 		}
-		relays := newHubRelayFunctions(
+		relays := newHubRelay(
 			appserver.NewServer(appserver.ServerConfig{ServerName: "abort-canceled-verification", SourceID: "local"}),
 			hubcore.WebConfig{}, appsource.NewRegistry(),
 		)
@@ -2247,7 +2247,7 @@ func TestHubRelayPostReadFailureAbortsReturnedHandoffBeforeRelease(t *testing.T)
 			deliveries: make(chan appsource.RelayDelivery),
 		}
 		source := &relaySessionTestSource{lease: lease}
-		relays := newHubRelayFunctions(
+		relays := newHubRelay(
 			appserver.NewServer(appserver.ServerConfig{ServerName: "abort-read-error", SourceID: "local"}),
 			hubcore.WebConfig{}, appsource.NewRegistry(),
 		)
@@ -2291,7 +2291,7 @@ func TestHubRelayUnknownTargetDoesNotHeadOfLineBlockKnownDelivery(t *testing.T) 
 		deliveries: deliveries,
 	}
 	source := &relaySessionTestSource{lease: lease}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "review", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),
@@ -2386,7 +2386,7 @@ func TestHubRelayPendingTargetPreservesOrderWhileKnownTargetProgresses(t *testin
 		lease:        lease,
 		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "pending-order", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),
@@ -2476,7 +2476,7 @@ func TestHubRelayPendingDeliveryLimitCleansUpOnCanonicalStop(t *testing.T) {
 		deliveries: make(chan appsource.RelayDelivery),
 	}
 	source := &relaySessionTestSource{lease: lease}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "pending-limit", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),
@@ -2970,7 +2970,7 @@ func TestHubAtomicRelayReadLetsDeletionWinAndAbortsHandoff(t *testing.T) {
 		thread: lease.readResult.Response.Thread,
 		lease:  lease,
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 		hubcore.WebConfig{DeletionStore: store, ResumeLocks: resumeLocks},
 		appsource.NewRegistry(),

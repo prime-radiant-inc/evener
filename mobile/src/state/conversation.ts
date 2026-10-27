@@ -37,12 +37,14 @@ import {
 	copyItemTextPresence,
 	deriveSendQueueAvailability,
 	foldWarningParams,
+	ITEM_OMISSION_TOLERANT_FIELDS,
 	isStaleCursorError,
 	itemIdentityMatches,
 	itemTextPresence,
 	joinWarningParts,
 	mergeOlderItemPage,
 	notificationTargetsThread,
+	notificationTouchesTranscript,
 	sessionControls,
 	WireError,
 } from "@evener/appwire-client";
@@ -115,56 +117,6 @@ export type ConversationStatus = "idle" | "opening" | "open" | "error" | "closed
 // display reprojection, pending emptiness or a discarded/superseded read must
 // not. Display rows stay readable in every state.
 export type LatestReadState = "unknown" | "reading" | "ready" | "error";
-
-// The wire's nil/non-nil-empty/non-empty rule (reducer.ts's own
-// ITEM_OMISSION_TOLERANT_FIELDS, mirrored here for the mobile-only merges
-// that fall outside the shared reducer's per-turn mergeHistory): an omitted
-// field means "this entry said nothing new here", not "cleared". Read by
-// both the rehydrate reconciliation below and reconcileCrossTurnReissues.
-const SNAPSHOT_AUTHORITY_FIELDS = [
-	"images",
-	"outputImages",
-	"output",
-	"error",
-	"raw",
-	"prevalOnly",
-	"exitCode",
-	"argumentsJSON",
-	"description",
-	"toolName",
-	"callId",
-	"eventKind",
-	"steeringKind",
-	"source",
-] as const;
-
-// The known thread-scalar notifications: reducer.ts's own case for each just
-// restamps one scalar field (and lastFrameAt), never `turns` — read straight
-// off applyNotificationToThread's switch, minus history/updated, the
-// overlay/* cases (which do touch turns), evener/thread/resync (its own
-// clause) and warning (its own drop rule). The gap rule below reads this as
-// a denylist: anything NOT in this set — including a forward-compat method
-// this client has no case for at all — is transcript-shaped, and a frame
-// that leaves `turns` unchanged by reference is a gap.
-const THREAD_SCALAR_ONLY_METHODS = new Set<string>([
-	"thread/queueChanged",
-	"thread/status/changed",
-	"thread/model/changed",
-	"thread/reasoning-effort/changed",
-	"evener/goal/updated",
-	"evener/notes/updated",
-	"evener/urls/updated",
-	"thread/vision-model/changed",
-	"evener/task/updated",
-	"evener/thread/name/changed",
-	"evener/sandbox/escalation/requested",
-	"evener/sandbox/escalation/resolved",
-	"evener/job/started",
-	"evener/job/finished",
-	"evener/delegate/updated",
-	"evener/jobs/treeUpdated",
-	"evener/thread/modelRetry",
-]);
 
 // The store's own conversation mutation actions. Deliberately narrower than
 // the wire request union (conversationMutation.ts's ConversationMutationKind
@@ -846,7 +798,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	// under one turn that this frame just reissued under ANOTHER turn stays
 	// positioned at its OLD turn, beside its other neighbors there, not
 	// wherever the live frame's own (often freshly-opened) turn happens to
-	// sort — absorbing the reissue's fields (SNAPSHOT_AUTHORITY_FIELDS, the
+	// sort — absorbing the reissue's fields (ITEM_OMISSION_TOLERANT_FIELDS, the
 	// same omission-tolerant fallback rehydrate's own post-merge stripping
 	// pass reads) there, and the copy the reducer's own per-turn merge just
 	// landed at the new turn drops. loadOlder and rehydrate call this same
@@ -918,7 +870,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	// that function's own comment for why).
 	function applyCrossTurnFallback(fresh: ItemModel, held: ItemModel): ItemModel {
 		let merged = fresh;
-		for (const field of SNAPSHOT_AUTHORITY_FIELDS) {
+		for (const field of ITEM_OMISSION_TOLERANT_FIELDS) {
 			const heldValue = (held as unknown as Record<string, unknown>)[field];
 			if (heldValue === undefined || (fresh as unknown as Record<string, unknown>)[field] !== undefined) continue;
 			if (merged === fresh) merged = { ...fresh };
@@ -2500,7 +2452,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							? [...reconcileCrossTurnReissues(currentConvForMerge.turns, appliedModel.turns)]
 							: [...appliedModel.turns];
 					// mergeReplacedItem (reducer.ts) is deliberately omission-tolerant
-					// per field (ITEM_OMISSION_TOLERANT_FIELDS/SNAPSHOT_AUTHORITY_FIELDS
+					// per field (ITEM_OMISSION_TOLERANT_FIELDS)
 					// — an incremental history/updated delta naturally omits a field it
 					// did not change, and that must fall back to the held value, not
 					// clear it). A full thread/read snapshot is not incremental: it
@@ -2527,7 +2479,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 									freshItemByIdentity.get(item.transcriptKey ?? item.id) ?? freshItemByIdentity.get(item.id);
 								if (fresh === undefined || !itemIdentityMatches(item, fresh)) return item;
 								let stripped: ItemModel | undefined;
-								for (const field of SNAPSHOT_AUTHORITY_FIELDS) {
+								for (const field of ITEM_OMISSION_TOLERANT_FIELDS) {
 									const heldValue = (item as unknown as Record<string, unknown>)[field];
 									const freshValue = (fresh as unknown as Record<string, unknown>)[field];
 									if (heldValue === undefined || freshValue !== undefined) continue;
@@ -3589,7 +3541,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// named out. evener/thread/resync is handled by the clause's other
 				// arm above and warning by droppedByTheWiresOwnRule below, so
 				// neither needs to be named here.
-				const touchesTranscript = !THREAD_SCALAR_ONLY_METHODS.has(n.method);
+				const touchesTranscript = notificationTouchesTranscript(n.method);
 				// One exception, by the wire's own rule rather than by this window's
 				// contents: a warning that lands with no active turn is dropped in the
 				// reducer because warnings are never transcript-persisted (its

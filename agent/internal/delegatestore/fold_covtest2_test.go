@@ -2,6 +2,7 @@ package delegatestore
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +30,7 @@ func TestApplyEventUnknownKind(t *testing.T) {
 func TestApplyCreatedAlreadyExists(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""))
 	err := Apply(state, createdEvent("dlg_a", ""))
-	if err == nil || !strings.Contains(err.Error(), "already exists") {
+	if !errors.Is(err, ErrDelegateExists) {
 		t.Fatalf("expected already-exists error, got %v", err)
 	}
 }
@@ -41,7 +42,7 @@ func TestApplyCreatedParentMissing(t *testing.T) {
 	evt := createdEvent("dlg_child", "dlg_nobody")
 	evt.Seq = 1
 	err := Apply(state, evt)
-	if err == nil || !strings.Contains(err.Error(), "parent") || !strings.Contains(err.Error(), "does not exist") {
+	if !errors.Is(err, ErrDelegateNotFound) {
 		t.Fatalf("expected parent-missing error, got %v", err)
 	}
 }
@@ -51,7 +52,7 @@ func TestApplyCreatedParentMissing(t *testing.T) {
 func TestApplyRunStartedMissingDelegate(t *testing.T) {
 	state := make(State)
 	err := Apply(state, startedEvent("dlg_nobody", 1, TriggerInitial))
-	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+	if !errors.Is(err, ErrDelegateNotFound) {
 		t.Fatalf("expected missing-delegate error, got %v", err)
 	}
 }

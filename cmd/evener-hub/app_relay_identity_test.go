@@ -46,7 +46,7 @@ func TestHubRelayLabelsAttachesWithItsRelayKey(t *testing.T) {
 		identities:        make(chan string, 8),
 	}
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
-	relays := newHubRelayFunctions(server, hubcore.WebConfig{}, appsource.NewRegistry())
+	relays := newHubRelay(server, hubcore.WebConfig{}, appsource.NewRegistry())
 	defer relays.stopRelay("host:current")
 
 	if err := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{Ref: "host:current"}, thread); err != nil {

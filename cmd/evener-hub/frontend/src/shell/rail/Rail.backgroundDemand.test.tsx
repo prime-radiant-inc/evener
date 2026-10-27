@@ -1,6 +1,16 @@
 import "fake-indexeddb/auto";
-import type { NavigationReadParams, NavigationReadResponse, NavigationSessionSummary } from "@evener/appwire-client";
-import { keyID, type ResourceKey, type ResourceState } from "@evener/appwire-client/state/navigation";
+import type {
+  NavigationReadParams,
+  NavigationReadResponse,
+  NavigationSessionSummary,
+  NavigationSnapshot,
+} from "@evener/appwire-client";
+import {
+  keyID,
+  normalizedGraphFromSnapshot,
+  type ResourceKey,
+  type ResourceState,
+} from "@evener/appwire-client/state/navigation";
 import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
@@ -26,10 +36,24 @@ const row = (ref: string) => ({
   live: true,
   children: [],
 });
-function resource(key: ResourceKey, refs: string[], remaining: number): ResourceState {
+function resource(key: Extract<ResourceKey, { kind: "section" }>, refs: string[], remaining: number): ResourceState {
+  const data = { generation_id: "g1", revision: 1, sessions: refs.map(row), remaining, truncated: remaining > 0 };
+  const params: NavigationReadParams = {
+    resource: "section",
+    section: key.section,
+    offset: key.offset,
+    limit: key.limit,
+    representationVersion: 3,
+  };
   return {
     key,
-    data: { generation_id: "g1", revision: 1, sessions: refs.map(row), remaining, truncated: remaining > 0 },
+    data,
+    normalized: {
+      key,
+      graph: normalizedGraphFromSnapshot(wireSnapshot(params, data).data as NavigationSnapshot),
+      version: { generationId: "g1", revision: 1, etag: "e" },
+      presence: "present",
+    },
     loadedRevision: 1,
     targetRevision: 1,
     forceToken: 0,

@@ -4314,7 +4314,7 @@ func TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner(t *te
 	}
 
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start successor", 0)
-	if outcome.result.Err == nil || !strings.Contains(outcome.result.Err.Error(), "store is closed") {
+	if !errors.Is(outcome.result.Err, delegatestore.ErrStoreClosed) {
 		t.Fatalf("prelaunch double failure = %#v, want durable store failure", outcome.result)
 	}
 	// The failed send returned before launchSubagentRun, so no runner exists for

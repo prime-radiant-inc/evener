@@ -14,6 +14,15 @@ import (
 	"primeradiant.com/evener/agent/task"
 )
 
+var (
+	// ErrDelegateExists is returned when an event creates a delegate that is
+	// already in the state.
+	ErrDelegateExists = errors.New("delegate already exists")
+	// ErrDelegateNotFound is returned when an event names a delegate (or a
+	// parent delegate) that is not in the state.
+	ErrDelegateNotFound = errors.New("delegate does not exist")
+)
+
 func Fold(events []Event) (State, error) {
 	state := make(State)
 	for i, event := range events {
@@ -291,14 +300,14 @@ func applyEvent(state State, event Event) error {
 
 func applyCreated(state State, event Event) error {
 	if state[event.DelegateID] != nil {
-		return fmt.Errorf("delegate %q already exists", event.DelegateID)
+		return fmt.Errorf("delegate %q: %w", event.DelegateID, ErrDelegateExists)
 	}
 	descriptor := cloneDescriptor(event.Created.Descriptor)
 	if err := validateDescriptor(descriptor); err != nil {
 		return fmt.Errorf("delegate_created: %w", err)
 	}
 	if descriptor.ParentDelegateID != "" && state[descriptor.ParentDelegateID] == nil {
-		return fmt.Errorf("delegate_created: parent %q does not exist", descriptor.ParentDelegateID)
+		return fmt.Errorf("delegate_created: parent %q: %w", descriptor.ParentDelegateID, ErrDelegateNotFound)
 	}
 	state[event.DelegateID] = &Aggregate{
 		CreatedAt:  event.TS,
@@ -824,7 +833,7 @@ func queueDelivery(aggregate *Aggregate, deliveryID string, generation uint64, p
 func requireAggregate(state State, id string) (*Aggregate, error) {
 	aggregate := state[id]
 	if aggregate == nil {
-		return nil, fmt.Errorf("delegate %q does not exist", id)
+		return nil, fmt.Errorf("delegate %q: %w", id, ErrDelegateNotFound)
 	}
 	return aggregate, nil
 }

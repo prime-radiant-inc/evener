@@ -122,7 +122,7 @@ func TestHubRPCConfirmedStoppedDeletionRecheckedUnderLock(t *testing.T) {
 					release := sync.OnceFunc(lock.Unlock)
 					defer release()
 					server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
-					registerThreadHandlers(server, cfg, newHubSourceRegistry(cfg), hubRelayFunctions{}, nil)
+					registerThreadHandlers(server, cfg, newHubSourceRegistry(cfg), nil, nil)
 					params, err := json.Marshal(map[string]string{"ref": "local:" + id})
 					if err != nil {
 						t.Fatal(err)
