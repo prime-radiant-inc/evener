@@ -261,8 +261,9 @@ func TestFileOpArmParity_ScratchRefusesSymlinkHopPlainArmFollows(t *testing.T) {
 			if got := classifyArm(op.run(plain, "link.txt")); got != outcomeAllowed {
 				t.Fatalf("plain arm through a symlink: outcome %d, want allowed", got)
 			}
-			if got := classifyArm(op.run(scratchEnv, link)); got == outcomeAllowed {
-				t.Fatalf("scratch arm followed a symlink out of the scratch root")
+			writeArmFixture(t, outside)
+			if got := classifyArm(op.run(scratchEnv, link)); got != outcomeDenied {
+				t.Fatalf("scratch arm through a symlink out of the scratch root: outcome %d, want denied", got)
 			}
 		})
 	}
