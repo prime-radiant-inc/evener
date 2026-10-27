@@ -585,7 +585,11 @@ export function preserveRecoveryPendingTurn(
         compositionOwnerId,
         localDraftRevisionId,
       );
-      void refreshPendingTurnsProjection(ref);
+      await refreshPendingTurnsProjection(ref);
+      // A row preserved under a resumed ref is new to that ref's already
+      // mounted view, which has no other reason to re-read.
+      if (preserved !== undefined && preserved.targetRef !== ref)
+        await refreshPendingTurnsProjection(preserved.targetRef);
       return preserved;
     })(),
   );

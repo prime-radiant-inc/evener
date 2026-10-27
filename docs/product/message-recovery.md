@@ -61,6 +61,76 @@ both in the write transaction. Another tab's Remove, Retry, dispatch admission
 or Stop can win, in which case the losing action refreshes without activating a
 stale edit. Matching thread/session identity is required even offline.
 
+When another pane consumes or advances the recovery a browser pane owns, the
+refused save preserves the complete local composition as a fresh recovery row
+before retiring the stale lease. The new row carries the local text, skill and
+command selections, payload input and attachment bytes, and the peer's row is
+left untouched. If the stale row still holds the identical composition, no
+duplicate row is created. The pane then owns the fresh row, so later edits
+update it, Send consumes it, and a reload restores the local composition
+including its images.
+
+### Browser seat and selection ownership
+
+A browser conversation seat owns its recovery selection. The seat is per tab
+and per conversation, uses the tab's existing client identity, and is stored
+beside the composer drafts under per-tab keys rather than in shared layout
+geometry. Another tab can therefore never read or overwrite this tab's seat.
+Independent panes on one conversation hold distinct seats and so keep
+independent selections; a `sessionZoom` cascade pane uses the same tab-scoped
+seat for its columns, with one selection entry per column ref. A mobile route
+reconstruction resolves the conversation mapping first, so a restarted pane id
+that once belonged to another conversation cannot lend its seat; a desktop
+layout restore uses the pane mapping, which is stable for saved ids. Route
+placement writes only the conversation mapping; pane-id mappings are written
+when a layout is saved or restored, so startup cannot overwrite a saved pane's
+seat before that layout returns. A retarget that keeps a pane's seat (resume,
+then return to the resumed session) rewrites the destination ref's mapping so
+a mobile reconstruction still finds that seat and its selection. Each pane-id
+mapping records the conversation it belongs to; a shared layout that reuses
+that id for another conversation falls back to this tab's mapping for the
+restored ref instead of assigning the other conversation's seat. Validated
+pane-specific seats are reserved across the whole restored layout before any
+pane falls back to the ref mapping or a fresh seat.
+
+Restoring a composer prefers the recovery row its seat last selected, falling
+back to the oldest restorable rejected row. This keeps a pane's preserved local
+work selected after reload even when an older rejected peer row exists.
+
+Disposal captures the newest complete composition before the attachment store
+clears. A refused recovery write that returns after disposal preserves that
+composition under a fresh recovery owner and records the fresh owner as the
+seat's selection. A resume or retarget carries the selection to the resumed
+ref; when the recovery row moved and another pane consumed it, the outbox's
+shared retarget record still names the destination, including when the
+retargeting adapter is another tab. Ref forwarding is recorded even when no
+recovery row survives the move, and follows repeated resumes to the latest
+identity, including a forwarding hop after the row's own recorded destination.
+Preservation refreshes both the captured ref and the row's actual target ref,
+so an already-mounted resumed view learns about the preserved row. A mounted
+replacement composer that still owns the stale lease and has no newer edits
+adopts the preserved composition immediately, so it shows and submits the
+local work without a reload. A destination that already holds a newer
+selection keeps it, and newer replacement edits are never overwritten: while
+that composer still owns the stale row, preservation leaves its selection and
+autosaved work in place, so a reload restores the newer composition. Adoption
+clears only the exact draft revision the preserved composition incorporated;
+a newer ordinary draft written by another pane or tab survives. The preserving
+composer is never treated as a newer-edit destination of its own same-ref
+conflict, so its fresh row still becomes the seat's selection. An explicit
+activation that merged this composer's newer draft into the stale row is
+likewise newer work: delayed preservation leaves the merged text and
+attachments in place. Typing during the activation write is also captured
+across that wait and counts as newer work, not as an untouched restoration.
+
+When another tab retargets the recovery while this composer preserves, the
+adopted row belongs to the resumed ref. The seat is reconciled with that ref
+before the row is activated: its ref-to-seat mapping moves with it. A successful
+recovery write also reconciles the seat from the row's durable ref.
+If the originating pane closes before preservation finishes, remembering the
+preserved row still records the destination selection and its ref-to-seat
+mapping, unless another owner already established that ref's mapping.
+
 Sending recovery consumes its durable source and creates one fresh outbox
 identity atomically. It never falls back to an ordinary enqueue when the source
 is missing. The Send press captures its Stop barrier before asynchronous draft
