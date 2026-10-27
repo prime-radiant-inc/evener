@@ -20,6 +20,7 @@ import {
   settleEntryTranscriptForTests,
   threadsStore,
 } from "./threads";
+import { MAX_RESOLVED_ESCALATIONS_PER_REF } from "./transcriptRepository";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
@@ -249,6 +250,52 @@ describe("useThreadsStore.resolveEscalation", () => {
     await refresh;
 
     expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
+  // The record exists for reads still carrying an escalation the daemon has
+  // since seen resolved, which can only be the few most recent. A long session
+  // resolves without bound, so the oldest entries are forgotten.
+  test("a long run of resolved escalations is bounded and the most recent stay filtered", async () => {
+    const fake = connectFakeClient();
+    const total = MAX_RESOLVED_ESCALATIONS_PER_REF * 3;
+    const ids = Array.from({ length: total }, (_, i) => `esc_${i}`);
+    const pending = (id: string) => ({
+      ref: "ref_a",
+      threadId: "thr_ref_a",
+      escalationId: id,
+      mode: "workspace-write" as const,
+      tool: "shell",
+      kind: "shell" as const,
+      deniedPath: "/etc/hosts",
+    });
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_seed");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return {
+        ...readResponse("ref_a", {
+          evener: {
+            ref: "ref_a",
+            capabilities: CAPABILITIES,
+            queue: { revision: 0 },
+            pendingEscalations: ids.map(pending),
+          },
+        }),
+        requestGeneration,
+      };
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    for (const id of ids) await threadsStore.getState().resolveEscalation("ref_a", id, true);
+
+    await threadsStore.getState().refreshThread("ref_a");
+
+    const remaining = threadsStore
+      .getState()
+      .threads.get("ref_a")
+      ?.pendingEscalations.map((e) => e.escalationId);
+    expect(remaining).toEqual(ids.slice(0, total - MAX_RESOLVED_ESCALATIONS_PER_REF));
   });
 
   test("a superseded read answered after the resolve is still discarded", async () => {

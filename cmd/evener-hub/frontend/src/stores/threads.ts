@@ -116,6 +116,7 @@ import { resetTasksPanelStoreForTests } from "./tasksPanel";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
 import {
   nextTranscriptReadIdentity,
+  recordResolvedEscalation,
   type TranscriptReader,
   TranscriptRepository,
   type TranscriptRetirementOutcome,
@@ -8242,7 +8243,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // this one records the resolve itself (see resolvedEscalationsByRef), then
     // folds it through the same routing a broadcast takes for the models and
     // hydrations that are live now.
-    resolvedEscalationsFor(ref).add(escalationId);
+    recordResolvedEscalation(resolvedEscalationsFor(ref), escalationId);
     const resolvedAnywhere =
       (model !== undefined && resolvedModel !== model) ||
       (watchedModel !== undefined && resolvedWatched !== watchedModel);
