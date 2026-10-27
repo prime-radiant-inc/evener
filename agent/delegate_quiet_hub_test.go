@@ -302,45 +302,54 @@ func TestDelegateQuietHub_BlockedLeaseDelaysNeitherOthersNorShutdown(t *testing.
 	}
 }
 
-// Attaches and detaches racing on one session must never strand a lease on a
-// dead ticker or leave a ticker running with no lease.
+// Attaches racing the last detach on one session must never strand a lease on
+// a dead ticker: each worker churns attach/detach and then leaves its final
+// registration attached, so every worker's lease must still tick afterwards.
 func TestDelegateQuietHub_ConcurrentAttachDetachNeverStrandsALease(t *testing.T) {
 	const workers, rounds = 8, 40
 	clk := agenttest.NewFakeClockAt(time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC))
 	root, controller := quietHubTestSession(t, clk)
-	churn := make([]delegateLease, workers)
-	for i := range churn {
-		churn[i] = seedQuietHubLease(t, controller, clk, fmt.Sprintf("dlg_hub_churn_%d", i))
+	leases := make([]delegateLease, workers)
+	for i := range leases {
+		leases[i] = seedQuietHubLease(t, controller, clk, fmt.Sprintf("dlg_hub_churn_%d", i))
 	}
-	anchor := seedQuietHubLease(t, controller, clk, "dlg_hub_anchor")
 	ageHubLeasesPastQuietWindow(clk)
 
+	cancels := make([]context.CancelFunc, workers)
 	var wg sync.WaitGroup
-	for _, lease := range churn {
+	for i, lease := range leases {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for range rounds {
-				cancel := root.startDelegateQuietWatchdog(context.Background(), lease)
-				cancel()
+				root.startDelegateQuietWatchdog(context.Background(), lease)()
 			}
+			cancels[i] = root.startDelegateQuietWatchdog(context.Background(), lease)
 		}()
 	}
 	wg.Wait()
-	if got := clk.BlockedCount(); got != 0 {
-		t.Fatalf("quiet hub tickers after all leases detached = %d, want 0", got)
+	for _, cancel := range cancels {
+		defer cancel()
+	}
+	if got := clk.BlockedCount(); got != 1 {
+		t.Fatalf("quiet hub tickers with %d leases attached = %d, want 1 shared ticker", workers, got)
 	}
 
-	// A lease attached after the churn gets a live ticker.
-	cancelAnchor := root.startDelegateQuietWatchdog(context.Background(), anchor)
-	defer cancelAnchor()
-	if got := clk.BlockedCount(); got != 1 {
-		t.Fatalf("quiet hub tickers after re-arm = %d, want 1", got)
+	want := make(map[delegateLease]int, workers)
+	for _, lease := range leases {
+		want[lease] = 1
 	}
-	wait := armQuietTicks(t, map[delegateLease]int{anchor: 1})
+	wait := armQuietTicks(t, want)
 	clk.Advance(delegateQuietCheckInterval)
-	if got := wait(); len(got) != 1 || got[0] != anchor {
-		t.Fatalf("ticks after churn = %+v, want [%+v]", got, anchor)
+	if got := wait(); len(got) != workers {
+		t.Fatalf("ticks after churn = %+v, want one per attached lease", got)
+	}
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	if got := clk.BlockedCount(); got != 0 {
+		t.Fatalf("quiet hub tickers after all leases detached = %d, want 0", got)
 	}
 }
 
