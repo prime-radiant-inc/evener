@@ -36,11 +36,11 @@ type shutdownProbe struct {
 }
 
 type shutdownSnapshot struct {
-	endpointRetired bool
-	backgroundDone  bool
-	appRPCShutdownBegun   bool
-	listenerClosed  bool
-	workerFinished  bool
+	endpointRetired     bool
+	backgroundDone      bool
+	appRPCShutdownBegun bool
+	listenerClosed      bool
+	workerFinished      bool
 }
 
 func (p *shutdownProbe) snapshot() *shutdownSnapshot {
