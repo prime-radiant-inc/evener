@@ -338,7 +338,7 @@ func formatWatchSummaries(cfgs []*watchConfig) []watchListEntry {
 	entries := make([]watchListEntry, 0, len(cfgs))
 	for _, cfg := range cfgs {
 		entries = append(entries, watchListEntry{
-			ID:         cfg.id,
+			ID:         cfg.watchID,
 			Source:     watchPublicSource(cfg.sourcePublic, cfg.target),
 			Condition:  watchConditionSummary(cfg),
 			Deliveries: cfg.deliveries,
@@ -565,7 +565,7 @@ func watchStatusInfoFromConfig(cfg *watchConfig) WatchStatusInfo {
 		return WatchStatusInfo{}
 	}
 	return WatchStatusInfo{
-		ID:             cfg.id,
+		ID:             cfg.watchID,
 		Source:         watchPublicSource(cfg.sourcePublic, cfg.target),
 		Target:         cfg.target,
 		SendTo:         watchSendTo(cfg),

@@ -5,7 +5,7 @@
 // settings.md §14). The section is host-scoped (component 07b): its
 // SkillsDirsHostScope wrapper hands it the settings route's selected host, and
 // DirListSetting reads that host's own global launch layer.
-import { LOCAL_HOST } from "../../../stores/hostRouting";
+import { LOCAL_HOST } from "@evener/appwire-client";
 import { DirListSetting } from "./dirListSetting";
 import { HostScopedSurface } from "./hostScopedSurface";
 

@@ -33,6 +33,7 @@
 
 import {
   humanizeState,
+  LOCAL_HOST,
   SHUT_DOWN_STATUSES,
   watchCadenceLabel,
   watchDurationLabel,
@@ -41,7 +42,6 @@ import {
 import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode, useCallback, useRef } from "react";
 import { settingsURLWithQuery } from "../../panes/settings/settingsHost";
-import { LOCAL_HOST } from "../../stores/hostRouting";
 import {
   relativeAge,
   selectDisplaySources,

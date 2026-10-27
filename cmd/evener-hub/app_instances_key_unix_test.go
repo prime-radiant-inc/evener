@@ -216,10 +216,26 @@ func TestEndpointFingerprintWriteFaultHelper(t *testing.T) {
 		t.Fatal("the helper was started without a key path")
 	}
 	signal.Ignore(syscall.SIGXFSZ)
-	limit := &syscall.Rlimit{Cur: fingerprintWriteFaultLimit, Max: fingerprintWriteFaultLimit}
+	var saved syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &saved); err != nil {
+		t.Fatalf("Getrlimit(RLIMIT_FSIZE): %v", err)
+	}
+	// Lower only the soft limit: an oversized write fails against Cur whatever
+	// Max is, and a lowered hard limit can never be raised back by an
+	// unprivileged process, which would cap every later write in this
+	// re-executed helper - the coverage machinery's exit-time metadata write
+	// when this binary was built with -cover chief among them - and turn a
+	// passing helper into exit status 2.
+	limit := &syscall.Rlimit{Cur: fingerprintWriteFaultLimit, Max: saved.Max}
 	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, limit); err != nil {
 		t.Fatalf("Setrlimit(RLIMIT_FSIZE): %v", err)
 	}
+	// The size limit is the fault the repair must survive, not a property of
+	// the rest of this re-executed process: restore the soft limit before the
+	// test returns so later writes in this process are not also capped.
+	defer func() {
+		_ = syscall.Setrlimit(syscall.RLIMIT_FSIZE, &saved)
+	}()
 	if _, err := repairEndpointFingerprintKey(path); err == nil {
 		t.Fatal("the size-limited repair succeeded, so this helper cannot pin the partial-write behavior")
 	}

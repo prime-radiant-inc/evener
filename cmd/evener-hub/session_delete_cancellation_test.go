@@ -148,10 +148,7 @@ func TestSessionDeleteCanceledAfterOwnershipReportsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	// Roster is nil so ownership acquisition observes the request context only
 	// through the alias reservation, leaving the post-acquire check as the next
 	// observer.

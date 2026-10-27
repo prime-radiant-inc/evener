@@ -44,10 +44,7 @@ func TestHubProtocolUpgradePreservesTranscriptAndRejectsUndeliverableMessages(t 
 func testHubProtocolUpgrade(t *testing.T, protocol string, cleared, cached bool) {
 	root := t.TempDir()
 	sessionID := buildRPCParentSession(t, filepath.Join(root, "projects", "upgrade-0000000000"))
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	runDir := t.TempDir()
 	daemonSessionID := sessionID
 	if cleared {
@@ -233,10 +230,7 @@ func TestHubResumeRefreshesProtocolStateBeforeDeciding(t *testing.T) {
 func TestHubTurnStartDiscoversRestartRequiredDuringRecovery(t *testing.T) {
 	root := t.TempDir()
 	sessionID := buildRPCParentSession(t, filepath.Join(root, "projects", "upgrade-0000000000"))
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: sessionID, SessionID: sessionID, Endpoint: protocolMismatchPeer(t)})
 	roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
@@ -1154,11 +1148,7 @@ func TestHubRPCListShowsIncompatibleDaemonWithoutPastIndex(t *testing.T) {
 	roster.Refresh()
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	list, err := client.ThreadList(t.Context(), appwire.ThreadListParams{})
 	if err != nil {
 		t.Fatal(err)
@@ -1191,10 +1181,7 @@ func TestHubRPCListShowsIncompatibleDaemonWithoutPastIndex(t *testing.T) {
 func TestHubRPCListDeduplicatesIncompatibleWorkspaceAlias(t *testing.T) {
 	root := t.TempDir()
 	sessionID := buildRPCParentSession(t, filepath.Join(root, "projects", "upgrade-0000000000"))
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	const instanceID = "02wMz5Txv1C3Hut0M8GCeC"
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), Protocol: "evener-appwire-v4", Endpoint: protocolMismatchPeer(t), SourceID: "local", ThreadID: instanceID, SessionID: instanceID, WorkspaceRef: "local:" + sessionID})
@@ -1202,11 +1189,7 @@ func TestHubRPCListDeduplicatesIncompatibleWorkspaceAlias(t *testing.T) {
 	roster.Refresh()
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster, Past: past})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	list, err := client.ThreadList(t.Context(), appwire.ThreadListParams{})
 	if err != nil {
 		t.Fatal(err)
@@ -1288,11 +1271,7 @@ func TestHubRejectsMutationForPreviousPIDIdentity(t *testing.T) {
 	roster.Refresh()
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster, StateDir: t.TempDir()})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	var response appwire.EmptyResponse
 	err := client.Request(t.Context(), appwire.MethodThreadCompactStart, appwire.ThreadCompactStartParams{Ref: "local:before"}, &response)
 	if err == nil || mutations.Load() != 0 {
@@ -1624,11 +1603,7 @@ func TestHubColdReadFindsIncompatibleDaemonByStableThreadID(t *testing.T) {
 	roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	// The owner appears after hub initialization. Its current session differs
 	// from the stable workspace, and no past index can supply an alias row.
 	entry := rendezvous.Entry{PID: os.Getpid(), Protocol: "evener-appwire-v4", Endpoint: protocolMismatchPeer(t), SourceID: "local", ThreadID: "current", SessionID: "current", WorkspaceRef: "local:stable"}
@@ -1655,10 +1630,7 @@ func TestSavedReadsSurviveUnrelatedDiscoveryFailure(t *testing.T) {
 func testSavedReadsSurviveUnrelatedDiscoveryFailure(t *testing.T, incompatible bool) {
 	stateDir := filepath.Join(t.TempDir(), "saved-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := hubcore.NewPastIndex(stateDir)
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, stateDir)
 	runDir := t.TempDir()
 	if incompatible {
 		writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v4", SessionID: sessionID, ThreadID: sessionID, Endpoint: protocolMismatchPeer(t)})

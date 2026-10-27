@@ -23,8 +23,8 @@ import {
 } from "@evener/appwire-client/testing/systemEventWireFixtures";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
-import { createConversationService } from "../../mobile/src/services/conversation";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { createConversationService } from "./conversation/services/conversation";
+import { createConversationStore } from "./conversation/state/conversation";
 import { palettes } from "./design/tokens";
 import { MAX_ITEM_BYTES, projectConversation } from "./projectedRows";
 import { withTestID } from "./markerTestUtils";

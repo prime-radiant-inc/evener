@@ -4,7 +4,7 @@
 // or none, forgets the last answer, and a read from a connection the screen
 // has left never lands, even when it answers late.
 import { useEffect, useState } from "react";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { SessionLink, type SessionState } from "../session/sessionMessage";
 
 /** The coordinator's state; "unreadable" when the read failed; null until a

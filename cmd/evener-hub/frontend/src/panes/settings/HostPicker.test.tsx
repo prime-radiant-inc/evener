@@ -1,11 +1,10 @@
 import type { HostRow } from "@evener/appwire-client";
-import { HOST_POLL_MS } from "@evener/appwire-client";
+import { HOST_POLL_MS, LOCAL_HOST } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
-import { LOCAL_HOST } from "../../stores/hostRouting";
 import { hostsStore } from "../../stores/hosts";
 import { resetSettingsHostForTests, settingsHostStore } from "../../stores/settingsHost";
 import { HostPicker } from "./HostPicker";

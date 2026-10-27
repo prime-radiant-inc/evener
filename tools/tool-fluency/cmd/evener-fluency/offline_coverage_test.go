@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -162,14 +163,14 @@ func TestAvailabilityProfilesAndInfraClassification(t *testing.T) {
 	}
 
 	p := provider.NewOpenAIProfile("model")
-	if got, err := runnerApplyFastCheapModel(nil, "x", nil); err != nil || got != nil {
+	if got, err := cmdutil.ApplyFastCheapModel(nil, "x", nil); err != nil || got != nil {
 		t.Fatalf("nil profile = %v, %v", got, err)
 	}
-	if got, err := runnerApplyFastCheapModel(p, " ", nil); err != nil || got != p {
+	if got, err := cmdutil.ApplyFastCheapModel(p, " ", nil); err != nil || got != p {
 		t.Fatalf("blank model = %v, %v", got, err)
 	}
-	if _, err := runnerApplyFastCheapModel(p, "other/cheap", llm.NewClient()); err == nil {
-		t.Fatal("missing cheap provider returned nil")
+	if _, err := cmdutil.ApplyFastCheapModel(p, "other/cheap", llm.NewClient()); !errors.Is(err, cmdutil.ErrFastCheapProviderUnavailable) {
+		t.Fatalf("missing cheap provider error = %v, want ErrFastCheapProviderUnavailable", err)
 	}
 }
 

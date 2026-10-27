@@ -462,9 +462,7 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 	}, startFn: goodStartFn(t)}
 	requireProtocolUpgrade(t, fr)
 	modelLegacySelectedProcess(t, fr, host)
-	m := newTestManager(t, testRegistry(t, host), fr, Options{
-		sleep: func(context.Context, time.Duration) error { return nil },
-	})
+	m := newSleeplessTestManager(t, host, fr)
 	testDeployRecorder(t, m)
 	testRestartRecorder(t, m)
 
@@ -544,9 +542,7 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 	fixture := modelSelectedProcess(t, fr, "/home/dev/.local/bin/evener", "oldsha", "newsha")
 	fixture.sha = "newsha"
 	fixture.endpointAlias = "evener hub endpoint --json"
-	m := newTestManager(t, testRegistry(t, host), fr, Options{
-		sleep: func(context.Context, time.Duration) error { return nil },
-	})
+	m := newSleeplessTestManager(t, host, fr)
 	testDeployRecorder(t, m)
 	testRestartRecorder(t, m)
 

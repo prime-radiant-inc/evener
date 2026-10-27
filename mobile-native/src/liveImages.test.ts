@@ -1,8 +1,8 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, it } from "vitest";
 import type { AnyNotification, Thread, ThreadItem } from "@evener/appwire-client";
-import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { type ConversationClientLike, createConversationService } from "./conversation/services/conversation";
+import { createConversationStore } from "./conversation/state/conversation";
 
 async function setup(initialItems: ThreadItem[] = []) {
 	const thread: Thread = {

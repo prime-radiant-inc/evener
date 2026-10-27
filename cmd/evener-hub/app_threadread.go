@@ -779,7 +779,7 @@ func hubForkLiveDelegateFenced(cfg hubcore.WebConfig, threadID string) bool {
 // session's own daemon is holding it behind recovery.
 //
 // NOTHING IN THE TREE EMITS IT. The daemon's status egress builds
-// appwire.ThreadStatus with a Type and no flags (server/appwire_runtime.go's
+// appwire.ThreadStatus with a Type and no flags (server/appwire_thread_projection.go's
 // appCapabilities path, internal/appprojector's threadStatus), and appwire
 // defines no constant for it, so this spelling has one side. It is named here
 // rather than left as a literal so the hub's own uses cannot be spelled apart,

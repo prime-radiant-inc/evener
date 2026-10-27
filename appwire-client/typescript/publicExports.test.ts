@@ -249,4 +249,59 @@ describe("protocol package root public exports", () => {
     expect(threadModelFromCache(record, 1).capabilities.send).toBe(false);
     expect(cachedSessionRecord(threadModelFromCache(record, 1), 2)?.history.incarnation).toBe("i");
   });
+
+  // The reducer's package-root surface is pinned by name and kind so a split
+  // of reducer.ts cannot drop or retype an export unnoticed.
+  it("exports the reducer surface from the package root", () => {
+    const functions = [
+      "applyHistoryReadFailure",
+      "applyNotification",
+      "applyOverlayEndForTranscriptHandoff",
+      "applyReadModel",
+      "applyReadResponse",
+      "cachedSessionRecord",
+      "collectAuthoritativeMutationIds",
+      "comparePositions",
+      "copyItemTextPresence",
+      "currentTranscriptState",
+      "decodeCurrentTranscriptState",
+      "decodeTranscriptItem",
+      "encodeTranscriptItem",
+      "foldWarningParams",
+      "hydrateThread",
+      "imageSessionRouteForSession",
+      "invalidateHistory",
+      "isToolCallItemId",
+      "isToolResultItemId",
+      "issueLatestWindowRead",
+      "itemIdentityMatches",
+      "itemTextPresence",
+      "joinWarningParts",
+      "joinedReasoningParagraphs",
+      "markItemIdentityOnly",
+      "markItemTextOmitted",
+      "mergeOlderItemPage",
+      "mergeOlderItemPageWithFolds",
+      "mergeTailTurns",
+      "mergeTranscriptItemVersioned",
+      "mergeTranscriptReaderWindow",
+      "mergeTranscriptTurnVersioned",
+      "mergeTurnHistory",
+      "mergeTurnHistoryWithFolds",
+      "notificationRoutingKey",
+      "notificationTargetsThread",
+      "notificationTouchesTranscript",
+      "prependOlderTurns",
+      "pruneBackgroundHistoryBodies",
+      "readDisposition",
+      "readWindowBounds",
+      "resolvePendingEscalation",
+      "threadModelFromCache",
+      "threadModelFromCurrentState",
+    ];
+    for (const name of functions) {
+      expect(typeof (packageRoot as Record<string, unknown>)[name], name).toBe("function");
+    }
+    expect(Array.isArray(packageRoot.ITEM_OMISSION_TOLERANT_FIELDS)).toBe(true);
+  });
 });

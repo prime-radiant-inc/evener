@@ -1122,28 +1122,41 @@ const requiredLaunchFlag = "api-log"
 // advertise requiredLaunchFlag.
 var errLaunchFlagUnadvertised = errors.New("evener launch-check did not advertise the --" + requiredLaunchFlag + " flag")
 
-func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model string, env []string) error {
+// runEvenerLaunchCheck runs `evener launch-check` under the launch-check
+// budget and returns its output. Any way the check ends without answering is
+// already a hub launch refusal: stopped by the budget or the caller, or exited
+// non-zero with its output (secrets redacted) as the diagnostic.
+func runEvenerLaunchCheck(ctx context.Context, evenerBinary string, env []string, extraArgs ...string) ([]byte, error) {
 	if evenerBinary == "" {
 		evenerBinary = "evener"
 	}
-	args := []string{"launch-check", "--protocol", appwire.ProtocolVersion, "--json"}
-	if strings.TrimSpace(model) != "" {
-		args = append(args, "--model", model)
-	}
 	checkCtx, cancel := context.WithTimeout(ctx, evenerLaunchCheckTimeout)
 	defer cancel()
+	args := append([]string{"launch-check", "--protocol", appwire.ProtocolVersion, "--json"}, extraArgs...)
 	cmd := exec.CommandContext(checkCtx, evenerBinary, args...)
 	cmd.Env = env
 	out, err := runLaunchCheck(cmd)
 	if checkCtx.Err() != nil {
-		return launchCheckWaitError(checkCtx)
+		return nil, launchCheckWaitError(checkCtx)
 	}
 	if err != nil {
 		msg := strings.TrimSpace(redactEnvSecrets(string(out), env))
 		if msg == "" {
 			msg = err.Error()
 		}
-		return launchRefusal(fmt.Errorf("%w: %s", errLaunchCheckFailed, msg))
+		return nil, launchRefusal(fmt.Errorf("%w: %s", errLaunchCheckFailed, msg))
+	}
+	return out, nil
+}
+
+func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model string, env []string) error {
+	var extraArgs []string
+	if strings.TrimSpace(model) != "" {
+		extraArgs = []string{"--model", model}
+	}
+	out, err := runEvenerLaunchCheck(ctx, evenerBinary, env, extraArgs...)
+	if err != nil {
+		return err
 	}
 	var resp struct {
 		Protocol    string   `json:"protocol"`
@@ -1162,23 +1175,9 @@ func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model strin
 }
 
 func listEvenerLaunchModelContract(ctx context.Context, evenerBinary string, env []string) (appwire.ModelListResponse, error) {
-	if evenerBinary == "" {
-		evenerBinary = "evener"
-	}
-	checkCtx, cancel := context.WithTimeout(ctx, evenerLaunchCheckTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(checkCtx, evenerBinary, "launch-check", "--protocol", appwire.ProtocolVersion, "--json", "--models")
-	cmd.Env = env
-	out, err := runLaunchCheck(cmd)
-	if checkCtx.Err() != nil {
-		return appwire.ModelListResponse{}, launchCheckWaitError(checkCtx)
-	}
+	out, err := runEvenerLaunchCheck(ctx, evenerBinary, env, "--models")
 	if err != nil {
-		msg := strings.TrimSpace(redactEnvSecrets(string(out), env))
-		if msg == "" {
-			msg = err.Error()
-		}
-		return appwire.ModelListResponse{}, launchRefusal(fmt.Errorf("%w: %s", errLaunchCheckFailed, msg))
+		return appwire.ModelListResponse{}, err
 	}
 	var resp struct {
 		Protocol    string                        `json:"protocol"`

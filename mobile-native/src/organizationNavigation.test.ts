@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { readOrganizationNavigation } from "./organizationNavigation";
 

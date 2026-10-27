@@ -1,6 +1,6 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import type {
 	NavigationActionCheckpoint,
 	NavigationActionStorage,

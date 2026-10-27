@@ -278,10 +278,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterPauseTurnGap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -391,10 +388,7 @@ func TestSession_StreamErrorFlushesMetaJSON_FirstTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -471,10 +465,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterHappyTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -539,10 +530,7 @@ func TestSession_EmptyResponseExhaustedFlushesMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -589,10 +577,7 @@ func TestSession_BareTextWithoutResultToolFlushesMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -656,10 +641,7 @@ func TestSession_MaxToolRoundsExitFlushesMeta(t *testing.T) {
 	sess.RegisterTool("my_loop_tool", "loops forever", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
 		return "ok", nil
 	})
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -705,10 +687,7 @@ func TestSession_CtxCancellationFlushesMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	// Happy turn 1.
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
@@ -788,10 +767,7 @@ func TestSession_PanicFlushesMeta(t *testing.T) {
 	sess.RegisterTool("boom_tool", "panics on call", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
 		panic("ztne kata test panic")
 	})
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	sessID := sess.ID()
 	// Delete the initial meta.json so we can detect the panic-path flush.
@@ -859,13 +835,9 @@ func TestSession_ProviderAbortKeepsSessionIdle(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
-	_, err = sess.ProcessInput(context.Background(), "cancel", nil)
+	_, err := sess.ProcessInput(context.Background(), "cancel", nil)
 	if err == nil {
 		t.Fatal("expected abort error")
 	}
@@ -898,15 +870,11 @@ func TestSession_WebSearch_FlagSetOnRequest(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hello", nil)
+	_, err := sess.ProcessInput(ctx, "hello", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1027,11 +995,7 @@ func TestSession_PauseTurn_ContinuesLoop(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -1327,10 +1291,7 @@ func TestSession_ContentFilterRecovery_FailsOnSecondFilterHit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -2225,10 +2186,7 @@ func TestSession_ProvideErrorReturnsErrorToCaller(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -2365,15 +2323,8 @@ func TestSession_AgentQuiescenceReturnsNilError(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -2407,10 +2358,7 @@ func TestSession_ProviderErrorDoesNotRecordAssistantTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -2457,10 +2405,7 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	if _, err := sess.ProcessInput(context.Background(), "hi", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -2686,10 +2631,7 @@ func TestProviderErrorTranscriptRemainsSemanticOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()

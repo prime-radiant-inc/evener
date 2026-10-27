@@ -12,17 +12,12 @@ func TestHubHistoryContentSavedTranscriptAndMetadata(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "selected-past-0000000000")
 	id := buildRPCParentSession(t, stateDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	no := false
 	options := appwire.ThreadContentParams{IncludeThinking: &no, IncludeToolCalls: &no, IncludeToolCallIntents: &no, IncludeSystemMessages: &no, IncludeDiagnostics: &no}
 	params := appwire.ThreadReadParams{ThreadContentParams: options, Ref: "local:" + id, IncludeTurns: true, ItemLimit: 1}

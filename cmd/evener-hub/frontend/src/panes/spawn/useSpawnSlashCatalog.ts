@@ -4,7 +4,7 @@ import type {
   ScopedReadState,
   SpawnSlashCatalogResponse,
 } from "@evener/appwire-client";
-import { hostRequest } from "../../stores/hostRouting";
+import { hostRequest } from "@evener/appwire-client";
 import { useScopedHostRead } from "./useScopedHostRead";
 
 export type SpawnSlashCatalogLoadState = ScopedReadState<SpawnSlashCatalogResponse>;

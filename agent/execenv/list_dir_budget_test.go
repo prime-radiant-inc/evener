@@ -8,7 +8,7 @@ package execenv
 // more exist) instead of enumerating the whole requested subtree first, and
 // reports the cap it stopped at through TruncatedAt.
 //
-// Both arms are pinned here: the unconfined walk (local.go, reading raw OS
+// Both arms are pinned here: the unconfined walk (local_search.go, reading raw OS
 // paths through the bounded chunked reader) and the confined fd-anchored
 // walk (securepath_fdops_unix.go). The legacy ListDirectory remains the oracle
 // for completed walks: it is pinned by the existing tests and the fuzz

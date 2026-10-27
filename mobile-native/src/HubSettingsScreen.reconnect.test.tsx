@@ -15,7 +15,7 @@ import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import type { ConnectionState } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { HubSettingsScreen } from "./HubSettingsScreen";
 import { hasTestID } from "./markerTestUtils";
 import { dropped, offersButton, render, renderedText, screenConnection as connection } from "./renderNative.testkit";

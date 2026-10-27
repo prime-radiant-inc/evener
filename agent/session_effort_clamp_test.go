@@ -178,10 +178,7 @@ func TestDescribeImage_OmitsEffortWhenProfileDoesNotSupportReasoning(t *testing.
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	desc := sess.describeImage(context.Background(), tool.ExecResult{
 		ImageData:      []byte("fake-png-bytes"),
@@ -240,10 +237,7 @@ func TestFallbackChain_OmitsEffortWhenFallbackProfileDoesNotSupportReasoning(t *
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -301,10 +295,7 @@ func TestFallbackChain_ConfiguredLevelsBeatCatalog(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -357,10 +348,7 @@ func TestFallbackChain_OllamaSkipsCatalogLevels(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()

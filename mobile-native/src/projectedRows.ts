@@ -8,7 +8,7 @@
 // publishes. It is the D24 end state: the pre-shared-projector private family
 // (mobile/src/conversation/, deleted in D24-6) is gone, the row vocabulary and
 // the timeline projection are re-homed here, and every consumer — the store's
-// seam (mobile/src/state/conversation.ts), the service (mobile/src/services/
+// seam (mobile-native/src/conversation/state/conversation.ts), the service (mobile-native/src/conversation/services/
 // conversation.ts) and the ~14 native screens — imports them from this file.
 //
 // The projection takes the user's transcript display config (D24-5's content
@@ -1306,7 +1306,7 @@ function failureItem(
 		kind: "failure",
 		// The id names the turn only, never the error's prose: rowsForTurn calls
 		// this once per turn (at most one error per turn), so turnID alone is
-		// already unique, and the display bound (mobile/src/state/conversation.ts)
+		// already unique, and the display bound (mobile-native/src/conversation/state/conversation.ts)
 		// cuts title/detail but not id — an id built from unbounded prose would
 		// stay oversized forever in timelineIdentity, page-ownership sets, list
 		// keys and this row's own JSON serialization.

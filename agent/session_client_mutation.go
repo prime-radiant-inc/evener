@@ -931,7 +931,7 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 // inside the serialized callback that reads the snapshot. This function is where
 // that constraint is written down rather than left as an anonymous condition.
 //
-// The daemon's own answer (server/appwire_runtime.go's appStatus) is this same
+// The daemon's own answer (server/appwire_thread_projection.go's appStatus) is this same
 // predicate projected onto what the daemon can see. They are deliberately the
 // same shape: the status the wire publishes, the capabilities published beside
 // it, and the precondition that decides whether Stop lands must not be able to

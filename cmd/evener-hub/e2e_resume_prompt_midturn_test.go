@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/internal/e2ecap"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
@@ -29,19 +28,7 @@ import (
 // turn's id was reserved before the crash, so it is the older of the two, and
 // the new prompt was admitted behind it.
 func TestE2E_SendPromptAfterDaemonDiedMidTurn(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, provider := startE2EHubStack(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	client := stack.dialRPC(ctx, t)

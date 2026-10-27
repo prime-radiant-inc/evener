@@ -24,7 +24,7 @@ import {
 } from "@evener/appwire-client";
 import { HubWriteBusyError, MARKETPLACE_REFETCH_DEBOUNCE_MS } from "@evener/appwire-client/state/extensions";
 import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { fonts } from "../design/tokens";
 import { AddMarketplace, MarketplaceDetail } from "../MarketplaceBrowser";
 import { PluginsPage } from "./PluginsPage";
@@ -225,6 +225,32 @@ async function confirmMarketplaceRemoval(tree: ReturnType<typeof render>) {
 	});
 }
 
+/** Mounts the Marketplaces segment against a scripted marketplace hub: the
+ * standard hub-1 route props, the harness connection, and one settle. */
+async function mountMarketplace(hub: { client: ConversationClientLike }): Promise<ReturnType<typeof render>> {
+	harness.connection = readyConnection(hub.client);
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof PluginsPage>;
+	const tree = render(<PluginsStack {...props} />);
+	await act(async () => {});
+	return tree;
+}
+
+/** Presses the acme row again and confirms the removal: the row stays
+ * removable, the hub records a second evener/marketplace/remove, and the
+ * call sites keep asserting what their own scenario added. */
+async function removeAcmeOnceMore(tree: ReturnType<typeof render>, hub: { methods: string[] }) {
+	await act(async () => {
+		marketplaceRow(tree, "acme").props.onPress();
+	});
+	await act(async () => {});
+	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+	expect(remove.props.disabled).toBe(false);
+	await confirmMarketplaceRemoval(tree);
+	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+}
+
 /** The props the mounted screen hands its Plugins child, for driving the
  * screen-level recorders directly: `onAppliedRemoval` is the seam whose
  * return the client-switch tests pin, and `appliedRemovalNames` is the
@@ -279,12 +305,7 @@ it("re-fences a name a stale presence read cleared after a browser remount", asy
 			throw cloneLitterError(null, false);
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
@@ -343,12 +364,7 @@ it("fences the name when a re-registration lands while the confirm dialog is ope
 			throw cloneLitterError(null, false);
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Marketplaces" }).props.onPress();
 	});
@@ -472,12 +488,7 @@ it("keeps the fence when a pre-removal read lands inside the outcome's window", 
 		},
 		remove: () => pendingRemoval,
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Back to Plugins" }).props.onPress();
@@ -596,12 +607,7 @@ it("clears an obsolete cleanup warning when a later applied removal is clean", a
 					);
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -653,12 +659,7 @@ it("clears the cleanup warning when a later removal succeeds", async () => {
 			return removals === 1 ? Promise.reject(cloneLitterError(null, false)) : Promise.resolve({ marketplaces: [] });
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -708,12 +709,7 @@ it("keeps a marketplace's warning when an unrelated removal succeeds", async () 
 			return removals === 1 ? Promise.reject(cloneLitterError(null, false)) : Promise.resolve({ marketplaces: [] });
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -756,12 +752,7 @@ it("records an applied removal after selection changes while the request is pend
 		},
 		remove: () => pendingRemoval,
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
@@ -807,12 +798,7 @@ it("keeps a valid applied list after the old browser is disposed", async () => {
 		},
 		remove: () => pendingRemoval,
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
@@ -853,12 +839,7 @@ it("shows the failed read's error alone when the retained list is not empty", as
 			throw new Error("list unavailable");
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Marketplaces" }).props.onPress();
 	});
@@ -888,12 +869,7 @@ it("reconciles through the remounted browser after the old browser is disposed",
 		},
 		remove: () => pendingRemoval,
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
@@ -956,12 +932,7 @@ it("keeps a remounted browser from retiring the fence on the pre-outcome snapsho
 			throw cloneLitterError(null, false);
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -1039,12 +1010,7 @@ it("retires an earlier fence on the read a later outcome's fence outran", async 
 			return removals === 1 ? acmeRemoval : Promise.reject(cloneLitterError(null, false));
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	releaseAcmeRemoval();
@@ -1164,12 +1130,7 @@ it("leaves ordinary marketplace removal failures retryable", async () => {
 			throw new Error("ordinary failure");
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 
@@ -1250,12 +1211,7 @@ it("records a pending removal settling after a remount whose list read failed", 
 		},
 		remove: () => pendingRemoval,
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
@@ -1325,12 +1281,7 @@ it("leaves a re-added marketplace removable after an applied removal reconciles 
 			return removals === 1 ? firstRemoval : Promise.resolve({ marketplaces: [] });
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
@@ -1378,14 +1329,7 @@ it("leaves a re-added marketplace removable after an applied removal reconciles 
 	});
 	await act(async () => {});
 
-	await act(async () => {
-		marketplaceRow(tree, "acme").props.onPress();
-	});
-	await act(async () => {});
-	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
-	expect(remove.props.disabled).toBe(false);
-	await confirmMarketplaceRemoval(tree);
-	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+	await removeAcmeOnceMore(tree, hub);
 });
 
 it("clears the fence when a blank-name re-add lands in the wire-indistinguishable second", async () => {
@@ -1405,12 +1349,7 @@ it("clears the fence when a blank-name re-add lands in the wire-indistinguishabl
 			return removals === 1 ? Promise.reject(cloneLitterError(null, false)) : Promise.resolve({ marketplaces: [] });
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -1441,14 +1380,7 @@ it("clears the fence when a blank-name re-add lands in the wire-indistinguishabl
 	});
 	await act(async () => {});
 
-	await act(async () => {
-		marketplaceRow(tree, "acme").props.onPress();
-	});
-	await act(async () => {});
-	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
-	expect(remove.props.disabled).toBe(false);
-	await confirmMarketplaceRemoval(tree);
-	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+	await removeAcmeOnceMore(tree, hub);
 });
 
 it("clears the fence for a blank-name re-add that resolves after the browser unmounts", async () => {
@@ -1480,12 +1412,7 @@ it("clears the fence for a blank-name re-add that resolves after the browser unm
 		},
 		add: () => pendingAdd,
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -1531,14 +1458,7 @@ it("clears the fence for a blank-name re-add that resolves after the browser unm
 		tree.root.findByProps({ accessibilityLabel: "Marketplaces" }).props.onPress();
 	});
 	await act(async () => {});
-	await act(async () => {
-		marketplaceRow(tree, "acme").props.onPress();
-	});
-	await act(async () => {});
-	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
-	expect(remove.props.disabled).toBe(false);
-	await confirmMarketplaceRemoval(tree);
-	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+	await removeAcmeOnceMore(tree, hub);
 });
 
 it("clears the fence for a wire-indistinguishable re-add made beside another change", async () => {
@@ -1581,12 +1501,7 @@ it("clears the fence for a wire-indistinguishable re-add made beside another cha
 			],
 		}),
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -1616,14 +1531,7 @@ it("clears the fence for a wire-indistinguishable re-add made beside another cha
 	});
 	await act(async () => {});
 
-	await act(async () => {
-		marketplaceRow(tree, "acme").props.onPress();
-	});
-	await act(async () => {});
-	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
-	expect(remove.props.disabled).toBe(false);
-	await confirmMarketplaceRemoval(tree);
-	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+	await removeAcmeOnceMore(tree, hub);
 });
 
 it("clears the fence for a blank-name re-add held behind a newer list read", async () => {
@@ -1664,12 +1572,7 @@ it("clears the fence for a blank-name re-add held behind a newer list read", asy
 		},
 		add: () => pendingAdd,
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -1713,14 +1616,7 @@ it("clears the fence for a blank-name re-add held behind a newer list read", asy
 		await Promise.resolve();
 	});
 	await act(async () => {});
-	await act(async () => {
-		marketplaceRow(tree, "acme").props.onPress();
-	});
-	await act(async () => {});
-	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
-	expect(remove.props.disabled).toBe(false);
-	await confirmMarketplaceRemoval(tree);
-	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+	await removeAcmeOnceMore(tree, hub);
 });
 
 it("keeps the fence for a fenced row a blank add's answer carries unchanged", async () => {
@@ -1756,12 +1652,7 @@ it("keeps the fence for a fenced row a blank add's answer carries unchanged", as
 		},
 		add: () => pendingAdd,
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -1825,12 +1716,7 @@ it("clears the fence for a wire-indistinguishable blank re-add when no list read
 			return removals === 1 ? Promise.reject(cloneLitterError(null, false)) : Promise.resolve({ marketplaces: [] });
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -1860,14 +1746,7 @@ it("clears the fence for a wire-indistinguishable blank re-add when no list read
 	});
 	await act(async () => {});
 
-	await act(async () => {
-		marketplaceRow(tree, "acme").props.onPress();
-	});
-	await act(async () => {});
-	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
-	expect(remove.props.disabled).toBe(false);
-	await confirmMarketplaceRemoval(tree);
-	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+	await removeAcmeOnceMore(tree, hub);
 });
 
 it("retires the fence when the read holding a wire-indistinguishable blank re-add lands", async () => {
@@ -1904,12 +1783,7 @@ it("retires the fence when the read holding a wire-indistinguishable blank re-ad
 		},
 		add: () => pendingAdd,
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -1959,14 +1833,7 @@ it("retires the fence when the read holding a wire-indistinguishable blank re-ad
 		await Promise.resolve();
 	});
 	await act(async () => {});
-	await act(async () => {
-		marketplaceRow(tree, "acme").props.onPress();
-	});
-	await act(async () => {});
-	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
-	expect(remove.props.disabled).toBe(false);
-	await confirmMarketplaceRemoval(tree);
-	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+	await removeAcmeOnceMore(tree, hub);
 });
 
 it("answers false for an applied outcome a client switch outran, and records for the client that replaced it", async () => {
@@ -2065,12 +1932,7 @@ it("prunes each fence against its own baseline, not the latest outcome's", async
 		lastUpdated: 1,
 	};
 	const hub = marketplaceClient({});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	const notice = "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.";
 	const record = pluginsProps(tree).onAppliedRemoval;
 	const report = pluginsProps(tree).onAuthoritativeMarketplaces;
@@ -2104,12 +1966,7 @@ it("leaves no fence when the store's snapshot already omits the target", async (
 		lastUpdated: 1,
 	};
 	const hub = marketplaceClient({});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	const notice = "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.";
 	const record = pluginsProps(tree).onAppliedRemoval;
 
@@ -2153,12 +2010,7 @@ it("clears the fence when a same-name re-add registers while reconciliation read
 		},
 		add: async () => ({ marketplaces: [{ ...marketplace, lastUpdated: 2 }] }),
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
@@ -2192,14 +2044,7 @@ it("clears the fence when a same-name re-add registers while reconciliation read
 	});
 	await act(async () => {});
 
-	await act(async () => {
-		marketplaceRow(tree, "acme").props.onPress();
-	});
-	await act(async () => {});
-	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
-	expect(remove.props.disabled).toBe(false);
-	await confirmMarketplaceRemoval(tree);
-	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+	await removeAcmeOnceMore(tree, hub);
 });
 
 it("clears the fence when another client re-adds the marketplace", async () => {
@@ -2219,12 +2064,7 @@ it("clears the fence when another client re-adds the marketplace", async () => {
 			throw cloneLitterError(null, false);
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -2241,14 +2081,7 @@ it("clears the fence when another client re-adds the marketplace", async () => {
 		tree.root.findByProps({ accessibilityLabel: "Back to Plugins" }).props.onPress();
 	});
 	await act(async () => {});
-	await act(async () => {
-		marketplaceRow(tree, "acme").props.onPress();
-	});
-	await act(async () => {});
-	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
-	expect(remove.props.disabled).toBe(false);
-	await confirmMarketplaceRemoval(tree);
-	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+	await removeAcmeOnceMore(tree, hub);
 });
 
 it("clears the fence when another client re-adds the name from a different source in the same wire second", async () => {
@@ -2272,12 +2105,7 @@ it("clears the fence when another client re-adds the name from a different sourc
 			return removals === 1 ? Promise.reject(cloneLitterError(null, false)) : Promise.resolve({ marketplaces: [] });
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -2317,12 +2145,7 @@ it("re-enables Remove for a same-source same-second re-registration", async () =
 			return removals === 1 ? Promise.reject(cloneLitterError(null, false)) : Promise.resolve({ marketplaces: [] });
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -2378,12 +2201,7 @@ it("retires the fence on the trusted read when an add resolving after unmount re
 		},
 		add: () => pendingAdd,
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -2425,14 +2243,7 @@ it("retires the fence on the trusted read when an add resolving after unmount re
 	// acme is removable again, a press only drawing the same idempotent
 	// applied outcome.
 	expect(marketplaceRows(tree, "gamma").length).toBeGreaterThan(0);
-	await act(async () => {
-		marketplaceRow(tree, "acme").props.onPress();
-	});
-	await act(async () => {});
-	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
-	expect(remove.props.disabled).toBe(false);
-	await confirmMarketplaceRemoval(tree);
-	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+	await removeAcmeOnceMore(tree, hub);
 });
 
 it("briefly fences a re-added registration observed before the removal settles, then clears it", async () => {
@@ -2466,12 +2277,7 @@ it("briefly fences a re-added registration observed before the removal settles, 
 			return removals === 1 ? firstRemoval : Promise.resolve({ marketplaces: [] });
 		},
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
@@ -2516,14 +2322,7 @@ it("briefly fences a re-added registration observed before the removal settles, 
 		tree.root.findByProps({ accessibilityLabel: "Marketplaces" }).props.onPress();
 	});
 	await act(async () => {});
-	await act(async () => {
-		marketplaceRow(tree, "acme").props.onPress();
-	});
-	await act(async () => {});
-	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
-	expect(remove.props.disabled).toBe(false);
-	await confirmMarketplaceRemoval(tree);
-	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+	await removeAcmeOnceMore(tree, hub);
 });
 
 it("clears the fence for a re-added marketplace whose registration carries the same wire timestamp", async () => {
@@ -2535,12 +2334,7 @@ it("clears the fence for a re-added marketplace whose registration carries the s
 		// so the wire's whole-second lastUpdated does not distinguish them.
 		add: async () => ({ marketplaces: [marketplace] }),
 	});
-	harness.connection = readyConnection(hub.client);
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof PluginsPage>;
-	const tree = render(<PluginsStack {...props} />);
-	await act(async () => {});
+	const tree = await mountMarketplace(hub);
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
@@ -2569,14 +2363,7 @@ it("clears the fence for a re-added marketplace whose registration carries the s
 	});
 	await act(async () => {});
 
-	await act(async () => {
-		marketplaceRow(tree, "acme").props.onPress();
-	});
-	await act(async () => {});
-	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
-	expect(remove.props.disabled).toBe(false);
-	await confirmMarketplaceRemoval(tree);
-	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+	await removeAcmeOnceMore(tree, hub);
 });
 
 // ---------------------------------------------------------------------------

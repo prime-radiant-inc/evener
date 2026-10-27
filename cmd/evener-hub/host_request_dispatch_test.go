@@ -27,9 +27,7 @@ func hostRequestDispatchHub(t *testing.T, handle func(method string, params json
 	t.Cleanup(wire.Close)
 	client := dialHubRPC(t, wire)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	return client, calls
 }
 

@@ -7,7 +7,7 @@
 //   Send      = ... && deriveSendQueueAvailability(status, capabilities)
 //
 // Send is the hub capability defined by whether a turn is in flight
-// (server/appwire_runtime.go's appCapabilities: Send is !active), while Steer,
+// (server/appwire_thread_projection.go's appCapabilities: Send is !active), while Steer,
 // Interrupt and Queue advertise harness support and the composer applies the
 // status itself. A snapshot cut before the turn therefore says send=true about
 // a session that is running by the time the status frame lands. Reading the
@@ -90,7 +90,7 @@ const COLD_CAPABILITIES: ThreadCapabilities = {
 };
 
 // What a LIVE daemon with every callback wired advertises, verbatim from
-// server/appwire_runtime.go's appCapabilities. `active` moves Send alone;
+// server/appwire_thread_projection.go's appCapabilities. `active` moves Send alone;
 // Steer, Interrupt and Queue are harness support and do not move with it. The
 // difference is still why a snapshot cannot be reused across a status change.
 function daemonCapabilities(active: boolean): ThreadCapabilities {

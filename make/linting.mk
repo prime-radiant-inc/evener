@@ -229,7 +229,7 @@ lint-fuzz-registry:
 ## Fail if a web or native import names the AppWire TypeScript package by
 ## path instead of by its package name, or native imports the web app's source.
 ## proves: Every import specifier under cmd/evener-hub/frontend/src,
-##   mobile-native and mobile/src spells the package @evener/appwire-client
+##   mobile-native spells the package @evener/appwire-client
 ##   (or a subpath its exports map publishes), with no file exempt but the resolver
 ##   configs and mobile-native/src/metroResolver.test.ts, which asserts that
 ##   mapping - each named one by one. No mobile-native import reaches into

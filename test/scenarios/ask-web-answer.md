@@ -198,7 +198,7 @@ gesture.
 - **Step 2 (exact)**: `state` is `"awaiting"`; `capabilities.send` is `true` and
   `capabilities.queue` is `true` — Send is the one status-computed flag
   (`Send: !active && !closed`), while Queue advertises harness support and does
-  not move with the status (`server/appwire_runtime.go`'s `appCapabilitiesLocked`).
+  not move with the status (`server/appwire_thread_projection.go`'s `appCapabilitiesLocked`).
   The client applies the status, so turn/queue is still offered only mid-turn.
   Falsify: `queue` false while `awaiting` on a wired harness — the folded
   `active` gate came back — or the thread never reports `awaiting` at all.

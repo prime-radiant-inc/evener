@@ -12,7 +12,7 @@ import (
 // driver's own error.
 func contentionConns(t *testing.T) (holder, contender *sql.Conn) {
 	t.Helper()
-	dsn := "file:" + filepath.Join(t.TempDir(), "contention.db") + "?_pragma=busy_timeout(0)&_pragma=journal_mode(WAL)"
+	dsn := "file:" + sqliteURIPathEscaper.Replace(filepath.Join(t.TempDir(), "contention.db")) + "?_pragma=busy_timeout(0)&_pragma=journal_mode(WAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatal(err)

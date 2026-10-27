@@ -159,7 +159,7 @@ func newRetirementResumeFixture(t *testing.T, opts retirementResumeOptions) *ret
 		return appwire.ThreadListResponse{Data: []appwire.Thread{thread}}, nil
 	})
 	appserver.HandleTyped(peerApp.Router(), appwire.MethodThreadRead, func(ctx context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		appserver.Subscribe(ctx, peerSessionID)
+		appserver.SubscribeWithAdmission(ctx, peerSessionID, false)
 		return appwire.ThreadReadResponse{Thread: thread}, nil
 	})
 	appserver.HandleTyped(peerApp.Router(), appwire.MethodEvenerDaemonStatus, func(context.Context, appwire.DaemonStatusParams) (appwire.DaemonStatusResponse, error) {
@@ -1160,10 +1160,7 @@ func TestResumeAfterConfirmedRetirementRecordsLifecycle(t *testing.T) {
 		writeRendezvous(t, runDir, entry)
 		return entry, nil
 	}}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	locks := hubcore.NewResumeLocks()
 	if err := locks.PersistForceStop([]string{requested, target}, target); err != nil {

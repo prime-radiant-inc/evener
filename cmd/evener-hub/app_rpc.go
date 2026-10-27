@@ -565,7 +565,7 @@ func resolvedOwnershipTarget(cfg hubcore.WebConfig, ref, threadID string) string
 // The hub does not trim the caller's id: it echoes exactly what the caller sent,
 // because every client correlates its outbox record by that id. The daemon does
 // trim it, at its own handler boundary, before a receipt or a refusal ever names
-// it (server/appwire_runtime.go's handleAppTurn*/handleAppThreadClear set
+// it (server/appwire_turn_handlers.go's handleAppTurn* and appwire_thread_clear.go's handleAppThreadClear set
 // params.ClientMutationID = strings.TrimSpace(params.ClientMutationID), and
 // agent/session_notes_rpc.go does the same). A byte-exact hub comparison would
 // therefore fail to see a padded caller id (" mut-1 ") in the normalized id the
@@ -1039,7 +1039,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			return admitSessionRecovery(ctx, cfg, message)
 		},
 		ConcurrentRequest: concurrentForwardedRequest,
-		SubscriptionAdmissionResolverV2: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
+		SubscriptionAdmissionResolver: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 			notSubscribe := appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
 			if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
 				return notSubscribe
@@ -1501,17 +1501,17 @@ func registerThreadHandlers(
 				return appwire.EmptyResponse{}, err
 			}
 			if parsed, parseErr := appwire.ParseRef(strings.TrimSpace(params.Ref)); parseErr == nil && parsed.SourceID != "" {
-				appserver.UnsubscribeLifecycle(ctx, parsed.SourceID+":"+parsed.ThreadID)
+				appserver.Unsubscribe(ctx, parsed.SourceID+":"+parsed.ThreadID)
 				return appwire.EmptyResponse{}, nil
 			}
-			appserver.UnsubscribeLifecycle(ctx, "local:"+strings.TrimSpace(params.ThreadID))
+			appserver.Unsubscribe(ctx, "local:"+strings.TrimSpace(params.ThreadID))
 			return appwire.EmptyResponse{}, nil
 		}
 		relayKey, _, keyErr := relayDeliveryTarget(source, appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
 		if keyErr != nil {
 			return appwire.EmptyResponse{}, keyErr
 		}
-		appserver.UnsubscribeLifecycle(ctx, relayKey)
+		appserver.Unsubscribe(ctx, relayKey)
 		return appwire.EmptyResponse{}, nil
 	})
 	listThreadTurns := func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {

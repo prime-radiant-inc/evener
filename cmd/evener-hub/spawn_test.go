@@ -1625,3 +1625,50 @@ func TestHubSpawnerNoUserLayerHonoursTheTriState(t *testing.T) {
 		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want present and empty", got, ok)
 	}
 }
+
+// Both launch-check entry points share one subprocess path, so a secret in a
+// failing check's output, an unparseable answer, a wrong-protocol answer and a
+// missing binary must each land the same way through either one.
+func TestEvenerLaunchCheckEntryPointsShareFailureHandling(t *testing.T) {
+	t.Parallel()
+	checks := map[string]func(ctx context.Context, evenerBinary string, env []string) error{
+		"validate": func(ctx context.Context, evenerBinary string, env []string) error {
+			return validateEvenerLaunchContract(ctx, evenerBinary, "openrouter/free", env)
+		},
+		"models": func(ctx context.Context, evenerBinary string, env []string) error {
+			_, err := listEvenerLaunchModelContract(ctx, evenerBinary, env)
+			return err
+		},
+	}
+	env := envFromMap(map[string]string{"OPENROUTER_API_KEY": "super-secret-key"})
+	cases := []struct {
+		name         string
+		script       string // empty means the binary does not exist
+		wantFailed   bool
+		wantNoSecret bool
+	}{
+		{name: "failing check echoes a secret", script: "#!/bin/sh\necho \"$OPENROUTER_API_KEY\" >&2\nexit 2\n", wantFailed: true, wantNoSecret: true},
+		{name: "answer is not JSON", script: "#!/bin/sh\necho not-json\n"},
+		{name: "answer names another protocol", script: "#!/bin/sh\nprintf '{\"protocol\":\"evener-appwire-v2\"}\\n'\n"},
+		{name: "binary is missing", wantFailed: true},
+	}
+	for checkName, call := range checks {
+		for _, tc := range cases {
+			t.Run(checkName+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				bin := filepath.Join(t.TempDir(), "fake-evener")
+				if tc.script != "" {
+					writeFakeEvener(t, bin, tc.script)
+				}
+				err := call(context.Background(), bin, env)
+				assertHubLaunchError(t, err)
+				if errors.Is(err, errLaunchCheckFailed) != tc.wantFailed {
+					t.Fatalf("errLaunchCheckFailed = %v, want %v: %v", !tc.wantFailed, tc.wantFailed, err)
+				}
+				if tc.wantNoSecret && strings.Contains(err.Error(), "super-secret-key") {
+					t.Fatalf("diagnostic leaked secret: %v", err)
+				}
+			})
+		}
+	}
+}

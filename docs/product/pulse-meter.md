@@ -115,7 +115,7 @@ fallbacks belong to [session activity](session-activity.md).
 
 ## Contracts
 
-- [AppWire types](../../appwire/types.go): `ActivityReadParams`,
+- [AppWire types](../../appwire/types_session.go): `ActivityReadParams`,
   `ActivityReadResponse`, `SessionActivity`. The
   [generated catalog](../appwire-protocol.md#activityreadresponse) carries the
   fields, with [`SessionActivity`](../appwire-protocol.md#sessionactivity) as

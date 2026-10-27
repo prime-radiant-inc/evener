@@ -33,13 +33,12 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 			}
 		}
 	}
-	markWatchConfigSnapshotsRejectingLocked(targets)
-	markWatchConfigsRejectingLocked(detachedCfgs)
+	teardown := watchTeardown{targets: targets, detachedCfgs: detachedCfgs}
+	teardown.markRejectingLocked()
 	jm.mu.Unlock()
 	dropped := append(terminalSnapshots(targets), detached...)
 	if err := jm.appendWatchTeardownBatch(dropped, targets); err != nil {
-		jm.rollbackWatchConfigSnapshotsRejecting(targets)
-		jm.rollbackWatchConfigsRejecting(detachedCfgs)
+		teardown.rollback(jm)
 		return watchResult{}, err
 	}
 	jm.detachWatchConfigSnapshots(targets)
@@ -119,13 +118,13 @@ func (jm *jobManager) clearWatchByIDMatchingWithReason(watchID string, allow fun
 		terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
 		endReason: endReason,
 	}}
-	markWatchConfigSnapshotsRejectingLocked(targets)
+	teardown := watchTeardown{targets: targets, detachedCfgs: detachedCfgs}
+	teardown.markRejectingLocked()
 	jm.mu.Unlock()
 
 	dropped := append(terminalSnapshots(targets), detached...)
 	if err := jm.appendWatchTeardownBatch(dropped, targets); err != nil {
-		jm.rollbackWatchConfigSnapshotsRejecting(targets)
-		jm.rollbackWatchConfigsRejecting(detachedCfgs)
+		teardown.rollback(jm)
 		return watchResult{}, err
 	}
 	jm.detachWatchConfigSnapshots(targets)

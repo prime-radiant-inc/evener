@@ -1018,37 +1018,6 @@ func TestProjectActivityJob_DescriptionFallback(t *testing.T) {
 	}
 }
 
-func TestCloneActivityRecord(t *testing.T) {
-	t.Parallel()
-	if cloneActivityRecord(nil) != nil {
-		t.Fatal("nil record should return nil")
-	}
-	ended := time.Unix(10, 0)
-	exit := 0
-	last := time.Unix(20, 0)
-	rec := &jobstore.JobRecord{
-		JobID: "j1", StartedAt: time.Unix(5, 0),
-		EndedAt: &ended, ExitCode: &exit, LastActivity: &last,
-	}
-	clone := cloneActivityRecord(rec)
-	if clone.JobID != "j1" {
-		t.Fatalf("clone = %+v", clone)
-	}
-	// Verify the pointers are distinct copies.
-	clone.EndedAt = nil
-	if rec.EndedAt == nil {
-		t.Fatal("mutating clone affected original EndedAt")
-	}
-	clone.ExitCode = nil
-	if rec.ExitCode == nil {
-		t.Fatal("mutating clone affected original ExitCode")
-	}
-	clone.LastActivity = nil
-	if rec.LastActivity == nil {
-		t.Fatal("mutating clone affected original LastActivity")
-	}
-}
-
 func TestMergeActivityRecords_NilAndEmpty(t *testing.T) {
 	t.Parallel()
 	// Nil durable + nil live = empty.

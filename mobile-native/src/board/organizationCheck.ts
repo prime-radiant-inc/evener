@@ -4,7 +4,7 @@
 // settle archive and favorite changes (the Projects screen's read) and pin
 // changes (the pin screens' read) alike (ruling 16).
 import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import type { NavigationActionCheckpoint, NavigationOperation } from "../navigationActionRepository";
 import type { NavigationPages } from "../navigationPages";
 import { readOrganizationNavigation } from "../organizationNavigation";

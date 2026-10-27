@@ -5,14 +5,12 @@
 // races the spec's scenario 13 concedes — the shared-lookup join (Review
 // Focus 5), the release during the lookup, and the lookup that lost its own
 // deadline race.
+import { type TestThreadOverrides, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
 import type {
   AnyNotification,
   HistoryChanges,
-  QueueState,
   SnapshotIdentity,
-  Thread,
-  ThreadCapabilities,
   ThreadModel,
   ThreadReadResponse,
   Turn,
@@ -46,26 +44,6 @@ import {
   threadsStore,
 } from "./threads";
 
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
-  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
-};
-
 // The response-level overrides a read fixture can carry besides the thread's
 // own fields (threads.test.ts's readResponse shape plus the v6 identity a
 // cached shell's reconciling read answers with).
@@ -92,33 +70,6 @@ function readResponse(ref: string, overrides: ReadResponseOverrides & TestThread
     requestGeneration: requestGeneration ?? 1,
     ...(olderCursor === undefined ? {} : { olderCursor }),
     ...(changes === undefined ? {} : { changes }),
-  };
-}
-
-function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
-  const { evener, ...threadOverrides } = overrides;
-  const threadID = threadOverrides.id ?? `thr_${ref}`;
-  return {
-    id: threadID,
-    sessionId: `sess_${ref}`,
-    preview: "test",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "idle" },
-    cwd: "/tmp/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: {
-      ref,
-      instanceId: threadID,
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      ...evener,
-      queue: { revision: 0, ...evener?.queue },
-    },
-    ...threadOverrides,
   };
 }
 

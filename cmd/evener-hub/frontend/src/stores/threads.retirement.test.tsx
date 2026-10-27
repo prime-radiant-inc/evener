@@ -19,7 +19,6 @@
 import type {
   AnyNotification,
   Thread,
-  ThreadCapabilities,
   ThreadReadResponse,
   TurnStartParams,
   WebSocketLike,
@@ -40,6 +39,7 @@ import { createTestComposerSource } from "../panes/session/testing/composerSourc
 import { replaceEditorText } from "../panes/session/testing/editor";
 import { ClientProvider } from "../shell/clientContext";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../threadTestUtils";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "./threads";
@@ -163,22 +163,6 @@ const DRAFT_TEXT = "unsent retirement draft";
 // instead of letting createSecureUUID mint a random one, so the assertion can
 // tie the accepted mutation back to the submitted intent.
 const MUTATION_ID = "retirement-view-mutation";
-
-const FULL_CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  rename: true,
-  sharedNotes: true,
-};
 
 function makeThread(instanceId: string, turnIds: string[]): Thread {
   return {

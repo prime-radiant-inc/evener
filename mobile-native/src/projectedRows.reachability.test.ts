@@ -39,7 +39,7 @@ const deletedDir = path.join(repoRoot, "mobile", "src", "conversation");
 const deletedSegment = ["conversation", "project"].join("/");
 const deletedRoot = ["mobile", "src", "conversation"].join("/");
 
-const APP_TREES = [path.join(repoRoot, "mobile/src"), path.join(repoRoot, "mobile-native/src")];
+const APP_TREES = [path.join(repoRoot, "mobile-native/src")];
 
 function* sourceFiles(dir: string): Generator<string> {
 	let entries;
@@ -131,7 +131,7 @@ describe("the deleted private projection family is unreachable", () => {
 		}
 	});
 
-	it("no source in either app tree names mobile/src/conversation/", () => {
+	it("no source in the app tree names mobile/src/conversation/", () => {
 		expect(offendersIn(APP_TREES, deletedDir)).toEqual([]);
 	});
 

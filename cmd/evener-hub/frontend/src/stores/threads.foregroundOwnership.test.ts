@@ -1,12 +1,6 @@
+import { type TestThreadOverrides, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
-import {
-  type QueueState,
-  RequestTimeoutError,
-  type Thread,
-  type ThreadCapabilities,
-  type ThreadModel,
-  type ThreadReadResponse,
-} from "@evener/appwire-client";
+import { RequestTimeoutError, type ThreadModel, type ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -56,53 +50,6 @@ async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
 }
 const settleCallerContinuations = nextMacrotask;
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
-  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
-};
-
-function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
-  const { evener, ...threadOverrides } = overrides;
-  const threadID = threadOverrides.id ?? `thr_${ref}`;
-  return {
-    id: threadID,
-    sessionId: `sess_${ref}`,
-    preview: "test",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "idle" },
-    cwd: "/tmp/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: {
-      ref,
-      instanceId: threadID,
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      ...evener,
-      queue: { revision: 0, ...evener?.queue },
-    },
-    ...threadOverrides,
-  };
-}
 
 function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   return { thread: testThread(ref, overrides) };

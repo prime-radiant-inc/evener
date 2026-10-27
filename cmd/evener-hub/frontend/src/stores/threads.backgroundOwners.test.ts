@@ -1,3 +1,4 @@
+import { appliedReceipt } from "../mutationReceiptTestUtils";
 import "fake-indexeddb/auto";
 import { type AnyNotification, acquireThreadSubscription, WireError } from "@evener/appwire-client";
 import { currentRead, textDelta } from "@evener/appwire-client/testing/currentTranscript";
@@ -131,12 +132,7 @@ describe("background thread claims", () => {
       dispatched.resolve(params);
       return {
         turn: { id: "turn_1", status: "inProgress", itemsView: "" },
-        receipt: {
-          clientMutationId: params.clientMutationId,
-          disposition: "applied",
-          threadId: "thr_local:one",
-          projectionState: "reflected",
-        },
+        receipt: appliedReceipt(params.clientMutationId, "thr_local:one"),
       };
     });
 

@@ -11,7 +11,7 @@ import {
 import * as Crypto from "expo-crypto";
 import type { InputAttachment } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "@evener/appwire-client/state/mutation";
-import { type ConversationMutationContext, MutationNotSentError } from "../../mobile/src/state/conversationMutation";
+import { type ConversationMutationContext, MutationNotSentError } from "./conversation/state/conversationMutation";
 import type { DraftImage, DraftImageData } from "./draftImages";
 import { restoreUnconfirmedDraft } from "./draftRecovery";
 import type {

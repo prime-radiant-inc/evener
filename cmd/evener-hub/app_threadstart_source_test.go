@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -61,10 +60,7 @@ func TestHubThreadStartUnknownSourceUnavailable(t *testing.T) {
 	if err == nil {
 		t.Fatal("hubThreadStart accepted an unknown source")
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("err = %v, want CodeUnavailable", err)
-	}
+	wire := requireWireError(t, err, appwire.CodeUnavailable)
 	if wire.Message != "spawn source is not available: missing" {
 		t.Fatalf("message = %q, want the existing unavailable shape", wire.Message)
 	}
@@ -206,12 +202,7 @@ func TestHubThreadStartRefusesRemoteOriginatedHostRouting(t *testing.T) {
 // identical request on an unmarked (local) connection still routes.
 func TestHubRPCThreadStartRefusesBridgeOriginatedFanOut(t *testing.T) {
 	source := &recordingStartSource{scriptedAppSource: &scriptedAppSource{id: "remote-a"}}
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
 	dial := func(t *testing.T, header http.Header) *appwire.Client {
 		t.Helper()

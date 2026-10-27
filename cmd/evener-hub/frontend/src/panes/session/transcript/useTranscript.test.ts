@@ -1,4 +1,4 @@
-import type { Thread, ThreadCapabilities, ThreadTurnsListResponse } from "@evener/appwire-client";
+import type { Thread, ThreadTurnsListResponse } from "@evener/appwire-client";
 import { hydrateThread, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, render, renderHook } from "@testing-library/react";
@@ -18,13 +18,14 @@ import {
   settleEntryTranscriptForTests,
   threadsStore,
 } from "../../../stores/threads";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { enterAgentCascade, returnFromAgentCascade } from "../../zoom/actions";
 import { useTranscriptScroll } from "./flow/useTranscriptScroll";
 import { retainedTranscriptReadView } from "./transcriptReadView";
 import { resetTranscriptPagingForTests, useTranscript } from "./useTranscript";
 import "../index";
 import "../../transcript/index";
-import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 
 // flushUntil drains microtask turns until `done()` reports true - same
 // contract/name as stores/threads.test.ts's own helper (duplicated here:
@@ -32,22 +33,6 @@ import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
 }
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
   return {

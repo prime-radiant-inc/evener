@@ -1,15 +1,5 @@
 file	test	reason
 agent/cov_s3_communicate_test.go	TestS3Cov_PredictionMessage	Compact tool result shown to the model (deferred model-facing text; #4415, #4424).
-agent/internal/tool/repair/explain_covtest_test.go	TestConstraintMessage_MinLengthLimitNotInt	Schema repair message to the model (deferred model-facing text; #4415).
-agent/internal/tool/repair/explain_covtest_test.go	TestConstraintMessage_MaxLengthLimitNotInt	Schema repair message to the model (deferred model-facing text; #4415).
-agent/internal/tool/repair/explain_covtest_test.go	TestConstraintMessage_MaxItemsLimitNotInt	Schema repair message to the model (deferred model-facing text; #4415).
-agent/internal/tool/repair/explain_covtest_test.go	TestConstraintMessage_MinItemsLimitNotInt	Schema repair message to the model (deferred model-facing text; #4415).
-agent/internal/tool/repair/explain_covtest_test.go	TestConstraintMessage_EnumEmpty	Schema repair message to the model (deferred model-facing text; #4415).
-agent/internal/tool/repair/explain_covtest_test.go	TestExplainSchemaError_PresentFieldUnhandledKeyword	Schema repair message to the model (deferred model-facing text; #4424).
-agent/internal/tool/repair/explain_oneof_test.go	TestExplainSchemaError_MultipleMatchOneOfAcceptsBareKeyword	Schema repair message to the model (deferred model-facing text; #4415).
-agent/internal/tool/repair/suggest_test.go	TestUnknownToolMessage_NoSuggestionWhenFar	Unknown-tool repair message to the model (deferred model-facing text); TestSuggestToolName_NoMatchBeyondThreshold covers the structured half (#4415).
-agent/job_watch_branches_test.go	TestCallbackWatchesCancelledAtRestartMessage	System notification to the model (deferred model-facing text; #4424).
-agent/session_tools_jobs_list_test.go	TestDefJobListDescriptionMentionsActiveWatches	Tool description the model reads (deferred model-facing text; #4424).
 internal/appwirets/emit_test.go	TestTypeExprNavigationArrayRendersAsSlice	False positive: a generated TypeScript type expression, a machine contract (#4424).
 llm/providers/chatcompletions/recompute_test.go	TestExtractRecordedResponse_SSE	False positive: scripted SSE deltas reassemble into the response text (#4424).
 test/e2e/fakellm/fakellm_coverage_test.go	TestContentTextArray	False positive: fixture parts concatenate into the text (#4424).
