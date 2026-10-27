@@ -3456,7 +3456,7 @@ func stableSupervisionEntryRefusal(sub *subagent, childID string) string {
 // quiesced one.
 func stableSupervisionRefusal(sub *subagent) string {
 	// sub.sess is assigned once, at subagent creation, and never reassigned
-	// (delegate_runtime.go's cold restore and subagents.go's start), so an
+	// (delegate_restore_idle.go's cold restore and subagents.go's start), so an
 	// unlocked read cannot race a writer; stableSupervisionState reads it the
 	// same way.
 	sess := sub.sess
@@ -3624,7 +3624,7 @@ func stableSupervisionReservedAttentionIDLocked(c *delegateTreeController, runti
 // from the TryLocked source that already printed its fields, and each predicate
 // names the accessor it mirrors, so a change there shows up here as a drift.
 func stableSupervisionState(root *Session, sub *subagent) string {
-	// sub.sess is assigned once, at subagent creation (delegate_runtime.go's cold
+	// sub.sess is assigned once, at subagent creation (delegate_restore_idle.go's cold
 	// restore and subagents.go's start), and never reassigned, so an unlocked read
 	// cannot race a writer; stableSupervisionFailureSnapshot reads it the same way.
 	sess := sub.sess
