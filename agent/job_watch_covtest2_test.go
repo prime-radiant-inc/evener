@@ -506,11 +506,11 @@ func TestCovLiveWatchSummaries(t *testing.T) {
 	createdB := createdA.Add(time.Second)
 	jm.mu.Lock()
 	jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: "job_b"}] = &watchConfig{
-		id: "watch_b", target: "job_b", sourcePublic: "job_b", progressIntervalMS: 5000,
+		watchID: "watch_b", target: "job_b", sourcePublic: "job_b", progressIntervalMS: 5000,
 		deliveries: 2, createdAt: createdB,
 	}
 	jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: "job_a"}] = &watchConfig{
-		id: "watch_a", target: "job_a", sourcePublic: "job_a", outputMatch: "READY",
+		watchID: "watch_a", target: "job_a", sourcePublic: "job_a", outputMatch: "READY",
 		deliveries: 1, createdAt: createdA,
 	}
 	jm.mu.Unlock()

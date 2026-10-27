@@ -313,7 +313,6 @@ func TestAcceptNotificationInputAdoptsRestoredCallerWatchSendProvenance(t *testi
 		WatchGeneration:         "wg_restore",
 	}
 	cfg := &watchConfig{
-		id:         "watch_restore",
 		watchID:    "watch_restore",
 		target:     "job_restore",
 		send:       &watchSendArgs{To: runtimeMessageAliasCaller},
