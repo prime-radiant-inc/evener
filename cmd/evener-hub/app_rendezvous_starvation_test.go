@@ -47,7 +47,7 @@ import (
 // scan, together holding the serial worker past the resume for well over
 // the bound. The queue arithmetic is load-bearing: a serial request runs
 // without waiting for an in-flight slow read, so the resume only queues
-// once the 16-slot slow-read cap is full (internal/appserver/server.go
+// once the 16-slot slow-read cap is full (internal/appserver/dispatch.go
 // acquireSlowReadSlot) — the queued read count must exceed the cap, and
 // the fixture scale must make the shared-rebuild-plus-scans window exceed
 // 2x the bound. The spec's implementation notes carry the measured
