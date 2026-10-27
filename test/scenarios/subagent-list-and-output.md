@@ -50,8 +50,8 @@ one value, `shell` (`agent/internal/jobstore/record.go#JobType`).
   (`agent/delegate_tree_controller.go#captureDelegateSnapshot`). The run's
   outcome reason rides the row's `[started · reason · exit · bytes]` tail,
   not the status column. The row's structured state does carry `task`,
-  populated from the descriptor (`agent/session_tools_jobs.go#jobListEntry`;
-  `agent/session_tools_jobs.go#projectStableDelegateListItem`), but
+  populated from the descriptor (`agent/session_tools_job_list.go#jobListEntry`;
+  `agent/session_tools_job_list.go#projectStableDelegateListItem`), but
   `formatJobList` never prints it — the model-facing line shows a label
   taken from `description`. Assert on the printed line, and read the task
   text from the child's transcript rather than expecting the listing to

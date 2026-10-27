@@ -102,12 +102,12 @@ default).**"); this card only runs with the raised config below.
    > Then end your turn.
 
    Ask for the line, not for fields. `job_list`'s model-facing output is
-   `formatJobList` (`agent/session_tools_jobs.go#formatJobList`): one line
+   `formatJobList` (`agent/session_tools_job_list.go#formatJobList`): one line
    per row of `id  type  status`, plus `depth=N` ONLY when non-zero, a
    label, and a `[started · reason · exit · bytes]` tail. Naming fields in
    the prompt invites the runner to supply the ones the tool omits:
    `owner_session_id` and `parent_delegate_id` live only on the structured
-   state (`agent/session_tools_jobs.go#jobListEntry`), which the model never
+   state (`agent/session_tools_job_list.go#jobListEntry`), which the model never
    sees, and a depth-0 row prints no depth token at all. Asking for the raw
    line makes an absent token observable as an absence instead of something
    the runner has to invent or explain away.
@@ -215,7 +215,7 @@ default).**"); this card only runs with the raised config below.
 
   From the durable journals read in step 6 — NOT from the model's
   report: each worker's lineage is `parent_delegate_id` = COORD, never
-  `parent_job_id` (`agent/session_tools_jobs.go#jobListEntry`;
+  `parent_job_id` (`agent/session_tools_job_list.go#jobListEntry`;
   `parent_job_id` is shell-to-shell lineage only — "Vocabulary"
   "`parent_job_id` never encodes delegate lineage."). Falsification: a
   worker whose lineage is recorded under `parent_job_id`.
@@ -300,7 +300,7 @@ default).**"); this card only runs with the raised config below.
   a two-valued lifecycle — `running` or `idle`, nothing else
   (`agent/delegate_tree_controller.go#captureDelegateSnapshot`, which
   maps both the idle and the closed phase to `idle`;
-  `agent/session_tools_jobs.go#projectStableDelegateStatus` is what puts
+  `agent/session_tools_job_status_stop.go#projectStableDelegateStatus` is what puts
   that string in the listing's status column). So a stopped worker reads
   `idle` there, and NO delegate row ever reads `cancelled`, `stopped` or
   `completed` — those words belong to the latest RUN's outcome:
@@ -322,7 +322,7 @@ default).**"); this card only runs with the raised config below.
   the word cancel appears: `status` `idle`, `reason` `stopped_by_parent`,
   and `outcome` `cancelled_by_request` — meaning the request cancelled
   live runs in the subtree, versus `already_idle` when it found none
-  (`agent/session_tools_jobs.go#stableDelegateStopResult`). Expect
+  (`agent/session_tools_job_status_stop.go#stableDelegateStopResult`). Expect
   `previous_status` `idle`, NOT `running`: it is computed from the
   TARGET's own open run, while the outcome is computed from the whole
   subtree's (`agent/delegate_tree_stop.go#classifyDelegateStopAdmission`).

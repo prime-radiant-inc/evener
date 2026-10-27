@@ -34,7 +34,7 @@ plus the resumable follow-up path through `delegate_send`.
   `reason` `stopped_by_parent`, `previous_status` `running`, and
   `outcome` `cancelled_by_request`, the field that records that the
   request cancelled a live run rather than finding it `already_idle`
-  (`agent/session_tools_jobs.go#stableDelegateStopResult`). The RUN's own
+  (`agent/session_tools_job_status_stop.go#stableDelegateStopResult`). The RUN's own
   terminal is `stopped`/`stopped_by_parent`, readable through
   `job_status(target=<delegate_id>)`'s `last_outcome`; the fold forces
   that pair for any finish landing in the stopping phase
@@ -47,7 +47,7 @@ plus the resumable follow-up path through `delegate_send`.
   the same conversation unless the target is explicitly not resumable. It
   returns the SAME `delegate_id` and no job identity — the stable result
   carries no `job_id`, `started_job_id` or `current_job_id`
-  (`agent/session_tools_jobs.go#marshalDelegateSendResult`). With the
+  (`agent/session_tools_delegate_send.go#marshalDelegateSendResult`). With the
   30s inline wait satisfied it reads `action` `completed`; if the wait
   expires first it reads `action` `started` / `status` `running`, which
   is an unfinished wait rather than a failure.

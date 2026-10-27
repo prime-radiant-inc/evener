@@ -156,7 +156,7 @@ where tool_name=read_file, status=ok`, no dropped sends, and no
 self-loop verdict. Both watches are listed on the PARENT's report even
 though the observer created them — a parent-source watch is installed
 into the parent's own job manager
-(`agent/session_tools_jobs.go#Session.configureStableWatchOnSource`).
+(`agent/session_tools_job_watch.go#Session.configureStableWatchOnSource`).
 The observer outline should show
 ignored broad frames as bare assistant text with no tool calls, and the
 successful filtered `read_file` frame as a single `communicate`.

@@ -20,7 +20,7 @@ passing `max_wait_ms` to creation is rejected outright with
 (`agent/session_tools.go#stableDelegateCreateTool`). `delegate_send`'s own
 result carries no job field either — `sendMessageResult`
 (`agent/job_delegate.go#sendMessageResult`) and its wire form
-`delegateSendResult` (`agent/session_tools_jobs.go#delegateSendResult`)
+`delegateSendResult` (`agent/session_tools_delegate_send.go#delegateSendResult`)
 have `delegate_id`, `transcript_ref`, `action`, `status`; neither declares
 `job_id`, `started_job_id`, `current_job_id`, or `latest_job_id`, and
 nothing in the tree emits any of those four names on this path. There is
