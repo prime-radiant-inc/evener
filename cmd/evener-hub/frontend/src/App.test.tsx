@@ -5,7 +5,6 @@ import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "./notifications";
-import { isLeader, resetLeaderForTests } from "./notifications/leader";
 import { StubResizeObserver } from "./resizeObserverTestUtils";
 import { AppShell } from "./shell/AppShell";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./shell/workspace";
@@ -13,6 +12,7 @@ import { installLocalStorage, MemoryStorage } from "./storageTestUtils";
 import { connectionStore } from "./stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "./stores/navigation/store";
 import { resetThreadsStoreForTests } from "./stores/threads";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "./stores/transcriptDisplay";
 import { resetToastStoreForTests } from "./widgets/toast/store";
 
 // AppShell's default createClient constructs a REAL AppwireClient (no test
@@ -144,7 +144,6 @@ beforeAll(async () => {
   await import("./dev/WidgetGallery");
   await import("./dev/DevHarness");
   await import("./panes/welcome/Welcome");
-  await import("./comic/ComicApp");
   // AppShell.tsx now React.lazy()s DockHost itself (Task 7's bundle split -
   // dockview is dead weight on the mobile path); the default-route test
   // below renders through AppShell -> DockHost, same reasoning as the
@@ -166,6 +165,7 @@ beforeEach(() => {
   closeAllCreatedClients();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   localStorage.clear();
+  resetTranscriptDisplayStoreForTests();
   // The dev widget gallery route pushes real toasts through the
   // module-singleton toast store (widgets/toast/store.ts), and unmounting
   // cancels their timers without removing them; reset so no test starts
@@ -210,58 +210,41 @@ test("renders the app shell (welcome pane) at the default route", async () => {
   expect(screen.queryByText(/connection:/i)).toBeNull();
 });
 
-test("comic entry leaves workspace and notification leadership unmounted while following Back and Forward", async () => {
-  resetNotificationsForTests();
-  resetLeaderForTests();
-  resetWorkspaceStoreForTests();
-  window.history.pushState({}, "", "/comic");
-  await act(async () => {
-    render(<App />);
-  });
-  expect((await screen.findByRole("main")).getAttribute("data-comic-route")).toBe("picker");
-  expect(workspaceStore.getState().panes).toHaveLength(0);
-  expect(isLeader()).toBe(false);
-  expect(connectionStore.getState().client).toBeInstanceOf(AppwireClient);
-  expect(allCreatedClients.size).toBe(1);
-  await act(async () => {
-    window.history.pushState({}, "", "/comic/s/remote%3Ahost%2Fsession");
-    window.dispatchEvent(new PopStateEvent("popstate"));
-  });
-  expect(screen.getByRole("main").getAttribute("data-session-ref")).toBe("remote:host/session");
-  await act(async () => {
-    window.history.pushState({}, "", "/comic");
-    window.dispatchEvent(new PopStateEvent("popstate"));
-  });
-  expect(screen.getByRole("main").getAttribute("data-comic-route")).toBe("picker");
-});
+test.each(["/comic", "/comic/s/remote%3Ahost%2Fsession"])(
+  "retired Comic path %s uses ordinary unknown-route recovery",
+  async (path) => {
+    window.history.pushState({}, "", path);
+    await act(async () => {
+      render(<App />);
+    });
+    const home = await screen.findByRole("button", { name: "Go home" });
+    expect(document.querySelector("[data-comic-route]")).toBeNull();
+    const client = connectionStore.getState().client;
+    expect(client).toBeInstanceOf(AppwireClient);
+    await act(async () => home.click());
+    expect(await screen.findByTestId("workspace-host")).toBeTruthy();
+    expect(window.location.pathname).toBe("/");
+    expect(connectionStore.getState().client).toBe(client);
+    expect(allCreatedClients.size).toBe(1);
+  },
+);
 
-test("comic entry initializes navigation without starting workspace background transcript demand", async () => {
-  resetNotificationsForTests();
-  window.history.pushState({}, "", "/comic");
+test("presentation changes preserve the workspace, URL and connection owner", async () => {
   await act(async () => {
     render(<App />);
   });
-  await screen.findByRole("main");
-  const client = new FakeClient("ready");
-  client.scriptConnect(() => ({
-    serverInfo: { name: "fake", version: "1" },
-    protocolVersion: APPWIRE_PROTOCOL_VERSION,
-    sourceId: "fake",
-    features: {} as never,
-    navigation: { version: 1, generationId: "test-generation", sequence: 0, readVersions: [3] },
-  }));
-  client.on("evener/navigation/read", (params) => {
-    if (params.resource !== "manifest") throw new Error(`comic unexpectedly read ${params.resource}`);
-    return navigationReadResponse("test-generation");
-  });
-  await act(async () => {
-    connectionStore.getState().connect(client);
-    await client.connect();
-  });
-  await vi.waitFor(() => expect(navigationStore.getState().mode).toBe("v3"));
-  expect(
-    client.calls.filter((call) => call.method === "evener/navigation/read" || call.method === "thread/read"),
-  ).toEqual([{ method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 3 } }]);
+  const panes = workspaceStore.getState().panes;
+  const client = connectionStore.getState().client;
+  const url = window.location.href;
+  expect(panes).toHaveLength(1);
+  expect(client).toBeInstanceOf(AppwireClient);
+  for (const mode of ["comic", "standard"] as const) {
+    await act(async () => transcriptDisplayStore.getState().setPresentation("desktop", mode));
+    expect(workspaceStore.getState().panes).toBe(panes);
+    expect(window.location.href).toBe(url);
+    expect(connectionStore.getState().client).toBe(client);
+    expect(allCreatedClients.size).toBe(1);
+  }
 });
 
 test("initiates and settles the welcome navigation load without an error", async () => {

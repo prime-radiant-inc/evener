@@ -12,12 +12,14 @@ a retry, refusal, banner, or repair action.
 Version skew between hub, daemons, clients and remote hubs follows the
 direction rules in the [compatibility policy](README.md#compatibility).
 
-The additional [Comic Chat client](comic-chat.md) at `/comic` is a browser
-presentation, not a parallel session backend. S02 owns shared composer submission
-and recovery, S05 owns canonical history, and S10 owns delegate identity/activity.
-Comic consumes those owners for literal panels and explicit child readers. Its
-root questions and approvals reuse the shared controls, while inline children
-remain readers. The regular `/s/:ref` client stays available and visually separate.
+The [Comic Chat presentation](comic-chat.md) is selected in the browser's Verbosity
+panel. It renders the whole conversation pane within the existing workspace,
+retaining its `/s/:ref` URL, connection and composer source. S02 owns the browser's
+per-viewport presentation choice and shared submission/recovery, S05 owns canonical
+history, and S10 owns delegate identity/activity. Comic consumes those owners for
+literal panels and explicit child readers. Root questions and approvals reuse the
+shared controls, while inline children remain readers. Standard content settings
+and hub defaults are independent of this browser-only presentation choice.
 
 ## How the product fits together
 
@@ -92,7 +94,7 @@ and accepted input. The device reconnects and hydrates that authority, preservin
 its drafts. OpenAI owns transcription; the device connects directly using SDK
 TLS, without a Hub or Mac transcription proxy.
 
-The additional [Comic Chat client](comic-chat.md) also belongs to S02.
+The [Comic Chat presentation](comic-chat.md) also belongs to S02.
 Its root reader and explicitly expanded child lifetimes share the existing thread,
 history and session-scoped delegate owners. `composeComicFlow` supplies one virtual
 scroll flow for both comic and plain views, with qualified source anchors.

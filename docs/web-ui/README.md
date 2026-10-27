@@ -4,9 +4,9 @@ Design documentation for the web hub (`cmd/evener-hub`).
 
 ## Current
 
-- **[Comic Chat](../product/comic-chat.md)** — the additional `/comic`
-  client, literal panels and inline child readers, bundled Comic Sans, and
-  shared root composer/recovery ownership. The ordinary client remains unchanged.
+- **[Comic Chat](../product/comic-chat.md)**: whole-conversation presentation
+  selected in Verbosity, literal panels and inline child readers, bundled Comic
+  Sans, and existing workspace connection and composer/recovery ownership.
 - **[Message recovery](../product/message-recovery.md)** — local queue Edit/Remove,
   durable composer ownership, offline recovery and Stop races.
 - **[Session activity](../product/session-activity.md)** — ownership of scoped
