@@ -127,23 +127,6 @@ const PAGE_LIFETIME_NONCE = (() => {
 let sourceReadSequence = 0;
 
 /** Unique across routes, repository replacements, tabs and browser reloads. */
-// A stale read can only carry escalations pending on the daemon when it was
-// issued, which are the few most recent ones, so a ref remembers only that many
-// resolved escalations and a long session does not accumulate every one.
-export const MAX_RESOLVED_ESCALATIONS_PER_REF = 32;
-
-// Adds in place and trims the oldest: the repository and the threads store
-// share one Set per ref.
-export function recordResolvedEscalation(resolved: Set<string>, escalationId: string): void {
-  // Re-adding moves the id to the newest position (Set iterates in insertion order).
-  resolved.delete(escalationId);
-  resolved.add(escalationId);
-  for (const oldest of resolved) {
-    if (resolved.size <= MAX_RESOLVED_ESCALATIONS_PER_REF) break;
-    resolved.delete(oldest);
-  }
-}
-
 export function nextTranscriptReadIdentity(): { readId: string; boundary: string } {
   const identity = `${PAGE_LIFETIME_NONCE}:${++sourceReadSequence}`;
   return { readId: `read:${identity}`, boundary: `boundary:${identity}` };
@@ -959,7 +942,7 @@ export class TranscriptRepository {
       }
     }
     if (notification.method === "evener/sandbox/escalation/resolved") {
-      recordResolvedEscalation(this.#resolvedEscalations, notification.params.escalationId);
+      this.#resolvedEscalations.add(notification.params.escalationId);
     }
     const previousModel = this.#model;
     const now = this.#now();

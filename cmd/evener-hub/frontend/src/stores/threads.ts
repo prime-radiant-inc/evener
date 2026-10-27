@@ -1356,7 +1356,7 @@ function createEntryTranscriptRepository(
         const lease = syncThreadSubscription(ref, client);
         if (!lease) return Promise.reject(new Error("entry history has no subscription owner"));
         const generation = (fixture.repository?.getSnapshot()?.history?.issuedGeneration ?? 0) + 1;
-        return lease.read(threadReadParams(true, generation, held)).then((result) => {
+        return readThreadTracked(ref, lease, threadReadParams(true, generation, held)).then((result) => {
           if (client !== wiredClient || epoch !== readyEpoch) throw new Error("entry history source was retired");
           return result;
         });
@@ -3872,14 +3872,18 @@ async function readThreadHydration(
   try {
     try {
       if (signal?.aborted) throw new Error("Thread hydration attempt was retired");
-      response = await lease.read(threadReadParams(includeTurns, pending.requestGeneration, held));
+      response = await readThreadTracked(ref, lease, threadReadParams(includeTurns, pending.requestGeneration, held));
     } catch (err) {
       if (signal?.aborted) throw err;
       if (!shouldRetryWithoutHeldSnapshot(held, err)) throw err;
       // Logical retirement removes this operation before its issued request's
       // physical slot settles. Its still-live signal cannot authorize a retry.
       if (signal?.aborted || (tracked && pendingThreadHydrations.get(ref) !== pending)) throw err;
-      response = await lease.read(threadReadParams(includeTurns, pending.requestGeneration, undefined));
+      response = await readThreadTracked(
+        ref,
+        lease,
+        threadReadParams(includeTurns, pending.requestGeneration, undefined),
+      );
       discardHeldHistory = true;
     }
   } catch (err) {
@@ -5153,10 +5157,28 @@ function resolvedEscalationsFor(ref: string): Set<string> {
   return resolved;
 }
 
+const readsInFlightByRef = new Map<string, number>();
+
+// Every thread/read goes through here so eviction can tell a read that may
+// still carry a resolved escalation is outstanding.
+function readThreadTracked(
+  ref: string,
+  lease: ThreadSubscriptionLease,
+  params: Parameters<ThreadSubscriptionLease["read"]>[0],
+): ReturnType<ThreadSubscriptionLease["read"]> {
+  readsInFlightByRef.set(ref, (readsInFlightByRef.get(ref) ?? 0) + 1);
+  return lease.read(params).finally(() => {
+    const remaining = (readsInFlightByRef.get(ref) ?? 1) - 1;
+    if (remaining > 0) readsInFlightByRef.set(ref, remaining);
+    else readsInFlightByRef.delete(ref);
+  });
+}
+
 // Trims the Set in place: the transcript repository holds this same Set.
 function trimResolvedEscalations(ref: string): void {
   const resolved = resolvedEscalationsByRef.get(ref);
-  if (!resolved || pendingThreadHydrations.has(ref) || pendingWatchedHydrations.has(ref)) return;
+  if (!resolved || readsInFlightByRef.has(ref) || pendingThreadHydrations.has(ref) || pendingWatchedHydrations.has(ref))
+    return;
   for (const oldest of resolved) {
     if (resolved.size <= MAX_RESOLVED_ESCALATIONS_PER_REF) break;
     resolved.delete(oldest);
@@ -8785,6 +8807,7 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
   resolvedEscalationsByRef.clear();
+  readsInFlightByRef.clear();
   for (const route of productionEntryRoutes.values()) retireEntryTranscriptRoute(route);
   productionEntryRoutes.clear();
   productionEntryCache?.close();
