@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -195,4 +196,30 @@ func TestHubUnsubscribeAcceptedExtraField(t *testing.T) {
 	if got := aliasMethodCountUntilBarrier(t, client, "test/stale-extra"); got != 0 {
 		t.Errorf("stale extra-field delivery=%d, want 0", got)
 	}
+}
+
+// The hub resolver maps what it cannot resolve onto a disposition per request
+// shape: a subscribing read of a ref no source serves is refused as unavailable,
+// and an undecodable thread/read or thread/unsubscribe body is an invalid
+// request.
+func TestHubAdmissionDispositionsWithoutASource(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
+	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer wire.Close()
+	client := dialHubRPC(t, wire)
+	defer client.Close()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:unserved", Subscribe: true})
+	requireWireError(t, err, appwire.CodeUnavailable)
+
+	err = client.Request(ctx, appwire.MethodThreadRead, json.RawMessage(`"not an object"`), nil)
+	requireWireError(t, err, appwire.CodeInvalidParams)
+
+	err = client.Request(ctx, appwire.MethodThreadUnsubscribe, json.RawMessage(`"not an object"`), nil)
+	requireWireError(t, err, appwire.CodeInvalidParams)
 }
