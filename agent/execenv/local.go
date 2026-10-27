@@ -751,40 +751,22 @@ func (e *LocalExecutionEnvironment) EditFileCtx(ctx context.Context, path string
 // EditFileWithCtx is EditFileWith with the caller's context threaded to its
 // read, so a cancelled edit ends a read parked on a stream.
 func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {
-	sfs := e.sandbox()
-	sandboxArm := sfs != nil
-	var abs string
-	var b []byte
-	var err error
-	if sfs == nil {
-		abs = e.resolve(path)
-		sfs = e.scratchSandboxFor(abs)
-	} else {
-		abs = e.resolve(path)
+	t, err := e.fileTarget("edit_file", path, targetWrite)
+	if err != nil {
+		return "", err
 	}
-	defer sfs.release()
-	if sfs != nil {
-		if sandboxArm {
-			if derr := e.requireLiveSandboxRootForRelative(sfs, "edit_file", path); derr != nil {
-				return "", derr
-			}
-		}
+	defer t.release()
+	var b []byte
+	if t.sfs != nil {
 		// Deny an edit in a non-writable location up front (read-only mode, outside
 		// the writable roots, or a masked/git-protected surface) before reading, so
 		// the model gets a clean write denial rather than a match/not-found result.
-		if derr := sfs.checkWritable("edit_file", abs); derr != nil {
+		if derr := t.sfs.checkWritable("edit_file", t.abs); derr != nil {
 			return "", derr
 		}
-		b, err = sfs.readFileCtx(ctx, "edit_file", abs)
+		b, err = t.sfs.readFileCtx(ctx, "edit_file", t.abs)
 	} else {
-		if err := e.requireLiveWorkingDirForRelative(path); err != nil {
-			return "", err
-		}
-		abs, err = e.resolveWrite(path)
-		if err != nil {
-			return "", err
-		}
-		b, err = readFileCappedCtx(ctx, e.filesystem(), abs)
+		b, err = readFileCappedCtx(ctx, e.filesystem(), t.abs)
 	}
 	if err != nil {
 		return "", err
@@ -817,11 +799,11 @@ func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path st
 	if finish != nil {
 		edited = finish(edited)
 	}
-	if sfs != nil {
-		if werr := sfs.writeFile("edit_file", abs, edited, 0o644); werr != nil {
+	if t.sfs != nil {
+		if werr := t.sfs.writeFile("edit_file", t.abs, edited, 0o644); werr != nil {
 			return "", werr
 		}
-	} else if werr := afero.WriteFile(e.filesystem(), abs, edited, 0o644); werr != nil {
+	} else if werr := afero.WriteFile(e.filesystem(), t.abs, edited, 0o644); werr != nil {
 		return "", werr
 	}
 	plural := "s"
