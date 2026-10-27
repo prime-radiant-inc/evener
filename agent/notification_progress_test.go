@@ -458,11 +458,7 @@ func progressReceipt(t *testing.T, clock *agenttest.FakeClock) (*Session, *messa
 }
 func waitForProgress(t *testing.T, ch <-chan struct{}, what string) {
 	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(30 * time.Second):
-		t.Fatal(what)
-	}
+	waitForTestSignal(t, ch, what)
 }
 
 // Register after fixture creation but before starting workers. LIFO cleanup
@@ -504,14 +500,10 @@ func TestNotificationProgressHoldClaimBoundary(t *testing.T) {
 			clock := agenttest.NewFakeClock()
 			s, a, id := progressReceipt(t, clock)
 			progressAttachController(t, s, clock)
-			var complete atomic.Bool
 			var wakes atomic.Int32
 			var release func()
 			// Record the return of the whole attention/retirement release.
-			progressObserve(s, func(point string, s *Session) {
-				if point == "custody-return" {
-					complete.Store(true)
-				}
+			complete := progressObserve(s, func(point string, s *Session) {
 				if point == "claim-"+when && release == nil {
 					release = sync.OnceFunc(s.holdJobNotificationWake())
 				}
@@ -575,11 +567,7 @@ func TestNotificationProgressCanonicalHintDisposition(t *testing.T) {
 			defer outer()
 			entered, resume := make(chan struct{}), make(chan struct{})
 			unpause := sync.OnceFunc(func() { close(resume) })
-			var complete atomic.Bool
-			progressObserve(s, func(point string, s *Session) {
-				if point == "custody-return" {
-					complete.Store(true)
-				}
+			complete := progressObserve(s, func(point string, s *Session) {
 				if point == "retry-dispatch" {
 					close(entered)
 					<-resume
@@ -689,11 +677,7 @@ func TestNotificationProgressLegacyHintDisposition(t *testing.T) {
 			s.enqueueJobNotificationAndNotify(jobNotification{JobID: "legacy-token-source", Status: jobNotificationEventWatch})
 			entered, resume := make(chan struct{}), make(chan struct{})
 			unpause := sync.OnceFunc(func() { close(resume) })
-			var complete atomic.Bool
-			progressObserve(s, func(point string, s *Session) {
-				if point == "custody-return" {
-					complete.Store(true)
-				}
+			complete := progressObserve(s, func(point string, s *Session) {
 				if point == "retry-dispatch" {
 					close(entered)
 					<-resume
@@ -1025,7 +1009,6 @@ func TestNotificationProgressConcurrentWatchTransportIsIndependent(t *testing.T)
 	var timedAttempts atomic.Int32
 	var expectedWatchGeneration int
 	var acked atomic.Int32
-	var complete atomic.Bool
 	var wakes atomic.Int32
 	var producerStarted bool
 	originalAppend := jm.appendEvent
@@ -1221,17 +1204,11 @@ func TestNotificationProgressConcurrentWatchTransportIsIndependent(t *testing.T)
 	phase.Store("both-retries-scheduled")
 	t.Logf("setup complete: %s watch-receipt=%s two-observed=true requests=1 source-pending=1 canonical-retry=true watch-retry=true attempts=2 setup-ack-failures=2 timed-attempts=0", identity(), watchID)
 	c := progressAttachController(t, s, clock)
-	progressObserve(s, func(point string, session *Session) {
-		if session != s {
-			return
-		}
+	complete := progressObserve(s, func(point string, session *Session) {
 		if point == "retry-dispatch" {
 			close(retryEntered)
 			// The main wait and cleanup own cancellation, not this custody gate.
 			<-retryResume
-		}
-		if point == "custody-return" {
-			complete.Store(true)
 		}
 	})
 	s.SetNotifyFunc(func() {
