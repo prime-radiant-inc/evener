@@ -26,6 +26,14 @@ their keyboard behavior. Narrow-screen checks must reach the question choices,
 note and final action, not merely capture their container. Browser viewport and
 safe-area emulation do not establish native touch inertia or device behavior.
 
+On mobile, `ComicApp` uses the ordinary shell's shared visual-viewport keyboard
+inset. The session root spends it as bottom padding inside its viewport-sized
+border box, keeping the composer above the keyboard while the reader contracts.
+Closing the keyboard restores reader space without resetting the draft or source
+text. Pinch zoom is excluded, and leaving Comic releases its viewport listeners
+and inset before the ordinary client takes ownership. Browser regression checks
+simulate the visual-viewport boundary, not a physical Safari keyboard.
+
 ## Original art and offline checks
 
 The selected 12 character poses, two backgrounds and six emotion icons are in `cmd/evener-hub/frontend/public/webassets/comic/`. The original art is from Microsoft's public [Comic Chat source release](https://github.com/microsoft/comic-chat/tree/48a162249484ab8d116c243e8203b0956d350c09), pinned to `48a162249484ab8d116c243e8203b0956d350c09`. [Art attribution](../../cmd/evener-hub/frontend/public/webassets/comic/ATTRIBUTION.md), the original [MIT notice](../../cmd/evener-hub/frontend/public/webassets/comic/LICENSE), the [selected asset manifest](../../cmd/evener-hub/frontend/public/webassets/comic/manifest.json) and [extraction guide](../../cmd/evener-hub/frontend/scripts/comic-assets/README.md) document origin, chosen AVB face/torso records and native-size PNG conversion. The four original Armando, Bolo, Denise and Tiki `.avb` files, all other referenced input files, source code and the historical archived EULA remain unchanged beneath `scripts/comic-assets/source/`. Their URLs, byte counts, Git SHA-1 blob IDs and SHA-256 values are frozen in `scripts/comic-assets/source-evidence.json` for offline reproduction.

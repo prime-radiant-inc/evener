@@ -1,10 +1,10 @@
 {
-  "description": "Real Comic picker scroll reachability and session dynamic viewport containment",
+  "description": "Real Comic picker scrolling, dynamic viewport containment and simulated keyboard recovery",
   "cssFiles": ["styles/global.css"],
   "viewport": { "width": 320, "height": 620, "mobile": true, "touch": true },
   "mutation": {
-    "declaration": "Comic root min-height:100vh and absent picker height/overflow",
-    "verified": "2026-10-27, before the CSS repair",
-    "expect": "Native picker gestures cannot reach lower rows or pagination, and a modeled large viewport pushes the composer below the visible viewport"
+    "declaration": "Comic root min-height:100vh and absent picker height/overflow, or mobile session padding-bottom:0",
+    "verified": "2026-10-27, before viewport repairs and with keyboard padding zeroed then restored",
+    "expect": "Native picker gestures cannot reach lower rows or pagination, a modeled large viewport pushes the composer below the visible viewport, and zero keyboard padding leaves editor/Send below the simulated 440/480px visual viewport at 320/390px widths"
   }
 }

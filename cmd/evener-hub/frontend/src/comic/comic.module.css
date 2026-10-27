@@ -199,6 +199,11 @@
 .spotlight .figure { height: 327px; bottom: -97px; width: 35%; left: 13%; }
 .spotlight.panel[data-comic-speaker="assistant"] .figure { left: auto; right: 13%; }
 
+@media (max-width: 899px) {
+  /* Shared keyboard inset shrinks the flex reader, not the viewport-sized root. */
+  .comicRoot[data-comic-route="session"] { padding-bottom: var(--keyboard-inset, 0px); }
+}
+
 @media (max-width: 760px) {
   .row { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .row > :only-child { grid-column: auto; }
