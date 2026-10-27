@@ -16,6 +16,20 @@ claiming the whole viewport. The standalone Comic picker was removed from the
 product, so its empty/50-row scrolling and pagination assertions are retired.
 Native CDP wheel/touch now move the actual Comic transcript and must record
 trusted input, changed scroll position and a retained away anchor.
+Before stopping the touch fling, a separate early Appearance click checks all
+choices, Escape/focus return, exact draft/reader height, and the retained source
+identity/offset against an independent DOM Range. Its current viewport offset
+must match that Range exactly, including if prior native movement continues.
+Draft setup selects and replaces the editor content through native input.
+
+A native stationary touch then stops the previous fling before the independent
+keyboard geometry matrix. Trusted pointer/touch start and completion, matching
+IDs and no remaining touches are required. Waiting for the first `scrollend`
+would be insufficient: reader restoration can emit it while inertia continues.
+The causal regression was a source save before Appearance pointerdown, with no
+JavaScript scroll writer; the native-stop control preserved the exact source.
+No sleep, reader-settlement wait or source-equality tolerance is added.
+
 The entire matrix runs twice: bundled fonts, then network-blocked font requests.
 The second run must report `data-comic-font=unavailable` and a visible real
 fallback notice, not a test-inserted substitute. Both runs hit-test Appearance,
