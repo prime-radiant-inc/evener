@@ -16,6 +16,7 @@ import {
   type TurnStartResponse,
   WireError,
 } from "@evener/appwire-client";
+import { MutationDispatcher } from "@evener/appwire-client/state/mutation";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
@@ -33,7 +34,6 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace"
 import { connectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { IDBUpgradeError } from "./idbConnection";
-import { MutationDispatcher } from "./mutationDispatcher";
 import type { MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "./projectionWork";

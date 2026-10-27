@@ -1,5 +1,5 @@
+import { LOCAL_HOST } from "@evener/appwire-client";
 import { afterEach, expect, test } from "vitest";
-import { LOCAL_HOST } from "./hostRouting";
 import {
   adoptSettingsHostFromURL,
   initialSettingsHost,

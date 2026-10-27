@@ -8,10 +8,14 @@
 // alive across the session, since the schema is server-global.
 
 import type { LaunchConfigStoreState } from "@evener/appwire-client";
-import { createLaunchConfigStore, type LaunchConfigClient, type LaunchConfigStore } from "@evener/appwire-client";
+import {
+  createLaunchConfigStore,
+  isLocalHost,
+  type LaunchConfigClient,
+  type LaunchConfigStore,
+} from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { connectedClientPort, onConnectionNotification, onConnectionReplacedOrRecovered } from "./connection";
-import { isLocalHost } from "./hostRouting";
 import { remoteHostStoreClient } from "./hostStoreClient";
 import {
   currentHostRegistration,

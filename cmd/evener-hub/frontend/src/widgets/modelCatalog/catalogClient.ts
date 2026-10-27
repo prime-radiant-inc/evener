@@ -1,6 +1,6 @@
 import type { AppwireClientLike, ModelDescriptor, ModelListParams, ModelListResponse } from "@evener/appwire-client";
+import { hostRequest } from "@evener/appwire-client";
 import { connectionStore } from "../../stores/connection";
-import { hostRequest } from "../../stores/hostRouting";
 import type { ModelCatalog, ModelCatalogEntry } from "./index";
 
 export interface FetchCatalogOptions {
@@ -47,7 +47,7 @@ export async function fetchModelCatalog(
  * model/list on the controller's connection; for a remote host the call is
  * wrapped in evener/host/request, so the picker describes the host the layer is
  * being edited for rather than this hub. model/list is on the hub's
- * host-dependent discovery allow-list (stores/hostRouting.ts). */
+ * host-dependent discovery allow-list (appwire-client hostRouting.ts). */
 export async function fetchModelCatalogForHost(
   host: string | null | undefined,
   opts?: FetchCatalogOptions,

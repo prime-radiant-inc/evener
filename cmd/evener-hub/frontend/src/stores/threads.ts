@@ -71,6 +71,7 @@ import {
   canEditQueuedMessage,
   canRemoveQueuedMessage,
   DIRECT_FALLBACK_METHODS,
+  MutationDispatcher,
   notificationMutationIdentities,
   type PendingTurnEntry,
 } from "@evener/appwire-client/state/mutation";
@@ -83,7 +84,6 @@ import { backgroundTranscriptOptions } from "./backgroundTranscriptOptions";
 import { connectedClientPort, connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { acknowledgeHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
-import { MutationDispatcher } from "./mutationDispatcher";
 import {
   type MutationAttachment,
   type MutationCommit,
