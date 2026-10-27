@@ -110,7 +110,7 @@ draft. Browser reports an error and permits another Start. Neither can identify
 the result by a durable creation request ID. The user must investigate or risk a
 duplicate; editing the draft does not resolve the first attempt.
 
-**Evidence.** [ThreadStartParams](../../appwire/types.go#L2316) has no client
+**Evidence.** [ThreadStartParams](../../appwire/types_turn.go) has no client
 creation key. The hub
 [detaches creation from peer cancellation](../../cmd/evener-hub/app_threadlifecycle.go#L82).
 Native [submit](../../mobile-native/src/newSession.ts#L429) persists uncertainty;

@@ -169,8 +169,8 @@ describe("goal actions", () => {
 });
 
 describe("canonical Go mutation receipt schema guard", () => {
-	it("binds the decoder literals and optional fields to appwire/types.go", () => {
-		const source = readFileSync(path.resolve(process.cwd(), "../appwire/types.go"), "utf8");
+	it("binds the decoder literals and optional fields to appwire/types_turn.go", () => {
+		const source = readFileSync(path.resolve(process.cwd(), "../appwire/types_turn.go"), "utf8");
 		expect(source).toContain('MutationDispositionApplied  MutationDisposition = "applied"');
 		expect(source).toContain('MutationDispositionReplayed MutationDisposition = "replayed"');
 		expect(source).not.toMatch(/MutationDisposition\w*\s+MutationDisposition = "accepted"/);
