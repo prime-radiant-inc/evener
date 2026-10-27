@@ -1902,3 +1902,37 @@ test("reconciling a retyped ref points it at the cascade that retains it", () =>
   expect(reopened.composerSeatId).toBe(cascade.composerSeatId);
   expect(readRecoverySelection(ownerRef, composerSelectionScope(reopened.composerSeatId))).toBe("cascade-owner-row");
 });
+
+test("closing a competing pane points its ref at the cascade that retains it", () => {
+  installLocalStorage(new MemoryStorage());
+  const ownerRef = "local:close-owner";
+  const childRef = "local:close-child";
+  const sessionId = workspaceStore.getState().replacePrimary("session", { ref: ownerRef });
+  const session = workspaceStore.getState().panes.find((pane) => pane.id === sessionId);
+  if (!session?.composerSeatId) throw new Error("session pane lacks its seat");
+  const cascadeId = workspaceStore.getState().openPane(
+    "sessionZoom",
+    {
+      ref: childRef,
+      source: { type: "session", params: { ref: ownerRef } },
+      edges: [{ ownerRef, childRef, delegateId: "delegate-1" }],
+    },
+    { slot: "secondary" },
+  );
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
+  writeRecoverySelection(ownerRef, composerSelectionScope(cascade.composerSeatId), "cascade-owner-row");
+  writeRecoverySelection(ownerRef, composerSelectionScope("rejected-owner-seat"), "rejected-owner-row");
+
+  workspaceStore.getState().closePane(sessionId);
+  // No pane shows the owner conversation anymore, but the cascade retains it
+  // as a column: its seat owns the ref mapping, not the closed pane's.
+  expect(readRefComposerSeat(ownerRef)).toBe(cascade.composerSeatId);
+
+  resetWorkspaceStoreForTests();
+  const reopenedId = workspaceStore.getState().openPane("session", { ref: ownerRef });
+  const reopened = workspaceStore.getState().panes.find((pane) => pane.id === reopenedId);
+  if (!reopened?.composerSeatId) throw new Error("reopened owner lacks its seat");
+  expect(reopened.composerSeatId).toBe(cascade.composerSeatId);
+  expect(readRecoverySelection(ownerRef, composerSelectionScope(reopened.composerSeatId))).toBe("cascade-owner-row");
+});

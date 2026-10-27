@@ -128,7 +128,9 @@ export interface ComposerSourceState {
     options?: { replaceSelection?: string; keepSelection?: boolean },
   ): void;
   /** Adopt a row preserved under this source's ref when it still owns the
-   * stale lease and the user has not edited since. */
+   * stale lease and the user has not edited since. Deferred while this source
+   * holds the recovery-operation lock or is sending its active row; applied
+   * with every guard re-evaluated once that operation settles. */
   adoptPreservedSelection(targetRef: string, staleId: string, preserved: MutationRecoveryRecord): void;
   /** Whether this source still owns the stale lease and has newer work than
    * the composition that lease was activated with. */
@@ -354,6 +356,10 @@ export function createComposerSourceState(
   // An explicit activation that merged this composer's newer draft into the
   // recovery row. Delayed preservation must not replace that work.
   let activationIncorporatedWork = false;
+  // A preserved-row adoption deferred while this source held the recovery-
+  // operation lock or was sending its active row; flushed when the operation
+  // settles, with every ownership guard re-evaluated then.
+  let deferredAdoption: { targetRef: string; staleId: string; preserved: MutationRecoveryRecord } | null = null;
   let cleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let cleanupRetryAttempt = 0;
   let cleanupRetryVersion = 0;
@@ -545,6 +551,18 @@ export function createComposerSourceState(
   function adoptPreservedSelection(targetRef: string, staleId: string, preserved: MutationRecoveryRecord): void {
     if (disposed || ref !== targetRef) return;
     if (currentRecoveryId() !== staleId) return;
+    // Adoption - the lease swap and the selection publication inside it -
+    // must respect the destination's submission guard and recovery-operation
+    // lock: swapping the lease while this source is sending its restored row
+    // makes the resend read the preserved row's revision under the original
+    // id, a spurious refusal that also replaces the composition being sent.
+    // Every submission holds the operation lock across its awaited save, so
+    // deferring here and flushing on the lock's release re-evaluates full
+    // ownership once the operation settles.
+    if (state.getState().recoveryOperationBusy || recoverySubmissionsInFlight.has(staleId)) {
+      deferredAdoption = { targetRef, staleId, preserved };
+      return;
+    }
     if (operations.hasPending) return;
     // An explicit activation is already building the next composition from
     // this composer's visible work. Adoption must not replace that work before
@@ -570,6 +588,16 @@ export function createComposerSourceState(
     if (preserved.localDraftRevisionId !== undefined) {
       clearPersistedDraftIfRevisionMatches(ref, preserved.localDraftRevisionId);
     }
+  }
+
+  function flushDeferredAdoption(): void {
+    if (deferredAdoption === null) return;
+    const pending = deferredAdoption;
+    deferredAdoption = null;
+    // Re-run every guard: the settled operation may have consumed the row or
+    // installed a different lease meanwhile, in which case the adoption is
+    // dropped rather than applied to a state it no longer describes.
+    adoptPreservedSelection(pending.targetRef, pending.staleId, pending.preserved);
   }
 
   function notifyPreservedSelection(targetRef: string, staleId: string, preserved: MutationRecoveryRecord): void {
@@ -740,6 +768,12 @@ export function createComposerSourceState(
                 emptyAtRefusal || refusalComposition === null
                   ? undefined
                   : await preserveStaleRecovery(clientMutationId, localDraftRevisionId, refusalComposition);
+              preserved = await reconcileDisposalComposition(
+                clientMutationId,
+                localDraftRevisionId,
+                refusalComposition,
+                preserved,
+              );
               destinationOwnsNewer =
                 preserved !== undefined &&
                 destinationHasNewerEdits(recoverySelectionOwnerId, preserved.targetRef, clientMutationId, source);
@@ -854,6 +888,49 @@ export function createComposerSourceState(
         );
       return undefined;
     }
+  }
+
+  // Preservation awaited storage while the pane kept working. Work typed or
+  // settled during that wait is captured by dispose() when the pane closes
+  // before the preservation settles, and a disposed source can never save it
+  // itself - every later persistence refuses. Fold the disposal snapshot into
+  // the preserved row before it settles; otherwise a reopen restores the
+  // composition from before the wait and loses those edits.
+  async function reconcileDisposalComposition(
+    clientMutationId: string,
+    localDraftRevisionId: string | undefined,
+    refusalComposition: RecoveryComposition | null,
+    preserved: MutationRecoveryRecord | undefined,
+  ): Promise<MutationRecoveryRecord | undefined> {
+    if (!disposed || disposalComposition === null) return preserved;
+    if (compositionIsEmpty(disposalComposition)) return preserved;
+    if (
+      refusalComposition !== null &&
+      recoveryCompositionFingerprint(disposalComposition) === recoveryCompositionFingerprint(refusalComposition)
+    ) {
+      return preserved;
+    }
+    if (preserved === undefined) {
+      // Nothing was preserved at refusal, but the disposal snapshot holds
+      // work gained during the wait: preserve that instead.
+      return preserveStaleRecovery(clientMutationId, localDraftRevisionId, disposalComposition);
+    }
+    const revision = recoveryCompositionRevision(preserved);
+    const reconciled = await updateRecoveryPendingTurn(
+      preserved.clientMutationId,
+      ref,
+      disposalComposition.text,
+      [...disposalComposition.attachments],
+      disposalComposition.skillNames,
+      disposalComposition.commandNames,
+      disposalComposition.mentions,
+      [],
+      localDraftRevisionId,
+      revision,
+      { [preserved.clientMutationId]: revision },
+      compositionOwnerId,
+    );
+    return reconciled ?? preserved;
   }
 
   function activateRecovery(record: MutationRecoveryRecord): Promise<boolean> {
@@ -1013,6 +1090,7 @@ export function createComposerSourceState(
       released = true;
       recoveryOperationHeld = false;
       if (!disposed) state.setState({ recoveryOperationBusy: false });
+      flushDeferredAdoption();
     };
   }
 

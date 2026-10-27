@@ -371,14 +371,22 @@ export function selectionSeatForRef(
 // A route reconstruction resolves one seat per conversation. When the pane
 // that most recently wrote that mapping closes or loses the route, point the
 // mapping at a surviving pane instead of leaving the closed pane's seat there.
+// No pane may show the conversation while a cascade still retains it as a
+// column - drilled onto a deeper leaf, that cascade is the surviving owner,
+// its columns sharing the pane's own seat. With no owner at all the stored
+// mapping is left as it is: a close or retype never erases the conversation,
+// and a later reopen must restore the seat's recovery row.
 function writeSurvivingRefSeat(ref: string, panes: readonly OpenPaneRecord[], preferredId?: string | null): void {
-  const candidates = panes.filter(
-    (pane) => isConversationPaneType(pane.type) && refParam(pane.params) === ref && pane.composerSeatId !== undefined,
-  );
+  const seated = (pane: OpenPaneRecord) => isConversationPaneType(pane.type) && pane.composerSeatId !== undefined;
+  const candidates = panes.filter((pane) => seated(pane) && refParam(pane.params) === ref);
+  const retaining = panes.filter((pane) => seated(pane) && retainsConversationRef(pane, ref));
   const chosen =
     candidates.find((pane) => pane.id === preferredId) ??
     candidates.find((pane) => pane.slot === "main") ??
-    candidates[0];
+    candidates[0] ??
+    retaining.find((pane) => pane.id === preferredId) ??
+    retaining.find((pane) => pane.slot === "main") ??
+    retaining[0];
   if (chosen?.composerSeatId !== undefined) writeRefComposerSeat(ref, chosen.composerSeatId);
 }
 
@@ -869,28 +877,11 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     if (previousRef !== null && previousRef !== nextRef) {
       // The pane no longer shows its old conversation. Point that ref at a
       // surviving pane when one still shows it; else at the cascade that
-      // retains it as a column.
-      if (
-        nextPanes.some(
-          (pane) =>
-            isConversationPaneType(pane.type) &&
-            refParam(pane.params) === previousRef &&
-            pane.composerSeatId !== undefined,
-        )
-      ) {
-        writeSurvivingRefSeat(previousRef, nextPanes, state.focusedPaneId === expected.id ? null : state.focusedPaneId);
-      } else {
-        const retaining = nextPanes.find(
-          (pane) =>
-            pane.type === "sessionZoom" &&
-            pane.composerSeatId !== undefined &&
-            retainsConversationRef(pane, previousRef),
-        );
-        if (retaining?.composerSeatId !== undefined) writeRefComposerSeat(previousRef, retaining.composerSeatId);
-        // Otherwise no owner is left, but a retype never closes a
-        // conversation: keep the stored mapping so a later reopen restores
-        // the seat's recovery row (closePane leaves it behind the same way).
-      }
+      // retains it as a column. With no owner at all the stored mapping stays
+      // put - a retype never closes a conversation, and a later reopen must
+      // restore the seat's recovery row (closePane leaves an unowned mapping
+      // behind the same way).
+      writeSurvivingRefSeat(previousRef, nextPanes, state.focusedPaneId === expected.id ? null : state.focusedPaneId);
     }
     for (const listener of paneRetypeListeners) listener(expected, replacement);
     const origins = [...transcriptOpenOrigins];

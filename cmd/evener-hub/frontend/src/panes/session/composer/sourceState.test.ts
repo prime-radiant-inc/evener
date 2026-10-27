@@ -30,6 +30,7 @@ import {
   resetPendingTurnsStoreForTests,
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
+import { beginRecoverySubmission } from "./sourceState";
 
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
@@ -741,6 +742,183 @@ test("preservation under a resumed ref refreshes an already-mounted view of it",
     );
   } finally {
     view.unmount();
+    storage.close();
+  }
+});
+
+// Preservation can await storage while the pane keeps working. Work typed or
+// settled during that wait is captured by dispose() when the pane closes
+// before the preservation settles; a disposed source can never save it itself,
+// so the preserved row must be reconciled with the disposal snapshot before
+// it settles - otherwise a reopen restores the composition from before the
+// wait and loses those edits.
+test("a pane disposed while preservation is held keeps the work it gained", async () => {
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  setMutationStorageForTests(storage);
+  const ref = "local:held-preserve";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  try {
+    await source.activateRecovery(recovery);
+    const operations = createAttachmentOperations(source.editor, source.attachments);
+    source.editText("start [image 1]");
+    const peer = new MutationOutboxIndexedDB();
+    try {
+      const peerRecovery = await peer.getRecovery(original.clientMutationId);
+      if (!peerRecovery) throw new Error("missing peer recovery fixture");
+      await peer.updateRecoveryInput(
+        original.clientMutationId,
+        [{ type: "text", text: "peer composition" }],
+        [],
+        "peer composition",
+        [],
+        [],
+        undefined,
+        undefined,
+        { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+      );
+    } finally {
+      peer.close();
+    }
+
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, "start [image 1]", [], []);
+    await storage.reached.promise;
+    // Newer typing and a settled attachment arrive while the preservation
+    // itself is held, then the pane closes before it settles.
+    source.editText("latest [image 1]");
+    operations.replaceWithSettled([
+      { marker: 1, name: "latest.png", mediaType: "image/png", data: "AQID", pending: false },
+    ]);
+    source.dispose();
+    storage.release.resolve();
+    await saving;
+    const preserved = (await storage.listRecovery(ref)).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    expect(preserved).toMatchObject({
+      composerText: "latest [image 1]",
+      payload: {
+        input: [
+          { type: "text", text: "latest [image 1]" },
+          { type: "image", mediaType: "image/png", data: "AQID", name: "latest.png" },
+        ],
+      },
+      attachments: [expect.objectContaining({ marker: 1, name: "latest.png" })],
+    });
+    expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe(preserved?.clientMutationId);
+  } finally {
+    source.dispose();
+    storage.close();
+  }
+});
+
+// A replacement composer can be mid-send on its restored row when an older
+// preservation settles. Adoption must respect the destination's submission
+// guard and recovery-operation lock: swapping the lease under the awaited
+// save makes the resend read the preserved row's revision under the original
+// id - a spurious refusal - and replaces the composition being sent. Defer,
+// then re-evaluate ownership once the operation settles.
+test("adoption defers while the destination is sending its restored row", async () => {
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  setMutationStorageForTests(storage);
+  const oldRef = "local:send-defer-old";
+  const resumed = "local:send-defer-new";
+  const original = await storage.enqueueIntent({
+    targetRef: oldRef,
+    method: "turn/start",
+    payload: { ref: oldRef, input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(oldRef, undefined, "pane-a");
+  const replacement = createTestComposerSource(resumed, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    source.editText("local preserved composition");
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+    );
+
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, "local preserved composition", [], []);
+    await storage.reached.promise;
+    await peer.retargetOutbox(oldRef, resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    const retargeted = await storage.getRecovery(original.clientMutationId);
+    if (!retargeted) throw new Error("missing retargeted recovery fixture");
+    await replacement.activateRecovery(retargeted);
+    // The replacement presses Send on its restored row: the operation lock
+    // and the submission guard are held across the awaited save.
+    const releaseOperation = replacement.tryAcquireRecoveryOperation();
+    if (!releaseOperation) throw new Error("operation lock unavailable");
+    const releaseInFlight = beginRecoverySubmission(original.clientMutationId);
+    storage.release.resolve();
+    await saving;
+
+    // The send still owns the lease and the composition it captured.
+    expect(replacement.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+    expect(replacement.getSnapshot().text).toBe("peer composition");
+    const preserved = (await storage.listRecovery(resumed)).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    expect(preserved).toBeDefined();
+
+    // Once the operation settles, ownership is re-evaluated and adoption lands.
+    releaseInFlight();
+    releaseOperation();
+    expect(replacement.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId);
+    expect(replacement.getSnapshot().text).toBe("local preserved composition");
+  } finally {
+    source.dispose();
+    replacement.dispose();
+    peer.close();
     storage.close();
   }
 });
