@@ -272,11 +272,37 @@ function destinationHasNewerEdits(
  * composition; restoring it through a fresh source would write a new revision
  * and race the send. */
 const recoverySubmissionsInFlight = new Set<string>();
+// Deferred adoptions waiting on a submission they do not own: the waiting
+// source may hold no operation lock of its own, so only the shared guard's
+// release can recheck them.
+const recoverySubmissionWaiters = new Map<string, Set<() => void>>();
+
+function onRecoverySubmissionSettled(clientMutationId: string, listener: () => void): () => void {
+  let waiters = recoverySubmissionWaiters.get(clientMutationId);
+  if (waiters === undefined) {
+    waiters = new Set();
+    recoverySubmissionWaiters.set(clientMutationId, waiters);
+  }
+  waiters.add(listener);
+  return () => {
+    const current = recoverySubmissionWaiters.get(clientMutationId);
+    if (current === undefined) return;
+    current.delete(listener);
+    if (current.size === 0) recoverySubmissionWaiters.delete(clientMutationId);
+  };
+}
 
 export function beginRecoverySubmission(clientMutationId: string): () => void {
   recoverySubmissionsInFlight.add(clientMutationId);
   return () => {
     recoverySubmissionsInFlight.delete(clientMutationId);
+    // A deferred adoption can wait on this guard alone - its own source holds
+    // no operation lock whose release would flush it. Recheck every waiter
+    // now that the id settled.
+    const waiters = recoverySubmissionWaiters.get(clientMutationId);
+    if (waiters === undefined) return;
+    recoverySubmissionWaiters.delete(clientMutationId);
+    for (const waiter of waiters) waiter();
   };
 }
 
@@ -360,6 +386,7 @@ export function createComposerSourceState(
   // operation lock or was sending its active row; flushed when the operation
   // settles, with every ownership guard re-evaluated then.
   let deferredAdoption: { targetRef: string; staleId: string; preserved: MutationRecoveryRecord } | null = null;
+  let deferredAdoptionUnwatch: (() => void) | null = null;
   let cleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let cleanupRetryAttempt = 0;
   let cleanupRetryVersion = 0;
@@ -558,9 +585,15 @@ export function createComposerSourceState(
     // id, a spurious refusal that also replaces the composition being sent.
     // Every submission holds the operation lock across its awaited save, so
     // deferring here and flushing on the lock's release re-evaluates full
-    // ownership once the operation settles.
+    // ownership once the operation settles. A submission held by ANOTHER
+    // source never releases this source's lock, so a deferral waiting on the
+    // shared guard alone also watches that guard's own release.
     if (state.getState().recoveryOperationBusy || recoverySubmissionsInFlight.has(staleId)) {
       deferredAdoption = { targetRef, staleId, preserved };
+      if (recoverySubmissionsInFlight.has(staleId)) {
+        deferredAdoptionUnwatch?.();
+        deferredAdoptionUnwatch = onRecoverySubmissionSettled(staleId, flushDeferredAdoption);
+      }
       return;
     }
     if (operations.hasPending) return;
@@ -592,6 +625,8 @@ export function createComposerSourceState(
 
   function flushDeferredAdoption(): void {
     if (deferredAdoption === null) return;
+    deferredAdoptionUnwatch?.();
+    deferredAdoptionUnwatch = null;
     const pending = deferredAdoption;
     deferredAdoption = null;
     // Re-run every guard: the settled operation may have consumed the row or
@@ -903,7 +938,23 @@ export function createComposerSourceState(
     preserved: MutationRecoveryRecord | undefined,
   ): Promise<MutationRecoveryRecord | undefined> {
     if (!disposed || disposalComposition === null) return preserved;
-    if (compositionIsEmpty(disposalComposition)) return preserved;
+    if (compositionIsEmpty(disposalComposition)) {
+      // The user cleared the composer while the preservation was pending,
+      // then closed the pane. The row preserved from before the clear no
+      // longer describes their final state: discard it - revision-guarded,
+      // like every empty cleanup - instead of leaving it as the composition
+      // a reopen restores.
+      if (preserved !== undefined) {
+        const discarded = await discardRecoveryPendingTurn(
+          preserved.clientMutationId,
+          ref,
+          undefined,
+          recoveryCompositionRevision(preserved),
+        );
+        if (discarded) return undefined;
+      }
+      return preserved;
+    }
     if (
       refusalComposition !== null &&
       recoveryCompositionFingerprint(disposalComposition) === recoveryCompositionFingerprint(refusalComposition)
@@ -930,7 +981,13 @@ export function createComposerSourceState(
       { [preserved.clientMutationId]: revision },
       compositionOwnerId,
     );
-    return reconciled ?? preserved;
+    if (reconciled) return reconciled;
+    // Another pane edited or consumed the preserved row while this source
+    // held the disposal snapshot, so the row no longer describes this pane's
+    // newest work - and a disposed source can never save that work again.
+    // Preserve the disposal snapshot under a fresh recovery owner so the
+    // advanced row does not silently swallow it.
+    return (await preserveStaleRecovery(clientMutationId, localDraftRevisionId, disposalComposition)) ?? preserved;
   }
 
   function activateRecovery(record: MutationRecoveryRecord): Promise<boolean> {
@@ -1278,6 +1335,9 @@ export function createComposerSourceState(
       boundEditor = null;
       recoveryWriteVersionRef.current += 1;
       recoveryReplacementEpochRef.current += 1;
+      deferredAdoptionUnwatch?.();
+      deferredAdoptionUnwatch = null;
+      deferredAdoption = null;
       unsubscribeCommitted();
       unsubscribeAttachments();
       unsubscribeDraft();
