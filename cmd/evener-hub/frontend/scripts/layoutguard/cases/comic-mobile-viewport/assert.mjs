@@ -93,9 +93,75 @@ async function readerGestures(send, width) {
       throw Error('reader gesture did not retain movement '+JSON.stringify({width,gesture,before,after:await evaluate(send,`(() => {const port=document.querySelector('[data-comic-scroll]').firstElementChild;return {top:port.scrollTop,max:port.scrollHeight-port.clientHeight,saved:sessionStorage.getItem('evener:comic:position:local:comic-geometry'),events:window.comicReaderInput};})()`)}));
     }
     if(!after.events.every(event=>event.trusted)||!after.events.some(event=>event.type===(gesture==='wheel'?'wheel':'touchmove')))throw Error('reader gesture was not trusted '+JSON.stringify(after));
-    evidence.push({gesture,before,after});
+    const earlyPopup=gesture==='touch'?await earlyAppearancePopup(send,after.saved):undefined;
+    const stop=gesture==='touch'?await stopReaderTouch(send):undefined;
+    evidence.push({gesture,before,after,earlyPopup,stop});
   }
   return evidence;
+}
+
+async function replaceDraft(send, text) {
+  await evaluate(send, `(() => {
+    const editor=document.querySelector('[role="textbox"]');
+    editor.focus();
+    const range=document.createRange();
+    range.selectNodeContents(editor);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+  })()`);
+  await send('Input.insertText',{text});
+}
+
+// Independent browser Range witness, not a production reader/debug API.
+function savedSourcePoint(expected) {
+  const saved=JSON.parse(sessionStorage.getItem('evener:comic:position:local:comic-geometry')??'null')?.position;
+  if(saved?.mode!=='away'||saved.sessionRef!==expected.sessionRef||saved.entryId!==expected.entryId||saved.offset!==expected.offset||JSON.stringify(saved.path)!==JSON.stringify(expected.path))return null;
+  const port=document.querySelector('[data-comic-scroll]').firstElementChild;
+  const source=[...port.querySelectorAll('[data-comic-entry]')].find(node=>node.dataset.comicSession===saved.sessionRef&&node.dataset.comicEntry===saved.entryId&&node.dataset.comicPath===JSON.stringify(saved.path)&&+node.dataset.comicStart<=saved.offset&&+node.dataset.comicEnd>saved.offset);
+  const text=source?.querySelector('[data-comic-text]');
+  if(!text||text.textContent!==window.comicGeometry.source.slice(+source.dataset.comicStart,+source.dataset.comicEnd))return null;
+  const walker=document.createTreeWalker(text,NodeFilter.SHOW_TEXT);
+  let offset=saved.offset-Number(source.dataset.comicStart),node;
+  while((node=walker.nextNode())) {
+    if(offset<node.length) {
+      const range=document.createRange();range.setStart(node,offset);range.setEnd(node,offset+1);
+      const y=range.getBoundingClientRect().top-port.getBoundingClientRect().top;
+      return y===saved.viewportOffset?{saved,y,scrollTop:port.scrollTop}:null;
+    }
+    offset-=node.length;
+  }
+  return null;
+}
+
+async function earlyAppearancePopup(send, expected) {
+  // The finger has lifted, but its native fling may still update the source.
+  // Keep the identity/offset fixed and independently check each current y.
+  const source=()=>until(send,`(${savedSourcePoint})(${JSON.stringify(expected)})`);
+  const before=await evaluate(send,appearanceSnapshot());
+  const sourceBefore=await source();
+  const popup=await openAndDismissAppearance(send,620);
+  const after=await evaluate(send,appearanceSnapshot());
+  if(before.draft!==after.draft||before.height!==after.height)throw Error('early Appearance changed draft/reader height '+JSON.stringify({before,after}));
+  const sourceAfter=await source();
+  return {popup,before,after,sourceBefore,sourceAfter};
+}
+
+async function stopReaderTouch(send) {
+  // A native stationary touch stops the previous fling. A first scrollend is
+  // insufficient: reader restoration itself can emit one during that fling.
+  const point=await evaluate(send,`(() => {
+    const port=document.querySelector('[data-comic-scroll]').firstElementChild;
+    const r=port.getBoundingClientRect(),x=r.right-16,y=r.top+r.height/2;
+    if(!port.contains(document.elementFromPoint(x,y)))throw Error('native stop target is not reachable');
+    window.comicTouchStop=[];
+    for(const type of ['pointerdown','touchstart','pointerup','touchend'])port.addEventListener(type,event=>window.comicTouchStop.push({type,trusted:event.isTrusted,id:event.pointerId??event.changedTouches[0]?.identifier,remaining:event.touches?.length}),{once:true,passive:true});
+    return {x,y};
+  })()`);
+  await send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{...point,id:2}]});
+  await send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+  const events=await until(send,`window.comicTouchStop.length===4&&window.comicTouchStop`);
+  if(JSON.stringify(events.map(event=>event.type))!==JSON.stringify(['pointerdown','touchstart','pointerup','touchend'])||events.some(event=>!event.trusted)||events[0].id!==events[2].id||events[1].id!==events[3].id||events[3].remaining!==0)throw Error('native stop did not complete '+JSON.stringify(events));
+  return events;
 }
 
 async function appearancePopup(send, bottom, stage) {
@@ -111,9 +177,17 @@ async function appearancePopup(send, bottom, stage) {
   }
 }
 
+const appearanceSnapshot = () => `(() => ({draft:document.querySelector('[role="textbox"]')?.innerHTML,reader:sessionStorage.getItem('evener:comic:position:local:comic-geometry'),height:document.querySelector('[data-comic-scroll]').getBoundingClientRect().height}))()`;
+
 async function checkAppearancePopup(send, bottom) {
-  const snapshot = () => `(() => ({draft:document.querySelector('[role="textbox"]')?.innerHTML,reader:sessionStorage.getItem('evener:comic:position:local:comic-geometry'),height:document.querySelector('[data-comic-scroll]').getBoundingClientRect().height}))()`;
-  const before = await evaluate(send,snapshot());
+  const before = await evaluate(send,appearanceSnapshot());
+  const popup = await openAndDismissAppearance(send,bottom);
+  const after = await evaluate(send,appearanceSnapshot());
+  if(JSON.stringify(before)!==JSON.stringify(after))throw Error('Appearance toggle changed draft/source/reader '+JSON.stringify({before,after}));
+  return popup;
+}
+
+async function openAndDismissAppearance(send, bottom) {
   const point = await until(send,`(async () => {
     const button=[...document.querySelectorAll('[data-comic-font][data-session-ref] button')].find(node=>node.textContent.trim()==='Appearance');
     if(!button||button.disabled)return null;
@@ -134,8 +208,6 @@ async function checkAppearancePopup(send, bottom) {
   await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
   await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
   await until(send,`!document.querySelector('[role="dialog"][aria-label="Appearance"]')&&document.activeElement?.textContent.trim()==='Appearance'`);
-  const after=await evaluate(send,snapshot());
-  if(JSON.stringify(before)!==JSON.stringify(after))throw Error('Appearance toggle changed draft/source/reader '+JSON.stringify({before,after}));
   return popup;
 }
 
@@ -234,6 +306,7 @@ export default async function assert(_measurement, { page }) {
     const restored = await readSession();
     checkSession("restored native session", restored);
     evidence.push({ width, native, model, toolbar, restored });
+    if(width<900)await replaceDraft(send,`EARLY_DRAFT_${width}`);
     try { evidence.push({width,gestures:await readerGestures(send,width)}); }
     catch(error) { failures.push(error.message); }
 
@@ -241,15 +314,7 @@ export default async function assert(_measurement, { page }) {
     // viewport stays 620px while visualViewport shrinks and scrolls independently.
     await evaluate(send, "window.comicGeometry.simulateViewport()");
     const draft = `KEYBOARD_DRAFT_${width}`;
-    await evaluate(send, `(() => {
-      const editor = document.querySelector('[role="textbox"]');
-      editor.focus();
-      const range = document.createRange();
-      range.selectNodeContents(editor);
-      window.getSelection().removeAllRanges();
-      window.getSelection().addRange(range);
-    })()`);
-    await send("Input.insertText", { text: draft });
+    await replaceDraft(send,draft);
     await frame(send);
     const beforeKeyboard = await readSession();
     for (const [name, event, values, visibleBottom] of [
