@@ -184,11 +184,16 @@ describe("draft handoff ledger", () => {
 		const { ledger } = setup();
 		ledger.beginSubmission("obligation-1", a);
 		const first = ledger.recordIdentityChange(a, b);
-		const graph = ledger.readGraph();
+		let graph = ledger.readGraph();
 		expect(graph.edges).toMatchObject([
 			{ edgeId: first.edgeId, chainId: first.chainId, from: a, to: b, obligations: ["obligation-1"] },
 		]);
 		expect(graph.obligations[0].chainId).toBe(first.chainId);
+		// The stamped chain lets the next hop carry the same obligation.
+		const second = ledger.recordIdentityChange(b, c);
+		graph = ledger.readGraph();
+		expect(second.chainId).toBe(first.chainId);
+		expect(graph.edges.find((edge) => edge.edgeId === second.edgeId)?.obligations).toEqual(["obligation-1"]);
 	});
 
 	test("reuses the chain and idempotently records one identity change", () => {
@@ -201,5 +206,47 @@ describe("draft handoff ledger", () => {
 		expect(graph.edges).toHaveLength(2);
 		expect(graph.edges.find((edge) => edge.edgeId === second.edgeId)?.dependencies).toEqual([]);
 		expect(graph.edges.find((edge) => edge.edgeId === first.edgeId)?.dependencies).toEqual([second.edgeId]);
+	});
+
+	test("stamps an obligation that starts after its edge was recorded", () => {
+		const { ledger } = setup();
+		const first = ledger.recordIdentityChange(a, b);
+		// The submission starts after the edge exists, so its obligation has no
+		// chain yet. The same identity change is recorded again.
+		ledger.beginSubmission("obligation-1", a);
+		expect(ledger.recordIdentityChange(a, b)).toEqual(first);
+		const second = ledger.recordIdentityChange(b, c);
+		const graph = ledger.readGraph();
+		expect(graph.obligations[0].chainId).toBe(first.chainId);
+		expect(graph.edges.find((edge) => edge.edgeId === second.edgeId)?.obligations).toEqual(["obligation-1"]);
+	});
+
+	test("re-records an identity change after its edge settled or was cleaned", () => {
+		const { ledger } = setup();
+		const first = ledger.recordIdentityChange(a, b);
+		ledger.settleEdge(first.edgeId, [], "hash");
+		const second = ledger.recordIdentityChange(a, b);
+		expect(second.edgeId).not.toBe(first.edgeId);
+		expect(ledger.readGraph().edges.find((edge) => edge.edgeId === second.edgeId)?.state).toBe("pending");
+		ledger.refuseEdge(second.edgeId, []);
+		ledger.cleanEdge(second.edgeId);
+		ledger.cleanEdge(first.edgeId);
+		const third = ledger.recordIdentityChange(a, b);
+		expect(third.edgeId).not.toBe(first.edgeId);
+		expect(() => ledger.settleEdge(third.edgeId, [], "hash")).not.toThrow();
+	});
+
+	test("merges dependencies and obligations passed for an existing edge", () => {
+		const { ledger } = setup();
+		ledger.beginSubmission("obligation-1", a);
+		const edge = ledger.createEdge({ chainId: "chain", from: a, to: b });
+		const merged = ledger.createEdge({
+			chainId: "chain",
+			from: a,
+			to: b,
+			obligations: ["obligation-1"],
+		});
+		expect(merged.edgeId).toBe(edge.edgeId);
+		expect(merged.obligations).toEqual(["obligation-1"]);
 	});
 });

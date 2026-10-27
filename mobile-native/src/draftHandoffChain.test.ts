@@ -5,6 +5,8 @@ import type { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { MutationOutboxSQLite } from "./mutationOutboxStorage";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
+import type { MutationIntent } from "@evener/appwire-client/state/mutation";
+import { MutationNotSentError } from "../../mobile/src/state/conversationMutation";
 
 // The ledger's default id source is expo-crypto through the storage adapter;
 // the counter makes chain and edge ids stable across assertions.
@@ -40,7 +42,7 @@ function setup() {
 		undefined,
 		() => storage.handoffLedger,
 	);
-	return { storage, storageLedger: storage.handoffLedger, repository, library };
+	return { storage, storageLedger: storage.handoffLedger, repository, library, mutations };
 }
 
 /** A resume records the identity change in the retarget savepoint even when no
@@ -230,5 +232,72 @@ describe("handoff chain obligations", () => {
 		storageLedger.settleEdge(bc.edgeId, [], "hash");
 		storageLedger.settleEdge(ab.edgeId, [], "hash");
 		expect(storageLedger.readGraph().edges.map((edge) => edge.state)).toEqual(["settled", "settled"]);
+	});
+
+	test("rolls the mutation row move back when recording the edge fails", async () => {
+		const { storage, storageLedger, mutations } = setup();
+		const intent: MutationIntent = {
+			targetRef: targetKey("a"),
+			threadId: "thread-a",
+			method: "notes/human/set",
+			payload: { ref: "a", expectedInstanceId: "instance-a", note: "waiting" },
+			attachments: [],
+			optimisticDisplay: null,
+		};
+		await storage.enqueueIntent(intent);
+		mutations.database.exec(
+			"CREATE TRIGGER reject_handoff_edge BEFORE INSERT ON draft_handoff_edges BEGIN SELECT RAISE(ABORT, 'reject'); END",
+		);
+		expect(() => resume(storage, "a", "b")).toThrow(/reject/);
+		mutations.database.exec("DROP TRIGGER reject_handoff_edge");
+		expect(await storage.listOutbox(targetKey("a"))).toHaveLength(1);
+		expect(storageLedger.readGraph().edges).toEqual([]);
+	});
+
+	test("a local refusal after the capture is gone still resolves the obligation", async () => {
+		const { library, repository, storageLedger } = setup();
+		const document = library.open(endpoint("a"));
+		document.edit("current");
+		let reject!: (error: Error) => void;
+		const submitted = document.submit(
+			() =>
+				new Promise<boolean>((_resolve, rejectPromise) => {
+					reject = rejectPromise;
+				}),
+		);
+		const token = repository.read(endpoint("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		// The hub is removed while the submission is in flight, so its capture
+		// token no longer matches the document's snapshot.
+		document.forget();
+		reject(new MutationNotSentError("the session retired"));
+		expect(await submitted).toBe("not-sent");
+		expect(storageLedger.readGraph().obligations).toMatchObject([
+			{ obligationId: token, origin: endpoint("a"), state: "failed" },
+		]);
+	});
+
+	test("a failing obligation write rejects the send and records the failure", async () => {
+		const { repository } = setup();
+		let token: string | undefined;
+		const resolved: [string, string][] = [];
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => ({
+				beginSubmission: (obligationId: string) => {
+					token = obligationId;
+					throw new Error("ledger unavailable");
+				},
+				resolveSubmission: (obligationId: string, state: "completed" | "failed") => {
+					resolved.push([obligationId, state]);
+				},
+			}),
+		);
+		const document = library.open(endpoint("a"));
+		document.edit("current");
+		await expect(document.submit(async () => true)).rejects.toThrow(/ledger unavailable/);
+		expect(token).toBeDefined();
+		expect(resolved).toEqual([[token, "failed"]]);
 	});
 });

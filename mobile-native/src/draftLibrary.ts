@@ -115,7 +115,7 @@ export class DraftLibrary {
 		this.pending.delete(this.handoffKey(to));
 		destination.adopt(snapshot.record);
 		if (destination !== source) {
-			source.retire();
+			source.retireInto(destination);
 			this.rememberRetired(from.hubId, source);
 			const sessions = this.hubs.get(from.hubId);
 			if (sessions?.get(from.sessionRef) === source) sessions.delete(from.sessionRef);

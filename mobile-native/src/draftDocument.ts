@@ -154,6 +154,11 @@ export class DraftDocument {
 	 * draft, while an already pending submission still settles onward. */
 	private retired = false;
 	private unsavedImages = new Map<string, DraftImageData>();
+	// A resumed identity's document that this retired one settles through. A
+	// submission already in flight outlives its screen, and its completion must
+	// clear the capture at the destination that now owns the record until the
+	// ledger delivers that completion itself.
+	private successor: DraftDocument | undefined;
 	imagePreviews(images: DraftImage[] = this.snapshot.record.images ?? []): InputAttachment[] {
 		return images.map((image) => {
 			const pending = this.unsavedImages.get(image.id);
@@ -261,6 +266,7 @@ export class DraftDocument {
 	forget() {
 		this.forgotten = true;
 		this.retired = true;
+		this.successor = undefined;
 		this.unsavedImages.clear();
 		this.update({
 			record: { draft: "", unconfirmed: null },
@@ -277,9 +283,12 @@ export class DraftDocument {
 		this.update({ record, loaded: true, submitting: false, error: null });
 	}
 
-	/** Retire this document after a handoff. Ordinary edits stop here; an
-	 * in-flight submission settles through the durable obligation it recorded. */
-	retire(): void {
+	/** Retire this document after a handoff. Ordinary edits stop here, while a
+	 * later settlement for its in-flight submission belongs to the document that
+	 * inherited the record. */
+	retireInto(successor: DraftDocument): void {
+		if (successor === this) return;
+		this.successor = successor;
 		this.retired = true;
 		this.unsavedImages.clear();
 	}
@@ -559,12 +568,13 @@ export class DraftDocument {
 			},
 			false,
 		);
-		// Durable before any transport call: a handoff edge that inherits this
-		// submission must wait for its completion instead of settling without the
-		// completion markers.
-		this.submissionLedger?.().beginSubmission(draftCaptureToken, this.destination);
 		this.update({ submitting: true });
 		try {
+			// Durable before any transport call: a handoff edge that inherits this
+			// submission must wait for its completion instead of settling without
+			// the completion markers. A failure resolves as failed and keeps its
+			// original error.
+			this.submissionLedger?.().beginSubmission(draftCaptureToken, this.destination);
 			const context: ConversationMutationContext = {
 				composer: {
 					text,
@@ -579,7 +589,7 @@ export class DraftDocument {
 				draftCaptureToken,
 			};
 			if (!(await operation(text, inputImages, context))) {
-				this.submissionLedger?.().resolveSubmission(draftCaptureToken, "failed");
+				this.resolveObligation(draftCaptureToken, "failed");
 				return false;
 			}
 			if (builtinCommand) {
@@ -603,7 +613,7 @@ export class DraftDocument {
 						},
 						draftCaptureToken,
 					);
-				} else this.submissionLedger?.().resolveSubmission(draftCaptureToken, "completed", metadata?.recoveryIds ?? []);
+				} else this.resolveObligation(draftCaptureToken, "completed", metadata?.recoveryIds ?? []);
 			} else if (!metadata?.recoveryIds?.length && this.snapshot.record.unconfirmedCaptureToken === draftCaptureToken)
 				this.completeSubmission(
 					{
@@ -615,7 +625,7 @@ export class DraftDocument {
 					},
 					draftCaptureToken,
 				);
-			else this.submissionLedger?.().resolveSubmission(draftCaptureToken, "completed");
+			else this.resolveObligation(draftCaptureToken, "completed");
 			return true;
 		} catch (error) {
 			// A proven local refusal made no durable row and no request. Clear only
@@ -625,7 +635,7 @@ export class DraftDocument {
 			// chain so a submission that outlived a retirement clears the capture
 			// where the record now lives.
 			if (!(error instanceof MutationNotSentError)) {
-				this.submissionLedger?.().resolveSubmission(draftCaptureToken, "failed");
+				this.resolveObligation(draftCaptureToken, "failed");
 				throw error;
 			}
 			if (this.snapshot.record.unconfirmedCaptureToken === draftCaptureToken)
@@ -640,26 +650,70 @@ export class DraftDocument {
 					draftCaptureToken,
 					"failed",
 				);
+			else this.resolveObligation(draftCaptureToken, "failed");
 			return "not-sent";
 		} finally {
 			this.update({ submitting: false });
 		}
 	}
 
-	/** Resolve the submission's durable obligation, then write the record only if
-	 * this document still owns its destination. A retired document's completion
-	 * lives in the ledger for the handoff to deliver. */
+	/** Resolve the submission's durable obligation, then route the completion to
+	 * the document that inherited the record during a handoff. The in-memory
+	 * forwarding stays until the ledger delivers completions itself. */
 	private completeSubmission(
 		record: DraftRecord,
 		captureToken: string,
 		state: "completed" | "failed" = "completed",
 	): void {
-		this.submissionLedger?.().resolveSubmission(
+		this.resolveObligation(
 			captureToken,
 			state,
 			state === "completed" ? (record.completedCommandRecoveryIds ?? []) : [],
 		);
-		if (!this.retired) this.persist(record, true);
+		if (this.successor) this.successor.forwardCompletion(record, captureToken);
+		else this.persist(record, true);
+	}
+
+	/** A failed obligation write must not mask the submission's own outcome. The
+	 * open obligation blocks handoff settlement until a later attempt resolves it. */
+	private resolveObligation(
+		captureToken: string,
+		state: "completed" | "failed",
+		completedCommandIds: readonly string[] = [],
+	): void {
+		try {
+			this.submissionLedger?.().resolveSubmission(captureToken, state, completedCommandIds);
+		} catch {
+			// The obligation stays open; recovery retries the resolution.
+		}
+	}
+
+	/** Follow the whole handoff chain: A's completion must reach the document
+	 * that currently owns the record, not an intermediate retired destination. */
+	private forwardCompletion(record: DraftRecord, captureToken: string): void {
+		if (this.successor) this.successor.forwardCompletion(record, captureToken);
+		else this.acceptSubmissionCompletion(record, captureToken);
+	}
+
+	private acceptSubmissionCompletion(settled: DraftRecord, captureToken: string): void {
+		const current = this.snapshot.record;
+		const next: DraftRecord = { ...current };
+		if (current.unconfirmedCaptureToken === captureToken) {
+			next.unconfirmed = null;
+			next.unconfirmedImages = undefined;
+			next.unconfirmedComposer = undefined;
+			next.unconfirmedCaptureToken = undefined;
+		}
+		const completed = settled.completedCommandRecoveryIds ?? [];
+		if (completed.length)
+			next.completedCommandRecoveryIds = [...new Set([...(current.completedCommandRecoveryIds ?? []), ...completed])];
+		const released = settled.releasedRecoveryIds ?? [];
+		if (released.length) next.releasedRecoveryIds = [...new Set([...(current.releasedRecoveryIds ?? []), ...released])];
+		try {
+			this.persist(next, true);
+		} catch {
+			/* The destination keeps its work; the composer's Retry owns the failure. */
+		}
 	}
 
 	/** Clear only the unconfirmed composition whose exact submission token a

@@ -126,8 +126,8 @@ describe("drafts across navigation", () => {
 		expect(library.open(to)).toBe(destination);
 	});
 
-	it("records a retired submission's obligation and resolves it when it completes", async () => {
-		const { library, repository, ledger } = setupWithLedger();
+	it("keeps a pending submission's capture under the resumed identity and clears it on completion", async () => {
+		const { library, repository } = setup();
 		const from = { hubId: "one", sessionRef: "old" };
 		const to = { hubId: "one", sessionRef: "resumed" };
 		const source = library.open(from);
@@ -144,17 +144,24 @@ describe("drafts across navigation", () => {
 		expect(repository.read(from).unconfirmed).toBe("pending message");
 
 		expect(library.handoff(from, to)).toBe(true);
-		expect(ledger.readGraph().obligations).toMatchObject([{ obligationId: token, origin: from, state: "open" }]);
+		expect(repository.read(to)).toMatchObject({
+			unconfirmed: "pending message",
+			unconfirmedCaptureToken: token,
+		});
+
+		// The destination screen can accept new input while the first submission
+		// is still settling; that work must survive the completion.
+		const destination = library.open(to);
+		destination.edit("edited after the handoff");
 		settle(true);
 		await submitted;
-		// The completion is durable here; delivering it to the destination record
-		// belongs to the claim/compose/decide slice.
-		expect(ledger.readGraph().obligations).toMatchObject([{ obligationId: token, origin: from, state: "completed" }]);
+		expect(repository.read(to)).toEqual({ draft: "edited after the handoff", unconfirmed: null });
+		expect(destination.getSnapshot().record.draft).toBe("edited after the handoff");
 		expect(repository.read(from)).toEqual({ draft: "", unconfirmed: null });
 	});
 
-	it("blocks a destination submission while the inherited capture is unresolved", async () => {
-		const { library, repository, ledger } = setupWithLedger();
+	it("does not clear a newer destination capture when the retired submission completes", async () => {
+		const { library, repository } = setup();
 		const from = { hubId: "one", sessionRef: "old" };
 		const to = { hubId: "one", sessionRef: "resumed" };
 		const source = library.open(from);
@@ -170,16 +177,19 @@ describe("drafts across navigation", () => {
 		if (token === undefined) throw new Error("missing source capture token");
 		expect(library.handoff(from, to)).toBe(true);
 
-		// The adopted record carries the first submission's uncertainty, so a
-		// second submission cannot start and records no second obligation.
 		const destination = library.open(to);
-		expect(await destination.submitText("newer message", async () => true)).toBeUndefined();
-		expect(repository.read(to).unconfirmedCaptureToken).toBe(token);
-		expect(ledger.readGraph().obligations).toHaveLength(1);
+		expect(destination.clearMatchingUnconfirmedCapture(token)).toBe(true);
+		await destination.submitText("newer message", async () => false);
+		const newerToken = repository.read(to).unconfirmedCaptureToken;
+		expect(newerToken).toBeDefined();
+		expect(newerToken).not.toBe(token);
 
 		settle(true);
 		await submitted;
-		expect(ledger.readGraph().obligations).toMatchObject([{ obligationId: token, state: "completed" }]);
+		expect(repository.read(to)).toMatchObject({
+			unconfirmed: "newer message",
+			unconfirmedCaptureToken: newerToken,
+		});
 	});
 
 	it("leaves a destination with selection-only metadata untouched", () => {
@@ -258,8 +268,8 @@ describe("drafts across navigation", () => {
 		expect(repository.read(to).draft).toBe("edited recovery");
 	});
 
-	it("keeps one obligation across two handoffs and resolves it at the terminal hop", async () => {
-		const { library, repository, ledger } = setupWithLedger();
+	it("forwards a pending submission through two handoffs", async () => {
+		const { library, repository } = setup();
 		const a = { hubId: "one", sessionRef: "a" };
 		const b = { hubId: "one", sessionRef: "b" };
 		const c = { hubId: "one", sessionRef: "c" };
@@ -279,16 +289,22 @@ describe("drafts across navigation", () => {
 		const middle = library.open(b);
 		middle.edit("middle work");
 		expect(library.handoff(b, c)).toBe(true);
-		expect(ledger.readGraph().obligations).toMatchObject([{ obligationId: token, state: "open" }]);
+		expect(repository.read(c)).toMatchObject({
+			draft: "middle work",
+			unconfirmed: "pending message",
+			unconfirmedCaptureToken: token,
+		});
 
 		settle(true);
 		await submitted;
-		expect(ledger.readGraph().obligations).toMatchObject([{ obligationId: token, state: "completed" }]);
+		const final = library.open(c);
+		expect(repository.read(c)).toEqual({ draft: "middle work", unconfirmed: null });
+		expect(final.getSnapshot().record.unconfirmed).toBeNull();
 		expect(repository.read(b)).toEqual({ draft: "", unconfirmed: null });
 	});
 
-	it("retires ordinary source mutations while the obligation records the settlement", async () => {
-		const { library, repository, ledger } = setupWithLedger();
+	it("retires ordinary source mutations while retaining settlement forwarding", async () => {
+		const { library, repository } = setup();
 		const from = { hubId: "one", sessionRef: "old" };
 		const to = { hubId: "one", sessionRef: "resumed" };
 		const source = library.open(from);
@@ -317,7 +333,7 @@ describe("drafts across navigation", () => {
 
 		settle(true);
 		await submitted;
-		expect(ledger.readGraph().obligations).toMatchObject([{ state: "completed" }]);
+		expect(repository.read(to)).toEqual({ draft: "", unconfirmed: null });
 	});
 
 	it("invalidates a retired source when its hub is removed", () => {
@@ -332,5 +348,38 @@ describe("drafts across navigation", () => {
 		library.removeHub("one");
 		expect(source.getSnapshot().loaded).toBe(false);
 		expect(repository.read(from)).toEqual({ draft: "", unconfirmed: null });
+	});
+
+	it("delivers an in-flight built-in completion to the resumed destination", async () => {
+		const { library, repository, ledger } = setupWithLedger();
+		const from = { hubId: "one", sessionRef: "old" };
+		const to = { hubId: "one", sessionRef: "resumed" };
+		repository.write(from, {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const source = library.open(from);
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		const token = repository.read(from).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		expect(library.handoff(from, to)).toBe(true);
+
+		finish();
+		await submitted;
+		expect(repository.read(to)).toMatchObject({
+			draft: "",
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+		expect(ledger.readGraph().obligations).toMatchObject([
+			{ obligationId: token, origin: from, state: "completed", completedCommandIds: ["recovered-a"] },
+		]);
 	});
 });

@@ -86,9 +86,13 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			 created_at INTEGER NOT NULL,
 			 state_changed_at INTEGER NOT NULL)`,
 		);
+		// Only live edges hold the identity: a cleaned tombstone must never block
+		// a later attempt for the same pair.
+		this.db.execSync("DROP INDEX IF EXISTS draft_handoff_edges_identity");
 		this.db.execSync(
 			`CREATE UNIQUE INDEX IF NOT EXISTS draft_handoff_edges_identity
-			 ON draft_handoff_edges (chain_id, from_hub_id, from_ref, to_hub_id, to_ref)`,
+			 ON draft_handoff_edges (chain_id, from_hub_id, from_ref, to_hub_id, to_ref)
+			 WHERE state != 'cleaned'`,
 		);
 		this.db.execSync(
 			`CREATE INDEX IF NOT EXISTS draft_handoff_edges_destination
@@ -136,7 +140,7 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 		return withSavepoint(this.db, "draft_handoff_record_identity", () => {
 			const recorded = this.db.getFirstSync<EdgeRow>(
 				`SELECT * FROM draft_handoff_edges
-				 WHERE from_hub_id = ? AND from_ref = ? AND to_hub_id = ? AND to_ref = ? AND state != 'cleaned'
+				 WHERE from_hub_id = ? AND from_ref = ? AND to_hub_id = ? AND to_ref = ? AND state = 'pending'
 				 ORDER BY created_at DESC, rowid DESC LIMIT 1`,
 				from.hubId,
 				from.sessionRef,
@@ -144,8 +148,10 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 				to.sessionRef,
 			);
 			if (recorded !== null) {
-				for (const obligation of this.openObligations(recorded.chain_id, from))
+				for (const obligation of this.openObligations(recorded.chain_id, from)) {
+					this.stampChain(obligation, recorded.chain_id);
 					this.attachObligation(recorded.edge_id, obligation);
+				}
 				for (const predecessor of this.db.getAllSync<EdgeRow>(
 					`SELECT * FROM draft_handoff_edges
 					 WHERE to_hub_id = ? AND to_ref = ? AND state != 'cleaned' ORDER BY created_at, rowid`,
@@ -173,7 +179,19 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 				from.hubId,
 				from.sessionRef,
 			);
-			const chainId = inbound?.chain_id ?? this.#createId();
+			// A settled or refused edge with the same identity is a finished
+			// attempt, not something to revive: record a fresh chain instead.
+			const finished = this.db.getFirstSync<EdgeRow>(
+				`SELECT * FROM draft_handoff_edges
+				 WHERE from_hub_id = ? AND from_ref = ? AND to_hub_id = ? AND to_ref = ? AND state != 'cleaned'
+				 ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+				from.hubId,
+				from.sessionRef,
+				to.hubId,
+				to.sessionRef,
+			);
+			const reusedChain = inbound?.chain_id ?? this.#createId();
+			const chainId = finished !== null && finished.chain_id === reusedChain ? this.#createId() : reusedChain;
 			const obligations = this.openObligations(chainId, from);
 			for (const obligation of obligations) this.stampChain(obligation, chainId);
 			const edge = this.createEdge({ chainId, from, to, obligations });
@@ -192,7 +210,24 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 	createEdge(input: CreateDraftHandoffEdgeInput): DraftHandoffEdge {
 		return withSavepoint(this.db, "draft_handoff_edge_insert", () => {
 			const existing = this.edgeByIdentity(input.chainId, input.from, input.to);
-			if (existing !== undefined) return existing;
+			if (existing !== undefined) {
+				// Merge rather than silently ignore what the caller carried.
+				for (const dependency of input.dependencies ?? []) {
+					if (this.edge(dependency) === undefined) throw new Error(`unknown handoff dependency ${dependency}`);
+					this.db.runSync(
+						`INSERT OR IGNORE INTO draft_handoff_dependencies (edge_id, depends_on_edge_id) VALUES (?, ?)`,
+						existing.edgeId,
+						dependency,
+					);
+				}
+				for (const obligation of input.obligations ?? []) {
+					if (this.obligation(obligation) === undefined) throw new Error(`unknown handoff obligation ${obligation}`);
+					this.attachObligation(existing.edgeId, obligation);
+				}
+				const merged = this.edge(existing.edgeId);
+				if (merged === undefined) throw new Error("handoff edge disappeared");
+				return merged;
+			}
 			const edgeId = this.#createId();
 			const now = this.#now();
 			this.db.runSync(
@@ -460,7 +495,8 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 	): DraftHandoffEdge | undefined {
 		const row = this.db.getFirstSync<EdgeRow>(
 			`SELECT * FROM draft_handoff_edges
-			 WHERE chain_id = ? AND from_hub_id = ? AND from_ref = ? AND to_hub_id = ? AND to_ref = ?`,
+			 WHERE chain_id = ? AND from_hub_id = ? AND from_ref = ? AND to_hub_id = ? AND to_ref = ?
+			   AND state != 'cleaned'`,
 			chainId,
 			from.hubId,
 			from.sessionRef,
