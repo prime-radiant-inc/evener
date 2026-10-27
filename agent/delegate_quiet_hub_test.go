@@ -41,20 +41,16 @@ func seedQuietHubLease(t *testing.T, controller *delegateTreeController, clk *ag
 // func frees the slot.
 func wedgeQuietLease(t *testing.T, s *Session, lease delegateLease) (unwedge func()) {
 	t.Helper()
-	delegateQuietWatchHubs.Lock()
-	hub := delegateQuietWatchHubs.hubs[s]
-	delegateQuietWatchHubs.Unlock()
-	if hub == nil {
-		t.Fatal("no quiet hub registered for session")
-	}
-	hub.mu.Lock()
+	s.quietWatch.mu.Lock()
 	var busy *uint32
-	for entry := range hub.entries {
-		if entry.lease == lease {
-			busy = entry.busy
+	if hub := s.quietWatch.hub; hub != nil {
+		for entry := range hub.entries {
+			if entry.lease == lease {
+				busy = entry.busy
+			}
 		}
 	}
-	hub.mu.Unlock()
+	s.quietWatch.mu.Unlock()
 	if busy == nil {
 		t.Fatal("lease has no in-flight guard")
 	}
@@ -81,11 +77,10 @@ const quietHubTripwire = 10 * time.Second
 // after the durable write lands, so a received signal means the attention is
 // already readable (each lease fires once per shared tick). The returned wait
 // collects the leases in arrival order.
-func armQuietTicks(t *testing.T, want map[delegateLease]int) func() []delegateLease {
+func armQuietTicks(t *testing.T, root *Session, want map[delegateLease]int) func() []delegateLease {
 	t.Helper()
 	ticks := make(chan delegateLease, 16)
-	restore := setQuietWatchTickDone(func(lease delegateLease) { ticks <- lease })
-	t.Cleanup(restore)
+	root.cfg.testOnly.delegateQuietWatchTickDone = func(lease delegateLease) { ticks <- lease }
 	remaining := make(map[delegateLease]int, len(want))
 	maps.Copy(remaining, want)
 	left := 0
@@ -143,7 +138,7 @@ func TestDelegateQuietHub_SharedTicksReachAllLeases(t *testing.T) {
 	}
 
 	want := map[delegateLease]int{leaseA: 1, leaseB: 1}
-	wait := armQuietTicks(t, want)
+	wait := armQuietTicks(t, root, want)
 	clk.Advance(delegateQuietCheckInterval)
 	if got := wait(); len(got) != 2 {
 		t.Fatalf("shared-tick completions = %+v, want one per lease", got)
@@ -171,7 +166,7 @@ func TestDelegateQuietHub_DetachedLeaseStopsReceiving(t *testing.T) {
 		t.Fatalf("quiet hub tickers after one of two leases detached = %d, want the shared ticker still running", got)
 	}
 
-	wait := armQuietTicks(t, map[delegateLease]int{leaseB: 1})
+	wait := armQuietTicks(t, root, map[delegateLease]int{leaseB: 1})
 	clk.Advance(delegateQuietCheckInterval)
 	if got := wait(); len(got) != 1 || got[0] != leaseB {
 		t.Fatalf("remaining lease ticks = %+v, want [%+v]", got, leaseB)
@@ -251,7 +246,7 @@ func TestDelegateQuietHub_RearmAfterLastDetachFiresNewTicker(t *testing.T) {
 		t.Fatalf("quiet hub tickers after re-arm = %d, want 1 shared ticker", got)
 	}
 
-	wait := armQuietTicks(t, map[delegateLease]int{leaseSecond: 1})
+	wait := armQuietTicks(t, root, map[delegateLease]int{leaseSecond: 1})
 	clk.Advance(delegateQuietCheckInterval)
 	if got := wait(); len(got) != 1 || got[0] != leaseSecond {
 		t.Fatalf("re-armed lease ticks = %+v, want [%+v]", got, leaseSecond)
@@ -277,7 +272,7 @@ func TestDelegateQuietHub_BlockedLeaseDelaysNeitherOthersNorShutdown(t *testing.
 	// ticks instead of queueing a goroutine per tick.
 	defer wedgeQuietLease(t, root, leaseSlow)()
 
-	wait := armQuietTicks(t, map[delegateLease]int{leaseFast: 1})
+	wait := armQuietTicks(t, root, map[delegateLease]int{leaseFast: 1})
 	clk.Advance(delegateQuietCheckInterval)
 	if got := wait(); len(got) != 1 || got[0] != leaseFast {
 		t.Fatalf("ticks with blocked lease = %+v, want only [%+v]", got, leaseFast)
@@ -339,7 +334,7 @@ func TestDelegateQuietHub_ConcurrentAttachDetachNeverStrandsALease(t *testing.T)
 	for _, lease := range leases {
 		want[lease] = 1
 	}
-	wait := armQuietTicks(t, want)
+	wait := armQuietTicks(t, root, want)
 	clk.Advance(delegateQuietCheckInterval)
 	if got := wait(); len(got) != workers {
 		t.Fatalf("ticks after churn = %+v, want one per attached lease", got)
@@ -381,7 +376,7 @@ func TestDelegateQuietHub_ChurnLeavesAttachedLeaseTicking(t *testing.T) {
 	if got := clk.BlockedCount(); got != 1 {
 		t.Fatalf("quiet hub tickers with one lease attached = %d, want 1", got)
 	}
-	wait := armQuietTicks(t, map[delegateLease]int{anchor: 1})
+	wait := armQuietTicks(t, root, map[delegateLease]int{anchor: 1})
 	clk.Advance(delegateQuietCheckInterval)
 	if got := wait(); len(got) != 1 || got[0] != anchor {
 		t.Fatalf("ticks after churn = %+v, want [%+v]", got, anchor)

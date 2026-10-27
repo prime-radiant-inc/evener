@@ -109,6 +109,7 @@ type Session struct {
 	id                     string
 	cfg                    SessionConfig
 	delegateController     *delegateTreeController
+	quietWatch             delegateQuietWatchHost
 	delegateRootSessionID  string
 	owningDelegateID       string
 	ownsDelegateController bool
