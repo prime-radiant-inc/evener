@@ -1578,6 +1578,84 @@ test("a retargeted autosave carries the selected row past an older peer row", as
   }
 });
 
+// A replacement's saved edit is newer than the composition preservation is
+// about to restore, even after its composer closes.
+test("a disposed replacement's saved edit keeps its selection", async () => {
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  setMutationStorageForTests(storage);
+  const oldRef = "local:disposed-edit-old";
+  const resumed = "local:disposed-edit-new";
+  const original = await storage.enqueueIntent({
+    targetRef: oldRef,
+    method: "turn/start",
+    payload: { ref: oldRef, input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(oldRef, undefined, "pane-a");
+  const replacement = createTestComposerSource(resumed, undefined, "pane-a");
+  let reloaded: ReturnType<typeof createTestComposerSource> | undefined;
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    const localText = "local preserved composition";
+    source.editText(localText);
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+    );
+
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, localText, [], []);
+    await storage.reached.promise;
+    await peer.retargetOutbox(oldRef, resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    const retargeted = await storage.getRecovery(original.clientMutationId);
+    if (!retargeted) throw new Error("missing retargeted recovery fixture");
+    replacement.setActiveRecoveryId(retargeted);
+    replacement.editText("newer replacement work");
+    await replacement.queueRecoveryPersistence(original.clientMutationId, "newer replacement work", [], []);
+    replacement.dispose();
+    storage.release.resolve();
+    await saving;
+
+    expect(readRecoverySelection(resumed, source.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+    reloaded = createTestComposerSource(resumed, undefined, "pane-a");
+    expect(readRecoverySelection(resumed, reloaded.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+    expect((await storage.getRecovery(original.clientMutationId))?.composerText).toBe("newer replacement work");
+  } finally {
+    storage.release.resolve();
+    source.dispose();
+    replacement.dispose();
+    reloaded?.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
 // Another tab may consume the source row before it retargets the ref, and the
 // ref may resume again afterwards. No surviving recovery row can carry the
 // destination, so ref forwarding itself must persist every hop.

@@ -81,6 +81,11 @@ export interface DocumentPaneState {
 
 const documentPaneStates = new Map<OpenPaneRecord, DocumentPaneState>();
 
+// A legacy Return can retype one pane through a session-ref transcript and
+// back. The pane lifetime keeps its composer, so hold its seat by pane id while
+// the transcript record carries none, then reattach it on the way back.
+const retainedComposerSeats = new Map<string, string>();
+
 export function documentPaneState(pane: OpenPaneRecord): DocumentPaneState | undefined {
   return documentPaneStates.get(pane);
 }
@@ -375,6 +380,15 @@ function writeSurvivingRefSeat(ref: string, panes: readonly OpenPaneRecord[], pr
     candidates.find((pane) => pane.slot === "main") ??
     candidates[0];
   if (chosen?.composerSeatId !== undefined) writeRefComposerSeat(ref, chosen.composerSeatId);
+}
+
+// The conversation mapping names the pane that currently owns the route. Every
+// transition that leaves a conversation pane as that owner writes it through
+// this one rule.
+function writePaneRefSeat(pane: OpenPaneRecord): void {
+  if (!isConversationPaneType(pane.type) || pane.composerSeatId === undefined) return;
+  const ref = refParam(pane.params);
+  if (ref !== null) writeRefComposerSeat(ref, pane.composerSeatId);
 }
 
 // The live DockviewApi, registered by DockHost once dockview is ready and
@@ -769,6 +783,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       if (seatChanged && seat !== undefined) main.composerSeatId = seat;
       if (!paramsChanged && !duplicatesRemoved && !seatChanged && state.focusedPaneId === main.id) return main.id;
       const mainWithParams = paramsChanged ? { ...main, params } : main;
+      writePaneRefSeat(mainWithParams);
       const nextPanes = panes.map((pane) => (pane.id === main.id ? mainWithParams : pane));
       const nextFocusedPaneId = main.id;
       set({ panes: nextPanes, focusedPaneId: nextFocusedPaneId });
@@ -797,6 +812,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       else if (pane.slot === "main") pane.slot = "secondary";
     }
     set({ panes: [...panes] });
+    writePaneRefSeat(source);
   },
 
   retypePane(expected, type, params) {
@@ -806,18 +822,27 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     if (expected.type === type && expected.params === params) return true;
     const replacement = { ...expected, type, params };
     if (!isConversationPaneType(type)) {
-      // A read-only transcript owns no composer selection.
+      // A read-only transcript owns no composer selection, but keeps the
+      // lifetime's seat for a later return to a conversation type.
+      if (expected.composerSeatId !== undefined) retainedComposerSeats.set(expected.id, expected.composerSeatId);
       delete replacement.composerSeatId;
     } else {
       const ref = refParam(params);
       if (ref !== null) {
         if (replacement.composerSeatId === undefined) {
-          replacement.composerSeatId = placeComposerSeat(ref, state.panes);
+          const retained = retainedComposerSeats.get(replacement.id);
+          if (retained === undefined) {
+            replacement.composerSeatId = placeComposerSeat(ref, state.panes);
+          } else {
+            retainedComposerSeats.delete(replacement.id);
+            replacement.composerSeatId = retained;
+            writePaneRefSeat(replacement);
+          }
         } else {
           // A retarget (resume, then return to the resumed session) keeps the
           // pane's seat. Persist it under the destination ref so a mobile
           // route reconstruction can find that seat after reload.
-          writeRefComposerSeat(ref, replacement.composerSeatId);
+          writePaneRefSeat(replacement);
         }
       }
     }
@@ -1131,6 +1156,10 @@ workspaceStore.subscribe((state, previous) => {
   }
   for (const pane of documentPaneStates.keys()) {
     if (!state.panes.includes(pane)) documentPaneStates.delete(pane);
+  }
+  const livePaneIds = new Set(state.panes.map((pane) => pane.id));
+  for (const paneId of retainedComposerSeats.keys()) {
+    if (!livePaneIds.has(paneId)) retainedComposerSeats.delete(paneId);
   }
 });
 
