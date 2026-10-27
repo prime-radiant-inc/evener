@@ -664,6 +664,9 @@ func formatJobWatchInspect(out jobWatchInspectToolResult) string {
 // (0, false, nil); an int or an integral, finite float64 is its value; anything
 // else (a string, 1.5, NaN) is invalid_request naming the field. Providers hand
 // numbers over as float64, so silently truncating would hide a model error.
+// optionalWholeIntArg cannot stand in for it: that helper rejects negative
+// values and native ints, and this one hands every integer to
+// normalizeWatchArgs, which owns the per-field bounds.
 // The only numeric bound here is what int can hold; a field with a documented
 // maximum (the timer seconds) enforces it in normalizeWatchArgs instead.
 func watchIntArg(args map[string]any, key string) (int, bool, error) {
@@ -689,24 +692,6 @@ func watchIntArg(args map[string]any, key string) (int, bool, error) {
 	}
 }
 
-// watchStringArg reads an optional string job_watch argument. Absent and null
-// both mean "not named" and read as empty. A present value of another type is
-// rejected rather than coerced: for source, empty is not a neutral value — a
-// create that names no source and asks for a timer becomes a self timer — so
-// coercion would silently build a watch on something other than what was asked
-// for.
-func watchStringArg(args map[string]any, key string) (string, error) {
-	raw, present := args[key]
-	if !present || raw == nil {
-		return "", nil
-	}
-	text, ok := raw.(string)
-	if !ok {
-		return "", fmt.Errorf("invalid_request: %s must be a string", key)
-	}
-	return text, nil
-}
-
 func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	operation := strings.TrimSpace(stringArg(args, "operation"))
 	if operation == "" {
@@ -724,7 +709,11 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	if _, ok := args["receiver_delegate_id"]; ok {
 		return watchArgs{}, errors.New("invalid_request: job_watch derives its receiver from the watcher session")
 	}
-	source, err := watchStringArg(args, "source")
+	// A present non-string source is rejected rather than coerced: empty is not a
+	// neutral source, since a create that names none and asks for a timer
+	// becomes a self timer, so coercion would build a watch on something other
+	// than what was asked for.
+	source, err := optionalStringArg(args, "source")
 	if err != nil {
 		return watchArgs{}, err
 	}

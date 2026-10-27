@@ -145,13 +145,13 @@ func (s *Session) runLaneResidueSweep(ctx context.Context) (budgetHit bool) {
 	// worktree remove and its branch delete. Refresh the registry snapshot between
 	// them: sweep 1 may itself create that orphan after its remove succeeds but a
 	// concurrent Git operation makes branch deletion lose the race.
-	_, _, _ = s.worktreePruneSweep1(ctx, run, managed, metaDir, policy)
+	_, _, _ = s.collectRegisteredLanes(ctx, run, managed, metaDir, policy)
 	out, err = run("worktree", "list", "--porcelain")
 	if err != nil {
 		return false
 	}
 	managed = managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir)
-	_, _, _ = s.worktreePruneSweep2(ctx, run, managed, metaDir, policy)
+	_, _, _ = s.reconcileOrphanSidecars(ctx, run, managed, metaDir, policy)
 	return false
 }
 
