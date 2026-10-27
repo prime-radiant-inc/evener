@@ -363,6 +363,20 @@ export function selectionSeatForRef(
   return undefined;
 }
 
+// A route reconstruction resolves one seat per conversation. When the pane
+// that most recently wrote that mapping closes or loses the route, point the
+// mapping at a surviving pane instead of leaving the closed pane's seat there.
+function writeSurvivingRefSeat(ref: string, panes: readonly OpenPaneRecord[], preferredId?: string | null): void {
+  const candidates = panes.filter(
+    (pane) => isConversationPaneType(pane.type) && refParam(pane.params) === ref && pane.composerSeatId !== undefined,
+  );
+  const chosen =
+    candidates.find((pane) => pane.id === preferredId) ??
+    candidates.find((pane) => pane.slot === "main") ??
+    candidates[0];
+  if (chosen?.composerSeatId !== undefined) writeRefComposerSeat(ref, chosen.composerSeatId);
+}
+
 // The live DockviewApi, registered by DockHost once dockview is ready and
 // cleared again on unmount. layoutJSON()/restoreLayout() are the only two
 // locked methods that need it - both stay inert (null / false) with no host
@@ -835,17 +849,28 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
 
   closePane(paneId) {
     const state = get();
-    if (!state.panes.some((p) => p.id === paneId)) return; // already closed: no-op
+    const closed = state.panes.find((pane) => pane.id === paneId);
+    if (!closed) return; // already closed: no-op
+    const remaining = state.panes.filter((pane) => pane.id !== paneId);
     set({
-      panes: state.panes.filter((p) => p.id !== paneId),
+      panes: remaining,
       focusedPaneId: state.focusedPaneId === paneId ? null : state.focusedPaneId,
     });
+    if (isConversationPaneType(closed.type)) {
+      const ref = refParam(closed.params);
+      if (ref !== null) writeSurvivingRefSeat(ref, remaining, state.focusedPaneId);
+    }
   },
 
   focusPane(paneId) {
     const state = get();
     if (state.focusedPaneId === paneId) return; // already focused: no-op
-    if (!presentedPanes(state.panes).some((p) => p.id === paneId)) return; // unknown or parked: no-op
+    const pane = presentedPanes(state.panes).find((p) => p.id === paneId);
+    if (!pane) return; // unknown or parked: no-op
+    if (isConversationPaneType(pane.type) && pane.composerSeatId !== undefined) {
+      const ref = refParam(pane.params);
+      if (ref !== null) writeRefComposerSeat(ref, pane.composerSeatId);
+    }
     set({ focusedPaneId: paneId });
   },
 

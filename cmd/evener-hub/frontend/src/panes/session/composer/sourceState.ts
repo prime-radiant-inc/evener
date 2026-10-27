@@ -421,6 +421,12 @@ export function createComposerSourceState(
   // ref-to-seat mapping so a reload can find the seat there.
   function reconcileRecoverySeat(targetRef: string): void {
     if (targetRef === ref || selectionOwnerId === undefined) return;
+    const selected = currentRecoveryId();
+    if (selected !== null && readRecoverySelection(targetRef, recoverySelectionOwnerId) === undefined) {
+      // The selected row moved with the retarget. Carry this pane's choice to
+      // the destination unless it already has one of its own.
+      writeRecoverySelection(targetRef, recoverySelectionOwnerId, selected);
+    }
     const establishedSeat = readRefComposerSeat(targetRef);
     if (establishedSeat === undefined || establishedSeat === selectionOwnerId) {
       writeRefComposerSeat(targetRef, selectionOwnerId);
@@ -464,6 +470,10 @@ export function createComposerSourceState(
     if (disposed || ref !== targetRef) return;
     if (currentRecoveryId() !== staleId) return;
     if (operations.hasPending) return;
+    // An explicit activation is already building the next composition from
+    // this composer's visible work. Adoption must not replace that work before
+    // activation's await returns and merges it.
+    if (state.getState().recoveryActivating) return;
     if (userEditEpoch !== selectionUserEditEpoch) return;
     if (activationIncorporatedWork) return;
     const recovered = recoveryComposerDraft(preserved);
@@ -493,7 +503,12 @@ export function createComposerSourceState(
 
   function ownsStaleRecoveryWithNewerEdits(targetRef: string, staleId: string): boolean {
     if (disposed || ref !== targetRef || currentRecoveryId() !== staleId) return false;
-    return activationIncorporatedWork || userEditEpoch !== selectionUserEditEpoch || operations.hasPending;
+    return (
+      state.getState().recoveryActivating ||
+      activationIncorporatedWork ||
+      userEditEpoch !== selectionUserEditEpoch ||
+      operations.hasPending
+    );
   }
   function persistDraft(text: string): void {
     if (disposed) return;

@@ -1608,3 +1608,30 @@ test("two cascade columns keep independent selections under one seat", () => {
   expect(readRecoverySelection(childRef, reloadedChild.recoverySelectionOwnerId)).toBe("child-selected-row");
   expect(readRecoverySelection(ownerRef, reloadedOwner.recoverySelectionOwnerId)).not.toBe("child-selected-row");
 });
+
+test("closing a competing seat restores the surviving pane's selection", () => {
+  installLocalStorage(new MemoryStorage());
+  const ref = "local:surviving-seat";
+  const mainId = workspaceStore.getState().replacePrimary("session", { ref });
+  const main = workspaceStore.getState().panes.find((pane) => pane.id === mainId);
+  if (!main?.composerSeatId) throw new Error("main pane lacks its seat");
+  const secondaryId = workspaceStore.getState().openPane("doc", { ref: "doc" });
+  const secondaryPane = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
+  if (!secondaryPane) throw new Error("secondary pane missing");
+  expect(workspaceStore.getState().retypePane(secondaryPane, "session", { ref })).toBe(true);
+  const secondary = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
+  if (!secondary?.composerSeatId) throw new Error("secondary session lacks its seat");
+  expect(secondary.composerSeatId).not.toBe(main.composerSeatId);
+
+  writeRecoverySelection(ref, composerSelectionScope(main.composerSeatId), "main-selected-row");
+  writeRecoverySelection(ref, composerSelectionScope(secondary.composerSeatId), "secondary-selected-row");
+
+  // The newer pane's allocation owns the conversation mapping until it closes.
+  workspaceStore.getState().closePane(secondaryId);
+  resetWorkspaceStoreForTests();
+  const reloadedId = workspaceStore.getState().openPane("session", { ref });
+  const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
+  if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
+  expect(reloaded.composerSeatId).toBe(main.composerSeatId);
+  expect(readRecoverySelection(ref, composerSelectionScope(reloaded.composerSeatId))).toBe("main-selected-row");
+});
