@@ -340,6 +340,65 @@ describe("useThreadsStore.resolveEscalation", () => {
     expect(pendingIds()).toEqual([]);
   });
 
+  // Saved history omits pending escalations without the daemon having said
+  // anything about them.
+  test("a read that is not a live snapshot does not forget a resolve", async () => {
+    const fake = connectFakeClient();
+    let mode: "saved" | "live" = "saved";
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      if (mode === "saved") {
+        const saved = readCarrying([], requestGeneration);
+        return {
+          ...saved,
+          thread: { ...saved.thread, evener: { ...saved.thread.evener, mutationStateAuthoritative: false } },
+        };
+      }
+      return readCarrying(["esc_1"], requestGeneration);
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+
+    await threadsStore.getState().refreshThread("ref_a");
+    mode = "live";
+    await threadsStore.getState().refreshThread("ref_a");
+
+    expect(pendingIds()).toEqual([]);
+  });
+
+  // A read still in flight from before the confirming one can carry the card.
+  test("an older read answered after a newer read confirmed the resolve does not bring it back", async () => {
+    const fake = connectFakeClient();
+    const answers: Array<(response: ThreadReadResponse) => void> = [];
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        answers.push((response) => resolve({ ...response, requestGeneration }));
+      });
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+
+    const tracked = threadsStore.getState().refreshThread("ref_a");
+    await vi.waitFor(() => expect(answers).toHaveLength(1));
+    const watched = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    answers[1](readCarrying([], undefined));
+    await watched;
+    answers[0](readCarrying(["esc_1"], undefined));
+    await tracked;
+
+    expect(pendingIds()).toEqual([]);
+  });
+
   test("a superseded read answered after the resolve is still discarded", async () => {
     const fake = connectFakeClient();
     let answerRead: (response: ThreadReadResponse) => void = () => {};

@@ -5155,23 +5155,58 @@ function resolvedEscalationsFor(ref: string): Set<string> {
   return resolved;
 }
 
-// A read issued after an escalation was resolved that no longer advertises it
-// shows the daemon is done with it (it is dropped when the approved tool's
-// rerun finishes), so that id can never come back and is forgotten. Ids
-// resolved after the read was issued are kept: the read says nothing of them.
+// A live read issued after an escalation was resolved that no longer advertises
+// it shows the daemon is done with it (it is dropped when the approved tool's
+// rerun finishes), so that id can never come back and is forgotten. Ids resolved
+// after the read was issued are kept: the read says nothing of them. Saved
+// history is not a live snapshot and confirms nothing.
+//
+// Forgetting waits until every read issued before the confirming one has
+// settled, and each response is stripped of resolved ids on arrival, before any
+// adopter sees it, so an older read can never restore what a newer one forgot.
 // The Set is trimmed in place; the transcript repository holds this same Set.
+interface ThreadReadFence {
+  settled: boolean;
+  confirmed: string[];
+}
+const threadReadFencesByRef = new Map<string, ThreadReadFence[]>();
+
+function settleThreadReadFence(ref: string, fence: ThreadReadFence): void {
+  fence.settled = true;
+  const fences = threadReadFencesByRef.get(ref) ?? [];
+  while (fences[0]?.settled) {
+    for (const escalationId of fences.shift()?.confirmed ?? []) resolvedEscalationsByRef.get(ref)?.delete(escalationId);
+  }
+  if (fences.length === 0) threadReadFencesByRef.delete(ref);
+}
+
 function readThreadForgettingConfirmed(
   ref: string,
   lease: ThreadSubscriptionLease,
   params: Parameters<ThreadSubscriptionLease["read"]>[0],
 ): ReturnType<ThreadSubscriptionLease["read"]> {
   const resolvedAtIssue = [...(resolvedEscalationsByRef.get(ref) ?? [])];
-  return lease.read(params).then((response) => {
-    const advertised = new Set(response.thread.evener?.pendingEscalations?.map((e) => e.escalationId));
-    const resolved = resolvedEscalationsByRef.get(ref);
-    for (const escalationId of resolvedAtIssue) if (!advertised.has(escalationId)) resolved?.delete(escalationId);
-    return response;
-  });
+  const fence: ThreadReadFence = { settled: false, confirmed: [] };
+  threadReadFencesByRef.set(ref, [...(threadReadFencesByRef.get(ref) ?? []), fence]);
+  return lease.read(params).then(
+    (response) => {
+      const evener = response.thread.evener;
+      const advertised = evener?.pendingEscalations ?? [];
+      if (evener?.mutationStateAuthoritative === true) {
+        const advertisedIds = new Set(advertised.map((e) => e.escalationId));
+        fence.confirmed = resolvedAtIssue.filter((escalationId) => !advertisedIds.has(escalationId));
+      }
+      const resolved = resolvedEscalationsByRef.get(ref);
+      const kept = resolved ? advertised.filter((e) => !resolved.has(e.escalationId)) : advertised;
+      settleThreadReadFence(ref, fence);
+      if (!evener || kept.length === advertised.length) return response;
+      return { ...response, thread: { ...response.thread, evener: { ...evener, pendingEscalations: kept } } };
+    },
+    (error) => {
+      settleThreadReadFence(ref, fence);
+      throw error;
+    },
+  );
 }
 
 function withoutResolvedEscalations(ref: string, pending: PendingThreadHydration, model: ThreadModel): ThreadModel {
@@ -8792,6 +8827,7 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
   resolvedEscalationsByRef.clear();
+  threadReadFencesByRef.clear();
   for (const route of productionEntryRoutes.values()) retireEntryTranscriptRoute(route);
   productionEntryRoutes.clear();
   productionEntryCache?.close();
