@@ -21,7 +21,7 @@ import {
   useTranscriptReader,
 } from "../panes/session/transcript/useTranscript";
 import { connectionStore } from "../stores/connection";
-import { resetThreadsStoreForTests } from "../stores/threads";
+import { resetThreadsStoreForTests, settleEntryTranscriptForTests, threadsStore } from "../stores/threads";
 import { useThreadModel } from "../stores/useThreadModel";
 import * as widgets from "../widgets";
 import { ComicTranscript } from "./ComicTranscript";
@@ -1084,9 +1084,14 @@ test.each(["collapse", "reopen"] as const)(
   },
 );
 
-test.each(["continue", "cancel"] as const)(
-  "saved child restoration owns the next accepted page only while active: %s",
-  async (intent) => {
+test.each([
+  { intent: "continue", recorded: false },
+  { intent: "cancel", recorded: false },
+  { intent: "continue", recorded: true },
+  { intent: "cancel", recorded: true },
+])(
+  "saved child restoration owns the next accepted page only while active: $intent, recorded=$recorded",
+  async ({ intent, recorded }) => {
     const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
     const entities = buildEntityView({
       sessionRef: model.ref,
@@ -1098,31 +1103,64 @@ test.each(["continue", "cancel"] as const)(
     const strip = {
       ...projectComicDelegates(model, entities)[0]!,
       ownerRef: "local:test",
-      childRef: `local:continuation-${intent}`,
+      childRef: `local:continuation-${intent}-${recorded}`,
     };
-    const turn = (id: string) => ({
-      id,
+    const turn = (id: string, entry: number) => ({
+      id: recorded ? "child-turn" : id,
       status: "completed" as const,
-      itemsView: "full" as const,
-      items: [{ id, type: "agentMessage" as const, text: `SOURCE_${id}` }],
+      itemsView: recorded ? ("fragment" as const) : ("full" as const),
+      ...(recorded ? { version: 138, hasEarlierItems: entry > 16, hasLaterItems: entry < 96 } : {}),
+      items: [
+        {
+          id,
+          type: "agentMessage" as const,
+          text: `SOURCE_${id}`,
+          ...(recorded
+            ? { transcriptKey: id, turnId: "child-turn", version: entry, position: { entry, item: 0 } }
+            : {}),
+        },
+      ],
     });
+    const authority = recorded
+      ? { bootGeneration: "1", snapshot: { incarnation: "child-incarnation", length: 140 } }
+      : {};
     const client = new FakeClient("ready");
-    client.on("thread/read", (p) => ({
-      thread: wireThread(p.ref, { turns: [turn("current")] }),
-      olderCursor: "96",
-    }));
+    client.on("thread/read", (p) =>
+      p.includeTurns === false
+        ? { thread: wireThread(p.ref) }
+        : {
+            ...authority,
+            requestGeneration: p.requestGeneration,
+            thread: wireThread(p.ref, { turns: [turn("current", 96)] }),
+            olderCursor: "96",
+          },
+    );
     client.on("thread/unsubscribe", () => ({}));
     const requests: string[] = [];
+    let reportFirst!: () => void;
+    const firstRequested = new Promise<void>((resolve) => {
+      reportFirst = resolve;
+    });
     let acceptFirst!: (page: ThreadTurnsListResponse) => void;
     client.on("thread/turns/list", (p) => {
       requests.push(p.cursor!);
+      reportFirst();
       return requests.length === 1
         ? new Promise<ThreadTurnsListResponse>((resolve) => {
             acceptFirst = resolve;
           })
-        : { data: [turn("saved-child")] };
+        : { ...authority, data: [turn("saved-child", 16)] };
     });
     connectionStore.getState().connect(client);
+    if (recorded) {
+      // Persist only the newest fragment, then reopen through the real cache.
+      // The saved source still requires two network pages of this same turn.
+      await threadsStore.getState().ensureThread(strip.childRef);
+      await settleEntryTranscriptForTests(strip.childRef);
+      await threadsStore.getState().releaseThread(strip.childRef);
+      resetThreadsStoreForTests();
+      connectionStore.getState().connect(client);
+    }
     const parentHistory = history();
     let childState!: ComicSubchatState;
     function Root() {
@@ -1145,11 +1183,21 @@ test.each(["continue", "cancel"] as const)(
     };
     writeComicPosition("local:test", position);
     const mounted = render(<Root />);
-    await waitFor(() => expect(requests).toEqual(["96"]));
     await waitFor(() => expect(childState.readers.get(JSON.stringify(position.path))?.history.loadingOlder).toBe(true));
+    await act(async () => firstRequested);
+    expect(requests).toEqual(["96"]);
+    if (recorded)
+      expect(client.calls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            method: "thread/read",
+            params: expect.objectContaining({ includeTurns: false }),
+          }),
+        ]),
+      );
     if (intent === "cancel")
       fireEvent.wheel(mounted.container.querySelector("[data-comic-scroll]")!.firstElementChild!, { deltaY: -100 });
-    await act(async () => acceptFirst({ data: [turn("middle")], nextCursor: "56" }));
+    await act(async () => acceptFirst({ ...authority, data: [turn("middle", 56)], nextCursor: "56" }));
     await waitFor(() =>
       expect(childState.readers.get(JSON.stringify(position.path))?.history.loadingOlder).toBe(false),
     );
