@@ -1,7 +1,9 @@
+import { mergeDraftText } from "@evener/appwire-client";
 import {
   type KeyboardEvent,
   type ReactNode,
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -14,6 +16,7 @@ import { type TextEditor, useAttachments } from "../panes/session/composer/attac
 import { consumeComposerFocus, useComposerFocusRequest } from "../panes/session/composer/composerFocus";
 import { readDraftRevision } from "../panes/session/composer/draft";
 import { QueueStrip } from "../panes/session/composer/queue";
+import { consumeQuoteInsert, useQuoteInsertRequest } from "../panes/session/composer/quoteInsert";
 import { SkillEditor, type SkillEditorHandle } from "../panes/session/composer/SkillEditor";
 import type { SkillEditorValue } from "../panes/session/composer/skillDocument";
 import type { ComposerSourceState } from "../panes/session/composer/sourceState";
@@ -26,10 +29,12 @@ import styles from "./comic.module.css";
 /** A full-page interaction area, never mounted by an inline child reader. */
 export function ComicComposer({
   source,
+  paneId,
   sessionActions,
   headingStatus,
 }: {
   source: ComposerSourceState;
+  paneId?: string;
   sessionActions?: ReactNode;
   headingStatus?: ReactNode;
 }): React.ReactElement {
@@ -37,7 +42,8 @@ export function ComicComposer({
   const { text, skillNames, commandNames, mentions, restoreEpoch, activeRecoveryId } = snapshot;
   const actions = useComposerActions(source);
   const askPending = useAskDockPending(source.ref);
-  const focusRequest = useComposerFocusRequest(source.ref);
+  const focusRequest = useComposerFocusRequest(source.ref, paneId);
+  const quoteInsertRequest = useQuoteInsertRequest(source.ref, paneId);
   const attachments = useAttachments(source.editor, source.attachments);
   const editor = useRef<SkillEditorHandle>(null);
   const mounted = useRef(false);
@@ -83,6 +89,16 @@ export function ComicComposer({
     editor.current.focus();
     consumeComposerFocus(source.ref);
   }, [focusRequest, askPending, source]);
+  const consumedQuoteInsertId = useRef<number | null>(null);
+  useEffect(() => {
+    if (!quoteInsertRequest || quoteInsertRequest.id === consumedQuoteInsertId.current) return;
+    consumedQuoteInsertId.current = quoteInsertRequest.id;
+    const merged = mergeDraftText(source.getSnapshot().text, quoteInsertRequest.text, quoteInsertRequest.placement);
+    const position = quoteInsertRequest.placement === "prefix" ? quoteInsertRequest.text.length : merged.length;
+    binding.write(merged, position);
+    editor.current?.focus();
+    consumeQuoteInsert(source.ref);
+  }, [quoteInsertRequest, source, binding]);
   const previousRecovery = useRef(activeRecoveryId);
   useLayoutEffect(() => {
     const activating = previousRecovery.current === null && activeRecoveryId !== null;

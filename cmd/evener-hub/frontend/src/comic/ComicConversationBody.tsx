@@ -111,6 +111,7 @@ export function ComicConversationBody({
               {seat.composerSource && (
                 <ComicComposer
                   source={seat.composerSource}
+                  paneId={seat.viewFallbackId}
                   headingStatus={isMobile ? liveness : undefined}
                   sessionActions={
                     isMobile && seat.sessionMenu ? (
