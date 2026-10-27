@@ -51,16 +51,16 @@ func watchLiveAndAcceptingDelivery(jm *jobManager, key watchKey, cfg *watchConfi
 }
 
 func failWatchClearedAppends(jm *jobManager, fail error) (restore func()) {
-	real := jm.appendEvents
+	realAppend := jm.appendEvents
 	jm.appendEvents = func(events []jobstore.Event) error {
 		for _, event := range events {
 			if event.Kind == jobstore.EventWatchCleared {
 				return fail
 			}
 		}
-		return real(events)
+		return realAppend(events)
 	}
-	return func() { jm.appendEvents = real }
+	return func() { jm.appendEvents = realAppend }
 }
 
 func TestClearWatchPersistFailureLeavesWatchLiveAndRetryable(t *testing.T) {
