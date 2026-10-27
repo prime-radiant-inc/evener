@@ -692,7 +692,13 @@ export function createComposerSourceState(
     preserved: MutationRecoveryRecord,
   ): Promise<MutationRecoveryRecord | undefined> {
     try {
-      const { recovery } = await readMutationPersistence(preserved.targetRef);
+      // Resolve the mutation by ID across retargets: a resume that landed
+      // while preservation awaited its projection refreshes can have moved
+      // the committed row to a ref the captured record never knew. A read
+      // filtered to the captured target ref would treat the surviving row as
+      // consumed and drop it, and its selection would never be published or
+      // adopted under the new ref.
+      const { recovery } = await readMutationPersistence();
       const current = recovery.find((row) => row.clientMutationId === preserved.clientMutationId);
       if (current === undefined) return undefined;
       if (
@@ -907,6 +913,18 @@ export function createComposerSourceState(
               // validation every adoption uses and drop what no longer
               // matches.
               preserved = preserved === undefined ? undefined : await revalidatePreservedRecord(preserved);
+              // A disposal that lands during that read leaves the pane's
+              // newest work - typing and settled attachments gained while
+              // the read was in flight - only in the disposal snapshot:
+              // queued saves abort on the disposed source. Reconcile the
+              // latest snapshot before the selection is published, exactly
+              // like a disposal caught before the read.
+              preserved = await reconcileDisposalComposition(
+                clientMutationId,
+                localDraftRevisionId,
+                refusalComposition,
+                preserved,
+              );
               destinationOwnsNewer =
                 preserved !== undefined &&
                 destinationHasNewerEdits(recoverySelectionOwnerId, preserved.targetRef, clientMutationId, source);

@@ -10,6 +10,7 @@ import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "../../../stores/projectionWork";
+import * as threads from "../../../stores/threads";
 import { resetThreadsStoreForTests, setMutationStorageForTests } from "../../../stores/threads";
 import { getToasts, pushToast, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { createTestComposerSource } from "../testing/composerSource";
@@ -1095,6 +1096,199 @@ test("the originating source drops a preserved row a peer consumed during the po
     ).toEqual([]);
   } finally {
     storage.releaseRefresh.resolve();
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+// A resume can retarget the committed row while preservation awaits its
+// post-commit projection refreshes. The revalidation read used to filter by
+// the captured target ref, treating the surviving row as consumed, so its
+// selection was never published or adopted under the new ref and a reopen
+// restored an older rejected peer row instead.
+test("a retarget during the post-commit wait keeps the preserved row selectable under the resumed ref", async () => {
+  class HeldRefreshStorage extends MutationOutboxIndexedDB {
+    hold = false;
+    readonly refreshReached = deferred<void>();
+    readonly releaseRefresh = deferred<void>();
+
+    override async listRecovery(targetRef?: string): Promise<MutationRecoveryRecord[]> {
+      const rows = await super.listRecovery(targetRef);
+      // Hold the post-commit refresh read that first sees the preserved row.
+      if (
+        this.hold &&
+        rows.some((row) => row.clientMutationId !== original.clientMutationId && row.clientMutationId !== peerRowId)
+      ) {
+        this.refreshReached.resolve();
+        await this.releaseRefresh.promise;
+      }
+      return rows;
+    }
+  }
+  const storage = new HeldRefreshStorage();
+  setMutationStorageForTests(storage);
+  const oldRef = "local:retarget-revalidate-old";
+  const resumed = "local:retarget-revalidate-new";
+  const original = await storage.enqueueIntent({
+    targetRef: oldRef,
+    method: "turn/start",
+    payload: { ref: oldRef, input: [{ type: "text", text: "row composition" }] },
+    attachments: [],
+    composerText: "row composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  // An older rejected peer row already lives under the resumed ref.
+  const peerRowIntent = await storage.enqueueIntent({
+    targetRef: resumed,
+    method: "turn/start",
+    payload: { ref: resumed, input: [{ type: "text", text: "older peer composition" }] },
+    attachments: [],
+    composerText: "older peer composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "older peer composition" }] },
+  });
+  await storage.transferToRecovery(peerRowIntent.clientMutationId, "rejected");
+  const peerRowId = peerRowIntent.clientMutationId;
+  const source = createTestComposerSource(oldRef, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  const scope = composerSelectionScope("pane-a");
+  try {
+    await source.activateRecovery(recovery);
+    // A peer advances the row so the source's save is refused into
+    // preservation.
+    const peerCurrent = await peer.getRecovery(original.clientMutationId);
+    if (!peerCurrent) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerCurrent) },
+    );
+
+    storage.hold = true;
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, "row composition", [], []);
+    await storage.refreshReached.promise;
+    // The preservation committed; a resume retargets it (and the stale row)
+    // while the post-commit refresh is held.
+    await peer.retargetOutbox(oldRef, resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    storage.releaseRefresh.resolve();
+    await saving;
+    await flushPendingTurnsProjectionForTests();
+
+    // The preserved row survived under the resumed ref and its selection and
+    // seat were published there, so a reopen selects it - not the older
+    // peer row.
+    const preservedRows = (await storage.listRecovery(resumed)).filter((row) => row.clientMutationId !== peerRowId);
+    const preserved = preservedRows.find((row) => row.clientMutationId !== original.clientMutationId);
+    expect(preserved).toMatchObject({ targetRef: resumed, composerText: "row composition" });
+    expect(readRecoverySelection(resumed, scope)).toBe(preserved?.clientMutationId);
+    expect(readRefComposerSeat(resumed)).toBe("pane-a");
+    expect(source.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId);
+  } finally {
+    storage.releaseRefresh.resolve();
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+// The revalidation read is the last await before the preserved record is
+// published and installed. Typing, an attachment settling, and the pane
+// closing during that read left the newest work only in the disposal
+// snapshot - queued saves abort on the disposed source - so the disposal is
+// rechecked after the read and reconciled before publication.
+test("a disposal during the revalidation read reconciles the pane's newest work", async () => {
+  installLocalStorage(new MemoryStorage());
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "local:revalidate-disposal";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "row composition" }] },
+    attachments: [],
+    composerText: "row composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const encoding = installControlledImageEncoding();
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const view = renderHook(() => useAttachments(source.editor, source.attachments));
+  const originalRead = threads.readMutationPersistence;
+  const revalidationReached = deferred<void>();
+  const releaseRevalidation = deferred<void>();
+  const readSpy = vi.spyOn(threads, "readMutationPersistence").mockImplementation(async (targetRef?: string) => {
+    const snapshot = await originalRead(targetRef);
+    if (
+      targetRef === undefined &&
+      snapshot.recovery.some((row) => row.clientMutationId !== original.clientMutationId)
+    ) {
+      revalidationReached.resolve();
+      await releaseRevalidation.promise;
+    }
+    return snapshot;
+  });
+  const peer = new MutationOutboxIndexedDB();
+  let unmounted = false;
+  try {
+    await act(async () => {
+      await source.activateRecovery(recovery);
+    });
+    // A peer advances the row so the source's save is refused into
+    // preservation.
+    const peerRow = await peer.getRecovery(original.clientMutationId);
+    if (!peerRow) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRow) },
+    );
+
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, "row composition", [], []);
+    await revalidationReached.promise;
+    // While the revalidation read is held, the user types, settles an image,
+    // and closes the pane.
+    act(() => {
+      source.editText("newer disposal work");
+    });
+    act(() => view.result.current.ingestFiles([image()], (message) => pushToast("error", message)));
+    await act(async () => {
+      await encoding.resolve();
+    });
+    view.unmount();
+    unmounted = true;
+    source.dispose();
+    releaseRevalidation.resolve();
+    await saving;
+    await flushPendingTurnsProjectionForTests();
+
+    // The preserved row carries the disposal snapshot's newest work, and the
+    // published selection points at it.
+    const preserved = (await storage.listRecovery(ref)).find(
+      (row) => row.clientMutationId !== original.clientMutationId,
+    );
+    expect(preserved).toMatchObject({ targetRef: ref, composerText: "newer disposal work[image 1]" });
+    expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe(preserved?.clientMutationId);
+  } finally {
+    releaseRevalidation.resolve();
+    readSpy.mockRestore();
+    if (!unmounted) view.unmount();
     source.dispose();
     peer.close();
     storage.close();
