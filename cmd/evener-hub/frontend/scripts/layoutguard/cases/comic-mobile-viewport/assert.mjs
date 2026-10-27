@@ -62,6 +62,7 @@ function sessionGeometry() {
     composer: rect(document.querySelector("[data-comic-composer]")),
     editor: rect(document.querySelector('[role="textbox"]')),
     submit: rect(document.querySelector('[data-testid="composer-submit"]')),
+    stop: rect(document.querySelector('[data-testid="composer-stop"]')),
     reader: rect(document.querySelector("[data-comic-scroll]")),
     draft: document.querySelector('[role="textbox"]')?.textContent,
     boxSizing: getComputedStyle(document.querySelector("main")).boxSizing,
@@ -293,12 +294,81 @@ export default async function assert(_measurement, { page }) {
         evidence.push({ width, keyboard: name, composerBottom: state.composer.bottom, readerHeight: state.reader.height });
       }
     }
+    if (width < 900) {
+      // CDP changes the browser's env() value, not the production padding rule.
+      // An independent probe proves that a nonzero safe area actually took effect.
+      await send("Emulation.setSafeAreaInsetsOverride", { insets: { bottom: 34 } });
+      const safeArea = await evaluate(send, `(() => {
+        const probe = document.createElement("div");
+        probe.style.paddingBottom = "env(safe-area-inset-bottom)";
+        document.body.append(probe);
+        const value = parseFloat(getComputedStyle(probe).paddingBottom);
+        probe.remove();
+        return value;
+      })()`);
+      if (safeArea !== 34) throw Error(`safe-area environment did not apply: ${safeArea}`);
+      await frame(send);
+      for (const control of ["submit", "stop"]) {
+        if (control === "stop") {
+          // Native editing clears the draft so the real active-thread composer
+          // switches to Stop. No RPC or action implementation is replaced.
+          await evaluate(send, `(() => {
+            const editor = document.querySelector('[role="textbox"]');
+            editor.focus();
+            const range = document.createRange();
+            range.selectNodeContents(editor);
+            window.getSelection().removeAllRanges();
+            window.getSelection().addRange(range);
+          })()`);
+          await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
+          await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
+          await evaluate(send, "window.comicGeometry.running(true)");
+          await until(send, '!!document.querySelector(\'[data-testid="composer-stop"]:not(:disabled)\')');
+        }
+        const baseline = await readSession();
+        for (const [name, event, values, bottom] of [
+          ["closed", "resize", { height: 620, offsetTop: 0, scale: 1 }, 586],
+          ["open", "resize", { height: 440 }, 440],
+          ["offset", "scroll", { offsetTop: 40 }, 480],
+          ["pinch", "resize", { scale: 2 }, 586],
+          ["unpinch", "resize", { scale: 1 }, 480],
+          ["close", "resize", { height: 620, offsetTop: 0 }, 586],
+          ["short-open", "resize", { height: 360 }, 360],
+          ["short-offset", "scroll", { offsetTop: 40 }, 400],
+          ["short-close", "resize", { height: 620, offsetTop: 0 }, 586],
+          ["partial-close", "resize", { height: 608 }, 586],
+          ["recovered", "resize", { height: 620 }, 586],
+        ]) {
+          await evaluate(send, `window.comicGeometry.viewport(${JSON.stringify(event)}, ${JSON.stringify(values)})`);
+          await frame(send);
+          const state = await readSession();
+          if (
+            state.boxSizing !== "border-box" ||
+            state.root.bottom !== 620 ||
+            state.overflow > 1 ||
+            state.draft !== (control === "submit" ? draft : "") ||
+            !state.literal ||
+            !state.editor.hit ||
+            !state[control]?.hit ||
+            ![state.composer, state.editor, state[control]].every((box) => reachable(box, width, bottom)) ||
+            Math.abs(state.composer.bottom - bottom) > 1
+          ) failures.push(`safe-area ${control} ${name} ${width}: expected bottom ${bottom}, ${JSON.stringify(state)}`);
+          if (name !== "short-open" && name !== "short-offset" && (state.reader.height <= 0 || !state.sourceParts))
+            failures.push(`safe-area ${control} ${name} ${width}: reader collapsed ${JSON.stringify(state)}`);
+          if (bottom === 586 && Math.abs(state.reader.height - baseline.reader.height) > 1)
+            failures.push(`safe-area ${control} ${name} ${width}: reader did not restore ${JSON.stringify(state)}`);
+          evidence.push({ width, keyboard: `safe-area-${control}-${name}`, composerBottom: state.composer.bottom, readerHeight: state.reader.height });
+        }
+      }
+      await evaluate(send, "window.comicGeometry.running(false)");
+      await send("Emulation.setSafeAreaInsetsOverride", { insets: {} });
+    }
     await evaluate(send, "window.comicGeometry.restoreViewport()");
   }
   return {
     pass: !failures.length,
     reason: failures.length
       ? failures.join("\n")
-      : `320/390/1360px empty/long picker, native wheel/touch, lower-row selection and pagination hit-testing, real session/composer within 620px under native and modeled 760px large viewport, simulated visualViewport keyboard open/scroll/pinch/close, draft/source retained and reader restored. ${JSON.stringify(evidence.map(({ width, gesture, after, toolbar, keyboard, composerBottom, readerHeight }) => ({ width, gesture, pickerScroll: after?.scrollTop, composerBottom: composerBottom ?? toolbar?.composer.bottom, keyboard, readerHeight })))}`,
+      : `320/390/1360px empty/long picker, native wheel/touch, lower-row selection and pagination hit-testing, real session/composer within 620px under native and modeled 760px large viewport, simulated visualViewport keyboard open/scroll/pinch/close, draft/source retained and reader restored, browser env safe-area 34px with Send/Stop and 440/360px keyboards without double counting. ${JSON.stringify(evidence.map(({ width, gesture, after, toolbar, keyboard, composerBottom, readerHeight }) => ({ width, gesture, pickerScroll: after?.scrollTop, composerBottom: composerBottom ?? toolbar?.composer.bottom, keyboard, readerHeight })))}`,
   };
 }

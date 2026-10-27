@@ -12,6 +12,10 @@ browser history retain the URL; the ordinary `/s/<encoded-ref>` client remains
 available. Both clients use the hub's existing authentication and `/rpc`
 connection. Reading a saved or remote conversation does not launch a daemon.
 
+Within each project tier, overlapping pages show each session ref once. Paging
+continues from raw returned row counts, not the deduplicated display count;
+loaded later pages remain available through navigation refresh and reconnect.
+
 ## Presentation and accessibility
 
 At 760 CSS pixels and below, panels recompose into one column rather than
@@ -27,8 +31,10 @@ note and final action, not merely capture their container. Browser viewport and
 safe-area emulation do not establish native touch inertia or device behavior.
 
 On mobile, `ComicApp` uses the ordinary shell's shared visual-viewport keyboard
-inset. The session root spends it as bottom padding inside its viewport-sized
-border box, keeping the composer above the keyboard while the reader contracts.
+inset. The session root reserves the larger of that inset and the bottom safe
+area as padding inside its viewport-sized border box. The composer clears the
+home indicator when the keyboard closes, without double-counting the safe area
+when the keyboard covers it, while the reader contracts.
 Closing the keyboard restores reader space without resetting the draft or source
 text. Pinch zoom is excluded, and leaving Comic releases its viewport listeners
 and inset before the ordinary client takes ownership. Browser regression checks

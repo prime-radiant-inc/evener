@@ -139,6 +139,15 @@ function render(kind, count = 0) {
 window.comicGeometry = {
   render,
   source,
+  running(active) {
+    flushSync(() => threadsStore.setState({
+      threads: new Map([[ref, {
+        ...model,
+        status: { type: active ? "active" : "idle" },
+        capabilities: { ...model.capabilities, interrupt: active },
+      }]]),
+    }));
+  },
   simulateViewport() {
     Object.defineProperty(window, "visualViewport", { configurable: true, value: viewport });
     simulatedViewport = true;

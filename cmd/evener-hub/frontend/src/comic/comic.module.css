@@ -200,8 +200,8 @@
 .spotlight.panel[data-comic-speaker="assistant"] .figure { left: auto; right: 13%; }
 
 @media (max-width: 899px) {
-  /* Shared keyboard inset shrinks the flex reader, not the viewport-sized root. */
-  .comicRoot[data-comic-route="session"] { padding-bottom: var(--keyboard-inset, 0px); }
+  /* The keyboard covers the safe area; reserve their union inside the root. */
+  .comicRoot[data-comic-route="session"] { padding-bottom: max(var(--keyboard-inset, 0px), env(safe-area-inset-bottom)); }
 }
 
 @media (max-width: 760px) {
