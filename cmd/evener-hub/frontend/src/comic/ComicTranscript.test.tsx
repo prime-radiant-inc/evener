@@ -4,6 +4,7 @@ import {
   hydrateThread,
   parseActivityTree,
   type SessionActivitySnapshot,
+  type ThreadReadResponse,
   type ThreadTurnsListResponse,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -1408,6 +1409,7 @@ test.each([
   { intent: "continue", recorded: true, opening: "before page", delivery: "current" },
   { intent: "continue", recorded: true, opening: "after page", delivery: "current" },
   { intent: "continue", recorded: true, opening: "none", delivery: "retained idle" },
+  { intent: "continue", recorded: true, opening: "none", delivery: "resident replacement" },
 ])(
   "saved child restoration owns the next accepted page only while active: $intent, recorded=$recorded, opening=$opening, delivery=$delivery",
   async ({ intent, recorded, opening, delivery }) => {
@@ -1443,17 +1445,36 @@ test.each([
     const authority = recorded
       ? { bootGeneration: "1", snapshot: { incarnation: "child-incarnation", length: 140 } }
       : {};
+    const replaceResident = delivery === "resident replacement";
+    let reopening = false;
+    let acceptReplacement!: () => void;
+    let staleProjectionSeen = false;
     const client = new FakeClient("ready");
-    client.on("thread/read", (p) =>
-      p.includeTurns === false
-        ? { thread: wireThread(p.ref) }
-        : {
-            ...authority,
-            requestGeneration: p.requestGeneration,
-            thread: wireThread(p.ref, { turns: [turn("current", 96)] }),
-            olderCursor: "96",
-          },
-    );
+    client.on("thread/read", (p) => {
+      if (p.includeTurns === false) return { thread: wireThread(p.ref) };
+      const response = {
+        ...authority,
+        requestGeneration: p.requestGeneration,
+        thread: wireThread(p.ref, { turns: [turn("current", 96)] }),
+        olderCursor: "96",
+      };
+      if (!replaceResident) return response;
+      if (!reopening) {
+        // Persist a real resident source, as the browser does before reload.
+        const cached = {
+          ...turn("current", 96),
+          hasEarlierItems: false,
+          hasLaterItems: false,
+          items: [...turn("saved-child", 16).items, ...turn("middle", 56).items, ...turn("current", 96).items],
+        };
+        return { ...response, thread: wireThread(p.ref, { turns: [cached] }), olderCursor: undefined };
+      }
+      // Let the committed cache restore first, then publish the actual partial
+      // hydration response. No mocked reconcile or manual model replacement.
+      return new Promise<ThreadReadResponse>((resolve) => {
+        acceptReplacement = () => resolve(response);
+      });
+    });
     client.on("thread/unsubscribe", () => ({}));
     const requests: string[] = [];
     let reportFirst!: () => void;
@@ -1472,13 +1493,14 @@ test.each([
     });
     connectionStore.getState().connect(client);
     if (recorded) {
-      // Persist only the newest fragment, then reopen through the real cache.
-      // The saved source still requires two network pages of this same turn.
+      // Persist the fixture, then reopen through the real cache. The replacement
+      // case starts resident, the other cases start with only the newest fragment.
       await threadsStore.getState().ensureThread(strip.childRef);
       await settleEntryTranscriptForTests(strip.childRef);
       await threadsStore.getState().releaseThread(strip.childRef);
       resetThreadsStoreForTests();
       connectionStore.getState().connect(client);
+      reopening = true;
     }
     const parentHistory = history();
     let childState!: ComicSubchatState;
@@ -1514,7 +1536,39 @@ test.each([
       viewportOffset: 24,
     };
     writeComicPosition("local:test", position);
-    const mounted = render(<Root />);
+    const geometry = replaceResident ? await mountGestureReader(false, { node: <Root />, position }) : undefined;
+    const mounted = geometry?.mounted ?? render(<Root />);
+    if (geometry) {
+      await waitFor(() => expect(threadsStore.getState().localOpenings.has(strip.childRef)).toBe(false));
+      geometry.publish();
+      expect(geometry.geometry.sourceY - geometry.port.scrollTop).toBe(position.viewportOffset);
+      expect(childState.readers.get(childKey)?.entries.some((value) => value.id === position.entryId)).toBe(true);
+      expect(requests).toEqual([]);
+      // The observed old-flow/new-snapshot interval had an invalid layout.
+      // Keep it invalid until both real continuation pages have published.
+      geometry.geometry.valid = false;
+      const lookup = comicRows.findComicFlowAnchorRow;
+      vi.spyOn(comicRows, "findComicFlowAnchorRow").mockImplementation((rows, saved) => {
+        const index = lookup(rows, saved);
+        const child = childState.readers.get(childKey);
+        if (
+          saved.mode === "away" &&
+          saved.entryId === position.entryId &&
+          index !== undefined &&
+          child &&
+          !child.entries.some((value) => value.id === position.entryId)
+        )
+          staleProjectionSeen = true;
+        return index;
+      });
+      await act(async () => acceptReplacement());
+      await waitFor(() =>
+        expect(childState.readers.get(childKey)?.entries.some((value) => value.id === position.entryId)).toBe(false),
+      );
+      expect(geometry.port.querySelector('[data-comic-entry="saved-child"]')).toBeNull();
+      expect(staleProjectionSeen).toBe(true);
+      expect(readComicPosition("local:test")).toEqual(position);
+    }
     await waitFor(() => expect(childState.readers.get(JSON.stringify(position.path))?.history.loadingOlder).toBe(true));
     await act(async () => firstRequested);
     expect(requests).toEqual(["96"]);
@@ -1602,12 +1656,21 @@ test.each([
         expect(childState.readers.get(JSON.stringify(position.path))?.history.loadingOlder).toBe(false),
       );
     }
+    if (replaceResident) await waitFor(() => expect(requests).toEqual(["96", "56"]));
     expect(requests).toEqual(intent === "continue" ? ["96", "56"] : ["96"]);
     const child = childState.readers.get(JSON.stringify(position.path))!;
     expect(child.entries.some((value) => value.id === "middle")).toBe(true);
     expect(child.entries.some((value) => value.id === "saved-child")).toBe(intent === "continue");
     expect(parentHistory.loadOlderReportingError).not.toHaveBeenCalled();
     if (intent === "continue") expect(readComicPosition("local:test")).toEqual(position);
+    if (geometry) {
+      geometry.geometry.sourceY = 220;
+      geometry.geometry.valid = true;
+      geometry.publish();
+      expect(geometry.port.scrollTop).toBe(196);
+      expect(geometry.geometry.sourceY - geometry.port.scrollTop).toBe(position.viewportOffset);
+      expect(readComicPosition("local:test")).toEqual(position);
+    }
     mounted.unmount();
   },
 );
