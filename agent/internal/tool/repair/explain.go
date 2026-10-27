@@ -21,7 +21,7 @@ import (
 // that cannot evaluate them must treat all three alike. The guard key lists
 // below derive their reference entries from this one slice — appended, never
 // hand-written per list — so $ref, $dynamicRef and $recursiveRef cannot drift
-// apart (issue #624 review; mirrors the shared isRefSegment predicate).
+// apart.
 var refKeywords = []string{"$ref", "$dynamicRef", "$recursiveRef"}
 
 // ExplainSchemaError renders model-facing coaching for a call that failed
@@ -43,12 +43,12 @@ var refKeywords = []string{"$ref", "$dynamicRef", "$recursiveRef"}
 // bare keyword ("maxLength") is a single-segment location. Its root segment
 // (after a $ref wrapper) drives branch attribution: a cause under a root-level
 // oneOf is explained as that branch rule rather than by an arm-internal leaf
-// read against a top-level property (issue #621). When the field is
+// read against a top-level property. When the field is
 // present and the keyword is a recognized value constraint (maxLength,
 // minLength, minItems, maxItems, enum), the message names the actual
 // constraint, its limit, and the offending value/length instead of the
 // generic "wrong type or value" message — which otherwise sends the caller
-// debugging a parameter that was correctly supplied (issue #193). A present
+// debugging a parameter that was correctly supplied. A present
 // field never gets the "Required arguments" tail, recognized keyword or not:
 // that tail lists already-satisfied sibling fields, which is misleading
 // regardless of whether the specific constraint can be detailed.
@@ -76,26 +76,25 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 		}
 	}
 
-	// A oneOf nested inside a property's (or array item's) schema (issue #624)
+	// A oneOf nested inside a property's (or array item's) schema
 	// fails with a keyword location that descends through that combinator, but its
 	// instance location is the container property (or an array index the
 	// missing-field fallback cannot resolve). Explain that combinator, scoped to
 	// the holder's own instance path, before the root-combinator handling below.
-	// enclosingOneOf returns false for a root-level combinator, so issue #621's
+	// enclosingOneOf returns false for a root-level combinator, so the
 	// prefix attribution still owns those failures.
 	if msg := nestedOneOfMessage(toolName, params, constraintKeywordLocation, instanceLocation); msg != "" {
 		return msg
 	}
 
 	// A branch-combinator failure is attributed to the branch, not to any single
-	// property: the deepest cause is the combinator itself (/oneOf/0/not, issue
-	// #618) or a keyword nested inside an arm
-	// (/oneOf/0/properties/sandbox/enum, issue #621 — which leaf the walk reaches
-	// depends on the arm order). Render the branch-level constraints before the
+	// property: the deepest cause is the combinator itself (/oneOf/0/not) or a
+	// keyword nested inside an arm (/oneOf/0/properties/sandbox/enum — which leaf
+	// the walk reaches depends on the arm order). Render the branch-level constraints before the
 	// present-field path below, whose constraintMessage reads a leaf keyword
 	// against the container's TOP-LEVEL property and can announce an
 	// allowed-values list — say, the top-level enum listing "off" — that the
-	// failing branch actually narrows away (issue #621).
+	// failing branch actually narrows away.
 	//
 	// The early return is taken only when the branch prose actually covers the
 	// failure (see branchCoversFailure): a constraint on a present property is a
@@ -103,8 +102,7 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 	// combinator and its arms' required/enum — so claiming the failure is "not
 	// any single argument's type or value" while showing a requirement the call
 	// already satisfied ("send all of \"x\"" when x was sent) is worse than the
-	// present-field path, which names the property and its defect (issue #621
-	// review).
+	// present-field path, which names the property and its defect.
 	refWrapped := refWrappedKeywordLocation(constraintKeywordLocation)
 
 	// A reference-wrapped cause always takes this path, whatever the leaf keyword
@@ -136,8 +134,7 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 		if !present {
 			// Attributed to a combinator, not covered by its prose, and naming no
 			// present field: a nested item/property defect the walk could not
-			// resolve. Name nothing rather than a field that does not exist
-			//.
+			// resolve. Name nothing rather than a field that does not exist.
 			return toolName + ": arguments did not match the schema."
 		}
 	}
@@ -154,16 +151,16 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 
 	// A present-but-invalid field is a value-constraint violation, never a
 	// missing-argument problem — the "Required arguments" tail below (which
-	// lists already-satisfied sibling fields) is the misdirection issue #193
-	// reports, so it never applies here, regardless of whether the specific
+	// lists already-satisfied sibling fields) is a misdirection, so it
+	// never applies here, regardless of whether the specific
 	// constraint keyword is one constraintMessage knows how to detail.
 	if present {
 		fullPath := field
 		if containerPath != "" {
 			fullPath = containerPath + "." + field
 		}
-		// The wrong branch's array can also reject a present field (issue
-		// #626 round 2: {"action":"update","tasks":[{"type":123}]}), and the
+		// The wrong branch's array can also reject a present field
+		// ({"action":"update","tasks":[{"type":123}]}), and the
 		// early return here would otherwise bypass the branch-naming below —
 		// entering the same unrecoverable loop one step later, via a type
 		// error instead of a missing one. Attribute the branch here too.
@@ -195,9 +192,7 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 	}
 
 	// A conditional sub-schema's required list describes one action's branch,
-	// not the call the caller made (issue #626: task_list's tasks[0] belongs to
-	// append, but an update caller read the bare list as describing its own
-	// call and retried into an unrecoverable loop). When the failing container
+	// not the call the caller made. When the failing container
 	// sits inside an array property scoped to an action the caller did not
 	// send, name that branch, and point the caller at the array its own action
 	// takes instead.
@@ -205,8 +200,8 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 	branchNamed := ctx.branchValue != ""
 	// The Example shows the caller's own branch shape whenever the failure
 	// sits inside an action-scoped array — a same-branch caller (append
-	// missing prompt) needs it just as much as a wrong-branch one (issue
-	// #626 complaint 3: the action-only Example gave neither a usable
+	// missing prompt) needs it just as much as a wrong-branch one (an
+	// action-only Example gives neither a usable
 	// template). Only the caller-sent-wrong-array tail is wrong-branch-only.
 	req := requiredList(containerSchema)
 	if len(req) > 0 {
@@ -265,8 +260,7 @@ func arrayItemSchema(params map[string]any, arrayName string) map[string]any {
 }
 
 // branchCtx is the branch context for one explained error, computed once
-// and shared by the present-field and missing-field paths (issue #626 round
-// 3: the two paths previously computed it independently, twice each).
+// and shared by the present-field and missing-field paths.
 type branchCtx struct {
 	selectorName string
 	actionValue  string
@@ -333,7 +327,7 @@ func (c branchCtx) example(params map[string]any) string {
 }
 
 // namedBranch reports the branch context for a conditional-sub-schema
-// failure (issue #626): the action selector's name, the action value the
+// failure: the action selector's name, the action value the
 // caller sent, and the action value whose branch the failing container's
 // property is scoped to. selectorName and actionValue are set whenever the
 // schema has an action selector the caller exercised (a same-branch caller
@@ -498,7 +492,7 @@ func actionScopedArrays(props map[string]any, actionValue string) []string {
 
 // missingArray returns the first action-scoped array name absent from the
 // call — the array the caller should have sent instead of the one that failed
-// (issue #626: update takes "updates", not "tasks") — or "" when every
+// — or "" when every
 // action-scoped array was supplied.
 func missingArray(actionArrays []string, args map[string]any) string {
 	for _, name := range actionArrays {
@@ -557,7 +551,7 @@ func constraintMessage(toolName string, containerSchema map[string]any, displayP
 	// A value constraint narrowed inside a combinator branch lives on the
 	// branch's own property schema, not the container's top-level property:
 	// reading the top-level enum announces a wider list — one that can contain
-	// the very value it calls disallowed (issue #622). branchSchema is the
+	// the very value it calls disallowed. branchSchema is the
 	// node the failing keyword location resolves to; the walk returns nil when
 	// it cannot resolve it (a $ref, a malformed pointer), leaving the
 	// container's top-level property to stand as before.
@@ -607,7 +601,7 @@ func constraintMessage(toolName string, containerSchema map[string]any, displayP
 		return fmt.Sprintf("%s: argument %q is not one of the allowed values: %s. Value is %q.", toolName, displayPath, strings.Join(allowed, ", "), fmt.Sprint(value))
 	case "required":
 		// The field itself is present but its object value is missing required
-		// properties (the issue #627 shape: communicate's output object without
+		// properties (for example communicate's output object without
 		// its nested message/data/artifacts). Name them rather than reporting
 		// the whole object as a wrong type or value, and show the accepted
 		// shape, resolved from the field's own schema (the container it lives
@@ -628,7 +622,7 @@ func constraintMessage(toolName string, containerSchema map[string]any, displayP
 		// — for a branch that requires a property the top-level shape omits, the
 		// example would leave out the very property just named missing, coaching
 		// a retry that fails the same way. Omit it rather than show one that is
-		// not checked against the branch (issue #622 review).
+		// not checked against the branch.
 		if branchSchema != nil {
 			return fmt.Sprintf("%s: argument %q is missing required properties: %s.",
 				toolName, displayPath, strings.Join(missing, ", "))
@@ -644,7 +638,7 @@ func constraintMessage(toolName string, containerSchema map[string]any, displayP
 // /anyOf/0/properties/sandbox/enum that is the arm's own sandbox property
 // schema, whose narrowed enum is the list that actually rejected the value.
 // Reading the constraint off the container instead would use the top-level
-// property, whose wider enum can contain the rejected value (issue #622).
+// property, whose wider enum can contain the rejected value.
 //
 // Returns nil when the location descends through no combinator (so only a
 // branch-narrowed constraint is redirected), or when the walk cannot resolve a
@@ -718,8 +712,7 @@ func branchConstraintSchema(params map[string]any, keywordLocation string) map[s
 }
 
 // exampleForField renders a minimal example naming just the failing field,
-// with its nested required shape expanded (issue #627: the example must show
-// the accepted output envelope, not a bare {}). containerSchema is the schema
+// with its nested required shape expanded. containerSchema is the schema
 // of the object holding field — the example resolves field's shape there, so
 // a nested field never picks up a same-named top-level property's schema.
 func exampleForField(containerSchema map[string]any, field string) string {
@@ -955,12 +948,12 @@ func isBareOneOfLocation(location string) bool {
 // what makes arm order irrelevant: with the positive oneOf arm ordered first
 // the deepest cause is /oneOf/0/properties/sandbox/enum, whose bare "enum"
 // would be read against the TOP-LEVEL property and render an allowed-values
-// list that does not apply (issue #621). A `$ref` wrapper is skipped first:
+// list that does not apply. A `$ref` wrapper is skipped first:
 // jsonschema reports a combinator behind a reference as /$ref/oneOf/.... A
 // combinator nested under properties/items is not attributed (the explainer
-// reads branch lists off the top-level schema; nested combinators are issue
-// #624), and a root anyOf/allOf keeps its leaf keyword
-// until its branches can be rendered.
+// reads branch lists off the top-level schema; nested combinators go through
+// nestedOneOfMessage), and a root anyOf/allOf keeps its leaf keyword until its
+// branches can be rendered.
 func branchCombinator(keywordLocation string) string {
 	segs := strings.Split(strings.Trim(keywordLocation, "/"), "/")
 	i := 0
@@ -991,7 +984,7 @@ func branchCombinator(keywordLocation string) string {
 // means exactly-one, so the arguments matched more than one branch. There is no
 // failing branch to describe (every branch's requirements are already
 // satisfied), so enumerating them would coach nothing; name the over-match and
-// its recovery instead (issue #623). The location, not just the keyword, is
+// its recovery instead. The location, not just the keyword, is
 // what distinguishes this from a *nested* oneOf failure: the deepest-first walk
 // makes a nested combinator's location "/oneOf/0/oneOf", which is not the
 // top-level list branchList can describe, so it keeps the branch enumeration.
@@ -1522,8 +1515,7 @@ func branchRequirement(branch any) string {
 	}
 	// An arm can carry a `not` and a required list at once. Describe both: a
 	// prohibition alone would hide the missing (or ill-typed) required property
-	// the caller has to fix, leaving nothing actionable in the message
-	//.
+	// the caller has to fix, leaving nothing actionable in the message.
 	described := describeRequired(schema)
 	if forbidden := schemaMap(schema, "not"); forbidden != nil {
 		prohibition := notProhibition(forbidden)
@@ -1541,8 +1533,7 @@ func branchRequirement(branch any) string {
 	if described == "" {
 		// A scalar arm (no required properties) such as {"const":"a"} or
 		// {"enum":[...]} would otherwise describe nothing, leaving the generic
-		// wrong-value message with no hint at the conditional constraint
-		// (issue #624 review).
+		// wrong-value message with no hint at the conditional constraint.
 		return scalarRequirement(schema)
 	}
 	return described
@@ -1703,8 +1694,7 @@ func minimalExample(params map[string]any) string {
 // exampleObject renders an object schema's required properties as
 // "name: placeholder" pairs, sorted alphabetically. expandNested also
 // expands an object property that itself declares required keys one level
-// deep (issue #627: communicate's output example must show the accepted
-// envelope, not a bare {}).
+// deep.
 //
 // The required list is copied before sorting — a schema's "required" value
 // may be a []string held by reference (DefCommunicateNamed builds it that
@@ -1832,7 +1822,7 @@ func formatEnumValue(v any) string {
 // an object key ("properties"/"additionalProperties"/"propertyNames") or an
 // array index ("items"). The kind cannot be recovered from the segment text —
 // a property may legally be named "0" — so traversal records it for both the
-// display path and the Example (issue #624 review).
+// display path and the Example.
 type pathStep struct {
 	name  string
 	index bool
@@ -1852,7 +1842,7 @@ type pathStep struct {
 // more than one branch) has no failing branch to describe; name the over-match
 // and its recovery instead, with no Example, which would print an object
 // matching zero branches. Root-level combinator handling lives in
-// oneOfConstraintMessage, which issue #621's prefix attribution owns.
+// oneOfConstraintMessage, which the prefix attribution owns.
 func branchConstraintMessage(toolName string, root, holder map[string]any, rootBranch map[string]any, propertyPath []pathStep, overMatch bool, leafConstraint string, exampleUnsafe bool) string {
 	branches, source := branchList(holder, "oneOf")
 	if len(branches) == 0 {
@@ -1871,7 +1861,7 @@ func branchConstraintMessage(toolName string, root, holder map[string]any, rootB
 	subject := "the combination of its properties"
 	if !objectShaped(holder) {
 		// A scalar holder (e.g. type string with const/enum arms) is not a
-		// combination of properties (issue #624 review).
+		// combination of properties.
 		subject = "its value"
 	}
 	if leafConstraint != "" {
@@ -1898,8 +1888,7 @@ func branchConstraintMessage(toolName string, root, holder map[string]any, rootB
 	if !exampleUnsafe {
 		// A walk that passed through anyOf/allOf/not left constraints the scoped
 		// builder does not model, so any Example it produced could violate the
-		// enclosing applicator; omit it rather than coach an invalid retry
-		// (issue #624 review).
+		// enclosing applicator; omit it rather than coach an invalid retry.
 		example = scopedBranchExample(root, rootBranch, propertyPath, branchValueExample(holder, branches))
 	}
 	if example != "" {
@@ -1909,7 +1898,7 @@ func branchConstraintMessage(toolName string, root, holder map[string]any, rootB
 }
 
 // nestedOneOfMessage explains a oneOf nested inside a property's (or array
-// item's) schema (issue #624). The failing keyword's location
+// item's) schema. The failing keyword's location
 // ("properties/opts/oneOf/0/required") is walked to the schema node holding
 // that oneOf, and its branches are rendered against that node's own instance
 // path (derived in lockstep from the keyword and instance locations), so a
@@ -1925,7 +1914,7 @@ func nestedOneOfMessage(toolName string, params map[string]any, keywordLocation,
 	// A branch-internal leaf constraint (a property's type, minimum, pattern,
 	// ...) is a single-argument defect the branch prose never names; pass it so
 	// the message names the actual constraint instead of claiming the failure is
-	// no argument's type or value (issue #624 review).
+	// no argument's type or value.
 	leafConstraint := ""
 	if leaf := lastKeywordSegment(keywordLocation); !branchProseCovers(leaf) {
 		leafConstraint = leaf
@@ -1946,8 +1935,8 @@ func branchProseCovers(leaf string) bool {
 	// "enum"/"const" are left out deliberately: the prose renders an enum only
 	// for a required property and a const only for a required-less (scalar) arm,
 	// so a branch such as {required:["a"], properties:{a:{const:7}}} would
-	// otherwise deny that any value is at fault and never say a must equal 7
-	// (issue #624 review). The leaf keyword is named instead.
+	// otherwise deny that any value is at fault and never say a must equal 7.
+	// The leaf keyword is named instead.
 	return false
 }
 
@@ -2001,7 +1990,7 @@ func enclosingOneOf(params map[string]any, keywordLocation, instanceLocation str
 	// applicatorUnsafe records that the walk passed through anyOf/allOf/not,
 	// whose surrounding constraints the scoped Example builder does not model:
 	// it can produce a value the enclosing applicator rejects, so the caller
-	// must omit the Example (issue #624 review).
+	// must omit the Example.
 	applicatorUnsafe = false
 	for i := 0; i < len(ksegs); i++ {
 		switch ksegs[i] {
@@ -2032,7 +2021,7 @@ func enclosingOneOf(params map[string]any, keywordLocation, instanceLocation str
 			// propertyNames constrains the property NAME, not the value a
 			// value-scoped Example would place there, so a combinator nested
 			// under it cannot be expressed: decline and let the caller fall back
-			// to the generic message (issue #624 review).
+			// to the generic message.
 			return nil, nil, nil, false, false, false
 		case "additionalProperties":
 			if consumed >= len(isegs) {
@@ -2051,7 +2040,7 @@ func enclosingOneOf(params map[string]any, keywordLocation, instanceLocation str
 			// combinator scoped to a non-root path is the holder: a oneOf nested
 			// inside an arm's oneOf is the combinator that actually failed, and
 			// enumerating the outer arms would describe a node the call already
-			// satisfies (issue #624 review).
+			// satisfies.
 			lastOneOf = i
 			if consumed > 0 {
 				holder = cur
@@ -2065,7 +2054,7 @@ func enclosingOneOf(params map[string]any, keywordLocation, instanceLocation str
 							if consumed == 0 && rootBranch == nil {
 								// The outermost root oneOf branch also constrains
 								// the root instance, so the Example must satisfy
-								// it too (issue #624 review).
+								// it too.
 								rootBranch = child
 							}
 							cur = child
@@ -2078,8 +2067,7 @@ func enclosingOneOf(params map[string]any, keywordLocation, instanceLocation str
 		case "anyOf", "allOf":
 			// A wrapper's subschema applies to the same instance, so descend its
 			// named arm without consuming an instance segment and without
-			// selecting a holder, letting a oneOf inside it be found (issue #624
-			// review).
+			// selecting a holder, letting a oneOf inside it be found.
 			if i+1 < len(ksegs) {
 				if arms, isList := cur[ksegs[i]].([]any); isList {
 					if idx, isIdx := arrayIndex(ksegs[i+1]); isIdx && idx >= 0 && idx < len(arms) {
@@ -2145,8 +2133,8 @@ func enclosingOneOf(params map[string]any, keywordLocation, instanceLocation str
 // e.g. {"x": "..."}. The object carries the holder's own required properties
 // plus the branch's, each value honoring the branch's and holder's
 // const/enum/type/numeric constraints, because a branch-ignoring placeholder
-// would produce an "accepted shape" Example that fails validation on retry
-// (issue #624 review). It returns "" when no branch names required properties,
+// would produce an "accepted shape" Example that fails validation on retry.
+// It returns "" when no branch names required properties,
 // a value cannot be built, or the object would satisfy zero or more than one
 // branch, so the caller omits the Example rather than coach an invalid retry.
 func branchValueExample(holder map[string]any, branches []any) string {
@@ -2181,13 +2169,12 @@ func branchValueExample(holder map[string]any, branches []any) string {
 		}
 		// Object-level constraints (minProperties/maxProperties, a const/enum on
 		// the object itself, ...) can make a required-only object invalid; omit
-		// rather than assert it (issue #624 review).
+		// rather than assert it.
 		if !objectExampleAllowed(holder, schema, names) {
 			continue
 		}
 		// The object must be one both schemas' declared types accept: a holder
-		// or branch typed as an array cannot be satisfied by an object
-		// (issue #624 review).
+		// or branch typed as an array cannot be satisfied by an object.
 		if !candidateMatchesType(map[string]any{}, holder["type"]) || !candidateMatchesType(map[string]any{}, schema["type"]) {
 			continue
 		}
@@ -2339,7 +2326,7 @@ func matchingBranchCount(branches []any, present map[string]bool) int {
 
 // exampleValueFor chooses a value for one required property that both the
 // branch and the holder accept, or declines (ok=false) so the caller omits the
-// Example rather than coach a retry that fails validation (issue #624 review).
+// Example rather than coach a retry that fails validation.
 // A declared const/enum is used only if the candidate also satisfies the other
 // constraints both schemas impose on the property (finding: an enum candidate
 // may violate a sibling minimum/multipleOf); with no const/enum it renders a
@@ -2349,13 +2336,13 @@ func exampleValueFor(holder, branch map[string]any, name string) (string, bool) 
 	hp, _ := schemaProps(holder)[name].(map[string]any)
 	// A property schema written as the boolean false rejects every value, so no
 	// Example can satisfy it; a boolean true is unconstrained and falls through
-	// as the nil schema does (issue #624 review).
+	// as the nil schema does.
 	if isFalsePropertySchema(branch, name) || isFalsePropertySchema(holder, name) {
 		return "", false
 	}
 	// An explicitly empty enum admits no value: any Example for this property
 	// is wrong by construction, so decline before the candidate/placeholder
-	// paths can emit one (issue #624 review). This is per branch, so an empty
+	// paths can emit one. This is per branch, so an empty
 	// enum on a sibling arm does not suppress a satisfiable branch.
 	if hasEmptyEnum(bp) || hasEmptyEnum(hp) {
 		return "", false
@@ -2368,7 +2355,7 @@ func exampleValueFor(holder, branch map[string]any, name string) (string, bool) 
 			// Validate and emit the SAME value: canonicalize once, so a typed
 			// container whose json.Marshal differs from its reflected shape
 			// ([]byte -> base64, typed nil map -> null) cannot pass validation as
-			// one JSON type and render as another (issue #624 review).
+			// one JSON type and render as another.
 			canonical := canonicalJSONValue(candidate)
 			if !sameJSONEncoding(candidate, canonical) {
 				// The canonical form denotes a different JSON value (a []byte is
@@ -2386,7 +2373,7 @@ func exampleValueFor(holder, branch map[string]any, name string) (string, bool) 
 	if typDeclared && typ == "" {
 		// A declared type shape this file cannot render faithfully (an
 		// ambiguous union, say): omit rather than emit a placeholder of the
-		// wrong type (issue #624 review).
+		// wrong type.
 		return "", false
 	}
 	if typ == "integer" || typ == "number" {
@@ -2400,8 +2387,7 @@ func exampleValueFor(holder, branch map[string]any, name string) (string, bool) 
 			return "", false
 		}
 		// The generated value must be one both schemas' declared types accept —
-		// the branch-preferred type alone can violate the holder (issue #624
-		// review). Omit when the types conflict.
+		// the branch-preferred type alone can violate the holder. Omit when the types conflict.
 		if !candidateMatchesType(value, bp["type"]) || !candidateMatchesType(value, hp["type"]) {
 			return "", false
 		}
@@ -2415,7 +2401,7 @@ func exampleValueFor(holder, branch map[string]any, name string) (string, bool) 
 	}
 	// An object placeholder is only valid when the object's own required list is
 	// empty and its shape is evaluable; otherwise omit rather than emit {}
-	// against a schema that demands nested properties (issue #624 review).
+	// against a schema that demands nested properties.
 	if typ == "object" &&
 		(len(requiredNames(bp)) > 0 || len(requiredNames(hp)) > 0 ||
 			!objectLevelEvaluable(bp, false) || !objectLevelEvaluable(hp, false)) {
@@ -2505,7 +2491,7 @@ func declaredCandidates(schema map[string]any) []any {
 
 // hasEmptyEnum reports whether schema declares an "enum" key with no members.
 // That is distinct from declaring no enum at all: an empty enum admits no
-// value, so no Example can satisfy it (issue #624 review).
+// value, so no Example can satisfy it.
 func hasEmptyEnum(schema map[string]any) bool {
 	if schema == nil {
 		return false
@@ -2522,7 +2508,7 @@ func hasEmptyEnum(schema map[string]any) bool {
 // enum/const and declared type, numeric bounds/multipleOf, and string length.
 // A schema carrying a constraint this file cannot evaluate (pattern, a nested
 // shape, ...) makes the candidate decline, so the caller omits the Example
-// rather than assert a value the branch or holder rejects (issue #624 review).
+// rather than assert a value the branch or holder rejects.
 func candidateSatisfies(candidate any, schemas ...map[string]any) bool {
 	candidate = canonicalJSONValue(candidate)
 	if slices.ContainsFunc(schemas, hasUnhandledCandidateRisk) {
@@ -2541,7 +2527,7 @@ func candidateSatisfies(candidate any, schemas ...map[string]any) bool {
 // object/array constraints recursively. A candidate that is neither is judged
 // by the own keywords alone, and the walk applies no combining applicator; a
 // constraint those keywords do not read therefore makes the candidate decline
-// rather than report it as satisfying a schema it may not (issue #4099).
+// rather than report it as satisfying a schema it may not.
 func candidateMatchesSchema(candidate any, schema map[string]any) bool {
 	if schema == nil {
 		return true
@@ -2587,8 +2573,8 @@ func schemaOwnKeywordsMatch(candidate any, schema map[string]any) bool {
 	}
 	if !integerCandidateExact(candidate) && hasNumericConstraint(schema) {
 		// A large integer loses precision in float64, so a bound or multipleOf
-		// could be validated against a different value than the one rendered
-		// (issue #624 review): decline rather than assert an off-by-one Example.
+		// could be validated against a different value than the one rendered:
+		// decline rather than assert an off-by-one Example.
 		return false
 	}
 	if v, ok := numericValue(candidate); ok {
@@ -2609,7 +2595,7 @@ func schemaOwnKeywordsMatch(candidate any, schema map[string]any) bool {
 // canonicalJSONValue converts a candidate to the shapes the validator sees
 // after json.Unmarshal — map[string]any and []any — so a typed const such as
 // map[string]string is validated recursively rather than falling through the
-// map/slice switch unrecognized (issue #624 review). Values already canonical
+// map/slice switch unrecognized. Values already canonical
 // (and non-container scalars) are returned unchanged.
 func canonicalJSONValue(v any) any {
 	switch t := v.(type) {
@@ -2617,12 +2603,12 @@ func canonicalJSONValue(v any) any {
 		return v
 	case map[string]any:
 		if t == nil {
-			// A typed nil container marshals to null, not {} (issue #624 review).
+			// A typed nil container marshals to null, not {}.
 			return nil
 		}
 		// Recurse: a typed container nested inside an otherwise canonical map
 		// ({"data": []byte{...}}) must be canonicalized too, or validation sees
-		// an array while rendering emits the base64 string (issue #624 review).
+		// an array while rendering emits the base64 string.
 		out := make(map[string]any, len(t))
 		for key, value := range t {
 			out[key] = canonicalJSONValue(value)
@@ -2630,7 +2616,7 @@ func canonicalJSONValue(v any) any {
 		return out
 	case []any:
 		if t == nil {
-			// A typed nil slice marshals to null, not [] (issue #624 review).
+			// A typed nil slice marshals to null, not [].
 			return nil
 		}
 		out := make([]any, len(t))
@@ -2669,7 +2655,7 @@ func canonicalJSONValue(v any) any {
 
 // sameJSONEncoding reports whether two values encode to identical JSON, so a
 // candidate may be validated in its canonical form only when that form denotes
-// the same value (issue #624 review).
+// the same value.
 func sameJSONEncoding(a, b any) bool {
 	aJSON, aErr := json.Marshal(a)
 	bJSON, bErr := json.Marshal(b)
@@ -2684,7 +2670,7 @@ func integerCandidateExact(candidate any) bool {
 	const maxExact = 1 << 53
 	if i, ok := integerValue(candidate); ok {
 		// Every integer kind (including named aliases) is checked, not only the
-		// concrete int/int64/uint/uint64 types (issue #624 review).
+		// concrete int/int64/uint/uint64 types.
 		return i.IsInt64() && i.Int64() >= -maxExact && i.Int64() <= maxExact
 	}
 	return true
@@ -2705,7 +2691,7 @@ func hasNumericConstraint(schema map[string]any) bool {
 // declares holds its exact value in float64. The code converts bounds and
 // multipleOf to float64, so a value that does not survive that conversion (a
 // float32, or an integer above 2^53) would be decided against a rounded number
-// and could emit an Example the compiled schema rejects (issue #624 review).
+// and could emit an Example the compiled schema rejects.
 func numericConstraintsExact(schema map[string]any) bool {
 	for _, key := range []string{"minimum", "exclusiveMinimum", "maximum", "exclusiveMaximum", "multipleOf"} {
 		v, present := schema[key]
@@ -2742,7 +2728,7 @@ var unevaluableObjectCandidateKeys = append([]string{
 // the object constraints schema declares: required, property-count bounds,
 // additionalProperties, and each declared property's schema (recursively). A
 // constraint it cannot evaluate makes the candidate decline, so the caller
-// omits the Example rather than assert it (issue #624 review).
+// omits the Example rather than assert it.
 func objectCandidateSatisfies(obj map[string]any, schema map[string]any) bool {
 	if slices.ContainsFunc(unevaluableObjectCandidateKeys, func(key string) bool {
 		_, present := schema[key]
@@ -2842,7 +2828,7 @@ func jsonEqual(a, b any) bool {
 		if aExact && bExact {
 			// Compare every numeric representation exactly: a float64 == would
 			// equate distinct numbers above 2^53, whether both operands are
-			// integers or one is a float (issue #624 review).
+			// integers or one is a float.
 			return ar.Cmp(br) == 0
 		}
 		return false
@@ -2869,7 +2855,7 @@ func numericRat(v any) (*big.Rat, bool) {
 // integerValue returns a candidate's exact integer value for the signed and
 // unsigned integer kinds (including named aliases), or ok=false for any other
 // kind. It lets jsonEqual compare integer const/enum values without the
-// precision loss of a float64 round-trip (issue #624 review).
+// precision loss of a float64 round-trip.
 func integerValue(v any) (*big.Int, bool) {
 	rv := reflect.ValueOf(v)
 	switch rv.Kind() {
@@ -2968,7 +2954,7 @@ func hasUnhandledCandidateRisk(schema map[string]any) bool {
 
 // numericValue extracts a JSON number candidate as a float64, covering every Go
 // numeric type (including named aliases, via reflection) so a candidate such as
-// int32(3) is not silently exempt from numeric validation (issue #624 review).
+// int32(3) is not silently exempt from numeric validation.
 func numericValue(v any) (float64, bool) {
 	switch n := v.(type) {
 	case float64:
@@ -3022,12 +3008,11 @@ func satisfiesNumeric(v float64, schemas ...map[string]any) bool {
 // numericValueSatisfies reports whether v meets one schema's numeric bounds and
 // multipleOf. The multipleOf tolerance scales with the declared multiple (a
 // fraction of it), so a multiple smaller than a fixed absolute tolerance is not
-// waved through — a sub-tolerance multiple would otherwise accept every value
-// (issue #624 review).
+// waved through — a sub-tolerance multiple would otherwise accept every value.
 func numericValueSatisfies(v float64, schema map[string]any) bool {
 	if !numericConstraintsExact(schema) {
 		// A constraint this file cannot hold exactly in float64 must not be
-		// decided against a rounded value (issue #624 review).
+		// decided against a rounded value.
 		return false
 	}
 	if minimum, ok := schemaFloat(schema["minimum"]); ok && v < minimum {
@@ -3044,7 +3029,7 @@ func numericValueSatisfies(v float64, schema map[string]any) bool {
 	}
 	if m, ok := schemaFloat(schema["multipleOf"]); ok && m != 0 {
 		// JSON Schema requires exact divisibility; a tolerance would accept a
-		// near-miss like 1.0000000005 as a multiple of 1 (issue #624 review).
+		// near-miss like 1.0000000005 as a multiple of 1.
 		isMultiple, decided := rationalMultiple(v, m)
 		if !decided || !isMultiple {
 			return false
@@ -3058,7 +3043,7 @@ func numericValueSatisfies(v float64, schema map[string]any) bool {
 // the decimal rationals their shortest forms denote (fmt.Sprint, then big.Rat),
 // and v/m must be an integer. There is no tolerance and no fixed-width
 // conversion, so a near-miss like 1.0000000005 is rejected as a multiple of 1
-// and a huge integral value cannot overflow (issue #624 review). decided is
+// and a huge integral value cannot overflow. decided is
 // false only when a value has no decimal rational form (NaN/Inf); the caller
 // treats that as "not a multiple" and omits the Example.
 func rationalMultiple(v, m float64) (isMultiple, decided bool) {
@@ -3076,7 +3061,7 @@ func rationalMultiple(v, m float64) (isMultiple, decided bool) {
 // schemaFloat extracts a JSON-Schema numeric value (minimum and friends),
 // tolerating the float64/int/int64 forms a Go map or JSON-decoded schema may
 // carry. Unlike schemaInt it preserves fractions, so a bound like 0.5 is not
-// silently truncated (issue #624 review).
+// silently truncated.
 func schemaFloat(v any) (float64, bool) {
 	return numericValue(v)
 }
@@ -3116,8 +3101,8 @@ type numBound struct {
 // numericExample renders a numeric property's smallest satisfying value: the
 // tightest lower bound across the branch and holder, rounded up for an integer
 // and rendered exactly for a number. Fractions are preserved (minimum 0.5 is
-// not truncated to 0) and an integer minimum of 0.5 becomes 1 (issue #624
-// review). ok is false when no bound can be rendered faithfully, so the caller
+// not truncated to 0) and an integer minimum of 0.5 becomes 1.
+// ok is false when no bound can be rendered faithfully, so the caller
 // omits the Example rather than coach an invalid retry.
 func numericExample(typ string, branch, holder map[string]any) (float64, bool) {
 	if hasUnhandledCandidateRisk(branch) || hasUnhandledCandidateRisk(holder) {
@@ -3125,7 +3110,7 @@ func numericExample(typ string, branch, holder map[string]any) (float64, bool) {
 	}
 	if !numericConstraintsExact(branch) || !numericConstraintsExact(holder) {
 		// Generating against a rounded bound could emit a value the compiled
-		// schema rejects (issue #624 review): omit rather than convert.
+		// schema rejects: omit rather than convert.
 		return 0, false
 	}
 	lower, hasLower := bindingLower(branch, holder)
@@ -3160,8 +3145,7 @@ func numericExample(typ string, branch, holder map[string]any) (float64, bool) {
 		switch {
 		case hasLower && lower.exclusive:
 			// Pick an interior value strictly above the bound; the exact bounds
-			// check below still rejects it if it is not valid (issue #624
-			// review).
+			// check below still rejects it if it is not valid.
 			candidate = lower.value + 1
 		case hasLower:
 			candidate = lower.value
@@ -3172,12 +3156,12 @@ func numericExample(typ string, branch, holder map[string]any) (float64, bool) {
 		}
 		// Snap up to the declared multiple so a sub-tolerance multipleOf
 		// (smaller than a fixed absolute epsilon) cannot wave the bound itself
-		// through (issue #624 review).
+		// through.
 		if hasMultiple {
 			// Snap in exact decimal arithmetic. Binary arithmetic would emit
 			// 0.30000000000000004 for minimum 0.3 with multipleOf 0.1, which the
-			// exact multiple check then rejects although 0.3 is valid (issue
-			// #624 review). An upper bound alone snaps down, not past it.
+			// exact multiple check then rejects although 0.3 is valid.
+			// An upper bound alone snaps down, not past it.
 			snapped, ok := snapMultiple(candidate, multiple, !fromUpper)
 			if !ok {
 				return 0, false
@@ -3243,7 +3227,7 @@ func integerMultipleWithin(candidate, m float64, downward bool) (float64, bool) 
 	const maxSnap = float64(1 << 62)
 	if candidate > maxSnap || candidate < -maxSnap {
 		// A bound this far out overflows int64 in the conversion below, which
-		// would snap to a wrong multiple: decline instead (issue #624 review).
+		// would snap to a wrong multiple: decline instead.
 		return 0, false
 	}
 	var value int64
@@ -3352,8 +3336,8 @@ func bindingUpper(schemas ...map[string]any) (numBound, bool) {
 // of every enclosing object level (root and intermediate ancestors alike) with
 // constraint-aware values. A failure deep under a container therefore yields a
 // document that validates end to end — {"request": {"opts": {"x": "..."},
-// "task": "..."}} — rather than one that drops an ancestor's required sibling
-// (issue #624 review). It returns "" when a required level cannot be satisfied
+// "task": "..."}} — rather than one that drops an ancestor's required sibling.
+// It returns "" when a required level cannot be satisfied
 // or a one-element array would break an enclosing array's constraints, letting
 // the caller omit the Example.
 func scopedBranchExample(root, rootBranch map[string]any, instPath []pathStep, valueExample string) string {
@@ -3397,7 +3381,7 @@ func scopedExampleValue(schema map[string]any, extras []map[string]any, instPath
 		// The terminal property is still constrained by every schema that
 		// declares it. When more than one does, their constraints cannot be
 		// merged into the value built for the holder alone, so decline rather
-		// than emit a leaf the root rejects (issue #624 review).
+		// than emit a leaf the root rejects.
 		if declaringCount(schemas, step.name) > 1 {
 			return "", false
 		}
@@ -3438,8 +3422,7 @@ func scopedExampleValue(schema map[string]any, extras []map[string]any, instPath
 	if len(extras) > 0 {
 		// When an enclosing root oneOf branch was selected, the completed
 		// document must still match exactly that one branch: a repair that now
-		// satisfies a second branch is an over-match and invalid (issue #624
-		// review).
+		// satisfies a second branch is an over-match and invalid.
 		if !exactlyOneRootBranch(schema, names) {
 			return "", false
 		}
@@ -3448,7 +3431,7 @@ func scopedExampleValue(schema map[string]any, extras []map[string]any, instPath
 		// properties are evaluated before combinators, so a property-nested
 		// failure carries no oneOf prefix). The built object was neither made to
 		// satisfy nor checked against it, and may match zero branches; decline
-		// rather than emit it (issue #624 review).
+		// rather than emit it.
 		return "", false
 	}
 	parts := make([]string, 0, len(names))
@@ -3478,7 +3461,7 @@ func exactlyOneRootBranch(schema map[string]any, names []string) bool {
 // boolean declaration is a constraint too: false admits no value so it declines
 // (nil), true is unconstrained; and when more than one schema declares the
 // property their constraints cannot be merged into one child schema here, so it
-// declines rather than silently drop one (issue #624 review).
+// declines rather than silently drop one.
 func propertySchema(schemas []map[string]any, name string) map[string]any {
 	var found map[string]any
 	for _, schema := range schemas {
@@ -3561,7 +3544,7 @@ func exampleValueForAny(schemas []map[string]any, name string) (string, bool) {
 // arrayExampleAllowed reports whether a one-element array example can satisfy
 // the enclosing array schema. Cardinality and item constraints this file cannot
 // decide make it decline, so the caller omits the Example rather than assert a
-// one-element array the schema rejects (issue #624 review).
+// one-element array the schema rejects.
 func arrayExampleAllowed(array map[string]any) bool {
 	if array == nil {
 		return true
@@ -3592,7 +3575,7 @@ func arrayExampleAllowed(array map[string]any) bool {
 // stepPathDisplay renders kinded instance-path steps for a message: object keys
 // joined with ".", array indices as "[N]" (e.g. "questions[0].opts"). Unlike
 // formatPath it never infers an index from the segment text, so a property
-// named "0" stays a key (issue #624 review, finding 4).
+// named "0" stays a key.
 func stepPathDisplay(steps []pathStep) string {
 	var b strings.Builder
 	for i, step := range steps {
@@ -3613,7 +3596,7 @@ func stepPathDisplay(steps []pathStep) string {
 // splitPointer splits a JSON-Pointer-style location into its decoded tokens.
 // jsonschema renders property names containing "/" or "~" as "~1"/"~0" (RFC
 // 6901), so both the keyword location and the instance location need decoding
-// before they can name a schema property (issue #624 review). Returns nil for
+// before they can name a schema property. Returns nil for
 // an empty location; accepts a location with or without a leading slash.
 func splitPointer(location string) []string {
 	location = strings.Trim(location, "/")
