@@ -1,26 +1,35 @@
-# Comic Chat client
+# Comic Chat presentation
 
-`/comic` is an additional Evener web client; it does not replace the existing hub. Its comic-panel units live in `cmd/evener-hub/frontend/src/comic/`. The reader composes literal source text into measured panels in one virtual scroll flow. The picker and reader remain usable without the Comic Sans files. Comic and plain presentation share the same source identities and foreground reader.
+Choose **Comic** under **Presentation** in the conversation's **Verbosity** panel.
+Comic renders the whole conversation pane, including its composer, questions and
+approvals, within the existing workspace. Its units live in
+`cmd/evener-hub/frontend/src/comic/`. The reader composes literal source text into
+measured panels in one virtual scroll flow and remains usable if the font cannot
+load. Comic and its plain reader share source identities and foreground demand.
 
-## Routes and access
+## Selection, navigation and ownership
 
-`/comic` opens the existing-session picker. `/comic/s/<encoded-ref>` opens a
-conversation, with the complete AppWire ref encoded as one URL component:
-`local:<session-id>` or `<host>:<session-id>`. Child conversations use the same
-route with their authoritative child ref, never a display name. Refresh and
-browser history retain the URL; the ordinary `/s/<encoded-ref>` client remains
-available. Both clients use the hub's existing authentication and `/rpc`
-connection. Reading a saved or remote conversation does not launch a daemon.
+Standard and Comic use the same `/s/<encoded-ref>` navigation, pane and connection.
+The complete AppWire ref is encoded as one URL component: `local:<session-id>` or
+`<host>:<session-id>`. Child navigation uses its authoritative ref, never a display
+name. Switching presentation does not navigate or open a second client. The
+ordinary workspace owns authentication, navigation, notification leadership and
+the `/rpc` connection. Reading a saved or remote conversation does not launch a daemon.
 
-Within each project tier, overlapping pages show each session ref once. Paging
-continues from raw returned row counts, not the deduplicated display count;
-loaded later pages remain available through navigation refresh and reconnect.
-Failed project or page refreshes retain their visible conversations and expose
-a retry for each failed resource, including earlier pages and terminal pages.
-Page retries request the failed offset without replacing the loaded page list.
-Successful reads replace retained data with canonical rows; continuation uses
-the last page's raw returned length after recovery. More waits while that page
-is loading or failed; healthy rows and retries for earlier pages remain usable.
+The browser remembers presentation separately for Desktop and Mobile, using the
+existing 899px viewport boundary. Same-origin tabs share the choice, and reload
+retains it. Both layouts default to Standard. This browser preference is separate
+from shared content settings and hub defaults; native clients do not gain a Comic
+setting. Standard's content editor remains mounted but inactive in Comic, retaining
+custom and advanced values. **Use hub default** clears the content override only.
+Storage failure leaves the current choice usable and reports uncertain persistence.
+
+`ConversationBody` selects the renderer within the existing `ConversationSeat`.
+The seat retains its composer source and identity-recovery owner across switches.
+Each presentation retains its reading position; Comic keeps per-seat semantic
+positions and uses session storage for reload. The normal session menu remains
+available, including a way back to Standard while the conversation is loading or
+deleted. Inline child readers remain noninteractive.
 
 ## Presentation and accessibility
 
@@ -36,15 +45,14 @@ their keyboard behavior. Narrow-screen checks must reach the question choices,
 note and final action, not merely capture their container. Browser viewport and
 safe-area emulation do not establish native touch inertia or device behavior.
 
-On mobile, `ComicApp` uses the ordinary shell's shared visual-viewport keyboard
-inset. The session root reserves the larger of that inset and the bottom safe
-area as padding inside its viewport-sized border box. The composer clears the
-home indicator when the keyboard closes, without double-counting the safe area
-when the keyboard covers it, while the reader contracts.
+On mobile, the ordinary shell owns the visual-viewport keyboard inset and safe
+area. Comic sizes to its conversation pane without adding another viewport-height
+root or counting the keyboard inset twice. The composer clears the home indicator
+when the keyboard closes, while the reader contracts when it opens.
 Closing the keyboard restores reader space without resetting the draft or source
-text. Pinch zoom is excluded, and leaving Comic releases its viewport listeners
-and inset before the ordinary client takes ownership. Browser regression checks
-simulate the visual-viewport boundary, not a physical Safari keyboard.
+text. Pinch zoom is excluded. Switching presentation does not replace the shell's
+viewport owner. Browser regression checks simulate the visual-viewport boundary,
+not a physical Safari keyboard.
 
 ## Original art and offline checks
 
@@ -64,7 +72,7 @@ Only a regular face was present; the browser synthesizes bold from that face.
 No installed or privately licensed font is needed or included.
 
 `comic.module.css` serves `/webassets/comic-fonts/comic.ttf` with `@font-face`,
-without `local()` fallback or a build-time download. `ComicApp` waits for normal
+without `local()` fallback or a build-time download. `ComicConversationBody` waits for normal
 and bold text readiness. If loading fails, it reports the failure while the
 conversation and navigation remain usable. The asset regression checks the
 actual font bytes and unchanged MIT notice independently of browser rendering.
@@ -81,12 +89,12 @@ and geometry to detect theme leakage. The default guard loads the bundled font;
 
 ## Shared input and recovery
 
-The full-page root uses the shared composer source, structured editor, attachments,
+The conversation pane uses its existing composer source, structured editor, attachments,
 queue and `useComposerActions` owner. Send, Queue and Stop keep ordinary-client
 admission and durable mutation identities. A transport failure does not mean an
 accepted input should be sent again: canonical transcript reconciliation can
 settle an unacknowledged mutation. Newer edits remain separately owned through
-reload and navigation between ordinary and Comic clients.
+reload, navigation and switches between Standard and Comic.
 
 An explicit Send-driven resume owns dispatch for its source and resolved
 destination until identity and outbox reconciliation finish. Reconnect reads
@@ -99,12 +107,13 @@ surface. Sandbox requests use the existing approval card; neither arriving at a
 request nor reconnecting approves it. A late response belongs to the original
 root, not the conversation now on screen. Inline children remain read-only.
 Comic does not add upload, voice, session creation, configuration, forks or general
-job/watch controls; those remain in the ordinary client. Existing structured
+job/watch controls; workspace navigation and existing menus retain those actions.
+Existing structured
 drafts and recovery remain shared, without new attachment-lifetime guarantees.
 
 ## Inline child readers
 
-`ComicSession` owns the root reader. `useComicSubchats` mounts one committed
+`ComicConversationBody` owns the root reader. `useComicSubchats` mounts one committed
 lifetime per explicitly expanded, qualified child path above the virtual rows.
 Scrolling a heading out of view does not release its read demand. Collapsing a
 branch releases that branch and its descendants, not an independently opened
@@ -162,9 +171,9 @@ the saved intent until recovery or user movement. **Jump to latest** releases
 every inline reader's pending history demand, not an independent reader's demand
 for the same child.
 
-The explicit **Open conversation** action selects the child's full-page route.
+The explicit **Open conversation** action uses the child's ordinary workspace route.
 Inline readers contain no composer or approval submission. Send, Stop and approval
-controls belong to the full-page interactive root, not inline expansion. Human
+controls belong to the interactive conversation pane, not inline expansion. Human
 questions and sandbox approvals remain interactive-root-only. Child activity
 status is not a human question or approval, and opening a child does not change
 those admission rules.

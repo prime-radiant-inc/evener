@@ -24,7 +24,7 @@ changes; keep implementation history in Git and pull requests.
 - [Playdate client](playdate-client.md): direct session browsing, chat transcripts,
   voice review, acoustic setup, native enrollment and device-owned draft recovery.
 - [Comic Chat](comic-chat.md): literal comic-panel conversations, thought bubbles,
-  inline subagent readers and shared composer recovery at `/comic`.
+  inline subagent readers and shared composer recovery, selected in Verbosity.
 - [Memory](memory.md): host-owned personal/project files, lower-trust indexes,
   scoped tools, gardening, recovery and per-session opt-out.
 - [Friction punchlist](friction.md): open, evidence-backed gaps, with unresolved
