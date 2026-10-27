@@ -397,6 +397,23 @@ Grouping excludes a notification dispatcher already past the wake-hold check whe
 finalization begins, even before input admission. The hold does not revoke that
 dispatch.
 
+Receipt-index repair can settle already observed notifications without producing
+new model input. The canonical retry and waking completion release share one
+transient publication token for that resource progress. The retry joins before
+clearing its active flag and retains its participation until its entire existing
+attention and retirement release returns. Completion release joins atomically
+with the last hold's decrement. The last eligible participant detaches the token
+before handing off one progress wake outside owner locks, even when no canonical
+IDs remain pending. A real completion hold retains that opportunity until release.
+
+An outstanding canonical or participating legacy input handoff satisfies the
+opportunity instead. Existing running, question, pause, name-recovery, paced retry,
+Stop and Close owners still suppress publication. An absent callback leaves no
+receipt-only replay obligation. Unrelated watch transport neither joins the token
+nor delays its progress wake. This adds no timer, queue, retirement lease or model
+turn, and promises neither global callback coalescing nor revocation of an already
+claimed handoff by a later hold, Stop or Close.
+
 The hold is not a transaction or a recovery owner. Source journals and canonical
 receiver custody retain each ID independently. A failed partition releases
 healthy work, and existing retries preserve the later obligation and terminal

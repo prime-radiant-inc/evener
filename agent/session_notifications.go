@@ -175,46 +175,52 @@ func (s *Session) scheduleNotificationRetry() {
 			return
 		}
 		s.mu.Unlock()
+		s.observeNotificationProgress("retry-admission-before")
 		release, err := s.beginAttentionCallback()
+		s.observeNotificationProgress("retry-admission-after")
 		s.mu.Lock()
 		current := s.notificationSchedule.retry.generation == generation
+		var progress *notificationProgress
 		if current {
+			s.pendingJobNotifsMu.Lock()
+			progress = s.joinNotificationProgressLocked()
+			s.pendingJobNotifsMu.Unlock()
 			s.notificationSchedule.retry.active = false
 			s.notificationSchedule.hinted = false
 		}
 		s.mu.Unlock()
+		s.observeNotificationProgress("retry-transition")
 		if !current {
 			if release != nil {
 				release()
+				s.observeNotificationProgress("custody-return")
 			}
 			return
 		}
 		if err != nil {
 			s.scheduleNotificationRetry()
+			s.finishNotificationProgress(progress, false)
 			return
 		}
 		func() {
-			defer release()
+			defer func() {
+				release()
+				s.observeNotificationProgress("custody-return")
+			}()
 			if !s.notificationStopHeld() {
 				if observe := s.cfg.testOnly.notificationRetryCallback; observe != nil {
 					observe()
 				}
 			}
+			s.observeNotificationProgress("retry-dispatch")
 			err = s.dispatchNotificationWake()
 		}()
 		if err != nil {
 			slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
-			return
 		}
-		// Repair can settle the last resource without making model input ready.
-		// Publish that progress only after callback custody and locks are released.
-		state := s.notificationExecutionState()
-		s.mu.Lock()
-		hinted := s.notificationSchedule.hinted
-		s.mu.Unlock()
-		if !state.held && !state.running && !state.recovering && !hinted {
-			s.notify()
-		}
+		s.observeNotificationProgress("retry-leave")
+		// The complete callback release above includes retirement custody.
+		s.finishNotificationProgress(progress, err == nil)
 	})
 }
 
@@ -748,4 +754,79 @@ func (c *delegateTreeController) notificationCustodyAndClosure(ownerSessionID, n
 	}
 	_, accepted = fold.content[notificationID]
 	return accepted, closed, nil
+}
+
+// notificationProgress joins only canonical retry and waking completion-release
+// publication. All fields and the Session pointer use pendingJobNotifsMu.
+// It is neither input admission nor an additional retirement lease.
+type notificationProgress struct {
+	users             int
+	progressCandidate bool
+	legacyHint        bool
+}
+
+// notificationProgressObserver is a test-only scheduling/observation seam. It
+// cannot replace admission, dispatch, custody release, or the publication claim.
+// Every call is outside owner locks, and a normal session leaves it nil.
+type notificationProgressObserver struct{ observe func(string) }
+
+func (s *Session) observeNotificationProgress(point string) {
+	if observer := s.testOnlyNotificationProgress.Load(); observer != nil {
+		observer.observe(point)
+	}
+}
+
+// Only registration allocates, never a finishing tail. Caller holds the pending
+// mutex, and if both locks are needed, the order is mu then pendingJobNotifsMu.
+func (s *Session) joinNotificationProgressLocked() *notificationProgress {
+	if s.notificationProgress == nil {
+		s.notificationProgress = &notificationProgress{}
+	}
+	p := s.notificationProgress
+	p.users++
+	return p
+}
+
+func (s *Session) finishNotificationProgress(p *notificationProgress, candidate bool) {
+	s.pendingJobNotifsMu.Lock()
+	p.progressCandidate = p.progressCandidate || candidate
+	p.users--
+	last := p.users == 0
+	s.pendingJobNotifsMu.Unlock()
+	if !last {
+		return
+	}
+	s.observeNotificationProgress("claim-before")
+	// Durable Stop reads must stay outside owner locks.
+	stopped := s.notificationStopHeld()
+	s.mu.Lock()
+	s.pendingJobNotifsMu.Lock()
+	if s.notificationProgress != p || p.users != 0 {
+		s.pendingJobNotifsMu.Unlock()
+		s.mu.Unlock()
+		return
+	}
+	if s.notifyWakeHolds > 0 {
+		s.notifyWakeDeferred = true
+		s.pendingJobNotifsMu.Unlock()
+		s.mu.Unlock()
+		return
+	}
+	// Detach before callback handoff. Reentry may join a fresh obligation,
+	// which this old claimant must never erase after returning from the call.
+	s.notificationProgress = nil
+	n := &s.notificationSchedule
+	var f func()
+	if p.progressCandidate && !stopped && !s.closingOrClosedLocked() &&
+		!n.running && len(s.askPending) == 0 && !n.paused && !n.nameBlocked &&
+		!n.retry.active && n.releaseTurnID == "" && !n.hinted &&
+		(!p.legacyHint || len(s.pendingJobNotifs) == 0) {
+		f = s.notifyFunc
+	}
+	s.pendingJobNotifsMu.Unlock()
+	s.mu.Unlock()
+	s.observeNotificationProgress("claim-after")
+	if f != nil {
+		f()
+	}
 }
