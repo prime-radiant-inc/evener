@@ -358,6 +358,14 @@ accept is otherwise a no-op that still calls
 so a wake carrying only already-settled shell/watch bookkeeping can finish with
 zero model turns; model-bound transcript attention always runs the owner turn.
 
+**Session lock contract.** `Session.mu` guards the session's mutable state; the full
+list and the ordered lock pairs live in the `Session` struct comment
+(`agent/session.go`). Ordered pairs, outermost first: `responseSideEffectsMu > mu`,
+`restMu > delegateDeliveryMu > mu`, `metaSaveMu > mu`, `goalUpdateMu > mu`,
+`notesUpdateMu > mu`. `drainAbandonedMu` and `childCommittedSendMu` are leaves. `restMu` serializes a rest
+transition with its `STATUS_SETTLED` emit; the rest-generation fields themselves are
+guarded by `mu`.
+
 **The forbidden re-entry.** `responseSideEffectsMu` is held across event emits
 (`emitAssistantResponse`, the tool-call-end emit). Observation paths and the `jobManager`'s
 retained upcalls (`emit`, `enqueue`, `wake`, `forward`) may take **only** leaf locks

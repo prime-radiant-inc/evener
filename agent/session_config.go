@@ -390,6 +390,13 @@ type testConfig struct {
 	// delegateInlineWaitReady observes the exact context and duration supplied to
 	// a stable delegate inline wait. Nil preserves the production wait.
 	delegateInlineWaitReady func(context.Context, time.Duration)
+	// delegateQuietWatchTickDone observes one quiet-watch hub tick's completed
+	// lease work. It fires after runDelegateQuietWatchdogTick returns, so the
+	// tick's durable write is already visible to the observer; coalesced and
+	// detached ticks do no work and never fire it. Set it before the clock
+	// delivers the first tick. Observers must not block: the call runs on the
+	// tick's worker goroutine. Nil preserves production.
+	delegateQuietWatchTickDone func(lease delegateLease)
 	// delegateSendBeforePositiveWaitAdmission observes the boundary immediately
 	// before a positive-wait send reserves its start. Nil preserves production.
 	delegateSendBeforePositiveWaitAdmission func()
