@@ -477,13 +477,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-// SetStatus replaces the full session status.
-func (s *Server) SetStatus(info StatusInfo) {
-	s.mu.Lock()
-	s.status = info
-	s.mu.Unlock()
-}
-
 // GetStatus returns the current session status.
 func (s *Server) GetStatus() StatusInfo {
 	s.mu.RLock()

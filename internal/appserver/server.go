@@ -689,14 +689,6 @@ func (c *Connection) ID() string {
 	return c.id
 }
 
-// Subscribe registers the connection's interest in threadID without a
-// hydration capture; tests outside this package seed live subscriptions with it.
-func (c *Connection) Subscribe(threadID string) {
-	c.server.projectionMu.Lock()
-	defer c.server.projectionMu.Unlock()
-	c.server.subs.Subscribe(c.id, threadID)
-}
-
 func (c *Connection) setCancel(cancel context.CancelFunc) {
 	c.mu.Lock()
 	c.cancel = cancel
@@ -1146,29 +1138,6 @@ func RunAfterResponseWritten(ctx context.Context, fn func()) {
 	if !AfterResponseWritten(ctx, fn) {
 		fn()
 	}
-}
-
-func Subscribe(ctx context.Context, threadID string) bool {
-	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
-	if !ok || conn == nil {
-		return true
-	}
-	if threadID == "" {
-		return false
-	}
-	server := conn.server
-	if server.beforeSubscriptionRegistration != nil {
-		server.beforeSubscriptionRegistration()
-	}
-	server.projectionMu.Lock()
-	defer server.projectionMu.Unlock()
-	server.mu.Lock()
-	defer server.mu.Unlock()
-	if server.conns[conn.id] != conn {
-		return false
-	}
-	server.subs.Subscribe(conn.id, threadID)
-	return true
 }
 
 // Unsubscribe drops the calling connection's subscription to one thread so a

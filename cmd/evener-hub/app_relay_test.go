@@ -116,7 +116,7 @@ func TestHubRelayEndsWithItsServer(t *testing.T) {
 	observeHubRelay = func(got *hubRelay) { relays = got }
 	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir()}, sources)
 	observeHubRelay = nil
-	server.NewConnection("subscriber").Subscribe("remote:thread")
+	seedSubscription(t, server, "remote:thread")
 	if err := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, thread); err != nil {
 		t.Fatalf("startRelay: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestHubRelayInitialSubscribeEndsWithItsServer(t *testing.T) {
 	observeHubRelay = func(got *hubRelay) { relays = got }
 	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir()}, sources)
 	observeHubRelay = nil
-	server.NewConnection("subscriber").Subscribe("remote:thread")
+	seedSubscription(t, server, "remote:thread")
 	started := make(chan error, 1)
 	go func() {
 		started <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, thread)

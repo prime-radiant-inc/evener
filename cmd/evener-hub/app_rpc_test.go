@@ -2884,7 +2884,7 @@ func TestHubRPCStableCurrentAdmissionCancellation(t *testing.T) {
 						}
 					})
 				}
-				appserver.Subscribe(ctx, id)
+				appserver.SubscribeWithAdmission(ctx, id, false)
 				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: id, SessionID: id, Evener: appwire.EvenerThread{Ref: "local:" + id}}}, nil
 			})
 			daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
@@ -3001,7 +3001,7 @@ func TestHubRPCRootChildAdmissionIsolation(t *testing.T) {
 						}
 					})
 				}
-				appserver.Subscribe(ctx, id)
+				appserver.SubscribeWithAdmission(ctx, id, false)
 				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: id, SessionID: id, Evener: appwire.EvenerThread{Ref: "local:" + id}}}, nil
 			})
 			daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
@@ -3072,7 +3072,7 @@ func TestHubRPCRootChildAdmissionIsolation(t *testing.T) {
 func TestHubRPCThreadReadRelaysDaemonNotifications(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		appserver.Subscribe(ctx, "th_1")
+		appserver.SubscribeWithAdmission(ctx, "th_1", false)
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Evener: appwire.EvenerThread{Ref: "local:th_1"}}}, nil
 	})
 	_, roster, runDir := startDaemonRoster(t, daemon, 103, "th_1", "sess_1")
@@ -3168,7 +3168,7 @@ func TestHubRPCRelaysSHARoutedToolResultImageFromARealDaemon(t *testing.T) {
 	sha := strings.Repeat("b", 64)
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		appserver.Subscribe(ctx, sessionID)
+		appserver.SubscribeWithAdmission(ctx, sessionID, false)
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID: sessionID, SessionID: sessionID, Source: "local",
 			Evener: appwire.EvenerThread{Ref: params.Ref},
@@ -10257,7 +10257,7 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnLiveStartError(t *testing.T) {
 
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		appserver.Subscribe(ctx, sessionID)
+		appserver.SubscribeWithAdmission(ctx, sessionID, false)
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -10291,7 +10291,7 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnGenericSubstringError(t *testin
 
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		appserver.Subscribe(ctx, sessionID)
+		appserver.SubscribeWithAdmission(ctx, sessionID, false)
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -10326,7 +10326,7 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		appserver.Subscribe(ctx, sessionID)
+		appserver.SubscribeWithAdmission(ctx, sessionID, false)
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -10405,7 +10405,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 
 			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-				appserver.Subscribe(ctx, sessionID)
+				appserver.SubscribeWithAdmission(ctx, sessionID, false)
 				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
 			})
 			appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {

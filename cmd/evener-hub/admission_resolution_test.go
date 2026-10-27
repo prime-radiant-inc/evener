@@ -63,7 +63,7 @@ func testHubAdmissionInventoryChange(t *testing.T, sameOwner bool) {
 		if sameOwner && swapped.Load() {
 			id = "next"
 		}
-		appserver.Subscribe(ctx, id)
+		appserver.SubscribeWithAdmission(ctx, id, false)
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: id, SessionID: id, Evener: appwire.EvenerThread{Ref: "local:" + id}}}, nil
 	})
 	upstream := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
@@ -158,7 +158,7 @@ func TestHubUnsubscribeAcceptedExtraField(t *testing.T) {
 	defer cancel()
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		appserver.Subscribe(ctx, "current")
+		appserver.SubscribeWithAdmission(ctx, "current", false)
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "current", SessionID: "current", Evener: appwire.EvenerThread{Ref: "local:current"}}}, nil
 	})
 	upstream := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))

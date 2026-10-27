@@ -33,7 +33,7 @@ func TestServerAppWireTurnCancelQueuedDispatchesIndex(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	gotIndex := -1
 	var gotExpectedID string
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
@@ -67,7 +67,7 @@ func TestServerAppWireTurnCancelQueuedAllowedWhileIdle(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
 	called := 0
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Cancel: func(appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
@@ -90,7 +90,7 @@ func TestServerAppWireTurnCancelQueuedRejectsNegativeIndex(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Cancel: func(appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 			return appwire.TurnCancelQueuedResponse{}, nil
@@ -111,7 +111,7 @@ func TestServerAppWireTurnCancelQueuedDelegatesWhenProjectionIsClosed(t *testing
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "closed"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "closed"})
 	called := 0
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Cancel: func(appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
@@ -131,7 +131,7 @@ func TestServerAppWireTurnCancelQueuedUnavailableWithoutFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 
 	conn := srv.AppServer().NewConnection("test")
 	resp := cancelRPC(conn, 2, appwire.TurnCancelQueuedParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1", ExpectedEntryID: "test-entry", Ref: "local:th_1", Index: 0})
@@ -150,7 +150,7 @@ func TestServerAppWireTurnCancelQueuedPropagatesSessionError(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Cancel: func(appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 			return appwire.TurnCancelQueuedResponse{}, appwire.Conflict("cancel: queue index 3 out of range (depth 1)")
@@ -203,7 +203,7 @@ func TestServerAppWireTurnCancelQueuedThroughSession(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", sess.ID())
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: sess.ID(), State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: sess.ID(), State: "active"})
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Cancel: sess.AcceptClientMutationCancelQueued,
 	})

@@ -162,7 +162,7 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 	// present zero aggregate.
 	live := server.NewServer(server.ServerConfig{})
 	live.SetAppIdentity("local", sess.ID())
-	live.SetStatus(server.StatusInfo{SessionID: sess.ID(), State: "idle", Model: sess.Profile().Model(), Profile: sess.Profile().ID(), WorkingDir: workDir})
+	seedDaemonStatus(live, server.StatusInfo{SessionID: sess.ID(), State: "idle", Model: sess.Profile().Model(), Profile: sess.Profile().ID(), WorkingDir: workDir})
 	live.SetThreadEnvelopeSource(sessionTaskEnvelopeSource{sess: sess})
 	live.RefreshThreadEnvelope()
 	conn := live.AppServer().NewConnection("test")

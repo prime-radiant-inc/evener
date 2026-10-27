@@ -580,7 +580,7 @@ func TestThreadListStatusOnlyCarriesProbeDiagnosticsOnly(t *testing.T) {
 
 func TestAppThread_OverlaysPendingAskFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetStatus(StatusInfo{SessionID: "s1", State: "awaiting"})
+	seedStatus(srv, StatusInfo{SessionID: "s1", State: "awaiting"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = true })
 	thread := srv.appThread()
 	if !thread.Evener.AskPending {
@@ -594,7 +594,7 @@ func TestAppThread_OverlaysPendingAskFunc(t *testing.T) {
 // prior thread/model/changed or thread/reasoning-effort/changed notification.
 func TestAppThread_CarriesReasoningInfoFromLiveSessionState(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetStatus(StatusInfo{SessionID: "s1", State: "idle"})
+	seedStatus(srv, StatusInfo{SessionID: "s1", State: "idle"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 		e.reasoningEffort = "high"
 		e.reasoningLevels = []string{"low", "medium", "high"}
@@ -615,7 +615,7 @@ func TestAppThread_CarriesReasoningInfoFromLiveSessionState(t *testing.T) {
 
 func TestAppThread_UsesGeneratedSessionNameFromMeta(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetStatus(StatusInfo{
+	seedStatus(srv, StatusInfo{
 		SessionID:  "01TITLE",
 		State:      "idle",
 		WorkingDir: "/tmp/project",

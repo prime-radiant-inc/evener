@@ -8,7 +8,7 @@ import "testing"
 // session was cold and the hub could scan the finished transcript (kata 12rq).
 func TestAppThreadCarriesTheLiveFailureCount(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetStatus(StatusInfo{SessionID: "s1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "s1", State: "active"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failedToolCalls = 6; e.failuresMeasured = true })
 
 	thread := srv.appThread()
@@ -25,7 +25,7 @@ func TestAppThreadCarriesAMeasuredZero(t *testing.T) {
 	// the session was counted and nothing failed. It has to reach the wire as 0
 	// rather than as absent, so the two cases stay distinguishable downstream.
 	srv := NewServer(ServerConfig{})
-	srv.SetStatus(StatusInfo{SessionID: "s1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "s1", State: "active"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failedToolCalls = 0; e.failuresMeasured = true })
 
 	thread := srv.appThread()
@@ -42,7 +42,7 @@ func TestAppThreadOmitsAnUnmeasuredFailureCount(t *testing.T) {
 	// as a comforting zero: a partial or fabricated figure wears session-level
 	// authority while under-reporting, which is worse than saying nothing.
 	srv := NewServer(ServerConfig{})
-	srv.SetStatus(StatusInfo{SessionID: "s1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "s1", State: "active"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failedToolCalls = 0; e.failuresMeasured = false })
 
 	thread := srv.appThread()
@@ -56,7 +56,7 @@ func TestAppThreadOmitsTheFailureCountOnADaemonThatNeverWiredIt(t *testing.T) {
 	// installs the callback. Absence is the honest report; the client renders
 	// nothing.
 	srv := NewServer(ServerConfig{})
-	srv.SetStatus(StatusInfo{SessionID: "s1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "s1", State: "active"})
 
 	thread := srv.appThread()
 	if thread.Evener.FailedToolCalls != nil {

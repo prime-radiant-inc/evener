@@ -170,7 +170,7 @@ func newWorktreeDocumentFixture(t *testing.T) *worktreeDocumentFixture {
 		t.Fatal(err)
 	}
 	daemon.ReplaceAppIdentity(prepared, nil)
-	daemon.SetStatus(daemonserver.StatusInfo{SessionID: sessionID, State: appwire.ThreadStatusIdle, WorkingDir: root})
+	seedDaemonStatus(daemon, daemonserver.StatusInfo{SessionID: sessionID, State: appwire.ThreadStatusIdle, WorkingDir: root})
 	daemon.WireTranscriptHistory(sess)
 	sess.ConsumeEventsLossless(func(event events.SessionEvent) {
 		daemonserver.BridgeEvent(daemon, event, nil)

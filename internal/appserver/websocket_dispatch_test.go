@@ -628,9 +628,8 @@ func TestServeWebSocketReadAdmissionCanceledByFollowingUnsubscribe(t *testing.T)
 		<-release
 	}
 	HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		if !Subscribe(ctx, "th_unrelated") {
-			return appwire.ThreadReadResponse{}, nil
-		}
+		conn, _ := ctx.Value(connectionContextKey{}).(*Connection)
+		conn.Subscribe("th_unrelated")
 		if !CaptureSubscription(ctx, false, func() string { return params.ThreadID }, notifier.CurrentSequence, func() bool { return true }) {
 			return appwire.ThreadReadResponse{}, nil
 		}
