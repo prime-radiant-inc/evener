@@ -185,20 +185,20 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	}
 	installPath := home + "/.local/bin/evener"
 	installHash := host.sha256IfFile(installPath)
+	hubMayHaveStarted := false
+	shutdownProved := true
 	t.Cleanup(func() {
-		stopHostListener(t, host, addr, hostDir+"/"+hostDeployToml)
-		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
-			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
+		if hubMayHaveStarted {
+			shutdownProved = stopHostListener(t, host, addr, hostDir+"/"+hostDeployToml, runTarget)
 		}
 		if installHash == "" {
 			if got := host.sha256IfFile(installPath); got != "" {
 				t.Errorf("the pipeline created %s on host %s (sha256 %s); it must write only to the test-owned %s", installPath, host.target, got, runTarget)
 			}
-			return
-		}
-		if got := host.sha256IfFile(installPath); got != installHash {
+		} else if got := host.sha256IfFile(installPath); got != installHash {
 			t.Errorf("the host's own install %s changed during the pipeline case (sha256 %s -> %s); it must write only to the test-owned %s", installPath, installHash, got, runTarget)
 		}
+		removeHostFixtureAfterProof(t, host, hostDir, shutdownProved)
 	})
 
 	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir+"/bin") + " " + shellquote.RemoteWord(hostDir+"/state"))
@@ -238,6 +238,7 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	// Step 1: the attach that provisions the bare host (the deploy path) and
 	// leaves it attached. This is the sibling check's provisioning path; every
 	// later step runs against the attached channel.
+	hubMayHaveStarted = true
 	attached := awaitHostAttachedWithin(ctx, t, client, hostName, hostDeployAttachTimeout)
 	t.Logf("attached %s: os=%s arch=%s hubVersion=%s evenerPath=%s", hostName, attached.OS, attached.Arch, attached.HubVersion, attached.EvenerPath)
 	if attached.OS != goos || attached.Arch != goarch {

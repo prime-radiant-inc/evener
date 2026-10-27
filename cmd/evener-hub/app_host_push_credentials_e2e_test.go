@@ -138,6 +138,9 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 	cfgRoot := hostDir + "/evener"
 	credsPath := cfgRoot + "/credentials.toml"
 	configPath := hostDir + "/" + hostPushToml
+	hostBin := hostDir + "/bin/evener"
+	hubMayHaveStarted := false
+	shutdownProved := true
 
 	// The per-run token makes the name unique. The directory is created with a
 	// bare `mkdir` — not a `test -e` followed by `mkdir -p` — so the creation is
@@ -153,9 +156,7 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 	// LIFO order that one runs FIRST, so the guarded files are read before this
 	// removal.
 	t.Cleanup(func() {
-		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
-			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
-		}
+		removeHostFixtureAfterProof(t, host, hostDir, shutdownProved)
 	})
 
 	// The two files this check must leave untouched: the host's REAL credential
@@ -169,7 +170,9 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 	installPath := home + "/.local/bin/evener"
 	installBefore := host.sha256IfFile(installPath)
 	t.Cleanup(func() {
-		stopHostListener(t, host, hostPushAddr, configPath)
+		if hubMayHaveStarted {
+			shutdownProved = stopHostListener(t, host, hostPushAddr, configPath, hostBin)
+		}
 		// Read the guarded files BEFORE removing the directory: with the
 		// falsification hook the guarded path can live inside hostDir, and hashing
 		// after the removal would fire on "absent" rather than on "changed".
@@ -181,7 +184,6 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 			"it must install nothing, only run the host's own binary", installBefore, installAfter)
 	})
 
-	hostBin := hostDir + "/bin/evener"
 	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir+"/state") + " " + shellquote.RemoteWord(hostDir+"/bin") + " " + shellquote.RemoteWord(cfgRoot))
 
 	// The disposable host hub must run a build that carries evener/host's 07c
@@ -208,6 +210,7 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 
 	// Start the disposable host hub itself, so the attach below bridges to it
 	// instead of bootstrapping a hub with the host's real environment.
+	hubMayHaveStarted = true
 	host.mustRun(hostHubLaunchScript(hostBin, configPath, hostDir, hostPushAddr))
 	awaitHostHubHealth(t, host, hostPushAddr, hostDir+"/hub.log")
 
