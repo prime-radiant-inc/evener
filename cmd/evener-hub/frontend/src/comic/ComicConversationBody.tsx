@@ -14,6 +14,7 @@ import { ComicComposer } from "./ComicComposer";
 import { ComicInteractions } from "./ComicInteractions";
 import { ComicSessionContent } from "./ComicSession";
 import styles from "./comic.module.css";
+import { comicSessionRef } from "./comicSessionIdentity";
 import { loadComicFonts } from "./measure";
 import { useComicReader } from "./useComicReader";
 
@@ -27,9 +28,13 @@ export function ComicConversationBody({
   seat: ConversationSeat;
   render(parts: ConversationParts): React.ReactNode;
 }) {
-  const reader = useComicReader(ref, seat.readView ?? seat.composerSource ?? undefined);
-  const history = useTranscriptReader(ref, reader.reader);
   const model = useThreadsStore((state) => state.threads.get(ref));
+  const reader = useComicReader(
+    ref,
+    seat.readView ?? seat.composerSource ?? undefined,
+    model && comicSessionRef(model),
+  );
+  const history = useTranscriptReader(ref, reader.reader);
   const deleted = useThreadsStore((state) => state.deletedRefs.has(ref));
   const frames = useThreadsStore((state) => state.frameTimes.get(ref) ?? EMPTY_FRAMES);
   const now = useNowTick(NOW_TICK_MS);
@@ -81,6 +86,7 @@ export function ComicConversationBody({
                 model={model}
                 history={history}
                 reader={reader}
+                keyboardScrollPaneId={seat.keyboardScrollPaneId}
                 mode={mode}
                 appearanceView={
                   <label htmlFor={viewId}>

@@ -1,10 +1,13 @@
 import { act, renderHook } from "@testing-library/react";
 import { type ReactNode, StrictMode } from "react";
-import { afterEach, expect, test } from "vitest";
-import { readComicPosition } from "./readerPosition";
+import { afterEach, expect, test, vi } from "vitest";
+import { readComicPosition, readComicPositionRecord } from "./readerPosition";
 import { useComicReader } from "./useComicReader";
 
-afterEach(() => sessionStorage.clear());
+afterEach(() => {
+  sessionStorage.clear();
+  vi.restoreAllMocks();
+});
 test("retained seats keep distinct semantic points across presentation unmounts", () => {
   const a = {};
   const b = {};
@@ -37,6 +40,60 @@ test("retained seats keep distinct semantic points across presentation unmounts"
   expect(reloaded.result.current.position).toEqual(secondPosition);
   reloaded.unmount();
 });
+
+test.each(["local", "remote"])(
+  "%s positions retain logical ownership while Comic and the model are absent",
+  (source) => {
+    const ref = `${source}:workspace`;
+    const logical = `${source}:original`;
+    const seats = [{}, {}];
+    const firstPosition = {
+      mode: "away" as const,
+      sessionRef: `${source}:child`,
+      path: ["delegate"],
+      entryId: "first",
+      offset: 7,
+      viewportOffset: 24,
+    };
+    const secondPosition = { ...firstPosition, entryId: "second", offset: 13 };
+    const first = renderHook(() => useComicReader(ref, seats[0], logical));
+    const second = renderHook(() => useComicReader(ref, seats[1], logical));
+    act(() => first.result.current.save(firstPosition));
+    act(() => second.result.current.save(secondPosition));
+    first.unmount();
+    second.unmount();
+    const writes = vi.spyOn(Storage.prototype, "setItem");
+    const returned = renderHook(({ session }: { session?: string }) => useComicReader(ref, seats[0], session), {
+      initialProps: { session: undefined as string | undefined },
+    });
+    expect(returned.result.current.position).toEqual(firstPosition);
+    returned.rerender({ session: logical });
+    const reader = returned.result.current.reader;
+    expect(returned.result.current.position).toEqual(firstPosition);
+    returned.rerender({ session: undefined });
+    expect(returned.result.current.reader).toBe(reader);
+    expect(reader.alive).toBe(true);
+    expect(writes).not.toHaveBeenCalled();
+    expect(readComicPosition(ref)).toEqual(secondPosition);
+    returned.unmount();
+
+    // No retained seat: durable ownership alone fences a Clear that happened
+    // while Standard was mounted, once the current model becomes available.
+    const reloaded = renderHook(({ session }: { session?: string }) => useComicReader(ref, undefined, session), {
+      initialProps: { session: undefined as string | undefined },
+    });
+    expect(reloaded.result.current.position).toEqual(secondPosition);
+    expect(writes).not.toHaveBeenCalled();
+    reloaded.rerender({ session: `${source}:replacement` });
+    const end = { mode: "end", sessionRef: ref, path: [] };
+    expect(reloaded.result.current.position).toEqual(end);
+    expect(readComicPositionRecord(ref)).toEqual({ ownerRef: `${source}:replacement`, position: end });
+    reloaded.unmount();
+    const retainedAfterClear = renderHook(() => useComicReader(ref, seats[0], `${source}:replacement`));
+    expect(retainedAfterClear.result.current.position).toEqual(end);
+    retainedAfterClear.unmount();
+  },
+);
 
 test("commits one standalone lifetime and retires it on ref change", () => {
   const mounted = renderHook(({ ref }) => useComicReader(ref), {

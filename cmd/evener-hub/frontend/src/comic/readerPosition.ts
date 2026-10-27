@@ -3,14 +3,21 @@ import type { ComicRow } from "./layout";
 export type ComicReadingTarget = { sessionRef: string; path: readonly string[] };
 export type ComicReadingPosition = ComicReadingTarget &
   ({ mode: "end" } | { mode: "away"; entryId: string; offset: number; viewportOffset: number });
+export type ComicPositionRecord = { ownerRef: string; position: ComicReadingPosition };
 const storageKey = (ref: string) => `evener:comic:position:${ref}`;
 
 export function readComicPosition(ref: string): ComicReadingPosition | undefined {
+  return readComicPositionRecord(ref)?.position;
+}
+
+export function readComicPositionRecord(ref: string): ComicPositionRecord | undefined {
   try {
     const stored = JSON.parse(sessionStorage.getItem(storageKey(ref)) ?? "null");
     const value = stored?.position;
     if (
       stored?.version !== 1 ||
+      typeof stored.ownerRef !== "string" ||
+      !stored.ownerRef ||
       !value ||
       typeof value.sessionRef !== "string" ||
       !value.sessionRef ||
@@ -19,7 +26,8 @@ export function readComicPosition(ref: string): ComicReadingPosition | undefined
     )
       return;
     const target = { sessionRef: value.sessionRef, path: value.path };
-    if (value.mode === "end") return { ...target, mode: "end" };
+    const ownerRef: string = stored.ownerRef;
+    if (value.mode === "end") return { ownerRef, position: { ...target, mode: "end" } };
     if (
       value.mode === "away" &&
       typeof value.entryId === "string" &&
@@ -28,11 +36,14 @@ export function readComicPosition(ref: string): ComicReadingPosition | undefined
       Number.isFinite(value.viewportOffset)
     ) {
       return {
-        ...target,
-        mode: "away",
-        entryId: value.entryId,
-        offset: value.offset,
-        viewportOffset: value.viewportOffset,
+        ownerRef,
+        position: {
+          ...target,
+          mode: "away",
+          entryId: value.entryId,
+          offset: value.offset,
+          viewportOffset: value.viewportOffset,
+        },
       };
     }
   } catch {
@@ -40,7 +51,7 @@ export function readComicPosition(ref: string): ComicReadingPosition | undefined
   }
 }
 
-export function writeComicPosition(ref: string, position: ComicReadingPosition): void {
+export function writeComicPosition(ref: string, position: ComicReadingPosition, ownerRef = ref): void {
   const target = { sessionRef: position.sessionRef, path: [...position.path] };
   const anchor =
     position.mode === "end"
@@ -53,7 +64,7 @@ export function writeComicPosition(ref: string, position: ComicReadingPosition):
           viewportOffset: position.viewportOffset,
         };
   try {
-    sessionStorage.setItem(storageKey(ref), JSON.stringify({ version: 1, position: anchor }));
+    sessionStorage.setItem(storageKey(ref), JSON.stringify({ version: 1, ownerRef, position: anchor }));
   } catch {
     /* Reading never depends on storage quota. */
   }

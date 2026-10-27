@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComicRow } from "./layout";
-import { findComicAnchorRow, readComicPosition, writeComicPosition } from "./readerPosition";
+import { findComicAnchorRow, readComicPosition, readComicPositionRecord, writeComicPosition } from "./readerPosition";
 
 afterEach(() => {
   sessionStorage.clear();
@@ -45,17 +45,26 @@ test("stores only a versioned source anchor under the complete selected ref", ()
   expect(readComicPosition("local:root")).toEqual(position);
   expect(readComicPosition("remote:child")).toBeUndefined();
   const key = sessionStorage.key(0)!;
-  expect(JSON.parse(sessionStorage.getItem(key)!)).toEqual({ version: 1, position });
+  expect(JSON.parse(sessionStorage.getItem(key)!)).toEqual({ version: 1, ownerRef: "local:root", position });
   for (const value of [
     "bad json",
     "null",
     '{"version":99}',
-    JSON.stringify({ version: 1, position: { ...position, offset: -1 } }),
-    JSON.stringify({ version: 1, position: { ...position, viewportOffset: null } }),
+    JSON.stringify({ version: 1, ownerRef: "local:root", position: { ...position, offset: -1 } }),
+    JSON.stringify({ version: 1, ownerRef: "local:root", position: { ...position, viewportOffset: null } }),
+    JSON.stringify({ version: 1, position }),
+    JSON.stringify({ version: 1, ownerRef: "", position }),
   ]) {
     sessionStorage.setItem(key, value);
     expect(readComicPosition("local:root")).toBeUndefined();
   }
+});
+test("stamps canonical ownership independently of routing and nested target refs", () => {
+  const position = { mode: "end" as const, sessionRef: "remote:child", path: ["delegate"] };
+  writeComicPosition("remote:workspace", position, "remote:replacement");
+  expect(readComicPositionRecord("remote:workspace")).toEqual({ ownerRef: "remote:replacement", position });
+  expect(readComicPosition("remote:workspace")).toEqual(position);
+  expect(readComicPositionRecord("local:workspace")).toBeUndefined();
 });
 test("storage denial never prevents reading or saving", () => {
   vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
