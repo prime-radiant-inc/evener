@@ -83,6 +83,17 @@ jobs:
         with:
           kind: web
 
+      - name: Prepare enforcing sandbox for Comic browser guard
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap
+          # Ubuntu 24.04 restricts unprivileged user namespaces by default.
+          # Enable the namespace backend, not an unsandboxed test fallback.
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --unshare-user --unshare-pid --die-with-parent --new-session \
+            --ro-bind / / --proc /proc --dev /dev --argv0 true -- true
+
       - name: Build and browser guards
         run: make test-web-browser
 
