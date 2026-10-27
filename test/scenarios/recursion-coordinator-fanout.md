@@ -152,7 +152,7 @@ default).**"); this card only runs with the raised config below.
    - root: `find $HOME/.local/state/evener/projects -path "*sessions/$SID/delegates.jsonl"`
      for delegate lifecycle — COORD/COORD2 and every worker live in
      this single root-owned journal, never a per-descendant copy
-     (`agent/delegate_runtime.go#bootstrapDelegateResources`: a child
+     (`agent/delegate_bootstrap.go#bootstrapDelegateResources`: a child
      session inherits its root's delegate controller instead of
      opening its own store). `jobs.jsonl` under `$SID` or a descendant
      session dir is shell-job evidence only.
@@ -176,7 +176,7 @@ default).**"); this card only runs with the raised config below.
   is REJECTED with the verbatim error
   `invalid_request: delegation_allowance must be less than your own allowance (2); valid grants: 0..1`
   ("Delegation allowance" "**The grant rule.**";
-  `agent/delegate_runtime.go:836`) — the `; valid grants: <range>`
+  `agent/delegate_create.go`) — the `; valid grants: <range>`
   suffix is part of the message, not an addition. The `(2)` proves the root's
   own allowance is 2 — i.e. `MaxSubagentDepth=2` took. Falsification:
   the call SUCCEEDS (the ceiling didn't apply — config not raised, or

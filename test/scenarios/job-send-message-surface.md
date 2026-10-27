@@ -26,7 +26,7 @@ have `delegate_id`, `transcript_ref`, `action`, `status`; neither declares
 nothing in the tree emits any of those four names on this path. There is
 no per-target handle-type check on `delegate_send` at all — `to` is
 handed straight to `(delegateRuntime).send`
-(`agent/delegate_runtime.go#delegateRuntime.send`), which authorizes
+(`agent/delegate_send.go#delegateRuntime.send`), which authorizes
 through the delegate tree's own id map and never inspects the string's
 shape. A `job_` handle fails only because it is not a key in that map:
 `authorizeMutationLocked` (`agent/delegate_tree_controller.go#delegateTreeController.authorizeMutationLocked`)
