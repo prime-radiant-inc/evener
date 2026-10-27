@@ -108,6 +108,12 @@ reload, navigation and switches between Standard and Comic.
 Stop remains available beside Send or Queue while a draft is present. Interrupting
 the run preserves that draft; the user need not clear it or switch presentation.
 
+Palette insertions, quoted text and composer focus target the addressed pane,
+including when two panes show the same conversation. Comic consumes each insertion
+once through the shared source, preserving existing skill and command identities
+and placing the caret at the insertion boundary. Switching to Standard does not
+replay a consumed insertion.
+
 An explicit Send-driven resume owns dispatch for its source and resolved
 destination until identity and outbox reconciliation finish. Reconnect reads
 cannot release that ownership, even when they permit ordinary folded Send.

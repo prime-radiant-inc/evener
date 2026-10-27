@@ -238,6 +238,7 @@ type namedParentAuthorshipProvider struct {
 	leafStarted, steered              chan struct{}
 	finishPreview, sendCompleted      chan struct{}
 	finishMiddle, finishRoot          chan struct{}
+	middleFinalStarted                chan struct{}
 	requests                          []string
 	unexpected                        func(string)
 }
@@ -309,6 +310,7 @@ func (p *namedParentAuthorshipProvider) Complete(ctx context.Context, req llm.Re
 			}
 			return parityResponse(parityCall("resume-leaf", "delegate_send", map[string]any{"to": p.leafID, "message": "leaf-completed-send", "max_wait_ms": 0})), nil
 		case 4:
+			close(p.middleFinalStarted)
 			if err := authorshipGate(ctx, p.finishMiddle); err != nil {
 				return llm.Response{}, err
 			}
@@ -319,6 +321,13 @@ func (p *namedParentAuthorshipProvider) Complete(ctx context.Context, req llm.Re
 			}
 		}
 	case "leaf":
+		if call == 2 {
+			// The test expects a successor middle generation. Its last request
+			// must precede this report, or that request can consume the attention.
+			if err := authorshipGate(ctx, p.middleFinalStarted); err != nil {
+				return llm.Response{}, err
+			}
+		}
 		if call == 1 || call == 2 {
 			return parityCommunicate(fmt.Sprintf("leaf-final-%d", call), fmt.Sprintf("leaf final %d", call), true), nil
 		}
@@ -382,7 +391,7 @@ func (p *namedParentAuthorshipProvider) Stream(ctx context.Context, req llm.Requ
 }
 
 func TestTranscriptAuthorshipNamedParentPublication(t *testing.T) {
-	p := &namedParentAuthorshipProvider{identity: make(chan string, 1), leafStarted: make(chan struct{}), steered: make(chan struct{}), finishPreview: make(chan struct{}), sendCompleted: make(chan struct{}), finishMiddle: make(chan struct{}), finishRoot: make(chan struct{})}
+	p := &namedParentAuthorshipProvider{identity: make(chan string, 1), leafStarted: make(chan struct{}), steered: make(chan struct{}), finishPreview: make(chan struct{}), sendCompleted: make(chan struct{}), finishMiddle: make(chan struct{}), finishRoot: make(chan struct{}), middleFinalStarted: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
 	p.unexpected = func(message string) {
 		t.Error(message)
@@ -483,10 +492,32 @@ func TestTranscriptAuthorshipNamedParentPublication(t *testing.T) {
 	}
 	close(p.finishPreview)
 	awaitIdle := func(id string, generation uint64) {
+		t.Helper()
+		t.Logf("await idle delegate=%s generation=%d", id, generation)
+		completed := false
+		defer func() {
+			if completed {
+				return
+			}
+			p.scriptMu.Lock()
+			requests := slices.Clone(p.requests)
+			p.scriptMu.Unlock()
+			ps.mu.Lock()
+			seen := slices.Clone(ps.seen)
+			next := ps.next
+			ps.mu.Unlock()
+			t.Logf("unmet idle delegate=%s generation=%d cursor=%d provider requests=%v", id, generation, next, requests)
+			for index, event := range seen {
+				if data, ok := event.Data.(events.DelegateUpdatedData); ok {
+					t.Logf("retained update[%d]: delegate=%s generation=%d lifecycle=%s outcome=%s", index, data.DelegateID, data.RunGeneration, data.Lifecycle, data.Outcome)
+				}
+			}
+		}()
 		ps.await(t, events.EventDelegateUpdated, func(ev events.SessionEvent) bool {
 			d, ok := ev.Data.(events.DelegateUpdatedData)
 			return ok && d.DelegateID == id && d.RunGeneration == generation && d.Lifecycle == "idle" && d.Outcome == "completed"
 		})
+		completed = true
 	}
 	awaitIdle(leaf.DelegateID, 1)
 	close(p.sendCompleted)
