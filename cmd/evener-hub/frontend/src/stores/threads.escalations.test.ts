@@ -391,9 +391,9 @@ describe("useThreadsStore.resolveEscalation", () => {
     await vi.waitFor(() => expect(answers).toHaveLength(1));
     const watched = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
     await vi.waitFor(() => expect(answers).toHaveLength(2));
-    answers[1](readCarrying([], undefined));
+    answers[1]?.(readCarrying([], undefined));
     await watched;
-    answers[0](readCarrying(["esc_1"], undefined));
+    answers[0]?.(readCarrying(["esc_1"], undefined));
     await tracked;
 
     expect(pendingIds()).toEqual([]);
