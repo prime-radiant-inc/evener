@@ -64,10 +64,18 @@ export class DraftLibrary {
 		if (ledger === undefined) return false;
 		const pending = this.pendingEdge(ledger, from, to);
 		if (pending !== undefined) return this.applyEdge(ledger, pending);
+		// A source retired by an earlier hop has already given its composition
+		// away; composing it again would resurrect the stale record.
+		if (this.retiredSource(from) !== undefined) return false;
 		const load = readHandoffGraph(ledger);
 		if (load.state === "ready") {
 			if (load.graph.edges.some((entry) => samePair(entry, from, to) && entry.state === "settled")) return true;
-			if (load.graph.edges.some((entry) => samePair(entry, from, to) && entry.state === "refused")) return false;
+			if (
+				load.graph.edges.some(
+					(entry) => samePair(entry, from, to) && (entry.state === "refused" || entry.state === "cleaned"),
+				)
+			)
+				return false;
 		}
 		const edge = this.createEdge(ledger, from, to);
 		if (edge === undefined) {
@@ -194,16 +202,23 @@ export class DraftLibrary {
 		}
 		if (!current.loaded || current.error !== null || current.submitting) return false;
 
-		const intended = fingerprint(snapshot.record);
+		const intended = compositionFingerprint(snapshot.record);
 		if (edge.deliveredHash !== null) {
-			// A retry after a transfer that did not settle. The destination may
-			// already hold exactly what this edge wrote, or it may have gained work
-			// since; the source still holding the intended record means the write
-			// never landed.
-			if (fingerprint(current.record) === edge.deliveredHash)
-				return this.settle(ledger, edge, destination, current.record, edge.deliveredHash);
-			if (fingerprint(snapshot.record) !== edge.deliveredHash)
+			const destinationNow = compositionFingerprint(current.record);
+			if (edge.composedAt !== null) {
+				// The transfer committed. This edge's own completion may have changed
+				// the destination's submission fields since; the composition
+				// fingerprint ignores those. Any composition change is someone else's
+				// work, so refuse instead of resurrecting the stale source.
+				if (destinationNow === edge.deliveredHash)
+					return mayDecide ? this.settle(ledger, edge, destination, current.record, edge.deliveredHash) : true;
 				return mayDecide ? this.refuse(ledger, edge, source) : false;
+			}
+			if (destinationNow === edge.deliveredHash)
+				return mayDecide ? this.settle(ledger, edge, destination, current.record, edge.deliveredHash) : true;
+			if (compositionFingerprint(snapshot.record) !== edge.deliveredHash)
+				return mayDecide ? this.refuse(ledger, edge, source) : false;
+			// The intended write never landed; fall through and compose again.
 		}
 		if (isOccupied(current.record)) return mayDecide ? this.refuse(ledger, edge, source) : false;
 
@@ -226,6 +241,14 @@ export class DraftLibrary {
 			this.repository().transfer(edge.from, edge.to, snapshot.record, additions);
 		} catch {
 			return false;
+		}
+		try {
+			// Durable proof the transfer committed, so a retry never composes from
+			// the retired source again.
+			ledger.recordComposed(edge.edgeId);
+		} catch {
+			// The destination still shows the composed record; the next retry settles
+			// from that comparison.
 		}
 		destination.adopt(snapshot.record);
 		if (destination !== source) {
@@ -386,24 +409,19 @@ function isOccupied(record: DraftRecord): boolean {
 	);
 }
 
-/** Stable fingerprint of the fields a handoff transfers, so a retry can tell
- * its own write from work added at the destination. */
-function fingerprint(record: DraftRecord): string {
+/** Stable fingerprint of the composition a handoff transfers, so a retry can
+ * tell its own write from work added at the destination. Submission lifecycle
+ * fields are deliberately excluded: this edge's own completion changes them. */
+function compositionFingerprint(record: DraftRecord): string {
 	const canonical = JSON.stringify({
 		draft: record.draft,
-		unconfirmed: record.unconfirmed,
 		images: (record.images ?? []).map((image) => [image.id, image.marker, image.mediaType]),
-		unconfirmedImages: (record.unconfirmedImages ?? []).map((image) => [image.id, image.marker, image.mediaType]),
 		composer: record.composer?.recoveryIds ?? [],
-		unconfirmedComposer: record.unconfirmedComposer?.recoveryIds ?? [],
 		parked: (record.parkedCompositions ?? []).map((parked) => [
 			parked.text,
 			parked.composer?.recoveryIds ?? [],
 			(parked.images ?? []).map((image) => image.id),
 		]),
-		completed: [...(record.completedCommandRecoveryIds ?? [])].sort(),
-		released: [...(record.releasedRecoveryIds ?? [])].sort(),
-		acks: [...(record.recoveryResendAcks ?? [])].sort(),
 	});
 	let hash = 2166136261;
 	for (let index = 0; index < canonical.length; index++) {

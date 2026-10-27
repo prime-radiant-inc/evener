@@ -228,4 +228,72 @@ describe("durable handoff library", () => {
 		expect(repository.read(destination("b")).draft).toBe("typed later");
 		expect(repository.read(destination("b")).releasedRecoveryIds).toEqual(["recovered-a"]);
 	});
+
+	test("an open-obligation hop settles after its completion without resurrecting the source", async () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const draftLibrary = library();
+		const source = draftLibrary.open(destination("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		const token = repository.read(destination("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+
+		// The composition moves while the obligation is still open, but the edge
+		// must not settle yet.
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "pending" });
+		expect(repository.read(destination("b"))).toMatchObject({
+			draft: "",
+			unconfirmed: "current",
+			unconfirmedCaptureToken: token,
+		});
+
+		finish();
+		await submitted;
+		// The completion clears the destination's capture and records the command.
+		expect(repository.read(destination("b"))).toMatchObject({
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "settled" });
+		expect(repository.read(destination("b"))).toMatchObject({
+			draft: "",
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+		expect(ledger.readGraph().deliveries).toContainEqual(
+			expect.objectContaining({ destination: endpoint("b"), recoveryId: "recovered-a", disposition: "completed" }),
+		);
+		expect(edgeFor(ledger, "a", "b")?.composedAt).not.toBeNull();
+	});
+
+	test("a repeated handoff after cleanup does not re-deliver the retired source", () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), { draft: "edited", unconfirmed: null });
+		const draftLibrary = library();
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "cleaned" });
+
+		draftLibrary.open(destination("b")).edit("");
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(repository.read(destination("b")).draft).toBe("");
+		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
+		// No second edge was recorded for the same pair.
+		expect(
+			ledger.readGraph().edges.filter((edge) => edge.from.sessionRef === "a" && edge.to.sessionRef === "b"),
+		).toHaveLength(1);
+	});
 });

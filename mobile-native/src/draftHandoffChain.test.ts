@@ -82,6 +82,7 @@ function submissionLedger(
 		createEdge: unused,
 		claimDestination: unused,
 		recordDelivered: unused,
+		recordComposed: unused,
 		settleEdge: unused,
 		refuseEdge: unused,
 		cleanEdge: unused,

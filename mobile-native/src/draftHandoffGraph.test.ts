@@ -25,6 +25,7 @@ function edge(
 		obligations: options.obligations ?? [],
 		claimAt: null,
 		deliveredHash: null,
+		composedAt: null,
 		supersededBy: null,
 		createdAt: options.createdAt ?? 0,
 		stateChangedAt: options.createdAt ?? 0,

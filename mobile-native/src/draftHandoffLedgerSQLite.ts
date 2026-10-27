@@ -23,6 +23,7 @@ interface EdgeRow {
 	state: DraftHandoffEdgeState;
 	claim_at: number | null;
 	delivered_hash: string | null;
+	composed_at: number | null;
 	superseded_by: string | null;
 	created_at: number;
 	state_changed_at: number;
@@ -82,6 +83,7 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			 state TEXT NOT NULL,
 			 claim_at INTEGER,
 			 delivered_hash TEXT,
+			 composed_at INTEGER,
 			 superseded_by TEXT,
 			 created_at INTEGER NOT NULL,
 			 state_changed_at INTEGER NOT NULL)`,
@@ -336,6 +338,18 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 		});
 	}
 
+	recordComposed(edgeId: string): void {
+		withSavepoint(this.db, "draft_handoff_composed", () => {
+			const edge = this.requirePending(edgeId);
+			this.db.runSync(
+				`UPDATE draft_handoff_edges SET composed_at = ?, state_changed_at = ? WHERE edge_id = ?`,
+				this.#now(),
+				this.#now(),
+				edge.edgeId,
+			);
+		});
+	}
+
 	refuseEdge(edgeId: string, deliveries: readonly DraftHandoffDelivery[]): void {
 		withSavepoint(this.db, "draft_handoff_refuse", () => {
 			const edge = this.requirePending(edgeId);
@@ -549,6 +563,7 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			obligations,
 			claimAt: row.claim_at,
 			deliveredHash: row.delivered_hash,
+			composedAt: row.composed_at,
 			supersededBy: row.superseded_by,
 			createdAt: row.created_at,
 			stateChangedAt: row.state_changed_at,

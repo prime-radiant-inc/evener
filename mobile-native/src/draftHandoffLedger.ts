@@ -35,6 +35,9 @@ export interface DraftHandoffEdge {
 	obligations: string[];
 	claimAt: number | null;
 	deliveredHash: string | null;
+	/** Set after a successful drafts transfer, so a retry decides against the
+	 * destination instead of re-composing from a retired source. */
+	composedAt: number | null;
 	supersededBy: string | null;
 	createdAt: number;
 	stateChangedAt: number;
@@ -90,6 +93,8 @@ export interface DraftHandoffLedger extends DraftSubmissionLedger {
 	 * retry compares the destination against it to tell its own write from work
 	 * added afterwards. */
 	recordDelivered(edgeId: string, deliveredHash: string): void;
+	/** Mark the drafts transfer as committed. */
+	recordComposed(edgeId: string): void;
 	settleEdge(edgeId: string, deliveries: readonly DraftHandoffDelivery[], deliveredHash: string): void;
 	refuseEdge(edgeId: string, deliveries: readonly DraftHandoffDelivery[]): void;
 	cleanEdge(edgeId: string): void;
