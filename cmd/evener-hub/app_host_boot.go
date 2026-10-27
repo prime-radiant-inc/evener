@@ -74,7 +74,7 @@ func (m *hubHostManager) breakBootTombstoneCollision(records Config) bool {
 // tombstone cap with every candidate remnant-gated) is logged and leaves the
 // file alone; the next mutation surfaces the typed refusal to its caller.
 func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool) bool {
-	if !hasFile || strings.TrimSpace(m.cfg.configPath) == "" || m.cfg.store.poisoned() != nil {
+	if !hasFile || strings.TrimSpace(m.cfg.configPath) == "" {
 		return false
 	}
 	entries := m.cfg.store.snapshot()
@@ -123,7 +123,7 @@ func (m *hubHostManager) seedHighWater(cfg Config) {
 // the next mutation, which records the same in-memory pair); the hub still
 // serves, because the pair is already the registry's current identity.
 func (m *hubHostManager) materializeHostRecords(cfg Config, hasFile bool) {
-	if !hasFile || m.cfg.store.poisoned() != nil {
+	if !hasFile {
 		return
 	}
 	entries := m.cfg.store.snapshot()
@@ -187,144 +187,6 @@ func (m *hubHostManager) hostFileAbsentOrEmpty() bool {
 	return len(raw) == 0
 }
 
-// migrateLegacyHostSidecar folds a retired hub.hosts.json into hub.toml exactly
-// once, at boot. The order is the crash-safety story, and it is fixed:
-//
-//  1. hub.toml is rewritten (atomically, directory synced) with the merged set
-//     and the machine-managed banner — the durable merged state exists before
-//     the retired file can go away.
-//  2. the sidecar is renamed aside — never deleted — and the directory synced,
-//     so the retirement is durable before anything can act on the merged state.
-//
-// A name hub.toml already declares wins when the entries agree: the migration
-// drops a byte-identical duplicate in the file's favor, exactly as the retired
-// merge dropped colliding sidecar entries — while a differing duplicate is
-// refused, because that retired merge's silent drop would lose the sidecar's
-// settings.
-// The same atomic write records `legacy_sidecar_migrated` in hub.toml, and the
-// marker — not the rename's durability alone — decides what a later boot does:
-// with the marker present the sidecar's entries are never read again (it is
-// stale; at most its set-aside rename is retried), so a name removed through
-// the UI after a completed migration can never be resurrected by a rename a
-// power loss undid, even on a filesystem that ignores directory syncs; without
-// the marker (a crash before it landed) the migration re-runs and converges.
-// The caller poisons writes on any other failure, including a failed set-aside
-// rename: no mutation can land while an unmigrated sidecar remains. A sidecar that fails to parse or validate is not migrated at
-// all — both files stay untouched and the caller poisons writes. A crash at any
-// point re-runs the whole migration on the next boot and converges, because
-// already-merged names collide with the live set and are skipped, and the
-// set-aside rename either already happened or is retried.
-func (m *hubHostManager) migrateLegacyHostSidecar() (wrote bool, err error) {
-	path := legacySidecarPathFor(m.cfg.configPath)
-	if path == "" {
-		return wrote, nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// No sidecar: hub.toml is not rewritten at boot, so a hub that
-			// never added a host keeps its file byte-identical.
-			return wrote, nil
-		}
-		return wrote, fmt.Errorf("read legacy host sidecar: %w", err)
-	}
-	// A sidecar that reappears after a recorded migration is stale — the
-	// marker and every mutation since are in the same file, so a survivor of
-	// one survived both. Ignore it rather than re-merging names the UI may
-	// have removed (the case a directory sync the filesystem ignores cannot
-	// rule out).
-	if doc, _, docErr := readHubTOMLDocument(m.cfg.configPath); docErr == nil && doc[legacySidecarMigratedKey] == true {
-		// Retire it if the aside name is free; a failure here changes nothing,
-		// because the marker — not the rename — is the authority.
-		aside := path + legacyHostSidecarAsideSuffix
-		if _, statErr := os.Stat(aside); statErr != nil && os.IsNotExist(statErr) {
-			if renameErr := os.Rename(path, aside); renameErr != nil {
-				m.logf("stale legacy host sidecar %s could not be set aside: %v", path, renameErr)
-			}
-		}
-		m.logf("stale legacy host sidecar %s ignored: %s already records the migration", path, m.cfg.configPath)
-		return wrote, nil
-	}
-	entries, err := parseLegacyHostSidecar(data)
-	if err != nil {
-		return wrote, err
-	}
-	// The store's set as the running hub held it: the rewrite's "known" set,
-	// so only genuine hand-added file entries are carried through.
-	pre := m.cfg.store.snapshot()
-	// The merge is resolved over the whole sidecar before anything live
-	// changes: every entry normalizes and validates, duplicates inside the
-	// sidecar and collisions with the live set resolve, and only then does the
-	// apply loop run. A sidecar that fails any of that leaves the live set
-	// exactly as it was — no half-merged hosts sitting behind a poisoned store
-	// — which is what makes "not migrated at all" true rather than aspirational.
-	var toAdd []hostreg.Host
-	seen := make(map[string]struct{}, len(entries))
-	for _, e := range entries {
-		// Normalize before any use of the entry. The registry's Add would
-		// normalize before storing, but the collision check and the source
-		// registration read the entry as decoded: a padded sidecar name would
-		// register a source under the padded spelling while the registry stores
-		// the trimmed one.
-		e = hostreg.Normalize(e)
-		if err := validateHostEntry(e); err != nil {
-			return wrote, fmt.Errorf("legacy host sidecar entry %q: %w", e.Name, err)
-		}
-		if _, dup := seen[e.Name]; dup {
-			return wrote, fmt.Errorf("legacy host sidecar entry %q: the sidecar names it twice", e.Name)
-		}
-		seen[e.Name] = struct{}{}
-		if live, ok := m.cfg.hosts.Get(e.Name); ok {
-			// hub.toml wins a collision only when the two entries say the same
-			// thing: a byte-identical duplicate is dropped (nothing is lost),
-			// while a differing one is refused loudly — silently dropping the
-			// sidecar's settings (a key path, say) would make the "lossless"
-			// migration a lie.
-			if !live.Equal(e) {
-				return wrote, fmt.Errorf("legacy host sidecar entry %q differs from the %s entry of the same name; resolve the duplicate first", e.Name, m.cfg.configPath)
-			}
-			continue
-		}
-		toAdd = append(toAdd, e)
-	}
-	// The apply loop cannot refuse: every name is validated, unique, and free.
-	// Add stays a checked call rather than a silent trust.
-	for _, e := range toAdd {
-		if err := m.cfg.hosts.Add(e); err != nil {
-			return wrote, fmt.Errorf("legacy host sidecar entry %q: %w", e.Name, err)
-		}
-		// The store row is the entry the registry stored, not the local one: the
-		// registry minted the migration's added hosts an identity, and the write
-		// below records it.
-		stored, ok := m.cfg.hosts.Get(e.Name)
-		if !ok {
-			return wrote, fmt.Errorf("legacy host sidecar entry %q: the registry did not store it", e.Name)
-		}
-		m.cfg.store.add(stored)
-		m.registerSource(e)
-	}
-	if err := m.persistHostsMarked(m.cfg.store.snapshot(), pre, hostPersistChange{}, true); err != nil {
-		return false, err
-	}
-	wrote = true
-	aside := path + legacyHostSidecarAsideSuffix
-	if _, err := os.Stat(aside); err == nil {
-		return wrote, fmt.Errorf("cannot set legacy host sidecar %s aside: %s already exists", path, aside)
-	}
-	if err := os.Rename(path, aside); err != nil {
-		return wrote, fmt.Errorf("set legacy host sidecar aside: %w", err)
-	}
-	// The rename is only durable once the directory entry carrying it is
-	// synced: without this, a power loss could bring the retired sidecar back
-	// and the next boot would re-merge names the UI had already removed. The
-	// sync seam keeps its usual tolerance for filesystems that cannot sync a
-	// directory at all.
-	if err := hubTOMLSyncDir(filepath.Dir(path)); err != nil {
-		return wrote, fmt.Errorf("set legacy host sidecar aside: %w", err)
-	}
-	return wrote, nil
-}
-
 // reconcilePipelineBoot runs spec 08b §7's boot passes in their fixed order,
 // after hub.toml's records are loaded and before the manager serves:
 // interrupted transition (idempotent — the store-open pass already moved
@@ -338,9 +200,6 @@ func (m *hubHostManager) reconcilePipelineBoot() {
 		return
 	}
 	fileCfg, hasFile := m.hostFileRecords()
-	if m.cfg.store.poisoned() != nil {
-		return
-	}
 	if !hasFile {
 		// hostFileRecords reports false for a genuinely absent or empty document
 		// AND for a file it could not read or decode. Only the first is a state

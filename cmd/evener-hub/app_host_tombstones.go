@@ -178,7 +178,7 @@ type hostTombstoneStage struct {
 // hostTombstoneCapacityError is the internal shape of spec §15's typed
 // `tombstone-capacity` conflict refusal: the global bound the persist would
 // exceed and the remnant-gated names that blocked every eviction candidate.
-// persistHostsMarked maps it onto appwire's envelope at the single write choke
+// persistHosts maps it onto appwire's envelope at the single write choke
 // point, so every mutation path surfaces the typed refusal.
 type hostTombstoneCapacityError struct {
 	bound         string

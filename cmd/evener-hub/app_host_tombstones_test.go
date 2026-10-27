@@ -617,7 +617,7 @@ func TestHostTombstoneBootPrune(t *testing.T) {
 		},
 		tombstones: map[string]HostTombstone{"gone": expired},
 	}
-	if err := writeHubTOMLHostsRecords(configPath, nil, nil, records, false); err != nil {
+	if err := writeHubTOMLHostsRecords(configPath, nil, nil, records); err != nil {
 		t.Fatalf("seed hub.toml: %v", err)
 	}
 	boot := bootHostManager(t, configPath)
@@ -711,7 +711,7 @@ func TestHostTombstoneBootCollisionRebasesLiveEntry(t *testing.T) {
 			},
 		},
 	}
-	if err := writeHubTOMLHostsRecords(configPath, entries, nil, records, false); err != nil {
+	if err := writeHubTOMLHostsRecords(configPath, entries, nil, records); err != nil {
 		t.Fatalf("seed hub.toml: %v", err)
 	}
 	boot := bootHostManager(t, configPath)
@@ -938,7 +938,7 @@ ssh = "gone.example"
 			},
 		},
 	}
-	if err := writeHubTOMLHostsRecords(configPath, nil, nil, records, false); err != nil {
+	if err := writeHubTOMLHostsRecords(configPath, nil, nil, records); err != nil {
 		t.Fatalf("seed hub.toml: %v", err)
 	}
 	boot := bootHostManager(t, configPath)
