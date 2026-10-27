@@ -267,7 +267,7 @@ type worktreeGuard struct {
 	// removeOp runs the remove operation (spec §5 remove, all eleven steps).
 	// force overrides provenance/merge gating; forceDirty separately overrides
 	// the uncommitted-work refusal so forcing past an ownership/merge gate
-	// cannot collaterally discard an uncommitted edit (F3 ergonomics finding).
+	// cannot collaterally discard an uncommitted edit.
 	removeOp func(ctx context.Context, name string, force, forceDirty, deleteBranch bool) (WorktreeRemoveResult, error)
 	// listOp runs the list operation (spec §5 list, all three steps).
 	listOp func(ctx context.Context) ([]WorktreeListEntry, error)
@@ -343,10 +343,6 @@ func worktreeOpLabel(operation string, args map[string]any) string {
 // registry-only, not part of any provider profile's own tool definitions.
 // Register with ReadOnly unset (false) — even the list operation is part of a
 // stateful lifecycle tool and must serialize with env-changing operations.
-//
-// Task 13 implements the create arm and the shared worktreeGuard plumbing; the
-// remaining operations (list/switch/exit/remove/prune) land in Tasks 14-16 and
-// currently return a clear "not yet implemented" error.
 func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 	_ = reg.Register(tool.RegisteredTool{
 		Definition: tool.DefManageWorktree(),

@@ -724,120 +724,51 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 			rootPseudo:  grepRootIsPseudo(filepath.Join(path, walkRoot)),
 		}
 	}
-	ignores, err := loadIgnoreSet(ctx, ignoreFS, func(rel string) bool {
-		return walkSkipsPseudoDir(path, filepath.Join(path, rel))
-	}, budget, wholeBaseIgnoreScope())
-	if err != nil {
-		return "", err
+	walk := grepTreeWalk{
+		ctx:         ctx,
+		acc:         a,
+		globFilters: globFilters,
+		skip:        skip,
+		root:        path,
+		ignoreFS:    ignoreFS,
+		budget:      budget,
+		walk:        func(fn fs.WalkDirFunc) error { return grepWalk(fsys, walkRoot, fn) },
+		read:        func(p string) ([]byte, error) { return grepReadFile(fsys, p) },
+		namedFile:   singleFile,
 	}
-	excludedByIgnore := 0
-	oversized := 0
-
-	err = grepWalk(fsys, walkRoot, func(p string, d fs.DirEntry, err error) error {
-		if cancelErr := ctx.Err(); cancelErr != nil {
-			return cancelErr
-		}
-		if err != nil {
-			// loadIgnoreSet's walk above already visits every directory this
-			// one would — its skip set (dot-prefixed directories only) is a
-			// strict subset of this walk's (which also skips gitignored
-			// ones) — so it always reaches an oversized directory first on
-			// any static tree and this guard cannot be reached that way. It
-			// is reachable only when a directory grows past the entry bound
-			// in the gap between the two passes, which
-			// TestGrepWalkCarriesTheEntriesRefusalWhenADirectoryGrowsAfterIgnoreDiscovery
-			// forces by stubbing grepWalk itself to grow the tree after
-			// ignore discovery has already listed it.
-			if _, refused := errors.AsType[*globBudgetError](err); refused {
-				return err
+	if singleFile {
+		// A file named as the target is a deliberate request: search the over-cap
+		// regular behind it in bounded windows. A device keeps the capped skip —
+		// its stream never ends, so bounding it is the cap's job, not the
+		// window's.
+		walk.largeNamedFile = func(p string) error {
+			opened, oerr := fsys.Open(p)
+			if oerr != nil {
+				return nil //nolint:nilerr // best-effort grep: an unreadable file is skipped
 			}
-			return nil //nolint:nilerr // best-effort grep: skip unreadable entries and keep walking
-		}
-		relPath := filepath.FromSlash(p)
-		if singleFile {
-			relPath = "."
-		}
-		relSlash := filepath.ToSlash(relPath)
-		if d.IsDir() {
-			if p != "." {
-				if strings.HasPrefix(d.Name(), ".") {
-					return filepath.SkipDir
-				}
-				if ignores.matches(relSlash, true) {
-					excludedByIgnore++
-					return filepath.SkipDir
-				}
-				if walkSkipsPseudoDir(path, filepath.Join(path, p)) {
-					return filepath.SkipDir
-				}
+			cf, ok := opened.(*grepCtxFile)
+			if !ok {
+				_ = opened.Close()
+				return nil
 			}
-			// fs.WalkDir never follows a directory symlink, so this walk
-			// cannot cycle back into itself the way the glob pattern walk's
-			// ancestor check has to guard against — the same reason ignore
-			// discovery's own budget charge is always cycleSafe. Charged
-			// only here, once the dot/gitignore skips above have already
-			// passed, so a directory the walk is about to skip anyway costs
-			// nothing.
-			if berr := budget.listing(true); berr != nil {
-				return berr
+			info, ierr := cf.Stat()
+			if ierr != nil || !info.Mode().IsRegular() {
+				_ = opened.Close()
+				return nil //nolint:nilerr // best-effort grep: an unreadable file is skipped
+			}
+			stop, serr := a.feedLargeFile(cf.ctx, cf.File)
+			_ = cf.Close()
+			if serr != nil {
+				if cancelErr := ctx.Err(); cancelErr != nil {
+					return cancelErr
+				}
+				return nil //nolint:nilerr // best-effort grep: a stalled or failed stream is skipped, like an unreadable file
+			}
+			if stop {
+				return filepath.SkipAll
 			}
 			return nil
 		}
-		// Skip hidden and gitignored files
-		if strings.HasPrefix(d.Name(), ".") {
-			return nil
-		}
-		if ignores.matches(relSlash, false) {
-			excludedByIgnore++
-			return nil
-		}
-		if selected, selErr := grepFileSelected(filepath.Base(p), relSlash, globFilters, skip); !selected {
-			return selErr
-		}
-		data, err := grepReadFile(fsys, p)
-		if err != nil {
-			if cancelErr := ctx.Err(); cancelErr != nil {
-				return cancelErr
-			}
-			if singleFile && errors.Is(err, errGrepFileTooLarge) {
-				// A file named as the target is a deliberate request: search
-				// the over-cap regular behind it in bounded windows. A device
-				// keeps the capped skip — its stream never ends, so bounding
-				// it is the cap's job, not the window's.
-				if opened, oerr := fsys.Open(p); oerr == nil {
-					if cf, ok := opened.(*grepCtxFile); ok {
-						if info, ierr := cf.Stat(); ierr == nil && info.Mode().IsRegular() {
-							stop, serr := a.feedLargeFile(cf.ctx, cf.File)
-							_ = cf.Close()
-							if serr != nil {
-								if cancelErr := ctx.Err(); cancelErr != nil {
-									return cancelErr
-								}
-								return nil //nolint:nilerr // best-effort grep: a stalled or failed stream is skipped, like an unreadable file
-							}
-							if stop {
-								return filepath.SkipAll
-							}
-							return nil
-						}
-					}
-					_ = opened.Close()
-				}
-			} else if errors.Is(err, errGrepFileTooLarge) {
-				oversized++
-			}
-			return nil //nolint:nilerr // best-effort grep: skip unreadable files and keep walking
-		}
-		if a.feed(relPath, data) {
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	if err != nil {
-		return "", err
 	}
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	return a.finishWalk(excludedByIgnore, oversized), nil
+	return walk.run()
 }
