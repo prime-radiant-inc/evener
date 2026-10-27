@@ -318,19 +318,19 @@ func TestDelegateQuietHub_ConcurrentAttachDetachNeverStrandsALease(t *testing.T)
 	cancels := make([]context.CancelFunc, workers)
 	var wg sync.WaitGroup
 	for i, lease := range leases {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range rounds {
 				root.startDelegateQuietWatchdog(context.Background(), lease)()
 			}
 			cancels[i] = root.startDelegateQuietWatchdog(context.Background(), lease)
-		}()
+		})
 	}
 	wg.Wait()
-	for _, cancel := range cancels {
-		defer cancel()
-	}
+	t.Cleanup(func() {
+		for _, cancel := range cancels {
+			cancel()
+		}
+	})
 	if got := clk.BlockedCount(); got != 1 {
 		t.Fatalf("quiet hub tickers with %d leases attached = %d, want 1 shared ticker", workers, got)
 	}
@@ -370,14 +370,12 @@ func TestDelegateQuietHub_ChurnLeavesAttachedLeaseTicking(t *testing.T) {
 	defer cancelAnchor()
 	var wg sync.WaitGroup
 	for _, lease := range churn {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range rounds {
 				cancel := root.startDelegateQuietWatchdog(context.Background(), lease)
 				cancel()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if got := clk.BlockedCount(); got != 1 {
