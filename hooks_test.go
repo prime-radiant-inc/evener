@@ -92,12 +92,12 @@ func TestPreCommitHookRoutesStagedFilesToTheirOwnTreesBiome(t *testing.T) {
 	runIn(t, repo, "git", "commit", "-q", "-m", "x")
 
 	for path, want := range map[string]string{
-		"mobile-native/src/a b.ts":         "a\n// formatted\n",
+		"mobile-native/src/a b.ts":             "a\n// formatted\n",
 		"mobile-native/src/conversation/m.tsx": "m\n// formatted\n",
-		"cmd/evener-hub/frontend/src/w.ts": "w\n// formatted\n",
-		"appwire-client/typescript/c.ts":   "c\n// formatted\n",
-		"docs/outside.ts":                  "outside\n",
-		"mobile-native/src/notes.md":       "notes\n",
+		"cmd/evener-hub/frontend/src/w.ts":     "w\n// formatted\n",
+		"appwire-client/typescript/c.ts":       "c\n// formatted\n",
+		"docs/outside.ts":                      "outside\n",
+		"mobile-native/src/notes.md":           "notes\n",
 	} {
 		if got := committedContent(t, repo, path); got != want {
 			t.Errorf("committed %s = %q, want %q", path, got, want)

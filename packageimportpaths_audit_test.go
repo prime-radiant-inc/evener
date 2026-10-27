@@ -69,11 +69,11 @@ func runPackageImportCheck(t *testing.T, root string) (bool, string) {
 // config that maps the name onto the path in the first place.
 func cleanPackageImportTree() map[string]string {
 	return map[string]string{
-		"cmd/evener-hub/frontend/src/app.ts":  "import { WireError } from \"@evener/appwire-client\";\n",
-		"mobile-native/src/screen.tsx":        "import { AppwireClient } from \"@evener/appwire-client\";\n",
+		"cmd/evener-hub/frontend/src/app.ts":      "import { WireError } from \"@evener/appwire-client\";\n",
+		"mobile-native/src/screen.tsx":            "import { AppwireClient } from \"@evener/appwire-client\";\n",
 		"mobile-native/src/conversation/state.ts": "import { hasItemFailure } from \"@evener/appwire-client\";\n",
-		"mobile-native/scripts/check-hub.mts": "import type { WebSocketLike } from \"@evener/appwire-client\";\n",
-		"mobile-native/vitest.config.mts":     "const shared = new URL(\"../appwire-client/typescript/index.ts\", import.meta.url);\n",
+		"mobile-native/scripts/check-hub.mts":     "import type { WebSocketLike } from \"@evener/appwire-client\";\n",
+		"mobile-native/vitest.config.mts":         "const shared = new URL(\"../appwire-client/typescript/index.ts\", import.meta.url);\n",
 	}
 }
 
