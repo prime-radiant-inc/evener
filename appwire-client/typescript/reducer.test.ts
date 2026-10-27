@@ -14,7 +14,6 @@ import {
   collectAuthoritativeMutationIds,
   decodeTranscriptItem,
   encodeTranscriptItem,
-  foldWarningParams,
   hydrateThread,
   imageSessionRouteForSession,
   itemTextPresence,
@@ -28,7 +27,6 @@ import {
   notificationTargetsThread,
   notificationTouchesTranscript,
   prependOlderTurns,
-  RAW_WARNING_FRAME_MAX_CHARS,
   resolvePendingEscalation,
 } from "./reducer";
 import { itemAt, turnAt } from "./testing/modelAccessors";
@@ -47,6 +45,7 @@ import type {
   Turn,
 } from "./types.gen";
 import { NOTIFICATION_NAMES } from "./types.gen";
+import { foldWarningParams, RAW_WARNING_FRAME_MAX_CHARS } from "./warningFold";
 import { WarningCodeContextBudget } from "./warnings";
 
 test("entry item codec preserves omitted text, identity-only markers, and rich recorded fields", () => {

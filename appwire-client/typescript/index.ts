@@ -547,7 +547,6 @@ export {
   decodeCurrentTranscriptState,
   decodeTranscriptItem,
   encodeTranscriptItem,
-  foldWarningParams,
   hydrateThread,
   ITEM_OMISSION_TOLERANT_FIELDS,
   imageSessionRouteForSession,
@@ -558,7 +557,6 @@ export {
   itemIdentityMatches,
   itemTextPresence,
   joinedReasoningParagraphs,
-  joinWarningParts,
   markItemIdentityOnly,
   markItemTextOmitted,
   mergeOlderItemPage,
@@ -903,6 +901,7 @@ export {
   STEERING_KINDS,
   THREAD_ITEM_EVENT_KINDS,
 } from "./types.gen";
+export { foldWarningParams, joinWarningParts } from "./warningFold";
 export type { WarningWords } from "./warnings";
 export {
   attentionWarningNotice,
