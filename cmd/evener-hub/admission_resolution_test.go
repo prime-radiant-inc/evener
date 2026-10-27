@@ -223,3 +223,48 @@ func TestHubAdmissionDispositionsWithoutASource(t *testing.T) {
 	err = client.Request(ctx, appwire.MethodThreadUnsubscribe, json.RawMessage(`"not an object"`), nil)
 	requireWireError(t, err, appwire.CodeInvalidParams)
 }
+
+// An unsubscribe for a ref whose source has since left the inventory still
+// withdraws the subscription the hub registered under that ref.
+func TestHubUnsubscribeOfUnresolvedRefWithdrawsItsSubscription(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		appserver.SubscribeWithAdmission(ctx, "current", false)
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "current", SessionID: "current", Evener: appwire.EvenerThread{Ref: "local:current"}}}, nil
+	})
+	upstream := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer upstream.Close()
+	var gone atomic.Bool
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		if gone.Load() {
+			return nil
+		}
+		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{SourceID: "local", ThreadID: "stable", SessionID: "current", WorkspaceRef: "local:stable", Endpoint: upstream.URL, Protocol: appwire.ProtocolVersion}}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer wire.Close()
+	client := dialHubRPC(t, wire)
+	defer client.Close()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:stable", Subscribe: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := server.SubscriberCount("local:stable"); got != 1 {
+		t.Fatalf("subscribers before unsubscribe = %d, want 1", got)
+	}
+
+	gone.Store(true)
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: "local:stable"}); err != nil {
+		t.Fatalf("unsubscribe of an unresolved ref: %v", err)
+	}
+	if got := server.SubscriberCount("local:stable"); got != 0 {
+		t.Fatalf("subscribers after unsubscribe = %d, want 0", got)
+	}
+}

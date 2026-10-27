@@ -473,14 +473,14 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 	if msg.Request != nil && msg.Request.Method == appwire.MethodThreadUnsubscribe && c.isInitialized() {
 		if (resolved || intent == SubscriptionAdmissionUnresolved) && resolvedKey != "" {
 			c.cancelSubscriptionAdmissions(resolvedKey)
-			ctx = context.WithValue(ctx, subscriptionLifecycleContextKey{}, resolvedKey)
+			target := unsubscribeTarget{key: resolvedKey}
 			if secondaryKey != "" && secondaryKey != resolvedKey {
 				c.cancelSubscriptionAdmissions(secondaryKey)
 				if intent == SubscriptionAdmissionUnresolved {
-					ctx = context.WithValue(ctx, subscriptionLifecycleContextKeysKey{}, []string{resolvedKey, secondaryKey})
-					ctx = context.WithValue(ctx, subscriptionUnresolvedContextKey{}, true)
+					target.aliasKey = secondaryKey
 				}
 			}
+			ctx = context.WithValue(ctx, unsubscribeTargetContextKey{}, target)
 		}
 	}
 	if msg.Request != nil && concurrentDispatchMethod(msg.Request.Method) && c.isInitialized() {

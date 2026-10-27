@@ -65,6 +65,20 @@ type CaptureSubscriptionHandoff struct {
 	Abort  func()
 }
 
+// unsubscribeTarget is the identity ordered ingress resolved for a
+// thread/unsubscribe request, carried to the handler on the context.
+type unsubscribeTarget struct {
+	// key is the resolved identity. A subscription registered under it is
+	// withdrawn with every delivery alias its lifecycle owns.
+	key string
+	// aliasKey is the second identity of a ref that no longer resolves to a
+	// source: admissions under it are canceled with key's, but only the
+	// subscription registered under key itself is withdrawn.
+	aliasKey string
+}
+
+type unsubscribeTargetContextKey struct{}
+
 // Unsubscribe drops the calling connection's subscription to one thread so a
 // browser switching views stops receiving its live updates and the relay can
 // idle out once no connection remains. Quietly a no-op when there is nothing
@@ -72,77 +86,34 @@ type CaptureSubscriptionHandoff struct {
 // already replaced): teardown never needs to distinguish those. Unlike
 // Subscribe it takes no projection gate: removing a subscription only
 // shrinks delivery.
+//
+// The identity ordered ingress resolved for the request, when there is one,
+// replaces threadID; without it threadID is the raw delivery key the caller
+// holds.
 func Unsubscribe(ctx context.Context, threadID string) {
-	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
-	if !ok || conn == nil || threadID == "" {
+	conn, _ := ctx.Value(connectionContextKey{}).(*Connection)
+	if conn == nil || threadID == "" {
 		return
 	}
-	if resolved, ok := ctx.Value(subscriptionLifecycleContextKey{}).(string); ok && resolved != "" {
-		threadID = resolved
+	target, resolved := ctx.Value(unsubscribeTargetContextKey{}).(unsubscribeTarget)
+	if !resolved {
+		target = unsubscribeTarget{key: threadID}
+	}
+	conn.cancelSubscriptionAdmissions(target.key)
+	if target.aliasKey != "" {
+		conn.cancelSubscriptionAdmissions(target.aliasKey)
 	}
 	server := conn.server
-	conn.cancelSubscriptionAdmissions(threadID)
 	server.mu.Lock()
 	defer server.mu.Unlock()
 	if server.conns[conn.id] != conn {
 		return
 	}
-	server.subs.Unsubscribe(conn.id, threadID)
-}
-
-type subscriptionLifecycleContextKey struct{}
-
-type subscriptionLifecycleContextKeysKey struct{}
-
-type subscriptionUnresolvedContextKey struct{}
-
-// UnsubscribeLifecycle uses the identity resolved at ordered request ingress.
-// Without a resolved identity, preserve the caller's raw delivery-key fallback.
-func UnsubscribeLifecycle(ctx context.Context, threadID string) {
-	conn, _ := ctx.Value(connectionContextKey{}).(*Connection)
-	if conn == nil || threadID == "" {
+	if resolved && target.aliasKey == "" {
+		server.subs.UnsubscribeLifecycle(conn.id, target.key)
 		return
 	}
-	key, _ := ctx.Value(subscriptionLifecycleContextKey{}).(string)
-	if keys, ok := ctx.Value(subscriptionLifecycleContextKeysKey{}).([]string); ok && len(keys) > 0 {
-		if len(keys) >= 2 && keys[0] != "" && keys[1] != "" {
-			conn.cancelSubscriptionAdmissions(keys[0])
-			conn.cancelSubscriptionAdmissions(keys[1])
-			conn.server.mu.Lock()
-			if conn.server.conns[conn.id] == conn {
-				if unresolved, _ := ctx.Value(subscriptionUnresolvedContextKey{}).(bool); unresolved {
-					conn.server.subs.Unsubscribe(conn.id, keys[0])
-				} else {
-					conn.server.subs.UnsubscribeLifecycleAlias(conn.id, keys[0], keys[1])
-				}
-			}
-			conn.server.mu.Unlock()
-			return
-		}
-		for _, key := range keys {
-			if key == "" {
-				continue
-			}
-			conn.cancelSubscriptionAdmissions(key)
-			conn.server.mu.Lock()
-			if conn.server.conns[conn.id] == conn {
-				conn.server.subs.UnsubscribeLifecycle(conn.id, key)
-			}
-			conn.server.mu.Unlock()
-		}
-		return
-	}
-	if key == "" {
-		Unsubscribe(ctx, threadID)
-		return
-	}
-	threadID = key
-	conn.cancelSubscriptionAdmissions(threadID)
-	conn.server.mu.Lock()
-	defer conn.server.mu.Unlock()
-	if conn.server.conns[conn.id] == conn {
-		conn.server.subs.UnsubscribeLifecycle(conn.id, threadID)
-	}
+	server.subs.Unsubscribe(conn.id, target.key)
 }
 
 // SubscribeWithAdmission installs an immediate subscription and consumes the
@@ -226,6 +197,8 @@ type SubscriptionTarget struct {
 // send queue. A false snapshot result restores the previous ownership.
 // When supplied, resolveTarget replaces threadID and atomically resolves D+A1
 // under the registration gates, before admission validation or hydration changes.
+// currentSequence and snapshot run while the projection and delivery gates are
+// held, so they must be cheap and must not acquire a lock ordered before them.
 func CaptureSubscription(
 	ctx context.Context,
 	replace bool,

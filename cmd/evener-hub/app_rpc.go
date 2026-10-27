@@ -1501,17 +1501,17 @@ func registerThreadHandlers(
 				return appwire.EmptyResponse{}, err
 			}
 			if parsed, parseErr := appwire.ParseRef(strings.TrimSpace(params.Ref)); parseErr == nil && parsed.SourceID != "" {
-				appserver.UnsubscribeLifecycle(ctx, parsed.SourceID+":"+parsed.ThreadID)
+				appserver.Unsubscribe(ctx, parsed.SourceID+":"+parsed.ThreadID)
 				return appwire.EmptyResponse{}, nil
 			}
-			appserver.UnsubscribeLifecycle(ctx, "local:"+strings.TrimSpace(params.ThreadID))
+			appserver.Unsubscribe(ctx, "local:"+strings.TrimSpace(params.ThreadID))
 			return appwire.EmptyResponse{}, nil
 		}
 		relayKey, _, keyErr := relayDeliveryTarget(source, appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
 		if keyErr != nil {
 			return appwire.EmptyResponse{}, keyErr
 		}
-		appserver.UnsubscribeLifecycle(ctx, relayKey)
+		appserver.Unsubscribe(ctx, relayKey)
 		return appwire.EmptyResponse{}, nil
 	})
 	listThreadTurns := func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
