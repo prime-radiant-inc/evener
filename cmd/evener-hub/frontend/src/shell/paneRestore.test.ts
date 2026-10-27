@@ -33,6 +33,7 @@ import { openDocBeside } from "../panes/doc/openDoc";
 import {
   composerSelectionScope,
   readRecoverySelection,
+  readRefComposerSeat,
   writeComposerSeat,
   writeRecoverySelection,
   writeRefComposerSeat,
@@ -532,6 +533,52 @@ test("restore reserves known pane seats before ref fallbacks", () => {
     expect(known?.composerSeatId).toBe("seat-known");
     expect(unknown?.composerSeatId).not.toBe("seat-known");
     expect(readRecoverySelection("ref_a", composerSelectionScope("seat-known"))).toBe("known-row");
+  } finally {
+    setMutationClientIdentityForTests(undefined);
+  }
+});
+
+// A restored layout can hold a session pane and a cascade for one
+// conversation. Each pane keeps its own seat, but the conversation mapping -
+// what a mobile route reconstruction reads after the reload - must follow the
+// restored focus, not whichever same-ref pane the panel iteration wrote last.
+test("restore reconciles a shared conversation mapping from the focused pane", () => {
+  installLocalStorage(new MemoryStorage());
+  try {
+    setMutationClientIdentityForTests("tab-a");
+    writeComposerSeat("p_session", "ref_shared", "session-seat");
+    writeRecoverySelection("ref_shared", composerSelectionScope("session-seat"), "session-row");
+    writeComposerSeat("p_cascade", "ref_shared", "cascade-seat");
+    writeRecoverySelection("ref_shared", composerSelectionScope("cascade-seat"), "cascade-row");
+
+    restorePanels({
+      p_session: {
+        id: "p_session",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "ref_shared" } },
+      },
+      p_cascade: {
+        id: "p_cascade",
+        contentComponent: "default",
+        params: {
+          paneType: "sessionZoom",
+          paneParams: { ref: "ref_shared", source: { type: "session", params: { ref: "local:root" } }, edges: [] },
+        },
+      },
+    });
+    // restorePanels focuses the first panel: the session pane, whose
+    // iteration-time write the cascade's would have overwritten.
+    expect(workspaceStore.getState().focusedPaneId).toBe("p_session");
+    expect(readRefComposerSeat("ref_shared")).toBe("session-seat");
+
+    // A mobile route reconstruction after the restore restores the focused
+    // pane's selected row, not the inactive cascade's.
+    resetWorkspaceStoreForTests();
+    const reloadedId = workspaceStore.getState().openPane("session", { ref: "ref_shared" });
+    const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
+    if (!reloaded?.composerSeatId) throw new Error("reloaded route lacks its seat");
+    expect(reloaded.composerSeatId).toBe("session-seat");
+    expect(readRecoverySelection("ref_shared", composerSelectionScope(reloaded.composerSeatId))).toBe("session-row");
   } finally {
     setMutationClientIdentityForTests(undefined);
   }

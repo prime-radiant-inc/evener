@@ -15,16 +15,15 @@ import { useEffect } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import {
-  clearRefComposerSeat,
   composerSelectionScope,
   readPaneComposerSeat,
   readRecoverySelection,
   readRefComposerSeat,
   transferRecoverySelection,
-  writeComposerSeat,
   writePaneComposerSeat,
   writeRefComposerSeat,
 } from "../panes/session/composer/draft";
+import { parseZoomParams } from "../panes/zoom/intent";
 import { createSecureUUID } from "../stores/secureUUID";
 import { type PaneTypeId, paneFor } from "./paneRegistry";
 import { paramString, refParam } from "./routing";
@@ -381,6 +380,18 @@ function writeSurvivingRefSeat(ref: string, panes: readonly OpenPaneRecord[], pr
     candidates.find((pane) => pane.slot === "main") ??
     candidates[0];
   if (chosen?.composerSeatId !== undefined) writeRefComposerSeat(ref, chosen.composerSeatId);
+}
+
+// A cascade pane keeps every conversation on its cached path - the source it
+// can Return to plus each column its edges walked - alive as retained columns.
+// Every column's composer shares the pane's own seat, so the pane still owns
+// those refs' seat mappings even while drilled onto a deeper leaf.
+function retainsConversationRef(pane: OpenPaneRecord, ref: string): boolean {
+  if (pane.type !== "sessionZoom") return false;
+  const params = parseZoomParams(pane.params);
+  if (params === null) return false;
+  if (params.ref === ref || params.source.params.ref === ref) return true;
+  return params.edges.some((edge) => edge.ownerRef === ref || edge.childRef === ref);
 }
 
 // The conversation mapping names the pane that currently owns the route. Every
@@ -856,8 +867,9 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     const nextPanes = state.panes.map((pane) => (pane === expected ? replacement : pane));
     const nextRef = isConversationPaneType(type) ? refParam(params) : null;
     if (previousRef !== null && previousRef !== nextRef) {
-      // The pane no longer owns its old conversation. Point that ref at a
-      // surviving pane, or remove the mapping when the conversation closed.
+      // The pane no longer shows its old conversation. Point that ref at a
+      // surviving pane when one still shows it; else at the cascade that
+      // retains it as a column.
       if (
         nextPanes.some(
           (pane) =>
@@ -868,7 +880,16 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       ) {
         writeSurvivingRefSeat(previousRef, nextPanes, state.focusedPaneId === expected.id ? null : state.focusedPaneId);
       } else {
-        clearRefComposerSeat(previousRef);
+        const retaining = nextPanes.find(
+          (pane) =>
+            pane.type === "sessionZoom" &&
+            pane.composerSeatId !== undefined &&
+            retainsConversationRef(pane, previousRef),
+        );
+        if (retaining?.composerSeatId !== undefined) writeRefComposerSeat(previousRef, retaining.composerSeatId);
+        // Otherwise no owner is left, but a retype never closes a
+        // conversation: keep the stored mapping so a later reopen restores
+        // the seat's recovery row (closePane leaves it behind the same way).
       }
     }
     for (const listener of paneRetypeListeners) listener(expected, replacement);
@@ -1052,6 +1073,12 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         params: entry.params.paneParams,
         slot: index === 0 ? "main" : "secondary",
       }));
+      // The saved active panel may be one the skip dropped - or the duplicate
+      // this restore reconciled, in which case focus follows the conversation
+      // that survived. Focus only an id that actually survived, else the
+      // first survivor.
+      const wantedId = savedActiveId === undefined ? undefined : (duplicates.get(savedActiveId) ?? savedActiveId);
+      const focusedPaneId = panes.find((p) => p.id === wantedId)?.id ?? panes[0]?.id ?? null;
       // Reattach every restored conversation to this tab's own seat. The pane
       // mapping survives a desktop reload; the ref mapping covers a route
       // reconstructed under a new pane id. Candidates already held by another
@@ -1080,27 +1107,33 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
           candidates.find((candidate) => candidate !== undefined && !usedSeats.has(candidate)) ?? createSecureUUID();
         usedSeats.add(pane.composerSeatId);
       }
-      // Persist fallback seats first, then validated ones, so a reserved pane's
-      // conversation mapping is the one left behind.
+      // Persist each pane mapping separately: a pane-id mapping belongs to
+      // saved desktop geometry and never contests another pane's conversation
+      // mapping.
       for (const { pane, ref } of conversations) {
-        if (reserved.has(pane)) continue;
-        writeComposerSeat(pane.id, ref, pane.composerSeatId ?? pane.id);
+        if (ref !== null) writePaneComposerSeat(pane.id, ref, pane.composerSeatId ?? pane.id);
       }
+      // Reconcile each conversation mapping once, from the restored focus:
+      // the focused pane is its conversation's presenting owner, so a route
+      // reconstruction after a mobile reload restores that pane's recovery
+      // row - not whichever same-ref pane the panel iteration wrote last. A
+      // validated (reserved) pane outranks a fresh fallback for a ref the
+      // restored focus does not name.
+      const ownersByRef = new Map<string, OpenPaneRecord[]>();
       for (const { pane, ref } of conversations) {
-        if (!reserved.has(pane)) continue;
-        writeComposerSeat(pane.id, ref, pane.composerSeatId ?? pane.id);
+        if (ref === null) continue;
+        const owners = ownersByRef.get(ref);
+        if (owners === undefined) ownersByRef.set(ref, [pane]);
+        else owners.push(pane);
+      }
+      for (const [ref, owners] of ownersByRef) {
+        const chosen =
+          owners.find((pane) => pane.id === focusedPaneId) ?? owners.find((pane) => reserved.has(pane)) ?? owners[0];
+        if (chosen !== undefined) writeRefComposerSeat(ref, chosen.composerSeatId ?? chosen.id);
       }
       for (const listener of workspaceRestoreListeners) listener(panes);
       bumpPastRestoredIds(panes);
-      // The saved active panel may be one the skip dropped - or the duplicate
-      // this restore reconciled, in which case focus follows the conversation
-      // that survived. Focus only an id that actually survived, else the
-      // first survivor.
-      const wantedId = savedActiveId === undefined ? undefined : (duplicates.get(savedActiveId) ?? savedActiveId);
-      set({
-        panes,
-        focusedPaneId: panes.find((p) => p.id === wantedId)?.id ?? panes[0]?.id ?? null,
-      });
+      set({ panes, focusedPaneId });
       const conversationParents = migrated.conversationParents ?? {};
       for (const pane of panes) {
         const parentRef = conversationParents[pane.id];
