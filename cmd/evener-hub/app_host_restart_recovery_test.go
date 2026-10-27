@@ -1277,6 +1277,12 @@ func restartDisconnectedWithoutDeployment(t *testing.T) {
 }
 
 func TestHostDeployRestartAfterFreshProvisioningDoesNotRepush(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		restartAfterFreshProvisioning(t)
+	})
+}
+
+func restartAfterFreshProvisioning(t *testing.T) {
 	sha, dirty, channel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
 	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = sha, dirty, channel })
 	buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = "", "", ""
@@ -1300,6 +1306,9 @@ func TestHostDeployRestartAfterFreshProvisioningDoesNotRepush(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.cfg.opsWG.Wait()
+	// The channel's supervisor takes the gate once the deploy releases it; the
+	// next Restart must not race that hold.
+	synctest.Wait()
 	assertRestartRecoveryRecord(t, store, deploy.ID, hostops.StateComplete)
 	assertPublicRecoveryEffects(t, runner, 2, 2, 1, "dev", restartStartB)
 	restart, err := m.Restart(t.Context(), appwire.HostRestartParams{Name: host.Name, Generation: host.Generation, IncarnationID: host.IncarnationID, OperationID: "standalone-after-provisioning"})

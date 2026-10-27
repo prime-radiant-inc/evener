@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AppState } from "react-native";
-import type { ConversationService } from "../../../mobile/src/services/conversation";
+import type { ConversationService } from "../conversation/services/conversation";
 
 import type { FindState } from "./findInSession";
 import {

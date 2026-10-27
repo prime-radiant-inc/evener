@@ -142,6 +142,92 @@ function preservedDraft() {
 }
 const editor = () => screen.getByRole("textbox", { name: "Message" });
 
+test.each([false, true])("Comic Appearance keeps controls and owners with mobile=%s", async (mobile) => {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: mobile && query === "(max-width: 899px)",
+    media: query,
+    addEventListener() {},
+    removeEventListener() {},
+  }));
+  const fake = await setup();
+  await mount(fake);
+  await presentation("comic");
+  const owner = lifetime();
+  const composer = owner.composer;
+  const reads = fake.calls.filter((c) => c.method === "thread/read").length;
+  const trigger = screen.getByRole("button", { name: "Appearance" });
+  expect(screen.queryByRole("combobox", { name: "View" })).toBeNull();
+  expect(screen.queryByRole("combobox", { name: "Scene" })).toBeNull();
+  trigger.focus();
+  fireEvent.click(trigger);
+  const popup = screen.getByRole("dialog", { name: "Appearance" });
+  expect(within(popup).getAllByRole("combobox")).toHaveLength(3);
+  const scene = within(popup).getByRole("combobox", { name: "Scene" });
+  expect(
+    within(scene)
+      .getAllByRole("option")
+      .map((o) => o.textContent),
+  ).toEqual(["Room", "Field", "White"]);
+  fireEvent.change(scene, { target: { value: "field" } });
+  const expression = within(popup).getByRole("combobox", { name: "Human expression" });
+  expect(
+    within(expression)
+      .getAllByRole("option")
+      .map((o) => o.textContent),
+  ).toEqual(["neutral", "happy-wave", "angry", "scared", "point", "celebrate"]);
+  fireEvent.change(expression, { target: { value: "celebrate" } });
+  fireEvent.keyDown(expression, { key: "Escape" });
+  expect(screen.queryByRole("dialog", { name: "Appearance" })).toBeNull();
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
+  fireEvent.click(trigger);
+  expect((screen.getByRole("combobox", { name: "Scene" }) as HTMLSelectElement).value).toBe("field");
+  expect((screen.getByRole("combobox", { name: "Human expression" }) as HTMLSelectElement).value).toBe("celebrate");
+  fireEvent.change(screen.getByRole("combobox", { name: "View" }), { target: { value: "plain" } });
+  expect(document.querySelector("[data-comic-mode='plain']")).toBeTruthy();
+  fireEvent.change(screen.getByRole("combobox", { name: "View" }), { target: { value: "comic" } });
+  expect((screen.getByRole("combobox", { name: "Scene" }) as HTMLSelectElement).value).toBe("field");
+  fireEvent.mouseDown(document.body);
+  expect(screen.queryByRole("dialog", { name: "Appearance" })).toBeNull();
+  expect(lifetime()).toBe(owner);
+  expect(lifetime().composer).toBe(composer);
+  expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(reads);
+  expect(screen.getByRole("button", { name: "Jump to latest" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+});
+
+test.each([false, true])("Comic keeps one menu with mobile=%s", async (mobile) => {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: mobile && query === "(max-width: 899px)",
+    media: query,
+    addEventListener() {},
+    removeEventListener() {},
+  }));
+  const fake = await setup("active");
+  act(() => {
+    const model = threadsStore.getState().threads.get(ref)!;
+    threadsStore.setState({ threads: new Map([[ref, { ...model, lastFrameAt: Date.now() - 300_000 }]]) });
+  });
+  await mount(fake);
+  await presentation("comic");
+  const menus = screen.getAllByRole("button", { name: "Session actions" });
+  expect(menus).toHaveLength(1);
+  expect(!!menus[0]?.closest("[data-comic-composer]")).toBe(mobile);
+  const statuses = screen.getAllByTestId("liveness-line");
+  expect(statuses).toHaveLength(1);
+  expect(statuses[0]?.textContent).toBe("Quiet ~5m");
+  expect(!!statuses[0]?.closest("[data-comic-composer]")).toBe(mobile);
+  expect(screen.getByRole("button", { name: "Jump to latest" }).textContent).toBe(mobile ? "Latest" : "Jump to latest");
+  await waitFor(() =>
+    expect(screen.getByLabelText("Comic font unavailable").textContent).toBe(
+      mobile
+        ? "Comic Sans unavailable, using fallback font."
+        : "Comic Sans could not load. The conversation remains available in the fallback font.",
+    ),
+  );
+  fireEvent.click(menus[0]!);
+  expect(screen.getByRole("menuitem", { name: "Verbosity…" })).toBeTruthy();
+});
+
 test.each(["success", "retry"])("an in-flight approval survives presentation handoff: %s", async (outcome) => {
   const fake = await setup();
   let finish!: (value: object) => void;

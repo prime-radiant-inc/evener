@@ -1,5 +1,6 @@
 import {
   type KeyboardEvent,
+  type ReactNode,
   useCallback,
   useLayoutEffect,
   useMemo,
@@ -23,7 +24,15 @@ import { Button, PromptCard, SendIcon } from "../widgets";
 import styles from "./comic.module.css";
 
 /** A full-page interaction area, never mounted by an inline child reader. */
-export function ComicComposer({ source }: { source: ComposerSourceState }): React.ReactElement {
+export function ComicComposer({
+  source,
+  sessionActions,
+  headingStatus,
+}: {
+  source: ComposerSourceState;
+  sessionActions?: ReactNode;
+  headingStatus?: ReactNode;
+}): React.ReactElement {
   const snapshot = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   const { text, skillNames, commandNames, mentions, restoreEpoch, activeRecoveryId } = snapshot;
   const actions = useComposerActions(source);
@@ -110,7 +119,17 @@ export function ComicComposer({ source }: { source: ComposerSourceState }): Reac
   }
   return (
     <section className={styles.interaction} aria-label="Your message" data-comic-composer={source.ref}>
-      <strong>You</strong>
+      {sessionActions || headingStatus ? (
+        <div className={styles.composerHeading}>
+          <div>
+            <strong>You</strong>
+            {headingStatus}
+          </div>
+          {sessionActions && <div>{sessionActions}</div>}
+        </div>
+      ) : (
+        <strong>You</strong>
+      )}
       <QueueStrip
         {...actions.queueProps}
         onRestoreToComposer={(...args) => {

@@ -377,14 +377,14 @@ func prepareLocalSpawn(ctx context.Context, cfg hubcore.WebConfig, params appwir
 }
 
 func localSpawnWorkspaceRef(entry rendezvous.Entry) string {
-	if ref, err := appwire.ParseRef(strings.TrimSpace(entry.WorkspaceRef)); err == nil && ref.SourceID == "local" {
+	if ref, err := appwire.ParseRef(strings.TrimSpace(entry.WorkspaceRef)); err == nil && ref.SourceID == appwire.LocalSourceID {
 		return ref.String()
 	}
 	threadID := strings.TrimSpace(entry.ThreadID)
 	if threadID == "" {
 		threadID = strings.TrimSpace(entry.SessionID)
 	}
-	return appwire.Ref{SourceID: "local", ThreadID: threadID}.String()
+	return appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: threadID}.String()
 }
 
 func localSpawnInstanceID(entry rendezvous.Entry, thread appwire.Thread) string {
@@ -473,7 +473,7 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 			return appwire.ThreadResumeResponse{}, err
 		}
 		requestedRefID = ref.ThreadID
-		if ref.SourceID != "local" {
+		if ref.SourceID != appwire.LocalSourceID {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.ThreadResumeResponse{}, err
@@ -866,7 +866,7 @@ func resumeOwnershipStep(cfg hubcore.WebConfig, requestedID string) (string, []s
 		if !slices.Contains(forceStopAliases(entry), requestedID) && (referenceTarget == "" || !slices.Contains(forceStopAliases(entry), referenceTarget)) {
 			continue
 		}
-		if entry.SourceID != "" && entry.SourceID != "local" {
+		if entry.SourceID != "" && entry.SourceID != appwire.LocalSourceID {
 			return "", nil, errors.New("daemon claims a foreign session source")
 		}
 		claims = append(claims, entry)
@@ -1016,7 +1016,7 @@ func hubResumedThreadResponse(ctx context.Context, cfg hubcore.WebConfig, source
 	if threadID == "" {
 		threadID = sessionID
 	}
-	ref := appwire.Ref{SourceID: "local", ThreadID: threadID}.String()
+	ref := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: threadID}.String()
 	source, err := sourceForThread(sources, ref, "")
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, err
@@ -1078,7 +1078,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}
-	if ref.SourceID != "local" {
+	if ref.SourceID != appwire.LocalSourceID {
 		return forkRemoteThread(ctx, cfg, sources, params)
 	}
 	// A request that cannot be carried out however it is routed is answered
@@ -1304,7 +1304,7 @@ func forkStateDir(cfg hubcore.WebConfig, entry hubcore.PastEntry) (string, error
 
 // forkThreadResponse is the response naming the new child thread.
 func forkThreadResponse(childID, originalInput string) appwire.ThreadForkResponse {
-	childRef := appwire.Ref{SourceID: "local", ThreadID: childID}.String()
+	childRef := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: childID}.String()
 	return appwire.ThreadForkResponse{
 		Thread: appwire.Thread{
 			ID:        childID,
@@ -1532,7 +1532,7 @@ func forkTargetFromRendezvous(cfg hubcore.WebConfig, threadID string) (string, e
 	}
 	var claims []rendezvous.Entry
 	for _, entry := range entries {
-		if entry.SourceID != "" && entry.SourceID != "local" {
+		if entry.SourceID != "" && entry.SourceID != appwire.LocalSourceID {
 			continue
 		}
 		if !slices.Contains(forceStopAliases(entry), threadID) {
@@ -1770,7 +1770,7 @@ func readSpawnedLocalThread(ctx context.Context, sources *appsource.Registry, en
 }
 
 func spawnedLocalDaemonSource(sources *appsource.Registry) (*appsource.LocalDaemonSource, error) {
-	source, ok := sources.Source("local")
+	source, ok := sources.Source(appwire.LocalSourceID)
 	if ok {
 		if local, ok := source.(*appsource.LocalDaemonSource); ok {
 			return local, nil

@@ -3,13 +3,12 @@ package cmdutil
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -127,39 +126,6 @@ func TestStateRootFromLookup(t *testing.T) {
 	}
 }
 
-// runGit runs a git command in dir with a fixed identity, failing the test on
-// error.
-func runGit(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-	return strings.TrimSpace(string(out))
-}
-
-// newLinkedWorktree builds an origin-less main repo with one commit and a
-// linked worktree, returning their absolute paths.
-func newLinkedWorktree(t *testing.T) (main, wt string) {
-	t.Helper()
-	base := t.TempDir()
-	main = filepath.Join(base, "main")
-	runGit(t, base, "init", "-q", "main")
-	runGit(t, main, "commit", "-q", "--allow-empty", "-m", "init")
-	wt = filepath.Join(base, "wt")
-	runGit(t, main, "worktree", "add", "-q", wt, "-b", "feat")
-	return main, wt
-}
-
 // TestDefaultProjectStateDir_LinkedWorktreeSameAsMain proves the fix for the
 // bug described in
 // docs/superpowers/specs/2026-07-02-native-worktree-tools-design.md §1
@@ -168,7 +134,7 @@ func newLinkedWorktree(t *testing.T) (main, wt string) {
 // computed a different project state dir than launching from the main repo
 // root. DefaultProjectStateDir must key both the same.
 func TestDefaultProjectStateDir_LinkedWorktreeSameAsMain(t *testing.T) {
-	main, wt := newLinkedWorktree(t)
+	main, wt := gittest.NewLinkedWorktree(t)
 
 	_, mainDir, err := DefaultProjectStateDir(main)
 	if err != nil {
@@ -187,11 +153,11 @@ func TestDefaultProjectStateDir_LinkedWorktreeSameAsMain(t *testing.T) {
 func TestDefaultProjectStateDir_ClonesWithSameOriginDiffer(t *testing.T) {
 	base := t.TempDir()
 	remote := filepath.Join(base, "remote.git")
-	runGit(t, base, "init", "-q", "--bare", remote)
+	gittest.Run(t, base, "init", "-q", "--bare", remote)
 	first := filepath.Join(base, "first")
 	second := filepath.Join(base, "second")
-	runGit(t, base, "clone", "-q", remote, first)
-	runGit(t, base, "clone", "-q", remote, second)
+	gittest.Run(t, base, "clone", "-q", remote, first)
+	gittest.Run(t, base, "clone", "-q", remote, second)
 
 	_, firstDir, err := DefaultProjectStateDir(first)
 	if err != nil {

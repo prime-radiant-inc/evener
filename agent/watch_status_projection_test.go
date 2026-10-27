@@ -455,11 +455,11 @@ func TestFormatWatchStatusesIsPureAndOrdersRows(t *testing.T) {
 	secondFire := created.Add(2 * time.Minute)
 
 	jobWatch := &watchConfig{
-		id: "watch_a", sourcePublic: "job_1", target: "job_1",
+		watchID: "watch_a", sourcePublic: "job_1", target: "job_1",
 		outputMatch: "ready", createdAt: created,
 	}
 	timerWatch := &watchConfig{
-		id: "watch_b", sourcePublic: "self", target: runtimeMessageAliasCaller,
+		watchID: "watch_b", sourcePublic: "self", target: runtimeMessageAliasCaller,
 		timer: true, timerSeconds: 300, progressIntervalMS: 300000,
 		createdAt: created, deliveries: 2,
 		deliveryTimes: []time.Time{firstFire, secondFire},
@@ -601,11 +601,11 @@ func TestAppendWatchStatusesByRowKeepsRowKeysAndFormatterOutput(t *testing.T) {
 	const receiver = "session_other"
 	jm.mu.Lock()
 	jm.watches[watchKey{Target: "job_own"}] = &watchConfig{
-		id: "watch-own", watchID: "watch-own", sourcePublic: "self", target: "job_own",
+		watchID: "watch-own", sourcePublic: "self", target: "job_own",
 		createdAt: frozenTestTime,
 	}
 	jm.watches[watchKey{Target: "job_receiver", ReceiverSessionID: receiver}] = &watchConfig{
-		id: "watch-receiver", watchID: "watch-receiver", sourcePublic: "self", target: "job_receiver",
+		watchID: "watch-receiver", sourcePublic: "self", target: "job_receiver",
 		receiverSessionID: receiver, createdAt: frozenTestTime,
 	}
 	jm.mu.Unlock()
@@ -639,7 +639,7 @@ func TestWatchProjectionCollectsUnderTheLockAndFormatsWithoutIt(t *testing.T) {
 	jm := newTestJM(t)
 	jm.mu.Lock()
 	jm.watches[watchKey{Target: "job_one"}] = &watchConfig{
-		id: "watch-one", watchID: "watch-one", sourcePublic: "self", target: "job_one",
+		watchID: "watch-one", sourcePublic: "self", target: "job_one",
 		createdAt: frozenTestTime, deliveries: 3,
 		deliveryTimes: []time.Time{frozenTestTime, frozenTestTime.Add(time.Second)},
 	}

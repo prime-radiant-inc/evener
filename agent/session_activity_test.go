@@ -830,7 +830,7 @@ func TestSessionActivityDurableWatchClearInvalidatesReceiver(t *testing.T) {
 			requireSessionActivityInvalidation(t, fixture.source.events, target, target, appwire.SessionActivityResourceWatches)
 			fixture.sourceJM.mu.Lock()
 			for key, cfg := range fixture.sourceJM.watches {
-				if cfg.id == result.WatchID {
+				if cfg.watchID == result.WatchID {
 					closeWatchConfig(cfg)
 					delete(fixture.sourceJM.watches, key)
 				}

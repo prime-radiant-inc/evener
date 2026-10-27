@@ -86,8 +86,7 @@ func TestOneShotDrainEscalatesAndExitsOnAnUndisposedBackgroundJob(t *testing.T) 
 	// model turn, parks for a fed recheck, or returns), so the drain finishes
 	// in milliseconds; 30s only fires on a genuine hang — which is the #297
 	// regression this suite exists to catch.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	done := make(chan drainResult, 1)
 	go func() {
 		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
@@ -611,8 +610,7 @@ func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
 	jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
 
 	// TRIPWIRE: every step is scripted or fed; 30s only fires on a hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	var completedOnAnnounce sync.Once
 	process := func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
 		// The drain has queued the announcement and not yet opened the turn.
@@ -670,8 +668,7 @@ func TestOneShotDrainDeliversInsteadOfAnnouncingAFinalizingJob(t *testing.T) {
 	jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
 
 	// TRIPWIRE: every step is scripted or fed; 30s only fires on a hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	recheck := make(chan time.Time)
 	sess.jobManager.testOnlyAfterNotifyPendingAppend = func(string) {
 		// The terminal record and NotifyPending are durable; the running entry

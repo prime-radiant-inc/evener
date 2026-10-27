@@ -5,8 +5,8 @@
 // It reads string literals, template text and JSX text through the
 // TypeScript parser, so comments, identifiers and import paths never trip
 // it. Text handed to console.* is for developers, and is skipped. It covers
-// the phone's own code and the shared mobile code it runs (mobile/src), whose
-// errors the phone shows.
+// the phone's own code, including the shared conversation services and store
+// (src/conversation), whose errors the phone shows.
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,7 +14,7 @@ import ts from "typescript";
 import { expect, it } from "vitest";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
-const ROOTS = ["mobile-native/src", "mobile/src"].map((root) => path.join(REPO, root));
+const ROOTS = ["mobile-native/src"].map((root) => path.join(REPO, root));
 const FORBIDDEN = /\breconnect\b|\brefresh\b|\bpull down to retry\b|\btry again when connected\b/i;
 
 function productionFiles(dir: string): string[] {

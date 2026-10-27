@@ -4,18 +4,16 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { AppwireClient, hydrateThread } from "@evener/appwire-client";
-import { keyID } from "@evener/appwire-client/state/navigation";
-import { ComicPicker } from "/src/comic/ComicPicker";
-import { ComicSession } from "/src/comic/ComicSession";
-import styles from "/src/comic/comic.module.css";
+import { ComicConversationBody } from "/src/comic/ComicConversationBody";
+import { createComposerSourceState } from "/src/panes/session/composer/sourceState";
+import shellStyles from "/src/shell/AppShell.module.css";
 import { ClientProvider } from "/src/shell/clientContext";
 import { useKeyboardInset } from "/src/shell/useKeyboardInset";
-import { navigationStore } from "/src/stores/navigation/store";
 import { threadsStore } from "/src/stores/threads";
+import { PaneScaffold } from "/src/widgets";
 
 // Headless Chrome cannot open Safari's software keyboard. Replace only that
-// browser API boundary; use the real hook and CSS below it. ComicApp.test.tsx
-// separately proves that the actual app mounts and releases the hook.
+// browser API boundary; use the real shell hook and CSS below it.
 const viewport = Object.assign(new EventTarget(), { height: 620, offsetTop: 0, scale: 1 });
 const nativeViewport = window.visualViewport;
 let simulatedViewport = false;
@@ -81,56 +79,34 @@ const model = hydrateThread(
 );
 threadsStore.setState({ threads: new Map([[ref, model]]) });
 
-function render(kind, count = 0) {
-  if (kind === "picker") {
-    const key = { kind: "section", section: "live", offset: 0, limit: 50 };
-    navigationStore.setState({
-      mode: "v3",
-      visibleResourceKeys: new Set([keyID(key)]),
-      resources: new Map([
-        [
-          keyID(key),
-          {
-            key,
-            data: {
-              generation_id: "geometry",
-              revision: 1,
-              remaining: count ? 1 : 0,
-              truncated: !!count,
-              sessions: Array.from({ length: count }, (_, i) => ({
-                ref: `local:geometry-${i}`,
-                title: `GEOMETRY_ROW_${i}`,
-                children: [],
-              })),
-            },
-            loadedRevision: 1,
-            targetRevision: 1,
-            forceToken: 0,
-            etag: "geometry",
-            loading: false,
-            stale: false,
-            error: null,
-            generationID: "geometry",
-          },
-        ],
-      ]),
-    });
-  }
+const seat = {
+  readView: null,
+  composerSource: createComposerSourceState(ref, "comic-geometry-pane"),
+  keepViewRemount: () => true,
+  viewFallbackId: "comic-geometry-pane",
+  focused: true,
+  keyboardScrollPaneId: null,
+  sessionMenu: true,
+};
+
+function render() {
   flushSync(() =>
     root.render(
       <ClientProvider client={client}>
         <KeyboardInset key={String(simulatedViewport)} />
-        <main key={kind} className={styles.comicRoot} data-theme="light" data-comic-route={kind}>
-          {kind === "picker" ? (
-            <ComicPicker
-              onSelect={(selected) => {
-                window.selectedComicRef = selected;
-              }}
-            />
-          ) : (
-            <ComicSession sessionRef={ref} onReplaceRef={() => false} onSelectRef={() => {}} />
-          )}
-        </main>
+        <div className={shellStyles.shell} data-geometry-shell>
+          <div style={{ flex: "none", height: 24 }} data-geometry-host-chrome>Pane host</div>
+          <div className={shellStyles.content}>
+            <div className={shellStyles.workspaceColumn} data-geometry-pane>
+              <ComicConversationBody ref={ref} seat={seat} render={({ content, footer, cadence }) => (
+                <PaneScaffold paneId={seat.viewFallbackId} title="Comic geometry" scaffoldMarker={`session:${ref}`}
+                  focused bodyScroll={false} cadence={cadence} footer={footer}>
+                  {content}
+                </PaneScaffold>
+              )} />
+            </div>
+          </div>
+        </div>
       </ClientProvider>,
     ),
   );
@@ -164,4 +140,4 @@ window.comicGeometry = {
   },
 };
 window.measure = () => ({ ready: true });
-render("picker");
+render();

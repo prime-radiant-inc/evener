@@ -23,7 +23,6 @@ vi.mock("@react-navigation/native", async () => {
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 // Each mount's controllers, disposed after the test's trees unmount, so a
 // failing assertion can't leak them into the next test.

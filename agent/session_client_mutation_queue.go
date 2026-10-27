@@ -678,10 +678,6 @@ func queuedInputFromClientMutation(entry clientMutationQueueEntry) queuedInput {
 	return queued
 }
 
-func clientMutationInput(text string, images []ImageAttachment, skillNames []string, commandNames ...[]string) []appwire.InputItem {
-	return clientMutationInputWithMentions(text, images, skillNames, nil, commandNames...)
-}
-
 func clientMutationInputWithMentions(text string, images []ImageAttachment, skillNames []string, mentions []appwire.InputMention, commandNames ...[]string) []appwire.InputItem {
 	input := make([]appwire.InputItem, 0, 1+len(images)+len(skillNames))
 	if text != "" {
@@ -1870,7 +1866,7 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 		s.wakeRunnableClientMutationStartAfterFence()
 	}
 	if returned {
-		// The durable queue grew a message back. QueueDepth, QueuePreview,
+		// The durable queue grew a message back. QueueDepth,
 		// WireState and the queued-input wake all read the process-local copy,
 		// so without this the message is durably present and invisible -- and
 		// the wake that would run it gates on that same stale depth.
@@ -1920,7 +1916,7 @@ func returnClaimedQueuedMutation(
 	}
 	// Callers own the queue revision and the runtime reflection: restore bumps
 	// the revision once for the whole rebuild, and the completion path bumps it
-	// per return. Both must reflect afterwards -- QueueDepth, QueuePreview,
+	// per return. Both must reflect afterwards -- QueueDepth,
 	// WireState and the queued-input wake all read the process-local copy, so a
 	// message restored only here would be durably present and invisible.
 	record.ProjectionState = acceptedClientMutationProjection(record.Method)

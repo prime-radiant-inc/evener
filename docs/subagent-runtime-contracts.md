@@ -256,7 +256,7 @@ sites:
 - `web_fetch` cheap-model summarization (`agent/tool_web_fetch.go` `webFetch`),
 - session auto-naming (`agent/session_namer.go` `nameSession`, advisory — failure does
   not fail the session),
-- image description (`describeImage`, `agent/session_tools.go` — side-channel call, no
+- image description (`describeImage`, `agent/session_tools_vision.go` — side-channel call, no
   `Tools` set),
 - prompt hooks (`agent/internal/hooks/hooks.go` `clientAdapter`/`executePromptHook`),
 - context-manager strategies (fork-summarize, recursive distill, checkpoint prediction,

@@ -1,6 +1,6 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import { sendQueueDecisionFor } from "../../../stores/liveControls";
-import type { ResumeOnlySignals } from "../../../stores/threads";
+import type { ResumeOnlySignals } from "../../../stores/recoveryFence";
 
 /** Presentation only: liveControls remains the browser's admission owner. */
 export function composerAvailability(

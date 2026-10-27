@@ -13,7 +13,6 @@ vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: "ready"
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 /** Access for paradise-park's evener, whose hub default is `defaults`. */
 async function mount(defaults: Record<string, unknown>, launchOverrides: Record<string, unknown> = {}, refuse = false) {

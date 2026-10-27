@@ -5,7 +5,7 @@ The agent's `urls_add` tool (`agent/internal/tool/definitions.go:DefUrlsAdd`,
 agent tool name `urls_add` — tool names cannot contain slashes, so the wire
 RPC `urls/add` and the tool differ in spelling) appends entries the Notes
 panel renders as links; the human's `urls/remove`
-(`appwire/types.go:826-837`, daemon `agent/session_notes_rpc.go:RemoveSessionURL`)
+(`appwire/types_thread.go#UrlsRemoveParams`, daemon `agent/session_notes_rpc.go:RemoveSessionURL`)
 removes one by id; the `evener/urls/updated` push keeps every client
 converged; and the removed id stays discoverable from the panel (step 5 pins
 the web panel's answer).
@@ -150,7 +150,7 @@ ref off the resulting `/s/local:<SID>` path, and wait for `idle` (poll `thread/r
    {"id":4,"method":"urls/remove","params":{"ref":"local:<SID>",
     "clientMutationId":"<uuid>","expectedInstanceId":"<SID>","id":"<U_SPEC>"}}
    ```
-   Param shape is `appwire.UrlsRemoveParams` (`appwire/types.go:828-833`).
+   Param shape is `appwire.UrlsRemoveParams` (`appwire/types_thread.go#UrlsRemoveParams`).
    Then re-issue the step-1 `thread/read` and diff the `sessionUrls` list.
    **Expected:** no error; the response is `{}` (empty by design — it carries
    no state, so assert nothing about the list from the response itself); the

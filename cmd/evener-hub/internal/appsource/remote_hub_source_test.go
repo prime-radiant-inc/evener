@@ -239,10 +239,7 @@ func TestRemoteHubSourceCallErrorKeepsRequestDeadlineRaw(t *testing.T) {
 		t.Fatalf("mapCallError(canceled) = %v, want context.Canceled", err)
 	}
 	connect := source.mapConnectError(context.DeadlineExceeded)
-	var wire appwire.WireError
-	if !errors.As(connect, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("mapConnectError(deadline) = %v, want SessionUnavailable", connect)
-	}
+	requireWireError(t, connect, appwire.CodeUnavailable)
 }
 
 func TestRemoteHubSourceReadThread(t *testing.T) {
@@ -402,10 +399,7 @@ func TestRemoteHubSourceNestedNonLocalRefRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("ReadThread accepted a nested non-local ref")
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
-		t.Fatalf("error = %T %v, want InternalError WireError", err, err)
-	}
+	requireWireError(t, err, appwire.CodeInternalError)
 }
 
 func TestRemoteHubSourceEOFBecomesSessionUnavailable(t *testing.T) {

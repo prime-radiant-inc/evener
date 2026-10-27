@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/gittest"
 )
 
 // TestPushDeployReturnsResolvedTarget pins the round-eight High that the
@@ -46,7 +47,7 @@ func TestPushDeployReturnsResolvedTarget(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{BuildBinary: writeStageBinary})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
+	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil, nil)
 	if err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
@@ -218,10 +219,10 @@ func TestIgnoredGoFileRefusedInBuildSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("*.gen.go\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, root, "init", "-q")
-	gitIn(t, root, "add", ".")
-	gitIn(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
-	short := gitIn(t, root, "rev-parse", "HEAD")[:7]
+	gittest.Run(t, root, "init", "-q")
+	gittest.Run(t, root, "add", ".")
+	gittest.Run(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
+	short := gittest.Run(t, root, "rev-parse", "HEAD")[:7]
 
 	orig := buildinfo.GitSHA
 	t.Cleanup(func() { buildinfo.GitSHA = orig })
@@ -236,7 +237,7 @@ func TestIgnoredGoFileRefusedInBuildSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "generated.gen.go"), []byte("package extra\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if status := gitIn(t, root, "status", "--porcelain"); status != "" {
+	if status := gittest.Run(t, root, "status", "--porcelain"); status != "" {
 		t.Fatalf("the generated file was not ignored; porcelain status = %q", status)
 	}
 	_, err := verifyBuildSource(root)

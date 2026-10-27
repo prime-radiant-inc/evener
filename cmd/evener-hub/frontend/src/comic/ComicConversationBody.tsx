@@ -7,6 +7,7 @@ import { LivenessLine } from "../panes/session/transcript/flow/LivenessLine";
 import { useTranscriptReader } from "../panes/session/transcript/useTranscript";
 import { navigate, paneToURL } from "../shell/routing";
 import { cadenceStateFor } from "../shell/sessionStatus";
+import { useIsMobile } from "../shell/useIsMobile";
 import { useThreadsStore } from "../stores/threads";
 import { Cadence, InlineNotice, Select } from "../widgets";
 import { ComicComposer } from "./ComicComposer";
@@ -32,6 +33,7 @@ export function ComicConversationBody({
   const deleted = useThreadsStore((state) => state.deletedRefs.has(ref));
   const frames = useThreadsStore((state) => state.frameTimes.get(ref) ?? EMPTY_FRAMES);
   const now = useNowTick(NOW_TICK_MS);
+  const isMobile = useIsMobile();
   const [mode, setMode] = useState<"comic" | "plain">("comic");
   const viewId = useId();
   const [fontStatus, setFontStatus] = useState<"loading" | "ready" | "unavailable">("loading");
@@ -44,6 +46,17 @@ export function ComicConversationBody({
       active = false;
     };
   }, []);
+  const liveness = model && (
+    <LivenessLine
+      lastFrameAt={model.lastFrameAt}
+      now={now}
+      active={model.status.type === "active"}
+      sessionRef={ref}
+      turnId={model.runningTurnId ?? model.activeTurnId}
+      retry={model.modelRetry}
+      primaryModel={model.model}
+    />
+  );
   const parts: ConversationParts =
     deleted || !model
       ? {
@@ -58,27 +71,31 @@ export function ComicConversationBody({
             <div className={styles.paneBody}>
               {fontStatus === "unavailable" && (
                 <InlineNotice live="status" aria-label="Comic font unavailable">
-                  Comic Sans could not load. The conversation remains available in the fallback font.
+                  {isMobile
+                    ? "Comic Sans unavailable, using fallback font."
+                    : "Comic Sans could not load. The conversation remains available in the fallback font."}
                 </InlineNotice>
               )}
-              <div className={styles.controls}>
-                <label htmlFor={viewId}>View</label>
-                <Select
-                  id={viewId}
-                  value={mode}
-                  options={[
-                    { value: "comic", label: "Comic" },
-                    { value: "plain", label: "Plain" },
-                  ]}
-                  onChange={(event) => setMode(event.target.value as "comic" | "plain")}
-                />
-              </div>
               <ComicSessionContent
                 sessionRef={ref}
                 model={model}
                 history={history}
                 reader={reader}
                 mode={mode}
+                appearanceView={
+                  <label htmlFor={viewId}>
+                    View
+                    <Select
+                      id={viewId}
+                      value={mode}
+                      options={[
+                        { value: "comic", label: "Comic" },
+                        { value: "plain", label: "Plain" },
+                      ]}
+                      onChange={(event) => setMode(event.target.value as "comic" | "plain")}
+                    />
+                  </label>
+                }
                 onOpen={(target) => {
                   const url = paneToURL("session", { ref: target });
                   if (url !== null) navigate(url);
@@ -89,18 +106,22 @@ export function ComicConversationBody({
           ),
           footer: (
             <>
-              <LivenessLine
-                lastFrameAt={model.lastFrameAt}
-                now={now}
-                active={model.status.type === "active"}
-                sessionRef={ref}
-                turnId={model.runningTurnId ?? model.activeTurnId}
-                retry={model.modelRetry}
-                primaryModel={model.model}
-              />
+              {(!isMobile || !seat.composerSource) && liveness}
               <PendingChips sessionRef={ref} />
-              {seat.composerSource && <ComicComposer source={seat.composerSource} />}
-              {seat.sessionMenu && <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" />}
+              {seat.composerSource && (
+                <ComicComposer
+                  source={seat.composerSource}
+                  headingStatus={isMobile ? liveness : undefined}
+                  sessionActions={
+                    isMobile && seat.sessionMenu ? (
+                      <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" />
+                    ) : undefined
+                  }
+                />
+              )}
+              {seat.sessionMenu && (!isMobile || !seat.composerSource) && (
+                <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" />
+              )}
             </>
           ),
           cadence: <Cadence state={cadenceStateFor(model.status.type)} frameTimes={frames} now={now} />,

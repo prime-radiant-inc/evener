@@ -45,7 +45,6 @@ vi.mock("@react-navigation/native", async () => {
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-application", () => ({ nativeApplicationVersion: "0.1.0", nativeBuildVersion: "5" }));
 
 const FIRST_START = "2026-10-21T12:00:00Z";

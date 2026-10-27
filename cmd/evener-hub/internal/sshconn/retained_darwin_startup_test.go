@@ -173,7 +173,7 @@ func TestRetainedDarwinStartupRecordRecovery(t *testing.T) {
 			m.pendingRestarts[host.Name] = pending
 			snapshot := owner.clone()
 			pending.selected = &snapshot
-			_, _, err = m.deployForOperation(t.Context(), host, Preflight{Host: host.Name, OS: "darwin", Arch: "arm64", UID: "1000", ExecutableMissing: true}, pending)
+			_, _, err = m.deployForOperation(t.Context(), host, Preflight{Host: host.Name, OS: "darwin", Arch: "arm64", UID: "1000", ExecutableMissing: true}, pending, nil)
 			if mode == "deleted" || mode == "nonexecutable" {
 				data, readErr := os.ReadFile(target)
 				info, statErr := os.Stat(target)

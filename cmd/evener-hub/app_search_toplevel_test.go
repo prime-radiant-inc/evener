@@ -25,10 +25,7 @@ func searchSubagentCase(t *testing.T, metas []schema.SessionMeta, live []hubcore
 			t.Fatal(err)
 		}
 	}
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	var roster *hubcore.Roster
 	if live != nil {
 		roster = hubcore.NewRosterWithEntries(live...)
@@ -286,10 +283,7 @@ func TestHubSearchAppliesForkSupersessionFoldedInMidQuery(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	// The continuation exists only on disk: the query's probes fold it in.
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID: contID, UpdatedAt: now.Add(-3 * time.Hour), Name: "quiet worker", ParentSessionID: origID,
@@ -367,10 +361,7 @@ func TestHubSearchGroupingAgreesWithTheTreeRollup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	roster := hubcore.NewRosterWithEntries(live...)
 	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past, Roster: roster}, appwire.SearchParams{Query: "frobnitz"}, now)
 	if err != nil {

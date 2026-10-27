@@ -23,7 +23,6 @@ vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => navigation,
 	usePreventRemove: () => {},
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 
 const palette = paletteFor("light");

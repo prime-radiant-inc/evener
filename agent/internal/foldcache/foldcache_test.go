@@ -130,10 +130,29 @@ func itoa(v int) string {
 	return string(digits)
 }
 
+// newIntsFile creates a file of the given name in a fresh temp dir, filled
+// with newline-delimited integers, and returns its path.
+func newIntsFile(t *testing.T, name string, lines []int) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	writeLines(t, path, lines)
+	return path
+}
+
+// newIntsCache builds the standard counting-extend environment: an ints file
+// named name holding lines, a cache with the given bound, a background
+// context, and an extend that records each call's fromOffset into calls.
+func newIntsCache(t *testing.T, name string, bound int, lines []int, calls *[]int64) (path string, c *Cache[intsFold], ctx context.Context, extend Extend[intsFold]) {
+	t.Helper()
+	path = newIntsFile(t, name, lines)
+	c = New[intsFold](bound)
+	ctx = context.Background()
+	extend = countingLineExtend(t, calls)
+	return
+}
+
 func TestCache_FirstGetReadsFromZero(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2, 3})
+	path := newIntsFile(t, "nums.txt", []int{1, 2, 3})
 	var calls []int64
 	c := New[intsFold](8)
 
@@ -155,13 +174,8 @@ func TestCache_FirstGetReadsFromZero(t *testing.T) {
 // Get's Result.Offset reported — never 0 — so the underlying reader only
 // ever sees bytes appended since the last successful read.
 func TestCache_SecondGetReadsOnlyTheAppendedDelta(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2, 3})
 	var calls []int64
-	c := New[intsFold](8)
-	ctx := context.Background()
-	extend := countingLineExtend(t, &calls)
+	path, c, ctx, extend := newIntsCache(t, "nums.txt", 8, []int{1, 2, 3}, &calls)
 
 	first, err := c.Get(ctx, path, extend)
 	if err != nil {
@@ -197,13 +211,8 @@ func TestCache_SecondGetReadsOnlyTheAppendedDelta(t *testing.T) {
 // extend call happens at all -- not even an incremental one over zero new
 // bytes.
 func TestCache_RepeatedGetWithNoChangeDoesNotCallExtend(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2, 3})
 	var calls []int64
-	c := New[intsFold](8)
-	ctx := context.Background()
-	extend := countingLineExtend(t, &calls)
+	path, c, ctx, extend := newIntsCache(t, "nums.txt", 8, []int{1, 2, 3}, &calls)
 
 	if _, err := c.Get(ctx, path, extend); err != nil {
 		t.Fatalf("first Get: %v", err)
@@ -221,13 +230,8 @@ func TestCache_RepeatedGetWithNoChangeDoesNotCallExtend(t *testing.T) {
 // produces the CORRECT result for the new content, and the epoch must bump
 // so a continuation minted against the old content is detectably stale.
 func TestCache_ShrunkFileForcesFullRescanAndBumpsEpoch(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2, 3, 4, 5})
 	var calls []int64
-	c := New[intsFold](8)
-	ctx := context.Background()
-	extend := countingLineExtend(t, &calls)
+	path, c, ctx, extend := newIntsCache(t, "nums.txt", 8, []int{1, 2, 3, 4, 5}, &calls)
 
 	first, err := c.Get(ctx, path, extend)
 	if err != nil {
@@ -261,13 +265,8 @@ func TestCache_ShrunkFileForcesFullRescanAndBumpsEpoch(t *testing.T) {
 // byte count as before is still detected via mtime, forces a full rescan,
 // and bumps epoch.
 func TestCache_SameSizeDifferentMTimeRewriteForcesFullRescanAndBumpsEpoch(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2}) // "1\n2\n" == 4 bytes
 	var calls []int64
-	c := New[intsFold](8)
-	ctx := context.Background()
-	extend := countingLineExtend(t, &calls)
+	path, c, ctx, extend := newIntsCache(t, "nums.txt", 8, []int{1, 2}, &calls) // "1\n2\n" == 4 bytes
 
 	first, err := c.Get(ctx, path, extend)
 	if err != nil {
@@ -301,9 +300,7 @@ func TestCache_SameSizeDifferentMTimeRewriteForcesFullRescanAndBumpsEpoch(t *tes
 // client's already-issued continuation is still safe (append-only order is
 // unaffected), so epoch must NOT bump.
 func TestCache_GrowthWithUnchangedMTimeReadsFromZeroWithoutBumpingEpoch(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2})
+	path := newIntsFile(t, "nums.txt", []int{1, 2})
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -345,9 +342,7 @@ func TestCache_GrowthWithUnchangedMTimeReadsFromZeroWithoutBumpingEpoch(t *testi
 // the cache-package level: N concurrent Get calls for the same path must
 // share a single extend call, not N redundant ones. Run with -race.
 func TestCache_ConcurrentGetsCoalesceToOneExtendCall(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2, 3})
+	path := newIntsFile(t, "nums.txt", []int{1, 2, 3})
 	var extendCalls atomic.Int64
 	release := make(chan struct{})
 	extend := func(ctx context.Context, path string, fromOffset int64, prior intsFold) (intsFold, int64, error) {
@@ -412,9 +407,7 @@ func TestCache_ConcurrentGetsCoalesceToOneExtendCall(t *testing.T) {
 // the cache: a later, successful Get for the same path must retry from
 // scratch rather than replaying the error or a partial result forever.
 func TestCache_ExtendErrorIsNotCached(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2})
+	path := newIntsFile(t, "nums.txt", []int{1, 2})
 	sentinel := errors.New("boom")
 	attempt := 0
 	extend := func(ctx context.Context, path string, fromOffset int64, prior intsFold) (intsFold, int64, error) {
@@ -443,13 +436,9 @@ func TestCache_ExtendErrorIsNotCached(t *testing.T) {
 // with a max of 2 entries, touching a third path must evict the least
 // recently used one, forcing its next Get to be a fresh (fromOffset=0) read.
 func TestCache_EvictsLeastRecentlyUsedBeyondBound(t *testing.T) {
-	dir := t.TempDir()
-	pathA := filepath.Join(dir, "a.txt")
-	pathB := filepath.Join(dir, "b.txt")
-	pathC := filepath.Join(dir, "c.txt")
-	writeLines(t, pathA, []int{1})
-	writeLines(t, pathB, []int{2})
-	writeLines(t, pathC, []int{3})
+	pathA := newIntsFile(t, "a.txt", []int{1})
+	pathB := newIntsFile(t, "b.txt", []int{2})
+	pathC := newIntsFile(t, "c.txt", []int{3})
 	var calls []int64
 	c := New[intsFold](2)
 	ctx := context.Background()
@@ -482,8 +471,7 @@ func TestCache_EvictsLeastRecentlyUsedBeyondBound(t *testing.T) {
 // existing missing-file contract (no error, empty result) so callers that
 // already handle "session has no journal yet" the same way keep working.
 func TestCache_MissingFileReadsAsZeroValueWithoutError(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "missing.txt")
+	path := filepath.Join(t.TempDir(), "missing.txt")
 	c := New[intsFold](8)
 	extend := func(ctx context.Context, path string, fromOffset int64, prior intsFold) (intsFold, int64, error) {
 		t.Fatalf("extend called for a nonexistent file")
@@ -506,11 +494,8 @@ func TestCache_MissingFileReadsAsZeroValueWithoutError(t *testing.T) {
 // rewrite. Epoch bookkeeping must survive eviction of the (potentially
 // large) cached value.
 func TestCache_EvictionDoesNotHideAnInterveningRewriteFromEpoch(t *testing.T) {
-	dir := t.TempDir()
-	pathA := filepath.Join(dir, "a.txt")
-	pathB := filepath.Join(dir, "b.txt")
-	writeLines(t, pathA, []int{1, 2, 3})
-	writeLines(t, pathB, []int{9})
+	pathA := newIntsFile(t, "a.txt", []int{1, 2, 3})
+	pathB := newIntsFile(t, "b.txt", []int{9})
 	var calls []int64
 	c := New[intsFold](1) // bound of 1: touching B evicts A
 	ctx := context.Background()
@@ -550,9 +535,7 @@ func TestCache_EvictionDoesNotHideAnInterveningRewriteFromEpoch(t *testing.T) {
 // owner; a coalesced waiter with its own healthy context must get the real
 // result.
 func TestCache_CanceledOwnerDoesNotPoisonAHealthyWaiter(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2, 3})
+	path := newIntsFile(t, "nums.txt", []int{1, 2, 3})
 	ownerCtx, cancelOwner := context.WithCancel(context.Background())
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -617,9 +600,7 @@ func TestCache_CanceledOwnerDoesNotPoisonAHealthyWaiter(t *testing.T) {
 // this: the bytes at the cached offset must still match what was last
 // observed before a hit is trusted.
 func TestCache_SameSizeSameMTimeRewriteIsDetectedViaTailProbe(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2}) // "1\n2\n" == 4 bytes
+	path := newIntsFile(t, "nums.txt", []int{1, 2}) // "1\n2\n" == 4 bytes
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -663,9 +644,7 @@ func TestCache_SameSizeSameMTimeRewriteIsDetectedViaTailProbe(t *testing.T) {
 // (a genuine append, where epoch correctly stays put), this constructs the
 // untested sibling: a rewrite whose old prefix does NOT survive.
 func TestCache_GrowingRewriteWithUnchangedMTimeBumpsEpoch(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2}) // "1\n2\n" == 4 bytes
+	path := newIntsFile(t, "nums.txt", []int{1, 2}) // "1\n2\n" == 4 bytes
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -714,9 +693,7 @@ func TestCache_GrowingRewriteWithUnchangedMTimeBumpsEpoch(t *testing.T) {
 // file's unrelated bytes, welding a nonsense fold (neither the old value
 // nor the new file's true content) instead of forcing a clean full rescan.
 func TestCache_GrowingRewriteWithChangedMTimeIsDetectedViaTailProbe(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2}) // "1\n2\n" == 4 bytes
+	path := newIntsFile(t, "nums.txt", []int{1, 2}) // "1\n2\n" == 4 bytes
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -767,13 +744,8 @@ func TestCache_GrowingRewriteWithChangedMTimeIsDetectedViaTailProbe(t *testing.T
 // path is read completely fresh but its epoch still records that the file
 // underneath the path changed identity.
 func TestCache_DeletedFileEpochSurvivesAcrossRecreation(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2})
 	var calls []int64
-	c := New[intsFold](8)
-	ctx := context.Background()
-	extend := countingLineExtend(t, &calls)
+	path, c, ctx, extend := newIntsCache(t, "nums.txt", 8, []int{1, 2}, &calls)
 
 	first, err := c.Get(ctx, path, extend)
 	if err != nil {
@@ -831,13 +803,8 @@ func (i tornStatInfo) ModTime() time.Time { return i.mod }
 // then refused for a journal that was only appended to. The tail probe tells
 // the two apart, so it decides here as it does in every other ambiguous case.
 func TestCache_TornAppendStatKeepsTheGeneration(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2})
 	var calls []int64
-	c := New[intsFold](8)
-	ctx := context.Background()
-	extend := countingLineExtend(t, &calls)
+	path, c, ctx, extend := newIntsCache(t, "nums.txt", 8, []int{1, 2}, &calls)
 	folded, err := c.Get(ctx, path, extend)
 	if err != nil {
 		t.Fatalf("first Get: %v", err)
@@ -879,17 +846,12 @@ func TestCache_TornAppendStatKeepsTheGeneration(t *testing.T) {
 // by the time it is taken and reports the larger size, while a rewrite still
 // reports the same one.
 func TestCache_SameSizeRewriteKeepingItsTailBumpsTheGeneration(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
 	original := make([]int, 0, 40)
 	for v := 10; v < 50; v++ {
 		original = append(original, v)
 	}
-	writeLines(t, path, original)
 	var calls []int64
-	c := New[intsFold](8)
-	ctx := context.Background()
-	extend := countingLineExtend(t, &calls)
+	path, c, ctx, extend := newIntsCache(t, "nums.txt", 8, original, &calls)
 	folded, err := c.Get(ctx, path, extend)
 	if err != nil {
 		t.Fatalf("first Get: %v", err)
@@ -933,17 +895,12 @@ func TestCache_SameSizeRewriteKeepingItsTailBumpsTheGeneration(t *testing.T) {
 // has already reached, and a same-size rewrite underneath is served from the
 // stale fold with its generation intact.
 func TestCache_TornStatAppendRecordsTheSizeItActuallyFolded(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
 	original := make([]int, 0, 40)
 	for v := 10; v < 50; v++ {
 		original = append(original, v)
 	}
-	writeLines(t, path, original)
 	var calls []int64
-	c := New[intsFold](8)
-	ctx := context.Background()
-	extend := countingLineExtend(t, &calls)
+	path, c, ctx, extend := newIntsCache(t, "nums.txt", 8, original, &calls)
 	folded, err := c.Get(ctx, path, extend)
 	if err != nil {
 		t.Fatalf("first Get: %v", err)
@@ -1015,17 +972,12 @@ func TestCache_TornStatAppendRecordsTheSizeItActuallyFolded(t *testing.T) {
 // is gone. Growth alone is not evidence the fold survived, so the probe is
 // asked again once the length is known.
 func TestCache_RewriteInsideTheSecondStatWindowBumpsTheGeneration(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
 	original := make([]int, 0, 40)
 	for v := 10; v < 50; v++ {
 		original = append(original, v)
 	}
-	writeLines(t, path, original)
 	var calls []int64
-	c := New[intsFold](8)
-	ctx := context.Background()
-	extend := countingLineExtend(t, &calls)
+	path, c, ctx, extend := newIntsCache(t, "nums.txt", 8, original, &calls)
 	folded, err := c.Get(ctx, path, extend)
 	if err != nil {
 		t.Fatalf("first Get: %v", err)
@@ -1086,9 +1038,7 @@ func TestCache_RewriteInsideTheSecondStatWindowBumpsTheGeneration(t *testing.T) 
 // with an mtime it does not, reads that as a same-size rewrite, and discards
 // a fold nothing invalidated.
 func TestCache_AppendDuringTheFoldRecordsAMatchingMtime(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2})
+	path := newIntsFile(t, "nums.txt", []int{1, 2})
 	var calls []int64
 	c := New[intsFold](8)
 	ctx := context.Background()
@@ -1133,17 +1083,12 @@ func TestCache_AppendDuringTheFoldRecordsAMatchingMtime(t *testing.T) {
 // leaves it where it was, so a hit decided on that stale length returns a
 // fold that is missing everything the append added.
 func TestCache_AppendRacingTheStatIsNotServedFromTheCachedFold(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
 	original := make([]int, 0, 40)
 	for v := 10; v < 50; v++ {
 		original = append(original, v)
 	}
-	writeLines(t, path, original)
 	var calls []int64
-	c := New[intsFold](8)
-	ctx := context.Background()
-	extend := countingLineExtend(t, &calls)
+	path, c, ctx, extend := newIntsCache(t, "nums.txt", 8, original, &calls)
 	folded, err := c.Get(ctx, path, extend)
 	if err != nil {
 		t.Fatalf("first Get: %v", err)
@@ -1204,13 +1149,8 @@ func mustStat(t *testing.T, path string) os.FileInfo {
 // again: a generation that moves on every request refuses every continuation
 // on the request that carries it.
 func TestCache_DeletedPathReportsOneStableGeneration(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	writeLines(t, path, []int{1, 2})
 	var calls []int64
-	c := New[intsFold](8)
-	ctx := context.Background()
-	extend := countingLineExtend(t, &calls)
+	path, c, ctx, extend := newIntsCache(t, "nums.txt", 8, []int{1, 2}, &calls)
 	folded, err := c.Get(ctx, path, extend)
 	if err != nil {
 		t.Fatalf("first Get: %v", err)

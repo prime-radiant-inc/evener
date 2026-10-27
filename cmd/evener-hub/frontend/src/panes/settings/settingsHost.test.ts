@@ -1,6 +1,6 @@
+import { LOCAL_HOST } from "@evener/appwire-client";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import { LOCAL_HOST } from "../../stores/hostRouting";
 import { resetSettingsHostForTests, settingsHostStore } from "../../stores/settingsHost";
 import { settingsURL, useSettingsHostURLSync } from "./settingsHost";
 

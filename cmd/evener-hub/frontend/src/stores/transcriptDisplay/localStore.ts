@@ -1,5 +1,4 @@
-import { legacyWritesFromConfig, type TranscriptDisplayConfigV1, type ViewportClass } from "@evener/appwire-client";
-import { readLegacyPreference } from "../prefs";
+import type { ViewportClass } from "@evener/appwire-client";
 import type { ConversationPresentation } from "../transcriptDisplay";
 
 export const LOCAL_KEYS: Record<ViewportClass, string> = {
@@ -29,15 +28,6 @@ export function writePresentation(layout: ViewportClass, value: ConversationPres
   return writeVerified(PRESENTATION_KEYS[layout], value);
 }
 
-export const LEGACY_KEYS = [
-  "transcriptRoundTimings",
-  "transcriptTokenCounts",
-  "transcriptHookExitsAll",
-  "transcriptHookExitsNormal",
-  "transcriptPromptLoaded",
-  "showCost",
-] as const;
-
 export type StorageWarningSetter = (message: string | null) => void;
 
 export function writeLocal(layout: ViewportClass, encoded: string): boolean {
@@ -66,25 +56,8 @@ export function removeLocal(layout: ViewportClass): boolean {
   }
 }
 
-export function verifyLegacyWrite(config: TranscriptDisplayConfigV1): boolean {
-  try {
-    const expected = legacyWritesFromConfig(config);
-    for (const key of LEGACY_KEYS) {
-      const raw = readLegacyPreference(key);
-      if (raw !== (expected[key] ? "1" : "0")) return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function reportStorageResult(
-  setStorageWarning: StorageWarningSetter,
-  localOK: boolean,
-  legacyOK: boolean,
-): void {
-  if (localOK && legacyOK) {
+export function reportStorageResult(setStorageWarning: StorageWarningSetter, localOK: boolean): void {
+  if (localOK) {
     setStorageWarning(null);
     return;
   }

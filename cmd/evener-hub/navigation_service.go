@@ -475,7 +475,7 @@ func (s *NavigationService) subagentChain(ctx context.Context, ref string) (*nav
 	ctx, cancel := context.WithTimeout(ctx, s.buildTimeout)
 	defer cancel()
 	parsed, err := navigationRef(ref)
-	chain := &navigationAliasChain{remote: err == nil && parsed.SourceID != "local"}
+	chain := &navigationAliasChain{remote: err == nil && parsed.SourceID != appwire.LocalSourceID}
 	seen := map[string]bool{ref: true}
 	for current := ref; s.subagentParent != nil && len(chain.ancestors) < maxNavigationAliasHops; {
 		next, kind, err := s.subagentParent(ctx, current)
@@ -1624,7 +1624,7 @@ func (w *WebServer) navigationSubagentParent(ctx context.Context, ref string) (p
 	if err != nil {
 		return "", "", nil
 	}
-	if parsed.SourceID != "local" {
+	if parsed.SourceID != appwire.LocalSourceID {
 		return w.navigationRemoteAncestor(ctx, parsed)
 	}
 	id := parsed.ThreadID
@@ -1634,7 +1634,7 @@ func (w *WebServer) navigationSubagentParent(ctx context.Context, ref string) (p
 				continue
 			}
 			workspace, err := appwire.ParseRef(hubcore.LiveRowRef(entry))
-			if err == nil && workspace.SourceID == "local" && workspace.String() != ref {
+			if err == nil && workspace.SourceID == appwire.LocalSourceID && workspace.String() != ref {
 				return workspace.String(), "session", nil
 			}
 		}
@@ -1683,7 +1683,7 @@ func (w *WebServer) navigationRemoteAncestor(ctx context.Context, ref appwire.Re
 	if !ok || !remote.Online() {
 		return "", "", appwire.SessionUnavailable("navigation source unavailable")
 	}
-	localRef := appwire.Ref{SourceID: "local", ThreadID: ref.ThreadID}.String()
+	localRef := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: ref.ThreadID}.String()
 	params, err := json.Marshal(appwire.NavigationReadParams{Resource: "location", Ref: localRef, RepresentationVersion: 3})
 	if err != nil {
 		return "", "", err
@@ -1719,7 +1719,7 @@ func (w *WebServer) navigationRemoteAncestor(ctx context.Context, ref appwire.Re
 		return "", "", err
 	}
 	root, err := appwire.ParseRef(location.TopLevelRef)
-	if err != nil || root.SourceID != "local" || location.Ref != localRef {
+	if err != nil || root.SourceID != appwire.LocalSourceID || location.Ref != localRef {
 		return "", "", appwire.Unavailable("remote location identity mismatch")
 	}
 	if location.TopLevel && root.String() == localRef {

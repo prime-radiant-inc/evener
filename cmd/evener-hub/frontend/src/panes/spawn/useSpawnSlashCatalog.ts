@@ -1,6 +1,11 @@
-import type { AppwireClientLike, LaunchConfigLayer, SpawnSlashCatalogResponse } from "@evener/appwire-client";
-import { hostRequest } from "../../stores/hostRouting";
-import { type ScopedReadState, useScopedHostRead } from "./useScopedHostRead";
+import type {
+  AppwireClientLike,
+  LaunchConfigLayer,
+  ScopedReadState,
+  SpawnSlashCatalogResponse,
+} from "@evener/appwire-client";
+import { hostRequest } from "@evener/appwire-client";
+import { useScopedHostRead } from "./useScopedHostRead";
 
 export type SpawnSlashCatalogLoadState = ScopedReadState<SpawnSlashCatalogResponse>;
 

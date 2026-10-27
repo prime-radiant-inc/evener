@@ -685,10 +685,7 @@ func TestStopFinalizationMarksARecordedSteerAndReleasesTheHold(t *testing.T) {
 	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	runningStartTurn(t, s, "running-turn", "do the thing")
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: "steer-recorded-inline",
@@ -745,10 +742,7 @@ func TestReleaseRetryWakesTheSteerBehindAStaleSlot(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer s.Close()
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	clk := agenttest.NewFakeClockAt(time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC))
 	s.clock = clk
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
@@ -799,10 +793,7 @@ func TestInjectDrainedSteeringStopsAtTheFirstFailedAppend(t *testing.T) {
 	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	refusal := refuseSteerAppends(s, "steer-first")
 	refusal.refuse.Store(true)
 	for _, steer := range []struct{ id, text string }{{"steer-first", "first steer"}, {"steer-second", "second steer"}} {
@@ -843,10 +834,7 @@ func TestCarrierClaimSkipsASteerInFlight(t *testing.T) {
 	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: "steer-in-flight",
 		Input:            []appwire.InputItem{{Type: "text", Text: "recorded, unmarked"}},
@@ -882,10 +870,7 @@ func TestFailedSteeringSelectionLandsTheSteer(t *testing.T) {
 	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: "steer-bad-skill",
 		Input:            []appwire.InputItem{{Type: "skill", Name: "no-such-skill"}},
@@ -920,10 +905,7 @@ func TestFailedSteeringSelectionWhoseRecordFailsStopsTheDrain(t *testing.T) {
 	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	var refusals atomic.Int32
 	s.clientMutationTranscriptAppend = func(turn schema.Turn) error {
 		if turn.Kind == schema.TurnFailure && turn.ClientMutationID == "steer-bad-skill" {
@@ -1162,10 +1144,7 @@ func TestFailedRecordedSteerMarkRetriesAtTheNextWake(t *testing.T) {
 	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	runningStartTurn(t, s, "running-turn", "do the thing")
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: "steer-recorded",
@@ -1238,10 +1217,7 @@ func TestRecordedSelectionFailureIsMarkedFailedNotIncorporated(t *testing.T) {
 	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: "steer-bad-skill",
 		Input:            []appwire.InputItem{{Type: "skill", Name: "no-such-skill"}},

@@ -45,6 +45,40 @@ func (a *scriptedStreamAdapter) Requests() []Request {
 	return append([]Request{}, a.requests...)
 }
 
+// replayEvents is a stream script that sends evs on a fresh channel stream in
+// order and closes it, cancelling the stream's context once the last event has
+// landed - the shape every scripted stream that runs to completion follows.
+// Scripts that block on a context or an external signal stay hand-written.
+func replayEvents(evs ...StreamEvent) func(ctx context.Context, req Request) (Stream, error) {
+	return func(ctx context.Context, _ Request) (Stream, error) {
+		_, cancel := context.WithCancel(ctx)
+		st := NewChanStream(cancel)
+		go func() {
+			defer st.CloseSend()
+			for _, ev := range evs {
+				st.Send(ev)
+			}
+			cancel()
+		}()
+		return st, nil
+	}
+}
+
+// finishEvent carries resp as the stream's finish event, the tail of every
+// complete scripted stream.
+func finishEvent(resp Response) StreamEvent {
+	return StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &resp}
+}
+
+// newScriptedStreamClient returns a client whose "openai" adapter runs the
+// given scripts in order, plus the adapter for request assertions.
+func newScriptedStreamClient(scripts ...func(ctx context.Context, req Request) (Stream, error)) (*Client, *scriptedStreamAdapter) {
+	a := &scriptedStreamAdapter{name: "openai", scripts: scripts}
+	c := NewClient()
+	c.Register(a)
+	return c, a
+}
+
 func TestStreamGenerate_RejectsPromptAndMessagesTogether(t *testing.T) {
 	c := NewClient()
 	c.Register(&scriptedStreamAdapter{name: "openai"})
@@ -176,32 +210,15 @@ func TestStreamGenerate_TimeoutTotal_EmitsRequestTimeoutError(t *testing.T) {
 }
 
 func TestStreamGenerate_SimpleStreaming_YieldsDeltasAndFinish(t *testing.T) {
-	c := NewClient()
-	a := &scriptedStreamAdapter{
-		name: "openai",
-		scripts: []func(ctx context.Context, req Request) (Stream, error){
-			func(ctx context.Context, req Request) (Stream, error) {
-				_ = req
-				sctx, cancel := context.WithCancel(ctx)
-				st := NewChanStream(cancel)
-				go func() {
-					defer st.CloseSend()
-					st.Send(StreamEvent{Type: StreamEventStreamStart})
-					st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "text_1"})
-					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "Hel"})
-					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "lo"})
-					st.Send(StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"})
-					resp := Response{Provider: "openai", Model: "m", Message: Assistant("Hello"), Finish: FinishReason{Reason: "stop"}}
-					rp := resp
-					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp})
-					cancel()
-				}()
-				_ = sctx
-				return st, nil
-			},
-		},
-	}
-	c.Register(a)
+	fin := Response{Provider: "openai", Model: "m", Message: Assistant("Hello"), Finish: FinishReason{Reason: "stop"}}
+	c, _ := newScriptedStreamClient(replayEvents(
+		StreamEvent{Type: StreamEventStreamStart},
+		StreamEvent{Type: StreamEventTextStart, TextID: "text_1"},
+		StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "Hel"},
+		StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "lo"},
+		StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"},
+		finishEvent(fin),
+	))
 
 	prompt := "hi"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -254,58 +271,34 @@ func TestStreamGenerate_SimpleStreaming_YieldsDeltasAndFinish(t *testing.T) {
 }
 
 func TestStreamGenerate_ToolLoop_EmitsStepFinishAndContinues(t *testing.T) {
-	c := NewClient()
 	call := ToolCallData{ID: "c1", Name: "t1", Arguments: json.RawMessage(`{"x":1}`), Type: "function"}
-
-	a := &scriptedStreamAdapter{
-		name: "openai",
-		scripts: []func(ctx context.Context, req Request) (Stream, error){
-			// Step 1: tool call
-			func(ctx context.Context, req Request) (Stream, error) {
-				sctx, cancel := context.WithCancel(ctx)
-				st := NewChanStream(cancel)
-				go func() {
-					defer st.CloseSend()
-					st.Send(StreamEvent{Type: StreamEventStreamStart})
-					st.Send(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Type: "function"}})
-					st.Send(StreamEvent{Type: StreamEventToolCallDelta, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Arguments: call.Arguments, Type: "function"}})
-					st.Send(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &call})
-					resp := Response{
-						Provider: "openai",
-						Model:    "m",
-						Message: Message{Role: RoleAssistant, Content: []ContentPart{
-							{Kind: ContentToolCall, ToolCall: &call},
-						}},
-						Finish: FinishReason{Reason: "tool_calls"},
-					}
-					rp := resp
-					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp})
-					cancel()
-				}()
-				_ = sctx
-				return st, nil
-			},
-			// Step 2: final text
-			func(ctx context.Context, req Request) (Stream, error) {
-				sctx, cancel := context.WithCancel(ctx)
-				st := NewChanStream(cancel)
-				go func() {
-					defer st.CloseSend()
-					st.Send(StreamEvent{Type: StreamEventStreamStart})
-					st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "text_1"})
-					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "ok"})
-					st.Send(StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"})
-					resp := Response{Provider: "openai", Model: "m", Message: Assistant("ok"), Finish: FinishReason{Reason: "stop"}}
-					rp := resp
-					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp})
-					cancel()
-				}()
-				_ = sctx
-				return st, nil
-			},
-		},
+	step1Resp := Response{
+		Provider: "openai",
+		Model:    "m",
+		Message: Message{Role: RoleAssistant, Content: []ContentPart{
+			{Kind: ContentToolCall, ToolCall: &call},
+		}},
+		Finish: FinishReason{Reason: "tool_calls"},
 	}
-	c.Register(a)
+	step2Resp := Response{Provider: "openai", Model: "m", Message: Assistant("ok"), Finish: FinishReason{Reason: "stop"}}
+
+	// Step 1: tool call. Step 2: final text.
+	c, a := newScriptedStreamClient(
+		replayEvents(
+			StreamEvent{Type: StreamEventStreamStart},
+			StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Type: "function"}},
+			StreamEvent{Type: StreamEventToolCallDelta, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Arguments: call.Arguments, Type: "function"}},
+			StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &call},
+			finishEvent(step1Resp),
+		),
+		replayEvents(
+			StreamEvent{Type: StreamEventStreamStart},
+			StreamEvent{Type: StreamEventTextStart, TextID: "text_1"},
+			StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "ok"},
+			StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"},
+			finishEvent(step2Resp),
+		),
+	)
 
 	prompt := "hi"
 	rounds := 1
@@ -394,38 +387,22 @@ func TestStreamGenerate_ToolLoop_EmitsStepFinishAndContinues(t *testing.T) {
 }
 
 func TestStreamGenerate_PassiveToolCall_StopsWithoutStepFinish(t *testing.T) {
-	c := NewClient()
 	call := ToolCallData{ID: "c1", Name: "t1", Arguments: json.RawMessage(`{}`), Type: "function"}
-
-	a := &scriptedStreamAdapter{
-		name: "openai",
-		scripts: []func(ctx context.Context, req Request) (Stream, error){
-			func(ctx context.Context, req Request) (Stream, error) {
-				sctx, cancel := context.WithCancel(ctx)
-				st := NewChanStream(cancel)
-				go func() {
-					defer st.CloseSend()
-					st.Send(StreamEvent{Type: StreamEventStreamStart})
-					st.Send(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Type: "function"}})
-					st.Send(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &call})
-					resp := Response{
-						Provider: "openai",
-						Model:    "m",
-						Message: Message{Role: RoleAssistant, Content: []ContentPart{
-							{Kind: ContentToolCall, ToolCall: &call},
-						}},
-						Finish: FinishReason{Reason: "tool_calls"},
-					}
-					rp := resp
-					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp})
-					cancel()
-				}()
-				_ = sctx
-				return st, nil
-			},
-		},
+	resp := Response{
+		Provider: "openai",
+		Model:    "m",
+		Message: Message{Role: RoleAssistant, Content: []ContentPart{
+			{Kind: ContentToolCall, ToolCall: &call},
+		}},
+		Finish: FinishReason{Reason: "tool_calls"},
 	}
-	c.Register(a)
+
+	c, _ := newScriptedStreamClient(replayEvents(
+		StreamEvent{Type: StreamEventStreamStart},
+		StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Type: "function"}},
+		StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &call},
+		finishEvent(resp),
+	))
 
 	prompt := "hi"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -472,28 +449,12 @@ func TestStreamGenerate_PassiveToolCall_StopsWithoutStepFinish(t *testing.T) {
 }
 
 func TestStreamGenerate_DoesNotRetryAfterPartialDataDelivered(t *testing.T) {
-	c := NewClient()
-	a := &scriptedStreamAdapter{
-		name: "openai",
-		scripts: []func(ctx context.Context, req Request) (Stream, error){
-			func(ctx context.Context, req Request) (Stream, error) {
-				_ = req
-				sctx, cancel := context.WithCancel(ctx)
-				st := NewChanStream(cancel)
-				go func() {
-					defer st.CloseSend()
-					st.Send(StreamEvent{Type: StreamEventStreamStart})
-					st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "text_1"})
-					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "hi"})
-					st.Send(StreamEvent{Type: StreamEventError, Err: NewStreamError("openai", "boom", nil)})
-					cancel()
-				}()
-				_ = sctx
-				return st, nil
-			},
-		},
-	}
-	c.Register(a)
+	c, a := newScriptedStreamClient(replayEvents(
+		StreamEvent{Type: StreamEventStreamStart},
+		StreamEvent{Type: StreamEventTextStart, TextID: "text_1"},
+		StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "hi"},
+		StreamEvent{Type: StreamEventError, Err: NewStreamError("openai", "boom", nil)},
+	))
 
 	prompt := "hi"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -665,23 +626,13 @@ func TestStreamGenerate_RetriesStreamTruncation(t *testing.T) {
 }
 
 func TestStreamGenerate_RetriesErrorEventWithoutForwardingAttemptError(t *testing.T) {
-	c := NewClient()
 	a := &scriptedStreamAdapter{
 		name: "openai",
 		scripts: []func(ctx context.Context, req Request) (Stream, error){
-			func(ctx context.Context, req Request) (Stream, error) {
-				_ = req
-				sctx, cancel := context.WithCancel(ctx)
-				st := NewChanStream(cancel)
-				go func() {
-					defer st.CloseSend()
-					st.Send(StreamEvent{Type: StreamEventStreamStart})
-					st.Send(StreamEvent{Type: StreamEventError, Err: ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)})
-					cancel()
-				}()
-				_ = sctx
-				return st, nil
-			},
+			replayEvents(
+				StreamEvent{Type: StreamEventStreamStart},
+				StreamEvent{Type: StreamEventError, Err: ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)},
+			),
 			func(ctx context.Context, req Request) (Stream, error) {
 				_ = req
 				sctx, cancel := context.WithCancel(ctx)
@@ -707,6 +658,7 @@ func TestStreamGenerate_RetriesErrorEventWithoutForwardingAttemptError(t *testin
 			},
 		},
 	}
+	c := NewClient()
 	c.Register(a)
 
 	prompt := "hi"
@@ -898,32 +850,15 @@ func TestStreamGenerate_Cancellation_EmitsAbortError(t *testing.T) {
 }
 
 func TestStreamResult_TextStream_FiltersToTextDeltasOnly(t *testing.T) {
-	c := NewClient()
-	a := &scriptedStreamAdapter{
-		name: "openai",
-		scripts: []func(ctx context.Context, req Request) (Stream, error){
-			func(ctx context.Context, req Request) (Stream, error) {
-				_ = req
-				sctx, cancel := context.WithCancel(ctx)
-				st := NewChanStream(cancel)
-				go func() {
-					defer st.CloseSend()
-					st.Send(StreamEvent{Type: StreamEventStreamStart})
-					st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "text_1"})
-					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "Hel"})
-					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "lo"})
-					st.Send(StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"})
-					resp := Response{Provider: "openai", Model: "m", Message: Assistant("Hello"), Finish: FinishReason{Reason: "stop"}}
-					rp := resp
-					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp})
-					cancel()
-				}()
-				_ = sctx
-				return st, nil
-			},
-		},
-	}
-	c.Register(a)
+	fin := Response{Provider: "openai", Model: "m", Message: Assistant("Hello"), Finish: FinishReason{Reason: "stop"}}
+	c, _ := newScriptedStreamClient(replayEvents(
+		StreamEvent{Type: StreamEventStreamStart},
+		StreamEvent{Type: StreamEventTextStart, TextID: "text_1"},
+		StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "Hel"},
+		StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "lo"},
+		StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"},
+		finishEvent(fin),
+	))
 
 	prompt := "hi"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1101,28 +1036,12 @@ func TestStreamResult_TextStream_CloseUnblocksIdleForwarder(t *testing.T) {
 }
 
 func TestStreamGenerate_AdapterTimeout_FlowsToRequest(t *testing.T) {
-	c := NewClient()
-	a := &scriptedStreamAdapter{
-		name: "openai",
-		scripts: []func(ctx context.Context, req Request) (Stream, error){
-			func(ctx context.Context, req Request) (Stream, error) {
-				_ = req
-				_, cancel := context.WithCancel(ctx)
-				st := NewChanStream(cancel)
-				go func() {
-					defer st.CloseSend()
-					st.Send(StreamEvent{Type: StreamEventStreamStart})
-					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "ok"})
-					resp := Response{Provider: "openai", Model: "m", Message: Assistant("ok"), Finish: FinishReason{Reason: "stop"}}
-					rp := resp
-					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp})
-					cancel()
-				}()
-				return st, nil
-			},
-		},
-	}
-	c.Register(a)
+	fin := Response{Provider: "openai", Model: "m", Message: Assistant("ok"), Finish: FinishReason{Reason: "stop"}}
+	c, a := newScriptedStreamClient(replayEvents(
+		StreamEvent{Type: StreamEventStreamStart},
+		StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "ok"},
+		finishEvent(fin),
+	))
 
 	prompt := "hi"
 	timeout := AdapterTimeout{
@@ -1167,44 +1086,28 @@ func TestStreamGenerate_AdapterTimeout_FlowsToRequest(t *testing.T) {
 func TestStreamGenerate_ToolCallsWithStopFinish_DoesNotExecute(t *testing.T) {
 	// Model returns tool call content parts BUT with finish_reason="stop" (not "tool_calls").
 	// Per spec section 5.6, tools should NOT be executed; response should be returned as-is.
-	c := NewClient()
 	executed := false
 	call := ToolCallData{ID: "call_1", Name: "get_weather", Arguments: json.RawMessage(`{}`), Type: "function"}
-
-	a := &scriptedStreamAdapter{
-		name: "openai",
-		scripts: []func(ctx context.Context, req Request) (Stream, error){
-			func(ctx context.Context, req Request) (Stream, error) {
-				sctx, cancel := context.WithCancel(ctx)
-				st := NewChanStream(cancel)
-				go func() {
-					defer st.CloseSend()
-					st.Send(StreamEvent{Type: StreamEventStreamStart})
-					st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "text_1"})
-					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "Here is the weather"})
-					st.Send(StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"})
-					st.Send(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Type: "function"}})
-					st.Send(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &call})
-					resp := Response{
-						Provider: "openai",
-						Model:    "m",
-						Message: Message{Role: RoleAssistant, Content: []ContentPart{
-							{Kind: ContentText, Text: "Here is the weather"},
-							{Kind: ContentToolCall, ToolCall: &call},
-						}},
-						Finish: FinishReason{Reason: FinishReasonStop, Raw: "stop"},
-						Usage:  Usage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
-					}
-					rp := resp
-					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp})
-					cancel()
-				}()
-				_ = sctx
-				return st, nil
-			},
-		},
+	resp := Response{
+		Provider: "openai",
+		Model:    "m",
+		Message: Message{Role: RoleAssistant, Content: []ContentPart{
+			{Kind: ContentText, Text: "Here is the weather"},
+			{Kind: ContentToolCall, ToolCall: &call},
+		}},
+		Finish: FinishReason{Reason: FinishReasonStop, Raw: "stop"},
+		Usage:  Usage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
 	}
-	c.Register(a)
+
+	c, _ := newScriptedStreamClient(replayEvents(
+		StreamEvent{Type: StreamEventStreamStart},
+		StreamEvent{Type: StreamEventTextStart, TextID: "text_1"},
+		StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "Here is the weather"},
+		StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"},
+		StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Type: "function"}},
+		StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &call},
+		finishEvent(resp),
+	))
 
 	prompt := "weather?"
 	rounds := 1
@@ -1276,29 +1179,14 @@ func TestStreamGenerate_ToolCallsWithStopFinish_DoesNotExecute(t *testing.T) {
 }
 
 func TestStreamGenerate_WebSearch_PropagatedToRequest(t *testing.T) {
-	c := NewClient()
-	a := &scriptedStreamAdapter{
-		name: "openai",
-		scripts: []func(ctx context.Context, req Request) (Stream, error){
-			func(ctx context.Context, req Request) (Stream, error) {
-				_, cancel := context.WithCancel(ctx)
-				st := NewChanStream(cancel)
-				go func() {
-					defer st.CloseSend()
-					st.Send(StreamEvent{Type: StreamEventStreamStart})
-					st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "text_1"})
-					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "searched"})
-					st.Send(StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"})
-					resp := Response{Provider: "openai", Model: "m", Message: Assistant("searched"), Finish: FinishReason{Reason: "stop"}}
-					rp := resp
-					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp})
-					cancel()
-				}()
-				return st, nil
-			},
-		},
-	}
-	c.Register(a)
+	fin := Response{Provider: "openai", Model: "m", Message: Assistant("searched"), Finish: FinishReason{Reason: "stop"}}
+	c, a := newScriptedStreamClient(replayEvents(
+		StreamEvent{Type: StreamEventStreamStart},
+		StreamEvent{Type: StreamEventTextStart, TextID: "text_1"},
+		StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "searched"},
+		StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"},
+		finishEvent(fin),
+	))
 
 	prompt := "search the web"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1341,62 +1229,45 @@ func TestStreamGenerate_WebSearch_PropagatedToRequest(t *testing.T) {
 func TestStreamGenerate_TotalUsage_AggregatesAcrossSteps(t *testing.T) {
 	// Two-step tool loop: step 1 (tool call) + step 2 (final response).
 	// Verify TotalUsage aggregates across both steps and Steps() returns both.
-	c := NewClient()
 	call := ToolCallData{ID: "c1", Name: "t1", Arguments: json.RawMessage(`{}`), Type: "function"}
-
-	a := &scriptedStreamAdapter{
-		name: "openai",
-		scripts: []func(ctx context.Context, req Request) (Stream, error){
-			// Step 1: tool call with usage {Input: 10, Output: 20, Total: 30}
-			func(ctx context.Context, req Request) (Stream, error) {
-				_, cancel := context.WithCancel(ctx)
-				st := NewChanStream(cancel)
-				go func() {
-					defer st.CloseSend()
-					st.Send(StreamEvent{Type: StreamEventStreamStart})
-					st.Send(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Type: "function"}})
-					st.Send(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &call})
-					resp := Response{
-						Provider: "openai",
-						Model:    "m",
-						Message: Message{Role: RoleAssistant, Content: []ContentPart{
-							{Kind: ContentToolCall, ToolCall: &call},
-						}},
-						Finish: FinishReason{Reason: FinishReasonToolCalls},
-						Usage:  Usage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
-					}
-					rp := resp
-					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp, Usage: &resp.Usage})
-					cancel()
-				}()
-				return st, nil
-			},
-			// Step 2: final text with usage {Input: 15, Output: 25, Total: 40}
-			func(ctx context.Context, req Request) (Stream, error) {
-				_, cancel := context.WithCancel(ctx)
-				st := NewChanStream(cancel)
-				go func() {
-					defer st.CloseSend()
-					st.Send(StreamEvent{Type: StreamEventStreamStart})
-					st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "text_1"})
-					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "done"})
-					st.Send(StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"})
-					resp := Response{
-						Provider: "openai",
-						Model:    "m",
-						Message:  Assistant("done"),
-						Finish:   FinishReason{Reason: FinishReasonStop},
-						Usage:    Usage{InputTokens: 15, OutputTokens: 25, TotalTokens: 40},
-					}
-					rp := resp
-					st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp, Usage: &resp.Usage})
-					cancel()
-				}()
-				return st, nil
-			},
-		},
+	step1Resp := Response{
+		Provider: "openai",
+		Model:    "m",
+		Message: Message{Role: RoleAssistant, Content: []ContentPart{
+			{Kind: ContentToolCall, ToolCall: &call},
+		}},
+		Finish: FinishReason{Reason: FinishReasonToolCalls},
+		Usage:  Usage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
 	}
-	c.Register(a)
+	step2Resp := Response{
+		Provider: "openai",
+		Model:    "m",
+		Message:  Assistant("done"),
+		Finish:   FinishReason{Reason: FinishReasonStop},
+		Usage:    Usage{InputTokens: 15, OutputTokens: 25, TotalTokens: 40},
+	}
+	step1Fin := finishEvent(step1Resp)
+	step1Fin.Usage = &step1Resp.Usage
+	step2Fin := finishEvent(step2Resp)
+	step2Fin.Usage = &step2Resp.Usage
+
+	// Step 1: tool call with usage {Input: 10, Output: 20, Total: 30}.
+	// Step 2: final text with usage {Input: 15, Output: 25, Total: 40}.
+	c, _ := newScriptedStreamClient(
+		replayEvents(
+			StreamEvent{Type: StreamEventStreamStart},
+			StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Type: "function"}},
+			StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &call},
+			step1Fin,
+		),
+		replayEvents(
+			StreamEvent{Type: StreamEventStreamStart},
+			StreamEvent{Type: StreamEventTextStart, TextID: "text_1"},
+			StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "done"},
+			StreamEvent{Type: StreamEventTextEnd, TextID: "text_1"},
+			step2Fin,
+		),
+	)
 
 	prompt := "hi"
 	rounds := 1
@@ -1480,47 +1351,33 @@ func TestStreamGenerate_StopWhen_TerminatesToolLoopEarly(t *testing.T) {
 	// Round 1: tool call -> execute -> StopWhen([step1]) = false
 	// Round 2: tool call -> execute -> StopWhen([step1,step2]) = true -> STOP
 	// Round 3: should never be reached.
-	c := NewClient()
-
 	makeToolCallStream := func(callID string) func(ctx context.Context, req Request) (Stream, error) {
-		return func(ctx context.Context, req Request) (Stream, error) {
-			call := ToolCallData{ID: callID, Name: "t1", Arguments: json.RawMessage(`{}`), Type: "function"}
-			_, cancel := context.WithCancel(ctx)
-			st := NewChanStream(cancel)
-			go func() {
-				defer st.CloseSend()
-				st.Send(StreamEvent{Type: StreamEventStreamStart})
-				st.Send(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Type: "function"}})
-				st.Send(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &call})
-				resp := Response{
-					Provider: "openai",
-					Model:    "m",
-					Message: Message{Role: RoleAssistant, Content: []ContentPart{
-						{Kind: ContentToolCall, ToolCall: &call},
-					}},
-					Finish: FinishReason{Reason: FinishReasonToolCalls},
-				}
-				rp := resp
-				st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &rp})
-				cancel()
-			}()
-			return st, nil
+		call := ToolCallData{ID: callID, Name: "t1", Arguments: json.RawMessage(`{}`), Type: "function"}
+		resp := Response{
+			Provider: "openai",
+			Model:    "m",
+			Message: Message{Role: RoleAssistant, Content: []ContentPart{
+				{Kind: ContentToolCall, ToolCall: &call},
+			}},
+			Finish: FinishReason{Reason: FinishReasonToolCalls},
 		}
+		return replayEvents(
+			StreamEvent{Type: StreamEventStreamStart},
+			StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Type: "function"}},
+			StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &call},
+			finishEvent(resp),
+		)
 	}
 
-	a := &scriptedStreamAdapter{
-		name: "openai",
-		scripts: []func(ctx context.Context, req Request) (Stream, error){
-			makeToolCallStream("c1"),
-			makeToolCallStream("c2"),
-			// Round 3: should never be reached.
-			func(ctx context.Context, req Request) (Stream, error) {
-				t.Fatal("StopWhen should have prevented round 3")
-				return nil, errors.New("unreachable")
-			},
+	// Round 3: should never be reached.
+	c, a := newScriptedStreamClient(
+		makeToolCallStream("c1"),
+		makeToolCallStream("c2"),
+		func(ctx context.Context, req Request) (Stream, error) {
+			t.Fatal("StopWhen should have prevented round 3")
+			return nil, errors.New("unreachable")
 		},
-	}
-	c.Register(a)
+	)
 
 	prompt := "hi"
 	rounds := 5 // plenty of budget; StopWhen should stop us at 2

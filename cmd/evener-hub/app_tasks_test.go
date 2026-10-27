@@ -79,10 +79,7 @@ func seedPastSessionWithTasks(t *testing.T, tasks []task.TaskInput) (hubcore.Web
 			t.Fatal(err)
 		}
 	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	return hubcore.WebConfig{Past: idx}, sessionID, stateDir
 }
 
@@ -138,10 +135,7 @@ func TestHubTasksList_AbsentTaskFileIsEmptySuccess(t *testing.T) {
 // serves a task file for a session the hub cannot otherwise account for.
 func TestHubTasksList_UnknownRefReturnsNotFoundError(t *testing.T) {
 	root := t.TempDir()
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	cfg := hubcore.WebConfig{Past: idx}
 	sessionID, err := identifier.NewSessionID()
 	if err != nil {

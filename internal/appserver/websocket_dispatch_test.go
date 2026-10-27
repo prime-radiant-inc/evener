@@ -612,11 +612,11 @@ func TestServeWebSocketHydrationThenMutationDeliversEveryNotificationExactlyOnce
 
 func TestServeWebSocketReadAdmissionCanceledByFollowingUnsubscribe(t *testing.T) {
 	const threadID = "th_admission"
-	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local", SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local", SubscriptionAdmissionResolver: func(msg appwire.Message) SubscriptionAdmissionResolution {
 		if msg.Request != nil && msg.Request.Method == appwire.MethodThreadRead {
-			return threadID, true
+			return SubscriptionAdmissionResolution{Key: threadID, Intent: SubscriptionAdmissionResolved}
 		}
-		return "", false
+		return SubscriptionAdmissionResolution{Intent: SubscriptionAdmissionNotSubscribe}
 	}})
 	notifier := NewNotifier(16)
 	entered := make(chan struct{})
@@ -628,9 +628,8 @@ func TestServeWebSocketReadAdmissionCanceledByFollowingUnsubscribe(t *testing.T)
 		<-release
 	}
 	HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		if !Subscribe(ctx, "th_unrelated") {
-			return appwire.ThreadReadResponse{}, nil
-		}
+		conn, _ := ctx.Value(connectionContextKey{}).(*Connection)
+		conn.Subscribe("th_unrelated")
 		if !CaptureSubscription(ctx, false, func() string { return params.ThreadID }, notifier.CurrentSequence, func() bool { return true }) {
 			return appwire.ThreadReadResponse{}, nil
 		}
@@ -692,11 +691,11 @@ func TestServeWebSocketUnsubscribeWaitsThroughSubscriptionRegistration(t *testin
 	captureResolved := make(chan error, 1)
 	server := NewServer(ServerConfig{
 		ServerName: "test-server", SourceID: "local",
-		SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
+		SubscriptionAdmissionResolver: func(msg appwire.Message) SubscriptionAdmissionResolution {
 			if msg.Request != nil && msg.Request.Method == appwire.MethodThreadRead {
-				return threadID, true
+				return SubscriptionAdmissionResolution{Key: threadID, Intent: SubscriptionAdmissionResolved}
 			}
-			return "", false
+			return SubscriptionAdmissionResolution{Intent: SubscriptionAdmissionNotSubscribe}
 		},
 	})
 	server.beforeSubscriptionBeginBuffered = func() {

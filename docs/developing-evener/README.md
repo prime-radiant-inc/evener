@@ -114,6 +114,12 @@ own diff and run focused checks for the files you changed; [Testing](testing.md)
 explains which checks apply. CI owns the full lint, test, browser, and build
 gates. Open a review with the commands you ran and any checks you could not run.
 
+Import rules for the TypeScript trees: the web and native apps import the AppWire
+package by name (`@evener/appwire-client`), never by path, and native never
+imports `cmd/evener-hub/frontend/src`. Code both apps need goes in the package,
+as a framework-free store or function with a thin React binding in each app.
+`make lint-package-imports` enforces both.
+
 A Go string enum that clients must share joins the generated TypeScript by
 adding a row to `stringEnums` in `internal/appwirets/emit.go`: the generator
 emits its values as a runtime catalog and types every field of that Go type by
@@ -128,7 +134,7 @@ config, so every worktree runs its own checkout's hooks. The one hook today is
 `scripts/hooks/pre-commit`: it formats the staged TypeScript and re-stages it,
 so formatting never reaches review as a finding.
 
-- `mobile-native/src` and `mobile/src` go through mobile-native's Biome
+- `mobile-native/src` goes through mobile-native's Biome
   (`format --write`); `cmd/evener-hub/frontend/src` and
   `appwire-client/typescript` go through the frontend's (`check --write` with
   the linter off, which also organizes imports). Each runs from its own tree

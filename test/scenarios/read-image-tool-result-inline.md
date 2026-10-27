@@ -5,7 +5,7 @@ BYTES — `read_file` on a PNG, whose bytes the daemon routes out of the text
 output into a side channel (`agent/internal/tool/registry.go:197-219`
 `ParseImageResult`) — reaches the browser as a *descriptor* and renders as a
 thumbnail under that same tool row. AppWire must carry no bytes and no base64
-for it: `appwire.OutputImage` (`appwire/types.go:730-738`) has Source / Name /
+for it: `appwire.OutputImage` (`appwire/types_turn.go#OutputImage`) has Source / Name /
 MediaType / Size / URL / SHA / Path and **no data field at all**. If
 `events.ToolResultOutputImage` (`agent/events/payloads.go#ToolResultOutputImage`), the hub's
 sha-route stamp (`cmd/evener-hub/output_images.go:169-181`), or the transcript

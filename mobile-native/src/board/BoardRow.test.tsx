@@ -21,7 +21,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	useWindowDimensions: () => ({ width: 390, height: 844, scale: 3, fontScale: viewport.fontScale }),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const palette = paletteFor("light");
 const NOW = Date.UTC(2026, 8, 26, 12, 0);

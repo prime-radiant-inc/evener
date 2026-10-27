@@ -13,7 +13,7 @@ import (
 	"primeradiant.com/evener/fuzz/oracle"
 )
 
-// This file fuzzes the two non-subprocess filesystem helpers in local.go that
+// This file fuzzes the two non-subprocess filesystem helpers (local_search.go, local_exec.go) that
 // read the real OS directly rather than the injectable afero.Fs seam:
 //
 //   - ListDirectory      — sorted, depth-limited recursive directory listing.

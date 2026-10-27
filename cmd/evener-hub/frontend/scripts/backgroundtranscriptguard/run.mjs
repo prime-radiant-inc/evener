@@ -694,9 +694,6 @@ function reconnectValidator(before, evidence, applied = {}) {
   }));
   const newConnectionReads = reads.filter((r) => !beforeConnections.has(r.connection));
   const newReads = (evidence?.readResponses ?? 0) - (before?.readResponses ?? 0);
-  const latest = newConnectionReads.length > 0 ? newConnectionReads[newConnectionReads.length - 1] : null;
-  const responseCursor = latest?.olderCursor ?? "";
-  const responseWindow = latest?.window ?? null;
   const appliedCursor = applied?.cursor ?? "";
   const appliedWindow = applied?.domain ? normalizeWindowFromModel(applied.domain) : null;
   const reconnected = newConnectionReads.length > 0;
@@ -709,27 +706,35 @@ function reconnectValidator(before, evidence, applied = {}) {
   // turn, tolerating the extra systemMessage notices; the cursor must still
   // match. This keeps the observation's meaning (the reconnect read was applied)
   // without the legacy whole-window exact-identity premise.
+  //
+  // The new connection may read the thread again after the reconnect read (a
+  // follow-up refresh). The model keeps the older edge it already holds, so its
+  // cursor and window stay the reconnect read's: the applied model matches the
+  // new connection's read that carries them, not necessarily the last one.
   const recordedItems = (items) => (items ?? []).filter((item) => item.type !== "systemMessage");
-  const windowExact =
-    Array.isArray(responseWindow) &&
-    responseWindow.length > 0 &&
+  const appliedBy = (read) =>
+    read.olderCursor === appliedCursor &&
+    Array.isArray(read.window) &&
+    read.window.length > 0 &&
     Array.isArray(appliedWindow) &&
-    responseWindow.every((responseTurn) => {
+    read.window.every((responseTurn) => {
       const appliedTurn = appliedWindow.find((turn) => turn.turnId === responseTurn.turnId);
       return (
         appliedTurn !== undefined &&
         orderedHistoryEqual(recordedItems(responseTurn.items), recordedItems(appliedTurn.items))
       );
     });
+  const appliedRead = newConnectionReads.find(appliedBy);
+  const reported = appliedRead ?? newConnectionReads[newConnectionReads.length - 1];
   return {
     reconnected,
     newReads,
     newConnectionReads: newConnectionReads.length,
-    responseCursor,
-    responseWindow,
+    responseCursor: reported?.olderCursor ?? "",
+    responseWindow: reported?.window ?? null,
     appliedWindow,
     appliedCursor,
-    appliedMatches: reconnected && appliedCursor === responseCursor && windowExact,
+    appliedMatches: appliedRead !== undefined,
   };
 }
 

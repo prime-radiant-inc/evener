@@ -3,7 +3,7 @@ import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FlatList } from "react-native";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { LaunchFieldEditor } from "./LaunchFieldEditor";
 import { Sheet } from "./sheet/Sheet";
 import { flatListCalls, pressable, render } from "./renderNative.testkit";

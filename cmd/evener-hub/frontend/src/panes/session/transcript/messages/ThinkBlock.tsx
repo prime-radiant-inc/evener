@@ -45,7 +45,7 @@
 // Expanded-trace anatomy adapted from Beautiful UI's Thinking component (beautifului.dev, MIT © 2026 Shane Levine) — see LICENSES/beautiful-ui.txt.
 
 import type { ItemModel, TurnModel } from "@evener/appwire-client";
-import { formatTokenCount, scopedDisclosureId } from "@evener/appwire-client";
+import { formatDurationMs, formatTokenCount, scopedDisclosureId } from "@evener/appwire-client";
 import { memo } from "react";
 import {
   disclosureScopeForSession,
@@ -57,7 +57,6 @@ import { disclosureDefault, isDisclosureOpen } from "../../../../widgets/disclos
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import {
-  formatThoughtDuration,
   joinedReasoningParagraphs,
   lastMeaningfulThoughtLine,
   segmentReasoningTrace,
@@ -117,7 +116,7 @@ function ThoughtLabel({ durationMs, preview }: { durationMs: number | undefined;
       {durationMs !== undefined && (
         <>
           {" · "}
-          <span data-duration-ms={durationMs}>{formatThoughtDuration(durationMs)}</span>
+          <span data-duration-ms={durationMs}>{formatDurationMs(durationMs)}</span>
         </>
       )}
       {preview && (

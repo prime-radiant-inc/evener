@@ -1,21 +1,16 @@
 import { expect, it } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { addLaunchMcp, resourceKey } from "./launchMcp";
 
 it("uses the web whitespace syntax and validates the command on the hub", async () => {
-	const calls: unknown[] = [];
-	const client = {
-		request: async (method: string, params: unknown) => {
-			calls.push({ method, params });
-			return { valid: true, path: "/usr/bin/env" };
-		},
-	} as unknown as ConversationClientLike;
+	const client = new FakeClient("ready");
+	client.on("evener/path/validate", () => ({ valid: true, path: "/usr/bin/env" }) as never);
 	const original = [{ name: "existing", command: "/bin/old", args: ["one argument"] }];
 	expect(await addLaunchMcp(client, original, " tools env  node server.js ")).toEqual([
 		...original,
 		{ name: "tools", command: "/usr/bin/env", args: ["node", "server.js"] },
 	]);
-	expect(calls).toEqual([
+	expect(client.calls.map((call) => ({ method: call.method, params: call.params }))).toEqual([
 		{
 			method: "evener/path/validate",
 			params: { path: "env", kind: "command" },
@@ -24,16 +19,14 @@ it("uses the web whitespace syntax and validates the command on the hub", async 
 	expect(original).toHaveLength(1);
 });
 it("rejects incomplete syntax, invalid commands and transport failures", async () => {
-	const client = {
-		request: async () => ({ valid: false, error: "invalid fixture" }),
-	} as unknown as ConversationClientLike;
+	const client = new FakeClient("ready");
+	client.on("evener/path/validate", () => ({ valid: false, error: "invalid fixture" }) as never);
 	await expect(addLaunchMcp(client, [], "name")).rejects.toThrow();
 	await expect(addLaunchMcp(client, [], "name missing-command")).rejects.toThrow();
-	const offline = {
-		request: async () => {
-			throw Error("offline");
-		},
-	} as unknown as ConversationClientLike;
+	const offline = new FakeClient("ready");
+	offline.on("evener/path/validate", () => {
+		throw Error("offline");
+	});
 	await expect(addLaunchMcp(offline, [], "name command")).rejects.toThrow();
 });
 it("distinguishes MCP argument boundaries and resource kinds", () => {

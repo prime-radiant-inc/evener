@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { WireError } from "@evener/appwire-client";
-import { type ConversationClientLike, createNewSessionService } from "../../mobile/src/services/newSession";
+import { type ConversationClientLike, createNewSessionService } from "./conversation/services/newSession";
 import { type CreationDraft, CreationDraftRepository } from "./creationDraftRepository";
 import { creationImageDraft } from "./creationImageDraft";
 import { ImageSelection } from "./imageSelection";

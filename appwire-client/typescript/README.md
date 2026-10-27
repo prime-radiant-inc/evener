@@ -118,6 +118,13 @@ actions (`refresh`, `loadMore`, `refreshLoaded`, `reset`) over a
 `evener/archived/list`, paged by cursor and refreshed in place (a refresh
 sends the list's revision and keeps its rows when the hub answers
 unchanged); the host resets it when its connection is replaced or recovers.
+The scoped host read store, `createScopedHostReadStore()`, is the debounced
+read about one host and project behind the New session plugin preview and the
+web slash catalog: `start(inputs)` begins a read and returns its cancel,
+`view(inputs)` reports the state for the inputs now (keeping the last response
+for the same client, host and project, never another request's), and `retry()`
+asks again. `pluginPreviewReadInputs` builds the plugin preview's inputs; each
+app binds the store with a thin React hook.
 The hub's own update check, install, and restart,
 `createHubUpdateController({ client, awaitRestart })`, is the same triple
 with the restart wait as a port: each app says how it notices the new hub.
@@ -190,6 +197,12 @@ turn scalars while retaining the already-owned item array. These helpers do not
 establish range coverage or own persisted turn metadata.
 
 ## Transcript reader reducer helpers
+
+`reducer.ts` holds the transcript reducer. The warning fold (`foldWarningParams`,
+`joinWarningParts`, the bounded raw-frame fallback) lives in `warningFold.ts`, a
+leaf module the reducer imports and that imports nothing from it. Further
+reducer pieces follow the same rule: a split-out module never imports
+`reducer.ts`.
 
 `mergeTranscriptReaderWindow(model, turns)` folds actual bounded local reader
 rows into `model.history` with the reducer's ordinary versioned merge rules.

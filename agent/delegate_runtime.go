@@ -1780,8 +1780,8 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// child, and driveChildIfNotStopGated falls through to
 	// driveSubagentNotificationTurn, which launches a second, UNLEASED
 	// EntryNotification turn on the session this generation is about to run. The
-	// two turns then share one drain ladder and popFollowUp (a destructive pop
-	// with no owner check) lets the unleased turn steal the run's follow-up.
+	// two turns then share one drain ladder and the queue pop (a destructive pop
+	// with no owner check) lets the unleased turn steal the run's queued input.
 	// sub.driving is the flag every other guard already reads as "a turn is in
 	// flight on this idle child"; it is handed to the run under the same sub.mu
 	// hold that sets running.

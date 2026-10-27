@@ -69,14 +69,13 @@ agent/internal/tool/cov_s4_tool_test.go	3
 agent/internal/tool/registry_program_fuzz_test.go	1
 agent/internal/tool/repair/explain_oneof_nested_test.go	2
 agent/internal/tool/repair/explain_oneof_review_test.go	4
-agent/internal/tool/repair/explain_oneof_test.go	21
+agent/internal/tool/repair/explain_oneof_test.go	20
 agent/internal/tool/repair/explain_test.go	5
 agent/internal/tool/repair/repair_fuzz_test.go	3
-agent/internal/tool/repair/suggest_test.go	1
 agent/job_close_budget_test.go	1
 agent/job_stop_live_watches_test.go	2
 agent/job_transcript_read_test.go	3
-agent/job_watch_branches_test.go	16
+agent/job_watch_branches_test.go	15
 agent/job_watch_config_test.go	15
 agent/job_watch_core_config_fuzz_test.go	1
 agent/job_watch_events_output_fuzz_test.go	1
@@ -159,7 +158,6 @@ agent/session_worktree_resume_test.go	1
 agent/settlement_salvage_test.go	3
 agent/steering_tool_gate_test.go	1
 agent/subagent_model_selection_test.go	1
-agent/subagents_cov_test.go	1
 agent/subagents_covtest_test.go	3
 agent/task_reminders_test.go	1
 agent/transcript/cov_s4_transcript_fault_test.go	18

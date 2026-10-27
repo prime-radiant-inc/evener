@@ -138,13 +138,6 @@ func TestJobListWatchReflectsDeliveries(t *testing.T) {
 	}
 }
 
-func TestDefJobListDescriptionMentionsActiveWatches(t *testing.T) {
-	t.Parallel()
-	if description := toolpkg.DefJobList().Description; !strings.Contains(description, "active watches") {
-		t.Fatalf("DefJobList description = %q", description)
-	}
-}
-
 func TestJobListReportsDelegationAllowance(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)

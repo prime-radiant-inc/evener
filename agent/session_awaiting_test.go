@@ -180,9 +180,7 @@ func TestProcessInput_NextInputClearsAwaiting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "first", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -268,9 +266,7 @@ func TestProcessInput_NeedsResponseWithWarmIdleChildRestsAwaiting(t *testing.T) 
 	sess := newSession(t, withSteps(func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }), withImmediateRest())
 	child := newTestSessionForState(t)
 	sess.subagents.track(&subagent{id: child.ID(), sess: child})
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -320,9 +316,7 @@ func TestWireState_AwaitingOutranksAutonomy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -471,9 +465,7 @@ func TestProcessInput_NeedsResponseWithLiveChildRestsIdle(t *testing.T) {
 	sess.subagents.mu.Lock()
 	sess.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child, running: true}
 	sess.subagents.mu.Unlock()
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -622,9 +614,7 @@ func TestArmAwaitingAtSettle_PendingDelegateReportRestsIdle(t *testing.T) {
 		func(req llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
 	}}
 	sess := newSession(t, withDir(stateDir), withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}), withAdapter(f))
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}

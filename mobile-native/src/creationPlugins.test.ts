@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import type { PluginPreviewResponse } from "@evener/appwire-client";
-import { type ConversationClientLike, createNewSessionService } from "../../mobile/src/services/newSession";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { createNewSessionService } from "./conversation/services/newSession";
 import { createNewSessionStore } from "./newSession";
 
 async function setup(names: string[]) {
@@ -10,16 +11,12 @@ async function setup(names: string[]) {
 		resolve = yes;
 		reject = no;
 	});
-	const calls: { method: string; params: unknown }[] = [];
-	const service = createNewSessionService({
-		request: async (method: string, params: unknown) => {
-			calls.push({ method, params });
-			if (method === "evener/plugin/preview") return preview;
-			if (method === "thread/start") return { thread: { evener: { ref: "local:new" } }, turn: {} };
-			if (method === "model/list") return { data: [] };
-			throw new Error(`Unexpected ${method}`);
-		},
-	} as ConversationClientLike);
+	const client = new FakeClient("ready");
+	client.on("evener/plugin/preview", () => preview);
+	client.on("thread/start", () => ({ thread: { evener: { ref: "local:new" } }, turn: {} }) as never);
+	client.on("model/list", () => ({ data: [] }) as never);
+	const calls = client.calls;
+	const service = createNewSessionService(client);
 	const store = createNewSessionStore("hub-a");
 	store.getState().bind(service);
 	await store.getState().setCwd("/project", false);

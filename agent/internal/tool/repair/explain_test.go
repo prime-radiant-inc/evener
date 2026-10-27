@@ -77,12 +77,8 @@ func TestExplainJSONError_ShowsTailWhenTruncated(t *testing.T) {
 	raw := []byte(`{"file_path": "/tmp/x", "content": "hello wor`)
 	msg := ExplainJSONError("write_file", editParamsForExplain(), io.ErrUnexpectedEOF, raw)
 	// The excerpt is %q-quoted, so the raw text appears escaped.
-	if !strings.Contains(msg, `{\"file_path\": \"/tmp/x\", \"content\": \"hello wor`) {
-		t.Fatalf("msg omitted the failing input: %q", msg)
-	}
-	if !strings.Contains(msg, "ended with") {
-		t.Fatalf("msg did not mark the truncation point: %q", msg)
-	}
+	wantMsg(t, msg, `{\"file_path\": \"/tmp/x\", \"content\": \"hello wor`, "msg omitted the failing input")
+	wantMsg(t, msg, "ended with", "msg did not mark the truncation point")
 }
 
 func TestExplainJSONError_UsesOffsetAtRealTruncatedEOF(t *testing.T) {
@@ -123,9 +119,7 @@ func TestExplainJSONError_ShowsWindowAroundOffset(t *testing.T) {
 	if !strings.Contains(msg, "near byte") || !strings.Contains(msg, ">>>") {
 		t.Fatalf("msg did not mark the failing offset: %q", msg)
 	}
-	if !strings.Contains(msg, "JSON object") {
-		t.Fatalf("msg dropped the coaching: %q", msg)
-	}
+	wantMsg(t, msg, "JSON object", "msg dropped the coaching")
 }
 
 func TestExplainJSONError_CapsExcerptLength(t *testing.T) {
@@ -134,9 +128,7 @@ func TestExplainJSONError_CapsExcerptLength(t *testing.T) {
 	if len(msg) > 1000 {
 		t.Fatalf("msg not capped (%d bytes): %.200q...", len(msg), msg)
 	}
-	if !strings.Contains(msg, "...") {
-		t.Fatalf("truncated excerpt missing ellipsis: %q", msg)
-	}
+	wantMsg(t, msg, "...", "truncated excerpt missing ellipsis")
 }
 
 func realJSONError(t *testing.T, raw []byte) error {
@@ -458,9 +450,7 @@ func TestExplainSchemaError_FlatTopLevelUnchanged(t *testing.T) {
 	if msg != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", msg, want)
 	}
-	if strings.Contains(msg, " in ") {
-		t.Fatalf("flat top-level message must not gain an 'in <container>' qualifier: %q", msg)
-	}
+	notMsg(t, msg, " in ", "flat top-level message must not gain an 'in <container>' qualifier")
 }
 
 func TestExplainSchemaError_DoesNotMutateStringRequired(t *testing.T) {

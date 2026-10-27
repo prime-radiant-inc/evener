@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { NavigationSessionLocation, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type { NavigationSessionLocation, Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -27,28 +27,13 @@ import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import { activityClient, activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { installMobileViewport } from "../testing/mobileViewport";
 import "../../sessionPanels";
 import { type SessionChromePlacement, SessionChrome as SessionChromeView } from "./SessionChrome";
 
 const here = dirname(fileURLToPath(import.meta.url));
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
   return {

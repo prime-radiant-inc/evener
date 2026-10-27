@@ -7,7 +7,7 @@
 // history and notifying same-tab listeners is still "URL glue", just not a
 // pure function.
 
-import { isLocalHost, normalizeHost } from "../stores/hostRouting";
+import { isLocalHost, normalizeHost } from "@evener/appwire-client";
 import { createSecureUUID } from "../stores/secureUUID";
 import type { PaneTypeId } from "./paneRegistry";
 
@@ -229,7 +229,7 @@ function withSettingsHost(target: string): string {
   if (!isSettingsPath(window.location.pathname)) return target;
   const params = new URLSearchParams(search);
   if (params.has(HOST_QUERY_PARAM)) return target;
-  // The current host goes through the ONE spelling rule (hostRouting.ts's
+  // The current host goes through the ONE spelling rule (appwire-client hostRouting.ts's
   // normalizeHost, the same one the store's own URL reading uses): an absent,
   // empty, or `local` current host normalizes to the local hub, which is nothing
   // to carry - so the target keeps the canonical hostless local URL instead of

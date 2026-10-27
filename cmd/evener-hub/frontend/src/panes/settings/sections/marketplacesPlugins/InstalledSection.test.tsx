@@ -1,10 +1,10 @@
 import type { PluginEntry } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { InstalledSection } from "./InstalledSection";
 import { chipKinds, showsEmptyRow } from "./marketplacesTestUtils";
@@ -28,12 +28,6 @@ const FORMATTER: PluginEntry = {
   version: "0.3.1",
 };
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();
@@ -46,7 +40,7 @@ afterEach(() => {
 });
 
 test("renders a row per plugin with name, marketplace, and version", () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
   render(<InstalledSection onSelect={() => {}} />);
   expect(screen.getByText("linter")).toBeTruthy();
@@ -54,21 +48,21 @@ test("renders a row per plugin with name, marketplace, and version", () => {
 });
 
 test("shows v.unknown when version is empty", () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [{ ...LINTER, version: "" }] });
   render(<InstalledSection onSelect={() => {}} />);
   expect(screen.getByText("@ acme-plugins · vunknown")).toBeTruthy();
 });
 
 test("shows the empty state when no plugins are installed", () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [] });
   render(<InstalledSection onSelect={() => {}} />);
   expect(showsEmptyRow()).toBe(true);
 });
 
 test("shows broken/disabled/auto-upgrade badges only when applicable", () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({
     plugins: [{ ...LINTER, broken: true, enabled: false, autoUpgrade: true }],
   });
@@ -77,14 +71,14 @@ test("shows broken/disabled/auto-upgrade badges only when applicable", () => {
 });
 
 test("no badges render for a healthy, enabled, non-auto-upgrading plugin", () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
   render(<InstalledSection onSelect={() => {}} />);
   expect(chipKinds()).toEqual([]);
 });
 
 test("the status dot reads broken > disabled > idle, in that priority order", () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({
     plugins: [
       { ...LINTER, plugin: "broken-one", broken: true, enabled: false },
@@ -100,7 +94,7 @@ test("the status dot reads broken > disabled > idle, in that priority order", ()
 
 test("clicking a row calls onSelect with the plugin and marketplace", async () => {
   const user = userEvent.setup();
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER, FORMATTER] });
   const onSelect = vi.fn();
   render(<InstalledSection onSelect={onSelect} />);
@@ -109,7 +103,7 @@ test("clicking a row calls onSelect with the plugin and marketplace", async () =
 });
 
 test("rows carry no per-row action buttons - actions live in the detail sheet", () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
   render(<InstalledSection onSelect={() => {}} />);
   expect(screen.queryByRole("button", { name: "Disable" })).toBeNull();
@@ -121,7 +115,7 @@ test("rows carry no per-row action buttons - actions live in the detail sheet", 
 
 test("the filter narrows rows by plugin name, case-insensitively", async () => {
   const user = userEvent.setup();
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER, FORMATTER] });
   render(<InstalledSection onSelect={() => {}} />);
   await user.type(screen.getByRole("textbox", { name: "Filter installed" }), "FORM");
@@ -131,7 +125,7 @@ test("the filter narrows rows by plugin name, case-insensitively", async () => {
 
 test("the filter also matches the marketplace name", async () => {
   const user = userEvent.setup();
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER, FORMATTER] });
   render(<InstalledSection onSelect={() => {}} />);
   await user.type(screen.getByRole("textbox", { name: "Filter installed" }), "other-mark");
@@ -141,7 +135,7 @@ test("the filter also matches the marketplace name", async () => {
 
 test("a filter with no match says so, and clearing it restores the rows", async () => {
   const user = userEvent.setup();
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
   render(<InstalledSection onSelect={() => {}} />);
   const filter = screen.getByRole("textbox", { name: "Filter installed" });
@@ -153,7 +147,7 @@ test("a filter with no match says so, and clearing it restores the rows", async 
 });
 
 test("marks a plugin the hub found an update for", () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [{ ...LINTER, updateAvailable: true }, FORMATTER] });
   render(<InstalledSection onSelect={() => {}} />);
   expect(chipKinds()).toEqual(["update-available"]);

@@ -49,7 +49,6 @@ vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => navigation,
 	usePreventRemove: () => {},
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
 );

@@ -1,12 +1,10 @@
 package agent
 
 import (
-	"context"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
@@ -48,8 +46,7 @@ func TestDelegateMessagingGuidanceGoldens(t *testing.T) {
 	adapter.script("SCHEMA-CHILD", func(llm.Request) llm.Response { return agenttest.FinalResponse("pass") })
 	root := newMessagingRoot(t, adapter, nil)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -107,8 +104,7 @@ func TestDelegateMessagingGuidanceGoldenRenamedResultTool(t *testing.T) {
 	})
 	root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) { cfg.ResultToolName = "respond" })
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

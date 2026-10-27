@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Production hub + real daemon fixture. Go supplies an independently recorded literal source turn.
-import { readFileSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync, appendFileSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import {
@@ -73,14 +73,7 @@ async function until(label, read, accept = Boolean) {
   throw new Error(`${label}: ${JSON.stringify(value)}`);
 }
 
-async function recordOwnerTrace(page, evidenceDir, stage) {
-  const observation = await evaluate(page.send, '(() => {const trace=window.__comicOwnerTrace;if(!trace)return null;const observation={sequence:trace.sequence,dropped:trace.dropped,events:trace.events};trace.events=[];return observation;})()');
-  if (observation) writeFileSync(`${evidenceDir}/owner-${stage}-${Date.now()}.json`, JSON.stringify(observation, null, 2));
-  return observation;
-}
-
-async function reloadPage(page, evidenceDir) {
-  if (evidenceDir) await recordOwnerTrace(page, evidenceDir, 'before-reload');
+async function reloadPage(page) {
   const before = await evaluate(page.send, 'performance.timeOrigin');
   await page.send('Page.reload');
   await until('new document after reload', async () => {
@@ -102,6 +95,89 @@ function repliesSince(trace, start, accept) {
     }
   }
   return replies;
+}
+
+async function nativeClick(page, label, expression) {
+  const point = await until(label, () => evaluate(page.send, `(async () => {
+    const node = (${expression});
+    if (!node || node.disabled) return null;
+    const before = node.getBoundingClientRect();
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    const r = node.getBoundingClientRect();
+    if (!node.isConnected || Math.abs(before.x-r.x)>0.1 || Math.abs(before.y-r.y)>0.1) return null;
+    const x = r.x + r.width / 2, y = r.y + r.height / 2;
+    return r.width && r.height && node.contains(document.elementFromPoint(x, y)) ? {x,y} : null;
+  })()`));
+  await page.send('Input.dispatchMouseEvent', {type:'mousePressed', ...point, button:'left', buttons:1, clickCount:1});
+  await page.send('Input.dispatchMouseEvent', {type:'mouseReleased', ...point, button:'left', buttons:0, clickCount:1});
+}
+
+async function paneSnapshot(page) {
+  return evaluate(page.send, `(() => {
+    const ref=decodeURIComponent(location.pathname.slice(3));
+    const owner = [...document.querySelectorAll('[data-session-actions-ref]')].find(node=>node.dataset.sessionActionsRef===ref && node.dataset.paneId);
+    const scope = window.__comicRoot?.() ?? owner?.closest('[data-testid="pane-footer"]')?.parentElement ?? document;
+    const editor = scope.querySelector('[role="textbox"][aria-label="Message"]');
+    return {path:location.pathname, origin:performance.timeOrigin,
+      ref:owner?.dataset.sessionActionsRef, pane:owner?.dataset.paneId,
+      editor:editor?.innerHTML ?? null,
+      attachments:JSON.stringify([...scope.querySelectorAll('[data-testid="attachment-tile"]')].map(tile=>({src:tile.querySelector('img')?.src,name:tile.querySelector('button[aria-label^="Remove "]')?.getAttribute('aria-label')}))),
+      comic:!!window.__comicRoot?.(),
+      sockets:window.__comicSockets?.filter(s=>s.readyState===WebSocket.OPEN && new URL(s.url).pathname==='/rpc').length};
+  })()`);
+}
+
+async function presentation(page, mode) {
+  const before = await paneSnapshot(page);
+  if (!before.ref || !before.pane || before.sockets !== 1) throw Error('missing single pane/socket before mode change '+JSON.stringify(before));
+  await nativeClick(page, 'Session actions reachable', `[...document.querySelectorAll('[data-session-actions-ref]')].find(node=>node.dataset.sessionActionsRef===decodeURIComponent(location.pathname.slice(3)) && node.dataset.paneId)?.closest('button')`);
+  await nativeClick(page, 'Verbosity menu item reachable', `[...document.querySelectorAll('[role="menuitem"]')].find(n=>n.textContent.trim()==='Verbosity…')`);
+  await nativeClick(page, mode+' Presentation reachable', `[...document.querySelectorAll('[role="radiogroup"]')].find(group=>(group.getAttribute('aria-label')??document.getElementById(group.getAttribute('aria-labelledby'))?.textContent)==='Presentation')?.querySelector('[role="radio"][aria-label="${mode}"]')`);
+  await until(mode+' selected',()=>paneSnapshot(page),value=>value.comic===(mode==='Comic'));
+  if(await evaluate(page.send, `!!document.querySelector('[role="dialog"]')`)) {
+    await nativeClick(page,'close Verbosity',`document.querySelector('[role="dialog"] button[aria-label="Close"]')`);
+  }
+  await until('Verbosity closed',()=>evaluate(page.send, `!document.querySelector('[role="dialog"]')`));
+  const after = await until(mode+' same-pane presentation',()=>paneSnapshot(page),value=>value.comic===(mode==='Comic') && value.editor===before.editor);
+  for (const key of ['path','origin','ref','pane','editor','attachments','sockets']) {
+    if (before[key] !== after[key]) throw Error('presentation changed '+key+' '+JSON.stringify({mode,before,after}));
+  }
+  return {mode,before,after};
+}
+
+async function evictChildHistory(page, ref, partial) {
+  // This is the real browser persistence boundary, not a store setter or RPC
+  // stub. Retain only the newest authentic read certificate for the partial
+  // case, then require the missing older source to return over the real socket.
+  return evaluate(page.send, `new Promise((resolve,reject) => {
+    const open=indexedDB.open('evener-session-cache');
+    open.onerror=()=>reject(open.error);
+    open.onsuccess=()=>{
+      const db=open.result, names=['transcriptItems','transcriptTurns','transcriptCoverage','transcriptMeta'];
+      const tx=db.transaction(names,'readwrite'), rows={};
+      let pending=names.length, observation;
+      tx.onerror=()=>reject(tx.error);
+      tx.oncomplete=()=>{db.close();resolve(observation);};
+      for(const name of names){const request=tx.objectStore(name).getAll();request.onsuccess=()=>{
+        rows[name]=request.result;if(--pending)return;
+        const meta=rows.transcriptMeta.find(row=>row.requestedRefs?.some(value=>value.ref===${JSON.stringify(ref)}));
+        if(!meta){tx.abort();reject(Error('child cache metadata absent'));return;}
+        const key=meta.historyKey;
+        const coverage=rows.transcriptCoverage.filter(row=>row.historyKey===key);
+        const read=coverage.filter(row=>row.kind==='read'&&row.start).sort((a,b)=>b.start.entry-a.start.entry||b.start.item-a.start.item)[0];
+        if(${partial}&&!read){tx.abort();reject(Error('newest authentic cache read certificate absent'));return;}
+        const deleted={},retained={};
+        for(const name of names){deleted[name]=0;retained[name]=0;const cursor=tx.objectStore(name).openCursor();cursor.onsuccess=()=>{
+          const c=cursor.result;if(!c)return;const row=c.value;
+          if(row.historyKey===key){
+            const keep=${partial}&&(name==='transcriptMeta'||name==='transcriptTurns'||(name==='transcriptCoverage'&&row.rangeId===read.rangeId)||(name==='transcriptItems'&&(row.position.entry>read.start.entry||(row.position.entry===read.start.entry&&row.position.item>=read.start.item))));
+            if(keep)retained[name]++;else{c.delete();deleted[name]++;}
+          }c.continue();
+        };}
+        observation={ref:${JSON.stringify(ref)},partial:${partial},read:read&&{start:read.start,end:read.end,serverCursor:read.serverCursor},deleted,retained};
+      };}
+    };
+  })`);
 }
 
 async function journey(page, fixture, endpoint) {
@@ -141,13 +217,13 @@ async function journey(page, fixture, endpoint) {
   const anonymousResponses = [];
   let canonicalFailure;
   const paused = [];
-  let holdFonts = fixture.requireFonts;
+  let holdFonts = false;
   await page.send("Network.enable");
   await page.send("DOM.enable");
   await page.send("CSS.enable");
   page.ws.addEventListener("message", event => {
     const message = JSON.parse(event.data);
-    if (message.method === 'Network.responseReceived' && message.params.type === 'Document' && new URL(message.params.response.url).pathname === '/comic') {
+    if (message.method === 'Network.responseReceived' && message.params.type === 'Document' && new URL(message.params.response.url).pathname === '/s/' + encodeURIComponent(fixture.refs.live)) {
       anonymousResponses.push({status:message.params.response.status});
     }
     if (["Network.webSocketCreated", "Network.webSocketFrameSent", "Network.webSocketFrameReceived", "Network.webSocketClosed"].includes(message.method)) {
@@ -187,6 +263,9 @@ async function journey(page, fixture, endpoint) {
   // Observe actual native sockets. A chosen outgoing history frame is dropped by
   // closing that transport, never by injecting a model or fabricated RPC reply.
   await page.send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+    // Observation only. Ordinary child navigation can retain an owner pane,
+    // so every Comic measurement belongs to the ref in the unchanged URL.
+    window.__comicRoot = () => [...document.querySelectorAll('[data-comic-font][data-session-ref]')].find(node=>node.dataset.sessionRef===decodeURIComponent(location.pathname.slice(3)));
     const Native = window.WebSocket;
     window.__comicSockets = [];
     window.WebSocket = class extends Native {
@@ -269,27 +348,33 @@ async function journey(page, fixture, endpoint) {
   if (fixture.requireFonts) await page.send("Fetch.enable", { patterns: [{ urlPattern: "*/webassets/comic-fonts/*" }] });
   else await page.send("Network.setBlockedURLs", { urls: ["*/webassets/comic-fonts/*"] });
   await page.send("Emulation.setDeviceMetricsOverride", { width: 1360, height: 900, deviceScaleFactor: 1, mobile: false });
-  await navigateTo(page, new URL('/comic', fixture.baseURL).href);
-  await until('unauthenticated Comic rejection', () => anonymousResponses.at(-1), response => response?.status === 401);
-  if (await evaluate(page.send, '!!document.querySelector("[data-comic-route]")')) throw Error('unauthenticated Comic mounted');
+  await navigateTo(page, new URL('/s/' + encodeURIComponent(fixture.refs.live), fixture.baseURL).href);
+  await until('unauthenticated conversation rejection', () => anonymousResponses.at(-1), response => response?.status === 401);
+  if (await evaluate(page.send, '!!document.querySelector("[data-comic-font]")')) throw Error('unauthenticated Comic mounted');
   writeFileSync(`${fixture.evidenceDir}/authentication.json`, JSON.stringify({anonymous:anonymousResponses.at(-1),mounted:false},null,2));
-  await navigateTo(page, fixture.baseURL);
+  const entryRef = fixture.authorshipRef || fixture.refs.live;
+  const authenticated = await evaluate(page.send, `fetch(${JSON.stringify(fixture.baseURL)},{credentials:'include'}).then(response=>response.status)`);
+  if(authenticated!==200)throw Error('real authentication endpoint rejected '+authenticated);
   const base = new URL(fixture.baseURL).origin;
-  const route = `${base}/comic/s/${encodeURIComponent(fixture.refs.live)}`;
+  const route = `${base}/s/${encodeURIComponent(fixture.refs.live)}`;
   // Page.load waits for paused fonts. The actual reader, not that event, is the readiness contract.
-  await page.send("Page.navigate", { url: route });
+  await page.send("Page.navigate", { url: `${base}/s/${encodeURIComponent(entryRef)}` });
+  await until('normal session pane ready',()=>paneSnapshot(page),value=>value.ref===entryRef && value.editor!==null && value.sockets===1);
+  if ((await paneSnapshot(page)).comic) throw Error('fresh browser did not default to Standard');
+  const modeEntry = [await presentation(page, 'Comic')];
+  writeFileSync(`${fixture.evidenceDir}/presentation-entry.json`,JSON.stringify(modeEntry,null,2));
   const evaluateHere = expression => evaluate(page.send, expression);
   const read = (point = null) => evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(point)}, ${JSON.stringify(fixture.refs.live)})`);
-  const click = name => evaluateHere(`(() => { const button = [...document.querySelectorAll('button')].find(node => node.textContent.trim() === ${JSON.stringify(name)}); if (!button || button.disabled) return false; button.click(); return true; })()`);
-  const select = (name, value) => evaluateHere(`(() => { const label = [...document.querySelectorAll('label')].find(node => node.textContent.startsWith(${JSON.stringify(name)})); const control = label?.querySelector('select'); if (!control) throw Error('missing choice'); control.value = ${JSON.stringify(value)}; control.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  const click = name => evaluateHere(`(() => { const button = [...document.querySelectorAll('button')].find(node => (node.textContent.trim() === ${JSON.stringify(name)} || node.getAttribute("aria-label") === ${JSON.stringify(name)})); if (!button || button.disabled) return false; button.click(); return true; })()`);
+  const select = (name, value) => selectAppearance(page, name, value);
   const screenshot = async name => {
     const shot = await page.send("Page.captureScreenshot", { format: "png" });
     writeFileSync(`${fixture.evidenceDir}/${name}.png`, Buffer.from(shot.result.data, "base64"));
   };
   const record = async (name, point, end = false) => {
-    const value = await until(name, () => read(point), value => value && value.mounted > 0 && !value.missingArt.length && (end ? value.endGap <= 2 : point ? value.point && Math.abs(value.point.y - point.viewportOffset) <= 2 : true));
+    const value = await until(name, () => read(point), value => value && value.mounted > 0 && !value.missingArt.length && (end ? value.endGap <= 2 : point ? value.point && Math.abs(value.point.y - point.viewportOffset) <= 2 : true) && (value.mode !== 'comic' || !name.startsWith('away-width') || value.panels.some(panel => Math.abs(panel.panel.width-value.probe.panel.width)<1 && Math.abs(panel.text.width-value.probe.text.width)<1 && panel.text.font===value.probe.text.font)));
     if (value.overflow > 1 || value.pageOverflow > 1 || value.clipped.length || value.mounted > 35 || value.missingArt.length) throw new Error(`${name}: bad geometry ${JSON.stringify(value)}`);
-    if (value.path !== new URL(route).pathname || value.route !== "session" || value.ref !== fixture.refs.live) throw new Error(`${name}: wrong authenticated conversation route ${JSON.stringify(value)}`);
+    if (value.path !== new URL(route).pathname || value.ref !== fixture.refs.live) throw new Error(`${name}: wrong authenticated conversation route ${JSON.stringify(value)}`);
     if (name === "away-before-font" && value.parts.filter(part => part.entryId === point.entryId).map(part => part.text).join("") !== fixture.expectedSourceText) throw new Error("complete independent literal source was not rendered exactly once");
     if (point && (value.saved?.entryId !== point.entryId || value.saved?.offset !== point.offset)) throw new Error(`${name}: anchor identity changed ${JSON.stringify(value.saved)}`);
     if (end && name !== "initial-end" && value.saved?.mode !== "end") throw new Error(`${name}: lost explicit end-following ${JSON.stringify(value.saved)}`);
@@ -309,19 +394,41 @@ async function journey(page, fixture, endpoint) {
       if (preceding.has(part.entryId) && preceding.get(part.entryId) !== part.start) throw new Error(`${name}: duplicated or omitted interior source range ${JSON.stringify(part)}`);
       preceding.set(part.entryId, part.end);
     }
-    metrics.push({ name, ...value });
+    metrics.push({ name, pageCount:pageReads.length, ...value });
     wireTrace.push({ at: Date.now(), checkpoint: name, pageCount: pageReads.length });
     writeFileSync(`${fixture.evidenceDir}/measurements.json`, JSON.stringify({ metrics, pageReads, maxPages, socketsClosed, subscriptions }, null, 2));
     return value;
   };
+  // Choose both viewport preferences through their real controls. Merely resizing
+  // must not copy the desktop choice into the as-yet untouched mobile preference.
+  await page.send('Emulation.setDeviceMetricsOverride',{width:390,height:900,deviceScaleFactor:1,mobile:false});
+  await until('mobile starts independently Standard',()=>paneSnapshot(page),value=>!value.comic && value.editor!==null);
+  modeEntry.push(await presentation(page,'Comic'));
+  await page.send('Emulation.setDeviceMetricsOverride',{width:1360,height:900,deviceScaleFactor:1,mobile:false});
+  await until('desktop Comic retained',()=>paneSnapshot(page),value=>value.comic);
+  modeEntry.push(await presentation(page,'Standard'));
+  await page.send('Emulation.setDeviceMetricsOverride',{width:390,height:900,deviceScaleFactor:1,mobile:false});
+  await until('desktop Standard leaves mobile Comic intact',()=>paneSnapshot(page),value=>value.comic);
+  await page.send('Emulation.setDeviceMetricsOverride',{width:1360,height:900,deviceScaleFactor:1,mobile:false});
+  await until('desktop Standard restored',()=>paneSnapshot(page),value=>!value.comic && value.editor!==null);
+  modeEntry.push(await presentation(page,'Comic'));
+  const preferences=await evaluateHere(`Object.fromEntries(['desktop','mobile'].map(v=>[v,localStorage.getItem('evener.prefs.conversationPresentation.'+v)]))`);
+  if(Object.values(preferences).some(value=>value!=='comic'))throw Error('mode preferences not independently persisted '+JSON.stringify(preferences));
+  writeFileSync(`${fixture.evidenceDir}/presentation-entry.json`,JSON.stringify({modeEntry,preferences},null,2));
+  // The ordinary Standard reader may legitimately prefetch history. Keep the
+  // root history cold until its paging proof, without changing either store.
+  await until('entry fonts settled',()=>evaluateHere(`window.__comicRoot()?.dataset.comicFont`),value=>value==='ready'||value==='unavailable');
+  holdFonts = fixture.requireFonts;
+  await page.send('Network.setCacheDisabled',{cacheDisabled:true});
+  await page.send('Page.navigate',{url:route});
   await until("initial real comic", () => read(), value => value?.parts.some(part => fixture.expectedSourceText.includes(part.text) && part.text.length > 100));
   if (!focused) {
   await record("initial-end", null, true);
   // Scroll a literal source point into view as a reader would. No model/store injection.
   const target = await evaluateHere(`(() => {
-    const source = [...document.querySelectorAll('[data-comic-entry]')].find(node => node.querySelector('[data-comic-text]')?.textContent.startsWith('COMIC_READ_SOURCE_3f'));
+    const source = [...window.__comicRoot()?.querySelectorAll('[data-comic-entry]')].find(node => node.querySelector('[data-comic-text]')?.textContent.startsWith('COMIC_READ_SOURCE_3f'));
     if (!source) throw Error('source not mounted');
-    const port = document.querySelector('[data-comic-scroll]').firstElementChild;
+    const port = window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild;
     const text = source.querySelector('[data-comic-text]').firstChild;
     const offset = Math.min(650, text.length - 1);
     const range = document.createRange(); range.setStart(text, offset); range.setEnd(text, offset + 1);
@@ -351,13 +458,14 @@ async function journey(page, fixture, endpoint) {
     holdFonts = false;
     await Promise.all(paused.map(requestId => page.send("Fetch.continueRequest", { requestId })));
     await until("bundled font loaded", () => read(), value => value?.font === "ready");
+    await page.send('Network.setCacheDisabled',{cacheDisabled:false});
     await record("away-after-late-font", point);
   } else await until("explicit failed font state", () => read(), value => value?.font === "unavailable");
 
   // A real non-text click used to leave the reader permanently awaiting scroll.
   // Hit-test rendered art, then use CDP input, not element.click or DOM events.
   const clickTarget = await evaluateHere(`(() => {
-    const port = document.querySelector('[data-comic-scroll]').firstElementChild;
+    const port = window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild;
     const bounds = port.getBoundingClientRect();
     for (const image of port.querySelectorAll('article img')) {
       const rect = image.getBoundingClientRect();
@@ -373,7 +481,7 @@ async function journey(page, fixture, endpoint) {
         port.addEventListener('pointerdown', window.__comicClickListener);
         port.addEventListener('pointerup', window.__comicClickListener);
         window.__comicClickDiagnostics = [];
-        window.__comicClickDiagnostic = event => window.__comicClickDiagnostics.push({type:event.type, scrollTop:port.scrollTop, collapsed:document.getSelection()?.isCollapsed, selectionNode:document.getSelection()?.anchorNode?.nodeName, saved:sessionStorage.getItem('evener:comic:position:' + document.querySelector('main')?.dataset.sessionRef)});
+        window.__comicClickDiagnostic = event => window.__comicClickDiagnostics.push({type:event.type, scrollTop:port.scrollTop, collapsed:document.getSelection()?.isCollapsed, selectionNode:document.getSelection()?.anchorNode?.nodeName, saved:sessionStorage.getItem('evener:comic:position:' + window.__comicRoot()?.dataset.sessionRef)});
         document.addEventListener('selectionchange', window.__comicClickDiagnostic);
         port.addEventListener('scroll', window.__comicClickDiagnostic);
         return {x, y, scrollTop:port.scrollTop};
@@ -386,12 +494,12 @@ async function journey(page, fixture, endpoint) {
   await evaluateHere(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
   writeFileSync(`${fixture.evidenceDir}/native-click-diagnostics.json`, JSON.stringify(await evaluateHere(`(() => {
     document.removeEventListener('selectionchange', window.__comicClickDiagnostic);
-    document.querySelector('[data-comic-scroll]').firstElementChild.removeEventListener('scroll', window.__comicClickDiagnostic);
+    window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild.removeEventListener('scroll', window.__comicClickDiagnostic);
     return {target:${JSON.stringify(clickTarget)}, events:window.__comicClickEvents, diagnostics:window.__comicClickDiagnostics};
   })()`), null, 2));
   const clicked = await record("native-click-without-scroll", point);
   const clickEvents = await evaluateHere(`(() => {
-    const port = document.querySelector('[data-comic-scroll]').firstElementChild;
+    const port = window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild;
     port.removeEventListener('pointerdown', window.__comicClickListener);
     port.removeEventListener('pointerup', window.__comicClickListener);
     return window.__comicClickEvents;
@@ -401,18 +509,17 @@ async function journey(page, fixture, endpoint) {
 
   for (const width of [1360, 760, 600, 390, 320, 1360]) {
     await page.send("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
-    await evaluateHere(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
     await record(`away-width-${width}`, point);
     await screenshot(width === 320 ? "phone" : width === 1360 ? "desktop" : `width-${width}`);
     // Root identities are intentionally fixed. Stress their actual inherited
     // label CSS in a detached-from-transcript probe, not a fake session entry.
     const identity = await evaluateHere(`(() => {
-      const original = document.querySelector('[data-comic-entry] article');
+      const original = window.__comicRoot()?.querySelector('[data-comic-entry] article');
       const panel = original.cloneNode(false);
       const label = original.querySelector('[data-comic-identity]').cloneNode(false);
       label.textContent = 'FIXTURE_LONG_AGENT_NAME_' .repeat(12) + ' · FIXTURE_LONG_BADGE_' .repeat(10);
       panel.style.cssText = 'position:absolute;visibility:hidden;width:' + original.getBoundingClientRect().width + 'px';
-      panel.append(label); document.querySelector('[data-comic-route]').append(panel);
+      panel.append(label); window.__comicRoot().append(panel);
       const result = {width:innerWidth, labelWidth:label.clientWidth, labelHeight:label.clientHeight, lineHeight:parseFloat(getComputedStyle(label).lineHeight), overflow:label.scrollWidth-label.clientWidth, family:getComputedStyle(label).fontFamily};
       panel.remove(); return result;
     })()`);
@@ -430,9 +537,8 @@ async function journey(page, fixture, endpoint) {
     if (!fonts.every(face => face.result.fonts.some(font => font.isCustomFont && font.glyphCount > 0 && /Comic/i.test(font.familyName)))) throw new Error(`Comic Sans not actually rendering regular and synthesized-bold text: ${JSON.stringify(fonts)}`);
   }
   await select("View", "comic");
-  await record("away-comic", point);
   // Switching from plain changes measured row heights. Wait for the bounded
-  // virtual range to settle before comparing a presentation-only change.
+  // virtual range to settle before checking its error row or presentation.
   let previousParts;
   let stableSamples = 0;
   await until('comic range settled after plain view', async () => {
@@ -441,6 +547,7 @@ async function journey(page, fixture, endpoint) {
     previousParts = parts;
     return stableSamples >= 3;
   });
+  await record("away-comic", point);
   const beforeStyle = await read(point);
   await select("Scene", "field");
   await select("Human expression", "happy-wave");
@@ -450,7 +557,7 @@ async function journey(page, fixture, endpoint) {
   for (let index = 0; index < 3; index++) {
     const before = pageReads.length;
     if (index === 0) await evaluateHere('window.__comicFailHistory = true');
-    if (!await click("Older messages")) throw new Error("older demand unavailable");
+    await until(`Older messages available for page ${index+1}`,()=>click("Older messages"));
     if (index === 0) {
       await until("history transport failure visible", () => evaluateHere(`!![...document.querySelectorAll('button')].find(node => node.textContent.trim() === 'Retry')`));
       await record("history-failed-away", point);
@@ -463,8 +570,8 @@ async function journey(page, fixture, endpoint) {
   let olderPoint;
   await until("later page source reached", async () => {
     const value = await evaluateHere(`(() => {
-      const source = [...document.querySelectorAll('[data-comic-entry]')].find(node => node.querySelector('[data-comic-text]')?.textContent.startsWith('COMIC_HISTORY_27'));
-      const port = document.querySelector('[data-comic-scroll]').firstElementChild;
+      const source = [...window.__comicRoot()?.querySelectorAll('[data-comic-entry]')].find(node => node.querySelector('[data-comic-text]')?.textContent.startsWith('COMIC_HISTORY_27'));
+      const port = window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild;
       const deltaY = source ? source.querySelector('[data-comic-text]').getBoundingClientRect().top - port.getBoundingClientRect().top - 24 : -port.clientHeight * 3;
       port.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY }));
       port.scrollTop += deltaY;
@@ -476,6 +583,9 @@ async function journey(page, fixture, endpoint) {
   const captured = await until("later page anchor saved", () => read(), value => value?.saved?.entryId === olderPoint);
   point = { ...captured.saved, text: fixture.historyTexts[27] };
   await record("later-page-away", point);
+  const rootHandoff = [await presentation(page,'Standard'),await presentation(page,'Comic')];
+  await record('away-mode-handoff',point);
+  writeFileSync(`${fixture.evidenceDir}/root-mode-handoff.json`,JSON.stringify(rootHandoff,null,2));
   for(const width of [320,760,1360]) {
     await page.send('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});
     await record(`later-page-width-${width}`,point);
@@ -498,7 +608,7 @@ async function journey(page, fixture, endpoint) {
   await complete("COMIC_LIVE_APPEND_away");
   await record("away-live-append", point);
   const beforeReload = wireTrace.length;
-  await reloadPage(page, fixture.evidenceDir);
+  await reloadPage(page);
   const freshRoot = await until('fresh root history after reload', () => repliesSince(wireTrace, beforeReload,
     request => request.method === 'thread/read' && request.params?.ref === fixture.refs.live && request.params.includeTurns === true)
     .find(reply => reply.response.result?.thread?.turns?.length > 0));
@@ -527,7 +637,7 @@ async function journey(page, fixture, endpoint) {
   if (maxPages !== 1 || pageReads.length < 6) throw new Error(`shared sequential paging not exercised: ${JSON.stringify({maxPages, pageReads})}`);
   }
   try {
-    if (!focused) await childJourney(page, fixture, { command, complete, incoming, outgoing, screenshot });
+    if (!focused) await childJourney(page, fixture, { command, complete, incoming, outgoing, screenshot, wireTrace });
     if (fixture.scenario !== 'recovery') {
     await rosterJourney(page, fixture, { command, complete, incoming, outgoing, screenshot, wireTrace });
     await remoteJourney(page, fixture, { incoming, wireTrace, screenshot });
@@ -543,10 +653,9 @@ async function journey(page, fixture, endpoint) {
     }
   }
   catch (error) {
-    await recordOwnerTrace(page, fixture.evidenceDir, 'failure');
     await screenshot('child-failure');
     writeFileSync(`${fixture.evidenceDir}/failure-wire.json`, JSON.stringify(wireTrace, null, 2));
-    writeFileSync(`${fixture.evidenceDir}/child-failure.json`, JSON.stringify({error:String(error), dom:await evaluateHere('document.querySelector("main")?.outerHTML'), requests:outgoing.filter(frame => frame.method === 'thread/read'), frames:incoming.map(frame => JSON.parse(frame)).filter(frame => frame.method || frame.result?.context || frame.result?.thread || frame.result?.turns)}, null, 2));
+    writeFileSync(`${fixture.evidenceDir}/child-failure.json`, JSON.stringify({error:String(error), dom:await evaluateHere('window.__comicRoot()?.outerHTML'), requests:outgoing.filter(frame => frame.method === 'thread/read'), frames:incoming.map(frame => JSON.parse(frame)).filter(frame => frame.method || frame.result?.context || frame.result?.thread || frame.result?.turns)}, null, 2));
     throw error;
   }
   if (focused) console.log(`Focused Comic ${fixture.scenario} only, not the full gate; ${fixture.evidenceDir}`);
@@ -579,7 +688,7 @@ async function composerJourney(page, fixture, { command, wireTrace, screenshot }
   command('background-role', 'comic-composer');
   command('background-phase', 'comic-composer-ready');
   await until('composer provider configured', () => records().some(row => row.event === 'background-phase-ack' && row.phase === 'comic-composer-ready'));
-  await navigateTo(page, new URL('/comic/s/' + encodeURIComponent(fixture.refs.live), fixture.baseURL).href);
+  await navigateTo(page, new URL('/s/' + encodeURIComponent(fixture.refs.live), fixture.baseURL).href);
   const click = async testId => until(testId, () => evaluateHere(`(() => { const button = document.querySelector('[data-testid="${testId}"]'); if (!button || button.disabled) return false; button.click(); return true; })()`));
   const type = async text => {
     await until('committed full-page editor', () => evaluateHere(`(() => { const editor = document.querySelector('[role="textbox"]'); if (!editor) return false; editor.focus(); return document.activeElement === editor; })()`));
@@ -589,21 +698,37 @@ async function composerJourney(page, fixture, { command, wireTrace, screenshot }
   const receipt = method => until(`${method} real receipt`, () => repliesSince(wireTrace, start, request => request.method === method).find(pair => pair.response.result?.receipt));
   const provider = text => until('provider received ' + text, () => records().find(row => row.event === 'request' && row.kind === 'turn' && row.request?.messages?.some(message => message.role === 'user' && message.content?.some(part => part.text === text))));
   await type('/settings COMIC_COMPOSER_SEND literal input');
+  // CDP supplies a real file to the ordinary picker. The production decode and
+  // source pipeline stage it; no attachment store or editor state is injected.
+  const imagePath = `${fixture.evidenceDir}/mode-attachment.png`;
+  writeFileSync(imagePath,Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=','base64'));
+  const handoffs=[];
+  try {
+    handoffs.push(await presentation(page,'Standard'));
+    const document = await page.send('DOM.getDocument');
+    const input = await page.send('DOM.querySelector',{nodeId:document.result.root.nodeId,selector:'input[type="file"]'});
+    await page.send('DOM.setFileInputFiles',{nodeId:input.result.nodeId,files:[imagePath]});
+    await until('staged attachment decoded',()=>evaluateHere(`!!document.querySelector('[data-testid="attachment-tile"] img')?.naturalWidth`));
+    for(const mode of ['Comic','Standard','Comic'])handoffs.push(await presentation(page,mode));
+    await nativeClick(page,'remove staged attachment',`document.querySelector('button[aria-label="Remove mode-attachment.png"]')`);
+    await until('attachment removed before provider fixture',()=>evaluateHere(`!document.querySelector('[data-testid="attachment-tile"]')`));
+  } finally { unlinkSync(imagePath); }
   await click('composer-submit');
   await receipt('turn/start');
   const sent = await provider('/settings COMIC_COMPOSER_SEND literal input');
-  await until('first live streamed reply', () => evaluateHere(`document.querySelector('[data-comic-scroll]')?.textContent.includes('COMIC_COMPOSER_REPLY streamed first')`));
+  await until('first live streamed reply', () => evaluateHere(`window.__comicRoot()?.querySelector('[data-comic-scroll]')?.textContent.includes('COMIC_COMPOSER_REPLY streamed first')`));
   await type('COMIC_COMPOSER_QUEUE literal queued input');
   await click('composer-submit');
   await receipt('turn/queue');
+  for(const mode of ['Standard','Comic'])handoffs.push(await presentation(page,mode));
   command('background-phase', 'comic-composer-finish');
   const queued = await provider('COMIC_COMPOSER_QUEUE literal queued input');
-  await until('queued turn live stream', () => evaluateHere(`document.querySelector('[data-comic-scroll]')?.textContent.includes('COMIC_COMPOSER_QUEUE streaming before Stop')`));
+  await until('queued turn live stream', () => evaluateHere(`window.__comicRoot()?.querySelector('[data-comic-scroll]')?.textContent.includes('COMIC_COMPOSER_QUEUE streaming before Stop')`));
   await click('composer-stop');
   await receipt('turn/interrupt');
   await until('provider cancelled by Stop', () => records().some(row => row.event === 'comic-composer-cancelled'));
   const pairs = verifyComposerReceipts(wireTrace.slice(start), fixture.refs.live);
-  writeFileSync(`${fixture.evidenceDir}/composer.json`, JSON.stringify({ref:fixture.refs.live, pairs, provider:[sent, queued], wireTrace:wireTrace.slice(start)}, null, 2));
+  writeFileSync(`${fixture.evidenceDir}/composer.json`, JSON.stringify({ref:fixture.refs.live, handoffs, pairs, provider:[sent, queued], wireTrace:wireTrace.slice(start)}, null, 2));
   await screenshot('composer-stopped');
   console.log('Comic composer: literal Send, live partial reply, Queue consumed by provider, Stop receipt and provider cancellation');
 }
@@ -623,7 +748,7 @@ async function sendRecoveryJourney(page, fixture, {command,wireTrace,screenshot}
   command('background-role','history');
   command('background-phase','comic-recovery-ready');
   await until('recovery provider configured',()=>records().some(row=>row.event==='background-phase-ack'&&row.phase==='comic-recovery-ready'));
-  await navigateTo(page,new URL('/comic/s/'+encodeURIComponent(fixture.refs.live),fixture.baseURL).href);
+  await navigateTo(page,new URL('/s/'+encodeURIComponent(fixture.refs.live),fixture.baseURL).href);
   const editor='[role="textbox"][aria-label="Message"]';
   const text=()=>evaluateHere(`document.querySelector(${JSON.stringify(editor)})?.textContent`);
   const replace=async value=>{
@@ -647,14 +772,14 @@ async function sendRecoveryJourney(page, fixture, {command,wireTrace,screenshot}
     await evaluateHere('window.__comicCloseRecovery()');
     await until('recovery native socket closed',()=>wireTrace.slice(start).some(row=>row.event==='Network.webSocketClosed'));
     const reloadStart=wireTrace.length;
-    await reloadPage(page, fixture.evidenceDir);
+    await reloadPage(page);
     await until('newer draft survives reload',text,value=>value===newer);
     const pairs=await until('correlated recovery receipt',()=>repliesSince(wireTrace,start,request=>request.method==='turn/start'&&request.params?.clientMutationId===intercepted.request.params.clientMutationId),pairs=>pairs.some(pair=>pair.response.result?.receipt?.disposition==='applied'));
     const canonical=await until('post-reload authoritative accepted input',()=>repliesSince(wireTrace,reloadStart,request=>request.method==='thread/read'&&request.params.ref===fixture.refs.live).flatMap(pair=>pair.response.result?.thread?.turns??[]).flatMap(turn=>turn.items??[]).find(item=>item.type==='userMessage'&&item.text===marker&&item.clientMutationId===intercepted.request.params.clientMutationId));
     await until('real recovered provider input',()=>records().some(row=>row.event==='request'&&row.kind==='turn'&&row.request?.messages?.some(message=>message.role==='user'&&message.content?.some(part=>part.text===marker))));
-    for(const client of ['s','comic/s']) {
-      await navigateTo(page,new URL('/'+client+'/'+encodeURIComponent(fixture.refs.live),fixture.baseURL).href);
-      await until('newer draft survives '+client,text,value=>value===newer);
+    for(const mode of ['Standard','Comic']) {
+      await presentation(page,mode);
+      await until('newer draft survives '+mode,text,value=>value===newer);
     }
     const attempts=wireTrace.slice(start).filter(row=>row.event==='Network.webSocketFrameSent').map(row=>JSON.parse(row.frame)).filter(request=>request.method==='turn/start'&&request.params.input?.some(part=>part.text===marker));
     if(attempts.length<1||attempts.length>2||attempts.some(request=>request.params.clientMutationId!==intercepted.request.params.clientMutationId)||pairs.filter(pair=>pair.response.result?.receipt?.disposition==='applied').length!==1||pairs.some(pair=>pair.response.error))throw Error('recovery did not retain one accepted mutation '+JSON.stringify({attempts,pairs}));
@@ -679,7 +804,7 @@ async function pendingViewportJourney(page, fixture, kind, selector, screenshot)
         const rect=node=>{const r=node.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,bottom:r.bottom,right:r.right};};
         const probe=document.createElement('div');probe.style.paddingBottom='env(safe-area-inset-bottom)';document.body.append(probe);
         const inset=parseFloat(getComputedStyle(probe).paddingBottom);probe.remove();
-        return {width:innerWidth,height:innerHeight,inset,reduced:matchMedia('(prefers-reduced-motion: reduce)').matches,ref:document.querySelector('main')?.dataset.sessionRef,overflow:document.documentElement.scrollWidth-innerWidth,root:root&&rect(root),text:root?.textContent,editor:document.querySelector('[role="textbox"][aria-label="Message"]')?.textContent,controls:[...(root?.querySelectorAll('button,input')??[])].map(node=>({tag:node.tagName,type:node.type,disabled:node.disabled,checked:node.checked,value:node.value,rect:rect(node)}))};
+        return {width:innerWidth,height:innerHeight,inset,reduced:matchMedia('(prefers-reduced-motion: reduce)').matches,ref:window.__comicRoot()?.dataset.sessionRef,overflow:document.documentElement.scrollWidth-innerWidth,root:root&&rect(root),text:root?.textContent,editor:document.querySelector('[role="textbox"][aria-label="Message"]')?.textContent,controls:[...(root?.querySelectorAll('button,input')??[])].map(node=>({tag:node.tagName,type:node.type,disabled:node.disabled,checked:node.checked,value:node.value,rect:rect(node)}))};
       })()`);
       observations.push(state);
       writeFileSync(`${fixture.evidenceDir}/interactions-${kind}-viewports.json`, JSON.stringify(observations,null,2));
@@ -711,6 +836,16 @@ async function pendingViewportJourney(page, fixture, kind, selector, screenshot)
     await page.send('Emulation.setEmulatedMedia', {features:[]});
     await page.send('Emulation.setDeviceMetricsOverride', {width:1360,height:900,deviceScaleFactor:1,mobile:false});
   }
+}
+
+async function selectAppearance(page, name, value) {
+  const evaluateHere = expression => evaluate(page.send, expression);
+    await nativeClick(page,'Appearance trigger',`[...window.__comicRoot().querySelectorAll('button')].find(node=>node.textContent.trim()==='Appearance')`);
+    await until('Appearance popup open',()=>evaluateHere(`!!document.querySelector('[role="dialog"][aria-label="Appearance"]')`));
+    await evaluateHere(`(() => { const popup=document.querySelector('[role="dialog"][aria-label="Appearance"]'); const r=popup.getBoundingClientRect(); if(r.left<0||r.right>innerWidth||r.top<0||r.bottom>innerHeight)throw Error('Appearance outside viewport '+JSON.stringify(r)); const label = [...popup.querySelectorAll('label')].find(node => node.textContent.startsWith(${JSON.stringify(name)})); const control = label?.control ?? label?.querySelector('select'); if (!control) throw Error('missing choice'); control.value = ${JSON.stringify(value)}; control.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    await page.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+    await page.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+    await until('Appearance dismissed with focus return',()=>evaluateHere(`!document.querySelector('[role="dialog"][aria-label="Appearance"]')&&window.__comicRoot().contains(document.activeElement)&&document.activeElement?.textContent.trim()==='Appearance'`));
 }
 
 async function inspectActionFonts(page,fixture,name,selectors) {
@@ -771,7 +906,7 @@ async function resumeJourney(page,fixture,{wireTrace,screenshot,endpoint}) {
   const start=wireTrace.length;
   const stopped=await fetch(fixture.checkpointURL+'/stop-root',{method:'POST'});
   if(!stopped.ok)throw Error('real root shutdown failed: '+await stopped.text());
-  await navigateTo(page,new URL('/comic/s/'+encodeURIComponent(fixture.refs.live),fixture.baseURL).href);
+  await navigateTo(page,new URL('/s/'+encodeURIComponent(fixture.refs.live),fixture.baseURL).href);
   const evaluateHere=expression=>evaluate(page.send,expression);
   await until('saved root editable',()=>evaluateHere(`(() => {const e=document.querySelector('[role="textbox"][aria-label="Message"]');if(!e)return false;e.focus();return document.activeElement===e;})()`));
   if(repliesSince(wireTrace,start,request=>request.method==='thread/resume'||request.method==='turn/start').length)throw Error('opening saved root launched a daemon');
@@ -781,7 +916,7 @@ async function resumeJourney(page,fixture,{wireTrace,screenshot,endpoint}) {
   await until('saved root Send resumes',()=>evaluateHere(`(() => {const b=document.querySelector('[data-testid="composer-submit"]');if(!b||b.disabled)return false;b.click();return true;})()`));
   const applied=await until('resumed input receipt',()=>repliesSince(wireTrace,start,request=>request.method==='turn/start'&&request.params.input?.some(part=>part.text==='COMIC_RESUME_SAME')).find(pair=>pair.response.result?.receipt?.disposition==='applied'));
   if(applied.request.params.ref!==fixture.refs.live||'local:'+applied.response.result.receipt.instanceId!==fixture.refs.live)throw Error('same-identity resume changed ref '+JSON.stringify(applied));
-  await until('resumed actual provider reply',()=>evaluateHere(`document.querySelector('[data-comic-scroll]')?.textContent.includes('skillguard turn complete')`));
+  await until('resumed actual provider reply',()=>evaluateHere(`window.__comicRoot()?.querySelector('[data-comic-scroll]')?.textContent.includes('skillguard turn complete')`));
   writeFileSync(`${fixture.evidenceDir}/resume.json`,JSON.stringify({applied,wireTrace:wireTrace.slice(start)},null,2));
   await screenshot('resumed-root');
   const replaceDraft=async (target,text)=>{
@@ -805,10 +940,8 @@ async function resumeJourney(page,fixture,{wireTrace,screenshot,endpoint}) {
   // inventing a recovery notification or issuing a read from the driver.
   const reopenStart=wireTrace.length;
   const documentOrigin=await evaluateHere('performance.timeOrigin');
-  const picker=await until('Conversations control reachable',()=>evaluateHere(`(() => {const b=document.querySelector('section[aria-label="Comic conversation"] > header button');if(!b)return null;const r=b.getBoundingClientRect();const x=r.x+r.width/2,y=r.y+r.height/2;return b.contains(document.elementFromPoint(x,y))?{x,y}:null;})()`));
-  await page.send('Input.dispatchMouseEvent',{type:'mousePressed',...picker,button:'left',buttons:1,clickCount:1});
-  await page.send('Input.dispatchMouseEvent',{type:'mouseReleased',...picker,button:'left',buttons:0,clickCount:1});
-  await until('same-document picker',()=>evaluateHere(`document.querySelector('main')?.dataset.comicRoute==='picker'`));
+  await nativeClick(page,'normal Settings navigation reachable',`document.querySelector('[data-testid="rail-settings"]')`);
+  await until('Settings replaced the conversation pane',()=>evaluateHere(`location.pathname.startsWith('/settings') && !document.querySelector('[data-session-actions-ref]') && !window.__comicRoot()?.querySelector('[data-comic-scroll]')`));
   // The last shared transcript/activity holder, not navigation itself, owns
   // unsubscribe. Let its final read settle before Back can cancel retirement.
   const retired=await until('old root final membership retired',()=>repliesSince(wireTrace,reopenStart,request=>request.method==='thread/unsubscribe'&&request.params?.ref===fixture.refs.live).find(pair=>pair.connection===applied.connection&&!pair.response.error));
@@ -817,7 +950,7 @@ async function resumeJourney(page,fixture,{wireTrace,screenshot,endpoint}) {
   const reacquireStart=wireTrace.length;
   await page.send('Input.dispatchMouseEvent',{type:'mousePressed',x:10,y:10,button:'back',clickCount:1});
   await page.send('Input.dispatchMouseEvent',{type:'mouseReleased',x:10,y:10,button:'back',clickCount:1});
-  await until('native Back reopens exact old ref',()=>evaluateHere(`document.querySelector('main')?.dataset.sessionRef`),value=>value===fixture.refs.live);
+  await until('native Back reopens exact old ref',()=>evaluateHere(`window.__comicRoot()?.dataset.sessionRef`),value=>value===fixture.refs.live);
   const fenced=await until('original connection real non-foldable recovery snapshot',()=>repliesSince(wireTrace,reacquireStart,request=>request.method==='thread/read'&&request.params.ref===fixture.refs.live&&request.params.includeTurns===true).find(pair=>pair.response.result?.thread?.evener?.resumeRequired===true&&pair.response.result.thread.evener.resumeOnlyFoldable!==true));
   const freshRequest=wireTrace.slice(reacquireStart).find(row=>row.event==='Network.webSocketFrameSent'&&row.connection===fenced.connection&&JSON.parse(row.frame).id===fenced.request.id);
   if(fenced.connection!==applied.connection||!freshRequest||freshRequest.at<acknowledgedAt||await evaluateHere('performance.timeOrigin')!==documentOrigin||wireTrace.slice(reopenStart).some(row=>row.event==='Network.webSocketCreated'))throw Error('recovery reopen replaced the document/connection or borrowed an earlier read');
@@ -834,8 +967,18 @@ async function resumeJourney(page,fixture,{wireTrace,screenshot,endpoint}) {
     destinationPage=await connectPage(endpoint,targetId);
     await destinationPage.send('Page.enable');
     await destinationPage.send('Runtime.enable');
-    await navigateTo(destinationPage,new URL('/comic/s/'+encodeURIComponent(destination),fixture.baseURL).href);
+    await destinationPage.send('Network.enable');
+    destinationPage.ws.addEventListener('message',event=>{
+      const message=JSON.parse(event.data);
+      if(!['Network.webSocketCreated','Network.webSocketFrameSent','Network.webSocketFrameReceived','Network.webSocketClosed'].includes(message.method))return;
+      const row={at:Date.now(),event:message.method,connection:message.params.requestId,frame:message.params.response?.payloadData};
+      appendFileSync(`${fixture.evidenceDir}/resume-destination-wire.jsonl`,`${JSON.stringify(row)}\n`);
+    });
+    await navigateTo(destinationPage,new URL('/s/'+encodeURIComponent(destination),fixture.baseURL).href);
     await replaceDraft(destinationPage,'COMIC_NEWER_DESTINATION_DRAFT');
+  } catch (error) {
+    if(destinationPage)writeFileSync(`${fixture.evidenceDir}/resume-destination-failure.json`,JSON.stringify(await evaluate(destinationPage.send,`({path:location.pathname,width:innerWidth,body:document.body.innerText.slice(0,3000),editors:[...document.querySelectorAll('[role="textbox"]')].map(node=>({label:node.getAttribute('aria-label'),editable:node.contentEditable})),owners:[...document.querySelectorAll('[data-session-actions-ref]')].map(node=>node.dataset.sessionActionsRef)})`),null,2));
+    throw error;
   } finally {
     destinationPage?.close();
     if(targetId)await browser.send('Target.closeTarget',{targetId});
@@ -851,7 +994,7 @@ async function resumeJourney(page,fixture,{wireTrace,screenshot,endpoint}) {
   await until('client-owned changed identity resume',()=>repliesSince(wireTrace,changedStart,request=>request.method==='thread/resume').find(pair=>pair.response.result?.thread));
   // Send resolves after durable enqueue and starts resume asynchronously. The
   // editor clearing on the old route is actual progress, not an arbitrary delay.
-  const ui=await until('processed Send clears old editor while resume held',()=>evaluateHere(`({ref:document.querySelector('main')?.dataset.sessionRef,text:document.querySelector('[role="textbox"][aria-label="Message"]')?.textContent,disabled:document.querySelector('[data-testid="composer-submit"]')?.disabled})`),value=>value.disabled===true&&value.text==='');
+  const ui=await until('processed Send clears old editor while resume held',()=>evaluateHere(`({ref:window.__comicRoot()?.dataset.sessionRef,text:document.querySelector('[role="textbox"][aria-label="Message"]')?.textContent,disabled:document.querySelector('[data-testid="composer-submit"]')?.disabled})`),value=>value.disabled===true&&value.text==='');
   ui.beforeText=beforeText;
   const admission={oldRef:fixture.refs.live,destination,ui,hold:await evaluateHere('window.__comicResumeHold'),trace:wireTrace.slice(changedStart)};
   writeFileSync(`${fixture.evidenceDir}/resume-held.json`,JSON.stringify(admission,null,2));
@@ -859,7 +1002,7 @@ async function resumeJourney(page,fixture,{wireTrace,screenshot,endpoint}) {
   admission.releaseIndex=wireTrace.length-changedStart;
   await evaluateHere('window.__comicReleaseResume()');
   await until('changed alias mutation applied',()=>repliesSince(wireTrace,changedStart,request=>request.method==='turn/start'&&request.params.input?.some(part=>part.text==='COMIC_RESUME_CHANGED')).find(pair=>pair.response.result?.receipt?.disposition==='applied'));
-  admission.afterUI=await until('changed identity route and newer destination draft',()=>evaluateHere(`({ref:document.querySelector('main')?.dataset.sessionRef,text:document.querySelector('[role="textbox"][aria-label="Message"]')?.textContent})`),value=>value.ref===destination&&value.text==='COMIC_NEWER_DESTINATION_DRAFT');
+  admission.afterUI=await until('changed identity route and newer destination draft',()=>evaluateHere(`({ref:window.__comicRoot()?.dataset.sessionRef,text:document.querySelector('[role="textbox"][aria-label="Message"]')?.textContent})`),value=>value.ref===destination&&value.text==='COMIC_NEWER_DESTINATION_DRAFT');
   admission.hold=await evaluateHere('window.__comicResumeHold');
   admission.trace=wireTrace.slice(changedStart);
   const {resumed,changed}=verifyResumeAdmission(admission);
@@ -876,7 +1019,7 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
   const frames = () => wireTrace.slice(start).filter(row => row.frame).map(row => JSON.parse(row.frame));
   const snapshot = () => evaluateHere(`(() => {
     const editor = document.querySelector('[role="textbox"][aria-label="Message"]');
-    return {ref:document.querySelector('main')?.dataset.sessionRef, text:editor?.textContent, focused:document.activeElement===editor, selected:document.getSelection()?.toString(), controls:[...document.querySelectorAll('[data-comic-composer] button')].map(button=>({text:button.textContent,disabled:button.disabled})), questions:document.querySelectorAll('[role="tab"]').length, approvals:document.querySelectorAll('[aria-label="Sandbox approval"]').length};
+    return {ref:window.__comicRoot()?.dataset.sessionRef, text:editor?.textContent, focused:document.activeElement===editor, selected:document.getSelection()?.toString(), controls:[...window.__comicRoot()?.querySelectorAll('[data-comic-composer] button')].map(button=>({text:button.textContent,disabled:button.disabled})), questions:document.querySelectorAll('[role="tab"]').length, approvals:document.querySelectorAll('[aria-label="Sandbox approval"]').length};
   })()`);
   const button = async selector => until('interaction control ' + selector, () => evaluateHere(`(() => {const button=document.querySelector(${JSON.stringify(selector)});if(!button||button.disabled)return false;button.click();return true;})()`));
   const visibleButton = async pattern => until('interaction action ' + pattern, () => evaluateHere(`(() => {const button=[...document.querySelectorAll('button')].find(button=>new RegExp(${JSON.stringify(pattern)},'i').test(button.textContent)&&!button.disabled);if(!button)return false;button.click();return true;})()`));
@@ -892,7 +1035,7 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
   await inspectActionFonts(page,fixture,'composer-action',['[data-testid="composer-submit"]']);
   await send('COMIC_INTERACTION_ASK');
   await until('real multi-question ask', () => evaluateHere(`document.querySelector('[role="tabpanel"]')?.textContent.includes('COMIC_QUESTION_SINGLE')`));
-  if (!await evaluateHere(`document.querySelector('[data-comic-composer] form')?.hasAttribute('inert')`)) throw Error('ordinary input active while answering');
+  if (!await evaluateHere(`window.__comicRoot()?.querySelector('[data-comic-composer] form')?.hasAttribute('inert')`)) throw Error('ordinary input active while answering');
   await screenshot('interactions-question');
   await pendingViewportJourney(page, fixture, 'question', '[data-ask-response-dock]', screenshot);
   if (fixture.requireFonts) {
@@ -908,14 +1051,14 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
       return fonts;
     };
     const fonts = await inspect();
-    await navigateTo(page, new URL('/s/' + encodeURIComponent(fixture.refs.live), fixture.baseURL).href);
+    await presentation(page,'Standard');
     await until('regular-client real question', () => evaluateHere(`document.querySelector('[data-ask-question]')?.textContent.includes('COMIC_QUESTION_SINGLE')`));
     await evaluateHere('document.fonts.ready.then(() => true)');
     const regular = await inspect();
     await screenshot('interactions-question-regular');
     writeFileSync(`${fixture.evidenceDir}/interaction-fonts.json`, JSON.stringify({comic:fonts, regular}, null, 2));
     if (regular.some(face => face.fonts.some(font => /Comic/i.test(font.familyName)))) throw Error('Comic font leaked into regular client');
-    await navigateTo(page, new URL('/comic/s/' + encodeURIComponent(fixture.refs.live), fixture.baseURL).href);
+    await presentation(page,'Comic');
     await until('Comic real question restored', () => evaluateHere(`document.querySelector('[data-ask-question]')?.textContent.includes('COMIC_QUESTION_SINGLE')`));
     if (!fonts.every(face => face.fonts.some(font => font.isCustomFont && font.glyphCount > 0 && /Comic/i.test(font.familyName)))) throw Error('question/control does not render Comic Sans: ' + JSON.stringify(fonts));
   }
@@ -943,7 +1086,7 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
       await inspectActionFonts(page,fixture,'approval-actions',[group+' [data-sandbox-escalation-allow]',group+' button:last-child']);
       await pendingViewportJourney(page, fixture, 'approval', group, screenshot);
       const failureStart = wireTrace.length;
-      const controls = () => evaluateHere(`({ref:document.querySelector('main')?.dataset.sessionRef,disabled:[...document.querySelectorAll(${JSON.stringify(group + ' button')})].map(button=>button.disabled)})`);
+      const controls = () => evaluateHere(`({ref:window.__comicRoot()?.dataset.sessionRef,disabled:[...document.querySelectorAll(${JSON.stringify(group + ' button')})].map(button=>button.disabled)})`);
       await evaluateHere('window.__comicFailApproval = true');
       await button(`${group} [data-sandbox-escalation-allow]`);
       const busy = await until('failed approval attempt busy', controls, state => state.disabled.length === 2 && state.disabled.every(value => value === true));
@@ -964,7 +1107,7 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
     if (marker === 'LATE') {
       await until('actual response withheld', () => evaluateHere('typeof window.__comicReleaseApproval === "function"'));
       if (!await evaluateHere(`[...document.querySelectorAll(${JSON.stringify(group + ' button')})].every(button=>button.disabled)`)) throw Error('pending approval controls not busy');
-      await evaluateHere(`history.pushState(null,'','/comic/s/'+encodeURIComponent(${JSON.stringify(fixture.authorshipRef)})); window.dispatchEvent(new PopStateEvent('popstate'));`);
+      await evaluateHere(`history.pushState(null,'','/s/'+encodeURIComponent(${JSON.stringify(fixture.authorshipRef)})); window.dispatchEvent(new PopStateEvent('popstate'));`);
       await until('second actual root selected', snapshot, value => value.ref === fixture.authorshipRef);
       await type('COMIC_SECOND_ROOT_DRAFT');
       // Hydration and the editor's draft projection must settle before the
@@ -1000,7 +1143,7 @@ export function savedSourcePlaced(geometry, expected) {
 }
 
 function readGeometry(point, ref) {
-  const port = document.querySelector('[data-comic-scroll]')?.firstElementChild;
+  const port = window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;
   if (!port) return null;
   const sources = [...port.querySelectorAll('[data-comic-entry]')];
   const parts = sources.map(node => ({ sessionRef: node.dataset.comicSession, path: JSON.parse(node.dataset.comicPath ?? '[]'), entryId: node.dataset.comicEntry, start: +node.dataset.comicStart, end: +node.dataset.comicEnd, text: node.querySelector('[data-comic-text]')?.textContent ?? '' }));
@@ -1012,13 +1155,13 @@ function readGeometry(point, ref) {
     if(text){const range = document.createRange(); range.setStart(text, point.offset - +source.dataset.comicStart); range.setEnd(text, point.offset - +source.dataset.comicStart + 1);rect=range.getBoundingClientRect();}
     selected = { sessionRef:source.dataset.comicSession, path:JSON.parse(source.dataset.comicPath), entryId: point.entryId, offset: point.offset, y: rect.top - port.getBoundingClientRect().top, start: +source.dataset.comicStart, end: +source.dataset.comicEnd };
   }
-  const probe = document.querySelector('[data-comic-probe]');
+  const probe = window.__comicRoot()?.querySelector('[data-comic-probe]');
   const probeText = probe?.querySelector('p');
   const panels = [...port.querySelectorAll('article')];
   const style = node => node ? { width: node.getBoundingClientRect().width, font: getComputedStyle(node).font, family: getComputedStyle(node).fontFamily, weight: getComputedStyle(node).fontWeight, size: getComputedStyle(node).fontSize, lineHeight: getComputedStyle(node).lineHeight } : null;
   return {
-    path: location.pathname, route: document.querySelector('main')?.dataset.comicRoute, ref: document.querySelector('main')?.dataset.sessionRef,
-    width: innerWidth, portWidth: port.clientWidth, mode: document.querySelector('[data-comic-mode]')?.dataset.comicMode, font: document.querySelector('[data-comic-font]')?.dataset.comicFont,
+    path: location.pathname, ref: window.__comicRoot()?.dataset.sessionRef,
+    width: innerWidth, portWidth: port.clientWidth, mode: window.__comicRoot()?.querySelector('[data-comic-mode]')?.dataset.comicMode, font: window.__comicRoot()?.dataset.comicFont,
     saved: JSON.parse(sessionStorage.getItem('evener:comic:position:' + ref) ?? 'null')?.position,
     point: selected, parts, mounted: sources.length, scrollTop: port.scrollTop, scrollHeight: port.scrollHeight, clientHeight: port.clientHeight, endGap: port.scrollHeight - port.clientHeight - port.scrollTop,
     errorGroups: [...port.querySelectorAll('section[aria-label="Turn errors"]')].map(group => [...group.querySelectorAll('[data-comic-entry]')].map(node => node.dataset.comicEntry)),
@@ -1056,7 +1199,7 @@ async function remoteJourney(page, fixture, { incoming, wireTrace, screenshot })
   const evaluateHere = expression => evaluate(page.send, expression);
   const firstFrame = wireTrace.length;
   const remoteURL = new URL(fixture.baseURL);
-  remoteURL.pathname = '/comic/s/' + encodeURIComponent(fixture.refs.remote);
+  remoteURL.pathname = '/s/' + encodeURIComponent(fixture.refs.remote);
   remoteURL.search = '';
   await navigateTo(page, remoteURL.href);
   await until('real remote parent activity', () => incoming.some(frame => {
@@ -1064,7 +1207,7 @@ async function remoteJourney(page, fixture, { incoming, wireTrace, screenshot })
     return result?.context?.ref === fixture.refs.remote && Array.isArray(result.delegates) && result.delegates.length === 50;
   }));
   const header = await until('remote-qualified real heading', async () => evaluateHere(`(() => {
-    const port=document.querySelector('[data-comic-scroll]')?.firstElementChild;if(!port)return null;
+    const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;if(!port)return null;
     const header=port.querySelector('[data-comic-delegate]');
     if(!header){port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:400}));port.scrollTop+=400;return null;}
     header.querySelector('button').click();
@@ -1072,9 +1215,9 @@ async function remoteJourney(page, fixture, { incoming, wireTrace, screenshot })
   })()`));
   if (!header.ref.startsWith('comic-remote:') || !header.key.includes(fixture.refs.remote)) throw Error('unqualified real remote heading: '+JSON.stringify(header));
   const source = async () => evaluateHere(`(() => {
-    const panel=[...document.querySelectorAll('[data-comic-entry]')].find(panel=>panel.dataset.comicSession===${JSON.stringify(header.ref)} && panel.textContent.includes('COMIC_ROSTER_LEAF literal answer'));
+    const panel=[...window.__comicRoot()?.querySelectorAll('[data-comic-entry]')].find(panel=>panel.dataset.comicSession===${JSON.stringify(header.ref)} && panel.textContent.includes('COMIC_ROSTER_LEAF literal answer'));
     if(panel) return {ref:panel.dataset.comicSession,identity:panel.querySelector('[data-comic-identity]').textContent};
-    const port=document.querySelector('[data-comic-scroll]')?.firstElementChild;if(port){port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:300}));port.scrollTop+=300;}return null;
+    const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;if(port){port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:300}));port.scrollTop+=300;}return null;
   })()`);
   const inline = await until('real remote child source', source);
   const local = JSON.parse(readFileSync(`${fixture.evidenceDir}/activity-roster.json`,'utf8')).observed.find(row=>row.ref.split(':').at(-1)===header.ref.split(':').at(-1));
@@ -1085,8 +1228,8 @@ async function remoteJourney(page, fixture, { incoming, wireTrace, screenshot })
   try { await until('remote full-page action', async () => {
     await evaluateHere('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     const step = await evaluateHere(`(() => {
-      const port=document.querySelector('[data-comic-scroll]').firstElementChild;
-      const headers=[...document.querySelectorAll('[data-comic-delegate]')];
+      const port=window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild;
+      const headers=[...window.__comicRoot()?.querySelectorAll('[data-comic-delegate]')];
       const before={top:port.scrollTop,height:port.scrollHeight,viewport:port.clientHeight};
       const mounted=headers.map(node=>({key:node.dataset.comicDelegate,ref:node.dataset.comicChildRef,y:node.getBoundingClientRect().top}));
       const decision=(${delegateLookupStep.toString()})({...before,mounted},${JSON.stringify(header)},${direction});
@@ -1101,7 +1244,7 @@ async function remoteJourney(page, fixture, { incoming, wireTrace, screenshot })
   }); } finally {
     writeFileSync(`${fixture.evidenceDir}/remote-route-search.json`,JSON.stringify({target:header,steps:search},null,2));
   }
-  await until('real remote direct route', () => evaluateHere('document.querySelector("main")?.dataset.sessionRef'), value=>value===header.ref);
+  await until('real remote direct route', () => evaluateHere(`({path:location.pathname,ref:window.__comicRoot()?.dataset.sessionRef,roots:[...document.querySelectorAll('[data-comic-font][data-session-ref]')].map(node=>node.dataset.sessionRef),owners:[...document.querySelectorAll('[data-session-actions-ref][data-pane-id]')].map(node=>({ref:node.dataset.sessionActionsRef,pane:node.dataset.paneId}))})`), value=>value.ref===header.ref);
   const direct = await until('remote direct persona', source, value=>value?.identity===inline.identity);
   const requests=verifyRemoteRequests(wireTrace.slice(firstFrame));
   writeFileSync(`${fixture.evidenceDir}/remote-identity.json`,JSON.stringify({header,local,inline,direct,requests},null,2));
@@ -1117,13 +1260,13 @@ async function rosterJourney(page, fixture, { command, complete, incoming, outgo
   const firstFrame = incoming.length;
   const firstTrace = wireTrace.length;
   const continuations = [];
-  await reloadPage(page, fixture.evidenceDir);
+  await reloadPage(page);
   const pages = () => incoming.slice(firstFrame).map(frame => JSON.parse(frame).result).filter(result => Array.isArray(result?.delegates) && result.page && result.context?.sessionId === fixture.refs.live.split(':').at(-1));
   await until('real first activity page', () => pages(), rows => rows.some(row => row.delegates.length === 50 && row.page.nextCursor));
   for (let index = 0; index < 2; index++) {
     const requestStart = outgoing.length;
     await until('activity continuation button', async () => {
-      await evaluateHere(`(() => { const port=document.querySelector('[data-comic-scroll]')?.firstElementChild; if(port) {port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:port.scrollHeight-port.scrollTop}));port.scrollTop=port.scrollHeight;} })()`);
+      await evaluateHere(`(() => { const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild; if(port) {port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:port.scrollHeight-port.scrollTop}));port.scrollTop=port.scrollHeight;} })()`);
       return evaluateHere(`(() => { const button=[...document.querySelectorAll('button')].find(button=>button.textContent==='More delegates'&&!button.disabled); if(!button)return false; button.click(); return true; })()`);
     });
     const request = await until('real continued activity page', () => outgoing.slice(requestStart).find(frame => frame.method === 'evener/thread/delegates/list' && frame.params?.ref === fixture.refs.live && frame.params.cursor));
@@ -1138,10 +1281,10 @@ async function rosterJourney(page, fixture, { command, complete, incoming, outgo
   let maxMountedHeaders = 0;
   let direction = 1;
   const steps = [];
-  await evaluateHere(`(() => {const port=document.querySelector('[data-comic-scroll]').firstElementChild;port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:-port.scrollTop}));port.scrollTop=0;})()`);
+  await evaluateHere(`(() => {const port=window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild;port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:-port.scrollTop}));port.scrollTop=0;})()`);
   for (let index = 0; index < 160; index++) {
     await evaluateHere('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-    const step = await evaluateHere(`(() => { const port=document.querySelector('[data-comic-scroll]').firstElementChild; const headers=[...document.querySelectorAll('[data-comic-delegate]')].map(header=>({key:header.dataset.comicDelegate,ref:header.dataset.comicChildRef,name:header.querySelector('strong').textContent,text:header.textContent,portrait:header.querySelector('img').getAttribute('src')})); const before={top:port.scrollTop,height:port.scrollHeight,viewport:port.clientHeight}; const boundary=${direction}<0?before.top<=1:before.top+before.viewport>=before.height-2; const deltaY=${direction}*Math.max(200,port.clientHeight-100);port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY}));port.scrollTop+=deltaY; return {headers,boundary,before,command:{deltaY,top:port.scrollTop}}; })()`);
+    const step = await evaluateHere(`(() => { const port=window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild; const headers=[...window.__comicRoot()?.querySelectorAll('[data-comic-delegate]')].map(header=>({key:header.dataset.comicDelegate,ref:header.dataset.comicChildRef,name:header.querySelector('strong').textContent,text:header.textContent,portrait:header.querySelector('img').getAttribute('src')})); const before={top:port.scrollTop,height:port.scrollHeight,viewport:port.clientHeight}; const boundary=${direction}<0?before.top<=1:before.top+before.viewport>=before.height-2; const deltaY=${direction}*Math.max(200,port.clientHeight-100);port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY}));port.scrollTop+=deltaY; return {headers,boundary,before,command:{deltaY,top:port.scrollTop}}; })()`);
     for (const header of step.headers) observed.set(header.key, header);
     maxMountedHeaders = Math.max(maxMountedHeaders, step.headers.length);
     steps.push({index,direction,...step,uncommandedDelta:step.before.top-(steps.at(-1)?.command.top??0)});
@@ -1164,9 +1307,9 @@ async function rosterJourney(page, fixture, { command, complete, incoming, outgo
   try { await until('same-named explicit child route',async()=>{
     await evaluateHere('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     const step = await evaluateHere(`(() => {
-    const headers=[...document.querySelectorAll('[data-comic-delegate]')];
+    const headers=[...window.__comicRoot()?.querySelectorAll('[data-comic-delegate]')];
     const mounted=headers.map(node=>({key:node.dataset.comicDelegate,ref:node.dataset.comicChildRef,y:node.getBoundingClientRect().top}));
-    const port=document.querySelector('[data-comic-scroll]').firstElementChild;const before={top:port.scrollTop,height:port.scrollHeight,viewport:port.clientHeight};
+    const port=window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild;const before={top:port.scrollTop,height:port.scrollHeight,viewport:port.clientHeight};
     const decision=(${delegateLookupStep.toString()})({...before,mounted},${JSON.stringify(directChild)},${namedDirection});
     const header=headers[decision.index];
     if(header){[...header.querySelectorAll('button')].find(button=>button.textContent==='Open conversation').click();return {found:true,before,mounted,decision};}
@@ -1178,15 +1321,15 @@ async function rosterJourney(page, fixture, { command, complete, incoming, outgo
   }); } finally {
     writeFileSync(`${fixture.evidenceDir}/named-route-search.json`,JSON.stringify({target:directChild.ref,steps:namedSearch},null,2));
   }
-  const readNamedIdentity = () => evaluateHere(`(() => {const panel=[...document.querySelectorAll('[data-comic-entry]')].find(node=>node.dataset.comicSession===${JSON.stringify(directChild.ref)}&&node.textContent.includes('COMIC_ROSTER_LEAF literal answer'));return panel?.querySelector('[data-comic-identity]')?.textContent;})()`);
+  const readNamedIdentity = () => evaluateHere(`(() => {const panel=[...(window.__comicRoot()?.querySelectorAll('[data-comic-entry]')??[])].find(node=>node.dataset.comicSession===${JSON.stringify(directChild.ref)}&&node.textContent.includes('COMIC_ROSTER_LEAF literal answer'));return panel?.querySelector('[data-comic-identity]')?.textContent;})()`);
   const directIdentity = await until('named direct child identity', readNamedIdentity, value=>value===`comic-same-name · ${ownedRow.delegateId} · ${fixture.refs.live}`);
-  await reloadPage(page, fixture.evidenceDir);
+  await reloadPage(page);
   const refreshedIdentity = await until('named direct child refresh identity', readNamedIdentity, value=>value===directIdentity);
   writeFileSync(`${fixture.evidenceDir}/named-direct.json`, JSON.stringify({directChild,ownedRow,directIdentity,refreshedIdentity},null,2));
 }
 
 // Additive real-daemon journey. DOM input only, never store/model injection.
-async function childJourney(page, fixture, { command, complete, incoming, outgoing, screenshot }) {
+async function childJourney(page, fixture, { command, complete, incoming, outgoing, screenshot, wireTrace }) {
   const evaluateHere = expression => evaluate(page.send, expression);
   const firstRequest = outgoing.length;
   command("background-role", "comic-subchats");
@@ -1197,7 +1340,7 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
   const metrics = [];
   const reveal = async (selector, text = "", direction = -1) => until("reveal real child " + text, async () => {
     const result = await evaluateHere(`(() => {
-      const port = document.querySelector('[data-comic-scroll]')?.firstElementChild;
+      const port = window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;
       if (!port) return null;
       const node = [...port.querySelectorAll(${JSON.stringify(selector)})].find(node => node.textContent.includes(${JSON.stringify(text)}));
       const deltaY = node ? node.getBoundingClientRect().top - port.getBoundingClientRect().top - 24 : ${direction} * port.clientHeight * .7;
@@ -1221,7 +1364,7 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
   };
   const operate = async (ref, label, keyboard = false) => {
     const found = await evaluateHere(`(() => {
-    const header = [...document.querySelectorAll('[data-comic-delegate]')].find(node => node.dataset.comicChildRef === ${JSON.stringify(ref)});
+    const header = [...window.__comicRoot()?.querySelectorAll('[data-comic-delegate]')].find(node => node.dataset.comicChildRef === ${JSON.stringify(ref)});
     const button = [...(header?.querySelectorAll('button') ?? [])].find(node => node.textContent.trim() === ${JSON.stringify(label)});
     if (!button) return false; button.focus({preventScroll:true}); if (!${keyboard}) button.click(); return true;
     })()`);
@@ -1241,7 +1384,7 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
   let grandchild;
   await until('real nested heading', async () => {
     const value = await evaluateHere(`(() => {
-      const port = document.querySelector('[data-comic-scroll]').firstElementChild;
+      const port = window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild;
       const node = [...port.querySelectorAll('[data-comic-delegate]')].find(node => node.dataset.comicChildRef !== ${JSON.stringify(header.ref)});
       if (node) return {ref:node.dataset.comicChildRef, key:node.dataset.comicDelegate, unplaced:[...port.querySelectorAll('[data-comic-flow="unplaced-group"]')].some(group => group.dataset.comicSession === ${JSON.stringify(header.ref)})};
       port.dispatchEvent(new WheelEvent('wheel', {bubbles:true, deltaY:400})); port.scrollTop += 400; return null;
@@ -1258,8 +1401,8 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
   const measure = async name => {
     const geometry = await until(name, () => evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(saved)}, ${JSON.stringify(fixture.refs.live)})`), value => savedSourcePlaced(value, saved));
     const nestedGeometry = await evaluateHere(`(() => {
-      const port = document.querySelector('[data-comic-scroll]').firstElementChild;
-      return {scrollports:document.querySelectorAll('[data-comic-scroll]').length, editors:port.querySelectorAll('textarea,[contenteditable=true]').length, fullPageEditors:document.querySelectorAll('[data-comic-composer] [contenteditable=true]').length,
+      const port = window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild;
+      return {scrollports:window.__comicRoot()?.querySelectorAll('[data-comic-scroll]').length, editors:port.querySelectorAll('textarea,[contenteditable=true]').length, fullPageEditors:window.__comicRoot()?.querySelectorAll('[data-comic-composer] [contenteditable=true]').length,
         headers:[...port.querySelectorAll('[data-comic-delegate]')].map(node => ({ref:node.dataset.comicChildRef, width:node.getBoundingClientRect().width, text:node.textContent})),
         thoughts:[...port.querySelectorAll('[data-comic-balloon=thought]')].map(node => { const text = node.querySelector('[data-comic-text]'); const box = node.getBoundingClientRect(); const inside = text.getBoundingClientRect(); return {text:node.textContent, width:node.clientWidth, height:node.clientHeight, overflow:Math.max(text.scrollWidth-text.clientWidth,text.scrollHeight-text.clientHeight), contained:inside.left >= box.left && inside.right <= box.right && inside.top >= box.top && inside.bottom <= box.bottom}; })};
     })()`);
@@ -1281,15 +1424,26 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
     try { const row = JSON.parse(line); return row.event === 'turn-complete' && row.prompt === 'COMIC_SUBCHAT_ROOT' && row.ok; } catch { return false; }
   }));
   await measure('nested-child-stream-finished');
-  await reloadPage(page, fixture.evidenceDir);
+  const nestedHandoff=[await presentation(page,'Standard'),await presentation(page,'Comic')];
+  await measure('nested-mode-handoff');
+  writeFileSync(`${fixture.evidenceDir}/nested-mode-handoff.json`,JSON.stringify(nestedHandoff,null,2));
+  await reloadPage(page);
   await measure('nested-reload');
   // Recover only the saved branch, then expose the child's explicit full-page route.
   if (!await operate(grandchild.ref, 'Open conversation')) throw Error('missing child route');
-  await until('full child page', () => evaluateHere('document.querySelector("main")?.dataset.sessionRef'), value => value === grandchild.ref);
+  await until('full child page', () => evaluateHere('window.__comicRoot()?.dataset.sessionRef'), value => value === grandchild.ref);
   await evaluateHere('history.back()');
   await measure('child-back');
+  // Back changes focus, not workspace ownership. The explicit direct page
+  // remains a secondary pane until its native tab close control retires it.
+  const directPaneBefore=await evaluateHere(`[...document.querySelectorAll('[data-session-actions-ref][data-pane-id]')].map(node=>({ref:node.dataset.sessionActionsRef,pane:node.dataset.paneId}))`);
+  if(directPaneBefore.filter(owner=>owner.ref===grandchild.ref).length!==1)throw Error('missing unique direct child pane owner');
+  await nativeClick(page,'close direct child workspace pane',`[...document.querySelectorAll('[data-session-actions-ref][data-pane-id]')].find(node=>node.dataset.sessionActionsRef===${JSON.stringify(grandchild.ref)})?.closest('.dv-groupview')?.querySelector('.dv-tab.dv-active-tab .dv-default-tab-action')`);
+  await until('direct child pane owner retired',()=>evaluateHere(`![...document.querySelectorAll('[data-session-actions-ref][data-pane-id]')].some(node=>node.dataset.sessionActionsRef===${JSON.stringify(grandchild.ref)})`));
+  await measure('child-direct-pane-closed');
+  writeFileSync(`${fixture.evidenceDir}/child-direct-pane-retirement.json`,JSON.stringify({before:directPaneBefore,after:await evaluateHere(`[...document.querySelectorAll('[data-session-actions-ref][data-pane-id]')].map(node=>({ref:node.dataset.sessionActionsRef,pane:node.dataset.paneId}))`)},null,2));
   for (const mode of ['plain', 'comic']) {
-    await evaluateHere(`(() => { const control = document.querySelector('select'); control.value = ${JSON.stringify(mode)}; control.dispatchEvent(new Event('change', {bubbles:true})); })()`);
+    await selectAppearance(page, "View", mode);
     await measure('nested-' + mode);
   }
   if (!await operate(grandchild.ref, 'Collapse conversation', true)) throw Error('missing keyboard collapse');
@@ -1298,7 +1452,7 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
   await until('keyboard reopened strip', () => evaluateHere(`document.activeElement?.closest('[data-comic-child-ref]')?.dataset.comicChildRef === ${JSON.stringify(grandchild.ref)} && document.activeElement?.getAttribute('aria-expanded') === 'true'`));
   writeFileSync(`${fixture.evidenceDir}/child-keyboard.json`, JSON.stringify(await evaluateHere(`({focusedRef:document.activeElement.closest('[data-comic-child-ref]').dataset.comicChildRef, expanded:document.activeElement.getAttribute('aria-expanded'), saved:JSON.parse(sessionStorage.getItem('evener:comic:position:' + ${JSON.stringify(fixture.refs.live)})).position})`), null, 2));
   await evaluateHere(`(() => {
-    const port=document.querySelector('[data-comic-scroll]').firstElementChild;
+    const port=window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild;
     window.__comicRestoreEvents=[];
     const record=event=>{window.__comicRestoreEvents.push({at:performance.now(),type:event.type,trusted:event.isTrusted,scrollTop:port.scrollTop,focusedRef:document.activeElement?.closest('[data-comic-child-ref]')?.dataset.comicChildRef,selectionInPort:port.contains(document.getSelection()?.anchorNode),saved:JSON.parse(sessionStorage.getItem('evener:comic:position:'+${JSON.stringify(fixture.refs.live)})??'null')?.position});if(window.__comicRestoreEvents.length>100)window.__comicRestoreEvents.shift();};
     for(const event of ['scroll','wheel','pointerdown','pointerup','pointercancel','keydown','focusin'])port.addEventListener(event,record,{passive:true});
@@ -1307,7 +1461,6 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
   const restoreCheckpoints=[];
   const recordRestore=async stage=>{
     restoreCheckpoints.push({stage,geometry:await evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(saved)},${JSON.stringify(fixture.refs.live)})`),events:await evaluateHere('window.__comicRestoreEvents')});
-    await recordOwnerTrace(page,fixture.evidenceDir,`nested-${stage}`);
     writeFileSync(`${fixture.evidenceDir}/nested-restore-checkpoints.json`,JSON.stringify({expected:saved,header,grandchild,checkpoints:restoreCheckpoints},null,2));
   };
   // Native Enter may scroll its focused heading into view. Reestablish an
@@ -1338,10 +1491,10 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
   const childPages = outgoing.slice(beforePaging).filter(frame => frame.method === 'thread/turns/list' && frame.params.ref === header.ref);
   if (childPages.length < 3) throw Error('three child history pages were not read: ' + childPages.length);
   await reveal('[data-comic-child-ref=' + JSON.stringify(grandchild.ref) + ']', '', 1);
-  const relocated = await evaluateHere(`(() => { const node = document.querySelector('[data-comic-child-ref=' + ${JSON.stringify(JSON.stringify(grandchild.ref))} + ']'); return {key:node?.dataset.comicDelegate, expanded:node?.querySelector('[aria-expanded]')?.getAttribute('aria-expanded')}; })()`);
+  const relocated = await evaluateHere(`(() => { const node = window.__comicRoot()?.querySelector('[data-comic-child-ref=' + ${JSON.stringify(JSON.stringify(grandchild.ref))} + ']'); return {key:node?.dataset.comicDelegate, expanded:node?.querySelector('[aria-expanded]')?.getAttribute('aria-expanded')}; })()`);
   if (relocated.key !== grandchild.key || relocated.expanded !== 'true') throw Error('causal placement replaced expanded nested identity');
   const laterSource = await reveal('[data-comic-entry][data-comic-session=' + JSON.stringify(header.ref) + ']', 'COMIC_CHILD_SOURCE_05', 1);
-  await evaluateHere(`(() => { const port = document.querySelector('[data-comic-scroll]').firstElementChild; const source = [...port.querySelectorAll('[data-comic-text]')].find(node => node.textContent.startsWith('COMIC_CHILD_SOURCE_05')); const deltaY = source.getBoundingClientRect().top - port.getBoundingClientRect().top + 80; port.dispatchEvent(new WheelEvent('wheel', {bubbles:true, deltaY})); port.scrollTop += deltaY; })()`);
+  await evaluateHere(`(() => { const port = window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild; const source = [...port.querySelectorAll('[data-comic-text]')].find(node => node.textContent.startsWith('COMIC_CHILD_SOURCE_05')); const deltaY = source.getBoundingClientRect().top - port.getBoundingClientRect().top + 80; port.dispatchEvent(new WheelEvent('wheel', {bubbles:true, deltaY})); port.scrollTop += deltaY; })()`);
   if(laterSource.sessionRef!==header.ref || laterSource.path.length!==1)throw Error('wrong later child source');
   saved = await capturedSource('later child source anchor',laterSource,1);
   await measure('later-child-page');
@@ -1350,25 +1503,36 @@ async function childJourney(page, fixture, { command, complete, incoming, outgoi
   await until('child socket reconnected', () => evaluateHere('window.__comicSockets.some(socket => socket.readyState === WebSocket.OPEN)'));
   await measure('later-child-reconnected');
   const beforeReload = outgoing.length;
-  const diagnosticScript=await page.send('Page.addScriptToEvaluateOnNewDocument',{source:`window.__comicReloadEvents=[];for(const type of ['scroll','wheel','pointerdown','pointerup','pointercancel','keydown','focusin','selectionchange'])document.addEventListener(type,event=>{const port=document.querySelector('[data-comic-scroll]')?.firstElementChild;window.__comicReloadEvents.push({at:performance.now(),type:event.type,trusted:event.isTrusted,scrollTop:port?.scrollTop,selectionInPort:!!port?.contains(document.getSelection()?.anchorNode),saved:JSON.parse(sessionStorage.getItem('evener:comic:position:'+${JSON.stringify(fixture.refs.live)})??'null')?.position});if(window.__comicReloadEvents.length>100)window.__comicReloadEvents.shift();},{capture:true,passive:true});`});
+  const paneOwnersBefore=await evaluateHere(`[...document.querySelectorAll('[data-session-actions-ref][data-pane-id]')].map(node=>({ref:node.dataset.sessionActionsRef,pane:node.dataset.paneId,visible:!!node.getClientRects().length}))`);
+  if(paneOwnersBefore.some(owner=>owner.ref===grandchild.ref))throw Error('direct descendant pane still owns the reload');
+  const diagnosticScript=await page.send('Page.addScriptToEvaluateOnNewDocument',{source:`window.__comicReloadEvents=[];for(const type of ['scroll','wheel','pointerdown','pointerup','pointercancel','keydown','focusin','selectionchange'])document.addEventListener(type,event=>{const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;window.__comicReloadEvents.push({at:performance.now(),type:event.type,trusted:event.isTrusted,scrollTop:port?.scrollTop,selectionInPort:!!port?.contains(document.getSelection()?.anchorNode),saved:JSON.parse(sessionStorage.getItem('evener:comic:position:'+${JSON.stringify(fixture.refs.live)})??'null')?.position});if(window.__comicReloadEvents.length>100)window.__comicReloadEvents.shift();},{capture:true,passive:true});`});
   const reloadBefore=await until('immediate pre-reload source placement',()=>evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(saved)},${JSON.stringify(fixture.refs.live)})`),value=>savedSourcePlaced(value,saved));
-  await reloadPage(page, fixture.evidenceDir);
+  await reloadPage(page);
   try { await measure('later-child-reload'); } finally {
-    await recordOwnerTrace(page,fixture.evidenceDir,'later-child-verdict');
-    writeFileSync(`${fixture.evidenceDir}/later-child-restore-checkpoints.json`,JSON.stringify({expected:saved,before:reloadBefore,after:await evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(saved)},${JSON.stringify(fixture.refs.live)})`),events:await evaluateHere('window.__comicReloadEvents'),requests:outgoing.slice(beforeReload)},null,2));
+    writeFileSync(`${fixture.evidenceDir}/later-child-restore-checkpoints.json`,JSON.stringify({expected:saved,before:reloadBefore,after:await evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(saved)},${JSON.stringify(fixture.refs.live)})`),paneOwnersBefore,paneOwnersAfter:await evaluateHere(`[...document.querySelectorAll('[data-session-actions-ref][data-pane-id]')].map(node=>({ref:node.dataset.sessionActionsRef,pane:node.dataset.paneId,visible:!!node.getClientRects().length}))`),events:await evaluateHere('window.__comicReloadEvents'),requests:outgoing.slice(beforeReload)},null,2));
     await page.send('Page.removeScriptToEvaluateOnNewDocument',{identifier:diagnosticScript.result.identifier});
   }
   if (outgoing.slice(beforeReload).some(frame => frame.method === 'thread/read' && frame.params.ref === grandchild.ref && frame.params.includeTurns !== false)) throw Error('restoration fetched an unopened descendant');
-  await page.send('Page.navigate', {url:new URL('/comic/s/' + encodeURIComponent(header.ref), fixture.baseURL).href});
-  await until('later child full page', () => evaluateHere('document.querySelector("main")?.dataset.sessionRef'), value => value === header.ref);
+  for (const partial of [true,false]) {
+    const eviction=await evictChildHistory(page,header.ref,partial);
+    if(!eviction.deleted.transcriptItems || (partial&&!eviction.retained.transcriptItems))throw Error('cache boundary did not remove older source '+JSON.stringify(eviction));
+    const networkStart=wireTrace.length;
+    await reloadPage(page);
+    await measure(partial?'later-child-partial-cache-reload':'later-child-cold-cache-reload');
+    const pages=repliesSince(wireTrace,networkStart,frame=>frame.method==='thread/turns/list'&&frame.params.ref===header.ref);
+    writeFileSync(`${fixture.evidenceDir}/later-child-${partial?'partial':'cold'}-cache.json`,JSON.stringify({eviction,expected:saved,pages},null,2));
+    if(pages.length<2 || pages.some(page=>page.response.error||!page.response.result) || new Set(pages.map(page=>page.request.params.cursor)).size<2)throw Error('child reload did not continue through two distinct successful real network pages '+JSON.stringify(pages));
+  }
+  await page.send('Page.navigate', {url:new URL('/s/' + encodeURIComponent(header.ref), fixture.baseURL).href});
+  await until('later child full page', () => evaluateHere('window.__comicRoot()?.dataset.sessionRef'), value => value === header.ref);
   await evaluateHere('history.back()');
   await measure('later-child-back');
-  await page.send('Page.navigate', {url:new URL('/comic/s/' + encodeURIComponent(grandchild.ref), fixture.baseURL).href});
-  await until('named-parent grandchild page', () => evaluateHere('document.querySelector("main")?.dataset.sessionRef'), value => value === grandchild.ref);
+  await page.send('Page.navigate', {url:new URL('/s/' + encodeURIComponent(grandchild.ref), fixture.baseURL).href});
+  await until('named-parent grandchild page', () => evaluateHere('window.__comicRoot()?.dataset.sessionRef'), value => value === grandchild.ref);
   const parentIdentity = await until('named parent instruction identity', () => evaluateHere(`(() => {
-    const panel=[...document.querySelectorAll('[data-comic-entry]')].find(node=>node.dataset.comicSession===${JSON.stringify(grandchild.ref)}&&node.textContent.includes('COMIC_PARENT_INSTRUCTION literal parent steering'));
+    const panel=[...window.__comicRoot()?.querySelectorAll('[data-comic-entry]')].find(node=>node.dataset.comicSession===${JSON.stringify(grandchild.ref)}&&node.textContent.includes('COMIC_PARENT_INSTRUCTION literal parent steering'));
     if(panel)return panel.querySelector('[data-comic-identity]')?.textContent;
-    const port=document.querySelector('[data-comic-scroll]')?.firstElementChild;if(port){port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:-300}));port.scrollTop-=300;}return null;
+    const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;if(port){port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:-300}));port.scrollTop-=300;}return null;
   })()`), value=>value===`comic-named-parent · ${JSON.parse(header.key)[1]} · ${JSON.parse(header.key)[0]}`);
   writeFileSync(`${fixture.evidenceDir}/named-parent.json`, JSON.stringify({header,grandchild,parentIdentity},null,2));
   await evaluateHere('history.back()');
@@ -1399,16 +1563,16 @@ async function authorshipJourney(page, fixture, { incoming, outgoing, screenshot
     try { const row = JSON.parse(line); return row.event === 'turn-complete' && row.prompt === human && row.ok; } catch { return false; }
   }));
   const navigate = async ref => {
-    await page.send('Page.navigate', {url:new URL('/comic/s/' + encodeURIComponent(ref), fixture.baseURL).href});
-    await until('authored conversation route', () => evaluateHere('document.querySelector("main")?.dataset.sessionRef'), value=>value===ref);
+    await page.send('Page.navigate', {url:new URL('/s/' + encodeURIComponent(ref), fixture.baseURL).href});
+    await until('authored conversation route', () => evaluateHere('window.__comicRoot()?.dataset.sessionRef'), value=>value===ref);
   };
   await navigate(fixture.authorshipRef);
   const expand = async name => {
     let direction=1;
     const header = await until('real authored child ' + name, async () => {
       const result=await evaluateHere(`(() => {
-      const port=document.querySelector('[data-comic-scroll]')?.firstElementChild;
-      const header=[...document.querySelectorAll('[data-comic-delegate]')].find(node=>node.textContent.includes(${JSON.stringify(name)}));
+      const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;
+      const header=[...window.__comicRoot()?.querySelectorAll('[data-comic-delegate]')].find(node=>node.textContent.includes(${JSON.stringify(name)}));
       if(!header){if(!port)return null;port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:${direction}*500}));port.scrollTop+=${direction}*500;return {boundary:${direction}<0?port.scrollTop<=1:port.scrollTop+port.clientHeight>=port.scrollHeight-1};}
       const button=[...header.querySelectorAll('button')].find(node=>node.textContent==='Expand conversation');
       if(button)button.click();
@@ -1438,7 +1602,7 @@ async function authorshipJourney(page, fixture, { incoming, outgoing, screenshot
   let baselineDirection=1;
   await until('six original non-inherited author baselines',async()=>{
     const result=await evaluateHere(`(() => {
-      const port=document.querySelector('[data-comic-scroll]')?.firstElementChild;if(!port)return null;
+      const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;if(!port)return null;
       const entries=[...port.querySelectorAll('[data-comic-entry]')].map(node=>({ref:node.dataset.comicSession,text:node.querySelector('[data-comic-text]')?.textContent,identity:node.querySelector('[data-comic-identity]')?.textContent,kind:node.querySelector('[data-comic-balloon]')?.dataset.comicBalloon,speaker:node.querySelector('article')?.dataset.comicSpeaker}));
       const controls=[port.parentElement.previousElementSibling,...port.querySelectorAll('[data-comic-flow="history"]')];
       for(const control of controls){const older=[...(control?.querySelectorAll('button')??[])].find(node=>node.textContent==='Older messages');if(older&&!older.disabled)older.click();}
@@ -1463,9 +1627,9 @@ async function authorshipJourney(page, fixture, { incoming, outgoing, screenshot
     let direction=1;
     await until(name, async()=>{
       const result=await evaluateHere(`(() => {
-        const port=document.querySelector('[data-comic-scroll]')?.firstElementChild;if(!port)return null;
+        const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;if(!port)return null;
         const entries=[...port.querySelectorAll('[data-comic-entry]')].filter(node=>node.dataset.comicSession===${JSON.stringify(leaf.ref)}).map(node=>({id:node.dataset.comicEntry,path:JSON.parse(node.dataset.comicPath),start:+node.dataset.comicStart,end:+node.dataset.comicEnd,text:node.querySelector('[data-comic-text]')?.textContent,identity:node.querySelector('[data-comic-identity]')?.textContent,kind:node.querySelector('[data-comic-balloon]')?.dataset.comicBalloon,speaker:node.querySelector('article')?.dataset.comicSpeaker}));
-        const history=document.querySelector('main')?.dataset.sessionRef===${JSON.stringify(leaf.ref)}
+        const history=window.__comicRoot()?.dataset.sessionRef===${JSON.stringify(leaf.ref)}
           ? port.parentElement.previousElementSibling
           : [...port.querySelectorAll('[data-comic-flow="history"]')].find(node=>node.dataset.comicSession===${JSON.stringify(leaf.ref)});
         const older=[...(history?.querySelectorAll('button')??[])].find(node=>node.textContent==='Older messages');
@@ -1495,7 +1659,7 @@ async function authorshipJourney(page, fixture, { incoming, outgoing, screenshot
   await screenshot('authorship-inline');
   await navigate(leaf.ref);
   await collect('direct-leaf-original-authors');
-  await reloadPage(page, fixture.evidenceDir);
+  await reloadPage(page);
   await collect('reloaded-leaf-original-authors');
   const beforeReconnect=outgoing.length;
   await evaluateHere("window.__comicSockets.forEach(socket=>socket.close(4000,'authorship recovery'))");

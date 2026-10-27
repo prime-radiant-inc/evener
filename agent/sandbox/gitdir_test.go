@@ -8,27 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 )
-
-// runGit runs a git command in dir and fails the test on error. Fixtures are
-// built with the real git binary — no mocks — so the classifier is exercised
-// against real .git directories and real linked-worktree/submodule pointer files.
-func runGit(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	// Deterministic identity + allow local file:// submodules (recent git blocks
-	// the file transport for submodules by default).
-	cmd.Env = append(cmd.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e",
-		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
-	}
-}
 
 func requireGit(t *testing.T) {
 	t.Helper()
@@ -55,7 +37,7 @@ func TestClassifyMainCheckout(t *testing.T) {
 	t.Parallel()
 	requireGit(t)
 	root := clean(t.TempDir())
-	runGit(t, root, "init", "-q")
+	gittest.Run(t, root, "init", "-q")
 
 	got, err := ClassifyWorkspace(root)
 	if err != nil {
@@ -97,10 +79,10 @@ func TestClassifyLinkedWorktree(t *testing.T) {
 	t.Parallel()
 	requireGit(t)
 	main := clean(t.TempDir())
-	runGit(t, main, "init", "-q")
-	runGit(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, main, "init", "-q")
+	gittest.Run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 	wt := filepath.Join(filepath.Dir(main), "linked-wt")
-	runGit(t, main, "worktree", "add", "-q", wt)
+	gittest.Run(t, main, "worktree", "add", "-q", wt)
 	wt = clean(wt)
 
 	got, err := ClassifyWorkspace(wt)
@@ -168,11 +150,11 @@ func TestClassifySubmodule(t *testing.T) {
 	base := clean(t.TempDir())
 	upstream := filepath.Join(base, "upstream")
 	super := filepath.Join(base, "super")
-	runGit(t, base, "init", "-q", "upstream")
-	runGit(t, upstream, "commit", "-q", "--allow-empty", "-m", "init")
-	runGit(t, base, "init", "-q", "super")
-	runGit(t, super, "commit", "-q", "--allow-empty", "-m", "init")
-	runGit(t, super, "-c", "protocol.file.allow=always", "submodule", "add", "-q", upstream, "sub")
+	gittest.Run(t, base, "init", "-q", "upstream")
+	gittest.Run(t, upstream, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, base, "init", "-q", "super")
+	gittest.Run(t, super, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, super, "-c", "protocol.file.allow=always", "submodule", "add", "-q", upstream, "sub")
 
 	subWT := clean(filepath.Join(super, "sub"))
 	got, err := ClassifyWorkspace(subWT)
@@ -207,12 +189,12 @@ func TestClassifyNestedSubmodule(t *testing.T) {
 	base := clean(t.TempDir())
 	upstream := filepath.Join(base, "upstream")
 	super := filepath.Join(base, "super")
-	runGit(t, base, "init", "-q", "upstream")
-	runGit(t, upstream, "commit", "-q", "--allow-empty", "-m", "init")
-	runGit(t, base, "init", "-q", "super")
-	runGit(t, super, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, base, "init", "-q", "upstream")
+	gittest.Run(t, upstream, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, base, "init", "-q", "super")
+	gittest.Run(t, super, "commit", "-q", "--allow-empty", "-m", "init")
 	// A submodule at a subdirectory path → git dir ".git/modules/libs/foo".
-	runGit(t, super, "-c", "protocol.file.allow=always", "submodule", "add", "-q", upstream, "libs/foo")
+	gittest.Run(t, super, "-c", "protocol.file.allow=always", "submodule", "add", "-q", upstream, "libs/foo")
 
 	subWT := clean(filepath.Join(super, "libs", "foo"))
 	got, err := ClassifyWorkspace(subWT)
@@ -245,11 +227,11 @@ func TestClassifyMainCheckoutWithSubmoduleProtectsModuleConfig(t *testing.T) {
 	base := clean(t.TempDir())
 	upstream := filepath.Join(base, "upstream")
 	super := clean(filepath.Join(base, "super"))
-	runGit(t, base, "init", "-q", "upstream")
-	runGit(t, upstream, "commit", "-q", "--allow-empty", "-m", "init")
-	runGit(t, base, "init", "-q", "super")
-	runGit(t, super, "commit", "-q", "--allow-empty", "-m", "init")
-	runGit(t, super, "-c", "protocol.file.allow=always", "submodule", "add", "-q", upstream, "sub")
+	gittest.Run(t, base, "init", "-q", "upstream")
+	gittest.Run(t, upstream, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, base, "init", "-q", "super")
+	gittest.Run(t, super, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, super, "-c", "protocol.file.allow=always", "submodule", "add", "-q", upstream, "sub")
 
 	got, err := ClassifyWorkspace(super)
 	if err != nil {
@@ -272,13 +254,13 @@ func TestClassifyMainCheckoutProtectsPerWorktreeConfig(t *testing.T) {
 	t.Parallel()
 	requireGit(t)
 	main := clean(t.TempDir())
-	runGit(t, main, "init", "-q")
-	runGit(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, main, "init", "-q")
+	gittest.Run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 	wt := main + "-wt"
-	runGit(t, main, "worktree", "add", "-q", wt)
+	gittest.Run(t, main, "worktree", "add", "-q", wt)
 	// Force a real per-worktree config.worktree carrying a hooksPath redirect.
-	runGit(t, wt, "config", "extensions.worktreeConfig", "true")
-	runGit(t, wt, "config", "--worktree", "core.hooksPath", "/tmp/evil-hooks")
+	gittest.Run(t, wt, "config", "extensions.worktreeConfig", "true")
+	gittest.Run(t, wt, "config", "--worktree", "core.hooksPath", "/tmp/evil-hooks")
 
 	got, err := ClassifyWorkspace(main)
 	if err != nil {
@@ -308,7 +290,7 @@ func TestClassifySymlinkedGitProtectsRealConfig(t *testing.T) {
 	requireGit(t)
 	base := clean(t.TempDir())
 	realGit := filepath.Join(base, "realrepo")
-	runGit(t, base, "init", "-q", "realrepo")
+	gittest.Run(t, base, "init", "-q", "realrepo")
 	// A working dir whose .git is a symlink to the real repo's .git.
 	wt := filepath.Join(base, "wt")
 	if err := os.Mkdir(wt, 0o755); err != nil {
@@ -369,7 +351,7 @@ func TestClassifyProtectsConfigIncludeUnderWorktree(t *testing.T) {
 	t.Parallel()
 	requireGit(t)
 	root := clean(t.TempDir())
-	runGit(t, root, "init", "-q")
+	gittest.Run(t, root, "init", "-q")
 	// The .git/config (protected) includes a worktree-local file. configDir is
 	// <root>/.git, so ../included.cfg resolves to <root>/included.cfg — writable.
 	appendFile(t, filepath.Join(root, ".git", "config"), "\n[include]\n\tpath = ../included.cfg\n")
@@ -391,7 +373,7 @@ func TestClassifyFollowsChainedConfigIncludes(t *testing.T) {
 	t.Parallel()
 	requireGit(t)
 	root := clean(t.TempDir())
-	runGit(t, root, "init", "-q")
+	gittest.Run(t, root, "init", "-q")
 	// .git/config includes a worktree-local middle file, which itself includes a
 	// second worktree-local file. Both worktree-local links must be protected.
 	appendFile(t, filepath.Join(root, ".git", "config"), "\n[include]\n\tpath = ../mid.cfg\n")

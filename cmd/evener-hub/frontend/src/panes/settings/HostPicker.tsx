@@ -8,10 +8,9 @@
 // stays visible; the pane consuming the selection decides what an unknown host
 // renders (CredentialsHostScope says so honestly).
 
-import { HOST_POLL_MS } from "@evener/appwire-client";
+import { HOST_POLL_MS, isLocalHost, LOCAL_HOST } from "@evener/appwire-client";
 import { useEffect } from "react";
 import { useConnectionStore } from "../../stores/connection";
-import { isLocalHost, LOCAL_HOST } from "../../stores/hostRouting";
 import { hostsStore, isConfiguredHost, selectableHostRows, useHostsStore } from "../../stores/hosts";
 import { FormRow, Select, type SelectOption } from "../../widgets";
 import { useConnectedEffect } from "./sections/useConnectedEffect";

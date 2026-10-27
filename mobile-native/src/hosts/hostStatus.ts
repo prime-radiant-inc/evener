@@ -1,6 +1,6 @@
 // A host's state in words (spec 12; ruling 4), from the row evener/host/list
 // serves. `midAttach` stays set while the hub's supervisor retries a dropped
-// host (observe, cmd/evener-hub/app_host_manage.go), so a host the hub is
+// host (observe, cmd/evener-hub/app_host_attach_state.go), so a host the hub is
 // already reaching for offers no Connect.
 import type { HostRow } from "@evener/appwire-client";
 

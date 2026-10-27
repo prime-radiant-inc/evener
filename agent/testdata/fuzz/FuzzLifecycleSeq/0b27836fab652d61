@@ -1,2 +1,2 @@
 go test fuzz v1
-[]byte("::")
+[]byte(":\x02")

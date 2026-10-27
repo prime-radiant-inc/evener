@@ -15,9 +15,9 @@ import type {
 	ConversationGoalActions,
 	ConversationModelCatalog,
 	ConversationService,
-} from "../../mobile/src/services/conversation";
+} from "./conversation/services/conversation";
 import type { DraftDocument } from "./draftDocument";
-import type { ConversationMutationContext } from "../../mobile/src/state/conversationMutation";
+import type { ConversationMutationContext } from "./conversation/state/conversationMutation";
 
 const localCommands = [
 	{ id: "project", capability: null, label: "Show in project" },

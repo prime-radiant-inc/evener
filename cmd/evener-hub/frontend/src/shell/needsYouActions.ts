@@ -11,7 +11,7 @@ import { navigationStore } from "../stores/navigation/store";
 import { threadsStore } from "../stores/threads";
 import { openAttentionSession } from "./attentionHistory";
 import { chromeStore } from "./chromeStore";
-import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
+import { focusedPaneDocument, focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
 import { paletteStore } from "./palette/paletteController";
 import { existingConversationPaneLifetime } from "./paneLifetime";
 import { needsYouRefs, nextNeedsYouRef } from "./rail/needsYouCycle";
@@ -280,10 +280,6 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
   // build the controller while it renders and still release every resource the
   // moment observation has begun. A controller built by a render React discards
   // never observes anything and has nothing to release.
-  const focusedPaneDocument = (): Document | null => {
-    const focused = workspaceStore.getState().focusedPaneId;
-    return focused ? (chromeStore.getState().paneDocuments.get(focused) ?? null) : null;
-  };
   const observeModalDocument = (doc: Document | null): void => {
     if (!doc || observedDocuments.has(doc) || !doc.documentElement) return;
     observedDocuments.add(doc);

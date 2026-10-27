@@ -21,14 +21,8 @@ import {
   sessionControls,
   type ThreadModel,
 } from "@evener/appwire-client";
-import {
-  isRecoveryFenced,
-  isResumeOnly,
-  isSendResumes,
-  type ResumeOnlySignals,
-  sendDrivenModel,
-  threadsStore,
-} from "./threads";
+import { isRecoveryFenced, isResumeOnly, isSendResumes, type ResumeOnlySignals } from "./recoveryFence";
+import { sendDrivenModel, threadsStore } from "./threads";
 
 export type SessionControl = keyof SessionControls["reason"];
 
@@ -60,11 +54,9 @@ export function pressRefusal(ref: string, control: SessionControl): string | und
   return controlsFor(model).reason[control];
 }
 
-// The local recovery fence's shared predicate lives in threads.ts - beside
-// the obligation state it reads, and where the store's own mutation admission
-// uses it (threads.ts cannot import this module without an import cycle).
-// Re-exported here so the control surfaces keep one import site for the fence
-// and its press-time reading; Composer.tsx's availabilityFor and QueueStrip's
+// The local recovery fence's shared predicate lives in recoveryFence.ts, where
+// the store's own mutation admission uses it too. Re-exported here so the
+// control surfaces keep one import site for the fence and its press-time reading; Composer.tsx's availabilityFor and QueueStrip's
 // press handlers derive from this one predicate (the composer module cannot
 // lend QueueStrip its copy: Composer imports QueueStrip), and each call site
 // adds the shape its own surface needs.

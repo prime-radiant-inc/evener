@@ -103,9 +103,7 @@ func checkHistoryContentRemoteRetention(t *testing.T, length int64, spacing uint
 	t.Cleanup(srv.Close)
 	client := dialHubRPC(t, srv)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	no := false
 	selection := appwire.ThreadContentParams{IncludeThinking: &no}
 	params := appwire.ThreadReadParams{ThreadContentParams: selection, Ref: "h1:t1", IncludeTurns: true, ItemLimit: 2}

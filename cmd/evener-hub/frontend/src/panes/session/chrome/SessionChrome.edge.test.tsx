@@ -5,7 +5,7 @@
 // - onToggleArchive error catch (207-208)
 // - onDelete error catch (221-222) + skipped warning (216-218)
 
-import type { NavigationSessionLocation, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type { NavigationSessionLocation, Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
@@ -18,27 +18,12 @@ import { connectionStore } from "../../../stores/connection";
 import * as navigationModule from "../../../stores/navigation/store";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
 import { resetThreadsStoreForTests, setCacheChannelFactoryForTests, threadsStore } from "../../../stores/threads";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import "../../sessionPanels";
 import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
 import { SessionChrome as SessionChromeView } from "./SessionChrome";
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
   return {

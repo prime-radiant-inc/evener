@@ -3,7 +3,7 @@ import type {
 	NavigationProjectSummary,
 	NavigationSessionLocation,
 } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { navigationReadback } from "./navigationReadback";
 import { localSessionId } from "./sessionDeletionResult";

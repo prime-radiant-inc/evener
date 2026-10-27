@@ -20,7 +20,6 @@ vi.mock("react-native", async () => ({
 		props.visible ? createElement("Modal", null, props.children) : null,
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 // Records what the composer holds: whether, and as what kind.
 const holds = vi.hoisted(() => ({ calls: [] as [boolean, string][] }));
 vi.mock("../alerts/alertsContext", () => ({

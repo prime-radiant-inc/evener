@@ -791,7 +791,7 @@ func (s *Session) notesSnapshotAll() (human, agent string, urls []schema.Session
 // inside its metadata save is not visible at all until that save lands.
 //
 // The fallback covers a session that was never built through NewSession or
-// RestoreSessionFromMeta: tests construct &Session{} directly and seed the live
+// RestoreSessionFromMetaWithConfig: tests construct &Session{} directly and seed the live
 // fields, and those sessions have no published cut. It reads the live store
 // exactly as every reader did before the cut existed.
 func (s *Session) notesProjectionSnapshot() (human, agent string, urls []schema.SessionURL, everProjected bool) {

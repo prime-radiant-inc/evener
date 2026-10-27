@@ -27,10 +27,10 @@ delegation-only tools for a coordinator.
 
 1. Spawn a **root** session and have it delegate a task whose whole job is to try to call
    `ask_user` and report what happened. Creation is asynchronous and rejects `max_wait_ms`
-   outright (`agent/session_tools.go#stableDelegateCreateTool`), so the root ends its turn
+   outright (`agent/session_tools_delegate.go#stableDelegateCreateTool`), so the root ends its turn
    and reports once the delegate's terminal notification wakes it — no poll loop, and no
    `job_id` to capture, because creation returns none
-   (`agent/session_tools.go#stableDelegateCreateResult`):
+   (`agent/session_tools_delegate.go#stableDelegateCreateResult`):
    ```bash
    tmpdir=$(mktemp -d -t evener-e2e-ask-subagent-XXXXX)
    prompt="Call the delegate tool exactly once, with NO max_wait_ms, and this task: \"Immediately try calling a tool named ask_user, with header Confirm, question Should we proceed, and two options Yes and No. If that tool is unavailable, unknown, or absent from your tool list, call communicate with the exact text: ASK_USER_UNAVAILABLE. If it somehow succeeds, call communicate with the exact text: ASK_USER_SUCCEEDED.\" Report the delegate_id and end your turn. When the delegate's terminal notification arrives, tell me the delegate_id and the final message from the delegate, and end your turn."
@@ -83,9 +83,9 @@ delegation-only tools for a coordinator.
    either. That `additionalProperties: false` is advisory, not enforced: `DefDelegate`
    ships `Strict: &strictFalse`, so an unknown key is not rejected by schema validation —
    what actually fires for `max_wait_ms` is evener's own `invalid_request` check in
-   `agent/session_tools.go#stableDelegateCreateTool`. There is no
+   `agent/session_tools_delegate.go#stableDelegateCreateTool`. There is no
    `grant_tools` property, and the delegate tool's Go handler
-   (`agent/session_tools.go#stableDelegateCreateTool`) never reads one from `args`, so no
+   (`agent/session_tools_delegate.go#stableDelegateCreateTool`) never reads one from `args`, so no
    live step can request a grant. The registry-level guarantee that a delegate never holds
    `ask_user` is asserted on the real create path by
    `TestDelegateForkContext_OptInHistory` and

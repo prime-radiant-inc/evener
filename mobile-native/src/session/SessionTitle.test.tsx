@@ -15,7 +15,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	useWindowDimensions: () => ({ fontScale: mockWindow.fontScale, scale: 2, width: 390, height: 844 }),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler", async () =>
 	(await import("../renderNative.testkit")).gestureDetectorModuleMock(),
 );

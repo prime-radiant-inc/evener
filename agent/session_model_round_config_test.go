@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/llm"
@@ -86,16 +85,12 @@ func TestSession_FallbackUsesDispatchSnapshot(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	// TRIPWIRE: scripted in-process adapter with a channel barrier, no real
 	// I/O; this ceiling only fires on a genuine deadlock, never as a timing
 	// mechanism.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 
 	req := llm.Request{Provider: "openai", Model: "primary", Messages: []llm.Message{llm.User("hi")}}
 	type outcome struct {

@@ -20,6 +20,23 @@ adding any exported forwarding methods to `Session`. The session namer (also in 
 agent`) appends to that same `SessionLog`, which is why the log is its own shared
 substrate rather than living inside `contextmgr`.
 
+Inside `contextmgr`, the `Manager` is split by concern. Only `manager.go`,
+`pressure.go` and `compact.go` hold `cm.mu`.
+
+| File | Owns |
+|---|---|
+| `manager.go` | `Manager`, `NewManager`, `CompactionMeta`, usage accessors |
+| `fold_context.go` | the `With*` context keys and their readers |
+| `pressure.go` | profile swap, token measurement, window and pressure math, `ApplyThresholdScale` |
+| `compact.go` | `MaybeCompact`, `ForceCompact`, assumed-window disclosure |
+| `observation_mask.go` | observation masking, thinking clearing |
+| `checkpoint.go`, `checkpoint_format.go` | deterministic checkpoint: collect history data, render markdown |
+| `partner_carry.go` | partner-message fitting, condensing and carry |
+| `summarize_fold.go` | `summarizeFold`, `foldCutoff`, `safeCutoff` |
+| `summarize_route.go`, `summary_prompt.go` | summarizer model routing, prompt text and reply validation |
+| `elicit.go` | `ElicitNote` |
+| `tool_output.go` | tool-output parsing helpers |
+
 ```mermaid
 flowchart LR
     subgraph agentpkg["package agent"]

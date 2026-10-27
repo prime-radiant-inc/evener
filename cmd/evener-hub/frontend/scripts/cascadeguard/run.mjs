@@ -1040,6 +1040,13 @@ async function dottedAncestorJourney() {
   await drill(fixture.edges[2], 3);
   await dottedAncestorStatus(fixture.refs[1]);
   await pinSourceDom();
+  // A remounted reader shows its first rows at the top before it moves to the
+  // end of the transcript; Return's baseline is the settled end, not that
+  // interval.
+  await wait(`(() => {
+    const port = ${sourcePortExpr};
+    return port && port.clientHeight > 0 && port.scrollHeight - port.clientHeight - port.scrollTop <= 4;
+  })()`, "the remounted source reader rests at the end of its transcript");
   await returnToSource();
 }
 

@@ -21,6 +21,37 @@ import (
 // stubMaxGlobDirListings lowers the directory-listing budget for a test and
 // restores it when the test ends, so a budget test can use a tree small
 // enough for t.TempDir() rather than one large enough to trip the real bound.
+// loadWholeIgnoreSet loads root's ignore set under a fresh glob budget and the
+// whole base ignore scope, returning the set and the budget it was loaded
+// under — the standard discovery shape of these tests.
+func loadWholeIgnoreSet(t *testing.T, root string) (*ignoreSet, *GlobBudget, error) {
+	t.Helper()
+	budget := newGlobBudget("glob")
+	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	return set, budget, err
+}
+
+// wantRulesTotalRefusal asserts the load refused on the retained-rules total
+// and retained no matchers before refusing.
+func wantRulesTotalRefusal(t *testing.T, budgetErr *globBudgetError, set *ignoreSet) {
+	t.Helper()
+	if budgetErr.kind != budgetRulesTotal {
+		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+	}
+	if len(set.dirs) != 0 {
+		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
+	}
+}
+
+// writeRootGitignore writes content to root's .gitignore.
+func writeRootGitignore(t *testing.T, root, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func stubMaxGlobDirListings(t *testing.T, n int) {
 	t.Helper()
 	orig := maxGlobDirListings
@@ -925,9 +956,7 @@ func TestGlobIgnoreDiscoveryRefusesRatherThanUnderExcluding(t *testing.T) {
 	root := globBudgetFixture(t, dirCount)
 	stubMaxGlobDirListings(t, listingBudget)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over a %d-directory tree with a listing budget of %d = (%d rules, %v), want a *globBudgetError; a set that gave up partway would be reported as complete and would silently stop excluding", dirCount, listingBudget, len(set.dirs), err)
@@ -1185,9 +1214,7 @@ func TestGrepWalkDoesNotChargeSkippedDirectories(t *testing.T) {
 		}
 		gitignoreLines = append(gitignoreLines, dir+"/")
 	}
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Join(gitignoreLines, "\n")+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, strings.Join(gitignoreLines, "\n")+"\n")
 
 	const budget = 25
 	stubMaxGlobDirListings(t, budget)
@@ -1405,9 +1432,7 @@ func TestGlobIgnoreDiscoveryAppliesAnAncestorGitignoreAboveThePrefix(t *testing.
 	if err := os.WriteFile(filepath.Join(sub, "skip.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("sub/skip.txt\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, "sub/skip.txt\n")
 
 	matches, err := NewLocalExecutionEnvironment(root).Glob(t.Context(), "sub/*.txt", root, false)
 	if err != nil {
@@ -1738,9 +1763,7 @@ func TestLoadIgnoreSetRefusesTooManyRetainedRules(t *testing.T) {
 	}
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, budget, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over %d directories each carrying %d rules in a few dozen source bytes (combined source %d, far under the %d-byte budget) = %v, want a *globBudgetError: charging source bytes missed the %d compiled matchers entirely", dirs, rulesPerFile, sourceBytes, total, err, dirs*rulesPerFile)
@@ -1771,9 +1794,7 @@ func TestLoadIgnoreSetChargesALongRulesSource(t *testing.T) {
 
 	root := t.TempDir()
 	long := strings.Repeat("a", lineBytes)
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(long+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, long+"\n")
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
 	budget := newGlobBudget("glob")
@@ -1828,9 +1849,7 @@ func TestLoadIgnoreSetDoesNotRetainZeroRuleMatchers(t *testing.T) {
 		pathBytes += len(rel + "/.gitignore")
 	}
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, budget, err := loadWholeIgnoreSet(t, root)
 	if err != nil {
 		t.Fatalf("loadIgnoreSet over %d zero-rule .gitignore files: %v", dirs, err)
 	}
@@ -1868,9 +1887,7 @@ func TestLoadIgnoreSetChargesRuleFreeFilesAgainstTheReadBudget(t *testing.T) {
 	}
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, budget, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over %d rule-free files of %d bytes each against a read budget of %d = %v, want a *globBudgetError: the source a rule-free file is read from has to count", dirs, perFile, total, err)
@@ -1967,9 +1984,7 @@ func TestLoadIgnoreSetMaterializesLinesOnlyAfterTheBudget(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".gitignore"), bytes.Repeat([]byte("\n"), fileBytes), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, budget, err := loadWholeIgnoreSet(t, root)
 	if err != nil {
 		t.Fatalf("loadIgnoreSet over a %d-byte newline-heavy .gitignore: %v", fileBytes, err)
 	}
@@ -2070,9 +2085,7 @@ func TestLoadIgnoreSetRefusesLongRulesWhoseSourceFitsTheBudget(t *testing.T) {
 	}
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over %d files of one %d-byte literal rule each (combined source %d, under the %d-byte budget) = %v, want a *globBudgetError: the compiled matchers are far larger than their source", dirs, lineBytes, dirs*(lineBytes+1), total, err)
@@ -2098,24 +2111,15 @@ func TestLoadIgnoreSetRefusesRepetitionRulesWhoseSourceFitsTheBudget(t *testing.
 	// byte: its source fits the budget, its compiled program does not.
 	line := strings.Repeat(".{999}", 1000)
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, line+"\n")
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over a %d-byte repetition rule (source under the %d-byte budget, compiled program far over) = %v, want a *globBudgetError", len(line), total, err)
 	}
-	if budgetErr.kind != budgetRulesTotal {
-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
-	}
-	if len(set.dirs) != 0 {
-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
-	}
+	wantRulesTotalRefusal(t, budgetErr, set)
 }
 
 // TestLoadIgnoreSetRefusesUnterminatedUnboundedRepetition pins that `{n,`
@@ -2128,24 +2132,15 @@ func TestLoadIgnoreSetRefusesUnterminatedUnboundedRepetition(t *testing.T) {
 
 	line := "a{1,(" + strings.Repeat("b", 1000) + "){1000}"
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, line+"\n")
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over an unterminated `{n,` quantifier before a repeated group = %v, want a *globBudgetError", err)
 	}
-	if budgetErr.kind != budgetRulesTotal {
-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
-	}
-	if len(set.dirs) != 0 {
-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
-	}
+	wantRulesTotalRefusal(t, budgetErr, set)
 }
 
 // TestLoadIgnoreSetChargesUnboundedRepetitionAsALoop pins the other direction
@@ -2162,14 +2157,10 @@ func TestLoadIgnoreSetChargesUnboundedRepetitionAsALoop(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "keep.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Repeat("a{1,}\n", rules)), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, strings.Repeat("a{1,}\n", rules))
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	if err != nil {
 		t.Fatalf("loadIgnoreSet over %d valid `a{1,}` rules = %v, want no error: an unbounded repetition compiles to a constant loop", rules, err)
 	}
@@ -2196,24 +2187,15 @@ func TestLoadIgnoreSetRefusesZeroMinimumRepetition(t *testing.T) {
 	const total = 1 << 20
 
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Repeat("a{0,1000}\n", rules)), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, strings.Repeat("a{0,1000}\n", rules))
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over %d `a{0,1000}` rules (each 9 source bytes compiling to ~96 KB) against a %d-byte budget = %v, want a *globBudgetError", rules, total, err)
 	}
-	if budgetErr.kind != budgetRulesTotal {
-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
-	}
-	if len(set.dirs) != 0 {
-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
-	}
+	wantRulesTotalRefusal(t, budgetErr, set)
 }
 
 // TestLoadIgnoreSetRefusesNestedQuantifiers pins that nested counted
@@ -2224,24 +2206,15 @@ func TestLoadIgnoreSetRefusesNestedQuantifiers(t *testing.T) {
 	const total = 32 << 20
 
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("(a{900}){900}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, "(a{900}){900}\n")
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over a nested `(a{900}){900}` rule = %v, want a *globBudgetError: nested quantifiers multiply", err)
 	}
-	if budgetErr.kind != budgetRulesTotal {
-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
-	}
-	if len(set.dirs) != 0 {
-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
-	}
+	wantRulesTotalRefusal(t, budgetErr, set)
 }
 
 // TestLoadIgnoreSetRefusesRepeatedGroupWithLiteralParen pins that the repeated
@@ -2254,24 +2227,15 @@ func TestLoadIgnoreSetRefusesRepeatedGroupWithLiteralParen(t *testing.T) {
 
 	line := "(" + strings.Repeat("a", 1000) + "[(]){1000}"
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, line+"\n")
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over a repeated group containing a literal parenthesis in a character class = %v, want a *globBudgetError", err)
 	}
-	if budgetErr.kind != budgetRulesTotal {
-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
-	}
-	if len(set.dirs) != 0 {
-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
-	}
+	wantRulesTotalRefusal(t, budgetErr, set)
 }
 
 // TestLoadIgnoreSetRefusesOptionalBranchRepetition pins that a bounded
@@ -2284,9 +2248,7 @@ func TestLoadIgnoreSetRefusesOptionalBranchRepetition(t *testing.T) {
 	const total = 32 << 20
 
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Repeat("a{0,1000}\n", rules)), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, strings.Repeat("a{0,1000}\n", rules))
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
 	budget := newGlobBudget("glob")
@@ -2310,24 +2272,15 @@ func TestLoadIgnoreSetRefusesMalformedQuantifierLine(t *testing.T) {
 
 	line := strings.Repeat("){1000}", 40000)
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, line+"\n")
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over a %d-byte malformed quantifier line = %v, want a *globBudgetError", len(line), err)
 	}
-	if budgetErr.kind != budgetRulesTotal {
-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
-	}
-	if len(set.dirs) != 0 {
-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
-	}
+	wantRulesTotalRefusal(t, budgetErr, set)
 }
 
 // TestLoadIgnoreSetRefusesClassStartingWithLiteralBracket pins that a `]` in the
@@ -2340,24 +2293,15 @@ func TestLoadIgnoreSetRefusesClassStartingWithLiteralBracket(t *testing.T) {
 
 	line := "(" + strings.Repeat("a", 1000) + "[])]){1000}"
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, line+"\n")
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over a repeated group whose class starts with a literal `]` = %v, want a *globBudgetError", err)
 	}
-	if budgetErr.kind != budgetRulesTotal {
-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
-	}
-	if len(set.dirs) != 0 {
-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
-	}
+	wantRulesTotalRefusal(t, budgetErr, set)
 }
 
 // TestLoadIgnoreSetRefusesRepeatedCapturingGroups pins that a capturing group's
@@ -2370,24 +2314,15 @@ func TestLoadIgnoreSetRefusesRepeatedCapturingGroups(t *testing.T) {
 
 	line := strings.Repeat("(", 600) + "a" + strings.Repeat(")", 600) + "{1000}"
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, line+"\n")
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over 600 nested capturing groups repeated 1000 times = %v, want a *globBudgetError: capture instructions repeat too", err)
 	}
-	if budgetErr.kind != budgetRulesTotal {
-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
-	}
-	if len(set.dirs) != 0 {
-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
-	}
+	wantRulesTotalRefusal(t, budgetErr, set)
 }
 
 // TestLoadIgnoreSetRefusesRepeatedUnicodeProperties pins that a Unicode
@@ -2400,24 +2335,15 @@ func TestLoadIgnoreSetRefusesRepeatedUnicodeProperties(t *testing.T) {
 	const total = 32 << 20
 
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Repeat(`\pL{1000}`+"\n", rules)), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, strings.Repeat(`\pL{1000}`+"\n", rules))
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over %d `\\pL{1000}` rules = %v, want a *globBudgetError: a repeated property keeps one table per copy", rules, err)
 	}
-	if budgetErr.kind != budgetRulesTotal {
-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
-	}
-	if len(set.dirs) != 0 {
-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
-	}
+	wantRulesTotalRefusal(t, budgetErr, set)
 }
 
 // TestLoadIgnoreSetRefusesBracketedUnicodeProperties pins that a property escape
@@ -2429,24 +2355,15 @@ func TestLoadIgnoreSetRefusesBracketedUnicodeProperties(t *testing.T) {
 	const total = 32 << 20
 
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Repeat(`[\pL]`+"\n", rules)), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, strings.Repeat(`[\pL]`+"\n", rules))
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over %d bracketed `\\pL` rules at the default budget = %v, want a *globBudgetError: a class holding a property carries its rune table", rules, err)
 	}
-	if budgetErr.kind != budgetRulesTotal {
-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
-	}
-	if len(set.dirs) != 0 {
-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
-	}
+	wantRulesTotalRefusal(t, budgetErr, set)
 }
 
 // TestLoadIgnoreSetRefusesQuantifierDenseLine pins that a line built from very
@@ -2460,24 +2377,15 @@ func TestLoadIgnoreSetRefusesQuantifierDenseLine(t *testing.T) {
 
 	line := strings.Repeat("a{2}*", 20000) // ~200,000 spans and stars without the cap
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, line+"\n")
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over a %d-byte quantifier-dense line = %v, want a *globBudgetError", len(line), err)
 	}
-	if budgetErr.kind != budgetRulesTotal {
-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
-	}
-	if len(set.dirs) != 0 {
-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
-	}
+	wantRulesTotalRefusal(t, budgetErr, set)
 }
 
 // TestLoadIgnoreSetKeepsBraceRulesUsable pins that a brace which is not a
@@ -2490,14 +2398,10 @@ func TestLoadIgnoreSetKeepsBraceRulesUsable(t *testing.T) {
 	const total = 1 << 20
 
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Repeat("*.{js,map}\n", rules)), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, strings.Repeat("*.{js,map}\n", rules))
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	if err != nil {
 		t.Fatalf("loadIgnoreSet over %d literal-brace rules against a %d-byte budget = %v, want no error: a brace that is not a counted repetition compiles to a small matcher", rules, total, err)
 	}
@@ -2516,24 +2420,15 @@ func TestLoadIgnoreSetRefusesStarDenseRules(t *testing.T) {
 
 	line := strings.Repeat("*/", 200<<10) // 400 KiB carrying 200,000 stars
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, line+"\n")
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over a %d-byte star-dense rule = %v, want a *globBudgetError: go-gitignore expands each star to several instructions", len(line), err)
 	}
-	if budgetErr.kind != budgetRulesTotal {
-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
-	}
-	if len(set.dirs) != 0 {
-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
-	}
+	wantRulesTotalRefusal(t, budgetErr, set)
 }
 
 // TestLoadIgnoreSetRefusesUnicodePropertyRules pins the Unicode-property
@@ -2546,24 +2441,15 @@ func TestLoadIgnoreSetRefusesUnicodePropertyRules(t *testing.T) {
 	const total = 1 << 20
 
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Repeat(`\pL`+"\n", rules)), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, strings.Repeat(`\pL`+"\n", rules))
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over %d `\\pL` rules (300 source bytes, ~1 MB of rune tables) against a %d-byte budget = %v, want a *globBudgetError", rules, total, err)
 	}
-	if budgetErr.kind != budgetRulesTotal {
-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
-	}
-	if len(set.dirs) != 0 {
-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
-	}
+	wantRulesTotalRefusal(t, budgetErr, set)
 }
 
 // TestLoadIgnoreSetRefusesStarsInsideRepetition pins the repeat-star charge. A
@@ -2577,24 +2463,15 @@ func TestLoadIgnoreSetRefusesStarsInsideRepetition(t *testing.T) {
 
 	line := "(" + strings.Repeat("*", 100) + "){1000}" // 100 stars, expanded 1000x
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, line+"\n")
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
-	budget := newGlobBudget("glob")
-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+	set, _, err := loadWholeIgnoreSet(t, root)
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over a %d-byte line of stars inside a repetition = %v, want a *globBudgetError", len(line), err)
 	}
-	if budgetErr.kind != budgetRulesTotal {
-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
-	}
-	if len(set.dirs) != 0 {
-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
-	}
+	wantRulesTotalRefusal(t, budgetErr, set)
 }
 
 // TestLoadIgnoreSetDoesNotOverchargeLiteralStars pins that a star the library
@@ -2607,9 +2484,7 @@ func TestLoadIgnoreSetDoesNotOverchargeLiteralStars(t *testing.T) {
 
 	root := t.TempDir()
 	content := strings.Repeat("\\*\n", rules) + "[*]\n"
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRootGitignore(t, root, content)
 	stubMaxGlobIgnoreTotalBytes(t, total)
 
 	budget := newGlobBudget("glob")

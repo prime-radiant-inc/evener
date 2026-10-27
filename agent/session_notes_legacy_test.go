@@ -268,7 +268,7 @@ func TestNotesHistoryCopyKeepsUserTypedNotePrefixVerbatim(t *testing.T) {
 			Kind: schema.TurnSteering, Message: llm.User("human updated their whiteboard:no space\there with\x1b[31mcolour"),
 		},
 		"user typed, explicit other kind": {
-			Kind: schema.TurnSteering, SteeringKind: events.SteeringKindAgentMessage,
+			Kind: schema.TurnSteering, SteeringKind: events.SteeringKindNoteHandoff,
 			Message: llm.User("human updated their whiteboard: quoted back\x1b[31m verbatim"),
 		},
 	}

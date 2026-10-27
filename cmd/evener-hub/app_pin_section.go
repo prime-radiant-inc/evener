@@ -187,7 +187,7 @@ func pinSectionAppWireError(err error) error {
 // ref can never address another source's row that shares its bare ID.
 func (s *WebServer) resolveTopLevelSessionRef(ctx context.Context, requested string) (pinSession, error) {
 	ref, refErr := appwire.ParseRef(strings.TrimSpace(requested))
-	if refErr != nil || ref.SourceID == "local" {
+	if refErr != nil || ref.SourceID == appwire.LocalSourceID {
 		return s.resolveLocalTopLevelSession(requested)
 	}
 	// A remote host's sessions come from the remote thread cache, bounded by
@@ -258,5 +258,5 @@ func sessionRefMatchesID(requested, actual string) bool {
 	if requestedRef, err := appwire.ParseRef(requested); err == nil && requestedRef == actualRef {
 		return true
 	}
-	return actualRef.SourceID == "local" && requested == actualRef.ThreadID
+	return actualRef.SourceID == appwire.LocalSourceID && requested == actualRef.ThreadID
 }

@@ -277,7 +277,7 @@ func TestServerAppWireSharedNotesCapabilityFollowsWiring(t *testing.T) {
 	if caps := srv.appCapabilities("idle", false); !caps.SharedNotes {
 		t.Fatalf("SharedNotes should be true with both verbs wired on an open session")
 	}
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "closed"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "closed"})
 	if caps := srv.appCapabilities("closed", false); caps.SharedNotes {
 		t.Fatalf("SharedNotes should be false on a closed session")
 	}

@@ -1,4 +1,4 @@
-import type { Task, ThreadCapabilities, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
+import type { Task, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -8,6 +8,7 @@ import { connectionStore } from "../../stores/connection";
 import { activityClient } from "../../stores/sessionActivityTestUtils";
 import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../threadTestUtils";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import { NOW_TICK_MS } from "../session/liveness";
@@ -35,22 +36,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   return {

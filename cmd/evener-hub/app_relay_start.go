@@ -529,7 +529,7 @@ func (s *relaySupervisor) broadcastNotification(notification appwire.Notificatio
 	s.backoff.Reset()
 	s.consecutiveFailures = 0
 	s.trackRelayedThread(notification)
-	if s.source.ID() == "local" {
+	if s.source.ID() == appwire.LocalSourceID {
 		notification = enrichOutputImageNotification(s.thread.SessionID, s.thread.CWD, s.argsByCallID, notification)
 	}
 	s.r.server.Broadcast(s.relayKey, notification.Method, notification.Params)

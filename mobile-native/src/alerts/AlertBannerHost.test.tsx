@@ -28,7 +28,6 @@ vi.mock("react-native", async () => {
 		PanResponder: { create: () => ({ panHandlers: {} }) },
 	};
 });
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 	useSafeAreaFrame: () => ({ x: 0, y: 0, width: 393, height: 852 }),

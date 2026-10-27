@@ -1,4 +1,4 @@
-import type { ItemModel, Thread, ThreadCapabilities, TurnModel } from "@evener/appwire-client";
+import type { ItemModel, Thread, TurnModel } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -10,6 +10,7 @@ import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import { readModuleCss } from "../../../../styles/cssBlock";
+import { ALL_CAPABILITIES as FORK_CAPABILITIES } from "../../../../threadTestUtils";
 import { Toast } from "../../../../widgets";
 import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
 import { readDraft } from "../../composer/draft";
@@ -264,22 +265,6 @@ test("UserMessageView is exported standalone for reuse by user-sourced steering"
 // composer draft with the wire's originalInput rather than opening an edit
 // dialog first. openChildPane's success path is mirrored: open the new ref as
 // its own pane, no toast.
-
-const FORK_CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 // A minimal, test-only "session" pane registration - real registerPane/
 // openPane machinery without pulling in the actual panes/session module

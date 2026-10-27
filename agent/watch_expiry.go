@@ -175,7 +175,6 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 		// a pending frame: enough identity for the send rail to route and settle
 		// this one frame, and never registered in jm.watches.
 		cfg := &watchConfig{
-			id:                 watch.WatchID,
 			watchID:            watch.WatchID,
 			sourcePublic:       watchPublicSource(watch.Source, watch.Target),
 			receiverSessionID:  watch.ReceiverSessionID,

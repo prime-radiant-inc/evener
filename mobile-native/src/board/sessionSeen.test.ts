@@ -5,7 +5,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { type NavigationSessionSummary, type SessionSeenMark, WireError } from "@evener/appwire-client";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { renderHook, settleMicrotasks } from "../renderNative.testkit";
 import { fleetSession } from "../session/fleetTestUtils";
 import { hubSeenMarks } from "./hubSeen";

@@ -1,7 +1,23 @@
 package appserver
 
+import "context"
+
 // Subscription seams the in-package tests drive directly. Production
 // subscribes through CaptureSubscription and the thread/read admission path.
+
+// Subscribe registers the connection's interest in threadID without a
+// hydration capture.
+func (c *Connection) Subscribe(threadID string) {
+	c.server.projectionMu.Lock()
+	defer c.server.projectionMu.Unlock()
+	c.server.subs.Subscribe(c.id, threadID)
+}
+
+// Subscribe subscribes the calling connection to threadID through the
+// production admission path, reporting whether it was accepted.
+func Subscribe(ctx context.Context, threadID string) bool {
+	return SubscribeWithAdmission(ctx, threadID, false) == nil
+}
 
 func (c *Connection) ReplaceSubscriptions(threadID string) {
 	c.server.projectionMu.Lock()
