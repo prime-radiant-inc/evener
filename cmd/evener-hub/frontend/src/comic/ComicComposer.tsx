@@ -179,34 +179,38 @@ export function ComicComposer({
             />
           }
           actions={
-            inlineStop ? (
-              <Button
-                key="stop"
-                type="button"
-                variant="dangerQuiet"
-                data-testid="composer-stop"
-                disabled={actions.busy || !stopReady}
-                onClick={() => void actions.stop()}
-              >
-                Stop
-              </Button>
-            ) : (
-              <Button
-                key="send"
-                type="submit"
-                data-testid="composer-submit"
-                icon={<SendIcon />}
-                disabled={
-                  actions.busy || !hasContent || !(actions.availability.canSend || actions.availability.canQueue)
-                }
-                onClick={(event) => {
-                  // Move focus before disabling Send, never after an asynchronous completion.
-                  if (event.currentTarget.ownerDocument.activeElement === event.currentTarget) editor.current?.focus();
-                }}
-              >
-                {actions.availability.canQueue && !actions.availability.canSend ? "Queue" : "Send"}
-              </Button>
-            )
+            <>
+              {actions.showStop && (
+                <Button
+                  key="stop"
+                  type="button"
+                  variant="dangerQuiet"
+                  data-testid="composer-stop"
+                  disabled={actions.busy || (inlineStop && !stopReady)}
+                  onClick={() => void actions.stop()}
+                >
+                  Stop
+                </Button>
+              )}
+              {!inlineStop && (
+                <Button
+                  key="send"
+                  type="submit"
+                  data-testid="composer-submit"
+                  icon={<SendIcon />}
+                  disabled={
+                    actions.busy || !hasContent || !(actions.availability.canSend || actions.availability.canQueue)
+                  }
+                  onClick={(event) => {
+                    // Move focus before disabling Send, never after an asynchronous completion.
+                    if (event.currentTarget.ownerDocument.activeElement === event.currentTarget)
+                      editor.current?.focus();
+                  }}
+                >
+                  {actions.availability.canQueue && !actions.availability.canSend ? "Queue" : "Send"}
+                </Button>
+              )}
+            </>
           }
         />
       </form>

@@ -283,6 +283,36 @@ test("Send and Stop are distinct controls with the existing activation delay", a
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/interrupt")).toHaveLength(1));
 });
 
+test.each([
+  { text: "RETAINED_STOP_DRAFT", skillNames: [] },
+  { text: "/retained-skill", skillNames: ["retained-skill"] },
+])("Stop preserves an unsent draft %j", async (draft) => {
+  const fake = await setup("active");
+  fake.on("turn/interrupt", (p) => ({
+    receipt: {
+      clientMutationId: p.clientMutationId,
+      disposition: "applied",
+      threadId: `thread-${ref}`,
+      projectionState: "reflected",
+    },
+  }));
+  const source = sourceFor();
+  source.editText(draft.text);
+  source.editSkillNames(draft.skillNames);
+  render(<ComicComposer source={source} />);
+  expect(source.getSnapshot()).toMatchObject(draft);
+  const stop = screen.getByTestId("composer-stop");
+  const submit = screen.getByTestId("composer-submit");
+  expect(stop).not.toBe(submit);
+  expect((stop as HTMLButtonElement).disabled).toBe(false);
+  await act(async () => fireEvent.click(stop));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toHaveLength(1));
+  expect(fake.calls.find((call) => call.method === "turn/interrupt")?.params).toMatchObject({ ref });
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/queue")).toEqual([]);
+  expect(source.getSnapshot()).toMatchObject(draft);
+  expect(editor().textContent).toBe(draft.text);
+});
+
 test("opening a stopped full-page conversation does not resume and keeps a usable draft", async () => {
   const fake = await setup("notLoaded");
   writeComposerDraft(ref, { text: "saved followup", skillNames: [] });

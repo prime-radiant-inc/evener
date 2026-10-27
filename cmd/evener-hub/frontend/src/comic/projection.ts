@@ -228,7 +228,10 @@ export function projectComicConversation(
           }
         }
       } else if (item.type === "steering") {
-        if (author?.kind === "human" || ((!author || author.kind === "unknown") && isUserAuthoredSteer(item))) {
+        if (
+          item.steeringKind !== "human-note" &&
+          (author?.kind === "human" || ((!author || author.kind === "unknown") && isUserAuthoredSteer(item)))
+        ) {
           entries.push({
             ...base,
             kind: "dialogue",

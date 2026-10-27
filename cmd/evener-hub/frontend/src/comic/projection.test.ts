@@ -118,6 +118,27 @@ const fixture = () =>
   ]);
 
 describe("comic conversation projection", () => {
+  test.each([false, true])("human notes retain caption classification with inherited=%s", (inherited) => {
+    const note = {
+      id: "authored-note",
+      type: "steering" as const,
+      source: "user",
+      steeringKind: "human-note",
+      text: inputText,
+      authorship: { author: { kind: "human" as const }, inherited },
+    };
+    const model = base([{ id: "notes", status: "completed", itemsView: "full", items: [note] }]);
+    const entries = projectComicConversation(model);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      sourceItemId: note.id,
+      kind: "caption",
+      speaker: "source",
+      text: note.text,
+      inherited,
+    });
+  });
+
   test("recorded original authors beat the containing child and immediate parent, including inherited input", () => {
     const author = {
       kind: "agent" as const,
