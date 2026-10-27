@@ -1,10 +1,10 @@
 {
-  "description": "Real Comic picker scrolling, dynamic viewport containment, safe-area clearance and keyboard recovery",
+  "description": "Real Comic pane reader gestures, host containment, safe-area clearance and keyboard recovery",
   "cssFiles": ["styles/global.css"],
   "viewport": { "width": 320, "height": 620, "mobile": true, "touch": true },
   "mutation": {
-    "declaration": "Comic root min-height:100vh and absent picker height/overflow, mobile session padding-bottom:0, or keyboard-only padding without env(safe-area-inset-bottom)",
-    "verified": "2026-10-27, before viewport repairs, with keyboard padding zeroed then restored, and before the safe-area repair with browser env bottom inset 34px",
-    "expect": "Native picker gestures cannot reach lower rows or pagination, a modeled large viewport pushes the composer below the visible viewport, zero keyboard padding leaves editor/Send below the simulated 440/480px visual viewport, and keyboard-only padding leaves closed Send/Stop at 607px below the 586px safe boundary at 320/390px widths"
+    "declaration": "Original pane allocation with 60px View row, full-size scene controls and separate mobile Session actions footer row",
+    "verified": "2026-10-27 against integrated 6b6cbf772df6b5bbec5bf629b4907c9db971d690 before the compact mobile repair",
+    "expect": "At both 320/390px widths and a 440px keyboard viewport, the 416px allocated pane has a zero-height reader while the footer consumes 215.78125px idle or 234.96875px running. Positive-reader assertions fail. The standalone picker no longer exists, and its prior mutations are not claimed by this pane fixture."
   }
 }

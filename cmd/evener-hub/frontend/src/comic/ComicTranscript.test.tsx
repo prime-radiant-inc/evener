@@ -3,6 +3,7 @@ import {
   buildEntityView,
   hydrateThread,
   parseActivityTree,
+  type SessionActivitySnapshot,
   type ThreadTurnsListResponse,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -33,6 +34,7 @@ import { useComicReader } from "./useComicReader";
 import { type ComicSubchatState, useComicSubchats } from "./useComicSubchats";
 
 beforeEach(() => {
+  document.getSelection()?.removeAllRanges();
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -81,12 +83,14 @@ function Reader({
   mode = "comic",
   older,
   strips = [],
+  activitySnapshot = null,
   subchats = { readers: new Map(), expandedPaths: [], expand() {}, collapse() {} },
 }: {
   entries?: readonly ComicEntry[];
   mode?: "comic" | "plain";
   older: UseTranscriptResult;
   strips?: readonly ComicDelegateStrip[];
+  activitySnapshot?: SessionActivitySnapshot | null;
   subchats?: ComicSubchatState;
 }) {
   const reader = useComicReader("local:test");
@@ -97,7 +101,7 @@ function Reader({
         path: [],
         entries,
         history: older,
-        activity: { snapshot: null, strips, entities: new Map(), context: {}, loadMore: async () => {} },
+        activity: { snapshot: activitySnapshot, strips, entities: new Map(), context: {}, loadMore: async () => {} },
       }}
       subchats={subchats}
       reader={reader}
@@ -127,6 +131,7 @@ test("looks up the end anchor once per render when presentation changes without 
   lookup.mockClear();
   virtualList.mockClear();
 
+  fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
   fireEvent.change(screen.getByRole("combobox", { name: "Scene" }), { target: { value: "field" } });
 
   expect(virtualList).toHaveBeenCalled();
@@ -184,6 +189,7 @@ test("indexes each reader once and reuses its entries across visible rows and pr
   rootMap.mockClear();
   childMap.mockClear();
 
+  fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
   fireEvent.change(screen.getByRole("combobox", { name: "Scene" }), { target: { value: "field" } });
 
   expect(rootMap).not.toHaveBeenCalled();
@@ -638,6 +644,31 @@ test.each([false, true])(
   },
 );
 
+test.each([false, true])(
+  "captures native movement before passive wheel delivery, pending layout=%s",
+  async (pending) => {
+    const { port, geometry, publish, frame, older, mounted, position } = await mountGestureReader();
+    geometry.valid = !pending;
+    port.scrollTop = 76; // Chromium can scroll before its passive wheel listener runs.
+    fireEvent.wheel(port, { deltaY: -20 });
+    fireEvent.scroll(port);
+    frame();
+    geometry.valid = true;
+    publish();
+    expect(older.cancelOlder).toHaveBeenCalledTimes(1);
+    expect(readComicPosition("local:test")).toEqual({ ...position, offset: 0, viewportOffset: 44 });
+    port.scrollTop = 56;
+    fireEvent.wheel(port, { deltaY: -20 });
+    fireEvent.scroll(port);
+    frame();
+    expect(readComicPosition("local:test")).toEqual({ ...position, offset: 0, viewportOffset: 64 });
+    geometry.sourceY = 220;
+    publish();
+    expect(port.scrollTop).toBe(156);
+    mounted.unmount();
+  },
+);
+
 test.each(["wheel", "key", "touch pan", "scrollbar", "selection", "native scroll"])(
   "captures %s movement after preserving a stationary pointer source",
   async (input) => {
@@ -829,6 +860,181 @@ test("fences pointer completion after latest and after reader retirement", async
   fireEvent.pointerUp(document.body, { pointerId: 8, pointerType: "mouse" });
   frame();
   expect(readComicPosition("local:test")).toEqual({ mode: "end", sessionRef: "local:test", path: [] });
+});
+
+function publishLocalOpening(ref: string, opening: boolean) {
+  act(() => {
+    threadsStore.setState((state) => {
+      const localOpenings = new Map(state.localOpenings);
+      if (opening) localOpenings.set(ref, 1);
+      else localOpenings.delete(ref);
+      return { localOpenings };
+    });
+  });
+}
+
+test("preserves a missing source during local opening without older-page demand", async () => {
+  const position: ComicReadingPosition = {
+    mode: "away",
+    sessionRef: "local:test",
+    path: [],
+    entryId: "later-page",
+    offset: 12,
+    viewportOffset: 24,
+  };
+  writeComicPosition("local:test", position);
+  publishLocalOpening("local:test", true);
+  const older = history(); // Both hasOlder and loadingOlder are false during local restoration.
+  const mounted = render(<Reader older={older} />);
+  await waitFor(() => expect(mounted.container.querySelector("[data-comic-entry]")).not.toBeNull());
+  expect(readComicPosition("local:test")).toEqual(position);
+  mounted.rerender(<Reader older={older} entries={[entry, { ...entry, id: "later-page" }]} />);
+  await waitFor(() => expect(mounted.container.querySelector('[data-comic-entry="later-page"]')).not.toBeNull());
+  expect(readComicPosition("local:test")).toEqual(position);
+  publishLocalOpening("local:test", false);
+  expect(readComicPosition("local:test")).toEqual(position);
+  expect(older.loadOlderReportingError).not.toHaveBeenCalled();
+});
+
+test("waits for local opening settlement to place an already published body", async () => {
+  publishLocalOpening("local:test", true);
+  const { place, port, position } = await mountGestureReader();
+  expect(place).not.toHaveBeenCalled();
+  expect(port.scrollTop).toBe(0);
+  // No body or layout publication follows this store notification.
+  publishLocalOpening("local:test", false);
+  expect(place).toHaveBeenCalledWith(96);
+  expect(port.scrollTop).toBe(96);
+  expect(readComicPosition("local:test")).toEqual(position);
+});
+
+test.each(["movement", "latest", "unmount"])("local opening completion respects %s cancellation", async (intent) => {
+  publishLocalOpening("local:test", true);
+  const { place, port, mounted, frame } = await mountGestureReader();
+  expect(place).not.toHaveBeenCalled();
+  if (intent === "movement") {
+    fireEvent.wheel(port, { deltaY: 40 });
+    port.scrollTop = 40;
+    fireEvent.scroll(port);
+    frame();
+    expect(readComicPosition("local:test")).toMatchObject({ mode: "away", offset: 0, viewportOffset: 80 });
+  } else if (intent === "latest") {
+    fireEvent.click(screen.getByRole("button", { name: /latest/i }));
+    expect(port.scrollTop).toBe(1500);
+    expect(readComicPosition("local:test")).toMatchObject({ mode: "end" });
+  } else mounted.unmount();
+  const position = readComicPosition("local:test");
+  const offset = port.scrollTop;
+  place.mockClear();
+  publishLocalOpening("local:test", false);
+  expect(readComicPosition("local:test")).toEqual(position);
+  expect(port.scrollTop).toBe(offset);
+  expect(place).not.toHaveBeenCalled();
+});
+
+test("settles a missing nested source only when its own local opening completes", async () => {
+  const model = hydrateThread({ thread: wireThread("local:root") }, "local:root", 0);
+  const entities = buildEntityView({
+    sessionRef: model.ref,
+    tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  const strip = { ...projectComicDelegates(model, entities)[0]!, ownerRef: "local:test" };
+  const position: ComicReadingPosition = {
+    mode: "away",
+    sessionRef: strip.childRef,
+    path: [strip.key],
+    entryId: "missing-child-body",
+    offset: 12,
+    viewportOffset: 24,
+  };
+  writeComicPosition("local:test", position);
+  const child = {
+    ref: strip.childRef,
+    path: [strip.key],
+    entries: [entry],
+    history: history(),
+    activity: { snapshot: null, entities: new Map(), strips: [], context: {}, loadMore: async () => {} },
+  };
+  publishLocalOpening(child.ref, true);
+  const subchats = {
+    readers: new Map([[JSON.stringify(child.path), child]]),
+    expandedPaths: [child.path],
+    expand() {},
+    collapse() {},
+  };
+  const mounted = render(<Reader older={history()} strips={[strip]} subchats={subchats} />);
+  await waitFor(() => expect(mounted.container.querySelector("[data-comic-entry]")).not.toBeNull());
+  expect(readComicPosition("local:test")).toEqual(position);
+  publishLocalOpening("local:unrelated", true);
+  publishLocalOpening("local:unrelated", false);
+  expect(readComicPosition("local:test")).toEqual(position);
+  // Genuine exhaustion settles using this same projection, without another body update.
+  publishLocalOpening(child.ref, false);
+  await waitFor(() => expect(readComicPosition("local:test")).toEqual({ ...position, entryId: "m", offset: 0 }));
+  expect(child.history.loadOlderReportingError).not.toHaveBeenCalled();
+});
+
+test("preserves a saved source while a partial cache is still loading", async () => {
+  const position: ComicReadingPosition = {
+    mode: "away",
+    sessionRef: "local:test",
+    path: [],
+    entryId: "later-page",
+    offset: 12,
+    viewportOffset: 24,
+  };
+  writeComicPosition("local:test", position);
+  const older = { ...history(), loadingOlder: true };
+  const mounted = render(<Reader older={older} />);
+  await waitFor(() => expect(mounted.container.querySelector("[data-comic-entry]")).not.toBeNull());
+  expect(readComicPosition("local:test")).toEqual(position);
+  expect(older.loadOlderReportingError).not.toHaveBeenCalled();
+  mounted.rerender(
+    <Reader older={{ ...older, loadingOlder: false }} entries={[entry, { ...entry, id: "later-page" }]} />,
+  );
+  await waitFor(() => expect(mounted.container.querySelector('[data-comic-entry="later-page"]')).not.toBeNull());
+  expect(readComicPosition("local:test")).toEqual(position);
+  mounted.unmount();
+});
+
+test.each(["older page", "local opening"])("preserves a missing child strip during %s", async (pending) => {
+  const position: ComicReadingPosition = {
+    mode: "away",
+    sessionRef: "local:child",
+    path: ["missing-strip"],
+    entryId: "child-source",
+    offset: 12,
+    viewportOffset: 24,
+  };
+  writeComicPosition("local:test", position);
+  const state = { loading: false, pending: false, error: null, unavailable: false, permanent: false };
+  const collection = { ...state, rows: [], context: null, complete: true, hasMore: false, issues: [] };
+  const snapshot: SessionActivitySnapshot = {
+    ref: "local:test",
+    scope: "session",
+    context: null,
+    runtime: null,
+    summary: null,
+    summaryState: state,
+    delegates: collection,
+    jobs: collection,
+    watches: collection,
+  };
+  const older = { ...history(), loadingOlder: pending === "older page" };
+  if (pending === "local opening") publishLocalOpening("local:test", true);
+  const mounted = render(<Reader older={older} activitySnapshot={snapshot} />);
+  await waitFor(() => expect(mounted.container.querySelector("[data-comic-entry]")).not.toBeNull());
+  expect(readComicPosition("local:test")).toEqual(position);
+  expect(older.loadOlderReportingError).not.toHaveBeenCalled();
+  if (pending === "local opening") publishLocalOpening("local:test", false);
+  else mounted.rerender(<Reader older={{ ...older, loadingOlder: false }} activitySnapshot={snapshot} />);
+  await waitFor(() =>
+    expect(readComicPosition("local:test")).toEqual({ mode: "end", sessionRef: "local:test", path: [] }),
+  );
+  mounted.unmount();
 });
 
 test("settles an unavailable saved source when history is exhausted", async () => {
@@ -1046,7 +1252,10 @@ test.each(["collapse", "reopen"] as const)(
     const { geometry, publish, frame, port, mounted } = await mountGestureReader(false, { node: <Root />, position });
     expect(children.readers.size).toBe(2);
     expect(readComicPosition("local:test")).toEqual(position);
-    expect(geometry.sourceY - port.scrollTop).toBe(24);
+    await waitFor(() => {
+      expect(threadsStore.getState().localOpenings.has(leafRef)).toBe(false);
+      expect(geometry.sourceY - port.scrollTop).toBe(24);
+    });
     const button = () =>
       mounted.container.querySelector<HTMLButtonElement>(`[data-comic-child-ref="${leafRef}"] [aria-expanded]`)!;
     const click = (invalid: boolean) => {
@@ -1072,6 +1281,7 @@ test.each(["collapse", "reopen"] as const)(
     expect(geometry.sourceY - port.scrollTop).toBe(0);
     click(boundary === "reopen");
     await waitFor(() => expect(children.readers.size).toBe(2));
+    await waitFor(() => expect(threadsStore.getState().localOpenings.has(leafRef)).toBe(false));
     // Native focus leaves a collapsed selection in the disclosure, not selected
     // source text. Exercise its queued notification after the explicit toggle.
     expect(document.getSelection()?.isCollapsed).toBe(true);

@@ -1,7 +1,25 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { isAtBottom } from "../panes/session/transcript/flow/scrollMetrics";
-import { olderTranscriptPageKey } from "../stores/threads";
-import { Button, type CommittedVirtualListLayout, Select, VirtualList, type VirtualListHandle } from "../widgets";
+import { useIsMobile } from "../shell/useIsMobile";
+import { isEntryTranscriptLocalOpening, olderTranscriptPageKey, threadsStore } from "../stores/threads";
+import {
+  Button,
+  type CommittedVirtualListLayout,
+  Popover,
+  Select,
+  VirtualList,
+  type VirtualListHandle,
+} from "../widgets";
 import { type ComicExpression, ComicPanel, type ComicScene } from "./ComicPanel";
 import { ComicPlainTranscript } from "./ComicPlainTranscript";
 import { ComicSubchatHeader } from "./ComicSubchatHeader";
@@ -66,6 +84,7 @@ export function ComicTranscript({
   subchats,
   reader,
   mode,
+  appearanceView,
   onOpen,
 }: {
   root: ComicReaderSnapshot;
@@ -73,8 +92,10 @@ export function ComicTranscript({
   onOpen(ref: string): void;
   reader: ReturnType<typeof useComicReader>;
   mode: "comic" | "plain";
+  appearanceView?: ReactNode;
 }): React.ReactElement {
   const { entries, history } = root;
+  const isMobile = useIsMobile();
   const host = useRef<HTMLDivElement>(null);
   const controlsId = useId();
   const list = useRef<VirtualListHandle>(null);
@@ -83,10 +104,12 @@ export function ComicTranscript({
   const anchor = useRef<ComicReadingPosition>(reader.position ?? { mode: "end", sessionRef, path: [] });
   const restoring = useRef(!!reader.position);
   const commanded = useRef<number | undefined>(undefined);
+  const savedOffset = useRef<number | undefined>(undefined);
   const moving = useRef(false);
   const movementStart = useRef<number | undefined>(undefined);
   const [scene, setScene] = useState<ComicScene>("room");
   const [expression, setExpression] = useState<ComicExpression>("neutral");
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [font, setFont] = useState<"loading" | "ready" | "unavailable">("loading");
   const [geometry, setGeometry] = useState({ width: 0, epoch: 0 });
   const [tailSpace, setTailSpace] = useState(0);
@@ -109,8 +132,31 @@ export function ComicTranscript({
   const latest = useRef({ entries, history, reader, sessionRef, rows, snapshots, subchats });
   latest.current = { entries, history, reader, sessionRef, rows, snapshots, subchats };
 
+  const [, retryOpeningPlacement] = useReducer((revision: number) => revision + 1, 0);
+  const openingRefs = useCallback(() => {
+    const position = anchor.current;
+    return new Set([
+      position.sessionRef,
+      ...[...latest.current.snapshots.values()]
+        .filter((snapshot) => comicPathContains(snapshot.path, position.path))
+        .map((snapshot) => snapshot.ref),
+    ]);
+  }, []);
+  const isOpening = useCallback(() => [...openingRefs()].some(isEntryTranscriptLocalOpening), [openingRefs]);
+  useLayoutEffect(
+    () =>
+      threadsStore.subscribe((state, previous) => {
+        if ([...openingRefs()].some((ref) => state.localOpenings.has(ref) !== previous.localOpenings.has(ref))) {
+          // Retry through React's committed rows, never the previous DOM in this publication callback.
+          retryOpeningPlacement();
+        }
+      }),
+    [openingRefs],
+  );
+
   const save = useCallback((position: ComicReadingPosition) => {
     anchor.current = position;
+    savedOffset.current = list.current?.getScrollElement()?.scrollTop;
     latest.current.reader.save(position);
   }, []);
 
@@ -134,6 +180,7 @@ export function ComicTranscript({
     restoring.current = !!reader.position;
     moving.current = false;
     movementStart.current = undefined;
+    savedOffset.current = undefined;
     lastPage.current = undefined;
     revision.current += 1;
     return () => {
@@ -253,6 +300,7 @@ export function ComicTranscript({
         return;
       }
       const position = anchor.current;
+      if (restoring.current && isOpening()) return;
       const rowIndex = findComicFlowAnchorRow(current.rows, position);
       if (rowIndex === undefined) return;
       if (position.mode === "end") {
@@ -298,8 +346,12 @@ export function ComicTranscript({
       commanded.current = port.scrollTop;
       restoring.current = false;
     },
-    [reader, rows, captureMovement],
+    [reader, rows, captureMovement, isOpening],
   );
+
+  useLayoutEffect(() => {
+    if (restoring.current && committed.current) restore(committed.current);
+  });
 
   useLayoutEffect(() => {
     const port = list.current?.getScrollElement();
@@ -368,7 +420,11 @@ export function ComicTranscript({
         complete();
     };
     const wheel = (event: WheelEvent) => {
+      // Passive wheel delivery can follow compositor movement. Compare against
+      // our saved/restored offset, not the already-scrolled DOM at delivery.
+      const start = commanded.current ?? savedOffset.current ?? port.scrollTop;
       cancel(event);
+      movementStart.current = start;
       blocked(event.deltaY);
     };
     const pointerDown = (event: PointerEvent) => {
@@ -443,7 +499,7 @@ export function ComicTranscript({
   }, [captureMovement, reader]);
 
   useEffect(() => {
-    if (!restoring.current || moving.current || !rows.length) return;
+    if (!restoring.current || moving.current || !rows.length || isOpening()) return;
     const position = anchor.current;
     let target = root;
     for (let depth = 0; depth < position.path.length; depth += 1) {
@@ -465,6 +521,7 @@ export function ComicTranscript({
           }
           return;
         }
+        if (target.history.loadingOlder) return;
         save({ mode: "end", sessionRef: target.ref, path: target.path });
         restoring.current = false;
         return;
@@ -504,13 +561,13 @@ export function ComicTranscript({
         lastPage.current = page;
         history.loadOlderReportingError();
       }
-    } else {
+    } else if (!history.loadingOlder) {
       const first = target.entries.find((entry) => entry.id === nearest.current) ?? target.entries[0];
       if (first) save({ ...position, sessionRef: target.ref, path: target.path, entryId: first.id, offset: 0 });
       restoring.current = false;
       if (committed.current) restore(committed.current);
     }
-  }, [root, subchats, rows, save, restore]);
+  });
 
   const toggle = (flow: Extract<ComicFlowRow, { kind: "strip" }>) => {
     const path = [...flow.path, flow.strip.key];
@@ -562,37 +619,56 @@ export function ComicTranscript({
   return (
     <div className={styles.reader} data-comic-mode={mode} data-comic-font={font}>
       <div className={styles.controls}>
-        {mode === "comic" && (
-          <>
-            <label htmlFor={`${controlsId}-scene`}>
-              Scene
-              <Select
-                id={`${controlsId}-scene`}
-                value={scene}
-                options={[
-                  { value: "room", label: "Room" },
-                  { value: "field", label: "Field" },
-                  { value: "white", label: "White" },
-                ]}
-                onChange={(event) => setScene(event.target.value as ComicScene)}
-              />
-            </label>
-            <label htmlFor={`${controlsId}-expression`}>
-              Human expression
-              <Select
-                id={`${controlsId}-expression`}
-                value={expression}
-                options={["neutral", "happy-wave", "angry", "scared", "point", "celebrate"].map((value) => ({
-                  value,
-                  label: value,
-                }))}
-                onChange={(event) => setExpression(event.target.value as ComicExpression)}
-              />
-            </label>
-          </>
-        )}
-        <Button variant="link" onClick={jump}>
-          Jump to latest
+        <Popover
+          open={appearanceOpen}
+          onClose={() => setAppearanceOpen(false)}
+          trigger={
+            <Button
+              variant="link"
+              aria-haspopup="dialog"
+              aria-expanded={appearanceOpen}
+              aria-controls={`${controlsId}-appearance`}
+              onClick={() => setAppearanceOpen((open) => !open)}
+            >
+              Appearance
+            </Button>
+          }
+        >
+          <div className={styles.appearance} id={`${controlsId}-appearance`} role="dialog" aria-label="Appearance">
+            {appearanceView}
+            {mode === "comic" && (
+              <>
+                <label htmlFor={`${controlsId}-scene`}>
+                  Scene
+                  <Select
+                    id={`${controlsId}-scene`}
+                    value={scene}
+                    options={[
+                      { value: "room", label: "Room" },
+                      { value: "field", label: "Field" },
+                      { value: "white", label: "White" },
+                    ]}
+                    onChange={(event) => setScene(event.target.value as ComicScene)}
+                  />
+                </label>
+                <label htmlFor={`${controlsId}-expression`}>
+                  Human expression
+                  <Select
+                    id={`${controlsId}-expression`}
+                    value={expression}
+                    options={["neutral", "happy-wave", "angry", "scared", "point", "celebrate"].map((value) => ({
+                      value,
+                      label: value,
+                    }))}
+                    onChange={(event) => setExpression(event.target.value as ComicExpression)}
+                  />
+                </label>
+              </>
+            )}
+          </div>
+        </Popover>
+        <Button variant="link" aria-label="Jump to latest" onClick={jump}>
+          {isMobile ? "Latest" : "Jump to latest"}
         </Button>
         {history.hasOlder && (
           <Button variant="link" disabled={history.loadingOlder} onClick={history.loadOlderReportingError}>
