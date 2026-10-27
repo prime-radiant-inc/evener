@@ -16,7 +16,9 @@ import {
   hydrateThread,
   invalidateHistory,
   issueLatestWindowRead,
+  itemTextPresence,
   mergeOlderItemPage,
+  pruneBackgroundHistoryBodies,
 } from "./reducer";
 import type {
   AnyNotification,
@@ -127,6 +129,36 @@ function read(
     ...(options.olderCursor ? { olderCursor: options.olderCursor } : {}),
   };
 }
+
+test.each([
+  { type: "steering", source: "user", steeringKind: undefined },
+  { type: "steering", source: undefined, steeringKind: "interrupted" },
+  { type: "steering", source: "daemon", steeringKind: undefined },
+  { type: "steering", source: "user", steeringKind: "human-note" },
+  { type: "steering", source: undefined, steeringKind: undefined },
+  { type: "agentMessage", source: "user", steeringKind: "interrupted" },
+])("background pruning keeps only steering boundary metadata for $type/$source/$steeringKind", (metadata) => {
+  const body = item("turn_boundary", 0, {
+    ...metadata,
+    text: "BODY_SENTINEL",
+    argumentsJson: "ARGUMENT_SENTINEL",
+  });
+  const model = hydrateThread(read([turn("turn_boundary", 1, [body])]), REF, NOW);
+  const pruned = pruneBackgroundHistoryBodies(model);
+  const identity = pruned.history?.turns[0]?.items[0];
+  if (!identity) throw new Error("Missing canonical identity");
+  expect(identity.id).toBe(body.id);
+  expect(identity.text).toBe("");
+  expect(itemTextPresence(identity)).toBe("omitted");
+  expect(identity.argumentsJSON).toBeUndefined();
+  expect(identity.source).toBe(metadata.type === "steering" ? metadata.source : undefined);
+  expect(identity.steeringKind).toBe(metadata.type === "steering" ? metadata.steeringKind : undefined);
+  // Retaining classification must not turn an identity-only item into a body.
+  expect(pruned.turns.flatMap((turn) => turn.items)).toEqual([]);
+  const again = pruneBackgroundHistoryBodies(pruned);
+  expect(again.history?.turns).toEqual(pruned.history?.turns);
+  expect(again.turns.flatMap((turn) => turn.items)).toEqual([]);
+});
 
 function page(turns: Turn[], options: Snapshot & { authoritative?: boolean } = {}): ThreadTurnsListResponse {
   return {

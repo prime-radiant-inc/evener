@@ -237,6 +237,51 @@ describe("ports", () => {
     expect(store.getState().byRef.get("ref_a")).toEqual(state);
   });
 
+  test.each([
+    { name: "user message", boundary: { type: "userMessage" }, resolves: true },
+    { name: "user steer", boundary: { type: "steering", source: "user" }, resolves: true },
+    { name: "interrupt", boundary: { type: "steering", steeringKind: "interrupted" }, resolves: true },
+    { name: "daemon steer", boundary: { type: "steering", source: "daemon" }, resolves: false },
+    { name: "human note", boundary: { type: "steering", source: "user", steeringKind: "human-note" }, resolves: false },
+  ])("an atomic pruned replacement preserves the $name resolution boundary", ({ boundary, resolves }) => {
+    const threads = fakeThreads();
+    const store = createAskDockStore();
+    store.followThreads(threads);
+    const oldAsk = askItem("i1", "call_1", DEPLOY);
+    const original = recordedThread([oldAsk]);
+    threads.publish("ref_a", original);
+    store.setAnswer("ref_a", "call_1:0", { kind: "free", text: "OLD_ANSWER" });
+    store.setNote("ref_a", "call_1:0", "OLD_NOTE");
+    threads.publish("ref_a", pruneBackgroundHistoryBodies(original));
+    const before = store.getState().byRef.get("ref_a");
+    const replacement = recordedThread([
+      oldAsk,
+      { id: "boundary", turnId: "turn_1", text: "BOUNDARY_BODY", ...boundary },
+      askItem("i2", "call_2", DEPLOY),
+    ]);
+    const pruned = pruneBackgroundHistoryBodies(replacement);
+    expect(pruned.askPending).toBe(true);
+    expect(pruned.turns.flatMap((turn) => turn.items)).toEqual([]);
+    expect(pruned.history?.turns.flatMap((turn) => turn.items.map((item) => item.text))).toEqual(["", "", ""]);
+    // No resident replacement is published before this snapshot.
+    threads.publish("ref_a", pruned);
+    const keys = () =>
+      store
+        .getState()
+        .byRef.get("ref_a")
+        ?.batches.flatMap((batch) => batch.questions.map((q) => q.key));
+    expect(keys()).toEqual(resolves ? [] : ["call_1:0"]);
+    expect(store.getState().byRef.get("ref_a")?.answers).toEqual(resolves ? {} : before?.answers);
+    threads.publish("ref_a", replacement);
+    expect(keys()).toEqual(resolves ? ["call_2:0"] : ["call_1:0", "call_2:0"]);
+    expect(store.getState().byRef.get("ref_a")?.answers).toEqual(resolves ? {} : before?.answers);
+    // A later prune/restore cannot resurrect the settled call or its draft.
+    threads.publish("ref_a", pruneBackgroundHistoryBodies(replacement));
+    threads.publish("ref_a", replacement);
+    expect(keys()).toEqual(resolves ? ["call_2:0"] : ["call_1:0", "call_2:0"]);
+    expect(store.getState().byRef.get("ref_a")?.answers).toEqual(resolves ? {} : before?.answers);
+  });
+
   test("a resolving overlay clears retained questions while an earlier positioned notice does not", () => {
     const threads = fakeThreads();
     const store = createAskDockStore();
