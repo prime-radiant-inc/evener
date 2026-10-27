@@ -19,8 +19,8 @@ agent/delegate_effort_alias_test.go	1
 agent/delegate_lane_branch_disposal_test.go	2
 agent/delegate_resource_supervision_test.go	3
 agent/delegate_resource_worktree_test.go	6
-agent/delegate_runtime_branches_test.go	3
-agent/delegate_runtime_covtest4_test.go	2
+agent/delegate_runtime_branches_test.go	2
+agent/delegate_runtime_covtest4_test.go	1
 agent/delegate_task_list_test.go	1
 agent/delegate_tree_attention_branches_test.go	1
 agent/delegate_tree_finish_branches_test.go	3
@@ -29,7 +29,7 @@ agent/delegate_tree_restore_branches_test.go	2
 agent/delegate_tree_start_branches_test.go	4
 agent/delegate_tree_start_test.go	1
 agent/delegate_tree_watch_branches_test.go	1
-agent/diagnostics_warning_test.go	3
+agent/diagnostics_warning_test.go	1
 agent/doctor/filesystem_program_fuzz_test.go	2
 agent/eval_lifecycle_program_fuzz_test.go	2
 agent/events_queue_covtest_test.go	2
