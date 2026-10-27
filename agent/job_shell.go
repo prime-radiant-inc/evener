@@ -633,7 +633,7 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		jm.mu.Unlock()
 		return errJobManagerClosing
 	}
-	rec := cloneJobRecord(run.rec)
+	rec := run.rec.Clone()
 
 	started := jobStartedEvent(rec)
 	if err := jm.appendEvent(started); err != nil {

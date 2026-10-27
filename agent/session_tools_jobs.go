@@ -1213,7 +1213,7 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 			rec = latest
 		}
 		if !done && rec != nil && !rec.Status.IsTerminal() {
-			pending := cloneJobRecord(rec)
+			pending := rec.Clone()
 			pending.Reason = "stop_pending"
 			rec = pending
 		}
