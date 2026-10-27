@@ -337,7 +337,7 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 					highWater:  map[string]HostGeneration{"gone": {Generation: 1, IncarnationID: expired.IncarnationID, PresenceEpoch: 4}},
 					tombstones: map[string]HostTombstone{"gone": expired},
 				}
-				if err := writeHubTOMLHostsRecords(config, nil, nil, records, false); err != nil {
+				if err := writeHubTOMLHostsRecords(config, nil, nil, records); err != nil {
 					t.Fatal(err)
 				}
 			}

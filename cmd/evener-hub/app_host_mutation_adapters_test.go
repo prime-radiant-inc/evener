@@ -11,7 +11,7 @@ import (
 // writeHubTOMLHosts is an exact write of entries: no preservation of hand-added
 // file entries and no machine-managed records.
 func writeHubTOMLHosts(path string, entries []hostreg.Host) error {
-	return writeHubTOMLHostsRecords(path, entries, nil, hostTOMLRecords{}, false)
+	return writeHubTOMLHostsRecords(path, entries, nil, hostTOMLRecords{})
 }
 
 // Add adapts AddResult for tests: it returns the committed row and reports a
