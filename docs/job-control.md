@@ -393,6 +393,9 @@ and shell custody are accepted, then the receiver rechecks ordinary execution
 eligibility. Wake callbacks hand off and return, rather than running the turn.
 This applies to persistent and memory-only receivers, not foreign receivers or
 unrelated input already admitted before finalization.
+Grouping excludes a notification dispatcher already past the wake-hold check when
+finalization begins, even before input admission. The hold does not revoke that
+dispatch.
 
 The hold is not a transaction or a recovery owner. Source journals and canonical
 receiver custody retain each ID independently. A failed partition releases
