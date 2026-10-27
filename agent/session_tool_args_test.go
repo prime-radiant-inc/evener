@@ -13,8 +13,6 @@ import (
 // These tables pin which inputs each family accepts so consolidating the
 // helpers cannot change what a model may send.
 
-func argPtr[T any](v T) *T { return &v }
-
 func samePtr[T comparable](a, b *T) bool {
 	if a == nil || b == nil {
 		return a == b
@@ -62,8 +60,8 @@ func TestOptionalBoolArg(t *testing.T) {
 	}{
 		{name: "absent", args: map[string]any{}},
 		{name: "null", args: map[string]any{"k": nil}},
-		{name: "true", args: map[string]any{"k": true}, want: argPtr(true)},
-		{name: "false", args: map[string]any{"k": false}, want: argPtr(false)},
+		{name: "true", args: map[string]any{"k": true}, want: new(true)},
+		{name: "false", args: map[string]any{"k": false}, want: new(false)},
 		{name: "string", args: map[string]any{"k": "true"}, wantErr: true},
 		{name: "number", args: map[string]any{"k": 1.0}, wantErr: true},
 	}
@@ -91,8 +89,8 @@ func TestOptionalWholeIntArg(t *testing.T) {
 	}{
 		{name: "absent", args: map[string]any{}},
 		{name: "null", args: map[string]any{"k": nil}},
-		{name: "zero", args: map[string]any{"k": 0.0}, want: argPtr(0)},
-		{name: "whole", args: map[string]any{"k": 7.0}, want: argPtr(7)},
+		{name: "zero", args: map[string]any{"k": 0.0}, want: new(0)},
+		{name: "whole", args: map[string]any{"k": 7.0}, want: new(7)},
 		{name: "fractional", args: map[string]any{"k": 1.5}, wantErr: true},
 		{name: "negative", args: map[string]any{"k": -1.0}, wantErr: true},
 		{name: "nan", args: map[string]any{"k": math.NaN()}, wantErr: true},
@@ -237,9 +235,9 @@ func TestLenientOptionalIntArg(t *testing.T) {
 		{name: "null", args: map[string]any{"k": nil}},
 		{name: "string reads as absent", args: map[string]any{"k": "3"}},
 		{name: "native int is not a decoded JSON number", args: map[string]any{"k": 3}},
-		{name: "whole", args: map[string]any{"k": 3.0}, want: argPtr(3)},
-		{name: "fractional truncates", args: map[string]any{"k": 1.9}, want: argPtr(1)},
-		{name: "negative", args: map[string]any{"k": -4.0}, want: argPtr(-4)},
+		{name: "whole", args: map[string]any{"k": 3.0}, want: new(3)},
+		{name: "fractional truncates", args: map[string]any{"k": 1.9}, want: new(1)},
+		{name: "negative", args: map[string]any{"k": -4.0}, want: new(-4)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
