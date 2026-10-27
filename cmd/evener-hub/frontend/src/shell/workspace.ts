@@ -350,7 +350,7 @@ function placeComposerSeat(ref: string, panes: readonly OpenPaneRecord[], outgoi
 
 // The outgoing seat that already owns this ref's selection, if any. Read
 // before a placement that is about to remove its pane.
-function selectionSeatForRef(
+export function selectionSeatForRef(
   ref: string,
   panes: readonly OpenPaneRecord[],
   preferred?: OpenPaneRecord | null,

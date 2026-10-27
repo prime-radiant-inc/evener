@@ -2,7 +2,12 @@ import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { createAttachmentOperations } from "../panes/session/composer/attachments/useAttachments";
-import { readRecoverySelection, writeRecoverySelection } from "../panes/session/composer/draft";
+import {
+  composerSelectionScope,
+  readRecoverySelection,
+  readRefComposerSeat,
+  writeRecoverySelection,
+} from "../panes/session/composer/draft";
 import { retainedTranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import type { MutationRecoveryRecord } from "../stores/mutationOutbox";
@@ -263,4 +268,27 @@ test("a resumed identity keeps a newer destination selection", () => {
   lifetime.adoptResumedSource("resumed");
   expect(readRecoverySelection("resumed", scope)).toBe("destination-row");
   lifetime.dispose();
+});
+
+test("a resumed source seat survives a later mobile route reconstruction", () => {
+  const pane = rootPane();
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const lifetime = conversationPaneLifetime(pane);
+  const composer = lifetime.composer;
+  if (!composer) throw new Error("session lifetime lacks its source");
+  const preserved = recoveryRow("resumed-seat-row", "local resumed work");
+  composer.setActiveRecoveryId(preserved);
+  const seat = lifetime.composerSeatId;
+
+  lifetime.adoptResumedSource("local:mobile-resumed");
+  expect(readRefComposerSeat("local:mobile-resumed")).toBe(seat);
+
+  // A reload reconstructs the resumed route under a fresh pane id. Route
+  // placement must find this tab's seat through the conversation mapping.
+  resetWorkspaceStoreForTests();
+  const reloadedId = workspaceStore.getState().openPane("session", { ref: "local:mobile-resumed" });
+  const reloaded = workspaceStore.getState().panes.find((record) => record.id === reloadedId);
+  if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
+  expect(reloaded.composerSeatId).toBe(seat);
+  expect(readRecoverySelection("local:mobile-resumed", composerSelectionScope(seat))).toBe(preserved.clientMutationId);
 });

@@ -3,6 +3,7 @@ import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { composerSelectionScope, readRecoverySelection, writeRecoverySelection } from "../panes/session/composer/draft";
+import { retainedConversationComposer } from "../panes/session/composer/retainedComposer";
 import { parseZoomParams } from "../panes/zoom/intent";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { currentAttentionEntryToken, openAttentionSession } from "./attentionHistory";
@@ -1567,4 +1568,43 @@ test("a retained seat on a retargeted conversation survives mobile reload", () =
   if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
   expect(reloaded.composerSeatId).toBe(seat);
   expect(readRecoverySelection("local:resumed", composerSelectionScope(reloaded.composerSeatId))).toBe("resumed-row");
+});
+
+test("two cascade columns keep independent selections under one seat", () => {
+  installLocalStorage(new MemoryStorage());
+  const ownerRef = "local:cascade-column-owner";
+  const childRef = "local:cascade-column-child";
+  const params = {
+    ref: childRef,
+    source: { type: "session" as const, params: { ref: ownerRef } },
+    edges: [{ ownerRef, childRef, delegateId: "delegate-1" }],
+  };
+  const cascadeId = workspaceStore.getState().openPane("sessionZoom", params);
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
+  const seat = cascade.composerSeatId;
+  const lifetime = conversationPaneLifetime(cascade);
+  const ownerColumn = retainedConversationComposer(lifetime, ownerRef);
+  const childColumn = retainedConversationComposer(lifetime, childRef);
+  if (!ownerColumn || !childColumn) throw new Error("cascade columns lack composers");
+  expect(ownerColumn.recoverySelectionOwnerId).toBe(childColumn.recoverySelectionOwnerId);
+
+  writeRecoverySelection(ownerRef, composerSelectionScope(seat), "owner-selected-row");
+  writeRecoverySelection(childRef, composerSelectionScope(seat), "child-selected-row");
+
+  // Reload reconstructs the cascade under a fresh pane id. Its columns still
+  // share the tab-scoped seat, and each ref restores its own selection.
+  resetWorkspaceStoreForTests();
+  const reloadedId = workspaceStore.getState().openPane("sessionZoom", params);
+  const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
+  if (!reloaded?.composerSeatId) throw new Error("reloaded cascade lacks its seat");
+  expect(reloaded.composerSeatId).toBe(seat);
+  const reloadedLifetime = conversationPaneLifetime(reloaded);
+  const reloadedOwner = retainedConversationComposer(reloadedLifetime, ownerRef);
+  const reloadedChild = retainedConversationComposer(reloadedLifetime, childRef);
+  if (!reloadedOwner || !reloadedChild) throw new Error("reloaded columns lack composers");
+  expect(reloadedOwner.recoverySelectionOwnerId).toBe(reloadedChild.recoverySelectionOwnerId);
+  expect(readRecoverySelection(ownerRef, reloadedOwner.recoverySelectionOwnerId)).toBe("owner-selected-row");
+  expect(readRecoverySelection(childRef, reloadedChild.recoverySelectionOwnerId)).toBe("child-selected-row");
+  expect(readRecoverySelection(ownerRef, reloadedOwner.recoverySelectionOwnerId)).not.toBe("child-selected-row");
 });

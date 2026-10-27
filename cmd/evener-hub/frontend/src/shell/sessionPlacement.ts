@@ -1,7 +1,12 @@
-import { composerSelectionScope, readRecoverySelection } from "../panes/session/composer/draft";
 import { parseZoomParams } from "../panes/zoom/intent";
 import { navigate, paneToURL, refParam } from "./routing";
-import { type OpenPaneRecord, presentedPanes, recordConversationOpenParent, workspaceStore } from "./workspace";
+import {
+  type OpenPaneRecord,
+  presentedPanes,
+  recordConversationOpenParent,
+  selectionSeatForRef,
+  workspaceStore,
+} from "./workspace";
 
 // A session pane's identity is the ref in its own params, derived here rather
 // than spelled by the caller so the type and the ref cannot diverge.
@@ -71,12 +76,7 @@ export function openTopLevelSession(ref: string): void {
 export function openNestedSessionWithOwner(ref: string, ownerRef: string): void {
   // Capture the outgoing selection seat before replacing the owner: promoting
   // the owner can remove the pane that carried this conversation's choice.
-  const outgoingSeat = workspaceStore
-    .getState()
-    .panes.map((pane) => ({ pane, seat: pane.composerSeatId ?? pane.id }))
-    .filter(({ pane }) => pane.type === "session" || pane.type === "sessionZoom")
-    .map(({ seat }) => seat)
-    .find((seat) => readRecoverySelection(ref, composerSelectionScope(seat)) !== undefined);
+  const outgoingSeat = selectionSeatForRef(ref, workspaceStore.getState().panes);
   openTopLevelSession(ownerRef);
   const openedId = workspaceStore
     .getState()
