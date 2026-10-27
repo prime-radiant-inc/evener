@@ -159,7 +159,6 @@ agent/session_worktree_resume_test.go	1
 agent/settlement_salvage_test.go	3
 agent/steering_tool_gate_test.go	1
 agent/subagent_model_selection_test.go	1
-agent/subagents_cov_test.go	1
 agent/subagents_covtest_test.go	3
 agent/task_reminders_test.go	1
 agent/transcript/cov_s4_transcript_fault_test.go	18

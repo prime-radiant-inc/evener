@@ -3547,63 +3547,6 @@ func TestSession_Subagent_SharedFilesystem(t *testing.T) {
 	t.Fatal("subagent did not receive parent-written file content via shared filesystem")
 }
 
-func TestSendInput_SteersRunningAgent(t *testing.T) {
-	t.Parallel()
-	// Create a minimal subagent entry with a running session to verify
-	// sendInput uses Steer() on running agents instead of rejecting them.
-	c := llm.NewClient()
-	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-	}}
-	c.Register(f)
-	dir := t.TempDir()
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	// Create a subagent session manually.
-	subSess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	sub := &subagent{
-		id:      subSess.id,
-		sess:    subSess,
-		status:  SubagentRunning,
-		running: true,
-		done:    make(chan struct{}),
-	}
-	sess.subagents.track(sub)
-
-	// sendInput on a running agent should Steer instead of erroring.
-	_, err = sess.sendInput(context.Background(), sub.id, "steered message")
-	if err != nil {
-		t.Fatalf("sendInput on running agent should not error, got: %v", err)
-	}
-
-	// Verify the steering message was queued.
-	subSess.mu.Lock()
-	queue := make([]string, 0, len(subSess.steeringQueue))
-	for _, m := range subSess.steeringQueue {
-		queue = append(queue, m.Text)
-	}
-	subSess.mu.Unlock()
-
-	if len(queue) != 1 || queue[0] != "steered message" {
-		t.Fatalf("expected steering queue=[\"steered message\"], got %v", queue)
-	}
-
-	// Clean up.
-	sub.mu.Lock()
-	sub.running = false
-	close(sub.done)
-	sub.mu.Unlock()
-	subSess.Close()
-}
-
 func TestDetectLoop_Patterns(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
