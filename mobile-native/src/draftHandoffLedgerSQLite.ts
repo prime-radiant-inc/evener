@@ -1,5 +1,6 @@
 import type { SqliteSync } from "./sqliteSync";
 import { withSavepoint } from "./sqliteSync";
+import { decodeDraftEndpoint } from "./draftHandoffLedger";
 import type {
 	CreateDraftHandoffEdgeInput,
 	DraftHandoffDelivery,
@@ -304,6 +305,33 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 					edgeId: row.edge_id,
 				})),
 		};
+	}
+
+	recoveryRowOwners(recoveryIds: readonly string[]): DraftHandoffEndpoint[] | undefined {
+		if (!recoveryIds.length) return [];
+		// The mutationOutboxStorage tables share this database but cannot be
+		// imported here without a construction cycle, so the names are spelled
+		// out; that module's TABLES constants are their single source of truth.
+		let rows: { target_ref: string }[];
+		try {
+			const placeholders = recoveryIds.map(() => "?").join(", ");
+			rows = this.db.getAllSync<{ target_ref: string }>(
+				`SELECT DISTINCT target_ref FROM mutation_outbox WHERE client_mutation_id IN (${placeholders})
+				 UNION SELECT DISTINCT target_ref FROM mutation_recovery WHERE client_mutation_id IN (${placeholders})`,
+				...recoveryIds,
+				...recoveryIds,
+			);
+		} catch {
+			// A ledger constructed on a database without the mutation tables has
+			// no row ownership to read; the caller falls back to the graph.
+			return undefined;
+		}
+		const owners = new Map<string, DraftHandoffEndpoint>();
+		for (const row of rows) {
+			const endpoint = decodeDraftEndpoint(row.target_ref);
+			if (endpoint !== undefined) owners.set(`${endpoint.hubId}\u0000${endpoint.sessionRef}`, endpoint);
+		}
+		return [...owners.values()];
 	}
 
 	claimDestination(edgeId: string): boolean {

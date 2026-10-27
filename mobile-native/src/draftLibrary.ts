@@ -9,6 +9,7 @@ import {
 import type {
 	DraftHandoffDelivery,
 	DraftHandoffEdge,
+	DraftHandoffEndpoint,
 	DraftHandoffLedger,
 	DraftHandoffGraph,
 	DraftSubmissionObligation,
@@ -403,14 +404,16 @@ export class DraftLibrary {
 		const obligations = edge.obligations
 			.map((obligationId) => graph.obligations.find((row) => row.obligationId === obligationId))
 			.filter((row): row is DraftSubmissionObligation => row !== undefined);
-		// A completion merges these ids into whichever record it clears, so the
-		// source can carry them without the destination ever having received
-		// them at delivery time.
+		// Delivered dispositions must be proven by the destination's own durable
+		// record. An obligation's resolution names the ids its completion merged
+		// at the capture's owner - which can still be the source when a transfer
+		// failed - so counting them as carried would settle an empty destination
+		// and strand the markers behind the retargeted rows. The hop instead
+		// composes again and the re-transfer carries them.
 		const carried = new Set([
 			...(delivered.completedCommandRecoveryIds ?? []),
 			...(delivered.releasedRecoveryIds ?? []),
 			...(delivered.recoveryResendAcks ?? []),
-			...obligations.flatMap((row) => [...row.completedCommandIds, ...row.releasedRecoveryIds]),
 		]);
 		return (
 			sameSelections(source.composer, delivered.composer) &&
@@ -441,6 +444,11 @@ export class DraftLibrary {
 		} catch {
 			return false;
 		}
+		// The retargets can have moved the rows past the immediate destination
+		// whether or not it accepted the draft; a refusal must leave the
+		// markers with the rows too, or the executed command stays restorable at
+		// the row owner.
+		if (!this.forwardDispositions(ledger, edge, completed, released)) return false;
 		try {
 			ledger.refuseEdge(edge.edgeId, deliveriesFor(edge, completed, released));
 		} catch {
@@ -475,10 +483,13 @@ export class DraftLibrary {
 		return true;
 	}
 
-	/** Write completed and released markers at the identity the retargets moved
-	 * the chain's mutation rows on to, when the rows traveled past this edge's
-	 * own destination. False when the forwarding write cannot land, so
-	 * settlement retries with the dispositions still recorded at the hop. */
+	/** Write completed and released markers at every identity that durably owns
+	 * the dispositions' mutation rows, when the rows traveled past this edge's
+	 * own destination. Row ownership follows the retargets, which move rows
+	 * with the identity regardless of whether the destination accepted the
+	 * draft, so both settlements and refusals forward. False when a forwarding
+	 * write cannot land, so the caller retries with the dispositions still
+	 * recorded. */
 	private forwardDispositions(
 		ledger: DraftHandoffLedger,
 		edge: DraftHandoffEdge,
@@ -486,28 +497,36 @@ export class DraftLibrary {
 		released: readonly string[],
 	): boolean {
 		if (!completed.length && !released.length) return true;
-		const load = readHandoffGraph(ledger);
-		if (load.state !== "ready") return false;
-		// The rows start from this edge's destination and follow the chain's
-		// composed continuations onward: this edge delivered its dispositions at
-		// its destination, so only a continuation that carried the identity
-		// further can have carried the rows further too.
-		const rowOwner = terminalDestination(load.graph.edges, edge.to, edge.chainId);
-		if (sameDestination(rowOwner, edge.to)) return true;
-		const document = this.open(rowOwner);
-		let current = document.getSnapshot();
-		if (!current.loaded) {
-			document.retry();
-			current = document.getSnapshot();
+		// Durable row ownership first: the mutation tables name the identity
+		// each row currently targets, across refused handoffs and uncomposed
+		// edges alike. Ledgers without that query fall back to the graph's
+		// continuation trace from this edge's destination.
+		const owners = ledger.recoveryRowOwners?.([...completed, ...released]);
+		const rowOwners: DraftHandoffEndpoint[] = [];
+		if (owners !== undefined) {
+			for (const owner of owners) if (!sameDestination(owner, edge.to)) rowOwners.push(owner);
+		} else {
+			const load = readHandoffGraph(ledger);
+			if (load.state !== "ready") return false;
+			const traced = terminalDestination(load.graph.edges, edge.to, edge.chainId);
+			if (!sameDestination(traced, edge.to)) rowOwners.push(traced);
 		}
-		// An unloaded or unsaved row owner must not receive markers through an
-		// empty snapshot; the edge stays pending and the next retry forwards.
-		if (!current.loaded || current.error !== null) return false;
-		try {
-			if (completed.length && !document.adoptCompletedCommandRecovery(completed)) return false;
-			if (released.length && !document.releaseRecoverySources(released)) return false;
-		} catch {
-			return false;
+		for (const rowOwner of rowOwners) {
+			const document = this.open(rowOwner);
+			let current = document.getSnapshot();
+			if (!current.loaded) {
+				document.retry();
+				current = document.getSnapshot();
+			}
+			// An unloaded or unsaved row owner must not receive markers through
+			// an empty snapshot; the caller retries and forwards again.
+			if (!current.loaded || current.error !== null) return false;
+			try {
+				if (completed.length && !document.adoptCompletedCommandRecovery(completed)) return false;
+				if (released.length && !document.releaseRecoverySources(released)) return false;
+			} catch {
+				return false;
+			}
 		}
 		return true;
 	}

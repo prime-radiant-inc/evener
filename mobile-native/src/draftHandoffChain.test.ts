@@ -680,4 +680,155 @@ describe("handoff chain obligations", () => {
 		).toBe("already-restored");
 		expect(storageLedger.readGraph().edges.find((edge) => edge.from.sessionRef === "a")?.state).toBe("settled");
 	});
+
+	test("a completion between a failed transfer and its retry reaches the destination", async () => {
+		const { storage, storageLedger, repository } = setup();
+		// Every transfer attempt fails through one full retry pass - the
+		// delivered hash is durable, the drafts transfer is not.
+		let failedTransfers = 0;
+		const flakyRepository = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "transfer" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (failedTransfers < 2) {
+							failedTransfers++;
+							throw new Error("transfer failed");
+						}
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		const library = new DraftLibrary(
+			() => flakyRepository,
+			undefined,
+			() => storageLedger,
+		);
+		const intent = (note: string): MutationIntent => ({
+			targetRef: targetKey("a"),
+			threadId: "thread-a",
+			method: "notes/human/set",
+			payload: { ref: "a", expectedInstanceId: "instance-a", note },
+			attachments: [],
+			optimisticDisplay: null,
+		});
+		await storage.enqueueIntent(intent("drives the retarget"));
+		const captured = await storage.enqueueIntent(intent("recovered command input"));
+		await storage.transferToRecovery(captured.clientMutationId, "editing");
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: [captured.clientMutationId] },
+		});
+		const source = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		resume(storage, "a", "b");
+		library.retryPendingHandoffs();
+		// The transfer failed after its delivered hash: the destination is still
+		// empty and the capture stays with the origin.
+		expect(repository.read(endpoint("b"))).toEqual({ draft: "", unconfirmed: null });
+
+		// The recovered command completes at the origin while the transfer is
+		// missing, so its markers land in the origin's record.
+		finish();
+		await submitted;
+		expect(repository.read(endpoint("a")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
+
+		library.retryPendingHandoffs();
+		// The obligation's own resolved ids prove nothing about the destination:
+		// the retry composes again, and the re-transfer carries the completion
+		// markers to the destination that owns the retargeted row.
+		expect(repository.read(endpoint("b")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
+		expect(
+			library.open(endpoint("b")).appendEditedRecovery({
+				version: 1,
+				clientMutationId: captured.clientMutationId,
+				targetRef: targetKey("b"),
+				method: "turn/start",
+				payload: { input: [{ type: "text", text: "encoded" }] },
+				attachments: [],
+				composerText: "encoded",
+				optimisticDisplay: {},
+				intentSequence: 1,
+				createdAt: 1,
+				state: "canceled",
+				attempted: false,
+				recoveryKind: "editing",
+			}),
+		).toBe("already-restored");
+		expect(storageLedger.readGraph().edges.find((edge) => edge.from.sessionRef === "a")?.state).toBe("settled");
+	});
+
+	test("a refusal forwards dispositions to the identity owning the retargeted rows", async () => {
+		const { storage, storageLedger, repository, library } = setup();
+		const intent = (note: string): MutationIntent => ({
+			targetRef: targetKey("a"),
+			threadId: "thread-a",
+			method: "notes/human/set",
+			payload: { ref: "a", expectedInstanceId: "instance-a", note },
+			attachments: [],
+			optimisticDisplay: null,
+		});
+		await storage.enqueueIntent(intent("drives the retarget"));
+		const captured = await storage.enqueueIntent(intent("recovered command input"));
+		await storage.transferToRecovery(captured.clientMutationId, "editing");
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: [captured.clientMutationId] },
+		});
+		// Both the intermediate and the terminal identities hold their own work,
+		// so every handoff refuses while the retargets move the rows on.
+		repository.write(endpoint("b"), { draft: "b work", unconfirmed: null });
+		repository.write(endpoint("c"), { draft: "c work", unconfirmed: null });
+		const source = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		resume(storage, "a", "b");
+		resume(storage, "b", "c");
+		expect(await storage.getRecovery(captured.clientMutationId)).toMatchObject({ targetRef: targetKey("c") });
+		library.retryPendingHandoffs();
+
+		// The recovered command completes at the origin; both hops then refuse.
+		finish();
+		await submitted;
+		library.retryPendingHandoffs();
+		expect(storageLedger.readGraph().edges.map((edge) => edge.state)).toEqual(
+			expect.arrayContaining(["refused", "refused"]),
+		);
+		// The immediate destination received its markers...
+		expect(repository.read(endpoint("b")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
+		// ...and so did the identity the retargets moved the row to, although no
+		// draft was ever accepted there.
+		expect(repository.read(endpoint("c")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
+		expect(
+			library.open(endpoint("c")).appendEditedRecovery({
+				version: 1,
+				clientMutationId: captured.clientMutationId,
+				targetRef: targetKey("c"),
+				method: "turn/start",
+				payload: { input: [{ type: "text", text: "encoded" }] },
+				attachments: [],
+				composerText: "encoded",
+				optimisticDisplay: {},
+				intentSequence: 1,
+				createdAt: 1,
+				state: "canceled",
+				attempted: false,
+				recoveryKind: "editing",
+			}),
+		).toBe("already-restored");
+	});
 });

@@ -111,6 +111,14 @@ export interface DraftHandoffLedger extends DraftSubmissionLedger {
 	recordDelivered(edgeId: string, deliveredHash: string): void;
 	/** Mark the drafts transfer as committed. */
 	recordComposed(edgeId: string): void;
+	/** The identities the mutation rows for these recovery ids currently
+	 * target, read from the durable outbox and recovery tables. Retargets move
+	 * rows with the identity regardless of whether the destination accepted
+	 * the draft, so this - not the handoff graph - is the durable row
+	 * ownership. Undefined when those tables are absent or unreadable: the
+	 * caller then falls back to the graph's continuation trace. Optional:
+	 * without the method the fallback applies as well. */
+	recoveryRowOwners?(recoveryIds: readonly string[]): DraftHandoffEndpoint[] | undefined;
 	settleEdge(edgeId: string, deliveries: readonly DraftHandoffDelivery[], deliveredHash: string): void;
 	refuseEdge(edgeId: string, deliveries: readonly DraftHandoffDelivery[]): void;
 	cleanEdge(edgeId: string): void;
