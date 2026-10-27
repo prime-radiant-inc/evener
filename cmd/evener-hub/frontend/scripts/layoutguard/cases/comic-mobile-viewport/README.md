@@ -23,6 +23,8 @@ Latest and the single Session actions menu. The real Appearance popup contains
 all View/Scene/expression choices at phone and desktop sizes. Opening/dismissing
 it must preserve draft, saved source and reader height, return focus, and keep
 every choice reachable within the viewport, including 360px keyboards.
+Activation uses one native pointer sequence on a stable, hit-tested trigger.
+Failures report the matrix stage, trigger/popup geometry and current focus.
 
 Headless Chrome resolves `100vh` and `100dvh` equally, even with mobile emulation.
 The case records those dimensions, then resolves viewport-unit tokens in the
