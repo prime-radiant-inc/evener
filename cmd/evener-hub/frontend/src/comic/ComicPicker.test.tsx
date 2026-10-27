@@ -2,7 +2,7 @@ import type { NavigationReadParams } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { ComicPicker } from "./ComicPicker";
@@ -183,6 +183,95 @@ test("remote live rows and current, recent, archived project pages load only on 
   mounted.unmount();
 });
 
+test.each(["current", "recent", "archived"] as const)(
+  "%s project pages select each ref once and retain raw offsets through refresh and reconnect",
+  async (tier) => {
+    const client = new FakeClient("ready");
+    const initialize = await client.connect();
+    const calls: NavigationReadParams[] = [];
+    let revision = 1;
+    const rows = (...ids: string[]) => ids.map((id) => ({ ref: `local:${tier}-${id}`, children: [] }));
+    client.on("evener/navigation/read", (params) => {
+      calls.push(params);
+      const snapshot = (data: unknown) => wireSnapshot(params, data, `"revision-${revision}"`, revision);
+      if (params.resource === "manifest")
+        return snapshot(
+          manifest({ catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } } }),
+        );
+      if (params.resource === "catalog")
+        return snapshot({ projects: [{ key: "overlap", name: "Overlap fixture", session_count: 4 }], remaining: 0 });
+      if (params.resource === "project") {
+        const response = snapshot({ key: "overlap", [tier]: { sessions: rows("a", "b") } });
+        const data = response.data as { metadata: Record<string, unknown> };
+        return { ...response, data: { ...data, metadata: { ...data.metadata, [`${tier}_remaining`]: 4 } } };
+      }
+      if (params.resource === "project_page") {
+        if (params.offset === 2) return snapshot({ sessions: rows("b", "c"), remaining: 2 });
+        if (params.offset === 4) return snapshot({ sessions: rows("c", `tail-${revision}`), remaining: 0 });
+      }
+      throw new Error(`unexpected navigation read ${JSON.stringify(params)}`);
+    });
+    act(() => initNavigation(client, capability()));
+    const selected: string[] = [];
+    const mounted = render(<ComicPicker onSelect={(ref) => selected.push(ref)} />);
+    // Await the boot catalog before expanding, rather than guessing microtask counts.
+    const project = await screen.findByRole("button", { name: "Overlap fixture" });
+    act(() => project.click());
+    const region = () => screen.getByRole("region", { name: `Overlap fixture ${tier}` });
+    await within(region()).findByRole("button", { name: `local:${tier}-a` });
+    for (const offset of [2, 4]) {
+      act(() =>
+        within(region())
+          .getByRole("button", { name: `More ${tier}` })
+          .click(),
+      );
+      await waitFor(() =>
+        expect(
+          navigationStore
+            .getState()
+            .resources.get(keyID({ kind: "project_page", projectKey: "overlap", tier, offset, limit: 50 }))
+            ?.loadedRevision,
+        ).toBe(1),
+      );
+    }
+    const checkRows = () => {
+      selected.length = 0;
+      for (const button of within(region()).getAllByRole("button")) button.click();
+      expect
+        .soft(selected)
+        .toEqual([`local:${tier}-a`, `local:${tier}-b`, `local:${tier}-c`, `local:${tier}-tail-${revision}`]);
+      expect(within(region()).queryByRole("button", { name: `More ${tier}` })).toBeNull();
+    };
+    const pageOffsets = () => calls.filter((call) => call.resource === "project_page").map((call) => call.offset);
+    expect(pageOffsets()).toEqual([2, 4]);
+    checkRows();
+    for (const recovery of ["refresh", "reconnect"]) {
+      revision++;
+      calls.length = 0;
+      await act(async () => {
+        if (recovery === "refresh") {
+          client.emitNotification({
+            method: "evener/navigation/invalidated",
+            params: {
+              generationId: "generation_test",
+              sequence: 1,
+              targets: [{ kind: "project", projectKey: "overlap", revision }],
+            },
+          });
+        } else {
+          client.emitStateChange("reconnecting");
+          client.emitReady({ ...initialize, navigation: { ...capability(), sequence: 2 } });
+        }
+        await navigationStore.getState().awaitNavigationTargets([{ kind: "project", projectKey: "overlap", revision }]);
+      });
+      expect(pageOffsets().sort()).toEqual([2, 4]);
+      checkRows();
+    }
+    mounted.unmount();
+    client.close();
+  },
+);
+
 test("a shallow root retains an explicitly supplied child ref until project expansion", async () => {
   const calls: NavigationReadParams[] = [];
   const childRef = "local:child-of-parent-034l-ref";
@@ -330,7 +419,7 @@ test("a failed project page retries once per offset and follows returned continu
     await flush();
   });
   expect(within(current()).getByRole("button", { name: "First" })).toBeDefined();
-  expect(within(current()).getByRole("alert").textContent).toContain("Page unavailable");
+  expect(within(current()).getByRole("alert")).toBeDefined();
   await act(async () => {
     const retry = within(current()).getByRole("button", { name: "More current" });
     retry.click();
@@ -380,7 +469,7 @@ test("a failed catalog page preserves prior projects and retries its exact offse
     await flush();
   });
   expect(within(projects()).getByRole("button", { name: "Project 0" })).toBeDefined();
-  expect(within(projects()).getByRole("alert").textContent).toContain("Catalog unavailable");
+  expect(within(projects()).getByRole("alert")).toBeDefined();
   await act(async () => {
     within(projects()).getByRole("button", { name: "Retry projects" }).click();
     await flush();

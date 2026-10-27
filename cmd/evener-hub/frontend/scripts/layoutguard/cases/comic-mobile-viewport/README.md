@@ -40,6 +40,17 @@ while the keyboard is open; closing must restore its original height and literal
 source slices. This supplements, rather than relaxes, the 440px positive-reader
 checks above.
 
+A separate safe-area sequence uses CDP `Emulation.setSafeAreaInsetsOverride` to
+set the browser's actual `env(safe-area-inset-bottom)` to 34px. An independent
+probe verifies the environment value; no production selector or padding rule is
+replaced. At 320/390px the composer must end at 586px with the keyboard closed,
+440/480px when opened/offset, and 360/400px with the shorter keyboard. Both Send
+with a native-input draft and Stop with an empty active-thread composer must be
+contained and hit-testable. Pinch/unpinch, partial close (12px keyboard inset),
+and full close retain the larger clearance rather than adding the insets. Drafts,
+literal slices and recovered reader heights remain checked. The short-open
+reader may collapse; all closed states must restore it.
+
 These are browser-API boundary simulations, not physical mobile browser chrome,
 software keyboard, Safari or touch-inertia qualification. The 440px keyboard
 boundary leaves space for the fixture's wrapped mobile headers and composer;
@@ -50,3 +61,6 @@ and the modeled session/composer ended at 760px. With dynamic minimum height and
 a bounded picker scrollport, the same case passes at all three widths.
 Removing the mobile session's keyboard padding leaves the composer at 620px,
 the editor bottom at 559px and Send at 607px, below the 440/480px boundary.
+With keyboard-only padding and a real 34px safe-area environment, the closed
+composer still ended at 620px and both Send and Stop at 607px, below the 586px
+safe boundary. The same assertions pass with the larger-inset reservation.

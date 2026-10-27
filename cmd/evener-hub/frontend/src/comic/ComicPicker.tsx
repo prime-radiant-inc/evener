@@ -93,12 +93,14 @@ function Project({ project, onSelect }: { project: NavigationProjectSummary; onS
                 keyID({ kind: "project_page", projectKey: project.key, tier, offset, limit: NAVIGATION_SECTION_LIMIT }),
               ),
             );
+            const seen = new Set<string>();
+            // Offset pages may overlap; deduplicate display rows, not consumed lengths.
             const rows = [
               ...(initial?.sessions ?? []),
               ...subsequent.flatMap(
                 (page) => (page?.data as { sessions?: NavigationSessionSummary[] } | null)?.sessions ?? [],
               ),
-            ];
+            ].filter((row) => !seen.has(row.ref) && seen.add(row.ref));
             const last = subsequent.at(-1);
             const lastData = last?.data as
               | { remaining?: number; sessions?: NavigationSessionSummary[] }
