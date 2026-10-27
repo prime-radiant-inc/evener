@@ -1,9 +1,7 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen, within } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { ComicPlainTranscript } from "./ComicPlainTranscript";
 import type { ComicEntry } from "./projection";
-
-afterEach(cleanup);
 
 test("plain transcript keeps literal text, thought/source semantics and complete identity", () => {
   const literal = "  **hello** <script>window.attack()</script> 👩🏽‍🚀\n\tlast  ";

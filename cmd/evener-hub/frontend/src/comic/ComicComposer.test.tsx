@@ -52,9 +52,7 @@ beforeEach(() => {
   sources = [];
 });
 afterEach(async () => {
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   cleanup();
   for (const source of sources) source.dispose();
   resetThreadsStoreForTests();
@@ -105,16 +103,16 @@ async function setup(status = "idle") {
     connectionStore.getState().connect(fake);
     await threadsStore.getState().ensureThread(ref);
   });
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   return fake;
 }
 const editor = () => screen.getByRole("textbox", { name: "Message" });
 async function settle(source?: ComposerSourceState) {
   await act(async () => {
     await source?.flushRecoveryWrites();
-    await flushPendingTurnsProjectionForTests();
+  });
+  await flushPendingTurnsProjectionForTests();
+  await act(async () => {
     await source?.flushRecoveryWrites();
   });
 }

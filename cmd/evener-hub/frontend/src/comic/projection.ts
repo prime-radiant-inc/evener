@@ -236,6 +236,7 @@ export function projectComicConversation(
             sourceLabel: "Human",
             text: textOf(item),
             persona: ANNA,
+            images: item.images,
           });
         } else if (item.steeringKind === "notification" && author?.kind !== "agent") {
           // Parsing runs only for the typed notification kind, not arbitrary text

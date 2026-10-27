@@ -144,6 +144,7 @@ beforeAll(async () => {
   await import("./dev/WidgetGallery");
   await import("./dev/DevHarness");
   await import("./panes/welcome/Welcome");
+  await import("./comic/ComicApp");
   // AppShell.tsx now React.lazy()s DockHost itself (Task 7's bundle split -
   // dockview is dead weight on the mobile path); the default-route test
   // below renders through AppShell -> DockHost, same reasoning as the
@@ -214,7 +215,9 @@ test("comic entry leaves workspace and notification leadership unmounted while f
   resetLeaderForTests();
   resetWorkspaceStoreForTests();
   window.history.pushState({}, "", "/comic");
-  render(<App />);
+  await act(async () => {
+    render(<App />);
+  });
   expect((await screen.findByRole("main")).getAttribute("data-comic-route")).toBe("picker");
   expect(workspaceStore.getState().panes).toHaveLength(0);
   expect(isLeader()).toBe(false);
@@ -235,7 +238,9 @@ test("comic entry leaves workspace and notification leadership unmounted while f
 test("comic entry initializes navigation without starting workspace background transcript demand", async () => {
   resetNotificationsForTests();
   window.history.pushState({}, "", "/comic");
-  render(<App />);
+  await act(async () => {
+    render(<App />);
+  });
   await screen.findByRole("main");
   const client = new FakeClient("ready");
   client.scriptConnect(() => ({

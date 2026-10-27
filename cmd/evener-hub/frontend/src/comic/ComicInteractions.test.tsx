@@ -45,9 +45,7 @@ beforeEach(() => {
   sources = [];
 });
 afterEach(async () => {
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   cleanup();
   for (const source of sources) source.dispose();
   resetThreadsStoreForTests();
@@ -84,10 +82,12 @@ async function setup() {
   }));
   await act(async () => {
     connectionStore.getState().connect(fake);
+
     await threadsStore.getState().ensureThread(firstRef);
+
     await threadsStore.getState().ensureThread(secondRef);
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   return fake;
 }
 function page(ref: string) {
@@ -264,9 +264,7 @@ test("late approval stays attached to the original ref", async () => {
   );
   replaceEditorText(editor(), "B_DRAFT");
   selectEditorText(editor(), 1, 3);
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   const secondBefore = secondSource.getSnapshot();
   const secondEditor = editor();
   const allow = screen.getByRole("button", { name: /allow/i }) as HTMLButtonElement;
@@ -379,9 +377,7 @@ test("late answer receipt cannot focus or change the second source", async () =>
   view.rerender(surface(secondSource));
   replaceEditorText(editor(), "SECOND_ANSWER_DRAFT");
   selectEditorText(editor(), 1, 4);
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   const secondBefore = secondSource.getSnapshot();
   const secondEditor = editor();
   await act(async () => finish());

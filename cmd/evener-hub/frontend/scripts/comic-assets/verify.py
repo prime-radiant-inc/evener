@@ -41,7 +41,7 @@ PNG_SHA256 = {
     'emotions/fc_ang_s.png': 'ee4be773fe3dcc5674cf42ca794b7c8b50c789688b3906abae3ee1fccb8a767a',
     'emotions/fc_laf_s.png': '7cb313d11270aa3070c7216b9d82b3e61859695c33bea0513c4b023166f76bb1',
 }
-EVIDENCE_SHA256 = '8f944d30a5b26b4043272e017a614a68e5ec579fba171fbe29b3f4a3fe8a7b73'
+EVIDENCE_SHA256 = 'f6be4bd10784a55043aeda922003e63fef1de5e963021d8835d3dc95d43e16e2'
 MIT_SHA256 = '722262cd04696639f0f65df38d792fb4e08a28309ff5cee15f10bdd9b66411a3'
 CAST_RECORDS = {'armando': (0, 0), 'bolo': (0, 0), 'denise': (3, 4), 'tiki': (2, 0)}
 
@@ -64,7 +64,8 @@ def verify(art, original):
     original_paths = set()
     for entry in evidence['files']:
         path = entry['local_path']
-        check(path not in original_paths and path == ('source/' + entry['upstream_path'] if path != 'LICENSE' else 'LICENSE'), 'source path mismatch')
+        expected_path = {'LICENSE': 'LICENSE', 'README.md': 'source/README.upstream.txt'}.get(entry['upstream_path'], 'source/' + entry['upstream_path'])
+        check(path not in original_paths and path == expected_path, 'source path mismatch')
         original_paths.add(path)
         check(entry['url'] == f"https://raw.githubusercontent.com/microsoft/comic-chat/{REVISION}/{entry['upstream_path']}", f'upstream URL mismatch: {path}')
         data = (art / 'LICENSE').read_bytes() if path == 'LICENSE' else (original / path).read_bytes()

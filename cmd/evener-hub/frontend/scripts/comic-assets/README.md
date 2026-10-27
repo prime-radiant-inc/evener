@@ -4,6 +4,8 @@ The public directory `../../public/webassets/comic/` contains exactly 12 charact
 
 `source-evidence.json` pins each of 24 retained originals by revision, upstream raw URL, Git blob SHA-1, SHA-256 and byte count (2,011,949 bytes total). Original bytes are in `source/`, except `LICENSE`, which sits with the selected public art. The historical `source/v1.0-pre/client/license.txt` differs from the current root MIT notice and is retained for context; the included artwork uses Microsoft's root MIT source release. `../../public/webassets/comic/ATTRIBUTION.md` names original art paths and code references.
 
+The upstream `README.md` is retained byte-for-byte as `source/README.upstream.txt`. It is archival input whose relative links refer to Microsoft's repository, not maintained Evener documentation. The source manifest retains its original path and URL.
+
 ## Selected output
 
 - `sprites/anna-{neutral,happy-wave,angry,scared,point,celebrate}.png`: original face and body combinations F0/T0, F1/T7, F5/T5, F7/T10, F16/T15, F6/T8, respectively. “Celebrate” is a descriptive label, not an original source emotion name.

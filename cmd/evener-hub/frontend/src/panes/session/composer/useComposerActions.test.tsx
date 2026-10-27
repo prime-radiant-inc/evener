@@ -27,9 +27,7 @@ beforeEach(() => {
   setMutationStorageForTests(storage);
 });
 afterEach(async () => {
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   cleanup();
   resetThreadsStoreForTests();
   vi.restoreAllMocks();
@@ -59,9 +57,7 @@ async function setup(status = "idle", evener: Partial<Thread["evener"]> = {}) {
   await threadsStore.getState().ensureThread(ref);
   const source = createTestComposerSource(ref);
   const hook = renderHook(({ busy }) => useComposerActions(source, busy), { initialProps: { busy: false } });
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   return { fake, source, ...hook };
 }
 
@@ -75,8 +71,8 @@ test.each([
   act(() => source.editText("pressed payload"));
   await act(async () => {
     await result.current.submitFromLiveState();
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   const rows = await storage.listOutbox(ref);
   expect(rows).toHaveLength(1);
   expect(rows[0]).toMatchObject({ method, payload: { input: [{ type: "text", text: "pressed payload" }] } });
@@ -90,12 +86,14 @@ test("press rechecks capabilities instead of captured render availability", asyn
   const press = result.current.submitFromLiveState;
   await act(async () => {
     const model = threadsStore.getState().threads.get(ref)!;
+
     threadsStore.setState({
       threads: new Map([[ref, { ...model, capabilities: { ...model.capabilities, send: false, queue: false } }]]),
     });
+
     await press();
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   expect(source.getSnapshot().text).toBe("kept");
   expect(await storage.listOutbox(ref)).toEqual([]);
 });
@@ -106,11 +104,14 @@ test("press sees pending Send before choosing Queue", async () => {
   const press = result.current.submitFromLiveState;
   await act(async () => {
     await threadsStore.getState().send(ref, "first", []);
-    await flushPendingTurnsProjectionForTests();
-    source.editText("second");
-    await press();
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
+  await act(async () => {
+    source.editText("second");
+
+    await press();
+  });
+  await flushPendingTurnsProjectionForTests();
   expect((await storage.listOutbox(ref)).map((row) => [row.method, row.payload.input])).toEqual([
     ["turn/start", [{ type: "text", text: "first" }]],
     ["turn/queue", [{ type: "text", text: "second" }]],
@@ -126,9 +127,10 @@ test.each(["stop", "uncertain"] as const)("%s refuses a stale press without chan
   const before = (await storage.listOutbox(ref)).map((row) => row.clientMutationId);
   await act(async () => {
     if (fence === "stop") threadsStore.setState({ stoppingRefs: new Set([ref]) });
+
     await result.current.submitFromLiveState();
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   expect((await storage.listOutbox(ref)).map((row) => row.clientMutationId)).toEqual(before);
   expect(source.getSnapshot().text).toBe("kept");
 });
@@ -142,9 +144,9 @@ test("shutdown Send parks exactly one mutation and drives resume", async () => {
   act(() => source.editText("resume payload"));
   await act(async () => {
     await result.current.submitFromLiveState();
-    await flushPendingTurnsProjectionForTests();
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
+  await flushPendingTurnsProjectionForTests();
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   expect(await storage.listOutbox(ref)).toMatchObject([
@@ -172,9 +174,10 @@ test("refused recovery keeps newer edits and creates no mutation", async () => {
   const { source, result } = await setup();
   await act(async () => {
     await source.activateRecovery(recovered);
+
     await source.flushRecoveryWrites();
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   const originalRecoveryID = source.getSnapshot().activeRecoveryId;
   const beforeMutationIDs = (await storage.listOutbox(ref)).map((row) => row.clientMutationId);
   const editedAfterSubmit = "edited after submit";
@@ -193,13 +196,13 @@ test("refused recovery keeps newer edits and creates no mutation", async () => {
   });
   await act(async () => {
     await result.current.submitFromLiveState();
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   failure.mockRestore();
   await act(async () => {
     await source.flushRecoveryWrites();
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   expect(refused).toBe(true);
   const afterMutationIDs = (await storage.listOutbox(ref)).map((row) => row.clientMutationId);
   expect(source.getSnapshot().text).toBe(editedAfterSubmit);
@@ -225,8 +228,8 @@ test("failed local write and refused live fallback keep the ordinary draft", asy
   });
   await act(async () => {
     await result.current.submitFromLiveState();
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   expect(refused).toBe(true);
   expect(await storage.listOutbox(ref)).toEqual([]);
   expect(source.getSnapshot().text).toBe("kept on failure");
@@ -249,8 +252,8 @@ test("edits during the accepted durable send survive snapshot clearing", async (
   });
   await act(async () => {
     await result.current.submitFromLiveState();
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   expect(source.getSnapshot().text).toBe("newer edit");
   expect(await storage.listOutbox(ref)).toMatchObject([{ payload: { input: [{ type: "text", text: "submitted" }] } }]);
 });
@@ -260,9 +263,10 @@ test("a recovery consumed in another tab is not submitted twice", async () => {
   const { source, result } = await setup();
   await act(async () => {
     await source.activateRecovery(recovered);
+
     await source.flushRecoveryWrites();
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   connectionStore.setState({ state: "idle" });
   const peer = new MutationOutboxIndexedDB();
   const current = (await peer.getRecovery(recovered.clientMutationId))!;
@@ -281,10 +285,12 @@ test("a recovery consumed in another tab is not submitted twice", async () => {
   expect(accepted).toBeDefined();
   await act(async () => {
     await result.current.submitFromLiveState();
-    await flushPendingTurnsProjectionForTests();
-    await source.flushRecoveryWrites();
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
+  await act(async () => {
+    await source.flushRecoveryWrites();
+  });
+  await flushPendingTurnsProjectionForTests();
   expect((await storage.listOutbox(ref)).map((row) => row.clientMutationId)).toEqual([accepted!.clientMutationId]);
   expect(source.getSnapshot().text).toBe("recovered");
   expect(source.getSnapshot().activeRecoveryId).not.toBe(recovered.clientMutationId);
@@ -298,16 +304,20 @@ test("two simultaneous recovery editors submit their shared composition only onc
   const secondHook = renderHook(() => useComposerActions(second));
   await act(async () => {
     await source.activateRecovery(recovered);
+
     await source.flushRecoveryWrites();
-    await flushPendingTurnsProjectionForTests();
+  });
+  await flushPendingTurnsProjectionForTests();
+  await act(async () => {
     await second.activateRecovery((await storage.getRecovery(recovered.clientMutationId))!);
+
     await second.flushRecoveryWrites();
   });
   connectionStore.setState({ state: "idle" });
   await act(async () => {
     await Promise.all([secondHook.result.current.submitFromLiveState(), result.current.submitFromLiveState()]);
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   expect(await storage.listOutbox(ref)).toMatchObject([{ payload: { input: [{ type: "text", text: "recovered" }] } }]);
   expect(source.getSnapshot().text).toBe("");
   expect(second.getSnapshot().text).toBe("");
@@ -347,13 +357,18 @@ test("Stop in flight and queue drain share the synchronous action gate", async (
     expect(result.current.queueProps.busy).toBe(true);
     await act(async () => {
       await result.current.submitFromLiveState();
+
       await result.current.submit("steer");
+
       await result.current.stop();
+
       expect(result.current.queueProps.tryAcquireRecoveryOperation?.()).toBeNull();
+
       hold.release();
+
       await stopping;
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
   } finally {
     hold.release();
   }

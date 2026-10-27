@@ -11,7 +11,7 @@
       "url": "https://raw.githubusercontent.com/microsoft/comic-chat/48a162249484ab8d116c243e8203b0956d350c09/LICENSE"
     },
     {
-      "local_path": "source/README.md",
+      "local_path": "source/README.upstream.txt",
       "upstream_path": "README.md",
       "bytes": 11288,
       "git_blob_sha1": "a95b972786e757dfbc79c3db043865fbeccc5a7f",

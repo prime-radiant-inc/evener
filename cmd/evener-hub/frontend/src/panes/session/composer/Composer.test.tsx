@@ -3702,7 +3702,9 @@ test("background recovery ownership rollover preserves the editor selection", as
     expect(document.getSelection()?.toString()).toBe(editedText.slice(2, 6));
     await act(async () => {
       await source.flushRecoveryWrites();
-      await flushPendingTurnsProjectionForTests();
+    });
+    await flushPendingTurnsProjectionForTests();
+    await act(async () => {
       await source.flushRecoveryWrites();
     });
 
