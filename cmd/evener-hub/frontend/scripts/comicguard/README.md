@@ -171,6 +171,14 @@ production `comic-remote` source. `remote-identity.json` compares its qualified
 heading with the local identity and checks inline/direct-child persona parity.
 This exercises real AppWire remote translation and subscription routing, not SSH
 attachment or a second physical host. No activity responses are substituted.
+Both remote parent and child require successful connection/request-correlated
+reads with matching qualified response identities. The web-wide Live owner may
+also read local top-level sessions, but only after a successful same-connection
+Live navigation reply listed that exact ref as a live session. Missing, late,
+failed or ineligible discovery cannot authorize a local read. The remote child's
+local counterpart is always forbidden, even if discovery incorrectly lists it.
+`turn/start` and `thread/resume` remain forbidden throughout the measured slice,
+including requests from the preceding document.
 
 Evidence includes `measurements.json`, root screenshots, `children.json`, nested
 screenshots, `child-canonical.json`, `child-keyboard.json`, `child-reads.json` and

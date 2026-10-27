@@ -1176,13 +1176,28 @@ function readGeometry(point, ref) {
   };
 }
 
-export function verifyRemoteRequests(trace) {
+export function verifyRemoteRequests(trace, {parentRef, childRef} = {}) {
   const connections=new Set(trace.filter(row=>row.event==='Network.webSocketCreated').map(row=>row.connection));
   if(!connections.size)throw Error('remote document did not open a connection');
   const sent=trace.filter(row=>row.event==='Network.webSocketFrameSent');
   if(sent.some(row=>['turn/start','thread/resume'].includes(JSON.parse(row.frame).method)))throw Error('remote read mutated a session');
   const requests=sent.filter(row=>connections.has(row.connection)).map(row=>JSON.parse(row.frame));
-  if(requests.some(frame=>frame.method==='thread/read'&&!frame.params.ref.startsWith('comic-remote:')))throw Error('remote read borrowed a local session');
+  for(const [index,row] of trace.entries()) {
+    if(row.event!=='Network.webSocketFrameSent'||!connections.has(row.connection))continue;
+    const request=JSON.parse(row.frame);
+    if(request.method!=='thread/read'||request.params.ref.startsWith('comic-remote:'))continue;
+    const ref=request.params.ref;
+    // The web-wide Live owner reads independently of panes. Its permission must
+    // precede this read on this connection, never come from the observed read.
+    const discovered=repliesSince(trace.slice(0,index),0,request=>request.method==='evener/navigation/read'&&request.params?.resource==='section'&&request.params.section==='live')
+      .some(pair=>pair.connection===row.connection&&!pair.response.error&&pair.response.result?.status==='ok'&&
+        pair.response.result.data?.entities?.some(entity=>entity.kind==='session'&&entity.value?.kind==='session'&&entity.value.live===true&&entity.value.ref===ref));
+    if(!ref.startsWith('local:')||ref===childRef?.replace('comic-remote:','local:')||!discovered)throw Error('remote read borrowed a local session');
+  }
+  const pairs=repliesSince(trace,0,request=>request.method==='thread/read');
+  for(const ref of [parentRef,childRef]) {
+    if(!ref?.startsWith('comic-remote:')||!pairs.some(pair=>connections.has(pair.connection)&&pair.request.params?.ref===ref&&!pair.response.error&&pair.response.result?.thread?.evener?.ref===ref&&pair.response.result.thread.id===ref.slice('comic-remote:'.length)))throw Error('remote read lacks successful qualified reply: '+ref);
+  }
   return requests;
 }
 
@@ -1246,7 +1261,7 @@ async function remoteJourney(page, fixture, { incoming, wireTrace, screenshot })
   }
   await until('real remote direct route', () => evaluateHere(`({path:location.pathname,ref:window.__comicRoot()?.dataset.sessionRef,roots:[...document.querySelectorAll('[data-comic-font][data-session-ref]')].map(node=>node.dataset.sessionRef),owners:[...document.querySelectorAll('[data-session-actions-ref][data-pane-id]')].map(node=>({ref:node.dataset.sessionActionsRef,pane:node.dataset.paneId}))})`), value=>value.ref===header.ref);
   const direct = await until('remote direct persona', source, value=>value?.identity===inline.identity);
-  const requests=verifyRemoteRequests(wireTrace.slice(firstFrame));
+  const requests=verifyRemoteRequests(wireTrace.slice(firstFrame),{parentRef:fixture.refs.remote,childRef:header.ref});
   writeFileSync(`${fixture.evidenceDir}/remote-identity.json`,JSON.stringify({header,local,inline,direct,requests},null,2));
 }
 

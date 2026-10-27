@@ -218,18 +218,70 @@ for (const [name, mutate] of [
 });
 
 const failedApproval = {id:19, method:'evener/sandbox/escalation/resolve', params:{ref:'local:root', escalationId:'approval-1', approve:true}};
+const remoteTargets = {parentRef:'comic-remote:root', childRef:'comic-remote:child'};
+const remoteFrame = (event, payload, connection='remote-document') => ({event:'Network.webSocketFrame'+event,connection,frame:JSON.stringify(payload)});
+function remoteReads() {
+  return [{event:'Network.webSocketCreated',connection:'remote-document'}, ...Object.values(remoteTargets).flatMap((ref,index)=>[
+    remoteFrame('Sent',{id:index+1,method:'thread/read',params:{ref}}),
+    remoteFrame('Received',{id:index+1,result:{thread:{id:ref.split(':')[1],evener:{ref}}}}),
+  ])];
+}
+function liveDiscovery(ref='local:root', connection='remote-document') {
+  return [
+    remoteFrame('Sent',{id:10,method:'evener/navigation/read',params:{resource:'section',section:'live'}},connection),
+    remoteFrame('Received',{id:10,result:{status:'ok',data:{entities:[{kind:'session',value:{ref,kind:'session',live:true}}]}}},connection),
+  ];
+}
+test('remote reads coexist with previously discovered same-connection Live background owners',()=>{
+  const rows=[...remoteReads(),...liveDiscovery(),remoteFrame('Sent',{id:11,method:'thread/read',params:{ref:'local:root'}})];
+  assert.equal(verifyRemoteRequests(rows,remoteTargets).filter(request=>request.method==='thread/read').length,3);
+});
+for(const defect of ['missing','late','other connection','failed','wrong request ID','non-Live','non-section','archived','delegate','wrong ref','child counterpart']) {
+  test(`remote local read rejects ${defect} discovery`,()=>{
+    const ref=defect==='child counterpart'?'local:child':'local:root';
+    let discovery=liveDiscovery(ref,defect==='other connection'?'old-document':'remote-document');
+    const request=JSON.parse(discovery[0].frame),reply=JSON.parse(discovery[1].frame);
+    if(defect==='missing')discovery=[];
+    if(defect==='failed')reply.error={message:'failed'};
+    if(defect==='wrong request ID')reply.id=99;
+    if(defect==='non-Live')request.params.section='recent';
+    if(defect==='non-section')request.params.resource='location';
+    if(defect==='archived')reply.result.data.entities[0].value.live=false;
+    if(defect==='delegate')reply.result.data.entities[0].value.kind='delegate';
+    if(defect==='wrong ref')reply.result.data.entities[0].value.ref='local:other';
+    if(discovery.length){discovery[0].frame=JSON.stringify(request);discovery[1].frame=JSON.stringify(reply);}
+    const read=remoteFrame('Sent',{id:11,method:'thread/read',params:{ref}});
+    assert.throws(()=>verifyRemoteRequests([...remoteReads(),...(defect==='late'?[read,...discovery]:[...discovery,read])],remoteTargets));
+  });
+}
+for(const target of ['parentRef','childRef'])for(const defect of ['missing reply','failed','wrong connection','wrong request ID','wrong qualified ref','wrong thread ID']) {
+  test(`remote ${target} requires successful correlated identity, ${defect}`,()=>{
+    const rows=remoteReads(),index=target==='parentRef'?2:4;
+    const reply=JSON.parse(rows[index].frame);
+    if(defect==='missing reply')rows.splice(index,1);
+    else {
+      if(defect==='failed')reply.error={message:'failed'};
+      if(defect==='wrong connection')rows[index].connection='old-document';
+      if(defect==='wrong request ID')reply.id=99;
+      if(defect==='wrong qualified ref')reply.result.thread.evener.ref=remoteTargets[target].replace('comic-remote:','local:');
+      if(defect==='wrong thread ID')reply.result.thread.id='other';
+      rows[index].frame=JSON.stringify(reply);
+    }
+    assert.throws(()=>verifyRemoteRequests(rows,remoteTargets));
+  });
+}
 test('remote oracle excludes preceding document reads but rejects local reads on its own connection', () => {
   const sent=(connection,ref)=>({event:'Network.webSocketFrameSent',connection,frame:JSON.stringify({method:'thread/read',params:{ref}})});
   const created={event:'Network.webSocketCreated',connection:'remote-document'};
-  assert.equal(verifyRemoteRequests([sent('old-document','local:old'),created,sent('remote-document','comic-remote:root')]).length,1);
-  assert.throws(()=>verifyRemoteRequests([created,sent('remote-document','local:wrong')]));
+  assert.equal(verifyRemoteRequests([sent('old-document','local:old'),...remoteReads()],remoteTargets).length,2);
+  assert.throws(()=>verifyRemoteRequests([created,sent('remote-document','local:wrong')],remoteTargets));
 });
 for (const method of ['thread/read','turn/start','thread/resume']) {
   for (const connection of ['destination','reconnected']) {
     test(`remote oracle rejects ${method} on ${connection}`, () => {
-      const rows=['destination','reconnected'].map(connection=>({event:'Network.webSocketCreated',connection}));
+      const rows=[...remoteReads(),...['destination','reconnected'].map(connection=>({event:'Network.webSocketCreated',connection}))];
       rows.push({event:'Network.webSocketFrameSent',connection,frame:JSON.stringify({method,params:{ref:method==='thread/read'?'local:wrong':'comic-remote:root'}})});
-      assert.throws(()=>verifyRemoteRequests(rows));
+      assert.throws(()=>verifyRemoteRequests(rows,remoteTargets));
     });
   }
 }
