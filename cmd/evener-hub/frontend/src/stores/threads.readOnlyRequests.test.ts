@@ -345,7 +345,7 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
 // chrome stream): both are plain read-only wire calls with no turn-CAS
 // concept - verified against every server-side handler
 // (cmd/evener-hub/app_rpc.go's registerMiscHandlers, cmd/evener-hub/
-// app source ListTasks implementations, and server/appwire_runtime.go's
+// app source ListTasks implementations, and server/appwire_jobs_models.go's
 // handleAppTasksList/handleAppModelList): none
 // of them ever construct appwire.Conflict(). Neither action maps errors -
 // a WireError (even one shaped like a Conflict, which cannot actually occur

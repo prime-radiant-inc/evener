@@ -1049,7 +1049,7 @@ func TestPastEntryThread_CarriesCostTotal(t *testing.T) {
 //
 // The short-circuit is scoped to Name only, not Preview: Preview is this
 // wire object's own full-text field (unaffected, still the raw-ID fallback,
-// matching the live-thread path in appwire_runtime.go and the TUI's own
+// matching the live-thread path in server/appwire_thread_projection.go and the TUI's own
 // Name-then-Preview-then-SessionID chain), and SessionDisplayName itself
 // stays untouched because eight other callers want its bare-ID last resort
 // (see nodeTitle's doc comment).

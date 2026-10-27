@@ -186,7 +186,7 @@ test.each([
 });
 
 // A mid-turn switch is the one case the daemon itself refuses (Conflict, see
-// server/appwire_runtime.go's handleAppThreadModelSet). The refusal belongs to
+// server/appwire_thread_settings.go's handleAppThreadModelSet). The refusal belongs to
 // the wire and surfaces as a toast, not as a control the user can't press -
 // pre-emptively disabling it was the client guessing at an answer only the
 // daemon has, and it took the switch away from every cold session too.

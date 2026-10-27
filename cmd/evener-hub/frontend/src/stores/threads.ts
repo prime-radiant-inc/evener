@@ -3252,7 +3252,7 @@ async function runResumeFencedForSend(ref: string): Promise<void> {
     while (threadsStore.getState().stoppingRefs.has(ref)) await waitForStopDrain(ref);
     const { thread } = await client.resumeThread(ref, { beforeRequest: stopBaseline });
     resumedRef = thread.evener.ref;
-    // The token the daemon's instance fence compares (appwire_runtime's
+    // The token the daemon's instance fence compares (server/appwire_thread_settings.go's
     // expectedInstanceID vs appThreadID), read the same fused way a fresh send
     // derives it (instanceId ?? threadId). Taken off the resume RESPONSE: the
     // resumed ref is usually not tracked yet, so the store has no model for it.
@@ -8233,7 +8233,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const client = requireClient();
     // Map a daemon Conflict to ConflictError, same as every other mutating
     // action: the daemon surfaces a stale/double/raced resolve as
-    // appwire.Conflict() (server/appwire_runtime.go's
+    // appwire.Conflict() (server/appwire_turn_handlers.go's
     // handleAppSandboxEscalationResolve) precisely so the client drops the card
     // instead of retrying. mapConflict passes any non-conflict rejection
     // through unchanged, and the local clear below runs only on a resolve that

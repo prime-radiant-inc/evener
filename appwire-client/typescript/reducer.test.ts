@@ -7011,7 +7011,7 @@ test("capabilities/goal/context*/usage/workMillis/activeTurnStartedAt survive li
 
 // The work-clock anchor (activeTurnStartedAt) is the sole snapshot-only evener
 // field with a rest-state exception to "survives untouched": it has no live
-// push to refresh it, so a cold hydrate mid-turn (server/appwire_runtime.go:865
+// push to refresh it, so a cold hydrate mid-turn (server/appwire_read_handlers.go
 // sets evener.activeTurnId, agent stamps ActiveTurnStartedAt) leaves a live anchor
 // that would keep clocking now-minus-anchor forever once the turn ends. The
 // reducer clears it on the two transitions it already handles — thread/status/
@@ -7315,7 +7315,7 @@ test("thread/status/changed can push a measured zero", () => {
 // until the turn ends, however many tool calls fail inside it — the same
 // shape of harm kata 12rq fixed at session scale (kata 895d). item/completed
 // is the finer-grained carrier: the server stamps it only on the item whose
-// completion actually moved the count (server/appwire_runtime.go's
+// completion actually moved the count (server/appwire_status_stamps.go's
 // stampFailureCountOnItemCompleted), so the client applies it exactly the
 // same way it applies thread/status/changed's.
 

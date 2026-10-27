@@ -565,7 +565,7 @@ func resolvedOwnershipTarget(cfg hubcore.WebConfig, ref, threadID string) string
 // The hub does not trim the caller's id: it echoes exactly what the caller sent,
 // because every client correlates its outbox record by that id. The daemon does
 // trim it, at its own handler boundary, before a receipt or a refusal ever names
-// it (server/appwire_runtime.go's handleAppTurn*/handleAppThreadClear set
+// it (server/appwire_turn_handlers.go's handleAppTurn* and appwire_thread_clear.go's handleAppThreadClear set
 // params.ClientMutationID = strings.TrimSpace(params.ClientMutationID), and
 // agent/session_notes_rpc.go does the same). A byte-exact hub comparison would
 // therefore fail to see a padded caller id (" mut-1 ") in the normalized id the

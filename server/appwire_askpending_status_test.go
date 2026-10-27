@@ -68,7 +68,7 @@ func TestStampAskPendingLeavesEverythingElseAlone(t *testing.T) {
 }
 
 // The stamper above is only reached if both notification egress loops call it
-// (appwire_runtime.go:565, :634), so this drives a real session event through
+// (appwire_record_events.go), so this drives a real session event through
 // the server and reads the frame it recorded — the shape
 // appwire_failure_push_test.go and appwire_capabilities_push_test.go use for the
 // two fields that ride this frame beside askPending. Dropping the call from

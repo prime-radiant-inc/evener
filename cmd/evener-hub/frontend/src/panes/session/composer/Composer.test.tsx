@@ -87,7 +87,7 @@ beforeAll(async () => {
 });
 
 // What a real daemon publishes for an IDLE thread, read off
-// server/appwire_runtime.go's appCapabilities: Send is !active, and Steer,
+// server/appwire_thread_projection.go's appCapabilities: Send is !active, and Steer,
 // Interrupt and Queue advertise harness support (#1363, #1375) and stay true
 // at idle (the composer applies the status itself). Clear and ForkFromTurn are
 // hardcoded false. This is the set the client is actually holding in the

@@ -4628,7 +4628,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         // Capabilities are snapshot-only too, and two of them (send, queue)
         // are defined BY this very transition: the hub gates send on "no turn
         // in flight" and queue on "a turn in flight"
-        // (server/appwire_runtime.go's appCapabilities; steer is harness
+        // (server/appwire_thread_projection.go's appCapabilities; steer is harness
         // support alone). A set cut before the
         // turn therefore describes the wrong session by the time the composer
         // reads it back, which is how a running session came to show no Steer,

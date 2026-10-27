@@ -480,7 +480,7 @@ with incomplete relationship evidence. Rendering keys qualify resource IDs with
 their authoritative refs. Actions keep the raw logical ID: job output uses the
 returned job owner ref, delegate stopping addresses its controller root, and a
 child conversation opens the returned child ref. A rendering key never becomes an
-action argument. The [delegate stop handler](../../server/appwire_runtime.go)
+action argument. The [delegate stop handler](../../server/appwire_turn_handlers.go)
 checks that root mutation boundary. Optional usage fields stay absent when unknown.
 Job output panes keep the logical job ID as their title when descriptive
 metadata is unavailable, while independently readable output remains usable.

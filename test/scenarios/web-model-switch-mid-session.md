@@ -102,7 +102,7 @@ mid-turn, and this card previously asserted that it was.
   Falsification: tab 2 needs a manual reload to see model B.
 - **Step 4 (AC 4, exact)**: AppWire **conflict** with an error whose message is
   the daemon's own `turn <reservedTurnID> is active`
-  (`server/appwire_runtime.go:820-831`; `appwire.Conflict` →
+  (`server/appwire_thread_settings.go#handleAppThreadModelSet`; `appwire.Conflict` →
   `CodeConflict`). The re-read `modelProvider` is unchanged — no partial state.
   Falsification: a successful response with the model mutated, or an internal
   error that hides which layer refused.
@@ -115,7 +115,7 @@ mid-turn, and this card previously asserted that it was.
   drained turn (`cmd/evener/serve.go:950-958`), and `ProcessInputKind` loops to
   run queued messages as further turns (`agent/session_lifecycle.go:517-524`),
   so `handleAppThreadModelSet`'s `processing || reservedTurnID != ""` guard
-  (`server/appwire_runtime.go#handleAppThreadModelSet`) stays true across the whole drain.
+  (`server/appwire_thread_settings.go#handleAppThreadModelSet`) stays true across the whole drain.
   Falsification: it succeeds while a queued message is still draining.
 - **Step 7**: once idle, the identical call that was rejected in steps 4 and 6
   returns 204 — confirms the rejection was state (turn-in-flight), not a

@@ -18,7 +18,7 @@ import (
 // A daemon stamps every status frame with the action set that goes with the
 // status it announces — except its own close, which it cannot describe: what a
 // thread can still be asked to do once its daemon is gone is the hub's answer,
-// not the corpse's (server/appwire_runtime.go's stampCapabilitiesOnStatusChange
+// not the corpse's (server/appwire_status_stamps.go's stampCapabilitiesOnStatusChange
 // and kata 06t8). This is the hub giving that answer on the way past.
 func TestRelayedCloseFrameCarriesTheHubsCapabilitiesForTheEndedThread(t *testing.T) {
 	thread := appwire.Thread{

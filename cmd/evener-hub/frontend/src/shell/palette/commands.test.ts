@@ -617,7 +617,7 @@ test("/interrupt sends turn/interrupt for a working session whose turn has no na
 
 // The palette used to answer "is a turn in flight" itself and refuse. Only the
 // daemon knows: it answers Conflict for a genuine mid-turn switch
-// (server/appwire_runtime.go's handleAppThreadModelSet) and resumes a cold
+// (server/appwire_thread_settings.go's handleAppThreadModelSet) and resumes a cold
 // session for everyone else (app_model.go's setThreadModelWithResume).
 test("/model sends thread/model/set even while a turn is in progress, letting the daemon rule", async () => {
   const fake = connectFake();

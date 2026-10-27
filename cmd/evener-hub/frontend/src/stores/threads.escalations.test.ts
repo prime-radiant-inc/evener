@@ -112,7 +112,7 @@ describe("useThreadsStore.resolveEscalation", () => {
     fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
     await threadsStore.getState().ensureThread("ref_a");
     // A stale/double/raced resolve is surfaced as appwire.Conflict() by the
-    // daemon (server/appwire_runtime.go's handleAppSandboxEscalationResolve:
+    // daemon (server/appwire_turn_handlers.go's handleAppSandboxEscalationResolve:
     // "Surface it as a conflict so the client can drop the card rather than
     // retry"). resolve must map it to ConflictError like every other mutating
     // action, so the escalation rail treats it as terminal, not retryable.
@@ -714,7 +714,7 @@ describe("useThreadsStore.resolveEscalation", () => {
 
     // The real wire shape (appwire.SandboxEscalationResolved): {threadId, ref,
     // escalationId} — the daemon's broadcast to every OTHER subscribed client
-    // when a pending escalation leaves the set (server/appwire_runtime.go's M7
+    // when a pending escalation leaves the set (server/appwire_record_events.go's M7
     // fix). Unlike the local resolveEscalation action, this arrives for a
     // resolve some OTHER client made, so a client that only watches the session
     // still drops its now-stale card.

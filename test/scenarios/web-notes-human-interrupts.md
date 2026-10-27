@@ -8,7 +8,7 @@ the projector labels the steering divider `Human note`
 (`appwire-client/typescript/steeringLabels.ts:44`, kind `human-note` on the wire); the Notes panel's
 Shared notes section renders it (`NotesPanel.tsx:165-261`); and a fresh
 live read carries the note (the Task 7 I1 gap — fixed by the envelope
-projection in `server/thread_envelope.go` + `server/appwire_runtime.go`,
+projection in `server/thread_envelope.go` + `server/appwire_thread_projection.go`,
 pinned at unit level by
 `server/thread_envelope_notes_test.go:TestThreadEnvelopeSeedUsesStructuredMetaNotes`
 and at e2e level by step 6 below).
@@ -38,7 +38,7 @@ work. It exercises four things in one run:
   guessing from the note's prose.
 - **Rejoin carries the note** — the live envelope seeds `HumanNote` from
   `SessionMeta()` and the root commit path patches it from
-  `NotesUpdatedParams` (`server/thread_envelope.go`, `server/appwire_runtime.go`),
+  `NotesUpdatedParams` (`server/thread_envelope.go`, `server/appwire_thread_projection.go`),
   so a fresh `thread/read` (what a rejoining client hydrates from) already
   carries the note before any push arrives.
 
@@ -217,7 +217,7 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
    **Expected:** `result.thread.evener.humanNote` is the step-4 edited text —
    present on the envelope snapshot itself, before any push arrives. This is
    the live-hydration path the envelope fix (`server/thread_envelope.go`
-   seeding from `SessionMeta()`, `server/appwire_runtime.go` root commit
+   seeding from `SessionMeta()`, `server/appwire_thread_projection.go` root commit
    from `NotesUpdatedParams`) closed: pre-fix, a live session hydrated notes
    as empty until the first push. Falsify: `humanNote` empty here while step
    4 shows it in the panel (the panel read it off a push; the snapshot
@@ -248,7 +248,7 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
 - **Step 1 (precondition, exact)**: `status.type` `active`, non-empty
   `activeTurnId`, `capabilities.sharedNotes` `true`. Falsify: `sharedNotes`
   `false` on a live evener session — the capability bit
-  (`server/appwire_runtime.go`, beside `Goal`) regressed.
+  (`server/appwire_thread_projection.go`, beside `Goal`) regressed.
 - **Step 2 (store, exact)**: `notes/human/set` returns the stored post-clamp
   note with no error. A whitespace-only or over-length note returns the
   normalized/clamped form (whitespace collapsed, 1000-rune clamp —
