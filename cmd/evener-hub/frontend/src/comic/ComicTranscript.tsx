@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import { isAtBottom } from "../panes/session/transcript/flow/scrollMetrics";
+import { useTranscriptScrollKeys } from "../panes/session/transcript/flow/useTranscriptScrollKeys";
 import { useChromeStore } from "../shell/chromeStore";
 import { useIsMobile } from "../shell/useIsMobile";
 import { isEntryTranscriptLocalOpening, threadsStore } from "../stores/threads";
@@ -84,6 +85,7 @@ export function ComicTranscript({
   root,
   subchats,
   reader,
+  keyboardScrollPaneId = null,
   mode,
   appearanceView,
   onOpen,
@@ -92,6 +94,7 @@ export function ComicTranscript({
   subchats: ComicSubchatState;
   onOpen(ref: string): void;
   reader: ReturnType<typeof useComicReader>;
+  keyboardScrollPaneId?: string | null;
   mode: "comic" | "plain";
   appearanceView?: ReactNode;
 }): React.ReactElement {
@@ -637,6 +640,23 @@ export function ComicTranscript({
     save({ mode: "end", sessionRef, path: [] });
     if (committed.current) restore(committed.current);
   };
+  useTranscriptScrollKeys({
+    paneId: keyboardScrollPaneId,
+    listRef: list,
+    jumpToBottom: jump,
+    markGesture: () => keyboardIntent(),
+    onPositioningCommand: () => keyboardIntent(),
+  });
+  function keyboardIntent() {
+    revision.current += 1;
+    restoring.current = false;
+    moving.current = true;
+    movementStart.current = undefined;
+    commanded.current = undefined;
+    setTailSpace(0);
+    committed.current?.cancelPendingScroll();
+    for (const snapshot of latest.current.snapshots.values()) snapshot.history.cancelOlder();
+  }
   const endAnchorRow = anchor.current.mode === "end" ? (findComicFlowAnchorRow(rows, anchor.current) ?? -1) : -1;
   return (
     <div className={styles.reader} data-comic-mode={mode} data-comic-font={font}>

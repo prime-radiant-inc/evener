@@ -13,6 +13,7 @@ export function ComicSessionContent({
   model,
   history,
   reader,
+  keyboardScrollPaneId,
   mode,
   appearanceView,
   onOpen,
@@ -21,6 +22,7 @@ export function ComicSessionContent({
   model: ThreadModel;
   history: ReturnType<typeof useTranscriptReader>;
   reader: ReturnType<typeof useComicReader>;
+  keyboardScrollPaneId?: string | null;
   mode: "comic" | "plain";
   appearanceView?: ReactNode;
   onOpen(ref: string): void;
@@ -42,6 +44,7 @@ export function ComicSessionContent({
         root={root}
         subchats={subchats.state}
         reader={reader}
+        keyboardScrollPaneId={keyboardScrollPaneId}
         mode={mode}
         appearanceView={appearanceView}
         onOpen={onOpen}

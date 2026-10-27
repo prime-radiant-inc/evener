@@ -807,7 +807,7 @@ test("standard anchor and Comic semantic path survive mode handoff and pane remo
       offset: 0,
       viewportOffset: 12,
     };
-    writeComicPosition(ref, position);
+    writeComicPosition(ref, position, "local:session-local:pane-comic");
     await presentation("comic");
     expect(document.querySelector("[data-comic-scroll]")).not.toBeNull();
     expect(readView.getCapture()).toMatchObject({ anchorId: capture?.anchorId, anchorOffset: capture?.anchorOffset });
