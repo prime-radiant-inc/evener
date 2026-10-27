@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -315,9 +317,16 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 					t.Fatal("yield wrote RunFinished")
 				}
 			}
-			pending, _ := root.pendingNotificationIDs()
-			if len(pending) == 0 {
-				t.Fatal("wait publication not delivered to owner before producer completion")
+			pending, err := root.pendingNotificationIDs()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := readTranscriptFull(transcriptPath(root.stateDir, root.ID()), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := yieldedWaitCustodyError(publicationEvents(t, root), data.Entries, adapter.requestsFor("root"), pending, owner.owningDelegateID, target); err != nil {
+				t.Fatal(err)
 			}
 			root.delegateController.mu.Lock()
 			active := root.delegateController.turnsInUse
@@ -352,6 +361,128 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Pending is a presentation state, not a custody receipt: the root's original
+// second request can already have observed and consumed the wait publication.
+func yieldedWaitCustodyError(events []delegatestore.Event, entries []transcript.Entry, requests []llm.Request, pending []string, owner, target string) error {
+	var publication delegatestore.Event
+	publications := 0
+	for _, event := range events {
+		if event.DelegateID == owner && event.UpdatePosted != nil && event.UpdatePosted.Communicate != nil && event.UpdatePosted.Communicate.CallID == "wait-71" {
+			publication = event
+			publications++
+		}
+	}
+	if publications != 1 {
+		return fmt.Errorf("wait publications=%d, want one for owner=%s", publications, owner)
+	}
+	update := publication.UpdatePosted
+	comm := update.Communicate
+	if update.Generation != 1 || update.Message != "wait-payload-71a9" || comm.Message != update.Message || !comm.EndTurn || comm.EndReason != "waiting_on_work" || target == "" || comm.WaitingOn != target || update.Packet == nil {
+		return fmt.Errorf("wait publication tuple=%+v communicate=%+v target=%s", update, comm, target)
+	}
+	var payload string
+	var metadata delegatestore.UpdateMetadata
+	if err := json.Unmarshal(update.Packet.Message, &payload); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(update.Packet.Metadata, &metadata); err != nil {
+		return err
+	}
+	if update.Packet.Kind != delegatestore.PacketUpdate || payload != update.Message || metadata != (delegatestore.UpdateMetadata{CallID: "wait-71", EndTurn: true, Disposition: "waiting_on_work", WaitingOn: target}) {
+		return fmt.Errorf("wait source packet=%+v metadata=%+v", update.Packet, metadata)
+	}
+	deliveryID := fmt.Sprintf("%s/update/%d", owner, publication.Seq)
+	id := "delegate:" + deliveryID
+	acks := 0
+	for _, event := range events {
+		if event.DelegateID == owner && event.Seq > publication.Seq && event.DeliveryAcknowledged != nil && event.DeliveryAcknowledged.DeliveryID == deliveryID {
+			acks++
+		}
+	}
+	if acks != 1 {
+		return fmt.Errorf("wait source acknowledgements=%d for %s", acks, deliveryID)
+	}
+	accepted, acceptedAt := 0, -1
+	var message llm.Message
+	for i, entry := range entries {
+		if entry.Turn.AttentionID == id {
+			accepted++
+			acceptedAt, message = i, entry.Turn.Message
+		}
+	}
+	if accepted != 1 || message.Role != llm.RoleUser {
+		return fmt.Errorf("wait receiver acceptances=%d for %s", accepted, id)
+	}
+	var frame struct {
+		XMLName  xml.Name
+		Delegate string `xml:"delegate_id,attr"`
+		Kind     string `xml:"kind,attr"`
+		Packet   string `xml:",chardata"`
+	}
+	if err := xml.Unmarshal([]byte(message.Text()), &frame); err != nil {
+		return err
+	}
+	packet, err := json.Marshal(update.Packet)
+	if err != nil {
+		return err
+	}
+	var sourcePacket, receiverPacket any
+	if err := json.Unmarshal(packet, &sourcePacket); err != nil {
+		return err
+	}
+	if err := json.Unmarshal([]byte(frame.Packet), &receiverPacket); err != nil {
+		return err
+	}
+	if frame.XMLName.Local != "delegate-notification" || frame.Delegate != owner || frame.Kind != "update" || !reflect.DeepEqual(sourcePacket, receiverPacket) {
+		return fmt.Errorf("wait receiver packet mismatch for %s", id)
+	}
+	if slices.Contains(pending, id) {
+		return nil
+	}
+	return yieldedWaitConsumptionError(entries, requests, id, acceptedAt, message)
+}
+
+func yieldedWaitConsumptionError(entries []transcript.Entry, requests []llm.Request, id string, acceptedAt int, message llm.Message) error {
+	// There are exactly two original root requests. Match coverage to the second
+	// successful raw response, not an observed flag or a later unrelated turn.
+	if len(requests) != 2 {
+		return fmt.Errorf("consumed wait root requests=%d, want two", len(requests))
+	}
+	for i, request := range requests {
+		covered := 0
+		for _, msg := range request.Messages {
+			if reflect.DeepEqual(msg, message) {
+				covered++
+			}
+		}
+		if covered != i {
+			return fmt.Errorf("wait request=%d packet coverage=%d, want %d", i+1, covered, i)
+		}
+	}
+	var responses []schema.Turn
+	observedAt, consumedAt, consumed := -1, -1, 0
+	for i, entry := range entries {
+		turn := entry.Turn
+		if turn.Kind == schema.TurnAssistant {
+			responses = append(responses, turn)
+			if slices.Contains(turn.ObservedNotificationIDs, id) {
+				observedAt = i
+			}
+		}
+		if resolution := turn.AttentionResolution; resolution != nil && resolution.AttentionID == id {
+			if resolution.Disposition != "consumed" {
+				return fmt.Errorf("wait resolution=%+v", resolution)
+			}
+			consumed++
+			consumedAt = i
+		}
+	}
+	if len(responses) != 2 || responses[0].TurnID == "" || responses[0].TurnID != responses[1].TurnID || slices.Contains(responses[0].ObservedNotificationIDs, id) || !slices.Equal(responses[1].ObservedNotificationIDs, []string{id}) || acceptedAt >= observedAt || observedAt >= consumedAt || consumed != 1 {
+		return fmt.Errorf("wait successful receipts=%+v accepted=%d observed=%d consumed=%d count=%d", responses, acceptedAt, observedAt, consumedAt, consumed)
+	}
+	return nil
 }
 
 func TestParentSteeringResumesYieldedWait(t *testing.T) {
