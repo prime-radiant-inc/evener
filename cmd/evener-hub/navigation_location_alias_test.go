@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/rendezvous"
 )
 
 const (
@@ -412,5 +414,95 @@ func TestNavigationLocationCurrentSessionUsesStableWorkspaceRow(t *testing.T) {
 				t.Fatalf("remote alias borrowed local workspace row: %+v", gone)
 			}
 		})
+	}
+}
+
+func TestNavigationLocationRosterResumeRefresh(t *testing.T) {
+	stable, current := identifier.MustNewSessionID(), identifier.MustNewSessionID()
+	runDir := t.TempDir()
+	entry := rendezvous.Entry{
+		PID: 4242, SourceID: appwire.LocalSourceID, SessionID: current, ThreadID: current,
+		WorkspaceRef: "local:" + stable, StartedAt: time.Now(),
+	}
+	writeRendezvous(t, runDir, entry)
+	var crashed atomic.Bool
+	roster := hubcore.NewRoster(runDir, forceStopProberFunc(func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{OK: !crashed.Load(), SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
+	})).SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessNotOwner })
+	refresh := func() {
+		t.Helper()
+		if err := roster.RefreshAndWait(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refresh()
+	past := hubcore.NewPastIndex("")
+	past.SeedForTest([]schema.SessionMeta{{ID: current, ProfileID: "local", UpdatedAt: time.Now()}})
+	inputs := &hubcore.InputsVersion{}
+	config := hubcore.WebConfig{Past: past, Roster: roster, Inputs: inputs}
+	// The Comic fixture has two hubs observing this same roster.
+	webs := []*WebServer{NewWebServer(config), NewWebServer(config)}
+	// main.go wires this publication hook before starting the roster watcher.
+	roster.SetOnChange(func() {
+		inputs.Bump()
+		for _, web := range webs {
+			web.navigation.Invalidate(navigationChangeHint{})
+		}
+	})
+	for _, web := range webs {
+		t.Cleanup(func() { _ = web.appRPC.Shutdown(context.Background()) })
+	}
+	assertRoster := func(wantCrashed bool, wantRow string) {
+		t.Helper()
+		rows := roster.Snapshot().Live
+		if len(rows) != 1 || rows[0].SessionID != current || rows[0].Crashed != wantCrashed || rows[0].WorkspaceRef != wantRow {
+			t.Fatalf("roster = %+v, want current=%s crashed=%t row=%s", rows, current, wantCrashed, wantRow)
+		}
+	}
+	assertLocation := func(web *WebServer, wantRow string) appwire.NavigationReadResponse {
+		t.Helper()
+		response := remoteLocationRead(t, web, "local:"+current, nil)
+		location := remoteLocationData(t, response)
+		if location.Ref != "local:"+current || !location.TopLevel || location.TopLevelRef != wantRow {
+			t.Fatalf("location = %+v, want current identity at %s", location, wantRow)
+		}
+		return response
+	}
+	assertRoster(false, "local:"+stable)
+	for _, web := range webs {
+		assertLocation(web, "local:"+stable)
+	}
+	crashed.Store(true)
+	refresh()
+	assertRoster(true, "local:"+stable)
+	before := make([]appwire.NavigationReadResponse, len(webs))
+	for i, web := range webs {
+		before[i] = assertLocation(web, "local:"+stable)
+	}
+	beforeInputs := inputs.Load()
+
+	// An explicit resume replaces the crashed daemon with the same current
+	// session, now registered under its own workspace rather than the old row.
+	if err := rendezvous.RemoveIfOwned(runDir, entry); err != nil {
+		t.Fatal(err)
+	}
+	entry.PID++
+	entry.WorkspaceRef = "local:" + current
+	writeRendezvous(t, runDir, entry)
+	crashed.Store(false)
+	refresh()
+	assertRoster(false, "local:"+current)
+	if inputs.Load() <= beforeInputs {
+		t.Fatal("resume did not publish a roster input change")
+	}
+	for i, web := range webs {
+		after := remoteLocationRead(t, web, "local:"+current, aliasBase(before[i]))
+		if after.Status != "ok" || after.GenerationID != before[i].GenerationID || after.Revision <= before[i].Revision {
+			t.Fatalf("resume response = %+v, want same generation and revision after %d", after, before[i].Revision)
+		}
+		assertLocation(web, "local:"+current)
+		if gone := remoteLocationRead(t, web, "remote:"+current, nil); gone.Status != "gone" {
+			t.Fatalf("foreign ref borrowed local resumed row: %+v", gone)
+		}
 	}
 }
