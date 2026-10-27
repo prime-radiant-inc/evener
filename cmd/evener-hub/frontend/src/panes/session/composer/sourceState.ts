@@ -513,15 +513,20 @@ export function createComposerSourceState(
     const targetRef = record?.targetRef ?? ref;
     // Adopting a preserved row may happen after a replacement composer has
     // selected a newer row under the destination. Only replace the lease's own
-    // stale choice, never that newer selection.
-    const currentSelection = record === null ? undefined : readRecoverySelection(targetRef, recoverySelectionOwnerId);
+    // stale choice, never that newer selection. Retiring the lease clears the
+    // stored choice only when it still names the retiring lease: a delayed
+    // preservation can have selected a fresh preserved row while this
+    // composer was sending its stale one, and that selection is a reopen's
+    // only path back to the preserved local work.
+    const currentSelection = readRecoverySelection(targetRef, recoverySelectionOwnerId);
     const mayWriteSelection =
       options?.keepSelection !== true &&
-      (record === null ||
-        options?.replaceSelection === undefined ||
-        currentSelection === undefined ||
-        currentSelection === options.replaceSelection ||
-        currentSelection === activeRecoveryId);
+      (record === null
+        ? currentSelection === previousRecoveryId
+        : options?.replaceSelection === undefined ||
+          currentSelection === undefined ||
+          currentSelection === options.replaceSelection ||
+          currentSelection === activeRecoveryId);
     if (mayWriteSelection) writeRecoverySelection(targetRef, recoverySelectionOwnerId, activeRecoveryId);
     state.setState({ activeRecoveryId });
   }
@@ -953,10 +958,15 @@ export function createComposerSourceState(
       if (preserved !== undefined) {
         const discarded = await discardRecoveryPendingTurn(
           preserved.clientMutationId,
-          ref,
+          // The row may live under a resumed ref this source never held; the
+          // mounted view there is the one whose entry must leave. The
+          // source's own ref can still project the row from before its
+          // retarget, so refresh it too when the row moved.
+          preserved.targetRef,
           undefined,
           recoveryCompositionRevision(preserved),
         );
+        if (discarded && preserved.targetRef !== ref) void refreshPendingTurnsProjection(ref);
         if (discarded) return undefined;
       }
       return preserved;

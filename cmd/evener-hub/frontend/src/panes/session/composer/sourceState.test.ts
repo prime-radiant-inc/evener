@@ -9,6 +9,7 @@ import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
+import { settleProjectionWorkForTests } from "../../../stores/projectionWork";
 import { resetThreadsStoreForTests, setMutationStorageForTests } from "../../../stores/threads";
 import { getToasts, pushToast, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { createTestComposerSource } from "../testing/composerSource";
@@ -24,12 +25,14 @@ import {
   readRecoverySelection,
   readRefComposerSeat,
   writeComposerDraft,
+  writeRecoverySelection,
 } from "./draft";
 import {
   preserveRecoveryPendingTurn,
   resetPendingTurnsStoreForTests,
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { beginRecoverySubmission } from "./sourceState";
 
 beforeEach(() => {
@@ -1238,6 +1241,160 @@ test("an identical-composition preservation under a resumed ref records the dest
     expect(readRecoverySelection(resumed, source.recoverySelectionOwnerId)).toBe(original.clientMutationId);
     expect(readRefComposerSeat(resumed)).toBe("pane-a");
   } finally {
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+// Delayed preservation can select a fresh preserved row while a replacement
+// composer is mid-send on its stale row, with the adoption deferred until the
+// submission settles. A successful send retires the lease - and that
+// retirement must clear only the retiring lease's own stored choice, never
+// the preserved row the delayed preservation selected for this seat.
+test("a retired lease keeps the preserved row a delayed preservation selected", async () => {
+  installLocalStorage(new MemoryStorage());
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "local:retire-preserved-selection";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "row composition" }] },
+    attachments: [],
+    composerText: "row composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const replacement = createTestComposerSource(ref, undefined, "pane-a");
+  try {
+    replacement.setActiveRecoveryId(recovery);
+    // The delayed preservation publishes the fresh row's selection while the
+    // composer is mid-send on its restored row.
+    const preserved: typeof recovery = {
+      ...recovery,
+      clientMutationId: "preserved-row",
+      composerText: "preserved composition",
+      payload: { ...recovery.payload, input: [{ type: "text", text: "preserved composition" }] },
+    };
+    const releaseOperation = replacement.tryAcquireRecoveryOperation();
+    if (!releaseOperation) throw new Error("operation lock unavailable");
+    const releaseSend = beginRecoverySubmission(original.clientMutationId);
+    writeRecoverySelection(ref, replacement.recoverySelectionOwnerId, "preserved-row");
+    replacement.adoptPreservedSelection(ref, original.clientMutationId, preserved);
+    // Adoption is deferred while the send owns the lease.
+    expect(replacement.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+
+    // The send commits: the lease retires under the held guards.
+    replacement.setActiveRecoveryId(null);
+    releaseSend();
+    releaseOperation();
+    // The deferred adoption is dropped - its lease is gone - but the
+    // preserved row's selection must survive the retirement.
+    expect(replacement.getSnapshot().activeRecoveryId).toBeNull();
+    expect(readRecoverySelection(ref, replacement.recoverySelectionOwnerId)).toBe("preserved-row");
+  } finally {
+    replacement.dispose();
+    storage.close();
+  }
+});
+
+// Clearing the composer while a preservation under a resumed ref is pending,
+// then closing the pane, discards the preserved row. The discard's refresh
+// must reach the mounted view of the row's own ref - the source's stale ref
+// refresh leaves the resumed entry on screen.
+test("clearing during preservation removes the preserved row from a mounted resumed view", async () => {
+  class HeldAfterPreservationStorage extends MutationOutboxIndexedDB {
+    holdNextPreservation = true;
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      const result = await super.preserveRecoveryComposition(...args);
+      if (this.holdNextPreservation) {
+        this.holdNextPreservation = false;
+        this.reached.resolve();
+        await this.release.promise;
+      }
+      return result;
+    }
+  }
+  const storage = new HeldAfterPreservationStorage();
+  setMutationStorageForTests(storage);
+  const oldRef = "local:clear-retarget-old";
+  const resumed = "local:clear-retarget-new";
+  const original = await storage.enqueueIntent({
+    targetRef: oldRef,
+    method: "turn/start",
+    payload: { ref: oldRef, input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(oldRef, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  const view = renderHook(() => useRecoveryEntries(resumed));
+  // A mounted composer holds an editor binding; without one, every editText
+  // would also queue a detached persistence chain whose settled reads land
+  // outside the window this test awaits.
+  const releaseEditor = source.bindEditor({
+    read: () => ({ text: "", cursor: 0, selection: { start: 0, end: 0 } }),
+    write: () => {},
+  });
+  try {
+    await waitFor(() => expect(view.result.current).toEqual([]));
+    await act(async () => {
+      await source.activateRecovery(recovery);
+    });
+    await flushPendingTurnsProjectionForTests();
+    source.editText("start composition");
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+    );
+    await peer.retargetOutbox(oldRef, resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    await act(async () => {
+      const saving = source.queueRecoveryPersistence(original.clientMutationId, "start composition", [], []);
+      await storage.reached.promise;
+      // The user clears the composer while the preservation is pending, then
+      // closes the pane.
+      source.editText("");
+      source.dispose();
+      storage.release.resolve();
+      await saving;
+      // Settle the tracked reads inside the window: one settling between
+      // this act's exit and the next flush round would publish outside both.
+      await settleProjectionWorkForTests();
+    });
+    await flushPendingTurnsProjectionForTests();
+    // The row was written and discarded inside the same settled chain: the
+    // mounted resumed view must not retain it - the view keeps exactly the
+    // surviving peer row and nothing else.
+    await waitFor(() =>
+      expect(view.result.current.map((record) => record.clientMutationId)).toEqual([original.clientMutationId]),
+    );
+    expect(
+      (await storage.listRecovery(resumed)).find((record) => record.clientMutationId !== original.clientMutationId),
+    ).toBeUndefined();
+  } finally {
+    view.unmount();
+    releaseEditor();
     source.dispose();
     peer.close();
     storage.close();
