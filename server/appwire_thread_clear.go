@@ -86,6 +86,9 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 			record.Response = &response
 			s.clearRecords[params.ClientMutationID] = record
 			if err := persistThreadClearJournal(s.clearJournalPath, s.clearRecords); err != nil {
+				// An unpersisted receipt must not stand in memory: the retry has
+				// to come back through this branch and make it durable.
+				s.clearRecords[params.ClientMutationID] = currentRecord
 				s.mu.Unlock()
 				return appwire.ThreadClearResponse{}, appwire.MutationUnknown(params.ClientMutationID, "thread clear receipt could not be persisted")
 			}
@@ -163,6 +166,7 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 	response := s.threadClearResponse(params.ClientMutationID, appwire.MutationDispositionApplied)
 	s.mu.Lock()
 	record = s.clearRecords[params.ClientMutationID]
+	reservedRecord := record
 	record.State = threadClearApplied
 	record.Response = &response
 	s.clearRecords[params.ClientMutationID] = record
@@ -170,6 +174,7 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 		// Keep the reserved record and the new identity. A retry will take the
 		// crash-recovery branch above and make the receipt durable before it
 		// reports success.
+		s.clearRecords[params.ClientMutationID] = reservedRecord
 		s.mu.Unlock()
 		return appwire.ThreadClearResponse{}, appwire.MutationUnknown(params.ClientMutationID, "thread clear receipt could not be persisted")
 	}

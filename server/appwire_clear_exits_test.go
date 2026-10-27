@@ -76,6 +76,30 @@ func reservedClear(t *testing.T, params appwire.ThreadClearParams) threadClearRe
 	}
 }
 
+// requireDurableReplay restarts a server over stateDir with the replacement
+// installed under the stable ref and requires the clear to replay from the
+// journal without invoking a replacement callback.
+func requireDurableReplay(t *testing.T, stateDir string, params appwire.ThreadClearParams) {
+	t.Helper()
+	restarted := NewServer(ServerConfig{StateDir: stateDir})
+	prepared, err := PrepareAppIdentityForRef("local", "new", params.Ref, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
+	restarted.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error {
+		t.Fatal("restart replay invoked the replacement callback")
+		return nil
+	})
+	response, err := restarted.handleAppThreadClear(context.Background(), params)
+	if err != nil {
+		t.Fatalf("restart replay: %v", err)
+	}
+	if response.Receipt.Disposition != appwire.MutationDispositionReplayed {
+		t.Fatalf("restart disposition = %q, want replayed", response.Receipt.Disposition)
+	}
+}
+
 func TestThreadClearRefusals(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -294,6 +318,7 @@ func TestThreadClearRecoveryThatCannotPersistIsOutcomeUnknownThenRetries(t *test
 	if response.Receipt.Disposition != appwire.MutationDispositionReplayed {
 		t.Fatalf("retry disposition = %q, want replayed", response.Receipt.Disposition)
 	}
+	requireDurableReplay(t, stateDir, params)
 }
 
 // A reserved record whose replacement never installed (the daemon died before
@@ -350,6 +375,7 @@ func TestThreadClearReceiptThatCannotPersistIsOutcomeUnknownThenReplays(t *testi
 	if calls != 1 {
 		t.Fatalf("replacement callback ran %d times, want 1", calls)
 	}
+	requireDurableReplay(t, stateDir, params)
 }
 
 // A reservation that cannot be written refuses the clear before the callback
