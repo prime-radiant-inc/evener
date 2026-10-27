@@ -377,7 +377,7 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 		t.Fatalf("remote Manager read through its own hub: %+v refusal=%s", remoteRead, managerToolRefusal(call))
 	}
 	call.RespondToolCall("communicate", communicateArgs("remote Manager read"))
-	acceptanceRemoteManagerInput(ctx, t, provider, local, remote, human, remoteHuman, managerRef, remoteHost)
+	acceptanceRemoteManagerInput(ctx, t, provider, local, remote, human, remoteHuman, managerRef, remoteHost, "")
 	awaitThread(ctx, t, human, managerRef, "Manager idle", func(thread appwire.Thread) bool { return thread.Status.Type == appwire.ThreadStatusIdle })
 	const ordinary = "ACCEPT-ORDINARY-TOOL"
 	if _, err := clientRequest[appwire.TurnStartResponse](ctx, human, appwire.MethodTurnStart, appwire.TurnStartParams{Ref: managerRef, ExpectedInstanceID: localInstanceIDForTestRef(managerRef), ClientMutationID: newMutationID(t), Input: []appwire.InputItem{{Type: "text", Text: ordinary}}}); err != nil {
@@ -443,7 +443,7 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 	}
 }
 
-func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *fakellm.Server, local, remote hubStack, human, remoteHuman *appwire.Client, managerRef, remoteHost string) {
+func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *fakellm.Server, local, remote hubStack, human, remoteHuman *appwire.Client, managerRef, remoteHost, managerHubID string) {
 	t.Helper()
 	worker, err := clientRequest[appwire.ThreadStartResponse](ctx, remoteHuman, appwire.MethodThreadStart, appwire.ThreadStartParams{Harness: "evener", CWD: remote.workDir, Model: remote.model})
 	if err != nil {
@@ -461,7 +461,10 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := (appwire.Ref{SourceID: remoteHost, ThreadID: parsed.ThreadID}).String()
+	target := workerRef
+	if remoteHost != "" {
+		target = (appwire.Ref{SourceID: remoteHost, ThreadID: parsed.ThreadID}).String()
+	}
 	const opening, task, question, answer = "ACCEPT-REMOTE-SEND", "ACCEPT-REMOTE-TASK", "ACCEPT-REMOTE-QUESTION", "ACCEPT-REMOTE-ANSWER"
 	awaitThread(ctx, t, human, managerRef, "Manager ready for remote input", func(thread appwire.Thread) bool { return thread.Status.Type == appwire.ThreadStatusIdle })
 	if _, err := clientRequest[appwire.TurnStartResponse](ctx, human, appwire.MethodTurnStart, appwire.TurnStartParams{Ref: managerRef, ExpectedInstanceID: localInstanceIDForTestRef(managerRef), ClientMutationID: newMutationID(t), Input: []appwire.InputItem{{Type: "text", Text: opening}}}); err != nil {
@@ -506,9 +509,12 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 	if watchID == clearedWatch {
 		t.Fatal("cleared remote watch remained active")
 	}
-	var queueMutations []string
+	var queueMutations, inputMutations []string
 	for _, message := range []string{task, answer} {
-		managerCall.RespondToolCall("delegate_send", map[string]any{"to": target, "input_mode": "start", "message": message, "client_mutation_id": newMutationID(t), "expected_instance_id": instance})
+		mutationID := newMutationID(t)
+		inputMutations = append(inputMutations, mutationID)
+		arguments := map[string]any{"to": target, "input_mode": "start", "message": message, "client_mutation_id": mutationID, "expected_instance_id": instance}
+		managerCall.RespondToolCall("delegate_send", arguments)
 		var targetCall *fakellm.Call
 		managerCall = nil
 		for targetCall == nil || managerCall == nil {
@@ -531,6 +537,21 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 			}
 		}
 		if message == task {
+			firstResult := appwire.SessionOperationResponse{}
+			if !managerToolResult(managerCall, &firstResult) || firstResult.Start == nil || firstResult.Start.Receipt.Disposition != appwire.MutationDispositionApplied || firstResult.Start.Receipt.ClientMutationID != mutationID {
+				t.Fatalf("initial Manager input receipt: %+v", firstResult)
+			}
+			// Replay the exact accepted request while the provider still holds the
+			// worker. The typed receipt contract, not a success string, identifies replay.
+			managerCall.RespondToolCall("delegate_send", arguments)
+			managerCall, err = provider.Next(ctx.Done())
+			if err != nil || !managerCall.Contains(opening) {
+				t.Fatalf("Manager exact replay result: call=%v err=%v", managerCall, err)
+			}
+			var replay appwire.SessionOperationResponse
+			if !managerToolResult(managerCall, &replay) || replay.Start == nil || replay.Start.Receipt.Disposition != appwire.MutationDispositionReplayed || replay.Start.Receipt.ClientMutationID != mutationID || replay.Start.Receipt.TurnID != firstResult.Start.Receipt.TurnID {
+				t.Fatalf("Manager exact replay receipt: first=%+v replay=%+v", firstResult.Start.Receipt, replay)
+			}
 			targetCall.RespondToolCall("ask_user", map[string]any{"questions": []any{map[string]any{"question": question, "options": []any{map[string]any{"label": "Proceed", "detail": "Continue"}, map[string]any{"label": "Wait", "detail": "Pause"}}}}})
 			awaitThread(ctx, t, human, target, "remote question pending", func(thread appwire.Thread) bool {
 				return thread.Evener.AskPending && thread.Evener.PendingQuestion != nil && thread.Evener.PendingQuestion.Question == question
@@ -592,16 +613,25 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 	if !workerTerminalAccepted(turns, "remote answer received") {
 		t.Fatal("remote saved history lost accepted completion")
 	}
-	hubID, err := hubcore.NewHubIdentityStore(filepath.Join(local.home, "state", "evener", "index.db")).HubID()
-	if err != nil {
-		t.Fatal(err)
+	if managerHubID == "" {
+		managerHubID, err = hubcore.NewHubIdentityStore(filepath.Join(local.home, "state", "evener", "index.db")).HubID()
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	caller, err := appwire.ParseRef(managerRef)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantActor := (appwire.Ref{SourceID: hubID, ThreadID: caller.ThreadID}).String()
-	stateDir, err := resolveEvenerStateDirWithStateHome(remote.workDir, "", filepath.Join(filepath.Dir(remote.workDir), "home", "state"))
+	wantActor := (appwire.Ref{SourceID: managerHubID, ThreadID: caller.ThreadID}).String()
+	if remoteHost == "" {
+		wantActor = managerRef
+	}
+	stateHome := filepath.Join(remote.home, "state")
+	if remote.home == "" {
+		stateHome = filepath.Join(filepath.Dir(remote.workDir), "home", "state")
+	}
+	stateDir, err := resolveEvenerStateDirWithStateHome(remote.workDir, "", stateHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -611,7 +641,9 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 	}
 	var saved struct {
 		Journal map[string]struct {
-			Actor schema.SessionActor `json:"actor"`
+			Actor        schema.SessionActor `json:"actor"`
+			Method       string              `json:"method"`
+			StableTurnID string              `json:"stable_turn_id"`
 		} `json:"journal"`
 	}
 	if err := json.Unmarshal(data, &saved); err != nil {
@@ -622,11 +654,28 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 			t.Errorf("remote queue mutation %s saved actor=%+v exists=%t, want %s", id, record.Actor, ok, wantActor)
 		}
 	}
+	for i, id := range inputMutations {
+		record, ok := saved.Journal[id]
+		if !ok || record.Actor.Kind != "manager" || record.Actor.ManagerRef != wantActor || record.Method != "turn/start" || record.StableTurnID == "" {
+			t.Errorf("saved input mutation %s actor=%+v method=%q stableTurnID=%q exists=%t", id, record.Actor, record.Method, record.StableTurnID, ok)
+		}
+		foundIdentity := 0
+		for _, turn := range turns {
+			for _, item := range turn.Items {
+				if item.ClientMutationID == id && item.Text == []string{task, answer}[i] && item.TurnID == record.StableTurnID {
+					foundIdentity++
+				}
+			}
+		}
+		if foundIdentity != 1 {
+			t.Errorf("mutation %s saved input identity count=%d, want one (turn %q)", id, foundIdentity, record.StableTurnID)
+		}
+	}
 	for _, message := range []string{task, answer} {
 		found := false
 		for _, turn := range turns {
 			for _, item := range turn.Items {
-				if item.Text == message {
+				if strings.Contains(item.Text, message) {
 					found = true
 					if item.Actor == nil || item.Actor.Kind != "manager" || item.Actor.ManagerRef != wantActor {
 						t.Fatalf("remote persisted actor=%+v, want Manager %s", item.Actor, wantActor)
@@ -636,6 +685,35 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 		}
 		if !found {
 			t.Fatalf("remote input absent from history: %q", message)
+		}
+	}
+	for _, message := range []string{task, answer} {
+		count := 0
+		for _, turn := range turns {
+			for _, item := range turn.Items {
+				if item.Text == message {
+					count++
+				}
+			}
+		}
+		if count != 1 {
+			t.Fatalf("accepted Manager input %q saved %d times, want exactly once", message, count)
+		}
+	}
+	for _, message := range []string{"ACCEPT-REMOTE-DRAIN-INPUT", "ACCEPT-REMOTE-PROMOTE"} {
+		count := 0
+		for _, turn := range turns {
+			for _, item := range turn.Items {
+				if strings.Contains(item.Text, message) {
+					count++
+					if item.Actor == nil || item.Actor.Kind != "manager" || item.Actor.ManagerRef != wantActor {
+						t.Errorf("saved synthesized input %q actor=%+v, want Manager %s", message, item.Actor, wantActor)
+					}
+				}
+			}
+		}
+		if count != 1 {
+			t.Errorf("saved synthesized input %q count=%d, want one", message, count)
 		}
 	}
 }
