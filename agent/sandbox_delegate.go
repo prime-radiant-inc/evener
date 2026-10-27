@@ -12,9 +12,8 @@ import (
 )
 
 type delegatePreparedEnvironment struct {
-	env              execenv.ExecutionEnvironment
-	ownsFresh        bool
-	stableController bool
+	env       execenv.ExecutionEnvironment
+	ownsFresh bool
 }
 
 type delegateSandboxErrorClass string

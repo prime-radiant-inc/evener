@@ -2536,6 +2536,20 @@ describe("resource-backed Rail", () => {
     expect(loadProject).toHaveBeenCalledWith("p");
   });
 
+  test("a resource with data and no graph renders no rows", () => {
+    // The store attaches a graph to every resource it publishes with data, so
+    // data alone is not a source of rows.
+    const liveRows = sectionResource("live", [summary({ title: "Ungraphed live row" })]);
+    const catalog = catalogResource([{ key: "p", name: "Ungraphed project", session_count: 1 }]);
+    installState([
+      { ...liveRows, normalized: undefined },
+      { ...catalog, normalized: undefined },
+    ]);
+    render(<Rail />);
+    expect(screen.queryByText("Ungraphed live row")).toBeNull();
+    expect(screen.queryByText("Ungraphed project")).toBeNull();
+  });
+
   test("an unrelated live session update does not reinvoke an unchanged errored project row", () => {
     const observer = vi.fn();
     const catalog = catalogResource([{ key: "p", name: "Retry project", session_count: 1 }]);

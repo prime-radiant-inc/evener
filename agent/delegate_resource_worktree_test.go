@@ -188,7 +188,7 @@ func TestStableDelegateWorktree_ClosureAppendFailureDestroysNothing(t *testing.T
 		t.Fatal(err)
 	}
 
-	if _, err := r.s.worktreeDispose(context.Background(), id, false, false); err == nil || !strings.Contains(err.Error(), "store is closed") {
+	if _, err := r.s.worktreeDispose(context.Background(), id, false, false); !errors.Is(err, delegatestore.ErrStoreClosed) {
 		t.Fatalf("closure append failure = %v, want durable-store error", err)
 	}
 	if after := wtGit(t, r.mainRoot, "worktree", "list", "--porcelain"); after != before {

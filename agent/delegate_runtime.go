@@ -2653,9 +2653,8 @@ func (runtime delegateRuntime) construct(_ context.Context, args delegateArgs, s
 	ctx = context.WithValue(ctx, ctxDelegationAllowance, started.descriptor.DelegationAllowance)
 	ctx = context.WithValue(ctx, delegateChildSessionIDContextKey{}, started.descriptor.ChildSessionID)
 	ctx = context.WithValue(ctx, delegatePreparedEnvironmentContextKey{}, delegatePreparedEnvironment{
-		env:              isolation.env,
-		ownsFresh:        isolation.ownsFreshEnv,
-		stableController: true,
+		env:       isolation.env,
+		ownsFresh: isolation.ownsFreshEnv,
 	})
 	if requested := started.descriptor.Sandbox; requested != nil {
 		ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, sandboxPolicyFromStableSnapshot(requested))

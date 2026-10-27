@@ -1169,11 +1169,11 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	}
 	cfg.PluginManager = mgr
 	pluginsController := &hubPluginsController{mgr: mgr, launchConfigRoot: hubLaunchConfigRoot(cfg)}
-	relayFunctions := newHubRelayFunctions(server, cfg, sources)
-	if observeHubRelayFunctions != nil {
-		observeHubRelayFunctions(relayFunctions)
+	relay := newHubRelay(server, cfg, sources)
+	if observeHubRelay != nil {
+		observeHubRelay(relay)
 	}
-	registerThreadHandlers(server, cfg, sources, relayFunctions, hubLogf)
+	registerThreadHandlers(server, cfg, sources, relay, hubLogf)
 	registerThreadNameSetHandler(server, cfg, sources, navigation)
 	registerAuthHandlers(server, authController)
 	registerInstanceHandlers(server, instancesController)
@@ -1286,7 +1286,7 @@ func registerThreadHandlers(
 	server *appserver.Server,
 	cfg hubcore.WebConfig,
 	sources *appsource.Registry,
-	relays hubRelayFunctions,
+	relays *hubRelay,
 	logf func(format string, args ...any),
 ) {
 	// evener/session/image is the AppWire counterpart of the local image routes:

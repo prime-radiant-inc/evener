@@ -11,6 +11,14 @@ import (
 	"sync"
 )
 
+var (
+	// ErrStoreClosed is returned by operations on a closed Store.
+	ErrStoreClosed = errors.New("delegatestore: store is closed")
+	// ErrStoreUnusable is returned once a failed rollback has left the file
+	// in an unknown state; the Store refuses further appends.
+	ErrStoreUnusable = errors.New("delegatestore: store is unusable")
+)
+
 type fileOps struct {
 	write    func(*os.File, []byte) (int, error)
 	sync     func(*os.File) error
@@ -256,10 +264,10 @@ func (s *Store) latchRollbackFailureLocked(operationErr, rollbackErr error) erro
 
 func (s *Store) ensureUsableLocked() error {
 	if s.closed {
-		return errors.New("delegatestore: store is closed")
+		return ErrStoreClosed
 	}
 	if s.unusable != nil {
-		return fmt.Errorf("delegatestore: store is unusable after failed rollback: %w", s.unusable)
+		return fmt.Errorf("%w after failed rollback: %w", ErrStoreUnusable, s.unusable)
 	}
 	if s.f == nil {
 		return errors.New("delegatestore: store has no file")

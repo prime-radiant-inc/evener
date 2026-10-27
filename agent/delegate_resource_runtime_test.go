@@ -464,7 +464,7 @@ func TestDelegateResourceRuntime_InputCompensationFailureLatchesBeforeRunReset(t
 	}
 
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "fail input and compensation", 0)
-	if outcome.result.DelegateID != fixture.delegateID || outcome.result.Err == nil || !strings.Contains(outcome.result.Err.Error(), "store is closed") {
+	if outcome.result.DelegateID != fixture.delegateID || !errors.Is(outcome.result.Err, delegatestore.ErrStoreClosed) {
 		t.Fatalf("double-failure send result = %#v, want stable identity and durable append error", outcome.result)
 	}
 	c := root.delegateController

@@ -284,7 +284,7 @@ func TestHubRelayConcurrentAliasesShareCanonicalHandle(t *testing.T) {
 		acquireEntered: acquireEntered,
 		acquireGate:    releaseAcquire,
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),

@@ -367,7 +367,7 @@ func TestDelegateResourceCreate_ResultMatchesCommittedSnapshot(t *testing.T) {
 		}
 
 		result := root.createDelegate(context.Background(), delegateArgs{Task: "retain fenced start"})
-		if !errors.Is(result.Err, constructionErr) || !strings.Contains(result.Err.Error(), "store is closed") {
+		if !errors.Is(result.Err, constructionErr) || !errors.Is(result.Err, delegatestore.ErrStoreClosed) {
 			t.Fatalf("create error = %v, want construction and compensating append diagnostics", result.Err)
 		}
 		if result.Status != jobstore.StatusRunning || result.Reason != "" || result.Resumable == nil || !*result.Resumable {
@@ -1068,7 +1068,7 @@ func TestDelegateResourceCreate_ResumabilityAppendFailureDestroysNothing(t *test
 		Task:                "retain after append failure",
 		DelegationAllowance: new(0),
 	})
-	if !errors.Is(result.Err, wantErr) || !strings.Contains(result.Err.Error(), "store is closed") {
+	if !errors.Is(result.Err, wantErr) || !errors.Is(result.Err, delegatestore.ErrStoreClosed) {
 		t.Fatalf("createDelegate error = %v, want construction and closure-append failures", result.Err)
 	}
 	root.delegateController.mu.Lock()
@@ -1247,7 +1247,7 @@ func TestDelegateResourceCreate_CloseAfterDrainRefusesFailedStartRetention(t *te
 
 	constructionErr := errors.New("construction failed after controller attachment")
 	result := runtime.failCommittedStart(started, isolation, prepared, true, constructionErr, "construction_failed")
-	if !errors.Is(result.Err, constructionErr) || !strings.Contains(result.Err.Error(), "store is closed") {
+	if !errors.Is(result.Err, constructionErr) || !errors.Is(result.Err, delegatestore.ErrStoreClosed) {
 		t.Fatalf("failed create error = %v, want construction and append failures", result.Err)
 	}
 	if got := root.subagents.get(prepared.sub.id); got != nil {

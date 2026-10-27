@@ -1,13 +1,8 @@
-import type {
-  NavigationCatalogs,
-  NavigationProjectPage,
-  NavigationProjectResource,
-  NavigationProjectSummary,
-  NavigationSessionSummary,
-} from "@evener/appwire-client";
+import type { NavigationCatalogs, NavigationProjectSummary, NavigationSessionSummary } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import {
   keyID,
+  type NormalizedResource,
   navigationOwnedContainerKey,
   navigationRootContainerKey,
   nextNavigationOffset,
@@ -25,17 +20,24 @@ const sessionModelCache = new WeakMap<object, Map<string, RailSession>>();
 type ProjectPageDependency = Readonly<{
   id: string;
   tier: "current" | "recent" | "archived";
-  graphOrData: object | null;
+  graph: object;
 }>;
 type ProjectModelCacheEntry = Readonly<{
-  mode: "compatibility" | "graph";
-  root: object | null;
+  root: object;
   pages: readonly ProjectPageDependency[];
-  compatibilityError?: string;
   result: RailProject;
 }>;
 const projectModelCache = new WeakMap<object, ProjectModelCacheEntry>();
+const summaryProjectCache = new WeakMap<object, { loaded: boolean; error: string | undefined; result: RailProject }>();
 const archivedProjectModelCache = new WeakMap<object, RailProject>();
+
+// A resource the store decoded from a snapshot or delta. The store attaches the
+// graph to every resource it publishes with data, so the rail reads nothing
+// else.
+type GraphResource = ResourceState & { normalized: NormalizedResource };
+function isGraphResource(resource: ResourceState): resource is GraphResource {
+  return resource.normalized !== undefined;
+}
 
 function summarySession(
   summary: NavigationSessionSummary,
@@ -98,13 +100,8 @@ export function resourceData<T>(state: ReturnType<typeof navigationStore.getStat
   if (resource?.normalized?.presence === "gone") return null;
   return (resource?.data as T | undefined) ?? null;
 }
-function returnedRootRows(resource: ResourceState, slot: string, field: string): number {
-  const normalized = resource.normalized;
-  if (normalized)
-    return normalized.graph.containers.get(navigationRootContainerKey(resource.key, slot))?.children.length ?? 0;
-  const data = resource.data as Record<string, unknown> | null;
-  const rows = data?.[field];
-  return Array.isArray(rows) ? rows.length : 0;
+function returnedRootRows(resource: GraphResource, slot: string): number {
+  return resource.normalized.graph.containers.get(navigationRootContainerKey(resource.key, slot))?.children.length ?? 0;
 }
 // The tiers a project resource serves rows for. Archived rows come from the
 // project's archived list (withArchivedList), not from navigation.
@@ -112,15 +109,16 @@ const PROJECT_TIERS = ["current", "recent"] as const;
 function projectPageStates(
   pages: ReadonlyMap<string, ResourceState>,
   projectKey: string,
-): Array<ResourceState & { key: Extract<ResourceKey, { kind: "project_page" }> }> {
+): Array<GraphResource & { key: Extract<ResourceKey, { kind: "project_page" }> }> {
   const tierOrder = { current: 0, recent: 1, archived: 2 } as const;
   return [...pages.values()]
     .filter(
-      (state): state is ResourceState & { key: Extract<ResourceKey, { kind: "project_page" }> } =>
+      (state): state is GraphResource & { key: Extract<ResourceKey, { kind: "project_page" }> } =>
         state.key.kind === "project_page" &&
         state.key.projectKey === projectKey &&
         state.data !== null &&
-        state.normalized?.presence !== "gone",
+        isGraphResource(state) &&
+        state.normalized.presence !== "gone",
     )
     .sort(
       (a, b) =>
@@ -130,11 +128,10 @@ function projectPageStates(
         keyID(a.key).localeCompare(keyID(b.key)),
     );
 }
-function projectPageDependencies(states: readonly ResourceState[]): ProjectPageDependency[] {
+function projectPageDependencies(states: readonly GraphResource[]): ProjectPageDependency[] {
   return states.flatMap((state) => {
     if (state.key.kind !== "project_page") return [];
-    const graphOrData = state.normalized?.graph ?? (typeof state.data === "object" ? state.data : null);
-    return [{ id: keyID(state.key), tier: state.key.tier, graphOrData }];
+    return [{ id: keyID(state.key), tier: state.key.tier, graph: state.normalized.graph as object }];
   });
 }
 function sameProjectPageDependencies(
@@ -147,34 +144,25 @@ function sameProjectPageDependencies(
       (dependency, index) =>
         dependency.id === right[index]?.id &&
         dependency.tier === right[index]?.tier &&
-        dependency.graphOrData === right[index]?.graphOrData,
+        dependency.graph === right[index]?.graph,
     )
   );
 }
 function cachedProject(
   summary: NavigationProjectSummary,
-  mode: ProjectModelCacheEntry["mode"],
-  root: object | null,
+  root: object,
   pages: readonly ProjectPageDependency[],
-  compatibilityError?: string,
 ): RailProject | undefined {
   const cached = projectModelCache.get(summary as object);
-  return cached?.mode === mode &&
-    cached.root === root &&
-    sameProjectPageDependencies(cached.pages, pages) &&
-    (mode === "graph" || cached.compatibilityError === compatibilityError)
-    ? cached.result
-    : undefined;
+  return cached?.root === root && sameProjectPageDependencies(cached.pages, pages) ? cached.result : undefined;
 }
 function cacheProject(
   summary: NavigationProjectSummary,
-  mode: ProjectModelCacheEntry["mode"],
-  root: object | null,
+  root: object,
   pages: readonly ProjectPageDependency[],
   result: RailProject,
-  compatibilityError?: string,
 ): RailProject {
-  projectModelCache.set(summary as object, { mode, root, pages, compatibilityError, result });
+  projectModelCache.set(summary as object, { root, pages, result });
   return result;
 }
 interface LoadedSection {
@@ -189,10 +177,11 @@ function loadedSection(
 ): LoadedSection {
   const pages = [...state.resources.values()]
     .filter(
-      (resource) =>
+      (resource): resource is GraphResource =>
         resource.key.kind === "section" &&
         resource.key.section === section &&
         resource.data !== null &&
+        isGraphResource(resource) &&
         state.visibleResourceKeys.has(keyID(resource.key)),
     )
     .sort((a, b) =>
@@ -201,80 +190,47 @@ function loadedSection(
         : 0,
     );
   const seen = new Set<string>();
-  const rows = pages.flatMap((resource) => {
-    const normalized = resource.normalized;
-    if (normalized) {
-      const model = selectRailModel(normalized);
-      const root = normalized.graph.containers.get(navigationRootContainerKey(resource.key, "sessions"));
-      return (root?.children ?? []).flatMap((entityKey) => {
-        const session = model.sessions.get(entityKey);
-        if (!session || seen.has(session.ref)) return [];
-        seen.add(session.ref);
-        return [session];
-      });
-    }
-    return (resource.data as { sessions: NavigationSessionSummary[] }).sessions.flatMap((summary) => {
-      if (seen.has(summary.ref)) return [];
-      seen.add(summary.ref);
-      return [summarySession(summary, section)];
-    });
-  });
+  const rows = pages.flatMap((resource) =>
+    graphSessionsForResource(resource).filter((session) => {
+      if (seen.has(session.ref)) return false;
+      seen.add(session.ref);
+      return true;
+    }),
+  );
   const last = pages.at(-1);
   const data = last?.data as { remaining?: number } | null;
   const pageKey = last?.key.kind === "section" ? last.key : { offset: 0, limit: 50 };
   return {
     sessions: rows,
     remaining: data?.remaining ?? 0,
-    offset: nextNavigationOffset(pageKey.offset, last ? returnedRootRows(last, "sessions", "sessions") : 0),
+    offset: nextNavigationOffset(pageKey.offset, last ? returnedRootRows(last, "sessions") : 0),
     limit: pageKey.limit,
   };
 }
+// The row a project shows when its graph has no rows to offer: the catalog
+// summary alone. `loaded` is whether a root read has settled, and `rootError`
+// the failure to retry from.
 function projectFromSummary(
   summary: NavigationProjectSummary,
-  root: NavigationProjectResource | null,
+  loaded: boolean,
   rootError: string | undefined,
-  pages: ReadonlyMap<string, ResourceState>,
 ): RailProject {
-  const rootObject = root as object | null;
-  const allPageStates = projectPageStates(pages, summary.key);
-  const pageDependencies = projectPageDependencies(allPageStates);
-  const cached = cachedProject(summary, "compatibility", rootObject, pageDependencies, rootError);
-  if (cached) return cached;
-  const all: RailSession[] = [];
-  const more: Partial<Record<"current" | "recent", number>> = {};
-  const nextOffsets: Partial<Record<"current" | "recent" | "archived", number>> = {};
-  for (const tier of PROJECT_TIERS) {
-    const base = root?.[tier];
-    const pageStates = allPageStates.filter((state) => state.key.tier === tier);
-    const rows = [...(base?.sessions ?? [])];
-    let remaining = base?.remaining ?? summary[`more_${tier}`] ?? 0;
-    for (const pageState of pageStates) {
-      const page = pageState.data as NavigationProjectPage;
-      for (const row of page.sessions) if (!rows.some((existing) => existing.ref === row.ref)) rows.push(row);
-      remaining = Math.min(remaining, page.remaining);
-    }
-    const lastPage = pageStates.at(-1);
-    nextOffsets[tier] =
-      lastPage?.key.kind === "project_page"
-        ? nextNavigationOffset(lastPage.key.offset, returnedRootRows(lastPage, "sessions", "sessions"))
-        : rows.length;
-    all.push(...sessions(rows, `project:${summary.key}:${tier}`, tier, undefined, summary.key));
-    more[tier] = remaining;
-  }
+  const cached = summaryProjectCache.get(summary as object);
+  if (cached && cached.loaded === loaded && cached.error === rootError) return cached.result;
   const result = {
     ...summary,
-    loaded: root !== null,
+    loaded,
     resourceError: rootError,
-    nextOffsets,
-    sessions: all,
-    more_current: more.current,
-    more_recent: more.recent,
+    nextOffsets: { current: 0, recent: 0 },
+    sessions: [],
+    more_current: summary.more_current ?? 0,
+    more_recent: summary.more_recent ?? 0,
   };
-  return cacheProject(summary, "compatibility", rootObject, pageDependencies, result, rootError);
+  summaryProjectCache.set(summary as object, { loaded, error: rootError, result });
+  return result;
 }
-function graphSessionsForResource(resource: ResourceState): RailSession[] {
+function graphSessionsForResource(resource: GraphResource): RailSession[] {
   const normalized = resource.normalized;
-  if (!normalized) return [];
   const model = selectRailModel(normalized);
   const root = normalized.graph.containers.get(navigationRootContainerKey(resource.key, "sessions"));
   return (root?.children ?? []).flatMap((entityKey) => {
@@ -284,14 +240,14 @@ function graphSessionsForResource(resource: ResourceState): RailSession[] {
 }
 function projectFromGraph(
   summary: NavigationProjectSummary,
-  resource: ResourceState,
+  resource: GraphResource,
   pages: ReadonlyMap<string, ResourceState>,
 ): RailProject | null {
   const normalized = resource.normalized;
-  if (!normalized || normalized.presence === "gone") return null;
+  if (normalized.presence === "gone") return null;
   const allPageStates = projectPageStates(pages, summary.key);
   const pageDependencies = projectPageDependencies(allPageStates);
-  const cached = cachedProject(summary, "graph", normalized.graph as object, pageDependencies);
+  const cached = cachedProject(summary, normalized.graph as object, pageDependencies);
   if (cached) return cached;
   const projectEntity = [...normalized.graph.entities.values()].find(
     (entity) =>
@@ -325,13 +281,13 @@ function projectFromGraph(
     const lastPage = pageStates.at(-1);
     nextOffsets[tier] =
       lastPage?.key.kind === "project_page"
-        ? nextNavigationOffset(lastPage.key.offset, returnedRootRows(lastPage, "sessions", "sessions"))
+        ? nextNavigationOffset(lastPage.key.offset, returnedRootRows(lastPage, "sessions"))
         : (container?.children.length ?? 0);
     const pageRemaining = pageStates.at(-1)?.data as { remaining?: number } | undefined;
     const metadataRemaining = metadata[`${tier}_remaining`];
     more[tier] = pageRemaining?.remaining ?? (typeof metadataRemaining === "number" ? metadataRemaining : 0);
   }
-  return cacheProject(summary, "graph", normalized.graph as object, pageDependencies, {
+  return cacheProject(summary, normalized.graph as object, pageDependencies, {
     ...summary,
     loaded: true,
     sessions: all,
@@ -392,11 +348,12 @@ function projectsFor(state: ReturnType<typeof navigationStore.getState>, catalog
   const output: RailProject[] = [];
   const catalogResources = [...state.resources.values()]
     .filter(
-      (resource) =>
+      (resource): resource is GraphResource =>
         resource.key.kind === "catalog" &&
         resource.key.catalog === catalog &&
         resource.data !== null &&
-        resource.normalized?.presence !== "gone",
+        isGraphResource(resource) &&
+        resource.normalized.presence !== "gone",
     )
     .sort((a, b) =>
       a.key.kind === "catalog" && b.key.kind === "catalog"
@@ -404,35 +361,23 @@ function projectsFor(state: ReturnType<typeof navigationStore.getState>, catalog
         : 0,
     );
   for (const resource of catalogResources) {
-    const normalizedCatalog = resource.normalized;
-    const data = resource.data as { projects: NavigationProjectSummary[] };
-    const summaries = normalizedCatalog
-      ? (() => {
-          const root = normalizedCatalog.graph.containers.get(navigationRootContainerKey(resource.key, "projects"));
-          return (root?.children ?? []).flatMap((entityKey) => {
-            const entity = normalizedCatalog.graph.entities.get(entityKey);
-            if (entity?.kind !== "project" || !entity.value || typeof entity.value !== "object") return [];
-            return [entity.value as NavigationProjectSummary];
-          });
-        })()
-      : data.projects;
+    const root = resource.normalized.graph.containers.get(navigationRootContainerKey(resource.key, "projects"));
+    const summaries = (root?.children ?? []).flatMap((entityKey) => {
+      const entity = resource.normalized.graph.entities.get(entityKey);
+      if (entity?.kind !== "project" || !entity.value || typeof entity.value !== "object") return [];
+      return [entity.value as NavigationProjectSummary];
+    });
     for (const summary of summaries) {
       if (output.some((project) => project.key === summary.key)) continue;
       const rootState = state.resources.get(keyID({ kind: "project", projectKey: summary.key }));
-      if (normalizedCatalog && rootState) {
-        const graphProject = projectFromGraph(summary, rootState, state.resources);
-        if (graphProject) {
-          output.push(graphProject);
-          continue;
-        }
+      const graphProject =
+        rootState && isGraphResource(rootState) ? projectFromGraph(summary, rootState, state.resources) : null;
+      if (graphProject) {
+        output.push(graphProject);
+        continue;
       }
-      const root =
-        rootState?.normalized?.presence === "gone"
-          ? null
-          : ((rootState?.data as NavigationProjectResource | null | undefined) ?? null);
-      output.push(
-        projectFromSummary(summary, root, rootState?.error ? errorText(rootState.error) : undefined, state.resources),
-      );
+      const rootLoaded = !!rootState && rootState.data !== null && rootState.normalized?.presence !== "gone";
+      output.push(projectFromSummary(summary, rootLoaded, rootState?.error ? errorText(rootState.error) : undefined));
     }
   }
   return output;
@@ -443,11 +388,12 @@ function catalogOverflowFor(
 ): { remaining: number; offset: number; limit: number } | undefined {
   const pages = [...state.resources.values()]
     .filter(
-      (resource) =>
+      (resource): resource is GraphResource =>
         resource.key.kind === "catalog" &&
         resource.key.catalog === catalog &&
         resource.data !== null &&
-        resource.normalized?.presence !== "gone",
+        isGraphResource(resource) &&
+        resource.normalized.presence !== "gone",
     )
     .sort((a, b) =>
       a.key.kind === "catalog" && b.key.kind === "catalog"
@@ -461,7 +407,7 @@ function catalogOverflowFor(
   const pageKey = last.key.kind === "catalog" ? last.key : { offset: 0, limit: 100 };
   return {
     remaining,
-    offset: nextNavigationOffset(pageKey.offset, returnedRootRows(last, "projects", "projects")),
+    offset: nextNavigationOffset(pageKey.offset, returnedRootRows(last, "projects")),
     limit: pageKey.limit,
   };
 }
@@ -482,8 +428,11 @@ export function railResources(state: ReturnType<typeof navigationStore.getState>
     .map((section) => {
       const pages = [...state.resources.values()]
         .filter(
-          (resource) =>
-            resource.key.kind === "pin_section" && resource.key.sectionId === section.id && resource.data !== null,
+          (resource): resource is GraphResource =>
+            resource.key.kind === "pin_section" &&
+            resource.key.sectionId === section.id &&
+            resource.data !== null &&
+            isGraphResource(resource),
         )
         .sort((a, b) =>
           a.key.kind === "pin_section" && b.key.kind === "pin_section"
@@ -493,16 +442,16 @@ export function railResources(state: ReturnType<typeof navigationStore.getState>
       const last = pages.at(-1);
       const pageKey = last?.key.kind === "pin_section" ? last.key : { offset: 0, limit: 50 };
       const remaining = (last?.data as { remaining?: number } | null)?.remaining ?? 0;
-      const normalizedPages = pages.filter((resource) => resource.normalized);
-      const graphSessions = normalizedPages.length
-        ? dedupeSessions(normalizedPages.flatMap((resource) => graphSessionsForResource(resource)))
+      // Until a section's pages load, the manifest's own rows paint it.
+      const graphSessions = pages.length
+        ? dedupeSessions(pages.flatMap((resource) => graphSessionsForResource(resource)))
         : null;
       return {
         id: section.id,
         name: section.name,
         member_count: pinCounts.get(section.id) ?? section.sessions.length,
         remaining,
-        offset: nextNavigationOffset(pageKey.offset, last ? returnedRootRows(last, "sessions", "sessions") : 0),
+        offset: nextNavigationOffset(pageKey.offset, last ? returnedRootRows(last, "sessions") : 0),
         limit: pageKey.limit,
         sessions:
           graphSessions ?? dedupeSessions(sessions(section.sessions, `pin:${section.id}`, undefined, section.id)),

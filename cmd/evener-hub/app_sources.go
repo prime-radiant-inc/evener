@@ -178,7 +178,7 @@ type deletionTargetLookup func(store *hubcore.DeletionStore, ref, threadID strin
 // between two checks made by a single request; production reads the durable
 // store directly. Work that runs in the background, past the request that
 // started it, captures the lookup once when it is built instead of reading
-// this variable live (see newHubRelayFunctions): a test restoring the seam must
+// this variable live (see newHubRelay): a test restoring the seam must
 // not race with, or be answered by, a relay some earlier test left running.
 var deletionTargetState deletionTargetLookup = func(store *hubcore.DeletionStore, ref, threadID string) (hubcore.DeletionState, bool) {
 	return store.TargetState(ref, threadID)

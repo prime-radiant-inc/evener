@@ -19,7 +19,6 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
@@ -125,18 +124,9 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 	}
 	sources := newHubSourceRegistry(cfg)
 	// Observe calls while retaining all real relay operations and their results.
-	var relays hubRelayFunctions
-	previousObserver := observeHubRelayFunctions
-	observeHubRelayFunctions = func(got hubRelayFunctions) { relays = got }
-	server := newHubAppServer(cfg, sources)
-	observeHubRelayFunctions = previousObserver
 	var reads atomic.Int32
-	liveRead := relays.readThread
-	relays.readThread = func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams) (*hubThreadReadResult, error) {
-		reads.Add(1)
-		return liveRead(ctx, source, params)
-	}
-	registerThreadHandlers(server, cfg, sources, relays, t.Logf)
+	cfg.RelayHooks.BeforeReadThread = func() { reads.Add(1) }
+	server := newHubAppServer(cfg, sources)
 	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
 	hubHTTP := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	t.Cleanup(hubHTTP.Close)

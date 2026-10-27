@@ -350,19 +350,7 @@ func patchStatusCapabilities(notification appwire.Notification, patch func(appwi
 	return notification
 }
 
-type hubRelayFunctions struct {
-	startRelay          func(context.Context, appsource.Source, appwire.ThreadReadParams, appwire.Thread) error
-	readThread          func(context.Context, appsource.Source, appwire.ThreadReadParams) (*hubThreadReadResult, error)
-	captureThreadRead   func(context.Context, appwire.ThreadReadParams, *hubThreadReadResult) bool
-	startTurn           func(context.Context, appsource.Source, appwire.TurnStartParams) (appwire.TurnStartResponse, error)
-	startRelayForThread func(context.Context, appwire.Thread) error
-	stopRelay           func(string)
-	stopCanonicalRelay  func(appwire.Ref)
-	relayCommandCount   func(string) int
-	relayPublished      func(string) bool
-}
-
-var observeHubRelayFunctions func(hubRelayFunctions)
+var observeHubRelay func(*hubRelay)
 var observeHubRelayWait func()
 
 // Test-only observations for the bounded pending-delivery queue, its delivery

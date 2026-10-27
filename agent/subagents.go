@@ -161,12 +161,6 @@ type preparedSubagentRun struct {
 	isolation          string
 	resultSchema       map[string]any
 	explicitToolGrants []string
-	// treeSlot is the tree-counter reservation claimed by prepareSubagentRun for
-	// this spawn's running delegate turn (spec §4). Ownership transfers to the
-	// delegate runningJob at attach; if the prepared run is discarded before
-	// attach (an error path, or the legacy in-process spawn that mints no
-	// delegate job), the reservation is released so the slot is not leaked.
-	treeSlot *treeReservation
 }
 
 // endEnvironmentScratch settles the scratch an environment owns when the
@@ -1147,36 +1141,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 		}
 	}
 
-	// Enforce the retained-terminal cap before tracking. Done AFTER NewSession so
-	// the child is fully built, but a failure must not leak it: dispose the created
-	// session and any unadopted fresh environment before returning.
-	// On success, GC-evicted records are closed here, OUTSIDE the manager mutex.
-	if !preparedEnv.stableController {
-		evicted, err := s.subagents.reserveSlot()
-		if err != nil {
-			disposeUnadopted()
-			return nil, err
-		}
-		for _, ev := range evicted {
-			teardownChildSession(context.Background(), ev.sess)
-		}
-	}
-
-	// Reserve a tree-counter slot for this spawn's running delegate turn (spec §4).
-	// At capacity the spawn does not launch: dispose the freshly built child and
-	// any unadopted environment (the same cleanup as the retained-cap path), then
-	// surface the tree_at_capacity error to the tool call. Ownership of the reservation
-	// transfers to the delegate runningJob at attach.
-	var treeSlot *treeReservation
-	var ok bool
-	if !preparedEnv.stableController {
-		treeSlot, ok = s.reserveTreeSlot(slotKindJob)
-		if !ok {
-			disposeUnadopted()
-			return nil, s.treeCapacityErrorFor()
-		}
-	}
-
 	now := s.sclock().Now()
 	nudgeEnabled := subagentNeedsCommunicateNudge(agent)
 	if frozen != nil {
@@ -1242,7 +1206,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 		isolation:          subCfg.spawn.isolation,
 		resultSchema:       cloneMap(subCfg.spawn.communicateOutputSchema),
 		explicitToolGrants: append([]string(nil), canonicalGrantTools...),
-		treeSlot:           treeSlot,
 	}
 	if frozen != nil {
 		prepared.task = frozen.Task

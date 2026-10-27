@@ -26,6 +26,7 @@ import {
   mergeTurnHistory,
   mergeTurnHistoryWithFolds,
   notificationTargetsThread,
+  notificationTouchesTranscript,
   prependOlderTurns,
   RAW_WARNING_FRAME_MAX_CHARS,
   resolvePendingEscalation,
@@ -8851,21 +8852,28 @@ test("delegate/updated with NaN incoming activity keeps current activity", () =>
   expect(result.delegates?.[0]?.latestActivityAt).toBe("2026-01-01T00:00:00Z");
 });
 
-test("delegate/updated with NaN current and valid incoming uses incoming", () => {
+test("delegate/updated orders activity below a millisecond like the activity store", () => {
   const model = testHydrate();
   const dlg1 = delegateInfo({
     delegateId: "dlg_1",
     projectionRevision: 1,
-    latestActivityAt: "not-a-date",
+    latestActivityAt: "2026-01-01T00:00:00.000100Z",
   });
   let result = applyNotification(model, delegateNotification("ref_t", dlg1), 2000);
   const dlg2 = delegateInfo({
     delegateId: "dlg_1",
     projectionRevision: 1,
-    latestActivityAt: "2026-01-01T00:00:00Z",
+    latestActivityAt: "2026-01-01T00:00:00.000900Z",
   });
   result = applyNotification(result, delegateNotification("ref_t", dlg2), 3000);
-  expect(result.delegates?.[0]?.latestActivityAt).toBe("2026-01-01T00:00:00Z");
+  expect(result.delegates?.[0]?.latestActivityAt).toBe("2026-01-01T00:00:00.000900Z");
+  const earlier = delegateInfo({
+    delegateId: "dlg_1",
+    projectionRevision: 1,
+    latestActivityAt: "2026-01-01T00:00:00.000500Z",
+  });
+  result = applyNotification(result, delegateNotification("ref_t", earlier), 4000);
+  expect(result.delegates?.[0]?.latestActivityAt).toBe("2026-01-01T00:00:00.000900Z");
 });
 
 test("delegate/updated with no incoming activity keeps current", () => {
@@ -9093,4 +9101,61 @@ test("hydrateThread clears artifactsDir when a snapshot omits it", () => {
     2000,
   );
   expect(withdrawn.artifactsDir).toBeUndefined();
+});
+
+// Every notification the wire names is classified here, so a new one fails this
+// table until someone decides whether it can change `turns`: the phone store
+// refetches when a transcript-shaped frame leaves `turns` untouched.
+const SCALAR_ONLY_NOTIFICATIONS = [
+  "thread/queueChanged",
+  "thread/status/changed",
+  "thread/model/changed",
+  "thread/reasoning-effort/changed",
+  "evener/goal/updated",
+  "evener/notes/updated",
+  "evener/urls/updated",
+  "thread/vision-model/changed",
+  "evener/task/updated",
+  "evener/thread/name/changed",
+  "evener/sandbox/escalation/requested",
+  "evener/sandbox/escalation/resolved",
+  "evener/job/started",
+  "evener/job/finished",
+  "evener/delegate/updated",
+  "evener/jobs/treeUpdated",
+  "evener/thread/modelRetry",
+] as const;
+const TRANSCRIPT_SHAPED_NOTIFICATIONS = [
+  "thread/started",
+  "thread/closed",
+  "warning",
+  "evener/auth/updated",
+  "evener/launch/updated",
+  "evener/attention/changed",
+  "evener/navigation/invalidated",
+  "evener/marketplace/updated",
+  "evener/plugin/updated",
+  "evener/notices/changed",
+  "evener/thread/resync",
+  "evener/thread/activity/changed",
+  "evener/settings/transcriptDisplay/changed",
+  "evener/settings/keybindings/changed",
+  "evener/settings/agentsDoc/changed",
+  "evener/host/notification",
+  "history/updated",
+  "overlay/upserted",
+  "overlay/delta",
+  "overlay/reset",
+  "overlay/end",
+] as const;
+
+test("every wire notification is classified as scalar-only or transcript-shaped", () => {
+  const classified = [...SCALAR_ONLY_NOTIFICATIONS, ...TRANSCRIPT_SHAPED_NOTIFICATIONS];
+  expect([...classified].sort()).toEqual([...NOTIFICATION_NAMES].sort());
+  for (const method of SCALAR_ONLY_NOTIFICATIONS) expect(notificationTouchesTranscript(method)).toBe(false);
+  for (const method of TRANSCRIPT_SHAPED_NOTIFICATIONS) expect(notificationTouchesTranscript(method)).toBe(true);
+});
+
+test("a method with no reducer case is transcript-shaped", () => {
+  expect(notificationTouchesTranscript("evener/not/yet/known")).toBe(true);
 });
