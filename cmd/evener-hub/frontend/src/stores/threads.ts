@@ -5171,13 +5171,21 @@ interface ThreadReadFence {
 }
 const threadReadFencesByRef = new Map<string, ThreadReadFence[]>();
 
-function settleThreadReadFence(ref: string, fence: ThreadReadFence): void {
-  fence.settled = true;
+// Confirmed ids are forgotten once every older read has settled and no
+// hydration for the ref is still adopting a response (the hydration is retired
+// after adoption), so an adopter still holding an older response can filter it.
+function forgetConfirmedEscalations(ref: string): void {
+  if (pendingThreadHydrations.has(ref) || pendingWatchedHydrations.has(ref)) return;
   const fences = threadReadFencesByRef.get(ref) ?? [];
   while (fences[0]?.settled) {
     for (const escalationId of fences.shift()?.confirmed ?? []) resolvedEscalationsByRef.get(ref)?.delete(escalationId);
   }
   if (fences.length === 0) threadReadFencesByRef.delete(ref);
+}
+
+function settleThreadReadFence(ref: string, fence: ThreadReadFence): void {
+  fence.settled = true;
+  forgetConfirmedEscalations(ref);
 }
 
 function readThreadForgettingConfirmed(
@@ -5269,6 +5277,7 @@ function retirePendingHydration(
   pending.baseModel = undefined;
   releasePendingHydrationBytes(ref, pending);
   if (isCurrent) pendingHydrations.delete(ref);
+  forgetConfirmedEscalations(ref);
   pendingHydrationRetirementForTests?.({
     ref,
     retainedNotificationCount,

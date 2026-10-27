@@ -399,6 +399,42 @@ describe("useThreadsStore.resolveEscalation", () => {
     expect(pendingIds()).toEqual([]);
   });
 
+  // A response that arrived before the resolve is still being adopted (it waits
+  // on cache authorities) when a newer read confirms the id gone.
+  test("a response awaiting adoption does not bring back a resolve a newer read confirmed", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
+      return reads === 2 ? readCarrying(["esc_1"], requestGeneration) : readCarrying([], requestGeneration);
+    });
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    let releaseAuthority: (generation: number) => void = () => {};
+    const entered = new Promise<void>((resolve) => {
+      vi.spyOn(cache, "getHistoryGeneration").mockImplementationOnce(() => {
+        resolve();
+        return new Promise<number>((release) => {
+          releaseAuthority = release;
+        });
+      });
+    });
+    const tracked = threadsStore.getState().refreshThread("ref_a");
+    await entered;
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    const published: string[][] = [];
+    const unsubscribe = threadsStore.subscribe(() => published.push(pendingIds() ?? []));
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    releaseAuthority(0);
+    await tracked;
+    unsubscribe();
+
+    expect(published.flat()).not.toContain("esc_1");
+    expect(pendingIds()).toEqual([]);
+  });
+
   test("a superseded read answered after the resolve is still discarded", async () => {
     const fake = connectFakeClient();
     let answerRead: (response: ThreadReadResponse) => void = () => {};
