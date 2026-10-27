@@ -941,7 +941,7 @@ async function resumeJourney(page,fixture,{wireTrace,screenshot,endpoint}) {
   const reopenStart=wireTrace.length;
   const documentOrigin=await evaluateHere('performance.timeOrigin');
   await nativeClick(page,'normal Settings navigation reachable',`document.querySelector('[data-testid="rail-settings"]')`);
-  await until('Settings replaced the conversation pane',()=>evaluateHere(`location.pathname.startsWith('/settings') && !document.querySelector('[data-session-actions-ref]') && !window.__comicRoot()?.querySelector('[data-comic-scroll]')`));
+  await until('Settings replaced the conversation pane',()=>evaluateHere(`location.pathname.startsWith('/settings') && ![...document.querySelectorAll('[data-session-actions-ref]')].some(node=>node.dataset.paneId) && !window.__comicRoot()?.querySelector('[data-comic-scroll]')`));
   // The last shared transcript/activity holder, not navigation itself, owns
   // unsubscribe. Let its final read settle before Back can cancel retirement.
   const retired=await until('old root final membership retired',()=>repliesSince(wireTrace,reopenStart,request=>request.method==='thread/unsubscribe'&&request.params?.ref===fixture.refs.live).find(pair=>pair.connection===applied.connection&&!pair.response.error));
