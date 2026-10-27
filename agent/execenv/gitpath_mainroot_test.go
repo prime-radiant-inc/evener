@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/gittest"
 )
 
 // fakeExecEnv is a minimal, fully scripted ExecutionEnvironment: every
@@ -54,27 +56,6 @@ func (f *fakeExecEnv) ExecCommand(ctx context.Context, command string, timeoutMS
 
 var _ ExecutionEnvironment = (*fakeExecEnv)(nil)
 
-// runGit runs a git command in dir with a fixed identity and the local file
-// protocol enabled (needed for submodule fixtures on git >= 2.38).
-func runGit(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	full := append([]string{"-c", "protocol.file.allow=always"}, args...)
-	cmd := exec.Command("git", full...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-	return strings.TrimSpace(string(out))
-}
-
 func evalSym(t *testing.T, p string) string {
 	t.Helper()
 	r, err := filepath.EvalSymlinks(p)
@@ -82,19 +63,6 @@ func evalSym(t *testing.T, p string) string {
 		t.Fatalf("EvalSymlinks(%q): %v", p, err)
 	}
 	return filepath.Clean(r)
-}
-
-// newLinkedWorktree builds a main repo with one commit and a linked worktree,
-// returning their absolute paths.
-func newLinkedWorktree(t *testing.T) (main, wt string) {
-	t.Helper()
-	base := t.TempDir()
-	main = filepath.Join(base, "main")
-	runGit(t, base, "init", "-q", "main")
-	runGit(t, main, "commit", "-q", "--allow-empty", "-m", "init")
-	wt = filepath.Join(base, "wt")
-	runGit(t, main, "worktree", "add", "-q", wt, "-b", "feat")
-	return main, wt
 }
 
 // (a) A main checkout resolves to its own root.
@@ -109,7 +77,7 @@ func TestResolveMainRepoRoot_MainRepo(t *testing.T) {
 
 // (b) A linked worktree resolves to the MAIN root, not the worktree dir.
 func TestResolveMainRepoRoot_LinkedWorktree(t *testing.T) {
-	main, wt := newLinkedWorktree(t)
+	main, wt := gittest.NewLinkedWorktree(t)
 	env := NewLocalExecutionEnvironment(wt)
 	got := ResolveMainRepoRoot(env, wt)
 	if want := evalSym(t, main); got != want {
@@ -158,11 +126,11 @@ func TestResolveMainRepoRoot_Submodule(t *testing.T) {
 	subb := filepath.Join(base, "subb")
 	super := filepath.Join(base, "super")
 	for _, s := range []string{suba, subb, super} {
-		runGit(t, base, "init", "-q", filepath.Base(s))
-		runGit(t, s, "commit", "-q", "--allow-empty", "-m", "seed")
+		gittest.Run(t, base, "init", "-q", filepath.Base(s))
+		gittest.Run(t, s, "commit", "-q", "--allow-empty", "-m", "seed")
 	}
-	runGit(t, super, "submodule", "add", "-q", "../suba", "suba")
-	runGit(t, super, "submodule", "add", "-q", "../subb", "subb")
+	gittest.Run(t, super, "submodule", "add", "-q", "../suba", "suba")
+	gittest.Run(t, super, "submodule", "add", "-q", "../subb", "subb")
 
 	subaWork := filepath.Join(super, "suba")
 	subbWork := filepath.Join(super, "subb")
@@ -183,7 +151,7 @@ func TestResolveMainRepoRoot_Submodule(t *testing.T) {
 // (f) The structural path resolves a linked worktree with the git binary
 // entirely absent from PATH.
 func TestResolveMainRepoRoot_StructuralWithoutGit(t *testing.T) {
-	main, wt := newLinkedWorktree(t)
+	main, wt := gittest.NewLinkedWorktree(t)
 	wantMain := evalSym(t, main)
 	// Hide git: PATH points at an empty dir. Setup above already used real git.
 	t.Setenv("PATH", t.TempDir())
@@ -243,7 +211,7 @@ func gitCountingShim(t *testing.T, toplevel string) (string, func() int) {
 // in its own slot. Both local roots resolve structurally, so the counting shim
 // should not be invoked.
 func TestResolveMainRepoRoot_SeparateCacheSlots(t *testing.T) {
-	main, wt := newLinkedWorktree(t)
+	main, wt := gittest.NewLinkedWorktree(t)
 	wantMain := evalSym(t, main)
 	wantWt := evalSym(t, wt)
 
@@ -283,7 +251,7 @@ func TestResolveMainRepoRoot_SeparateCacheSlots(t *testing.T) {
 // Cache memoization: a second ResolveMainRepoRoot returns the cached value even
 // after the worktree's .git pointer is removed, while a fresh env re-resolves.
 func TestResolveMainRepoRoot_Memoized(t *testing.T) {
-	main, wt := newLinkedWorktree(t)
+	main, wt := gittest.NewLinkedWorktree(t)
 	wantMain := evalSym(t, main)
 
 	env := NewLocalExecutionEnvironment(wt)

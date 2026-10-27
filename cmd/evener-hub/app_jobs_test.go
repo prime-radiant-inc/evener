@@ -95,10 +95,7 @@ func seedPastSessionWithJobs(t *testing.T, jobs []persistedJobFixture) (hubcore.
 	if jobs != nil {
 		writePersistedJobsLog(t, stateDir, sessionID, now, jobs)
 	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	return hubcore.WebConfig{Past: idx}, sessionID, stateDir
 }
 
@@ -246,10 +243,7 @@ func seedPastSessionWithActivity(t *testing.T, childJobs int) (hubcore.WebConfig
 		)
 	}
 	writePersistedActivityLog(t, stateDir, childID, now, childEvents)
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	return hubcore.WebConfig{Past: idx}, rootID, childID, stateDir
 }
 
@@ -397,10 +391,7 @@ func TestHubJobsListDeadSessionFallsBackToPast(t *testing.T) {
 // session the hub cannot otherwise account for.
 func TestHubJobsListDeadSessionNotInPastIndex(t *testing.T) {
 	root := t.TempDir()
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	cfg := hubcore.WebConfig{Past: idx}
 	sessionID, err := identifier.NewSessionID()
 	if err != nil {
@@ -619,10 +610,7 @@ func TestHubJobsOutputPastUnknownJob(t *testing.T) {
 	sources := newExitedLocalRegistry()
 
 	_, err := hubJobsOutput(context.Background(), cfg, sources, appwire.JobsOutputParams{Ref: "local:" + sessionID, JobID: "job_nope", MaxBytes: 4})
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("err = %v, want InvalidParams for a job id the persisted store has never heard of", err)
-	}
+	wire := requireWireError(t, err, appwire.CodeInvalidParams)
 	if want := "job not found: " + "job_nope"; wire.Message != want {
 		t.Fatalf("err message = %q, want %q", wire.Message, want)
 	}
@@ -670,10 +658,7 @@ func TestHubJobsOutputNonLocalRefKeepsTheLiveError(t *testing.T) {
 // SessionUnavailable thread-not-found error rather than an empty tail.
 func TestHubJobsOutputRefNotInPastIndexKeepsTheLiveError(t *testing.T) {
 	root := t.TempDir()
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	cfg := hubcore.WebConfig{Past: idx}
 	sessionID, err := identifier.NewSessionID()
 	if err != nil {
@@ -745,10 +730,7 @@ func TestHubJobsGetPastUnknownJob(t *testing.T) {
 	sources := newExitedLocalRegistry()
 
 	_, err := hubJobsGet(context.Background(), cfg, sources, appwire.JobsGetParams{Ref: "local:" + sessionID, JobID: "job_nope"})
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("err = %v, want InvalidParams for a job id the persisted store has never heard of", err)
-	}
+	wire := requireWireError(t, err, appwire.CodeInvalidParams)
 	if want := "job not found: " + "job_nope"; wire.Message != want {
 		t.Fatalf("err message = %q, want %q", wire.Message, want)
 	}
@@ -885,10 +867,7 @@ func TestEvenerJobsOutputRouteMapsUnknownJobToInvalidParams(t *testing.T) {
 	if raw != nil {
 		t.Fatalf("response = %#v, want no response alongside the error", raw)
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("err = %v, want InvalidParams for a job id the persisted store has never heard of", err)
-	}
+	wire := requireWireError(t, err, appwire.CodeInvalidParams)
 	if want := "job not found: job_nope"; wire.Message != want {
 		t.Fatalf("err message = %q, want %q", wire.Message, want)
 	}

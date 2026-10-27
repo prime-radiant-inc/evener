@@ -7,7 +7,6 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -67,11 +66,7 @@ func TestPendingQuestion_SurvivesRestore(t *testing.T) {
 	meta, dir := sess.Meta(), sess.stateDir
 	sess.Close()
 
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
-	}
-	defer restored.Close()
+	restored := restoreAskSession(t, meta, dir)
 	if got := restored.PendingQuestion(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("restored PendingQuestion = %+v, want %+v", got, want)
 	}

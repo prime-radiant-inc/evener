@@ -2946,23 +2946,10 @@ func TestMarketplaceNameMigration_SaveFailureWhoseOwnRollbackFailsNamesNoPath(t 
 
 	oldDir, newDir := m.marketplaceDir("a/b"), m.marketplaceDir("a-b")
 	oldCache, newCache := filepath.Join(m.cacheDir(), "a", "b"), filepath.Join(m.cacheDir(), "a-b")
-	origRename := marketplaceRename
-	t.Cleanup(func() { marketplaceRename = origRename })
-	marketplaceRename = func(from, to string) error {
-		if to == oldDir || to == oldCache {
-			return errors.New("boom")
-		}
-		return origRename(from, to)
-	}
-
-	origWrite := marketplaceAtomicWriteFile
-	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
-	marketplaceAtomicWriteFile = func(path string, data []byte, perm os.FileMode) error {
-		if filepath.Base(path) == marketplacesFileName {
-			return errors.New("boom")
-		}
-		return origWrite(path, data, perm)
-	}
+	stubMarketplaceRenameError(t, errors.New("boom"), func(_, to string) bool {
+		return to == oldDir || to == oldCache
+	})
+	stubMarketplaceWriteFailingFile(t, marketplacesFileName, errors.New("boom"))
 
 	_, err := m.ListMarketplaces(context.Background())
 	if err == nil {
@@ -2987,23 +2974,10 @@ func TestMarketplaceNameMigration_RecoveryRollbackFailureNamesNoPath(t *testing.
 
 	oldDir, newDir := m.marketplaceDir("a/b"), m.marketplaceDir("a-b")
 	oldCache, newCache := filepath.Join(m.cacheDir(), "a", "b"), filepath.Join(m.cacheDir(), "a-b")
-	origRename := marketplaceRename
-	t.Cleanup(func() { marketplaceRename = origRename })
-	marketplaceRename = func(from, to string) error {
-		if to == oldDir || to == oldCache {
-			return errors.New("boom")
-		}
-		return origRename(from, to)
-	}
-
-	origWrite := marketplaceAtomicWriteFile
-	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
-	marketplaceAtomicWriteFile = func(path string, data []byte, perm os.FileMode) error {
-		if filepath.Base(path) == marketplacesFileName {
-			return errors.New("boom")
-		}
-		return origWrite(path, data, perm)
-	}
+	stubMarketplaceRenameError(t, errors.New("boom"), func(_, to string) bool {
+		return to == oldDir || to == oldCache
+	})
+	stubMarketplaceWriteFailingFile(t, marketplacesFileName, errors.New("boom"))
 
 	err := m.migrateStore(context.Background())
 	if err == nil {
@@ -3028,14 +3002,7 @@ func TestMarketplaceNameMigration_MarkerWriteFailureNamesNoPath(t *testing.T) {
 	plantLegacyMarketplace(t, m, "a/b", "widget")
 
 	path := renameMarkerFile(m)
-	origWrite := marketplaceAtomicWriteFile
-	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
-	marketplaceAtomicWriteFile = func(p string, data []byte, perm os.FileMode) error {
-		if filepath.Base(p) == renameMarkerFileName {
-			return &fs.PathError{Op: "write", Path: path, Err: errors.New("permission denied")}
-		}
-		return origWrite(p, data, perm)
-	}
+	stubMarketplaceWriteFailingFile(t, renameMarkerFileName, &fs.PathError{Op: "write", Path: path, Err: errors.New("permission denied")})
 
 	_, err := m.ListMarketplaces(context.Background())
 	if err == nil {
@@ -3062,14 +3029,7 @@ func TestMarketplaceNameMigration_RecordWriteFailureNamesNoPath(t *testing.T) {
 	if pathErr != nil {
 		t.Fatal(pathErr)
 	}
-	origWrite := marketplaceAtomicWriteFile
-	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
-	marketplaceAtomicWriteFile = func(p string, data []byte, perm os.FileMode) error {
-		if filepath.Base(p) == migrationRecordFileName {
-			return &fs.PathError{Op: "write", Path: path, Err: errors.New("permission denied")}
-		}
-		return origWrite(p, data, perm)
-	}
+	stubMarketplaceWriteFailingFile(t, migrationRecordFileName, &fs.PathError{Op: "write", Path: path, Err: errors.New("permission denied")})
 
 	_, err := m.ListMarketplaces(context.Background())
 	if err == nil {
@@ -3787,14 +3747,7 @@ func TestMarketplaceNameMigration_MergeSaveFailureKeepsTheMarkerNamesNoPath(t *t
 	m.Stderr = io.Discard
 	plantInterruptedMerge(t, m, duplicate)
 
-	origWrite := marketplaceAtomicWriteFile
-	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
-	marketplaceAtomicWriteFile = func(path string, data []byte, perm os.FileMode) error {
-		if filepath.Base(path) == marketplacesFileName {
-			return errors.New("boom")
-		}
-		return origWrite(path, data, perm)
-	}
+	stubMarketplaceWriteFailingFile(t, marketplacesFileName, errors.New("boom"))
 
 	_, err := m.ListMarketplaces(context.Background())
 	if err == nil {

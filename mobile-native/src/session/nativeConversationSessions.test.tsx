@@ -1,5 +1,5 @@
 // One app-owned conversation binding per (hub, ref), borrowed by every mounted
-// view: the real native store, conversation service, activity store and durable
+// view: the real native store, conversation service and durable
 // mutation host, with the runtime and SQLite platform double underneath. Only
 // the wire client and the platform edges are test doubles - no fake store,
 // service or submitter stands in for the code under test.
@@ -170,7 +170,7 @@ afterEach(async () => {
 });
 
 describe("two attachments", () => {
-	it("share one store, service, sink and target registration", async () => {
+	it("share one store, service and target registration", async () => {
 		const client = hub("ref-1");
 		connected(client);
 
@@ -179,7 +179,6 @@ describe("two attachments", () => {
 
 		expect(a.entry).toBe(b.entry);
 		expect(a.entry.store).toBe(b.entry.store);
-		expect(a.entry.activitySink).toBe(b.entry.activitySink);
 		expect(a.entry.service).toBe(b.entry.service);
 		expect(a.entry.service).not.toBeNull();
 		expect(a.entry.attachmentCount).toBe(2);
@@ -526,7 +525,7 @@ describe("durable pending seam", () => {
 				served = { ...thread("ref-1"), id: "replacement-thread" };
 				const service = entry.service!;
 				const replacement = await service.readProjection("ref-1");
-				await entry.store.getState().openProjected(service, entry.activitySink, "ref-1", replacement);
+				await entry.store.getState().openProjected(service, "ref-1", replacement);
 				expect(entry.store.getState().conversation?.threadId).toBe("replacement-thread");
 			}
 			await pendingReady(entry);

@@ -25,8 +25,8 @@ import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
 import type { SqliteSync } from "./sqliteSync";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 import { NativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
-import { createConversationMutationPendingPort } from "../../mobile/src/state/conversationMutation";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { createConversationMutationPendingPort } from "./conversation/state/conversationMutation";
+import { createConversationStore } from "./conversation/state/conversation";
 import { projectConversation, type MobileConversation } from "./projectedRows";
 
 const expoSQLite = vi.hoisted(() => ({ openDatabaseSync: vi.fn() }));

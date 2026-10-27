@@ -22,6 +22,7 @@ import {
 import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
 import { goConstantValue } from "@evener/appwire-client/testing/goConstants";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore } from "./connection";
 import {
   clearedOutcomeLine,
@@ -44,12 +45,6 @@ import {
   teardownRetryRefusalAction,
 } from "./hostOps";
 import { hostsStore } from "./hosts";
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 function row(name: string): HostRow {
   return {
@@ -225,7 +220,7 @@ describe("refusal recovery actions", () => {
 
 describe("plan", () => {
   test("publishes the planned arm with its token and a client operation ID", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     await hostOpsStore.getState().plan("beta");
 
@@ -241,7 +236,7 @@ describe("plan", () => {
   });
 
   test("publishes the no-token arm without inventing a plan", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({
       outcome: "no-token",
       staleFacts: {
@@ -262,7 +257,7 @@ describe("plan", () => {
   });
 
   test("an envelope refusal publishes the classified refusal", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => {
       throw new WireError('host "beta": busy', -32013, { evenerErrorInfo: "host-busy-transient" });
     });
@@ -276,7 +271,7 @@ describe("plan", () => {
   });
 
   test("a response for a discarded plan cannot resurrect its state", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const settlements = gateSettlements(fake, "evener/host/plan");
     const pending = hostOpsStore.getState().plan("beta");
     await Promise.resolve();
@@ -288,7 +283,7 @@ describe("plan", () => {
   });
 
   test("an older plan response cannot overwrite a newer one", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const settlements = gateSettlements(fake, "evener/host/plan");
     const first = hostOpsStore.getState().plan("beta");
     await Promise.resolve();
@@ -306,7 +301,7 @@ describe("plan", () => {
   });
 
   test("a response landing after a client replacement publishes the connection-changed arm", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const settlements = gateSettlements(fake, "evener/host/plan");
     const pending = hostOpsStore.getState().plan("beta");
     await Promise.resolve();
@@ -325,7 +320,7 @@ describe("plan", () => {
   });
 
   test("a failure landing after a client replacement publishes the same arm", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const settlements = gateSettlements(fake, "evener/host/plan");
     const pending = hostOpsStore.getState().plan("beta");
     await Promise.resolve();
@@ -345,7 +340,7 @@ describe("plan", () => {
 
 describe("deploy", () => {
   test("submits exactly the displayed plan's token plus the client operation ID", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
     await hostOpsStore.getState().plan("beta");
@@ -373,7 +368,7 @@ describe("deploy", () => {
   });
 
   test("a missing client attaches the refusal to the current confirmation, never a stale snapshot", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     await hostOpsStore.getState().plan("beta");
     const planned = hostOpsStore.getState().plans.beta;
@@ -393,7 +388,7 @@ describe("deploy", () => {
   });
 
   test("an operation record is not published when the connection was replaced mid-request", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     const settlements = gateSettlements(fake, "evener/host/deploy");
     await hostOpsStore.getState().plan("beta");
@@ -410,7 +405,7 @@ describe("deploy", () => {
   });
 
   test("a superseded confirmation still publishes its record under the same client", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     const settlements = gateSettlements(fake, "evener/host/deploy");
     await hostOpsStore.getState().plan("beta");
@@ -436,7 +431,7 @@ describe("deploy", () => {
   });
 
   test("a stale token re-plans and re-renders before any retry", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let plans = 0;
     fake.on("evener/host/plan", () => {
       plans += 1;
@@ -467,7 +462,7 @@ describe("deploy", () => {
   });
 
   test("a hub.toml fingerprint drift re-plans like any other stale-entry refusal", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let plans = 0;
     fake.on("evener/host/plan", () => {
       plans += 1;
@@ -492,7 +487,7 @@ describe("deploy", () => {
   });
 
   test("a lost response retries with the SAME operation ID, never a fresh operation", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     let deploys = 0;
     fake.on("evener/host/deploy", () => {
@@ -520,7 +515,7 @@ describe("deploy", () => {
   });
 
   test("a conflicting operation ID rotates it for the retry", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     let deploys = 0;
     fake.on("evener/host/deploy", () => {
@@ -543,7 +538,7 @@ describe("deploy", () => {
   });
 
   test("host-detached offers Connect, not a bare retry", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     fake.on("evener/host/deploy", () => {
       throw new WireError("no channel", -32014, { evenerErrorInfo: "host-detached" });
@@ -567,7 +562,7 @@ describe("deploy", () => {
 
 describe("restart", () => {
   test("submits the intended pair and the client operation ID", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/restart", () => ({ id: "op-9", clientOperationId: "client-op-9", state: "pending" }));
     hostOpsStore.getState().beginRestart("beta", { generation: 3, incarnationId: "inc-3" });
     const attempt = hostOpsStore.getState().restarts.beta;
@@ -595,7 +590,7 @@ describe("restart", () => {
   });
 
   test("a stale-entry refusal re-reads the pair and retries once with the fresh one", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({
       hosts: [row("beta"), { ...row("beta"), generation: 4, incarnationId: "inc-4" }].slice(1),
     }));
@@ -627,7 +622,7 @@ describe("restart", () => {
   });
 
   test("a second stale-entry refusal surfaces instead of looping", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
     fake.on("evener/host/restart", () => {
       throw new WireError('host "beta": registration moved; retry', -32013, {
@@ -646,7 +641,7 @@ describe("restart", () => {
   });
 
   test("a failed stale-entry retry persists the fresh pair and operation ID", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("beta"), generation: 4, incarnationId: "inc-4" }] }));
     let restarts = 0;
     fake.on("evener/host/restart", () => {
@@ -687,7 +682,7 @@ describe("restart", () => {
   });
 
   test("a host-detached restart offers Connect and re-seeds the confirmation on the fresh pair", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("beta"), generation: 4, incarnationId: "inc-4" }] }));
     let restarts = 0;
     fake.on("evener/host/restart", () => {
@@ -732,7 +727,7 @@ describe("restart", () => {
   });
 
   test("a failed Connect during connectAndRestart records the connect refusal with the attempt intact", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
     fake.on("evener/host/restart", () => {
       throw new WireError("no live attached channel", -32014, { evenerErrorInfo: "host-detached" });
@@ -753,7 +748,7 @@ describe("restart", () => {
   });
 
   test("the stale-entry retry takes a forced read past an in-flight refresh", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const lists = gateSettlements(fake, "evener/host/list");
     // A background poll is in flight when the restart refuses stale-entry.
     // Its response was captured before the refusal proved the snapshot stale,
@@ -793,7 +788,7 @@ describe("restart", () => {
   });
 
   test("a failed forced read fails the attempt with the unknown-pair refusal and no second request", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
     // A ready pre-move snapshot stands...
     await hostsStore.getState().fetch();
@@ -816,7 +811,7 @@ describe("restart", () => {
   });
 
   test("a forced read discarded by a mutation fence answers false, so the retry never replays the stale pair", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
     // A ready pre-move snapshot stands.
     await hostsStore.getState().fetch();
@@ -852,7 +847,7 @@ describe("restart", () => {
   });
 
   test("a recovery completing after a close-and-reopen publishes nothing", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("beta"), generation: 4, incarnationId: "inc-4" }] }));
     fake.on("evener/host/restart", () => {
       throw new WireError("no live attached channel", -32014, { evenerErrorInfo: "host-detached" });
@@ -876,7 +871,7 @@ describe("restart", () => {
   });
 
   test("a failed connect recovery completing after a close-and-reopen publishes nothing", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     const attaches = gateSettlements(fake, "evener/host/attach");
     const pending = hostOpsStore.getState().connectAndPlan("beta");
@@ -893,7 +888,7 @@ describe("restart", () => {
   });
 
   test("a connect recovery superseded before Connect resolves issues no plan", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     const attaches = gateSettlements(fake, "evener/host/attach");
@@ -912,7 +907,7 @@ describe("restart", () => {
   });
 
   test("host-busy-operation names the running operation and blocks a bare retry", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/restart", () => {
       throw new WireError("busy", -32013, { evenerErrorInfo: "host-busy-operation", operationId: "op-42" });
     });
@@ -928,7 +923,7 @@ describe("restart", () => {
   });
 
   test("remnant-open surfaces the blocking remnant with no retry", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/restart", () => {
       throw new WireError("fenced", -32013, { evenerErrorInfo: "remnant-open", remnantId: "remnant-7" });
     });
@@ -983,7 +978,7 @@ async function startedDeploy(fake: FakeClient, operations: () => HostOperationsR
 
 describe("operations polling (S15)", () => {
   test("polls the started operation by host name and controller-assigned id", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await startedDeploy(fake, () => ({
       operations: [
         operationRecord({ state: "running", progress: [{ ts: "2026-09-28T08:00:05Z", message: "pushing evener" }] }),
@@ -1012,7 +1007,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a terminal success renders the completed outcome", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await startedDeploy(fake, () => ({
       operations: [operationRecord({ state: "complete", result: { ok: true, message: "deployed controller-rev-9" } })],
     }));
@@ -1029,7 +1024,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a terminal failure renders the record's result message verbatim", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const verbatim = "deploy failed: the remote evener service exited with status 1 after the swap";
     await startedDeploy(fake, () => ({
       operations: [operationRecord({ state: "failed", result: { ok: false, message: verbatim } })],
@@ -1049,7 +1044,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a terminal read ends the loop: no further reads, and the rows refresh", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
     await startedDeploy(fake, () => ({
       operations: [operationRecord({ state: "complete", result: { ok: true, message: "deployed 1.5.0" } })],
@@ -1070,7 +1065,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a late read cannot overwrite a terminal record or strand a stopped-progress error", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
     const settlements = gateSettlements(fake, "evener/host/operations");
@@ -1101,7 +1096,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a read counts as pending while in flight and is released when it settles", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
     const settlements = gateSettlements(fake, "evener/host/operations");
@@ -1122,7 +1117,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a superseded operation's pending read does not block the new operation", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
     const settlements = gateSettlements(fake, "evener/host/operations");
@@ -1150,7 +1145,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a read that finds no record marks the operation gone and stops the loop", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await startedDeploy(fake, () => ({ operations: [] }));
 
     await hostOpsStore.getState().pollOperation("beta");
@@ -1164,7 +1159,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a repeated identical read failure is published once, not every tick", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await startedDeploy(fake, () => ({ operations: [operationRecord({ state: "running" })] }));
     await hostOpsStore.getState().pollOperation("beta");
 
@@ -1181,7 +1176,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a deploy seed carries the current row's pair, so a re-created name cannot show it", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
     await hostsStore.getState().fetch();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
@@ -1197,7 +1192,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a late response from a superseded deploy cannot replace the newer operation", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     const settlements = gateSettlements(fake, "evener/host/deploy");
     await hostOpsStore.getState().plan("beta");
@@ -1231,7 +1226,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a late response after only a dialog close still seeds polling", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     const settlements = gateSettlements(fake, "evener/host/deploy");
     await hostOpsStore.getState().plan("beta");
@@ -1246,7 +1241,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a late restart response cannot replace the newer restart operation", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const settlements = gateSettlements(fake, "evener/host/restart");
     hostOpsStore.getState().beginRestart("beta", { generation: 3, incarnationId: "inc-3" });
     const first = hostOpsStore.getState().restart("beta");
@@ -1265,7 +1260,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a late restart response after only a dialog close still seeds polling", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const settlements = gateSettlements(fake, "evener/host/restart");
     hostOpsStore.getState().beginRestart("beta", { generation: 3, incarnationId: "inc-3" });
     const restart = hostOpsStore.getState().restart("beta");
@@ -1277,7 +1272,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a deploy seed keeps the pair captured at issue, not the re-created row's", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let reCreated = false;
     fake.on("evener/host/list", () => ({
       hosts: [reCreated ? { ...row("beta"), generation: 9, incarnationId: "inc-9" } : row("beta")],
@@ -1306,7 +1301,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("an older valid response publishes while a newer request is still in flight, and the newer replaces it", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     const settlements = gateSettlements(fake, "evener/host/deploy");
     await hostOpsStore.getState().plan("beta");
@@ -1331,7 +1326,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a lost connection is a visible progress state that a good read clears", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await startedDeploy(fake, () => ({
       operations: [
         operationRecord({ state: "running", progress: [{ ts: "2026-09-28T08:00:05Z", message: "waiting healthy" }] }),
@@ -1367,7 +1362,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a retry after a lost response reuses the same operation ID and adopts the returned record", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     let deploys = 0;
     fake.on("evener/host/deploy", () => {
@@ -1398,7 +1393,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a replay past compaction renders the tombstoned terminal outcome, never a fresh operation", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const verbatim = "restart failed: the post-restart probe still reports the old process instance";
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "failed" }));
@@ -1439,7 +1434,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a stale-entry read refusal is visible, and polling continues", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await startedDeploy(fake, () => {
       throw new WireError("the pinned boundary moved", -32013, { evenerErrorInfo: "stale-entry" });
     });
@@ -1454,7 +1449,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a mid-poll cursor-invalidated restarts from one fresh read, not a loop", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let reads = 0;
     await startedDeploy(fake, () => {
       reads += 1;
@@ -1479,7 +1474,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a cursor-too-large read refusal renders its concrete headline", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await startedDeploy(fake, () => {
       throw new WireError("the cursor would be 9100 bytes, over the 8192-byte encoded cap", -32013, {
         evenerErrorInfo: "cursor-too-large",
@@ -1603,7 +1598,7 @@ describe("operations polling (S15)", () => {
   // --- S16: the S15 follow-ups, RED-first ---------------------------------------
 
   test("an orphan-unverified record keeps polling until a terminal state", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let reads = 0;
     await startedDeploy(fake, () => {
       reads += 1;
@@ -1629,7 +1624,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a newer request that never publishes cannot suppress an older valid response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     const settlements = gateSettlements(fake, "evener/host/deploy");
     await hostOpsStore.getState().plan("beta");
@@ -1654,7 +1649,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("stopOperationPoll releases the name's pending reads so a remount is not skipped", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
     const settlements = gateSettlements(fake, "evener/host/operations");
@@ -1677,7 +1672,7 @@ describe("operations polling (S15)", () => {
   });
 
   test("a stale read settling after the poll stopped cannot release a new read's pending count", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
     fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
     const settlements = gateSettlements(fake, "evener/host/operations");
@@ -1723,7 +1718,7 @@ describe("operations polling (S15)", () => {
 
   describe("remnant teardown retry/recover (S16)", () => {
     test("teardownRetry submits exactly the remnantId and projects the teardown-complete arm", async () => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
       await hostsStore.getState().fetch();
       fake.on("evener/host/teardown-retry", () => ({
@@ -1752,7 +1747,7 @@ describe("operations polling (S15)", () => {
     });
 
     test("a failed arm carries the seam and the still-open remnant, never an aggregate success", async () => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       fake.on("evener/host/teardown-retry", () => ({
         outcome: "committed-with-teardown-failure",
         hostKind: "removed",
@@ -1780,7 +1775,7 @@ describe("operations polling (S15)", () => {
     });
 
     test("already-cleared renders as the idempotent resolved arm", async () => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       fake.on("evener/host/teardown-retry", () => ({
         outcome: "already-cleared",
         hostKind: "removed",
@@ -1797,7 +1792,7 @@ describe("operations polling (S15)", () => {
     });
 
     test("a live-attempt busy refusal renders the typed busy, never a silent no-op", async () => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       // 08b §6/§11: a live teardown attempt holds the gate, so the retry refuses
       // with the typed busy error (transient here — the holder is the attempt,
       // not an operation record) and the operator may retry later.
@@ -1819,7 +1814,7 @@ describe("operations polling (S15)", () => {
     });
 
     test("teardown-unknown-key names the unknown remnant and never bare-retries it", async () => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       fake.on("evener/host/teardown-retry", () => {
         throw new WireError('teardown remnant "remnant-7" is unknown or purged', -32001, {
           evenerErrorInfo: "teardown-unknown-key",
@@ -1839,7 +1834,7 @@ describe("operations polling (S15)", () => {
     });
 
     test("teardownRecover submits the wire's attestation fields and projects recovered-cleared", async () => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
       await hostsStore.getState().fetch();
       fake.on("evener/host/teardown-recover", (params) => ({
@@ -1878,7 +1873,7 @@ describe("operations polling (S15)", () => {
     });
 
     test("a response landing after a client replacement publishes the connection-changed refusal", async () => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       const settlements = gateSettlements(fake, "evener/host/teardown-retry");
       const pending = hostOpsStore.getState().teardownRetry("beta", "remnant-7");
       await vi.waitFor(() => expect(settlements).toHaveLength(1));
@@ -1901,7 +1896,7 @@ describe("operations polling (S15)", () => {
     });
 
     test("a superseded repair response publishes nothing", async () => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       const settlements = gateSettlements(fake, "evener/host/teardown-retry");
       const first = hostOpsStore.getState().teardownRetry("beta", "remnant-7");
       await vi.waitFor(() => expect(settlements).toHaveLength(1));
@@ -1929,7 +1924,7 @@ describe("operations polling (S15)", () => {
     });
 
     test("clearRepair drops the name's repair state", async () => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       fake.on("evener/host/teardown-retry", () => ({
         outcome: "teardown-complete",
         hostKind: "live",
@@ -1960,7 +1955,7 @@ describe("operations polling (S15)", () => {
     });
 
     test("an empty remnant id publishes a refusal instead of a silent no-op", async () => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       await hostOpsStore.getState().teardownRetry("beta", "  ");
       expect(fake.calls.filter((c) => c.method === "evener/host/teardown-retry")).toHaveLength(0);
       let repair = hostOpsStore.getState().repairs.beta;
@@ -1981,7 +1976,7 @@ describe("operations polling (S15)", () => {
     });
 
     test("a committed-with-teardown-failure arm still converges the host rows", async () => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       let escalation: number | undefined;
       fake.on("evener/host/list", () => ({
         hosts: [
@@ -2015,7 +2010,7 @@ describe("operations polling (S15)", () => {
     });
 
     test("reSeedRestart re-reads the pair and re-seeds the confirmation under a fresh operation ID", async () => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       let generation = 3;
       fake.on("evener/host/list", () => ({
         hosts: [{ ...row("beta"), generation, incarnationId: `inc-${generation}` }],
@@ -2038,7 +2033,7 @@ describe("operations polling (S15)", () => {
     });
 
     test("clearRepairRefusal drops a refusal but never cancels an in-flight repair", async () => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       // A refused entry is dropped: the fence re-check must be able to clear it.
       fake.on("evener/host/teardown-retry", () => {
         throw new WireError("busy", -32014, { evenerErrorInfo: "host-busy-transient" });
@@ -2068,7 +2063,7 @@ describe("operations polling (S15)", () => {
     });
 
     test("a re-seed landing after a newer restart attempt publishes nothing", async () => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
       await hostsStore.getState().fetch();
       hostOpsStore.getState().beginRestart("beta", { generation: 3, incarnationId: "inc-3" });

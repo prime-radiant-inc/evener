@@ -42,11 +42,7 @@ func parseRestartOptions(args []string, stderr io.Writer) (restartOptions, error
 	if fs.NArg() != 0 {
 		return opts, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "config" {
-			opts.configExplicit = true
-		}
-	})
+	opts.configExplicit = setFlagNames(fs)["config"]
 	return opts, nil
 }
 

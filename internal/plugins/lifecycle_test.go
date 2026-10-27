@@ -9,9 +9,7 @@ import (
 )
 
 func TestRemoveEnableDisable(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	mktRepo, name := makeInstallableMarketplace(t)
 	m := NewManager(t.TempDir())
 	m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo})
@@ -60,9 +58,7 @@ func TestRemove_DirectorySourceKeepsContents(t *testing.T) {
 	writePlugin(t, filepath.Join(dir, "plugins", "widget"), "widget", nil)
 
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
+	mustAddMarketplace(context.Background(), t, m, "", Source{Kind: SourceDirectory, Path: dir})
 	entry, err := m.Install(context.Background(), "widget", "local")
 	if err != nil {
 		t.Fatalf("Install: %v", err)

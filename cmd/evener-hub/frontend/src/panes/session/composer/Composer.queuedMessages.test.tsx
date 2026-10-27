@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { appliedReceipt } from "../../../mutationReceiptTestUtils";
 import { ClientProvider } from "../../../shell/clientContext";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
@@ -27,7 +28,10 @@ import { createAttachmentOperations } from "./attachments/useAttachments";
 import { Composer } from "./Composer";
 import { readComposerDraftRevisionId, readDraft, writeComposerDraft } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
-import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
+import {
+  flushPendingTurnsProjectionForTests,
+  outlastEmptyFlushRoundForTests,
+} from "./queue/testing/flushPendingTurnsProjection";
 
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
@@ -347,12 +351,7 @@ test("image encoding survives a literal-marker recovery merge while storage is p
       deliveredInputs.push(params.input ?? []);
       return {
         turn: { id: "image-merge", status: "inProgress", itemsView: "full", items: [] },
-        receipt: {
-          clientMutationId: params.clientMutationId,
-          disposition: "applied",
-          threadId: "thread-a",
-          projectionState: "reflected",
-        },
+        receipt: appliedReceipt(params.clientMutationId, "thread-a"),
       };
     });
     await user.click(screen.getByRole("button", { name: "Send" }));
@@ -681,21 +680,11 @@ test.each([false, true])("queuedEditsPreserveDraftAndSendOnce, Stop=%s", async (
     deliveredInputs.push(params.input ?? []);
     return {
       turn: { id: "revision", status: "inProgress", itemsView: "full", items: [] },
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread-a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread-a"),
     };
   });
   fake.on("turn/interrupt", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread-a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread-a"),
   }));
   fake.on("thread/resume", () => ({ thread }));
   await act(async () => {
@@ -809,12 +798,7 @@ test("two offline edits consolidate one durable owner and preserve typing during
       deliveredInputs.push(params.input ?? []);
       return {
         turn: { id: "combined", status: "inProgress", itemsView: "full", items: [] },
-        receipt: {
-          clientMutationId: params.clientMutationId,
-          disposition: "applied",
-          threadId: "thread-a",
-          projectionState: "reflected",
-        },
+        receipt: appliedReceipt(params.clientMutationId, "thread-a"),
       };
     });
     await act(async () => {
@@ -829,6 +813,16 @@ test("two offline edits consolidate one durable owner and preserve typing during
   } finally {
     hold.release();
   }
+  // The Send's settlement completes durable writes whose queued completion
+  // notifications start the pending-turns projection's final refresh. Under
+  // load such a notification can still be queued when the last await above
+  // returns, and the refresh it starts then publishes its snapshot outside
+  // act at teardown - the five QueueStrip plus three Composer not-wrapped-in-
+  // act warnings this test flaked on in whole-suite runs. Hop the macrotask
+  // queue empty so every queued notification has started its refresh, then
+  // flush the projection inside act.
+  await outlastEmptyFlushRoundForTests();
+  await flushPendingTurnsProjectionForTests();
 });
 
 test.each(["edit", "remove"] as const)(
@@ -924,12 +918,7 @@ test("recorded literal survives Edit beside a current image and Send", async () 
     expect(params.clientMutationId).not.toBe(record.clientMutationId);
     return {
       turn: { id: "literal-revision", status: "inProgress", itemsView: "full", items: [] },
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread-a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread-a"),
     };
   });
   await act(async () => {

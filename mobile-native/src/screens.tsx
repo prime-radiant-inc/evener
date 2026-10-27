@@ -50,8 +50,8 @@ import {
 	type NavigationSessionSummary,
 	translateAttachmentMarkers,
 } from "@evener/appwire-client";
-import { type ConversationState, olderPageKey } from "../../mobile/src/state/conversation";
-import type { ConversationMutationContext } from "../../mobile/src/state/conversationMutation";
+import { type ConversationState, olderPageKey } from "./conversation/state/conversation";
+import type { ConversationMutationContext } from "./conversation/state/conversationMutation";
 import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
 import type { SharedPayload } from "./share/sharePayload";
 import { ApprovalControls } from "./approvalControls";
@@ -151,7 +151,7 @@ import { useFleet } from "./session/useFleet";
 import { GhostRowContext, type GhostRowHost, GhostRowView } from "./session/GhostRows";
 import { TRANSCRIPT_GUTTER_PT } from "./session/transcriptLayout";
 import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
-import type { ConversationMutationSubmitter } from "../../mobile/src/state/conversationMutation";
+import type { ConversationMutationSubmitter } from "./conversation/state/conversationMutation";
 import type { NativeConversationAttachment } from "./session/nativeConversationSessions";
 import { useNativeConversationAttachment } from "./session/NativeConversationSessionsProvider";
 import {
@@ -394,7 +394,7 @@ export function ConversationScreen(
 ) {
 	const { hubId, ref } = props.route.params;
 	// The session binding is borrowed from the one app-owned registry entry per
-	// (hub, ref): the store, service, activity sink and durable host are shared
+	// (hub, ref): the store, service and durable host are shared
 	// by every mounted view of this session. A view that never commits creates
 	// none of them.
 	const attachment = useNativeConversationAttachment(hubId, ref);
@@ -460,12 +460,11 @@ function ConversationScreenView({
 	const chosenLevel = levels.get(route.params.ref);
 	const display = useMemo(() => displayForLevel(chosenLevel, hubDisplayConfig), [chosenLevel, hubDisplayConfig]);
 	const displayConfig = display.config;
-	// The shared binding: one store, service, activity sink and durable host for
+	// The shared binding: one store, service and durable host for
 	// every mounted view of this hub/ref. This view borrows them and never
 	// closes, suspends or resets them.
 	const { entry } = attachment;
 	const store = entry.store;
-	const activitySink = entry.activitySink;
 	const service = entry.service;
 	const mutationSubmitter: ConversationMutationSubmitter = entry.mutationSubmitter;
 	const currentDestination = useRef({ store, client });
@@ -817,8 +816,8 @@ function ConversationScreenView({
 	const controls = useMemo(() => {
 		if (!service || !connected || !focused) return null;
 		const refreshSession = async () => {
-			if (store.getState().status === "open") await store.getState().rehydrate(service, activitySink);
-			else await store.getState().resumeProjected(service, activitySink, route.params.ref);
+			if (store.getState().status === "open") await store.getState().rehydrate(service);
+			else await store.getState().resumeProjected(service, route.params.ref);
 			const current = store.getState();
 			if (current.status !== "open" || current.error) throw new Error("Could not read the session.");
 		};
@@ -855,7 +854,6 @@ function ConversationScreenView({
 		store,
 		client,
 		route.params.ref,
-		activitySink,
 		navigation,
 		connected,
 		focused,
@@ -878,23 +876,12 @@ function ConversationScreenView({
 							store.getState().conversationGeneration === bindingGeneration &&
 							store.getState().conversation?.instanceId === bindingInstance,
 						async () => {
-							await store.getState().rehydrate(service, activitySink);
+							await store.getState().rehydrate(service);
 							if (store.getState().error) throw new Error("Could not read the session.");
 						},
 					)
 				: null,
-		[
-			client,
-			service,
-			connected,
-			focused,
-			route.params.ref,
-			store,
-			navigation,
-			bindingGeneration,
-			bindingInstance,
-			activitySink,
-		],
+		[client, service, connected, focused, route.params.ref, store, navigation, bindingGeneration, bindingInstance],
 	);
 	useEffect(() => () => approvalControls?.dispose(), [approvalControls]);
 
@@ -2004,7 +1991,7 @@ function ConversationScreenView({
 						},
 						cleared: (response) => {
 							const replacement = service.adoptClear(response);
-							void store.getState().openProjected(service, activitySink, route.params.ref, replacement);
+							void store.getState().openProjected(service, route.params.ref, replacement);
 						},
 						openAside,
 						local: async (id) => {
@@ -2063,7 +2050,7 @@ function ConversationScreenView({
 			if (isLocalComposerCommand(completed) || completed === "aside") return;
 			// A shut-down session stays open on its history, like the ⋯ menu's
 			// own Shut down (ruling 19): the store's error surfaces a failed read.
-			await store.getState().rehydrate(service, activitySink);
+			await store.getState().rehydrate(service);
 		} catch (error) {
 			if (!currentBinding()) return;
 			setActionError(
@@ -2172,7 +2159,7 @@ function ConversationScreenView({
 				store.getState().conversationGeneration === bindingGeneration &&
 				store.getState().conversation?.instanceId === bindingInstance
 			)
-				await store.getState().rehydrate(online, activitySink);
+				await store.getState().rehydrate(online);
 		} catch {
 			setAnswerError("Could not confirm delivery. Your answers are retained; check delivery before trying again.");
 		} finally {
@@ -2635,13 +2622,13 @@ function ConversationScreenView({
 				// instead of queueing behind the turn this one starts.
 				await store
 					.getState()
-					.rehydrate(through, activitySink)
+					.rehydrate(through)
 					.catch(() => undefined);
 				return true;
 			}
 			return false;
 		},
-		[store, client, navigation, route.params, activitySink],
+		[store, client, navigation, route.params],
 	);
 	const deliver = useCallback(
 		async (
@@ -3205,7 +3192,7 @@ function ConversationScreenView({
 	function rehydrateQuietly(live: NonNullable<typeof service>) {
 		return store
 			.getState()
-			.rehydrate(live, activitySink)
+			.rehydrate(live)
 			.catch(() => undefined);
 	}
 	// A change to the hub's queue: whether the hub took it. The session is

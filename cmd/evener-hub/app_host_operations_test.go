@@ -86,11 +86,7 @@ func TestHostOperationsReadsThroughTheRealServer(t *testing.T) {
 	if web.hostManage == nil {
 		t.Fatal("the real server construction did not install the host-management surface")
 	}
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	var page appwire.HostOperationsResponse
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostOperations, appwire.HostOperationsParams{Limit: 1}, &page); err != nil {

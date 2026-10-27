@@ -597,32 +597,3 @@ export function legacyConfigFromValues(values: LegacyPreferenceValues): Transcri
     },
   );
 }
-
-export interface LegacyPreferenceWrites {
-  readonly transcriptRoundTimings: boolean;
-  readonly transcriptTokenCounts: boolean;
-  readonly transcriptHookExitsAll: boolean;
-  readonly transcriptHookExitsNormal: boolean;
-  readonly transcriptPromptLoaded: boolean;
-  readonly showCost: boolean;
-}
-
-export function legacyWritesFromConfig(config: TranscriptDisplayConfigV1): LegacyPreferenceWrites {
-  const normalized = normalizeConfig(config);
-  return {
-    transcriptRoundTimings: normalized.advanced.roundTimings,
-    transcriptTokenCounts: normalized.advanced.tokenCounts,
-    transcriptHookExitsAll: normalized.advanced.hookExits === "all",
-    transcriptHookExitsNormal: normalized.advanced.hookExits === "successful",
-    transcriptPromptLoaded: normalized.advanced.promptEvents,
-    showCost: normalized.advanced.estimatedCost,
-  };
-}
-
-export function dualWriteLegacyPreferences(
-  config: TranscriptDisplayConfigV1,
-  write: (key: LegacyPreferenceKey, value: boolean) => void,
-): void {
-  const values = legacyWritesFromConfig(config);
-  for (const key of LEGACY_PREF_KEYS) write(key, values[key]);
-}

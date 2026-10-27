@@ -34,7 +34,7 @@ import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";
 import { ToastRegion } from "./chrome/ToastRegion";
 import { ClientProvider } from "./clientContext";
 import { DockRegion } from "./DockRegion";
-import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
+import { focusedSessionPaneId, focusedSessionRef, modalOpenInFocusedWindows } from "./focusedSession";
 import { HoldHints } from "./holdhints/HoldHints";
 import { installKeybindings } from "./installKeybindings";
 import { createLiveSessionController } from "./liveSessionController";
@@ -587,9 +587,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       focusedSessionRef,
       routeEpoch: () => liveNavRouteEpochRef.current,
       completionBlocked: () =>
-        paletteStore.getState().open ||
-        document.querySelector('[aria-modal="true"]') !== null ||
-        isEditableTarget(document.activeElement),
+        paletteStore.getState().open || modalOpenInFocusedWindows() || isEditableTarget(document.activeElement),
       openLiveSession,
     });
     const unregister = [

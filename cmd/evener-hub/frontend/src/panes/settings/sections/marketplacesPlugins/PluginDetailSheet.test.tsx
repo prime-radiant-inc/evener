@@ -1,10 +1,10 @@
 import type { MarketplaceEntry, PluginEntry } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { chipKinds } from "./marketplacesTestUtils";
 import { PluginDetailSheet } from "./PluginDetailSheet";
@@ -29,12 +29,6 @@ const ACME: MarketplaceEntry = {
 
 const TARGET = { plugin: "linter", marketplace: "acme-plugins" };
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();
@@ -47,14 +41,14 @@ afterEach(() => {
 });
 
 test("renders nothing when target is null", () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   render(<PluginDetailSheet target={null} onClose={() => {}} />);
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
 test("renders name, state chips, version, marketplace, and source", async () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({
     plugins: [{ ...LINTER, broken: true, enabled: false, autoUpgrade: true }],
     marketplaces: [ACME],
@@ -72,7 +66,7 @@ test("renders name, state chips, version, marketplace, and source", async () => 
 });
 
 test("omits the source row when the marketplace is not registered", async () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [] });
   const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
@@ -84,7 +78,7 @@ test("omits the source row when the marketplace is not registered", async () => 
 });
 
 test("the Enabled and Auto-upgrade switches reflect the entry's state", async () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
@@ -97,7 +91,7 @@ test("the Enabled and Auto-upgrade switches reflect the entry's state", async ()
 
 test("the Enabled switch calls pluginDisable on an enabled plugin, pluginEnable on a disabled one", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   fake.on("evener/plugin/disable", (params) => {
     expect(params).toEqual(TARGET);
@@ -113,7 +107,7 @@ test("the Enabled switch calls pluginDisable on an enabled plugin, pluginEnable 
 
 test("the Enabled switch calls pluginEnable on a disabled plugin", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [{ ...LINTER, enabled: false }], marketplaces: [ACME] });
   fake.on("evener/plugin/enable", (params) => {
     expect(params).toEqual(TARGET);
@@ -129,7 +123,7 @@ test("the Enabled switch calls pluginEnable on a disabled plugin", async () => {
 
 test("a failed enable toggle re-enables the switch too", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   fake.on("evener/plugin/disable", () => {
     throw new Error("boom");
@@ -144,7 +138,7 @@ test("a failed enable toggle re-enables the switch too", async () => {
 
 test("a failed enable toggle toasts 'Toggle enable failed'", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   fake.on("evener/plugin/disable", () => {
     throw new Error("boom");
@@ -158,7 +152,7 @@ test("a failed enable toggle toasts 'Toggle enable failed'", async () => {
 
 test("the Enabled switch is disabled while its RPC is in flight, and re-enables after", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   let resolveDisable: (v: { plugins: PluginEntry[] }) => void = () => {};
   fake.on(
@@ -181,7 +175,7 @@ test("the Enabled switch is disabled while its RPC is in flight, and re-enables 
 
 test("the Auto-upgrade switch flips the current value; failure toasts", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   fake.on("evener/plugin/setAutoUpgrade", (params) => {
     expect(params).toEqual({ ...TARGET, autoUpgrade: true });
@@ -196,7 +190,7 @@ test("the Auto-upgrade switch flips the current value; failure toasts", async ()
 
 test("a failed auto-upgrade toggle toasts 'Toggle auto-upgrade failed'", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   fake.on("evener/plugin/setAutoUpgrade", () => {
     throw new Error("boom");
@@ -209,7 +203,7 @@ test("a failed auto-upgrade toggle toasts 'Toggle auto-upgrade failed'", async (
 });
 
 test("Upgrade and its badge show only when the hub found an update", async () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
@@ -226,7 +220,7 @@ test("Upgrade and its badge show only when the hub found an update", async () =>
 
 test("Upgrade calls pluginUpgrade, toasts an upgraded success, and is busy in flight", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [{ ...LINTER, updateAvailable: true }], marketplaces: [ACME] });
   let resolveUpgrade: (v: { plugins: PluginEntry[] }) => void = () => {};
   fake.on("evener/plugin/upgrade", (params) => {
@@ -254,7 +248,7 @@ test("Upgrade calls pluginUpgrade, toasts an upgraded success, and is busy in fl
 
 test("an upgrade leaves alone focus the user moved while it ran", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [{ ...LINTER, updateAvailable: true }], marketplaces: [ACME] });
   let resolveUpgrade: (v: { plugins: PluginEntry[] }) => void = () => {};
   fake.on(
@@ -276,7 +270,7 @@ test("an upgrade leaves alone focus the user moved while it ran", async () => {
 
 test("a failed upgrade toasts failure", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [{ ...LINTER, updateAvailable: true }], marketplaces: [ACME] });
   fake.on("evener/plugin/upgrade", () => {
     throw new Error("boom");
@@ -290,7 +284,7 @@ test("a failed upgrade toasts failure", async () => {
 
 test("Remove opens a confirm; confirming removes, toasts, and closes the sheet", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   fake.on("evener/plugin/remove", (params) => {
     expect(params).toEqual(TARGET);
@@ -308,7 +302,7 @@ test("Remove opens a confirm; confirming removes, toasts, and closes the sheet",
 
 test("cancelling the remove confirm does not call pluginRemove and keeps the sheet open", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   const removeSpy = vi.fn();
   fake.on("evener/plugin/remove", removeSpy);
@@ -323,7 +317,7 @@ test("cancelling the remove confirm does not call pluginRemove and keeps the she
 
 test("a failed remove toasts failure and keeps the sheet open", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   fake.on("evener/plugin/remove", () => {
     throw new Error("boom");
@@ -342,7 +336,7 @@ test("a failed remove toasts failure and keeps the sheet open", async () => {
 
 test("the remove confirm's buttons disable while the removal is in flight", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   fake.on("evener/plugin/remove", () => new Promise(() => {})); // never resolves - just observe the mid-flight state
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
@@ -355,7 +349,7 @@ test("the remove confirm's buttons disable while the removal is in flight", asyn
 
 test("the close button calls onClose", async () => {
   const user = userEvent.setup();
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   const onClose = vi.fn();
   render(<PluginDetailSheet target={TARGET} onClose={onClose} />);
@@ -364,7 +358,7 @@ test("the close button calls onClose", async () => {
 });
 
 test("lazily browses the marketplace and shows the catalog description when loaded", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   fake.on("evener/marketplace/browse", (params) => {
     expect(params).toEqual({ name: "acme-plugins" });
@@ -379,7 +373,7 @@ test("lazily browses the marketplace and shows the catalog description when load
 });
 
 test("does not re-browse a marketplace whose catalog is already cached", () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({
     plugins: [LINTER],
     marketplaces: [ACME],
@@ -393,7 +387,7 @@ test("does not re-browse a marketplace whose catalog is already cached", () => {
 });
 
 test("closes itself when the entry disappears from the store (removed elsewhere)", async () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   const onClose = vi.fn();
   const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");

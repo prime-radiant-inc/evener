@@ -170,7 +170,7 @@ func newWorktreeDocumentFixture(t *testing.T) *worktreeDocumentFixture {
 		t.Fatal(err)
 	}
 	daemon.ReplaceAppIdentity(prepared, nil)
-	daemon.SetStatus(daemonserver.StatusInfo{SessionID: sessionID, State: appwire.ThreadStatusIdle, WorkingDir: root})
+	seedDaemonStatus(daemon, daemonserver.StatusInfo{SessionID: sessionID, State: appwire.ThreadStatusIdle, WorkingDir: root})
 	daemon.WireTranscriptHistory(sess)
 	sess.ConsumeEventsLossless(func(event events.SessionEvent) {
 		daemonserver.BridgeEvent(daemon, event, nil)
@@ -194,10 +194,7 @@ func newWorktreeDocumentFixture(t *testing.T) *worktreeDocumentFixture {
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 
-	past := hubcore.NewPastIndex(filepath.Join(stateRoot, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(stateRoot, "projects", "*"))
 	if cached, ok := past.Find(sessionID); !ok || cached.Meta.EnvInfo.WorkingDir != root {
 		t.Fatalf("warm past fixture = %+v, want launch root %q", cached, root)
 	}
@@ -535,10 +532,7 @@ func TestDocumentWorktree_LiveSourceUnavailableDoesNotReadPast(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(stateRoot, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(stateRoot, "projects", "*"))
 	if _, ok := past.Find(sessionID); !ok {
 		t.Fatal("stale past fixture was not indexed")
 	}
@@ -573,9 +567,7 @@ func TestDocumentWorktree_LiveSourceUnavailableDoesNotReadPast(t *testing.T) {
 
 	hostClient := dialHubRPC(t, hostHTTP)
 	defer hostClient.Close() //nolint:errcheck // test cleanup
-	if _, err := hostClient.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, hostClient)
 	web := NewWebServer(cfg)
 	web.sources = sources
 	localHTTP := httptest.NewServer(web.Handler())

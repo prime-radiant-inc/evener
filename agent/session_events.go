@@ -383,7 +383,7 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 	ev.Provenance = provenance.Clone(p)
 	// eventsMu makes the send mutually exclusive with Close()'s close(s.events).
 	// emit is called from caller-owned goroutines the session cannot join
-	// (Enqueue/DrainAsSteer, the ProcessInput loop), so the lock — not a recover()
+	// (the client-mutation queue handlers, the ProcessInput loop), so the lock — not a recover()
 	// — is what guarantees we never send on a closed channel. Delivery of detached
 	// emitters' events before teardown is ensured separately by the WaitGroups.
 

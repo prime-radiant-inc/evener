@@ -67,7 +67,6 @@ import (
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/internal/e2ecap"
-	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 const (
@@ -171,12 +170,7 @@ func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpoint
 	staged := stageDeployArtifact(t, repoRoot, goos, goarch)
 	t.Logf("controller build: %s (version %q); host target %s/%s", hubBin, version, goos, goarch)
 
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
+	provider := newFakeLLMProvider(t)
 	runID := hostDeployRunID()
 	hostName := "e2e-pipeline-" + runID
 	dirName := hostPipelineDirPrefix + "-" + runID

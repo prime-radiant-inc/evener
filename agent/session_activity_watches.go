@@ -81,7 +81,7 @@ func (read *sessionActivityRead) watchesPage(ctx context.Context, params appwire
 			jm := runtime.jobManager
 			jm.mu.Lock()
 			for _, cfg := range jm.watches {
-				if cfg != nil && cfg.id == key.ID {
+				if cfg != nil && cfg.watchID == key.ID {
 					row.Watch = watchInfoFromStatus(watchStatusInfoFromConfig(cfg))
 					row.State = appwire.SessionWatchStateArmed
 					if !row.Watch.Active {
@@ -121,7 +121,7 @@ func (read *sessionActivityRead) watchesPage(ctx context.Context, params appwire
 	return result, nil
 }
 func projectRetainedSessionWatch(owner, receiver string, record *jobstore.WatchRecord, index *sessionActivityJobIndex) appwire.SessionWatch {
-	cfg := &watchConfig{id: record.WatchID, target: record.Target, sourcePublic: record.Source, createdAt: index.Created[record.WatchID]}
+	cfg := &watchConfig{watchID: record.WatchID, target: record.Target, sourcePublic: record.Source, createdAt: index.Created[record.WatchID]}
 	if snapshot := index.Configs[record.WatchID]; snapshot != nil {
 		cfg.target = snapshot.Target
 		cfg.outputMatch = activitybound.Truncate(snapshot.OutputMatch, activityMaxDelegateProseRunes)

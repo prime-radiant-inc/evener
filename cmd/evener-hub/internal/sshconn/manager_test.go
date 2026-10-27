@@ -31,6 +31,16 @@ func newTestManager(t *testing.T, reg *hostreg.Registry, fr *fakeRunner, opts Op
 	return m
 }
 
+// newSleeplessTestManager is newTestManager with the manager's pacing sleeps
+// stubbed out, for scenario tests whose fake runner answers synchronously and
+// would otherwise wait real time between retry rounds.
+func newSleeplessTestManager(t *testing.T, host hostreg.Host, fr *fakeRunner) *Manager {
+	t.Helper()
+	return newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+}
+
 func goodStartFn(t *testing.T) func(context.Context, []string, io.Writer) (Stdio, error) {
 	return func(context.Context, []string, io.Writer) (Stdio, error) {
 		return newFakeBridge(appwire.ProtocolVersion).stdio, nil

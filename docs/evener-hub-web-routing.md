@@ -59,6 +59,20 @@ different machines distinct. The
 [navigation projection](../cmd/evener-hub/navigation_projection.go) owns the
 bounded resources and project tiers used by the client.
 
+For a session absent from the navigation index, the
+[navigation service](../cmd/evener-hub/navigation_service.go) resolves its
+placement through an indexed top-level row. A local session's current identity
+can resolve to its stable workspace row, including after the daemon exits.
+Child and fork locations retain their requested identity and nested placement.
+
+For a remote alias, one bounded location read asks the owning source for its
+top-level placement. The controller preserves the source qualifier and uses its
+own indexed root and revision; it never substitutes a local session with the
+same ID. Source failure or a resolved remote root absent from the controller's
+index returns unavailable, allowing a later refresh to recover. An absent
+source or a source-confirmed missing session retains the gone outcome. Indexed
+locations require no additional source read.
+
 Project favorites use `evener/favorite/set`. Session pins use
 `evener/session-pin/assign` and `evener/session-pin/unpin` with the navigation pin
 catalog. A project deletion uses `evener/project/delete`, which validates its

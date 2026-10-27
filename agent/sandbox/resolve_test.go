@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -41,7 +42,7 @@ func mainRepo(t *testing.T) string {
 	t.Helper()
 	requireGit(t)
 	root := clean(t.TempDir())
-	runGit(t, root, "init", "-q")
+	gittest.Run(t, root, "init", "-q")
 	return root
 }
 
@@ -49,10 +50,10 @@ func linkedWorktreeRepo(t *testing.T) string {
 	t.Helper()
 	requireGit(t)
 	main := clean(t.TempDir())
-	runGit(t, main, "init", "-q")
-	runGit(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, main, "init", "-q")
+	gittest.Run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 	wt := filepath.Join(filepath.Dir(main), "wt")
-	runGit(t, main, "worktree", "add", "-q", wt)
+	gittest.Run(t, main, "worktree", "add", "-q", wt)
 	return clean(wt)
 }
 

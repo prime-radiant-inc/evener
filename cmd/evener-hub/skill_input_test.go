@@ -237,9 +237,7 @@ func assertSkillInputRejection(t *testing.T, err error) {
 func dialSkillInputHub(t *testing.T, hub *httptest.Server) *appwire.Client {
 	t.Helper()
 	client := dialHubRPC(t, hub)
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	return client
 }
 

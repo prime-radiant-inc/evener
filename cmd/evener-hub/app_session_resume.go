@@ -85,7 +85,7 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 		return err
 	}
 	discoveryUncertain := false
-	if ref, err := appwire.ParseRef(params.Ref); err == nil && ref.SourceID == "local" {
+	if ref, err := appwire.ParseRef(params.Ref); err == nil && ref.SourceID == appwire.LocalSourceID {
 		decision, err := checkConfirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, false, nil)
 		if err != nil {
 			return err
@@ -177,7 +177,7 @@ func withShutdownDiscoveryUncertainOwnership[R any](ctx context.Context, cfg hub
 // alias, so a Resume registered in that window is already mid-launch and must
 // not be overlapped by the tolerant action.
 func shutdownResumeActiveError(cfg hubcore.WebConfig, ref string) error {
-	if parsed, err := appwire.ParseRef(ref); err == nil && parsed.SourceID == "local" && cfg.ResumeLocks != nil {
+	if parsed, err := appwire.ParseRef(ref); err == nil && parsed.SourceID == appwire.LocalSourceID && cfg.ResumeLocks != nil {
 		if cfg.ResumeLocks.HasActiveResume(cfg.ResumeLocks.RecoveryAliases(parsed.ThreadID)) {
 			return sessionResumeRequiredError()
 		}
@@ -190,7 +190,7 @@ func shutdownResumeActiveError(cfg hubcore.WebConfig, ref string) error {
 // again under it, because a Resume can report the failure while shutdown
 // waits for the alias.
 func shutdownCleanupError(cfg hubcore.WebConfig, ref string) error {
-	if parsed, err := appwire.ParseRef(ref); err == nil && parsed.SourceID == "local" && cfg.ResumeLocks != nil {
+	if parsed, err := appwire.ParseRef(ref); err == nil && parsed.SourceID == appwire.LocalSourceID && cfg.ResumeLocks != nil {
 		if err := cfg.ResumeLocks.ResumeCleanupErrorStrict(cfg.ResumeLocks.RecoveryAliases(parsed.ThreadID)); err != nil {
 			return appwire.Unavailable(err.Error())
 		}

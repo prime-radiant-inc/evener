@@ -110,7 +110,7 @@ draft. Browser reports an error and permits another Start. Neither can identify
 the result by a durable creation request ID. The user must investigate or risk a
 duplicate; editing the draft does not resolve the first attempt.
 
-**Evidence.** [ThreadStartParams](../../appwire/types.go#L2316) has no client
+**Evidence.** [ThreadStartParams](../../appwire/types_turn.go) has no client
 creation key. The hub
 [detaches creation from peer cancellation](../../cmd/evener-hub/app_threadlifecycle.go#L82).
 Native [submit](../../mobile-native/src/newSession.ts#L429) persists uncertainty;
@@ -145,7 +145,7 @@ initial-read retry loop. The server can repair a projection on a later read.
 
 **Evidence.** Browser
 [hydrateAndSubscribe](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1818),
-native [rehydrate](../../mobile/src/state/conversation.ts#L2017) and
+native [rehydrate](../../mobile-native/src/conversation/state/conversation.ts#L2017) and
 [entry read actor](../../mobile-native/src/session/nativeConversationSessions.ts#L417), and server
 [recoverForRead](../../server/thread_history.go#L355) expose the ownership gap.
 Shared `reducer.history.test.ts` specifies that a later success clears history failure.
@@ -587,7 +587,7 @@ have a separately chosen lifetime outside session-owned job supervision.
 
 The normal shutdown path already marks and signals owned jobs in
 [closeRuntimeState](../../agent/jobs.go), followed by tracked process-group
-[cleanup](../../agent/execenv/local.go#L1330). After an abrupt loss, the restored
+[cleanup](../../agent/execenv/local.go#L485). After an abrupt loss, the restored
 job record's `runtime_lost` status describes lost supervision; it does not by
 itself prove that every OS process was terminated.
 
@@ -884,7 +884,7 @@ A transient failure in the first explicit Connect happens before that supervisor
 starts, and both clients issue only one attach request. A user who has already
 asked to connect must click again.
 
-**Evidence.** [Manager.Ensure](../../cmd/evener-hub/internal/sshconn/manager.go#L537)
+**Evidence.** [Manager.Ensure](../../cmd/evener-hub/internal/sshconn/ensure.go#L25)
 starts supervision after attachment; [host attach](../../cmd/evener-hub/app_host_attach.go#L108)
 returns the initial failure. Browser
 [connect](../../cmd/evener-hub/frontend/src/stores/hosts.ts#L627) and native
@@ -1045,7 +1045,7 @@ Hub home's update footer.
 start a detached hub with output redirected to `/dev/null`. A startup failure
 then loses the original explanation before the health check reports failure.
 
-**Evidence.** [bootstrapHub](../../cmd/evener-hub/internal/sshconn/manager.go#L2182)
+**Evidence.** [bootstrapHub](../../cmd/evener-hub/internal/sshconn/ensure.go#L868)
 passes an empty log path to
 [relaunchCommand](../../cmd/evener-hub/internal/sshconn/version.go#L870).
 Manual host access or a separate supervisor/log setup is the remaining diagnosis
@@ -1145,7 +1145,7 @@ are explicitly never parked.
 **Evidence.** [Registry dispatch](../../agent/internal/tool/registry.go#L719) and
 [breaker state](../../agent/internal/tool/breaker.go#L280) own the fingerprint and
 park. The production bypass is a
-[sandbox-approved rerun](../../agent/session_tools.go#L950). Existing
+[sandbox-approved rerun](../../agent/session_tools.go#L403). Existing
 `TestBreakerDispatch_IdenticalFailureNudgesThenParks`,
 `TestBreakerDispatch_ParkedResultDoesNotUnparkTheNextCall` and
 `TestBreakerDispatch_IdenticalSuccessLoopIsNeverParked` specify those contracts.

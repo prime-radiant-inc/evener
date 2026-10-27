@@ -25,7 +25,7 @@
 // announces (kata 06t8), so the two always describe the same moment - and for
 // that fresh set, this table already computes exactly what reading it would.
 // The hub advertises Send as "no turn in flight" and Queue as harness support
-// (server/appwire_runtime.go's appCapabilities); tiers 4 and 5 are that pair
+// (server/appwire_thread_projection.go's appCapabilities); tiers 4 and 5 are that pair
 // with the status supplying the "turn in flight" half, and tier 3 reads the
 // harness-support bit for whether a queue is wired at all. A tier 2 would
 // restate the table, not correct it.

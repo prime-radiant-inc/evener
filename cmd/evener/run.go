@@ -339,7 +339,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err != nil {
 		return err
 	}
-	profile, err = applyFastCheapModel(profile, cfg.fastCheapModel, client)
+	profile, err = cmdutil.ApplyFastCheapModel(profile, cfg.fastCheapModel, client)
 	if err != nil {
 		return err
 	}
@@ -415,7 +415,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if effort.Set {
 		baseSessionCfg.ReasoningEffort = effort.Value
 	}
-	if err := configureSandbox(&baseSessionCfg, cfg.sandboxMode, cfg.sandboxNet); err != nil {
+	if err := cmdutil.ConfigureSandbox(&baseSessionCfg, cfg.sandboxMode, cfg.sandboxNet); err != nil {
 		return err
 	}
 	// Engage enforcement for a FRESH session from the flag-set mode. A resume

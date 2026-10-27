@@ -86,7 +86,6 @@ vi.mock("@react-navigation/native", async () => {
 	};
 });
 vi.mock("expo-web-browser", () => ({ openBrowserAsync: vi.fn(async () => ({ type: "dismiss" })) }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler", async () =>
 	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
 );

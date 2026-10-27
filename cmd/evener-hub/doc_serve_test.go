@@ -44,10 +44,7 @@ func docServeTestServer(t *testing.T) (*WebServer, string, string) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
 	return web, cwd, sessionID
 }
@@ -359,7 +356,7 @@ func TestDocImageServesLiveDescriptorURLWithoutPast(t *testing.T) {
 	sessionID := "02wMz5Txv2enqVTitaig6F"
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
 	daemon.SetAppIdentity("local", sessionID)
-	daemon.SetStatus(daemonserver.StatusInfo{SessionID: sessionID, State: appwire.ThreadStatusIdle, WorkingDir: cwd})
+	seedDaemonStatus(daemon, daemonserver.StatusInfo{SessionID: sessionID, State: appwire.ThreadStatusIdle, WorkingDir: cwd})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 	entry := rendezvous.Entry{
@@ -885,10 +882,7 @@ func TestHubSessionDocumentRelativePathNeverResolvesAgainstArtifacts(t *testing.
 	if err := os.Symlink(filepath.Join(outside, "elsewhere.md"), filepath.Join(cwd, "report.md")); err != nil {
 		t.Skipf("symlink unsupported on this platform: %v", err)
 	}
-	idx := hubcore.NewPastIndex(filepath.Join(stateDir, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(stateDir, "projects", "*"))
 	srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: idx})
 	t.Cleanup(srv.Close)
 	if _, err := requestSessionDocument(t, srv, appwire.SessionDocumentParams{SessionID: session, Path: "report.md"}); err == nil {
@@ -946,10 +940,7 @@ func TestHubSessionDocumentServesArtifactsAfterWorkingDirectoryRemoved(t *testin
 	if err := os.WriteFile(target, []byte("retained report"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	idx := hubcore.NewPastIndex(filepath.Join(stateDir, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(stateDir, "projects", "*"))
 	srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: idx})
 	t.Cleanup(srv.Close)
 	if err := os.RemoveAll(cwd); err != nil {
@@ -1107,10 +1098,7 @@ func TestHubSessionDocumentMissingArtifactIsNotFound(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	idx := hubcore.NewPastIndex(filepath.Join(stateDir, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(stateDir, "projects", "*"))
 	srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: idx})
 	t.Cleanup(srv.Close)
 	_, err = requestSessionDocument(t, srv, appwire.SessionDocumentParams{SessionID: session, Path: filepath.Join(dir, "never.md")})
@@ -1210,10 +1198,7 @@ func TestDocFile_ServesArtifactUnderASymlinkedAncestor(t *testing.T) {
 	if err := os.WriteFile(target, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	idx := hubcore.NewPastIndex(filepath.Join(linked, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(linked, "projects", "*"))
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
 	rec := docRawRequest(t, web, session, target)
 	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), content) {
@@ -1295,10 +1280,7 @@ func TestDocFile_ServesALookalikeWorkingDirectoryThroughASymlink(t *testing.T) {
 	if err := schema.SaveSessionMeta(entry.StateDir, meta); err != nil {
 		t.Fatal(err)
 	}
-	idx := hubcore.NewPastIndex(filepath.Join(filepath.Dir(entry.StateDir), "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(filepath.Dir(entry.StateDir), "*"))
 	web.cfg.Past = idx
 	rec := docRawRequest(t, web, session, target)
 	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), content) {

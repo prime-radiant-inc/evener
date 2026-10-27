@@ -634,25 +634,6 @@ func TestCovWatchEventFilterMatches(t *testing.T) {
 
 // ---- jobs.go pure functions ----
 
-// TestCovCloneJobRecord covers cloneJobRecord.
-func TestCovCloneJobRecord(t *testing.T) {
-	t.Parallel()
-	// Nil → nil.
-	if got := cloneJobRecord(nil); got != nil {
-		t.Fatal("nil should return nil")
-	}
-
-	orig := &jobstore.JobRecord{JobID: "job_1", Status: jobstore.StatusRunning}
-	clone := cloneJobRecord(orig)
-	if clone.JobID != "job_1" || clone.Status != jobstore.StatusRunning {
-		t.Fatalf("clone = %+v", clone)
-	}
-	clone.Status = jobstore.StatusCompleted
-	if orig.Status == jobstore.StatusCompleted {
-		t.Fatal("clone should be independent")
-	}
-}
-
 // TestCovStringOutputResult covers stringOutputResult.
 func TestCovStringOutputResult(t *testing.T) {
 	t.Parallel()

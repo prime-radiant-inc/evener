@@ -78,7 +78,7 @@ func TestAppWireMutationResponseLossRetriesOnce(t *testing.T) {
 	if response.Receipt.Disposition != appwire.MutationDispositionReplayed {
 		t.Fatalf("retry disposition = %q, want %q", response.Receipt.Disposition, appwire.MutationDispositionReplayed)
 	}
-	if got := sess.QueueTexts(); len(got) != 1 || got[0] != "queued exactly once" {
+	if got := queueTexts(sess); len(got) != 1 || got[0] != "queued exactly once" {
 		t.Fatalf("queue texts after response loss retry = %#v, want one queued effect", got)
 	}
 }
@@ -157,7 +157,7 @@ func TestAppWireMutationSkillInputResponseLossRetriesOnce(t *testing.T) {
 	if response.Receipt.Disposition != appwire.MutationDispositionReplayed {
 		t.Fatalf("retry disposition = %q, want %q", response.Receipt.Disposition, appwire.MutationDispositionReplayed)
 	}
-	if got := sess.QueueTexts(); len(got) != 1 || got[0] != "queued exactly once" {
+	if got := queueTexts(sess); len(got) != 1 || got[0] != "queued exactly once" {
 		t.Fatalf("queue texts after response loss retry = %#v, want one queued effect", got)
 	}
 	// The retried queue effect keeps the canonical selection for consumption.
@@ -235,7 +235,7 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 				}
 			},
 			assert: func(t *testing.T, sess *agent.Session, _ *int, _ appwire.Message) {
-				if texts := sess.QueueTexts(); len(texts) != 1 || texts[0] != "queue once" {
+				if texts := queueTexts(sess); len(texts) != 1 || texts[0] != "queue once" {
 					t.Fatalf("queue effects = %#v, want one", texts)
 				}
 			},
@@ -245,7 +245,7 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 			method: appwire.MethodTurnDrainAsSteer,
 			setup: func(t *testing.T, sess *agent.Session, _ *int) any {
 				acceptMutationReplayActiveTurn(t, sess)
-				if err := sess.Enqueue(context.Background(), "drain once"); err != nil {
+				if err := enqueueText(sess, "drain once"); err != nil {
 					t.Fatalf("Enqueue: %v", err)
 				}
 				return appwire.TurnDrainAsSteerParams{
@@ -257,8 +257,8 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 			},
 			assert: func(t *testing.T, sess *agent.Session, _ *int, _ appwire.Message) {
 				steering := sess.SteeringQueueSnapshot()
-				if len(sess.QueueTexts()) != 0 || len(steering) != 1 || steering[0].Text != "drain once" {
-					t.Fatalf("drain effects: queue=%#v steering=%+v", sess.QueueTexts(), steering)
+				if len(queueTexts(sess)) != 0 || len(steering) != 1 || steering[0].Text != "drain once" {
+					t.Fatalf("drain effects: queue=%#v steering=%+v", queueTexts(sess), steering)
 				}
 			},
 		},
@@ -267,7 +267,7 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 			method: appwire.MethodTurnPromoteQueuedAsSteer,
 			setup: func(t *testing.T, sess *agent.Session, _ *int) any {
 				acceptMutationReplayActiveTurn(t, sess)
-				if err := sess.Enqueue(context.Background(), "promote once"); err != nil {
+				if err := enqueueText(sess, "promote once"); err != nil {
 					t.Fatalf("Enqueue: %v", err)
 				}
 				return appwire.TurnPromoteQueuedAsSteerParams{
@@ -275,13 +275,13 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 					ExpectedInstanceID: sess.ID(),
 					Ref:                "local:" + sess.ID(),
 					Index:              0,
-					ExpectedEntryID:    sess.QueueIDs()[0],
+					ExpectedEntryID:    queueIDs(sess)[0],
 				}
 			},
 			assert: func(t *testing.T, sess *agent.Session, _ *int, _ appwire.Message) {
 				steering := sess.SteeringQueueSnapshot()
-				if len(sess.QueueTexts()) != 0 || len(steering) != 1 || steering[0].Text != "promote once" {
-					t.Fatalf("promote effects: queue=%#v steering=%+v", sess.QueueTexts(), steering)
+				if len(queueTexts(sess)) != 0 || len(steering) != 1 || steering[0].Text != "promote once" {
+					t.Fatalf("promote effects: queue=%#v steering=%+v", queueTexts(sess), steering)
 				}
 			},
 		},
@@ -289,7 +289,7 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 			name:   "cancel",
 			method: appwire.MethodTurnCancelQueued,
 			setup: func(t *testing.T, sess *agent.Session, _ *int) any {
-				if err := sess.Enqueue(context.Background(), "cancel once"); err != nil {
+				if err := enqueueText(sess, "cancel once"); err != nil {
 					t.Fatalf("Enqueue: %v", err)
 				}
 				return appwire.TurnCancelQueuedParams{
@@ -297,13 +297,13 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 					ExpectedInstanceID: sess.ID(),
 					Ref:                "local:" + sess.ID(),
 					Index:              0,
-					ExpectedEntryID:    sess.QueueIDs()[0],
+					ExpectedEntryID:    queueIDs(sess)[0],
 				}
 			},
 			assert: func(t *testing.T, sess *agent.Session, _ *int, response appwire.Message) {
 				result := response.Response.Result.(appwire.TurnCancelQueuedResponse)
-				if result.RemovedText != "cancel once" || len(sess.QueueTexts()) != 0 {
-					t.Fatalf("cancel result=%+v queue=%#v", result, sess.QueueTexts())
+				if result.RemovedText != "cancel once" || len(queueTexts(sess)) != 0 {
+					t.Fatalf("cancel result=%+v queue=%#v", result, queueTexts(sess))
 				}
 			},
 		},
@@ -405,7 +405,7 @@ func TestAppWireMutationPayloadMismatchIsInvalidRequest(t *testing.T) {
 	if mismatch.Kind() != appwire.MessageError || mismatch.Error.Error.Code != appwire.CodeInvalidRequest {
 		t.Fatalf("mismatch response = %#v, want InvalidRequest", mismatch)
 	}
-	if texts := sess.QueueTexts(); len(texts) != 1 || texts[0] != "first payload" {
+	if texts := queueTexts(sess); len(texts) != 1 || texts[0] != "first payload" {
 		t.Fatalf("queue effects after mismatch = %#v, want original only", texts)
 	}
 }
@@ -530,7 +530,7 @@ func TestAppWireMutationPersistenceFailureCanRecoverInProcess(t *testing.T) {
 	if receipt := recovered.Response.Result.(appwire.TurnQueueResponse).Receipt; receipt.Disposition != appwire.MutationDispositionApplied {
 		t.Fatalf("recovery receipt = %+v, want applied", receipt)
 	}
-	if texts := sess.QueueTexts(); len(texts) != 1 || texts[0] != "apply after recovery" {
+	if texts := queueTexts(sess); len(texts) != 1 || texts[0] != "apply after recovery" {
 		t.Fatalf("recovery effects = %#v, want one", texts)
 	}
 }
@@ -571,7 +571,7 @@ func TestAppWireMutationTerminalRejectionReplays(t *testing.T) {
 			t.Fatalf("rejection %d data = %#v", requestID, rejected.Error.Error.Data)
 		}
 	}
-	if texts := sess.QueueTexts(); len(texts) != 0 {
+	if texts := queueTexts(sess); len(texts) != 0 {
 		t.Fatalf("terminal rejection produced effects: %#v", texts)
 	}
 }

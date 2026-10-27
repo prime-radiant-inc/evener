@@ -106,12 +106,7 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 	// shipped build) is announced as a skip, mirroring the deploy sibling.
 	goos, goarch := hostTarget(t, host)
 
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
+	provider := newFakeLLMProvider(t)
 	// The controller hub runs on its own isolated HOME. Its providers.toml
 	// declares the same instance the disposable host will hold, so the local
 	// credentials store can be seeded through the controller's own conditional

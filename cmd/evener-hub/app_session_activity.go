@@ -17,7 +17,7 @@ func registerSessionActivityHandlers(server *appserver.Server, cfg hubcore.WebCo
 				return source.ThreadActivityRead(ctx, params)
 			},
 			func(entry hubcore.PastEntry) (appwire.SessionActivitySummary, error) {
-				params.Ref = appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String()
+				params.Ref = appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: entry.Meta.ID}.String()
 				return agent.LoadSessionActivitySummary(ctx, entry.StateDir, entry.Meta.ID, params)
 			})
 	})
@@ -27,7 +27,7 @@ func registerSessionActivityHandlers(server *appserver.Server, cfg hubcore.WebCo
 				return source.ThreadDelegatesList(ctx, params)
 			},
 			func(entry hubcore.PastEntry) (appwire.SessionDelegatesResponse, error) {
-				params.Ref = appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String()
+				params.Ref = appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: entry.Meta.ID}.String()
 				return agent.LoadSessionActivityDelegates(ctx, entry.StateDir, entry.Meta.ID, params)
 			})
 	})
@@ -37,7 +37,7 @@ func registerSessionActivityHandlers(server *appserver.Server, cfg hubcore.WebCo
 				return source.ThreadJobsList(ctx, params)
 			},
 			func(entry hubcore.PastEntry) (appwire.SessionJobsResponse, error) {
-				params.Ref = appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String()
+				params.Ref = appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: entry.Meta.ID}.String()
 				return agent.LoadSessionActivityJobs(ctx, entry.StateDir, entry.Meta.ID, params)
 			})
 	})
@@ -47,7 +47,7 @@ func registerSessionActivityHandlers(server *appserver.Server, cfg hubcore.WebCo
 				return source.ThreadWatchesList(ctx, params)
 			},
 			func(entry hubcore.PastEntry) (appwire.SessionWatchesResponse, error) {
-				params.Ref = appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String()
+				params.Ref = appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: entry.Meta.ID}.String()
 				return agent.LoadSessionActivityWatches(ctx, entry.StateDir, entry.Meta.ID, params)
 			})
 	})

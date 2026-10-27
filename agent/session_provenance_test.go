@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -164,9 +163,7 @@ func TestAcceptSteeringCarrierInputClearsCompletedProvenance(t *testing.T) {
 	if !ok {
 		t.Fatalf("claimSteeringCarrierTurn refused a queued steer")
 	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if err := sess.acceptSteeringCarrierInput(ctx, queuedClientMutationIdentity{ClientMutationID: "carrier-prov-1", StableTurnID: turnID, SteeringCarrier: true}); err != nil {
 		t.Fatalf("acceptSteeringCarrierInput: %v", err)
 	}
@@ -316,7 +313,6 @@ func TestAcceptNotificationInputAdoptsRestoredCallerWatchSendProvenance(t *testi
 		WatchGeneration:         "wg_restore",
 	}
 	cfg := &watchConfig{
-		id:         "watch_restore",
 		watchID:    "watch_restore",
 		target:     "job_restore",
 		send:       &watchSendArgs{To: runtimeMessageAliasCaller},

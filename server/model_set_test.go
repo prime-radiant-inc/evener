@@ -76,7 +76,7 @@ func TestHandleAppThreadModelSet_JoinsSlashedModelUnconditionally(t *testing.T) 
 
 func TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn(t *testing.T) {
 	s := NewServer(ServerConfig{})
-	s.SetStatus(StatusInfo{SessionID: "s1", Model: "gpt-5.4", Profile: "openai"})
+	seedStatus(s, StatusInfo{SessionID: "s1", Model: "gpt-5.4", Profile: "openai"})
 	s.SetModelFunc(func(m string) error {
 		// Mirrors serve.go: the hook itself refreshes the cached session info
 		// synchronously after a successful switch, rather than waiting for the

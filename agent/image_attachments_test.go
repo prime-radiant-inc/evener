@@ -12,7 +12,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
@@ -164,8 +163,7 @@ func TestSession_Enqueue_DrainCarriesImagesIntoUserTurn(t *testing.T) {
 
 	// TRIPWIRE: scripted in-process adapter, no real I/O; the turn normally
 	// completes in well under a second. 30s only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "first input", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

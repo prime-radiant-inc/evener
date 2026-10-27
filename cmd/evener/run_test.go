@@ -539,8 +539,8 @@ func TestRunFastCheapModelValidation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unavailable --fast-cheap-model provider error")
 	}
-	if !errors.Is(err, errFastCheapProviderUnavailable) {
-		t.Fatalf("error = %v, want errFastCheapProviderUnavailable", err)
+	if !errors.Is(err, cmdutil.ErrFastCheapProviderUnavailable) {
+		t.Fatalf("error = %v, want cmdutil.ErrFastCheapProviderUnavailable", err)
 	}
 }
 

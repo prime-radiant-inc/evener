@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"primeradiant.com/evener/gittest"
+
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/events"
@@ -150,12 +152,12 @@ func FuzzSessionAuxExactProgram(f *testing.F) {
 		case 19:
 			s := newSession(t)
 			repo := t.TempDir()
-			runGitCmd(t, repo, "init")
+			gittest.Run(t, repo, "init")
 			if err := os.WriteFile(filepath.Join(repo, "tracked"), []byte("x"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			runGitCmd(t, repo, "add", "tracked")
-			runGitCmd(t, repo, "commit", "-m", "seed")
+			gittest.Run(t, repo, "add", "tracked")
+			gittest.Run(t, repo, "commit", "-m", "seed")
 			base := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 			s.swapEnvAndRefresh(base.WithWorkingDirectory(repo), nil)
 		}

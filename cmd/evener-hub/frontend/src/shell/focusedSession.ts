@@ -17,6 +17,7 @@
 // subscription does it; nothing reads a stale imperative value).
 
 import { parseZoomParams } from "../panes/zoom/intent";
+import { chromeStore } from "./chromeStore";
 import { refParam } from "./routing";
 import { currentSessionRef, useWorkspaceStore, workspaceStore } from "./workspace";
 
@@ -53,3 +54,19 @@ export function useFocusedActivityScopeRef(): string | null {
 /** Test-only: kept for the reset symmetry the suite files expect; the store
  * has no memory to clear (the scope derives fresh from the workspace). */
 export function resetFocusedActivityScopeForTests(): void {}
+
+// The document the focused reader lives in when Dockview adopted it into a
+// popout, else null: a popout is a separate window with its own DOM.
+export function focusedPaneDocument(): Document | null {
+  const focused = workspaceStore.getState().focusedPaneId;
+  return focused ? (chromeStore.getState().paneDocuments.get(focused) ?? null) : null;
+}
+
+// A blocking dialog is open where the user is looking: the opener's document
+// or the focused reader's own. A dialog in a popout the reader has left does
+// not count.
+export function modalOpenInFocusedWindows(): boolean {
+  const modalIn = (doc: Document): boolean => doc.querySelector('[aria-modal="true"]') !== null;
+  const focused = focusedPaneDocument();
+  return modalIn(document) || (focused !== null && modalIn(focused));
+}

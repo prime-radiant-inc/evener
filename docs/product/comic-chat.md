@@ -39,6 +39,10 @@ content is expanded in source order; missing or redacted content is not invented
 Routine tool text is hidden, while tool-produced images retain source attribution.
 The surrounding interface has no desktop title bars, menu bars or beveled chrome.
 
+On both phones and desktop, **Appearance** opens the View, Scene and expression
+controls in a popup. History controls and Send/Stop stay outside the popup so
+appearance settings do not crowd out the conversation when the keyboard opens.
+
 Comic and plain views preserve semantic reading positions through reflow. The
 root respects reduced motion and safe-area padding, and shared controls retain
 their keyboard behavior. Narrow-screen checks must reach the question choices,
@@ -161,8 +165,9 @@ its parent and healthy siblings stay usable.
 
 Saved positions contain the complete target session and expansion path, source
 entry and character offset, never transcript bodies. Restoration demands only the
-saved branch through the existing activity and history pagers. A newly loaded
-source waits for composed layout before any missing-source fallback. User
+saved branch through the existing activity and history pagers. In-flight history
+loads preserve the saved source and child path until loading finishes. A newly
+loaded source waits for composed layout before any missing-source fallback. User
 movement cancels pending restoration. A collapsed branch keeps its small anchor
 for reopening; a parent end target does not follow later child panels.
 If a saved child never hydrates and the shared owner confirms deletion,

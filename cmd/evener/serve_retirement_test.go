@@ -36,6 +36,27 @@ type serveRetireClock struct {
 	timers  []*serveRetireTimer
 }
 
+// newRetireDeps wires cleared serve deps with the fake retirement clock and
+// the retirement event recorder installed.
+func newRetireDeps(t *testing.T) (serveDeps, *clearTestState, []string, *serveRetireClock, *retireEventRecorder) {
+	t.Helper()
+	deps, state, args := newClearServeDeps(t)
+	clk := newServeRetireClock()
+	deps.retirementClock = clk
+	rec := newRetireEventRecorder()
+	deps.retirementObserve = rec.observe
+	return deps, state, args, clk, rec
+}
+
+// newRetirementServeEnv additionally appends the 1h daemon idle timeout and
+// resolves the run dir from the resulting args.
+func newRetirementServeEnv(t *testing.T) (serveDeps, *clearTestState, []string, *serveRetireClock, *retireEventRecorder, string) {
+	t.Helper()
+	deps, state, args, clk, rec := newRetireDeps(t)
+	args = append(args, "--daemon-idle-timeout", "1h")
+	return deps, state, args, clk, rec, serveArgValue(args, "--run-dir")
+}
+
 func newServeRetireClock() *serveRetireClock {
 	return &serveRetireClock{
 		now:     time.Unix(2000, 0).UTC(),
@@ -368,13 +389,7 @@ func runRetireServe(t *testing.T, deps serveDeps, state *clearTestState, args []
 // published, the rendezvous file is removed by the daemon's normal exit, the
 // transcript survives, and serve exits nil.
 func TestServeRetirementAutomaticExpiryReachesRelease(t *testing.T) {
-	deps, state, args := newClearServeDeps(t)
-	clk := newServeRetireClock()
-	deps.retirementClock = clk
-	rec := newRetireEventRecorder()
-	deps.retirementObserve = rec.observe
-	args = append(args, "--daemon-idle-timeout", "1h")
-	runDir := serveArgValue(args, "--run-dir")
+	deps, state, args, clk, rec, runDir := newRetirementServeEnv(t)
 
 	done := runRetireServe(t, deps, state, args)
 	rootID := rec.await(t, "root_published")
@@ -408,13 +423,7 @@ func TestServeRetirementAutomaticExpiryReachesRelease(t *testing.T) {
 // nothing (timer tick re-proves eligibility), and the daemon exits once.
 func TestServeRetirementManualTimerSingleOwner(t *testing.T) {
 	t.Run("manual first blocks the timer", func(t *testing.T) {
-		deps, state, args := newClearServeDeps(t)
-		clk := newServeRetireClock()
-		deps.retirementClock = clk
-		rec := newRetireEventRecorder()
-		deps.retirementObserve = rec.observe
-		args = append(args, "--daemon-idle-timeout", "1h")
-		runDir := serveArgValue(args, "--run-dir")
+		deps, state, args, clk, rec, runDir := newRetirementServeEnv(t)
 
 		done := runRetireServe(t, deps, state, args)
 		rec.await(t, "root_published")
@@ -463,13 +472,7 @@ func TestServeRetirementManualTimerSingleOwner(t *testing.T) {
 	})
 
 	t.Run("timer first blocks manual", func(t *testing.T) {
-		deps, state, args := newClearServeDeps(t)
-		clk := newServeRetireClock()
-		deps.retirementClock = clk
-		rec := newRetireEventRecorder()
-		deps.retirementObserve = rec.observe
-		args = append(args, "--daemon-idle-timeout", "1h")
-		runDir := serveArgValue(args, "--run-dir")
+		deps, state, args, clk, rec, runDir := newRetirementServeEnv(t)
 
 		done := runRetireServe(t, deps, state, args)
 		rec.await(t, "root_published")
@@ -510,13 +513,7 @@ func TestServeRetirementManualTimerSingleOwner(t *testing.T) {
 // so every settle-time re-arm is the full 1h; the shortened 1m arm is the one
 // that differs.
 func TestServeIdleTimeoutSetReArmsDeadlineAndExits(t *testing.T) {
-	deps, state, args := newClearServeDeps(t)
-	clk := newServeRetireClock()
-	deps.retirementClock = clk
-	rec := newRetireEventRecorder()
-	deps.retirementObserve = rec.observe
-	args = append(args, "--daemon-idle-timeout", "1h")
-	runDir := serveArgValue(args, "--run-dir")
+	deps, state, args, clk, rec, runDir := newRetirementServeEnv(t)
 
 	done := runRetireServe(t, deps, state, args)
 	rootID := rec.await(t, "root_published")
@@ -844,11 +841,7 @@ func TestServeIdleTimeoutSetUndoYieldsToNewerWrites(t *testing.T) {
 // RPC over a real WebSocket: dispatchDaemonRPC bypasses the transport where
 // the response is written, so it cannot observe a lost response.
 func TestServeManualRetirementResponseSurvivesServeCancel(t *testing.T) {
-	deps, state, args := newClearServeDeps(t)
-	clk := newServeRetireClock()
-	deps.retirementClock = clk
-	rec := newRetireEventRecorder()
-	deps.retirementObserve = rec.observe
+	deps, state, args, _, rec := newRetireDeps(t)
 
 	done := runRetireServe(t, deps, state, args)
 	rec.await(t, "root_published")
@@ -890,13 +883,7 @@ func TestServeManualRetirementResponseSurvivesServeCancel(t *testing.T) {
 // context: the consumer is parked immediately after Commit, its request context
 // is canceled, and the process must still reach "released" and exit.
 func TestServeRetirementRequestCancelAfterCommitStillExits(t *testing.T) {
-	deps, state, args := newClearServeDeps(t)
-	clk := newServeRetireClock()
-	deps.retirementClock = clk
-	rec := newRetireEventRecorder()
-	deps.retirementObserve = rec.observe
-	args = append(args, "--daemon-idle-timeout", "1h")
-	runDir := serveArgValue(args, "--run-dir")
+	deps, state, args, clk, rec, runDir := newRetirementServeEnv(t)
 
 	done := runRetireServe(t, deps, state, args)
 	rec.await(t, "root_published")
@@ -1031,13 +1018,7 @@ func TestServeRetirementPostCommitTeardownFailureStillAccepted(t *testing.T) {
 // cmd/evener-hub's resumeAfterConfirmedRetirement; a preparing claim that later
 // aborts settles back to "resident" and can never be reached through that gate.
 func TestServeRetirementPreparingRefusalTypesAsPreparing(t *testing.T) {
-	deps, state, args := newClearServeDeps(t)
-	clk := newServeRetireClock()
-	deps.retirementClock = clk
-	rec := newRetireEventRecorder()
-	deps.retirementObserve = rec.observe
-	args = append(args, "--daemon-idle-timeout", "1h")
-	runDir := serveArgValue(args, "--run-dir")
+	deps, state, args, clk, rec, runDir := newRetirementServeEnv(t)
 
 	done := runRetireServe(t, deps, state, args)
 	rec.await(t, "root_published")
@@ -1096,11 +1077,7 @@ func TestServeRetirementPreparingRefusalTypesAsPreparing(t *testing.T) {
 // with a conflict, no claim is consumed, and the daemon keeps serving; the
 // CURRENT generation is then accepted and the daemon exits cleanly.
 func TestServeRetirementStaleIdentityRefused(t *testing.T) {
-	deps, state, args := newClearServeDeps(t)
-	clk := newServeRetireClock()
-	deps.retirementClock = clk
-	rec := newRetireEventRecorder()
-	deps.retirementObserve = rec.observe
+	deps, state, args, _, rec := newRetireDeps(t)
 
 	done := runRetireServe(t, deps, state, args)
 	rec.await(t, "root_published")
@@ -1205,11 +1182,7 @@ func TestServeRetirementNegativeTimeoutRejected(t *testing.T) {
 // expiry timer is armed, no claim is consumed across days of virtual time,
 // and the lifecycle status reports the disabled timeout explicitly.
 func TestServeRetirementStandaloneDefaultDoesNotRetire(t *testing.T) {
-	deps, state, args := newClearServeDeps(t)
-	clk := newServeRetireClock()
-	deps.retirementClock = clk
-	rec := newRetireEventRecorder()
-	deps.retirementObserve = rec.observe
+	deps, state, args, clk, rec := newRetireDeps(t)
 
 	done := runRetireServe(t, deps, state, args)
 	rec.await(t, "root_published")
@@ -1290,13 +1263,7 @@ func newGatedReadServeDeps(t *testing.T) (serveDeps, *clearTestState, []string, 
 // a shape cmd/evener-hub's isLifecycleRetiringError never matches, so
 // resumeAfterConfirmedRetirement never fires.
 func TestServeRetirementAdmissionRefusesMutationWithTypedLifecycleError(t *testing.T) {
-	deps, state, args := newClearServeDeps(t)
-	clk := newServeRetireClock()
-	deps.retirementClock = clk
-	rec := newRetireEventRecorder()
-	deps.retirementObserve = rec.observe
-	args = append(args, "--daemon-idle-timeout", "1h")
-	runDir := serveArgValue(args, "--run-dir")
+	deps, state, args, clk, rec, runDir := newRetirementServeEnv(t)
 
 	done := runRetireServe(t, deps, state, args)
 	rec.await(t, "root_published")
@@ -1460,11 +1427,7 @@ const serveRetireResponseDeadline = 20 * time.Second
 // This drives the RPC over a real WebSocket: dispatchDaemonRPC bypasses the
 // transport where the response is written, so it cannot observe the ordering.
 func TestServeManualRetirementResponsePrecedesExitCancellation(t *testing.T) {
-	deps, state, args := newClearServeDeps(t)
-	clk := newServeRetireClock()
-	deps.retirementClock = clk
-	rec := newRetireEventRecorder()
-	deps.retirementObserve = rec.observe
+	deps, state, args, _, rec := newRetireDeps(t)
 
 	responseDelivered := make(chan struct{})
 	var deliveredOnce sync.Once
@@ -1535,11 +1498,7 @@ func TestServeManualRetirementResponsePrecedesExitCancellation(t *testing.T) {
 // before the consumer and the replacement stays resident; without it the
 // replacement is retired and serve exits.
 func TestServeRetirementClaimRevalidatesOwnershipAfterClear(t *testing.T) {
-	deps, state, args := newClearServeDeps(t)
-	clk := newServeRetireClock()
-	deps.retirementClock = clk
-	rec := newRetireEventRecorder()
-	deps.retirementObserve = rec.observe
+	deps, state, args, _, rec := newRetireDeps(t)
 
 	done := runRetireServe(t, deps, state, args)
 	rec.await(t, "root_published")
@@ -1635,11 +1594,7 @@ func TestServeRetirementClaimRevalidatesOwnershipAfterClear(t *testing.T) {
 // is cancelled, so a serve that returns then has left Run running behind it —
 // exactly the goroutine that can race a test's TempDir removal or leak check.
 func TestServeShutdownJoinsRetirementLoop(t *testing.T) {
-	deps, state, args := newClearServeDeps(t)
-	clk := newServeRetireClock()
-	deps.retirementClock = clk
-	rec := newRetireEventRecorder()
-	deps.retirementObserve = rec.observe
+	deps, state, args, clk, rec := newRetireDeps(t)
 	args = append(args, "--daemon-idle-timeout", "1h")
 
 	done := runRetireServe(t, deps, state, args)

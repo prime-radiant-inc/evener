@@ -30,6 +30,16 @@ const backgroundJobsBrowserCount = 151
 // Capture the supplied evidence destination before that environment redirect.
 var backgroundJobsArtifactRoot = os.Getenv("EVENER_SCRATCH_DIR")
 
+// backgroundJobsEvidenceRoot is where the guards keep evidence that must outlive
+// the test: the supplied destination, else the kept temp dir (the redirected
+// test temp root is removed when the test ends).
+func backgroundJobsEvidenceRoot() string {
+	if backgroundJobsArtifactRoot != "" {
+		return backgroundJobsArtifactRoot
+	}
+	return sandboxtest.KeptTempDir()
+}
+
 // The only scripted boundary is the provider. Jobs, journal eligibility, paging,
 // subscriptions, output and browser state all belong to the real stack.
 func TestBackgroundJobsBrowser(t *testing.T) {
@@ -46,11 +56,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 	t.Cleanup(provider.Close)
 	stack := startHubStack(t, provider)
 	client := stack.dialRPC(ctx, t)
-	artifactRoot := backgroundJobsArtifactRoot
-	if artifactRoot == "" {
-		artifactRoot = sandboxtest.KeptTempDir()
-	}
-	artifacts, err := os.MkdirTemp(artifactRoot, "backgroundjobsguard-")
+	artifacts, err := os.MkdirTemp(backgroundJobsEvidenceRoot(), "backgroundjobsguard-")
 	if err != nil {
 		t.Fatal(err)
 	}

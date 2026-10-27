@@ -42,10 +42,7 @@ func TestHubSearchListsALiveSessionOnceAsLive(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{PID: 1, WorkingDir: "/projects/alpha", SessionID: liveID, Status: appwire.ThreadStatusActive})
 
 	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past, Roster: roster}, appwire.SearchParams{Query: "frobnitz"}, time.Now())
@@ -87,10 +84,7 @@ func TestHubSearchLivePromptMatchSurvivesManyNewerPastMatches(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{PID: 1, WorkingDir: "/projects/alpha", SessionID: liveID, Status: appwire.ThreadStatusActive})
 
 	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past, Roster: roster}, appwire.SearchParams{Query: "frobnitz"}, now)
@@ -131,10 +125,7 @@ func TestHubSearchScopesByTheRailsArchiveRules(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	archive := hubcore.NewArchiveStore(filepath.Join(root, "index.db"))
 	for _, d := range []struct {
 		kind, id string
@@ -214,10 +205,7 @@ func TestHubSearchDegradesWhenArchiveDecisionsFail(t *testing.T) {
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: sessionID, UpdatedAt: time.Now(), Name: "Frobnitz audit"}); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	// A file that exists but is not a SQLite database: Decisions() fails
 	// deterministically rather than taking the "no store configured" no-op
 	// path an empty dbPath would.
@@ -270,10 +258,7 @@ func TestHubSearchDegradesWhenMessageIndexFails(t *testing.T) {
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: sessionID, UpdatedAt: time.Now(), Name: "Frobnitz audit"}); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	index, err := hubcore.OpenMessageSearch(filepath.Join(t.TempDir(), "search.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -315,10 +300,7 @@ func TestHubSearchInSessionsCarriesHitsWithSnippets(t *testing.T) {
 	}
 	_, sessionID := seedSearchSession(t, projectsRoot, "alpha", now.Add(-time.Hour), turns...)
 	seedSearchSession(t, projectsRoot, "beta", now.Add(-time.Hour), schema.NewTurn(schema.TurnUserInput, llm.User("unrelated work")))
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	index, err := hubcore.OpenMessageSearch(filepath.Join(t.TempDir(), "search.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -369,10 +351,7 @@ func TestHubSearchInSessionsFollowsTheScope(t *testing.T) {
 	projectsRoot := filepath.Join(root, "projects")
 	recent, recentID := seedSearchSession(t, projectsRoot, "alpha", now.Add(-time.Hour), schema.NewTurn(schema.TurnUserInput, llm.User("settle it")))
 	_, oldID := seedSearchSession(t, projectsRoot, "beta", now.Add(-20*24*time.Hour), schema.NewTurn(schema.TurnUserInput, llm.User("settle it")))
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	index, err := hubcore.OpenMessageSearch(filepath.Join(root, "search.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -416,10 +395,7 @@ func TestHubSearchOmitsALiveSubagentFromTheLiveGroup(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	// The subagent has its own live daemon and its normal turn-ended resting
 	// state ("awaiting"), with no real ask_pending; its parent is not live.
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
@@ -478,10 +454,7 @@ func TestHubSearchInSessionsIncludesALiveSessionMatchedOnlyByMessage(t *testing.
 	projectsRoot := filepath.Join(root, "projects")
 	liveEntry, liveID := seedSearchSession(t, projectsRoot, "alpha", now, schema.NewTurn(schema.TurnUserInput, llm.User("settle the drain")))
 	_, endedID := seedSearchSession(t, projectsRoot, "beta", now.Add(-time.Hour), schema.NewTurn(schema.TurnUserInput, llm.User("settle it too")))
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	index, err := hubcore.OpenMessageSearch(filepath.Join(root, "search.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -560,10 +533,7 @@ func TestHubSearchLiveArchivedFallsBackToThePastEntrysProjectWhenRosterCarriesNo
 	now := time.Now()
 	projectsRoot := filepath.Join(t.TempDir(), "projects")
 	pe, sessionID := seedSearchSession(t, projectsRoot, "alpha", now, schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
 	if err := archive.Set("", "project", filepath.Base(pe.StateDir), true, now); err != nil {
 		t.Fatal(err)

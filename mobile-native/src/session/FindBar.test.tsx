@@ -13,7 +13,6 @@ vi.mock("react-native", async () => {
 	const mock = (await import("../renderNative.testkit")).nativeModuleMock();
 	return { ...mock, AccessibilityInfo: { ...mock.AccessibilityInfo, announceForAccessibility: announce } };
 });
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const palette = paletteFor("light");
 

@@ -462,7 +462,7 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "BeginModelRequest"}:                                    1,
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "CompleteModelRequest"}:                                 1,
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "AbortModelRequest"}:                                    1,
-	{filename: "session_tools.go", function: "stableDelegateSendTool", kind: "delivery commit method", symbol: "Complete"}:                                                             1,
+	{filename: "session_tools_delegate.go", function: "stableDelegateSendTool", kind: "delivery commit method", symbol: "Complete"}:                                                    1,
 	{filename: "session_tools.go", function: "abortDelegateToolCallDeliveryCommits", kind: "delivery commit method", symbol: "Complete"}:                                               1,
 	{filename: "session_tools.go", function: "(*Session).abortDelegateDeliveryCommits", kind: "delivery commit method", symbol: "Complete"}:                                            1,
 	{filename: "session_tools.go", function: "(*Session).queueDelegateDeliveryCommit", kind: "delivery commit method", symbol: "Complete"}:                                             1,
@@ -499,7 +499,7 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "session_attention.go", function: "(*Session).finishAttentionTurn", kind: "session attention method", symbol: "resolveAttentionDurably"}:                                1,
 	{filename: "session_attention.go", function: "(*Session).finishRootDelegateAttentionTurn", kind: "session attention method", symbol: "resolveAttentionDurably"}:                    1,
 	{filename: "session_events.go", function: "(*Session).SetDescendantEventFunc", kind: "lifecycle method", symbol: "Snapshot"}:                                                       1,
-	{filename: "session_tools_jobs.go", function: "stableDelegateRowsForSession", kind: "lifecycle method", symbol: "Snapshot"}:                                                        1,
+	{filename: "session_tools_job_list.go", function: "stableDelegateRowsForSession", kind: "lifecycle method", symbol: "Snapshot"}:                                                    1,
 	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopAbandonable", kind: "lifecycle method", symbol: "stopReconcileRequirements"}:                     1,
 	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopAbandonable", kind: "lifecycle method", symbol: "Reconcile"}:                                     1,
 }

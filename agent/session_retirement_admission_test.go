@@ -599,27 +599,22 @@ func drainRetirementTestEvents(root *Session) []events.EventKind {
 	}
 }
 
-func TestRetirementAdmissionFollowUp(t *testing.T) {
+func TestRetirementAdmissionEnqueue(t *testing.T) {
 	t.Parallel()
 	root, _ := retirementRefusalRoot(t)
-	enqueue, ok := any(root).(interface{ FollowUp(string) error })
-	if !ok {
-		t.Fatal("FollowUp cannot report retirement refusal")
+	if err := root.Enqueue(t.Context(), "opaque-queued"); !errors.Is(err, ErrRetirementUnavailable) {
+		t.Fatalf("Enqueue error: %v", err)
 	}
-	before := append([]string(nil), root.followups...)
-	if err := enqueue.FollowUp("opaque-followup"); !errors.Is(err, ErrRetirementUnavailable) {
-		t.Fatalf("FollowUp error: %v", err)
-	}
-	if !reflect.DeepEqual(before, root.followups) {
-		t.Fatal("refused followup changed queue")
+	if got := root.QueueDepth(); got != 0 {
+		t.Fatalf("refused enqueue changed queue depth to %d", got)
 	}
 }
 
-func TestRetirementAcceptedFollowUpBlocks(t *testing.T) {
+func TestRetirementAcceptedQueuedInputBlocks(t *testing.T) {
 	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
-	if err := root.FollowUp("opaque-followup"); err != nil {
+	if err := root.Enqueue(t.Context(), "opaque-queued"); err != nil {
 		t.Fatal(err)
 	}
 	c, err := NewRetirementController(0, clock.Real())
@@ -631,7 +626,7 @@ func TestRetirementAcceptedFollowUpBlocks(t *testing.T) {
 	}
 	claim, snapshot, err := c.TryClaim(true)
 	if err != nil || claim != nil || !slices.ContainsFunc(snapshot.Blockers, func(b RetirementBlocker) bool { return b.Category == "input" && b.SessionID == root.ID() }) {
-		t.Fatalf("accepted followup lost blocker: %v %+v", err, snapshot)
+		t.Fatalf("accepted queued input lost blocker: %v %+v", err, snapshot)
 	}
 }
 

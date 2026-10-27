@@ -36,7 +36,7 @@ Declarative workflow templates are intentionally not specified here. Agent `task
 
 These current files are the implementation surface this contract should cite and preserve where possible:
 
-- Job/delegate model-facing tools: `agent/session_tools_jobs.go`, `agent/job_delegate.go`, `agent/internal/tool/definitions.go`.
+- Job/delegate model-facing tools: `agent/session_tools_jobs.go` (with `session_tools_job_watch.go`, `session_tools_job_list.go`, `session_tools_job_status_stop.go`, `session_tools_delegate_send.go`), `agent/job_delegate.go`, `agent/internal/tool/definitions.go`.
 - Subagent runtime and policy checks: `agent/subagents.go`.
 - Subagent in-memory manager/status: `agent/subagent_manager.go`, `agent/status.go`.
 - Subagent policy tests, including grant-tool rejection: `agent/plugin_agents_integration_test.go`.
@@ -47,7 +47,7 @@ These current files are the implementation surface this contract should cite and
 - Plugin hook parsing: `agent/plugin/hooks.go`, `agent/plugin/hooks_test.go`.
 - Hook runner and prompt/model hook helpers: `agent/internal/hooks/hooks.go`.
 - Tool execution and model calls: `agent/session_tools.go`, `agent/session_model_call.go`, `agent/session_stream.go`.
-- Standalone helper examples: `agent/tool_web_fetch.go`, `agent/session_namer.go`, `agent/session_tools.go` / `describeImage`, `agent/eval_probes.go`, `agent/internal/contextmgr/context_manager.go`, `agent/internal/contextmgr/strategy_memory_crystals.go`, `agent/internal/contextmgr/strategy_checkpoint_pred.go`.
+- Standalone helper examples: `agent/tool_web_fetch.go`, `agent/session_namer.go`, `agent/session_tools_vision.go` / `describeImage`, `agent/eval_probes.go`, `agent/internal/contextmgr/summarize_fold.go`, `agent/internal/contextmgr/strategy_memory_crystals.go`, `agent/internal/contextmgr/strategy_checkpoint_pred.go`.
 - LLM client/retry/rate-limit package: `llm/`.
 - Fork and lineage metadata: `agent/fork.go`, `agent/fork_test.go`, `agent/session_init.go`, `agent/session_state.go`, `agent/transcript/transcript.go`.
 - Transcript discovery/read tools and outline pivots: `agent/session_tools_find.go` for discovery/`children_of`, `agent/session_tools_transcript.go` for transcript reads, `agent/session_outline.go`, `docs/tools/transcripts.md`.

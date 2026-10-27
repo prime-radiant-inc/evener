@@ -79,7 +79,6 @@ vi.mock("./MoreOptions", () => ({ MoreOptions: () => null }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 // The sheet's share handoff reads the app group; this suite's sheet carries no
 // share, and the module cannot load under vitest.
 vi.mock("expo-file-system", () => ({ Paths: { appleSharedContainers: {} } }));

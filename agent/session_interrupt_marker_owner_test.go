@@ -43,10 +43,7 @@ func TestInterruptMarkerOfMutationNamedTurnCarriesTheTurn(t *testing.T) {
 		},
 	}))
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	if err := sess.ensureClientMutationStore(); err != nil {
 		t.Fatalf("ensureClientMutationStore: %v", err)
 	}

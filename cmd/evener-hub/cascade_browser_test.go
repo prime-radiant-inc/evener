@@ -349,7 +349,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 	var branch appwire.SessionDelegate
 	for level := range 6 {
 		owner := refs[level]
-		page, err := client.ThreadDelegatesList(ctx, appwire.SessionActivityListParams{Ref: owner, Scope: appwire.SessionActivityScopeSession, Limit: 200})
+		page, err := cascadeOwnerDelegates(ctx, client, owner)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -634,6 +634,30 @@ func TestAgentCascadeBrowser(t *testing.T) {
 	case err := <-scriptErr:
 		t.Fatal(err)
 	default:
+	}
+}
+
+// cascadeOwnerDelegates reads every direct delegate of owner. A page can be
+// empty and incomplete while the bounded scan advances through a long
+// transcript, so the walk follows the cursor to the end.
+func cascadeOwnerDelegates(ctx context.Context, client *appwire.Client, owner string) (appwire.SessionDelegatesResponse, error) {
+	var all appwire.SessionDelegatesResponse
+	cursor := ""
+	for {
+		page, err := client.ThreadDelegatesList(ctx, appwire.SessionActivityListParams{Ref: owner, Scope: appwire.SessionActivityScopeSession, Cursor: cursor, Limit: 200})
+		if err != nil {
+			return all, err
+		}
+		all.Context = page.Context
+		all.Delegates = append(all.Delegates, page.Delegates...)
+		all.Page = page.Page
+		if page.Page.Complete {
+			return all, nil
+		}
+		if page.Page.NextCursor == "" {
+			return all, fmt.Errorf("incomplete delegate page for %s has no continuation", owner)
+		}
+		cursor = page.Page.NextCursor
 	}
 }
 

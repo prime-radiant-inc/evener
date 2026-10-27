@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useSyncExternalStore } from "react";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { ACTIVITY_POLL_MS, ActivityPoll, isFreshRead } from "./activityPoll";
 
 const noSubscription = () => () => {};

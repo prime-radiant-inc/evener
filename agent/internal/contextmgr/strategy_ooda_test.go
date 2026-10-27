@@ -15,6 +15,16 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// newOODATestManager builds the manager every OODA orient test drives: an
+// OpenAI profile with the given window, the compaction thresholds the caller
+// names (in newCompactionManager's order), and the transcript tools the
+// orient text names.
+func newOODATestManager(client *llm.Client, contextWindow int, observationMask, thinkingClear, checkpoint, summarize float64) *Manager {
+	cm := newCompactionManager(client, contextWindow, observationMask, thinkingClear, checkpoint, summarize)
+	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
+	return cm
+}
+
 func TestOODAStrategy_SatisfiesInterface(t *testing.T) {
 	var _ Strategy = (*OODAStrategy)(nil)
 }
@@ -43,32 +53,12 @@ func TestOODAStrategy_Tools_InheritsFromSessionLogStrategy(t *testing.T) {
 
 func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 	client := llm.NewClient()
-	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client, cheapmodel.New(client))
+	// Thresholds high so no compaction occurs.
+	cm := newOODATestManager(client, 1000, 0.99, 0.99, 0.99, 0.99)
+	sls, _ := newTestSessionLogStrategy(t, cm)
+	ooda := &OODAStrategy{SessionLogStrategy: sls}
 
-	// Set thresholds high so no compaction occurs.
-	cm.ObservationMaskThreshold = 0.99
-	cm.ThinkingClearThreshold = 0.99
-	cm.CheckpointThreshold = 0.99
-	cm.SummarizeThreshold = 0.99
-	cm.PreserveRecentTurns = 2
-	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
-
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "test.log.jsonl")
-	sessionLog := mustNewSessionLog(t, logPath)
-
-	ooda := &OODAStrategy{
-		SessionLogStrategy: &SessionLogStrategy{
-			cm:  cm,
-			log: sessionLog,
-		},
-	}
-
-	history := []schema.Turn{
-		{Kind: schema.TurnUserInput, Message: llm.User("hello")},
-		{Kind: schema.TurnAssistant, Message: llm.Assistant("world")},
-	}
+	history := pingPongHistory("hello", "world")
 
 	err := ooda.ManageContext(context.Background(), &history, 0, func(events.EventKind, events.EventData) {})
 	if err != nil {
@@ -83,20 +73,10 @@ func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 
 func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *testing.T) {
 	client := llm.NewClient()
-	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client, cheapmodel.New(client))
-
-	// Set thresholds high so no compaction occurs.
-	cm.ObservationMaskThreshold = 0.99
-	cm.ThinkingClearThreshold = 0.99
-	cm.CheckpointThreshold = 0.99
-	cm.SummarizeThreshold = 0.99
-	cm.PreserveRecentTurns = 2
-	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
-
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "test.log.jsonl")
-	sessionLog := mustNewSessionLog(t, logPath)
+	// Thresholds high so no compaction occurs.
+	cm := newOODATestManager(client, 1000, 0.99, 0.99, 0.99, 0.99)
+	sls, sessionLog := newTestSessionLogStrategy(t, cm)
+	ooda := &OODAStrategy{SessionLogStrategy: sls}
 
 	// Pre-populate the session log with entries.
 	_ = sessionLog.Append(sessionlog.SessionLogEntry{
@@ -113,17 +93,7 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 		FilesTouched: []string{"auth.go"},
 	})
 
-	ooda := &OODAStrategy{
-		SessionLogStrategy: &SessionLogStrategy{
-			cm:  cm,
-			log: sessionLog,
-		},
-	}
-
-	history := []schema.Turn{
-		{Kind: schema.TurnUserInput, Message: llm.User("hello")},
-		{Kind: schema.TurnAssistant, Message: llm.Assistant("world")},
-	}
+	history := pingPongHistory("hello", "world")
 
 	var reported int
 	var reportedCalled bool
@@ -166,19 +136,9 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 
 func TestOODAStrategy_ManageContext_OrientTextUsesTranscriptTools(t *testing.T) {
 	client := llm.NewClient()
-	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client, cheapmodel.New(client))
-
-	cm.ObservationMaskThreshold = 0.99
-	cm.ThinkingClearThreshold = 0.99
-	cm.CheckpointThreshold = 0.99
-	cm.SummarizeThreshold = 0.99
-	cm.PreserveRecentTurns = 2
-	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
-
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "test.log.jsonl")
-	sessionLog := mustNewSessionLog(t, logPath)
+	cm := newOODATestManager(client, 1000, 0.99, 0.99, 0.99, 0.99)
+	sls, sessionLog := newTestSessionLogStrategy(t, cm)
+	ooda := &OODAStrategy{SessionLogStrategy: sls}
 
 	_ = sessionLog.Append(sessionlog.SessionLogEntry{
 		Turn:    1,
@@ -187,17 +147,7 @@ func TestOODAStrategy_ManageContext_OrientTextUsesTranscriptTools(t *testing.T) 
 		Outcome: "success",
 	})
 
-	ooda := &OODAStrategy{
-		SessionLogStrategy: &SessionLogStrategy{
-			cm:  cm,
-			log: sessionLog,
-		},
-	}
-
-	history := []schema.Turn{
-		{Kind: schema.TurnUserInput, Message: llm.User("hello")},
-		{Kind: schema.TurnAssistant, Message: llm.Assistant("world")},
-	}
+	history := pingPongHistory("hello", "world")
 
 	err := ooda.ManageContext(context.Background(), &history, 0, func(events.EventKind, events.EventData) {})
 	if err != nil {
@@ -218,20 +168,10 @@ func TestOODAStrategy_ManageContext_OrientTextUsesTranscriptTools(t *testing.T) 
 
 func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 	client := llm.NewClient()
-	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client, cheapmodel.New(client))
-
-	// Set thresholds high so no compaction occurs.
-	cm.ObservationMaskThreshold = 0.99
-	cm.ThinkingClearThreshold = 0.99
-	cm.CheckpointThreshold = 0.99
-	cm.SummarizeThreshold = 0.99
-	cm.PreserveRecentTurns = 2
-	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
-
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "test.log.jsonl")
-	sessionLog := mustNewSessionLog(t, logPath)
+	// Thresholds high so no compaction occurs.
+	cm := newOODATestManager(client, 1000, 0.99, 0.99, 0.99, 0.99)
+	sls, sessionLog := newTestSessionLogStrategy(t, cm)
+	ooda := &OODAStrategy{SessionLogStrategy: sls}
 
 	// Create a large log entry that exceeds 80k chars.
 	largeSummary := strings.Repeat("x", 85000)
@@ -242,17 +182,7 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 		Outcome: "success",
 	})
 
-	ooda := &OODAStrategy{
-		SessionLogStrategy: &SessionLogStrategy{
-			cm:  cm,
-			log: sessionLog,
-		},
-	}
-
-	history := []schema.Turn{
-		{Kind: schema.TurnUserInput, Message: llm.User("hello")},
-		{Kind: schema.TurnAssistant, Message: llm.Assistant("world")},
-	}
+	history := pingPongHistory("hello", "world")
 
 	err := ooda.ManageContext(context.Background(), &history, 0, func(events.EventKind, events.EventData) {})
 	if err != nil {
@@ -282,20 +212,11 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 // 3-byte runes start on a grid that puts byte 80000 inside a rune.
 func TestOODAStrategy_ManageContext_TruncationNeverSplitsRune(t *testing.T) {
 	client := llm.NewClient()
-	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client, cheapmodel.New(client))
+	// Thresholds high so no compaction occurs.
+	cm := newOODATestManager(client, 1000, 0.99, 0.99, 0.99, 0.99)
+	sls, sessionLog := newTestSessionLogStrategy(t, cm)
+	ooda := &OODAStrategy{SessionLogStrategy: sls}
 
-	// Set thresholds high so no compaction occurs.
-	cm.ObservationMaskThreshold = 0.99
-	cm.ThinkingClearThreshold = 0.99
-	cm.CheckpointThreshold = 0.99
-	cm.SummarizeThreshold = 0.99
-	cm.PreserveRecentTurns = 2
-	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
-
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "test.log.jsonl")
-	sessionLog := mustNewSessionLog(t, logPath)
 	_ = sessionLog.Append(sessionlog.SessionLogEntry{
 		Turn:    1,
 		Action:  "shell",
@@ -303,17 +224,7 @@ func TestOODAStrategy_ManageContext_TruncationNeverSplitsRune(t *testing.T) {
 		Outcome: "success",
 	})
 
-	ooda := &OODAStrategy{
-		SessionLogStrategy: &SessionLogStrategy{
-			cm:  cm,
-			log: sessionLog,
-		},
-	}
-
-	history := []schema.Turn{
-		{Kind: schema.TurnUserInput, Message: llm.User("hello")},
-		{Kind: schema.TurnAssistant, Message: llm.Assistant("world")},
-	}
+	history := pingPongHistory("hello", "world")
 
 	err := ooda.ManageContext(context.Background(), &history, 0, func(events.EventKind, events.EventData) {})
 	if err != nil {
@@ -331,20 +242,10 @@ func TestOODAStrategy_ManageContext_TruncationNeverSplitsRune(t *testing.T) {
 
 func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 	client := llm.NewClient()
-	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client, cheapmodel.New(client))
-
-	// Set low thresholds to trigger compaction.
-	cm.ObservationMaskThreshold = 0.05
-	cm.ThinkingClearThreshold = 0.95
-	cm.CheckpointThreshold = 0.95
-	cm.SummarizeThreshold = 0.99
-	cm.PreserveRecentTurns = 2
-	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
-
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "test.log.jsonl")
-	sessionLog := mustNewSessionLog(t, logPath)
+	// Low thresholds to trigger compaction.
+	cm := newOODATestManager(client, 1000, 0.05, 0.95, 0.95, 0.99)
+	sls, sessionLog := newTestSessionLogStrategy(t, cm)
+	ooda := &OODAStrategy{SessionLogStrategy: sls}
 
 	_ = sessionLog.Append(sessionlog.SessionLogEntry{
 		Turn:    1,
@@ -352,13 +253,6 @@ func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 		Summary: "Did something",
 		Outcome: "success",
 	})
-
-	ooda := &OODAStrategy{
-		SessionLogStrategy: &SessionLogStrategy{
-			cm:  cm,
-			log: sessionLog,
-		},
-	}
 
 	// Build a history with large content to trigger compaction.
 	largeContent := strings.Repeat("x", 30000)

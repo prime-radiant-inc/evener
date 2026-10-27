@@ -756,7 +756,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 		// Close(). Both joins are therefore bounded by the shared close budget.
 		s.joinWithinCloseBudget(budgetCtx, &s.sendersWG, "detached event emitters")
 		s.releaseAPILogRoute()
-		// Close under eventsMu so a caller-owned emit() (Enqueue/DrainAsSteer or
+		// Close under eventsMu so a caller-owned emit() (the client-mutation queue handlers or
 		// the ProcessInput loop — goroutines the session cannot join) can never
 		// send on the closed channel. This replaces the old emit() recover().
 		s.eventsMu.Lock()
@@ -985,13 +985,12 @@ func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate b
 
 // drainInputs is the snapshot the drain loop feeds selectDrainNextAction after a
 // completed (non-error) turn: the kind of the turn that just ran, whether a goal
-// continuation is already deferred, the popped follow-up text and queued message
+// continuation is already deferred, the popped queued message
 // (its text plus image and selection counts), whether notification work is pending, and
 // whether the turn just rested SessionAwaiting (spec §5.3's drain-ladder gate).
 type drainInputs struct {
 	RanKind              EntryKind
 	HaveDeferredCont     bool
-	FollowUp             string
 	QueuedText           string
 	QueuedImages         int
 	QueuedSkills         int
@@ -1009,7 +1008,7 @@ type drainInputs struct {
 	// could not persist, most often. No autonomous turn runs behind it -- a
 	// notification or continuation would drain the steer under a turn id that
 	// is not the receipt's -- so the input settles and the next external wake
-	// carries the steer. User work (a follow-up, a queued message) still runs.
+	// carries the steer. User work (a queued message) still runs.
 	SteeringParked bool
 }
 
@@ -1017,11 +1016,9 @@ type drainInputs struct {
 type drainAction int
 
 const (
-	// runFollowUp runs the popped per-turn follow-up as the next turn.
-	runFollowUp drainAction = iota
 	// runQueued runs the popped queued user message -- or the steering carrier
 	// claimed in its place -- as the next turn.
-	runQueued
+	runQueued drainAction = iota
 	// armGoalGate marks that the goal-continuation gate folds this turn and, with no
 	// notification pending, the resulting turn is the deferred continuation (if the
 	// fold arms one) or idle.
@@ -1043,8 +1040,8 @@ const (
 // SessionAwaiting.
 //
 // Awaiting is checked first and overrides every other rung (spec §5.3's
-// drain-ladder gate): a turn that just posted a question holds its follow-up,
-// notification, and goal rungs — none of them may drive the model past the
+// drain-ladder gate): a turn that just posted a question holds its
+// notification and goal rungs — none of them may drive the model past the
 // unanswered questions — and only the queued-input rung stays live, because a
 // message the user queued mid-turn IS the reply (they are demonstrably present).
 //
@@ -1055,8 +1052,8 @@ const (
 // instead would report the session idle while the user's drained text is
 // still undispatched (issue #1308).
 //
-// Otherwise, priority: a pending follow-up, then a queued user message (or
-// the carrier), then a pending notification, then the goal gate's deferred
+// Otherwise, priority: a queued user message (or the carrier), then a pending
+// notification, then the goal gate's deferred
 // continuation, then idle.
 // The goal gate always folds BEFORE the notification turn runs: the wrapper arms
 // on !skipGoalGate before acting on runNotification, so the fold stays ahead of
@@ -1074,8 +1071,6 @@ func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate boo
 		return goIdle, skipGoalGate
 	}
 	switch {
-	case strings.TrimSpace(in.FollowUp) != "":
-		return runFollowUp, skipGoalGate
 	case queued:
 		return runQueued, skipGoalGate
 	case in.SteeringParked:
@@ -1100,11 +1095,10 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 
 // ProcessInputKind processes a single input of the given EntryKind through to
 // completion and returns the accumulated assistant output. It runs the input,
-// then loops to drain per-turn follow-ups and queued user messages, running
-// each as a further turn. On a cancelled turn it applies interrupt semantics —
-// flipping the session back to idle (unless closed), appending a system-reminder
-// interrupt marker, and optionally draining the queue head — then returns the
-// partial output with the error. It emits EventSessionEnd for the input and
+// then loops to drain queued user messages, running each as a further turn.
+// On a cancelled turn it applies interrupt semantics — flipping the session
+// back to idle (unless closed), appending a system-reminder interrupt marker,
+// and optionally draining the queue head — then returns the partial output with the error. It emits EventSessionEnd for the input and
 // returns an error when the session is closed or a turn fails.
 func (s *Session) ProcessInputKind(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
 	return s.processInputKindWithProvenance(ctx, input, images, kind, nil)
@@ -1293,9 +1287,8 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// The durable selection belonged to the turn that just ran; a
 		// follow-up turn must not re-admit it.
 		processCtx = withDurableSkillSelection(processCtx, nil)
-		// Follow-up turns (after the first) carry no attachments and are
-		// user-driven, not continuations.
-		nextImages = nil
+		// Follow-up turns (after the first) are user-driven, not
+		// continuations; each drain rung sets the attachments it carries.
 		nextKind = EntryUserInput
 		nextProvenance = nil
 		if strings.TrimSpace(out) != "" {
@@ -1457,98 +1450,69 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.completeExecution(schema.TurnCompleted)
 		// Drain the next action after a completed (non-error) turn. The pops and the
 		// goal-gate fold are side effects kept here; selectDrainNextAction is the pure
-		// priority decision over their results. popQueueHead is reached only when no
-		// follow-up is pending (it consumes a queued message), matching the original
-		// short-circuit; notification work is likewise consulted only at its ladder
-		// rung and only for a non-notification, non-awaiting turn.
+		// priority decision over their results. Notification work is consulted only
+		// at its ladder rung and only for a non-notification, non-awaiting turn.
 		//
 		// awaiting reflects the boundary state the turn that just ran left behind
-		// (spec §5.3's drain-ladder gate). The follow-up pop itself is skipped while
-		// awaiting — not popped and then discarded — so a follow-up queued during
-		// the asking turn (FollowUp is public API with no gating of its own) is left
-		// intact in s.followups for the next drain cycle instead of being silently
-		// dropped by an awaiting rest that won't run it.
-		//
-		// This used to read s.State() == SessionAwaiting alone, on the premise
-		// that askPendingCount() > 0 here implied THIS round's own delta grew it
-		// (askedThisRound, which deliverIfCommunicated maps straight to
-		// SessionAwaiting) — true only because processOneInput's entry used to
-		// clear askPending unconditionally, so nothing could reach this capture
-		// with a pending ask the round itself did not just post. A steering-carrier
-		// entry whose steer does not answer the ask (a human-note update,
-		// steeringCarrierClaimAnswersAsk) now skips that entry clear, so a round
-		// that merely acknowledges the note without posting anything new leaves
-		// askPending exactly as it was — nonzero, but with askedThisRound false —
-		// and deliverIfCommunicated settles it SessionIdle at this capture point
-		// (armAwaitingAtSettle's general upgrade runs later, at the outer loop's
-		// own terminal settle, not before this capture). Reading state alone would
-		// then pop and run a follow-up while ask1 sits unanswered
-		// (TestAskUser_FollowUpNotDrainedWhilePendingAskSurvivesAHumanNoteCarrierRound
-		// pins this). askPendingCount() > 0 is checked directly alongside the
-		// state read so the gate holds regardless of which boundary state this
-		// round's own delta happened to settle on — awaitingOrHasPendingAsk
-		// samples both under one lock so a concurrent state transition or
-		// askPending mutation can't land between the two reads.
+		// (spec §5.3's drain-ladder gate). A steering-carrier entry whose steer does
+		// not answer the ask (a human-note update, steeringCarrierClaimAnswersAsk)
+		// skips the entry clear of askPending, so a round that merely acknowledges
+		// the note leaves askPending nonzero while deliverIfCommunicated settles it
+		// SessionIdle at this capture point. State alone would then read as not
+		// awaiting while ask1 sits unanswered, so askPendingCount() > 0 is checked
+		// alongside it; awaitingOrHasPendingAsk samples both under one lock so a
+		// concurrent state transition or askPending mutation can't land between
+		// the two reads.
 		awaiting := s.awaitingOrHasPendingAsk()
-		var fu string
-		if !awaiting {
-			// Follow-ups need no such guard: they live in memory for this
-			// process only, so a refusal that leaves one popped loses nothing a
-			// restart could have recovered. The queue below is durable.
-			fu = s.popFollowUp()
-		}
 		var queued queuedInput
-		if strings.TrimSpace(fu) == "" {
-			// The pop is durable and the turn it feeds runs on the next
-			// iteration, past the gate at the top of this loop. Refuse before
-			// taking the message rather than after: a message popped for a turn
-			// that is then refused is in no transcript, no queue and no session.
-			// Left queued, it is waiting when the restart recovers the writer.
-			if err := s.refuseTurnOnUnhealthyTranscript(processCtx); err != nil {
-				return strings.Join(outputs, "\n"), err
-			}
-			// kata 111a / t5j6: each drained queued message becomes a distinct user
-			// turn; its image attachments ride along as ContentImage parts.
-			//
-			// The claim refuses poison itself, on the generation it commits
-			// against, so a poisoning that lands after the check above still
-			// cannot pop a message for a turn the transcript will refuse. That
-			// refusal ends the input exactly as the check would.
-			var popRefusal error
-			queued, popRefusal = s.popQueueHeadRefusingPoison()
-			if popRefusal != nil {
+		// The pop is durable and the turn it feeds runs on the next
+		// iteration, past the gate at the top of this loop. Refuse before
+		// taking the message rather than after: a message popped for a turn
+		// that is then refused is in no transcript, no queue and no session.
+		// Left queued, it is waiting when the restart recovers the writer.
+		if err := s.refuseTurnOnUnhealthyTranscript(processCtx); err != nil {
+			return strings.Join(outputs, "\n"), err
+		}
+		// kata 111a / t5j6: each drained queued message becomes a distinct user
+		// turn; its image attachments ride along as ContentImage parts.
+		//
+		// The claim refuses poison itself, on the generation it commits
+		// against, so a poisoning that lands after the check above still
+		// cannot pop a message for a turn the transcript will refuse. That
+		// refusal ends the input exactly as the check would.
+		var popRefusal error
+		queued, popRefusal = s.popQueueHeadRefusingPoison()
+		if popRefusal != nil {
+			return strings.Join(outputs, "\n"), s.refuseTurnOnUnhealthyTranscript(processCtx)
+		}
+		// User steering the turn that just ran left behind -- a queue
+		// drained as steering after its last model call was in flight --
+		// has no turn of its own, and the input is not over until it has
+		// run. Claim its carrier here, as the queued entry, so it runs
+		// inline rather than after this call has reported the session
+		// idle and a wake reopens it (issue #1308). Only when nothing is
+		// queued: a queued message drains the steering itself. The claim
+		// refuses a held rail (a Stop parked the steer) and an occupied
+		// slot, the same gate the wake's claim uses, and it is not made
+		// while steering is parked (steeringParkedNow): a steer this
+		// input already tried and failed to append -- at a carrier, which
+		// ends the input, or at a running turn's own boundary drain,
+		// which goes on and completes -- is one attempt per external
+		// wake, and this rung is not one. The selector sees the park too
+		// and takes goIdle ahead of the autonomous rungs.
+		if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && !s.steeringParkedNow() && s.hasPendingUserSteering() {
+			carrier, carrierRefusal := s.claimSteeringCarrierInput()
+			if carrierRefusal != nil {
 				return strings.Join(outputs, "\n"), s.refuseTurnOnUnhealthyTranscript(processCtx)
 			}
-			// User steering the turn that just ran left behind -- a queue
-			// drained as steering after its last model call was in flight --
-			// has no turn of its own, and the input is not over until it has
-			// run. Claim its carrier here, as the queued entry, so it runs
-			// inline rather than after this call has reported the session
-			// idle and a wake reopens it (issue #1308). Only when nothing is
-			// queued: a queued message drains the steering itself. The claim
-			// refuses a held rail (a Stop parked the steer) and an occupied
-			// slot, the same gate the wake's claim uses, and it is not made
-			// while steering is parked (steeringParkedNow): a steer this
-			// input already tried and failed to append -- at a carrier, which
-			// ends the input, or at a running turn's own boundary drain,
-			// which goes on and completes -- is one attempt per external
-			// wake, and this rung is not one. The selector sees the park too
-			// and takes goIdle ahead of the autonomous rungs.
-			if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && !s.steeringParkedNow() && s.hasPendingUserSteering() {
-				carrier, carrierRefusal := s.claimSteeringCarrierInput()
-				if carrierRefusal != nil {
-					return strings.Join(outputs, "\n"), s.refuseTurnOnUnhealthyTranscript(processCtx)
-				}
-				if carrier.SteeringCarrier {
-					queued = carrier
-					if s.cfg.testOnly.steeringCarrierClaimed != nil {
-						s.cfg.testOnly.steeringCarrierClaimed(carrier.StableTurnID)
-					}
+			if carrier.SteeringCarrier {
+				queued = carrier
+				if s.cfg.testOnly.steeringCarrierClaimed != nil {
+					s.cfg.testOnly.steeringCarrierClaimed(carrier.StableTurnID)
 				}
 			}
 		}
-		noFollowUpOrQueued := strings.TrimSpace(fu) == "" &&
-			!inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && !queued.SteeringCarrier
+		noQueued := !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && !queued.SteeringCarrier
 		notificationsPending := false
 		// After a terminal communicate, notification work is left to the one-shot
 		// drain rather than run here: a completion the model was never shown is
@@ -1557,13 +1521,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// one-shot turn path is followed by DrainJobTree (cmd/evener run,
 		// drainForFinalization), and the drain's own turn gate reads the same
 		// two signals.
-		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() {
+		if noQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() {
 			notificationsPending = s.peekNotifications() > 0 || s.pendingRootDelegateAttention()
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
 			RanKind:              ranKind,
 			HaveDeferredCont:     haveDeferredCont,
-			FollowUp:             fu,
 			QueuedText:           queued.Text,
 			QueuedImages:         len(queued.Images),
 			QueuedSkills:         len(queued.SkillNames),
@@ -1574,14 +1537,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			SteeringParked:       s.steeringParkedNow(),
 		})
 
-		switch action {
-		case runFollowUp:
-			next = fu
-			s.mu.Lock()
-			s.sessionEndEmitted = false
-			s.mu.Unlock()
-			continue
-		case runQueued:
+		if action == runQueued {
 			next = queued.Text
 			nextImages = queued.Images
 			processCtx = s.claimedInputContext(processCtx, queued)
@@ -3192,8 +3148,8 @@ func (s *Session) settleDeliveredWatchNotification(ctx context.Context, d delive
 
 func (s *Session) finishNotificationNoop() {
 	// No turn ran, so a needs_response rest the wake interrupted still stands,
-	// and the drain loop then treats the input as awaiting, holding follow-ups
-	// as that rest did. A rest still owed was cancelled by the wake's turn
+	// and the drain loop then treats the input as awaiting, holding notifications
+	// and goal turns as that rest did. A rest still owed was cancelled by the wake's turn
 	// start; the drain-loop settle arms it again, from the end reason the
 	// turn start reset.
 	rest := SessionIdle

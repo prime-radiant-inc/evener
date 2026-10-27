@@ -90,6 +90,42 @@ func TestScanErrStringsCountsErrorMessageAssertionsPerFile(t *testing.T) {
 	}
 }
 
+func TestScanErrStringsCountsAssertionHelperCalls(t *testing.T) {
+	t.Parallel()
+	root := gitRepo(t, map[string]string{
+		"prod.go": "package x\n\nvar _ = \"name is required\"\n",
+		"helper_test.go": "package x\n\n" +
+			"func wantMsg(t *testing.T, msg, want, desc string) {\n" +
+			"	t.Helper()\n" +
+			"	if !strings.Contains(msg, want) {\n" +
+			"		t.Fatalf(\"%s: %q\", desc, msg)\n" +
+			"	}\n" +
+			"}\n\n" +
+			"func notMsg(t *testing.T, msg, want, desc string) {\n" +
+			"	t.Helper()\n" +
+			"	if strings.Contains(msg, want) {\n" +
+			"		t.Fatalf(\"%s: %q\", desc, msg)\n" +
+			"	}\n" +
+			"}\n\n" +
+			"func TestViaHelper(t *testing.T) {\n" +
+			"	msg := create(\"input\")\n" +
+			"	wantMsg(t, msg, \"name is required\", \"the error names the rule\")\n" +
+			"	notMsg(t, msg, \"name is required\", \"the error must not name the rule\")\n" +
+			"}\n",
+	})
+	got, err := ScanErrStrings(root)
+	if err != nil {
+		t.Fatalf("ScanErrStrings: %v", err)
+	}
+	// The helper bodies compare against a parameter, not a literal, so they
+	// count nothing; the call sites carry the literals and must count, or
+	// helper-wrapped prose assertions escape the budget.
+	want := map[string]int{"helper_test.go": 2}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ScanErrStrings = %v, want %v", got, want)
+	}
+}
+
 func TestReadErrStringBudgets(t *testing.T) {
 	t.Parallel()
 	got, err := ReadErrStringBudgets(strings.NewReader("file\tcount\na_test.go\t12\n\nb_test.go\t1\n"))

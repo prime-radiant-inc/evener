@@ -1,24 +1,23 @@
 import { expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { HubModels } from "./hubModels";
 
-function client(request: (method: string, params: unknown) => Promise<unknown>) {
-	return { request } as ConversationClientLike;
+// A hub whose model/list answers are scripted loosely: these tests hand back
+// partial catalogs on purpose, to pin how HubModels normalizes them.
+function client(modelList: (params: unknown) => Promise<unknown>) {
+	const hub = new FakeClient("ready");
+	hub.on("model/list", modelList as never);
+	return hub;
 }
 it("loads the same unscoped model catalog as web launch defaults", async () => {
-	const calls: unknown[] = [];
-	const models = new HubModels(
-		client(async (method, params) => {
-			calls.push([method, params]);
-			return {
-				data: [{ provider: "local", model: "a", supportsTools: true }],
-				recent: [{ provider: "local", model: "b", displayName: "Bee" }],
-				diagnostics: [{ provider: "offline", message: "Unavailable" }],
-			};
-		}),
-	);
+	const hub = client(async () => ({
+		data: [{ provider: "local", model: "a", supportsTools: true }],
+		recent: [{ provider: "local", model: "b", displayName: "Bee" }],
+		diagnostics: [{ provider: "offline", message: "Unavailable" }],
+	}));
+	const models = new HubModels(hub);
 	await models.refresh();
-	expect(calls).toEqual([["model/list", {}]]);
+	expect(hub.calls.map((call) => [call.method, call.params])).toEqual([["model/list", {}]]);
 	expect(models.getSnapshot().catalog).toEqual({
 		models: [{ provider: "local", model: "a", displayName: "a", supportsTools: true }],
 		recent: [{ provider: "local", model: "b", displayName: "Bee" }],
@@ -89,6 +88,7 @@ it("ignores a reply after its hub binding is disposed", async () => {
 		),
 	);
 	const pending = models.refresh();
+	await Promise.resolve();
 	models.dispose();
 	release({ data: [{ provider: "old", model: "hidden" }] });
 	await pending;
@@ -106,6 +106,7 @@ it("keeps the latest refresh when older reads finish later", async () => {
 	);
 	const old = models.refresh();
 	const next = models.refresh();
+	await Promise.resolve();
 	replies[1]?.({ data: [{ provider: "new", model: "new" }] });
 	await next;
 	replies[0]?.({ data: [{ provider: "old", model: "old" }] });

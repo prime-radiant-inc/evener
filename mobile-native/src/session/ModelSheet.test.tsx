@@ -7,7 +7,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { createConversationService } from "../../../mobile/src/services/conversation";
+import { createConversationService } from "../conversation/services/conversation";
 import { paletteFor } from "../design/tokens";
 import type { MobileConversation } from "../projectedRows";
 import {
@@ -49,7 +49,6 @@ vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => navigation,
 	usePreventRemove: () => {},
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const palette = paletteFor("light");
 const HUB = "hub-1";

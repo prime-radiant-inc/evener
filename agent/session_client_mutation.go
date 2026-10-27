@@ -931,7 +931,7 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 // inside the serialized callback that reads the snapshot. This function is where
 // that constraint is written down rather than left as an anonymous condition.
 //
-// The daemon's own answer (server/appwire_runtime.go's appStatus) is this same
+// The daemon's own answer (server/appwire_thread_projection.go's appStatus) is this same
 // predicate projected onto what the daemon can see. They are deliberately the
 // same shape: the status the wire publishes, the capabilities published beside
 // it, and the precondition that decides whether Stop lands must not be able to
@@ -1114,8 +1114,8 @@ func (s *Session) InterruptClientMutation(
 	s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
 	s.steeringMarked(recordedIDs)
 	if returnedClaim {
-		// The durable queue grew a claimed-but-unrun message back. QueueDepth,
-		// QueuePreview and WireState read the process-local copy, so without this
+		// The durable queue grew a claimed-but-unrun message back. QueueDepth
+		// and WireState read the process-local copy, so without this
 		// the message is durably present and invisible. No wake: this Stop parks
 		// the queue, so the returned message waits for the user's next run.
 		s.reflectDurableInputQueue()

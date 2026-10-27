@@ -511,77 +511,6 @@ func TestHubTOMLStoreRoundTrip(t *testing.T) {
 	}
 }
 
-// TestLegacyHostSidecarCorruptIsLoud pins that a corrupt retired sidecar fails
-// the migration's load — the caller decides loudly (logged, writes poisoned),
-// never half-applying it.
-func TestLegacyHostSidecarCorruptIsLoud(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "hub.hosts.json")
-	if err := os.WriteFile(path, []byte("{nope"), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if _, err := loadLegacyHostSidecar(path); err == nil {
-		t.Fatal("corrupt sidecar loaded without error")
-	}
-}
-
-// TestLegacyHostSidecarSchemaRequiresHostsArray pins the migration input's
-// schema gate: a JSON-valid document without a usable "hosts" array — {} or
-// {"hosts":null} — is a load error, not an empty sidecar. Loading it as "no
-// entries" would let the migration rewrite hub.toml from an empty snapshot and
-// silently discard whatever the document carried. A present empty array is the
-// one legitimately empty sidecar; a non-array "hosts" stays a typed-decode
-// failure.
-func TestLegacyHostSidecarSchemaRequiresHostsArray(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "hub.hosts.json")
-	for _, doc := range []string{"{}", `{"hosts":null}`, "null"} {
-		if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
-			t.Fatalf("write sidecar: %v", err)
-		}
-		if entries, err := loadLegacyHostSidecar(path); err == nil {
-			t.Errorf("%q loaded as %d entries without error, want a schema refusal", doc, len(entries))
-		}
-	}
-	// A wrong-type "hosts" still fails the typed decode — the gate must not
-	// shadow the parse error with a coarser schema message.
-	if err := os.WriteFile(path, []byte(`{"hosts":{}}`), 0o600); err != nil {
-		t.Fatalf("write sidecar: %v", err)
-	}
-	if _, err := loadLegacyHostSidecar(path); err == nil {
-		t.Error(`{"hosts":{}} loaded without error, want a decode failure`)
-	}
-	// A present empty array is the one legitimately empty sidecar.
-	if err := os.WriteFile(path, []byte(`{"hosts":[]}`), 0o600); err != nil {
-		t.Fatalf("write sidecar: %v", err)
-	}
-	entries, err := loadLegacyHostSidecar(path)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf(`{"hosts":[]} = %v, %v; want empty, nil`, entries, err)
-	}
-}
-
-// TestLegacyHostSidecarWithUnknownRecordsIsRefused pins the migration's
-// record-safety rule: the retired sidecar's only recognized record is the
-// `hosts` array; a document carrying any other machine-managed record — the
-// pre-decision revision's sketches (tombstones, generations, receipts,
-// remnants, markers) — is refused with the keys named, so the migration can
-// never fold the hosts and silently strip the rest.
-func TestLegacyHostSidecarWithUnknownRecordsIsRefused(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "hub.hosts.json")
-	doc := `{"hosts":[{"name":"beta","ssh":"beta.example"}],"tombstones":{"gone":{}},"generations":{"alpha":3}}`
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
-		t.Fatalf("write sidecar: %v", err)
-	}
-	_, err := loadLegacyHostSidecar(path)
-	if err == nil {
-		t.Fatal("records-bearing sidecar loaded without error; the migration would strip the records")
-	}
-	for _, want := range []string{"generations", "tombstones"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("refusal %q does not name %q", err, want)
-		}
-	}
-}
-
 // TestHubTOMLRewriteIsDeterministic pins that the store's encoder is stable:
 // rewriting the same entries twice produces byte-identical files, so an
 // untouched hub never churns its bytes under a harmless write.
@@ -641,39 +570,6 @@ func TestHostManageAddPersistsHubTOML(t *testing.T) {
 	}
 	if resp.Host.Origin != hostOriginHubTOML || resp.Host.KeyPath != "/k/s" {
 		t.Fatalf("reloaded row = %+v, want hub.toml origin + key", resp.Host)
-	}
-}
-
-// TestHubTOMLMigrationSidecarIdenticalDuplicateDrops pins the agreement arm of
-// the migration's collision rule: a sidecar entry byte-identical to the
-// hub.toml entry of the same name is dropped (nothing is lost), the file's
-// entry is never shadowed, and the sidecar is still set aside. The differing
-// arm — a loud refusal — is TestHubTOMLMigrationRefusesADifferingCollision.
-func TestHubTOMLMigrationSidecarIdenticalDuplicateDrops(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
-	if err := os.WriteFile(configPath, []byte("[[hosts]]\nname = \"m4\"\nssh = \"hub.example\"\n"), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
-	sidecar := filepath.Join(dir, "hub.hosts.json")
-	sidecarBytes := []byte(`{"hosts":[{"name":"m4","ssh":"hub.example"}]}`)
-	if err := os.WriteFile(sidecar, sidecarBytes, 0o600); err != nil {
-		t.Fatalf("write sidecar: %v", err)
-	}
-	m := bootHostManager(t, configPath)
-	resp, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "m4"})
-	if err != nil {
-		t.Fatalf("Status = %v", err)
-	}
-	if resp.Host.Address != "hub.example" || resp.Host.Origin != hostOriginHubTOML {
-		t.Fatalf("row = %+v, want the hub.toml entry authoritative", resp.Host)
-	}
-	if _, err := os.Stat(sidecar); !os.IsNotExist(err) {
-		t.Fatalf("sidecar still present after migration: %v", err)
-	}
-	aside, err := os.ReadFile(sidecar + ".migrated")
-	if err != nil || !bytes.Equal(aside, sidecarBytes) {
-		t.Fatalf("sidecar set aside = %q, %v; want the original bytes", aside, err)
 	}
 }
 
@@ -1069,60 +965,6 @@ func TestHostManageRowsRetainAttachState(t *testing.T) {
 	}
 }
 
-// TestHostManageLegacySidecarLoadFailureIsLoudAndKeepsFile pins the corrupt
-// legacy-sidecar discipline: the migration failure is logged through the hub
-// logging path, the hub.toml hosts keep serving, and neither file is rewritten
-// — an add fails loudly instead of clobbering entries that never loaded.
-func TestHostManageLegacySidecarLoadFailureIsLoudAndKeepsFile(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
-	hubTOMLBytes := []byte("[[hosts]]\nname = \"m4\"\nssh = \"m4.example\"\n")
-	if err := os.WriteFile(configPath, hubTOMLBytes, 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
-	sidecar := legacySidecarPathFor(configPath)
-	if err := os.WriteFile(sidecar, []byte("{corrupt"), 0o600); err != nil {
-		t.Fatalf("write sidecar: %v", err)
-	}
-	var logs []string
-	logf := func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
-	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts, logf)
-	if len(logs) == 0 {
-		t.Fatal("corrupt sidecar produced no log line at startup")
-	}
-	// The hub.toml host still serves.
-	if _, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "m4"}); err != nil {
-		t.Fatalf("Status over a corrupt sidecar = %v, want the hub.toml host to serve", err)
-	}
-	// The poisoned store refuses to persist: the add fails and commits
-	// nothing.
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err == nil {
-		t.Fatal("Add over a corrupt sidecar succeeded, want a loud refusal")
-	}
-	if _, ok := m.cfg.hosts.Get("side"); ok {
-		t.Fatal("the refused add committed a host")
-	}
-	// Neither file was rewritten: both survive for the operator to fix.
-	data, err := os.ReadFile(sidecar)
-	if err != nil {
-		t.Fatalf("read sidecar: %v", err)
-	}
-	if string(data) != "{corrupt" {
-		t.Fatalf("corrupt sidecar was rewritten to %q", data)
-	}
-	hubTOML, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read hub.toml: %v", err)
-	}
-	if !bytes.Equal(hubTOML, hubTOMLBytes) {
-		t.Fatalf("hub.toml was rewritten before the sidecar migrated:\n%s", hubTOML)
-	}
-}
-
 // TestHostManageSaveFailureCommitsNothing pins the durable-first discipline
 // from the failing side: when the hub.toml write fails, Add commits nothing
 // (no registry entry, no store row, no source) and Remove leaves the host
@@ -1223,222 +1065,6 @@ func TestHostManageAddRollsHubTOMLBackWhenLiveInsertFails(t *testing.T) {
 		if e.Name == "resurrect" {
 			t.Fatalf("hub.toml kept %q after the live insert failed: the next start would resurrect it", e.Name)
 		}
-	}
-}
-
-// TestHostManageLegacySidecarInvalidEntryIsLoudAndKeepsFiles pins the
-// all-or-nothing migration: a sidecar holding an invalid entry beside a valid
-// one merges neither, logs the invalid entry by name, poisons writes, and
-// leaves both files untouched for the operator to fix.
-func TestHostManageLegacySidecarInvalidEntryIsLoudAndKeepsFiles(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
-	hubTOMLBytes := []byte("[[hosts]]\nname = \"m4\"\nssh = \"m4.example\"\n")
-	if err := os.WriteFile(configPath, hubTOMLBytes, 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
-	sidecar := legacySidecarPathFor(configPath)
-	sidecarBytes := []byte(`{"hosts":[{"name":"good","ssh":"g.example"},{"name":"bad name","ssh":"b.example"}]}`)
-	if err := os.WriteFile(sidecar, sidecarBytes, 0o600); err != nil {
-		t.Fatalf("write sidecar: %v", err)
-	}
-	var logs []string
-	logf := func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
-	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts, logf)
-	// The invalid entry was logged by name; the valid sibling did not merge,
-	// because validation is all-or-nothing.
-	logged := false
-	for _, line := range logs {
-		if strings.Contains(line, "bad name") {
-			logged = true
-		}
-	}
-	if !logged {
-		t.Fatalf("invalid sidecar entry produced no log line: %v", logs)
-	}
-	if _, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "good"}); err == nil {
-		t.Fatal("the valid sibling merged even though the sidecar failed validation")
-	}
-	// The poisoned store refuses to persist: an add fails loudly and both
-	// files keep their bytes.
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err == nil {
-		t.Fatal("Add over a partially loaded sidecar succeeded, want a loud refusal")
-	}
-	gotSidecar, err := os.ReadFile(sidecar)
-	if err != nil {
-		t.Fatalf("reload sidecar: %v", err)
-	}
-	if !bytes.Equal(gotSidecar, sidecarBytes) {
-		t.Fatalf("sidecar rewritten to %q, want the original bytes", gotSidecar)
-	}
-	gotHubTOML, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("reload hub.toml: %v", err)
-	}
-	if !bytes.Equal(gotHubTOML, hubTOMLBytes) {
-		t.Fatalf("hub.toml rewritten to %q, want the original bytes", gotHubTOML)
-	}
-}
-
-// TestHostManageSidecarSchemaIsLoudAndKeepsFile pins the round-13 finding end
-// to end, extending the corrupt-file contract to the schema-shaped hole: a
-// JSON-valid document without a "hosts" array loads as no sidecar entries
-// and poisons the store, so the file is never rewritten from the empty
-// snapshot. The hub.toml hosts keep serving, the broken document is logged
-// at startup, an add fails loudly, and the file keeps its bytes for the
-// operator to fix.
-func TestHostManageSidecarSchemaIsLoudAndKeepsFile(t *testing.T) {
-	for _, doc := range []string{"{}", `{"hosts":null}`} {
-		dir := t.TempDir()
-		configPath := filepath.Join(dir, "hub.toml")
-		if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
-			t.Fatalf("write hub.toml: %v", err)
-		}
-		sidecar := legacySidecarPathFor(configPath)
-		if err := os.WriteFile(sidecar, []byte(doc), 0o600); err != nil {
-			t.Fatalf("write sidecar: %v", err)
-		}
-		var logs []string
-		logf := func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
-		hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
-		if err != nil {
-			t.Fatalf("hostreg.New: %v", err)
-		}
-		m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts, logf)
-		if len(logs) == 0 {
-			t.Errorf("%q produced no log line at startup, want the schema refusal logged", doc)
-		}
-		// The hub.toml host still serves: loud, not fatal.
-		if _, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "m4"}); err != nil {
-			t.Errorf("Status(m4) over %q = %v, want the hub.toml host to serve", doc, err)
-		}
-		// The poisoned store refuses to persist: the add fails and commits
-		// nothing.
-		if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err == nil {
-			t.Errorf("Add over %q succeeded, want a loud refusal", doc)
-		}
-		if _, ok := m.cfg.hosts.Get("side"); ok {
-			t.Errorf("the refused add over %q committed a host", doc)
-		}
-		// The schema-invalid document was not rewritten: its bytes survive
-		// for the operator to fix.
-		data, err := os.ReadFile(sidecar)
-		if err != nil {
-			t.Fatalf("read sidecar: %v", err)
-		}
-		if string(data) != doc {
-			t.Errorf("%q was rewritten to %q, want the original bytes", doc, data)
-		}
-	}
-}
-
-// TestHubTOMLMigrationEmptySidecarIsSetAsideAndAddWorks pins the
-// legitimate-empty boundary: {"hosts":[]} is a well-formed empty sidecar, not
-// a schema error — it migrates with no log lines and no poison, the retired
-// file is set aside, and an add works and persists into hub.toml.
-func TestHubTOMLMigrationEmptySidecarIsSetAsideAndAddWorks(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
-	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
-	sidecar := legacySidecarPathFor(configPath)
-	if err := os.WriteFile(sidecar, []byte(`{"hosts":[]}`), 0o600); err != nil {
-		t.Fatalf("write sidecar: %v", err)
-	}
-	var logs []string
-	logf := func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
-	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, nil, logf)
-	if len(logs) != 0 {
-		t.Fatalf(`{"hosts":[]} logged at startup: %v, want a legitimate empty sidecar`, logs)
-	}
-	if _, err := os.Stat(sidecar + legacyHostSidecarAsideSuffix); err != nil {
-		t.Fatalf("empty sidecar was not set aside: %v", err)
-	}
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err != nil {
-		t.Fatalf(`Add over {"hosts":[]} = %v, want success`, err)
-	}
-	// The add rewrote hub.toml with the entry: a fresh boot serves it.
-	m2 := bootHostManager(t, configPath)
-	if _, err := m2.Status(context.Background(), appwire.HostStatusParams{Name: "side"}); err != nil {
-		t.Fatalf("reloaded Status = %v, want the added entry persisted", err)
-	}
-}
-
-// TestHubTOMLMigrationNormalizesEntries pins the round-2 LOW: a padded sidecar
-// entry is normalized before the collision check, the merge into hub.toml, and
-// the source registration, so the migrated host keys, lists, removes, and
-// reloads under its trimmed name instead of splitting its identity between the
-// registry and the store row.
-func TestHubTOMLMigrationNormalizesEntries(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
-	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
-	padded := `{"hosts":[{"name":"  side  ","ssh":"  s.example  ","key_path":"  /keys/s  "}]}`
-	if err := os.WriteFile(legacySidecarPathFor(configPath), []byte(padded), 0o600); err != nil {
-		t.Fatalf("write sidecar: %v", err)
-	}
-	// boot simulates a hub start: the registry builds from hub.toml (main.go's
-	// path), then the manager migrates the legacy sidecar into it.
-	boot := func() *hubHostManager { return bootHostManager(t, configPath) }
-	sideRow := func(t *testing.T, m *hubHostManager) appwire.HostRow {
-		t.Helper()
-		list, err := m.List(context.Background(), appwire.EmptyParams{})
-		if err != nil {
-			t.Fatalf("List: %v", err)
-		}
-		for _, row := range list.Hosts {
-			if row.Name == "side" {
-				return row
-			}
-		}
-		t.Fatalf("List = %+v, want the padded sidecar entry migrated under its trimmed name", list.Hosts)
-		return appwire.HostRow{}
-	}
-
-	// The padded entry lists under the trimmed name with normalized fields.
-	m := boot()
-	row := sideRow(t, m)
-	if row.Origin != hostOriginHubTOML || row.Address != "s.example" || row.KeyPath != "/keys/s" {
-		t.Fatalf("padded sidecar row = %+v, want side/s.example with the trimmed key", row)
-	}
-	// Source ID: the source registered under the trimmed name too.
-	if _, ok := m.cfg.sources.Source("side"); !ok {
-		t.Fatal("the padded sidecar entry registered no source under its trimmed name")
-	}
-	// Reload: the migrated hub.toml loads identically on the next boot.
-	m2 := boot()
-	if row := sideRow(t, m2); row.Origin != hostOriginHubTOML {
-		t.Fatalf("reloaded sidecar row = %+v, want the one origin again", row)
-	}
-	// Removal works: the migrated row keys off the normalized entry.
-	if _, err := m2.Remove(context.Background(), removeRequest(t, m2, "side")); err != nil {
-		t.Fatalf("Remove(side) = %v, want success for a migrated entry", err)
-	}
-	// The file lost the entry, so the next boot does not resurrect it (the
-	// retired sidecar was set aside, never merged again).
-	m3 := boot()
-	list, err := m3.List(context.Background(), appwire.EmptyParams{})
-	if err != nil {
-		t.Fatalf("List after remove: %v", err)
-	}
-	// Registry spec 08 §15 (S11): the removed migrated host survives as a
-	// tombstone row (`removed: true`) — no LIVE host may render, which is what
-	// the resurrection check needs, and the retired sidecar's entries stay
-	// gone from the registry.
-	for _, row := range list.Hosts {
-		if !row.Removed {
-			t.Fatalf("list after the removal-and-reload = %+v, want no live hosts", list.Hosts)
-		}
-	}
-	if _, live := m3.cfg.hosts.Get("side"); live {
-		t.Fatal("the removed migrated host was resurrected on reload")
 	}
 }
 
@@ -1699,6 +1325,21 @@ func TestHostManageRetainedFactsFollowPerLookupValidity(t *testing.T) {
 	}
 }
 
+// writeSideHostConfig writes a hub.toml declaring the host "side" and returns
+// the registry holding the same entry.
+func writeSideHostConfig(t *testing.T, configPath string) *hostreg.Registry {
+	t.Helper()
+	side := hostreg.Host{Name: "side", SSH: "s.example", KeyPath: "/keys/s"}
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{side}); err != nil {
+		t.Fatalf("writeHubTOMLHosts: %v", err)
+	}
+	hosts, err := hostreg.New([]hostreg.Host{side})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	return hosts
+}
+
 // TestHostManageRemoveCommitsWithRemnantWhenLiveTeardownFails pins spec 08 §6's
 // commit-point rule: with a manager that can never complete the teardown
 // (RemoveHost refuses with no registry), the removal is COMMITTED — the
@@ -1711,21 +1352,13 @@ func TestHostManageRetainedFactsFollowPerLookupValidity(t *testing.T) {
 func TestHostManageRemoveCommitsWithRemnantWhenLiveTeardownFails(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
-	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
-	// A legacy sidecar entry from a previous run: the migration folds it into
-	// hub.toml at construction, the shape hostRegistryFromConfig builds for a
-	// manager with no registry — Add would refuse over this manager, so the
-	// boot path is the only way the entry gets here.
-	sidecarBytes := []byte(`{"hosts":[{"name":"side","ssh":"s.example","key_path":"/keys/s"}]}`)
-	if err := os.WriteFile(legacySidecarPathFor(configPath), sidecarBytes, 0o600); err != nil {
-		t.Fatalf("write sidecar: %v", err)
-	}
+	// The manager has no registry of its own, so the removal's live teardown
+	// can never complete and the removal commits with a remnant.
+	sideHosts := writeSideHostConfig(t, configPath)
 	manager := sshconn.New(nil, sshconn.Options{})
 	t.Cleanup(func() { _ = manager.Close() })
 	sources := appsource.NewRegistry()
-	m := newHubHostManager(sources, manager, hubcore.WebConfig{}, configPath, nil, nil)
+	m := newHubHostManager(sources, manager, hubcore.WebConfig{}, configPath, sideHosts, nil)
 
 	result, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side"))
 	if err != nil {
@@ -1798,16 +1431,12 @@ func TestHostManageRemoveCommitsWithRemnantWhenLiveTeardownFails(t *testing.T) {
 func TestHostManageRemoveRemnantKeepsThePinnedIdentity(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
-	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
-	sidecarBytes := []byte(`{"hosts":[{"name":"side","ssh":"s.example","key_path":"/keys/s"}]}`)
-	if err := os.WriteFile(legacySidecarPathFor(configPath), sidecarBytes, 0o600); err != nil {
-		t.Fatalf("write sidecar: %v", err)
-	}
+	// The manager has no registry of its own, so the removal's live teardown
+	// can never complete and the removal commits with a remnant.
+	sideHosts := writeSideHostConfig(t, configPath)
 	manager := sshconn.New(nil, sshconn.Options{})
 	t.Cleanup(func() { _ = manager.Close() })
-	m := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{}, configPath, nil, nil)
+	m := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{}, configPath, sideHosts, nil)
 
 	before, ok := m.cfg.hosts.Get("side")
 	if !ok || !completeIdentity(before) {
@@ -2292,19 +1921,12 @@ func TestHostManageRemoveWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 func TestHostManageRemoveRemnantIsDurableAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
-	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
-	// A sidecar entry the boot migration folds in and records an identity for —
-	// with a manager that can never complete the teardown, so the removal
-	// commits with a remnant.
-	sidecarBytes := []byte(`{"hosts":[{"name":"side","ssh":"s.example","key_path":"/keys/s"}]}`)
-	if err := os.WriteFile(legacySidecarPathFor(configPath), sidecarBytes, 0o600); err != nil {
-		t.Fatalf("write sidecar: %v", err)
-	}
+	// The manager has no registry of its own, so the removal's live teardown
+	// can never complete and the removal commits with a remnant.
+	sideHosts := writeSideHostConfig(t, configPath)
 	manager := sshconn.New(nil, sshconn.Options{})
 	t.Cleanup(func() { _ = manager.Close() })
-	m := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{}, configPath, nil, nil)
+	m := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{}, configPath, sideHosts, nil)
 	before, ok := m.cfg.hosts.Get("side")
 	if !ok || !completeIdentity(before) {
 		t.Fatalf("the boot left no complete live identity: %+v", before)
@@ -2405,10 +2027,7 @@ func TestHostManageAddRefusesAHeldGateWithTheTypedBusyError(t *testing.T) {
 		t.Fatalf("TryAcquire: %v", err)
 	}
 	_, err = m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "held", Address: "held.example"}})
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("Add against a held gate = %T (%v), want the conflict-class refusal", err, err)
-	}
+	wire := requireWireError(t, err, appwire.CodeConflict)
 	data, ok := wire.Data.(appwire.ErrorData)
 	if !ok || data.EvenerErrorInfo != appwire.ErrorHostBusyTransient {
 		t.Fatalf("busy data = %#v, want %q", wire.Data, appwire.ErrorHostBusyTransient)

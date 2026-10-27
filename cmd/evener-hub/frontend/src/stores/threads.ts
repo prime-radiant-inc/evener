@@ -71,6 +71,7 @@ import {
   canEditQueuedMessage,
   canRemoveQueuedMessage,
   DIRECT_FALLBACK_METHODS,
+  MutationDispatcher,
   notificationMutationIdentities,
   type PendingTurnEntry,
 } from "@evener/appwire-client/state/mutation";
@@ -83,7 +84,6 @@ import { backgroundTranscriptOptions } from "./backgroundTranscriptOptions";
 import { connectedClientPort, connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { acknowledgeHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
-import { MutationDispatcher } from "./mutationDispatcher";
 import {
   type MutationAttachment,
   type MutationCommit,
@@ -98,12 +98,11 @@ import {
 import {
   MutationOutboxIndexedDB,
   type MutationRecoveryResendResult,
-  MutationStorageError,
-  MutationStorageTimeoutError,
   type RetargetedMutations,
 } from "./mutationOutboxIndexedDB";
 import { trackProjectionWork } from "./projectionWork";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
+import { isRecoveryFenced, isResumeOnly, isSendResumes, type ResumeOnlySignals } from "./recoveryFence";
 import { createSecureUUID } from "./secureUUID";
 import {
   entryHistoryKey,
@@ -113,6 +112,7 @@ import {
 } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
+import { appendFrameTime, isStorageFailure, isStorageTimeout, mapConflict, StopCanceledError } from "./threadsErrors";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
 import {
   nextTranscriptReadIdentity,
@@ -165,22 +165,6 @@ export interface ForkFromTurnOptions {
   model?: string;
   deferInput?: boolean;
   aside?: boolean;
-}
-
-export class ConflictError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ConflictError";
-  }
-}
-
-/** A user's Stop landed while a resume was pending, so the resume and the
- * send it carried were canceled rather than delivered. */
-export class StopCanceledError extends Error {
-  constructor() {
-    super("Stop canceled this pending action; send again when ready.");
-    this.name = "StopCanceledError";
-  }
 }
 
 // The ghost's display input (steering-ghost spec §3): the row's full text
@@ -806,6 +790,12 @@ interface EntryTranscriptRoute {
   // down. A remount of the same route may serve this view without racing a
   // disk recertification against the lookup deadline.
   lastLocalOpenUsable?: boolean;
+  // True when the most recent open's bounded lookup expired before the local
+  // read answered (openEntryTranscript's deadline branch): the recorded window
+  // was never served nor refused, so a held pane's display can still be
+  // body-suppressed with no demand cursor. Distinguishes that strand from the
+  // fast recovery-needed answers a repository without a usable record returns.
+  localOpenDeadlineMissed?: boolean;
 }
 
 const productionEntryRoutes = new Map<string, EntryTranscriptRoute>();
@@ -954,11 +944,12 @@ function holdsCompleteForegroundWindow(model: ThreadModel | undefined): boolean 
   );
 }
 
-async function openEntryTranscript(ref: string): Promise<boolean> {
+async function openEntryTranscript(ref: string, recovery = false): Promise<boolean> {
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref || !fixture.repository) return true;
   const repository = fixture.repository;
   const openingToken = beginEntryTranscriptLocalOpening(ref);
+  fixture.localOpenDeadlineMissed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     fixture.reader ??= fixture.repository.attachReader();
@@ -1001,11 +992,18 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
       : await Promise.race([
           reader.openLocal(200),
           new Promise<undefined>((resolve) => {
-            timer = setTimeout(() => {
-              reader.dispose();
-              if (fixture.reader === reader) fixture.reader = undefined;
-              resolve(undefined);
-            }, SESSION_CACHE_LOOKUP_DEADLINE_MS);
+            timer = setTimeout(
+              () => {
+                reader.dispose();
+                if (fixture.reader === reader) fixture.reader = undefined;
+                resolve(undefined);
+                // A recovery attempt outlasts the lookup deadline on purpose:
+                // a read that answers slower than the deadline but successfully
+                // must be allowed to finish, or a consistently slow cache
+                // strands the pane behind a race it can only keep losing.
+              },
+              recovery ? sessionCacheStalledOpenMs : SESSION_CACHE_LOOKUP_DEADLINE_MS,
+            );
           }),
         ]);
     if (!result) {
@@ -1059,6 +1057,11 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
         return true;
       }
       fixture.lastLocalOpenStatus = "recovery-needed";
+      // Only the bounded-lookup deadline miss is the stranding strand a
+      // tracked re-open can heal; an established restore that stalled past
+      // its own settled-opening window hands to source recovery instead
+      // (the #4954 stalled-open contract), and must not arm this chain.
+      if (!stalled) fixture.localOpenDeadlineMissed = true;
       if (openingOwned()) fixture.lastLocalOpenUsable = false;
       return false;
     }
@@ -1211,6 +1214,143 @@ async function openCachedEntryTranscript(ref: string, generation: number): Promi
   await opening;
 }
 
+// A foreground acquisition whose bounded local opening missed its lookup
+// deadline returns with the repository's recorded display standing in for the
+// pane: body-suppressed and without a local demand cursor, because only a
+// successful open promotes recorded bodies into the display — a fresh server
+// read republishes the recorded projection and cannot restore them. One miss
+// self-heals inside ensureThread (the authoritative read publishes, and the
+// success arm's second open promotes the recorded window). Two misses in a
+// row — the sustained-slow-cache case the 250ms lookup deadline makes
+// possible — used to leave the pane that way permanently: nothing re-opened
+// the record, so the thread store's documented bounded source recovery (S02:
+// "the accepted baseline restores display, older paging and live updates")
+// never ran. A tracked re-open closes the gap, and it must RE-ARM: its own
+// open reads the same slow cache and can miss the same deadline again, so a
+// fixed number of attempts just strands the pane one attempt later (the
+// whole-suite third-miss failure this re-arm closes). Each attempt is bounded
+// by the stalled-open window rather than the lookup deadline (a read that
+// answers slowly but successfully must still finish), and only an attempt's
+// completion decides the next one — an event-completion chain, not a timer
+// loop — so it stops at the
+// first successful open, when the foreground holder releases, or when the
+// route retires, or once the storage chain has had its paced retry: a fast
+// recovery-needed refusal, or a second missed stalled window, hands to
+// source recovery once instead of re-arming against storage that may never
+// answer. One tracked chain covers every attempt, deduplicated per live
+// route, and is registered in trackedHydrationCompletions so a caller
+// awaiting the acquisition's completion (including
+// settleEntryTranscriptForTests) also awaits the display's convergence.
+// The route a pending recovery belongs to, keyed by ref: a recovery opened for
+// a retired route must never suppress a fresh acquisition's recovery, and a
+// released-then-reacquired pane (same ref, new route) still gets its own.
+const pendingOpeningRecoveries = new Map<string, EntryTranscriptRoute>();
+
+// The recovery chain's whole-span registration per ref, so a concurrent
+// hydration can compose with it instead of displacing it. Tracked separately
+// from trackedHydrationCompletions because a plain hydration's registration
+// may be superseded by a newer attempt, while the chain's span may not.
+const openingRecoveryCompletions = new Map<string, Promise<void>>();
+
+function scheduleEntryOpeningRecovery(ref: string): void {
+  const route = entryTranscriptRoute(ref);
+  if (!route || route.ref !== ref) return;
+  if (pendingOpeningRecoveries.get(ref) === route) return;
+  if ((refCounts.get(ref) ?? 0) <= 0) return; // no live foreground holder to recover for
+  if (route.localOpenDeadlineMissed !== true) return; // the open refused fast or handed to another path: not this chain's strand
+  // The chain exists to promote recorded bodies into a display that is still
+  // body-suppressed; a display another path (main's source recovery, a newer
+  // open) already healed needs no re-open churn against storage that may
+  // never answer.
+  if (holdsCompleteForegroundWindow(threadsStore.getState().threads.get(ref))) return;
+  pendingOpeningRecoveries.set(ref, route);
+  const recovery = (async () => {
+    let stalledAttempts = 0;
+    for (;;) {
+      const opened = await openEntryTranscript(ref, true);
+      if (opened) return;
+      if (entryTranscriptRoute(ref) !== route) return; // a retired route's recovery must not outlive it
+      if ((refCounts.get(ref) ?? 0) <= 0) return; // holder released: nothing left to recover for
+      // Another path healed the display mid-chain only while the repository
+      // still backs that display: a pending attempt whose timeout disposed the
+      // shared reader lets the repository reclaim its bodies without
+      // publishing, so the store's snapshot alone can be a stale complete view
+      // the next publication would prune. Require the resident range too, and
+      // a reclaimed repository re-opens instead of ending recovery on it.
+      if (
+        holdsCompleteForegroundWindow(threadsStore.getState().threads.get(ref)) &&
+        route.repository?.holdsResidentForegroundRange()
+      )
+        return;
+      if (route.localOpenDeadlineMissed === true && stalledAttempts < 1) {
+        // The attempt missed the deadline again under sustained slowness; the
+        // pane is still stranded and held, so give the storage chain one
+        // more paced attempt before turning to the source.
+        stalledAttempts += 1;
+        continue;
+      }
+      // The attempt refused fast instead of missing the deadline — storage
+      // answered a recovery-needed outright, and a transient repository error
+      // takes openLocal's catch, which resolves without arming another
+      // attempt — or it missed its second stalled window and the cache is not
+      // answering at all. A pane that is still suppressed must not strand
+      // behind a marker no later open will set, or behind storage that may
+      // never answer: hand to source recovery once, the same sequence a
+      // stalled restore hands to (#4954), and let the ordinary owner-scoped
+      // paths own the rest.
+      route.repository?.beginFreshBaseline();
+      publishEntryTranscriptModel(ref);
+      let sourceReadFailed = false;
+      try {
+        const client = await requireReadyClient();
+        const epoch = readyEpoch;
+        if (entryTranscriptRoute(ref) !== route) return;
+        if ((refCounts.get(ref) ?? 0) <= 0) return;
+        // The chain's own registration spans this read and the re-open after
+        // it; the tracked read joins under it rather than displacing it, so
+        // a consumer that starts waiting mid-read still captures a promise
+        // covering the entire recovery.
+        await refreshTrackedThread(client, epoch, ref, false, true, undefined, undefined, "foreground", false);
+      } catch {
+        // A failed source read keeps the ordinary owner-scoped retry — the
+        // owned hydration lifecycle schedules it — and the re-open below
+        // promotes the view a successful read restored, so a failed one has
+        // nothing to promote.
+        sourceReadFailed = true;
+      }
+      if (sourceReadFailed) {
+        return;
+      }
+      if (entryTranscriptRoute(ref) !== route) return;
+      if ((refCounts.get(ref) ?? 0) <= 0) return;
+      // Mirror the raced recovery's full sequence: the read that replaced
+      // the view is followed by the local re-open that promotes its
+      // restored bodies into the display. A source response that already
+      // healed the display needs no further cache read to converge.
+      if (!holdsCompleteForegroundWindow(threadsStore.getState().threads.get(ref))) {
+        await openEntryTranscript(ref, true);
+      }
+      return;
+    }
+  })().then(
+    () => undefined,
+    () => undefined,
+  );
+  // The chain's registration is the recovery's whole span; it is also
+  // recorded in openingRecoveryCompletions so a concurrent refresh can compose
+  // with it instead of displacing it. A superseded hydration's registration
+  // may still be displaced by a newer hydration — the newer attempt owns the
+  // ref's convergence — but the recovery chain's span is not a hydration and
+  // must survive every one.
+  openingRecoveryCompletions.set(ref, recovery);
+  trackedHydrationCompletions.set(ref, recovery);
+  void recovery.then(() => {
+    if (pendingOpeningRecoveries.get(ref) === route) pendingOpeningRecoveries.delete(ref);
+    if (openingRecoveryCompletions.get(ref) === recovery) openingRecoveryCompletions.delete(ref);
+    if (trackedHydrationCompletions.get(ref) === recovery) trackedHydrationCompletions.delete(ref);
+  });
+}
+
 function releaseEntryTranscriptReader(ref: string, releaseDisplay = false): void {
   if (heldCountsAtStore(ref)) return;
   const fixture = entryTranscriptRoute(ref);
@@ -1357,7 +1497,7 @@ function createEntryTranscriptRepository(
         const lease = syncThreadSubscription(ref, client);
         if (!lease) return Promise.reject(new Error("entry history has no subscription owner"));
         const generation = (fixture.repository?.getSnapshot()?.history?.issuedGeneration ?? 0) + 1;
-        return lease.read(threadReadParams(true, generation, held)).then((result) => {
+        return readThreadForgettingConfirmed(ref, lease, threadReadParams(true, generation, held)).then((result) => {
           if (client !== wiredClient || epoch !== readyEpoch) throw new Error("entry history source was retired");
           return result;
         });
@@ -3135,7 +3275,7 @@ async function runResumeFencedForSend(
     const { thread } = await client.resumeThread(ref, { beforeRequest: stopBaseline });
     resumedRef = thread.evener.ref;
     drive.targetRef = resumedRef;
-    // The token the daemon's instance fence compares (appwire_runtime's
+    // The token the daemon's instance fence compares (server/appwire_thread_settings.go's
     // expectedInstanceID vs appThreadID), read the same fused way a fresh send
     // derives it (instanceId ?? threadId). Taken off the resume RESPONSE: the
     // resumed ref is usually not tracked yet, so the store has no model for it.
@@ -3895,14 +4035,22 @@ async function readThreadHydration(
   try {
     try {
       if (signal?.aborted) throw new Error("Thread hydration attempt was retired");
-      response = await lease.read(threadReadParams(includeTurns, pending.requestGeneration, held));
+      response = await readThreadForgettingConfirmed(
+        ref,
+        lease,
+        threadReadParams(includeTurns, pending.requestGeneration, held),
+      );
     } catch (err) {
       if (signal?.aborted) throw err;
       if (!shouldRetryWithoutHeldSnapshot(held, err)) throw err;
       // Logical retirement removes this operation before its issued request's
       // physical slot settles. Its still-live signal cannot authorize a retry.
       if (signal?.aborted || (tracked && pendingThreadHydrations.get(ref) !== pending)) throw err;
-      response = await lease.read(threadReadParams(includeTurns, pending.requestGeneration, undefined));
+      response = await readThreadForgettingConfirmed(
+        ref,
+        lease,
+        threadReadParams(includeTurns, pending.requestGeneration, undefined),
+      );
       discardHeldHistory = true;
     }
   } catch (err) {
@@ -4079,27 +4227,6 @@ function olderItemsParams(ref: string, cursor: string) {
   return { ref, cursor, itemsView: "full", itemLimit: TRANSCRIPT_ITEM_PAGE_SIZE } as const;
 }
 
-// FRAME_TIMES_WINDOW_MS matches widgets/cadence's own WINDOW_MS exactly
-// (the trace it renders) so the ring never evicts a sample Cadence would
-// still want to show; FRAME_TIMES_MAX_ENTRIES is an independent cap purely
-// against runaway growth during a high-frequency notification burst within
-// that same 60s window (a long-lived, mostly-idle thread's ring stays far
-// under 64 on the window alone).
-export const FRAME_TIMES_WINDOW_MS = 60_000;
-export const FRAME_TIMES_MAX_ENTRIES = 64;
-
-// appendFrameTime is a pure ring-buffer step: append `now`, evict anything
-// older than the trace window (mirroring Cadence's own ticksFor exclusion,
-// `age > WINDOW_MS`, so the two boundaries agree exactly), then cap at
-// FRAME_TIMES_MAX_ENTRIES, keeping the most recent. `times` need not be
-// sorted (Cadence's own frameTimes prop doc says the same) - this never
-// re-sorts, only filters and slices.
-export function appendFrameTime(times: number[], now: number): number[] {
-  const kept = times.filter((t) => now - t <= FRAME_TIMES_WINDOW_MS);
-  const next = [...kept, now];
-  return next.length > FRAME_TIMES_MAX_ENTRIES ? next.slice(next.length - FRAME_TIMES_MAX_ENTRIES) : next;
-}
-
 function attachmentBlob(attachment: InputAttachment): Blob {
   const bytes = Uint8Array.from(atob(attachment.data), (character) => character.charCodeAt(0));
   return new Blob([bytes], { type: attachment.mediaType });
@@ -4229,97 +4356,6 @@ function composerMutationIntent(
     payload: { ref, expectedInstanceId, expectedQueueRevision, input },
     optimisticDisplay: { method: COMPOSER_METHODS.drain, input },
   };
-}
-
-// The recovery fence. A session carrying a restart-blocking
-// obligation (a Stop in flight, or a snapshot the daemon reports as
-// restartRequired/resumeRequired) admits no session action at all while the
-// obligation stands: the hub's recovery admission refuses turn/steer,
-// turn/queue and every other fenced mutation for exactly that window
-// (cmd/evener-hub's sessionActionRecoveryError reads the resume locks, never
-// the projected status), with turn/start carved out only for the merely-
-// resumable shape isResumeOnly names, so even a still-ACTIVE snapshot is
-// fenced while
-// a Stop drains - a live read relays the daemon's active status with
-// resumeRequired overlaid beside it (applyThreadResumeRequirement), and the
-// store arms the obligation on that very hydration. An offered press in that
-// window could only mint durable intent that parks until the explicit Resume
-// action clears the fence. The predicate lives here - beside the obligation
-// state it reads, and where the store's own mutation admission enforces it
-// (enqueueMutationIntent) without an import cycle - and liveControls
-// re-exports it for the surfaces.
-// Every ref shape carries the fence: a remote session's hub overlays
-// resumeRequired on the read it proxies back, so the same obligation reaches
-// this predicate.
-export function isRecoveryFenced(restartObligated: boolean): boolean {
-  return restartObligated;
-}
-
-// A LOCAL session the hub admits a folded send for. The authority is the hub's
-// OWN answer, not a shape this client infers: ResumeOnlyFoldable (whom
-// applyThreadResumeRequirement stamps) is true exactly when a turn/start on the
-// current connection would be admitted under the resume-only carve-out
-// (cmd/evener-hub's sessionAdmitsResumeRequired, read without a request: the
-// requirement is set, no Stop is draining, the exit is confirmed, and no
-// connection fence applies). The client no longer reads resumeRequired plus a
-// cleared send capability as this shape - that overlay (applyThreadResumeRequirement)
-// sets both for a Stop drain, an unconfirmed force-stop exit, the
-// connection-recovery fence, and an incompatible-protocol daemon too, four
-// shapes whose turn/start the hub still refuses, so inferring from them offered
-// Send where the hub would refuse it.
-//
-// Deliberately narrow - it is NOT the whole recovery fence. Every clause below
-// excludes a shape the hub would refuse or one whose send would starve:
-//
-//   - the hub bit must be true; an older or non-local snapshot that never
-//     carried it is not this shape.
-//   - no status clause: the hub's admission is status-independent
-//     (sessionActionRecoveryError / resumeOnlyFoldable read no status), so a
-//     live snapshot the hub legitimately stamped foldable - a daemon another
-//     controller started under a confirmed force-stop obligation - is admitted
-//     and folds. A status clause here would hide the folded send from a
-//     snapshot the hub would happily admit, silently falling back to the old
-//     explicit-Resume step the fold exists to remove. The stale bit a shut-down
-//     snapshot leaves behind is defended against where it is written, not here:
-//     the off-shut-down transition clears it (settleResumeOnlyOffShutdown) and
-//     a connection-generation change invalidates it
-//     (invalidateHeldHistoriesForReconnect), so a bit whose shut-down snapshot
-//     has ended cannot mis-route a send.
-//   - signals.uncertainMessages must be false: while delivery-uncertain rows
-//     exist the hub's explicit Resume still runs reconciliation, so the send is
-//     not the whole story and the Resume affordance stays.
-//   - signals.stopInFlight must be false: a snapshot taken before this page's
-//     Stop was answered can still carry the bit the hub stamped before the
-//     Stop's drain began, so the local in-flight Stop keeps the fence.
-//   - signals.queuedNonSend must be false: a queued non-turn/start durable row
-//     (still "submitting", attempted or not) parks at the target's FIFO ahead
-//     of a turn/start, so folding a send behind it would silently never
-//     deliver it.
-//
-// A Stop in flight / active drain, a restartRequired daemon that needs the
-// older daemon stopped first, and a stale-connection snapshot all leave the hub
-// bit false; all keep the fence.
-export interface ResumeOnlySignals {
-  // The store's delivery-uncertain rows (blockedUnknown).
-  uncertainMessages?: boolean;
-  // A Force stop this page started is still draining (stoppingRefs).
-  stopInFlight?: boolean;
-  // A queued non-turn/start durable row (still "submitting", attempted or not)
-  // ahead of the send (the pending-turns projection's hasQueuedNonSend).
-  queuedNonSend?: boolean;
-  // The store's mutation-recency reading (mutationAuthorityRefs), read only by
-  // the Send-resumes face below: a local snapshot whose parent still owns its
-  // uncertain rows (Session.tsx's recoveryOwnerRef) is not Send-driven.
-  mutationStateAuthoritative?: boolean;
-}
-
-export function isResumeOnly(model: Pick<ThreadModel, "resumeOnlyFoldable">, signals: ResumeOnlySignals = {}): boolean {
-  return (
-    model.resumeOnlyFoldable === true &&
-    signals.uncertainMessages !== true &&
-    signals.stopInFlight !== true &&
-    signals.queuedNonSend !== true
-  );
 }
 
 // The pending-turns projection's synchronous view of a ref's durable outbox,
@@ -4466,46 +4502,6 @@ function localFenceSignals(ref: string): ResumeOnlySignals {
     queuedNonSend: hasQueuedNonSend(ref),
     mutationStateAuthoritative: state.mutationAuthorityRefs.has(ref),
   };
-}
-
-// A snapshot the pane shows as retained by its owning session: its uncertain
-// rows are the owner's to reconcile, and the pane offers the owner's link and a
-// Refresh - never a resume, because the hub refuses to resume a session another
-// session still owns. Any parent ref counts, local or remote. The ONE
-// definition, consumed by the Send-resumes face here, the session notice, and
-// SessionChrome's force-stop eligibility.
-export function ownerRetainedRef(
-  model: Pick<ThreadModel, "status" | "parentRef">,
-  mutationStateAuthoritative: boolean,
-): string | undefined {
-  return !mutationStateAuthoritative &&
-    model.status.type !== "notLoaded" &&
-    model.status.type !== "restartRequired" &&
-    model.parentRef !== undefined &&
-    model.parentRef !== ""
-    ? model.parentRef
-    : undefined;
-}
-
-// The recovery fence's Send-driven face: any session carrying a
-// restart-blocking obligation. Send is the single recovery action; the store's
-// driver resumes before the parked send dispatches. Two shapes keep their own
-// controls because Send cannot complete them:
-//   - a restartRequired daemon needs its older process stopped first, which
-//     Send cannot do;
-//   - an owner-retained snapshot's rows belong to its owner.
-// Everything else - every ref shape, delivery-uncertain rows, a queued
-// non-send row, an unconfirmed exit, the connection fence, and a draining Stop
-// (the driver waits the drain out) - offers Send.
-export function isSendResumes(
-  model: Pick<ThreadModel, "resumeOnlyFoldable" | "status" | "parentRef">,
-  restartObligated: boolean,
-  signals: ResumeOnlySignals = {},
-): boolean {
-  if (!restartObligated) return false;
-  if (model.status.type === "restartRequired") return false;
-  if (ownerRetainedRef(model, signals.mutationStateAuthoritative === true) !== undefined) return false;
-  return !isResumeOnly(model, signals);
 }
 
 // isSendResumes over the store's current model for ref: the ADMISSION
@@ -4949,46 +4945,6 @@ async function enqueueDurableMutation(
   }
 }
 
-// Whether the IndexedDB watchdog gave up on an open or a transaction: storage
-// that may only be slow, so a durable write is worth a second attempt.
-function isStorageTimeout(error: unknown): boolean {
-  return error instanceof MutationStorageTimeoutError;
-}
-
-// The DOMException names IndexedDB uses when storage itself refuses: a full
-// origin, a browser that denies this origin storage, a schema version another
-// tab moved, a connection closed under the transaction, a transaction the
-// browser aborted, an internal failure. Names that judge the record written
-// (DataError, DataCloneError, ConstraintError: its key, its payload, a
-// duplicate id) or that only this code's own bugs raise (NotFoundError for a
-// missing store, TransactionInactiveError for a request on a finished
-// transaction) are absent on purpose. An AbortError cannot stand in for a
-// record judgment: the outbox adapter races a transaction's body against its
-// completion, so a body that throws rejects with its own error before the
-// abort it causes is reported, and IDBConnection rejects an open whose schema
-// upgrade threw with IDBUpgradeError, not the abort.
-const STORAGE_REFUSAL_NAMES: ReadonlySet<string> = new Set([
-  "QuotaExceededError",
-  "SecurityError",
-  "VersionError",
-  "InvalidStateError",
-  "UnknownError",
-  "AbortError",
-]);
-
-// Whether an outbox operation failed because storage did, not because of what
-// it was asked to write: the adapter's own storage errors (a timeout, a
-// refused, blocked or superseded open) or a storage refusal IndexedDB raised.
-// Only these earn the send fallback and the storage-blocked reconcile record;
-// the outbox's own validation errors keep their ordinary meaning. IndexedDB's
-// are matched by name because DOMExceptions from another realm fail
-// instanceof.
-function isStorageFailure(error: unknown): boolean {
-  if (error instanceof MutationStorageError) return true;
-  const name = typeof error === "object" && error !== null ? (error as { name?: unknown }).name : undefined;
-  return typeof name === "string" && STORAGE_REFUSAL_NAMES.has(name);
-}
-
 // The fallback send's RPC is its only transport, so a failure on the wire is
 // retried rather than surfaced. Only a transport failure earns the second
 // attempt: a settled WireError is the daemon's own answer (a conflict or a
@@ -5108,22 +5064,6 @@ async function enqueueMutation(
   notifyMutationPersistence([ref]);
 }
 
-// mapConflict recognizes the WireError shape the daemon uses for a lost turn
-// CAS (turn/start, turn/steer, turn/queue, turn/interrupt) or a stale/raced
-// escalation resolve: code -32013 with
-// data.evenerErrorInfo === "conflict" (appwire.Conflict(), appwire/errors.go).
-// The discriminator is the evenerErrorInfo string, not the code alone — code
-// -32013 is also used by appwire.QueuedDrainPartial with a different
-// evenerErrorInfo, which must NOT map to ConflictError. Any other rejection
-// (a different WireError, RequestTimeoutError, ConnectionClosedError, ...)
-// passes through unchanged.
-function mapConflict(err: unknown): Error {
-  if (err instanceof WireError && err.evenerErrorInfo === "conflict") {
-    return new ConflictError(err.message);
-  }
-  return err instanceof Error ? err : new Error(String(err));
-}
-
 function clearMutationIntent(ref: string): MutationIntent {
   const model = trackedThreadModel(ref);
   if (!model) throw new Error(`threads store: cannot clear unhydrated thread ${ref}`);
@@ -5168,6 +5108,61 @@ function resolvedEscalationsFor(ref: string): Set<string> {
     resolvedEscalationsByRef.set(ref, resolved);
   }
   return resolved;
+}
+
+// A live read issued after an escalation was resolved that no longer advertises
+// it shows the daemon is done with it (it is dropped when the approved tool's
+// rerun finishes), so that id can never come back and is forgotten. Ids resolved
+// after the read was issued are kept: the read says nothing of them. Saved
+// history is not a live snapshot and confirms nothing.
+//
+// Reads are answered out of order and adopted after they return, so a confirmed
+// id is forgotten only while no read for the ref is in flight and no hydration
+// is still adopting a response; each response is also stripped of resolved ids
+// on arrival. The Set is trimmed in place; the transcript repository holds this
+// same Set.
+const threadReadsByRef = new Map<string, { inFlight: number; confirmed: Set<string> }>();
+
+function forgetConfirmedEscalations(ref: string): void {
+  const reads = threadReadsByRef.get(ref);
+  if (!reads || reads.inFlight > 0 || pendingThreadHydrations.has(ref) || pendingWatchedHydrations.has(ref)) return;
+  for (const escalationId of reads.confirmed) resolvedEscalationsByRef.get(ref)?.delete(escalationId);
+  threadReadsByRef.delete(ref);
+}
+
+function readThreadForgettingConfirmed(
+  ref: string,
+  lease: ThreadSubscriptionLease,
+  params: Parameters<ThreadSubscriptionLease["read"]>[0],
+): ReturnType<ThreadSubscriptionLease["read"]> {
+  const resolvedAtIssue = [...(resolvedEscalationsByRef.get(ref) ?? [])];
+  const reads = threadReadsByRef.get(ref) ?? { inFlight: 0, confirmed: new Set<string>() };
+  threadReadsByRef.set(ref, reads);
+  reads.inFlight += 1;
+  const settle = () => {
+    reads.inFlight -= 1;
+    forgetConfirmedEscalations(ref);
+  };
+  return lease.read(params).then(
+    (response) => {
+      const evener = response.thread.evener;
+      const advertised = evener?.pendingEscalations ?? [];
+      if (evener?.mutationStateAuthoritative === true) {
+        const advertisedIds = new Set(advertised.map((e) => e.escalationId));
+        for (const escalationId of resolvedAtIssue)
+          if (!advertisedIds.has(escalationId)) reads.confirmed.add(escalationId);
+      }
+      const resolved = resolvedEscalationsByRef.get(ref);
+      const kept = resolved ? advertised.filter((e) => !resolved.has(e.escalationId)) : advertised;
+      settle();
+      if (!evener || kept.length === advertised.length) return response;
+      return { ...response, thread: { ...response.thread, evener: { ...evener, pendingEscalations: kept } } };
+    },
+    (error) => {
+      settle();
+      throw error;
+    },
+  );
 }
 
 function withoutResolvedEscalations(ref: string, pending: PendingThreadHydration, model: ThreadModel): ThreadModel {
@@ -5230,6 +5225,7 @@ function retirePendingHydration(
   pending.baseModel = undefined;
   releasePendingHydrationBytes(ref, pending);
   if (isCurrent) pendingHydrations.delete(ref);
+  forgetConfirmedEscalations(ref);
   pendingHydrationRetirementForTests?.({
     ref,
     retainedNotificationCount,
@@ -6638,6 +6634,7 @@ async function refreshTrackedThread(
   beforePublish?: () => void,
   reopenOnlyClientMutationId?: string,
   intent: HydrationIntent = "foreground",
+  registerCompletion = true,
 ): Promise<number | undefined> {
   // The scheduler can join an existing repository end read. Apply the same
   // owner fence as refreshTrackedThreadNow before joining, so a released ref
@@ -6653,6 +6650,8 @@ async function refreshTrackedThread(
       beforePublish,
       reopenOnlyClientMutationId,
       intent,
+      undefined,
+      registerCompletion,
     );
   let attempt: number | undefined;
   const residency = transcriptResidency();
@@ -6671,6 +6670,7 @@ async function refreshTrackedThread(
         reopenOnlyClientMutationId,
         intent,
         signal,
+        registerCompletion,
       );
     },
     // Recovery needs a fresh read, even when its pending publication claim was
@@ -6690,6 +6690,7 @@ async function refreshTrackedThreadNow(
   reopenOnlyClientMutationId?: string,
   intent: HydrationIntent = "foreground",
   signal?: AbortSignal,
+  registerCompletion = true,
 ): Promise<number | undefined> {
   // Returns the tracked-hydration attempt this refresh began, or undefined
   // when it never began one (an unowned ref, or an in-flight non-targeted
@@ -6732,14 +6733,34 @@ async function refreshTrackedThreadNow(
     if (isDiscardedReadResult(pending, result.model)) return pending.baseModel ?? null;
     return publishAndReconcileThreadHydration(ref, pending, result, reopenOnlyClientMutationId, intent);
   });
-  const completion = hydration.then(
-    () => undefined,
-    () => undefined,
-  );
-  trackedHydrationCompletions.set(ref, completion);
-  void completion.then(() => {
-    if (trackedHydrationCompletions.get(ref) === completion) trackedHydrationCompletions.delete(ref);
-  });
+  // A tracked read normally publishes its own settlement in
+  // trackedHydrationCompletions so waiting consumers await its convergence.
+  // A caller that already holds a wider registration for this ref — the
+  // opening-recovery chain registers its whole span — must keep that wider
+  // promise as the one consumers capture mid-read, so this read joins under
+  // it instead of displacing it.
+  if (registerCompletion) {
+    // Compose with the opening-recovery chain's registration when one is
+    // outstanding rather than displacing it: the chain's span is wider than
+    // this hydration, and a consumer that starts waiting while this read runs
+    // must still span the recovery behind it. Hydration-only registrations
+    // still displace each other — the newer attempt owns the ref's
+    // convergence. The compose is allSettled on purpose: a rejected hydration
+    // is the failed refresh's own concern and must not settle the composed
+    // completion while the chain's span is still pending, or a waiting
+    // consumer resumes before recovery establishes the display and cursor.
+    const outstandingRecovery = openingRecoveryCompletions.get(ref);
+    const completion = outstandingRecovery
+      ? Promise.allSettled([hydration, outstandingRecovery]).then(() => undefined)
+      : hydration.then(
+          () => undefined,
+          () => undefined,
+        );
+    trackedHydrationCompletions.set(ref, completion);
+    void completion.then(() => {
+      if (trackedHydrationCompletions.get(ref) === completion) trackedHydrationCompletions.delete(ref);
+    });
+  }
   const hasPublishedModel = threadsStore.getState().threads.has(ref);
   // A failed targeted predecessor may already have removed `previous`.
   // Keep the newest targeted read adoptable by the still-active initial
@@ -7308,7 +7329,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         try {
           const model = await inflight;
           if (model) {
-            await openEntryTranscript(ref);
+            if (!(await openEntryTranscript(ref))) scheduleEntryOpeningRecovery(ref);
             return;
           }
         } catch (err) {
@@ -8242,7 +8263,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const client = requireClient();
     // Map a daemon Conflict to ConflictError, same as every other mutating
     // action: the daemon surfaces a stale/double/raced resolve as
-    // appwire.Conflict() (server/appwire_runtime.go's
+    // appwire.Conflict() (server/appwire_turn_handlers.go's
     // handleAppSandboxEscalationResolve) precisely so the client drops the card
     // instead of retrying. mapConflict passes any non-conflict rejection
     // through unchanged, and the local clear below runs only on a resolve that
@@ -8795,6 +8816,7 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
   resolvedEscalationsByRef.clear();
+  threadReadsByRef.clear();
   for (const route of productionEntryRoutes.values()) retireEntryTranscriptRoute(route);
   productionEntryRoutes.clear();
   productionEntryCache?.close();
@@ -8863,6 +8885,7 @@ export function resetThreadsStoreForTests(): void {
   // under the default factory (the seam's own close-and-reattach).
   setCacheChannelFactoryForTests(defaultCacheChannelFactory);
   trackedHydrationCompletions.clear();
+  openingRecoveryCompletions.clear();
   pendingThreadHydrations.clear();
   pendingMutationReconciliations.clear();
   watchRefCounts.clear();

@@ -2,8 +2,8 @@
 
 import type { AnyNotification, LaunchConfigClient, PathValidateResponse } from "@evener/appwire-client";
 import type { LaunchLayerClient, MarketplacesClient, PluginsClient } from "@evener/appwire-client/state/extensions";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { beforeEach, expect, expectTypeOf, test } from "vitest";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore } from "./connection";
 import { type HostStoreClient, remoteHostStoreClient } from "./hostStoreClient";
 
@@ -37,18 +37,12 @@ void hostStoreTypeContract;
 // every request goes through evener/host/request, and only that host's own
 // notifications are delivered (unwrapped). There is no controller fallback.
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
 });
 
 test("forwards every request through evener/host/request with the bound host", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/request", () => ({ data: [] }) as never);
 
   await remoteHostStoreClient("beta").request("model/list", {});
@@ -63,11 +57,11 @@ test("rejects instead of reaching a controller method when no client is connecte
 });
 
 test("an existing host port resolves the replacement connection on each request", async () => {
-  const first = connectFakeClient();
+  const first = connectReadyFakeClient();
   first.on("evener/host/request", () => ({ data: [] }));
   const port = remoteHostStoreClient("beta");
   await port.request("model/list", {});
-  const replacement = connectFakeClient();
+  const replacement = connectReadyFakeClient();
   replacement.on("evener/host/request", () => ({ data: [] }));
   await port.request("model/list", { harness: "evener" });
 
@@ -80,7 +74,7 @@ test("an existing host port resolves the replacement connection on each request"
 });
 
 test("propagates the selected host's application refusal unchanged", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const refusal = new Error("host refused model discovery");
   fake.on("evener/host/request", () => {
     throw refusal;
@@ -89,7 +83,7 @@ test("propagates the selected host's application refusal unchanged", async () =>
 });
 
 test("delivers only the frames wrapped for its host, unwrapped to the plain method", () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const seen: AnyNotification[] = [];
   remoteHostStoreClient("beta").onNotification((n) => seen.push(n));
 
@@ -115,7 +109,7 @@ test("delivers only the frames wrapped for its host, unwrapped to the plain meth
 // timing out under a budget that was never honoured. The deadline now rides the
 // one call that actually carries the caller's wait, evener/host/request itself.
 test("a caller's timeoutMs rides the forwarded call rather than being dropped", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/request", () => ({ data: [] }) as never);
 
   await remoteHostStoreClient("beta").request("model/list", {}, { timeoutMs: 1234 });

@@ -77,10 +77,7 @@ func TestOpenAIPromptCacheDefaults_FallbackRowDropsRetentionKeepsKey(t *testing.
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	if _, err := sess.ProcessInput(context.Background(), "run", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)

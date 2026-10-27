@@ -863,34 +863,6 @@ func TestCovNextTurnContext2(t *testing.T) {
 	childCancel()
 }
 
-// TestCovPopFollowUp covers popFollowUp.
-func TestCovPopFollowUp(t *testing.T) {
-	t.Parallel()
-	s := &Session{}
-	// No followups — empty string.
-	if got := s.popFollowUp(); got != "" {
-		t.Fatalf("empty followups: got %q", got)
-	}
-
-	// Add followups.
-	s.mu.Lock()
-	s.followups = []string{"first", "second"}
-	s.mu.Unlock()
-
-	// Pop first.
-	if got := s.popFollowUp(); got != "first" {
-		t.Fatalf("first pop: got %q", got)
-	}
-	// Pop second.
-	if got := s.popFollowUp(); got != "second" {
-		t.Fatalf("second pop: got %q", got)
-	}
-	// Empty again.
-	if got := s.popFollowUp(); got != "" {
-		t.Fatalf("third pop: got %q", got)
-	}
-}
-
 // TestCovHasPendingSteering covers hasPendingSteering.
 func TestCovHasPendingSteering(t *testing.T) {
 	t.Parallel()
@@ -990,35 +962,6 @@ func TestCovSteeringQueueSnapshot(t *testing.T) {
 	s.mu.Lock()
 	if s.steeringQueue[0].Text == "modified" {
 		t.Fatal("snapshot should be a copy")
-	}
-	s.mu.Unlock()
-}
-
-// TestCovFollowUp covers FollowUp.
-func TestCovFollowUp(t *testing.T) {
-	t.Parallel()
-	s := &Session{}
-	// Empty message — no-op.
-	if err := s.FollowUp(""); err != nil {
-		t.Fatal(err)
-	}
-	// Whitespace message — no-op.
-	if err := s.FollowUp("  "); err != nil {
-		t.Fatal(err)
-	}
-	s.mu.Lock()
-	if len(s.followups) != 0 {
-		t.Fatalf("empty/whitespace should be no-op: %d", len(s.followups))
-	}
-	s.mu.Unlock()
-
-	// Valid message.
-	if err := s.FollowUp("do something"); err != nil {
-		t.Fatal(err)
-	}
-	s.mu.Lock()
-	if len(s.followups) != 1 || s.followups[0] != "do something" {
-		t.Fatalf("followups: %+v", s.followups)
 	}
 	s.mu.Unlock()
 }

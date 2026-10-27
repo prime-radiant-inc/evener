@@ -24,7 +24,6 @@ func FuzzWatchClearHistoryResidue(f *testing.F) {
 			receiverSessionID = testOwnerSessionID
 		}
 		cfg := &watchConfig{
-			id:                "watch-history",
 			watchID:           "watch-history",
 			sourcePublic:      "self",
 			target:            "job_history",

@@ -1,4 +1,5 @@
 import type { HostRow } from "@evener/appwire-client";
+import { LOCAL_HOST } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -9,7 +10,6 @@ import { resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { installLocalStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../stores/credentials";
-import { LOCAL_HOST } from "../../stores/hostRouting";
 import { hostsStore } from "../../stores/hosts";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetSettingsHostForTests, settingsHostStore } from "../../stores/settingsHost";

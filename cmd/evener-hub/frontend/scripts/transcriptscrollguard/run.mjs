@@ -464,9 +464,20 @@ async function main() {
         const state = window.endedPageState();
         const currentPort = document.querySelector('[data-testid="transcript-virtual-list"] > div');
         const currentRow = [...port.querySelectorAll('[data-row-id]')].find(row => row.getAttribute('data-row-id') === rowId);
+        const renderedIds = [...port.querySelectorAll('[data-row-id]')].map(r => r.getAttribute('data-row-id'));
         return JSON.stringify({ opened, beforeState, held, settled, state, rowId,
           samePort: port.isConnected && port === currentPort,
           sameRow: row.isConnected && row === currentRow,
+          // A failed sameRow names which way the keyed row was lost: replaced by
+          // a remounted node or gone from the window.
+          rowEvidence: {
+            rowConnected: row.isConnected,
+            rowState: currentRow ? (currentRow === row ? "same" : "replaced") : "absent",
+            renderedRows: renderedIds.length,
+            firstRenderedId: renderedIds[0] ?? null,
+            lastRenderedId: renderedIds[renderedIds.length - 1] ?? null,
+            scrollTop: port.scrollTop,
+          },
           sameFooter: footer && footer.isConnected && footer === document.querySelector('[data-testid="pane-footer"]'),
           drift: row.getBoundingClientRect().top - port.getBoundingClientRect().top - top });
       })()`,

@@ -162,6 +162,28 @@ It was a one-off experiment. Delete it from the tree (history keeps it), about -
 
 The engineering items in [GAPS.md](GAPS.md) run after Wave 2, with the same autonomy: fuzz corpus (G3), the committed bundle (G4), npm version skew (G5), `go.mod` (G6), logging (M1), concurrency and cancellation hygiene (M2), config sprawl (M3), dependencies (M4), and the test-orchestration overlap (M5).
 
+## Wave 1 follow-ups (2026-10-27)
+
+Jesse's answers to six open Wave 1 questions. Each applies to the named roadmap entry.
+
+### W1-60. Host store sidecar
+Delete the legacy `hub.hosts.json` sidecar migration and its write-poisoning. No tagged release ever wrote that sidecar. A corrupt main store still refuses writes.
+
+### W1-63. Transcript display settings
+Drop the dual write of transcript display settings to the legacy prefs keys.
+
+### W1-41b. Scoped host read
+Rewrite the debounced scoped host read behind `usePluginPreview` and `useScopedHostRead` as a framework-free store in the `appwire-client` package, with a thin hook in each app. The package stays React-free.
+
+### W1-58. Plan corpus
+Delete all of the roughly 225 superpowers plans older than 30 days that were kept.
+
+### W1-02. Hub store writers
+Keep afero in the hub stores (`hubcore` `writeStateFileAtomic` and its stores, `hostops` `saveFS` and `writeQuarantineFile`) along with their fault-injection tests. W1-02 is closed as done.
+
+### W1-37. Thought duration
+`formatThoughtDuration` switches to the shared `formatDurationMs`. Visible changes: 0 ms shows `1ms` instead of `0ms`, and 9,999 ms shows `10s` instead of `10.0s`.
+
 ## Still open
 
 Nothing.

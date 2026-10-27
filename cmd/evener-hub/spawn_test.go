@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -20,6 +19,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
@@ -1055,41 +1055,6 @@ func TestResolveEvenerStateDirMatchesServeDefaultForWorkingDir(t *testing.T) {
 	}
 }
 
-// runGitForSpawn runs a git command in dir with a fixed identity, failing the
-// test on error. Mirrors cmdutil/statedir_test.go's runGit; a package-main
-// test file cannot import an unexported test helper from another package.
-func runGitForSpawn(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-	return strings.TrimSpace(string(out))
-}
-
-// newLinkedWorktreeForSpawn builds an origin-less main repo with one commit
-// and a linked worktree, returning their absolute paths. Mirrors
-// cmdutil/statedir_test.go's newLinkedWorktree fixture.
-func newLinkedWorktreeForSpawn(t *testing.T) (main, wt string) {
-	t.Helper()
-	base := t.TempDir()
-	main = filepath.Join(base, "main")
-	runGitForSpawn(t, base, "init", "-q", "main")
-	runGitForSpawn(t, main, "commit", "-q", "--allow-empty", "-m", "init")
-	wt = filepath.Join(base, "wt")
-	runGitForSpawn(t, main, "worktree", "add", "-q", wt, "-b", "feat")
-	return main, wt
-}
-
 // TestResolveEvenerStateDirLinkedWorktreeSameAsMain proves the fix for the bug
 // described in
 // docs/superpowers/specs/2026-07-02-native-worktree-tools-design.md §1
@@ -1100,7 +1065,7 @@ func newLinkedWorktreeForSpawn(t *testing.T) (main, wt string) {
 // the main checkout — the same class of bug Task 3 already fixed in
 // cmdutil.DefaultProjectStateDir for `evener run`/`evener serve`.
 func TestResolveEvenerStateDirLinkedWorktreeSameAsMain(t *testing.T) {
-	main, wt := newLinkedWorktreeForSpawn(t)
+	main, wt := gittest.NewLinkedWorktree(t)
 
 	mainDir, err := resolveEvenerStateDir(main, "")
 	if err != nil {
@@ -1658,5 +1623,52 @@ func TestHubSpawnerNoUserLayerHonoursTheTriState(t *testing.T) {
 	}
 	if got, ok := envLookup(captured, "EVENER_PROVIDERS_CONFIG"); !ok || got != "" {
 		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want present and empty", got, ok)
+	}
+}
+
+// Both launch-check entry points share one subprocess path, so a secret in a
+// failing check's output, an unparseable answer, a wrong-protocol answer and a
+// missing binary must each land the same way through either one.
+func TestEvenerLaunchCheckEntryPointsShareFailureHandling(t *testing.T) {
+	t.Parallel()
+	checks := map[string]func(ctx context.Context, evenerBinary string, env []string) error{
+		"validate": func(ctx context.Context, evenerBinary string, env []string) error {
+			return validateEvenerLaunchContract(ctx, evenerBinary, "openrouter/free", env)
+		},
+		"models": func(ctx context.Context, evenerBinary string, env []string) error {
+			_, err := listEvenerLaunchModelContract(ctx, evenerBinary, env)
+			return err
+		},
+	}
+	env := envFromMap(map[string]string{"OPENROUTER_API_KEY": "super-secret-key"})
+	cases := []struct {
+		name         string
+		script       string // empty means the binary does not exist
+		wantFailed   bool
+		wantNoSecret bool
+	}{
+		{name: "failing check echoes a secret", script: "#!/bin/sh\necho \"$OPENROUTER_API_KEY\" >&2\nexit 2\n", wantFailed: true, wantNoSecret: true},
+		{name: "answer is not JSON", script: "#!/bin/sh\necho not-json\n"},
+		{name: "answer names another protocol", script: "#!/bin/sh\nprintf '{\"protocol\":\"evener-appwire-v2\"}\\n'\n"},
+		{name: "binary is missing", wantFailed: true},
+	}
+	for checkName, call := range checks {
+		for _, tc := range cases {
+			t.Run(checkName+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				bin := filepath.Join(t.TempDir(), "fake-evener")
+				if tc.script != "" {
+					writeFakeEvener(t, bin, tc.script)
+				}
+				err := call(context.Background(), bin, env)
+				assertHubLaunchError(t, err)
+				if errors.Is(err, errLaunchCheckFailed) != tc.wantFailed {
+					t.Fatalf("errLaunchCheckFailed = %v, want %v: %v", !tc.wantFailed, tc.wantFailed, err)
+				}
+				if tc.wantNoSecret && strings.Contains(err.Error(), "super-secret-key") {
+					t.Fatalf("diagnostic leaked secret: %v", err)
+				}
+			})
+		}
 	}
 }

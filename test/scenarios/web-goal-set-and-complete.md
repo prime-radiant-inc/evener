@@ -132,10 +132,10 @@ done
     "objective":"Create a file seed.txt containing the number 7. Then create double.txt containing that number doubled (14). Verify both files, then mark the goal complete."}}
    ```
    Param and response shapes are `appwire.GoalSetParams` /
-   `GoalSetResponse` (`appwire/types.go:986-998`). **Expected:** no error
+   `GoalSetResponse` (`appwire/types_turn.go#GoalSetResponse`). **Expected:** no error
    (an `Unavailable` here means the gate refused). `started` may be either
    value — it reports only whether the loop began *immediately*; a goal set
-   while a turn runs is still set and starts after it (`:991-995`).
+   while a turn runs is still set and starts after it.
 
 3. **[browser] The same action through the real UI.** Authenticate and open
    the session:
@@ -241,13 +241,13 @@ Leave Jesse's real `~/.evener` and `~/.local/state/evener` untouched; the
   (step 3) for the UI one.
 - **`goal_status`/`goal_iterations` are flat, top-level REST fields.** There
   is no `goal` object on `/api/sessions/<ref>`; `hubapi` cannot depend on
-  `appwire`, so `appwire.GoalState` (`appwire/types.go:356-359`) is
+  `appwire`, so `appwire.GoalState` (`appwire/types_thread.go#GoalState`) is
   flattened on the way out (`hubapi/types.go:164-169`). A poller reading
   `.goal.status` gets `null` forever and reports a false failure.
 - **`GoalSetResponse.started === false` is not an error.** It is false when
   the objective was cleared, when a turn is already running (the gate picks
   the goal up after it), or when no immediate start was possible — the goal
-  is set in every one of those cases (`appwire/types.go:991-995`).
+  is set in every one of those cases (`appwire/types_turn.go#GoalSetResponse`).
 - **The goal row only exists once a goal is set.** `CurrentWork` renders no
   goal row while no goal is set (`panes/session/composer/CurrentWork.tsx`) —
   the entry points are the palette's **Set session goal** command and the

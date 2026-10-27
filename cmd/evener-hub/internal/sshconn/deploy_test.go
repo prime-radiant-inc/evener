@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/internal/remoteinstall"
 )
 
@@ -85,7 +86,7 @@ func TestDeployBuildsPushesAtomicallyAndCleansStaging(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if builtOS != "linux" || builtArch != "amd64" {
@@ -123,7 +124,7 @@ func TestDeployTargetDirectoryMissingFailsClearly(t *testing.T) {
 		BuildBinary: func(context.Context, string, string, string) error { buildCalled = true; return nil },
 	})
 
-	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil)
+	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil)
 	if !errors.Is(err, ErrDeploy) {
 		t.Fatalf("err = %v, want ErrDeploy", err)
 	}
@@ -202,12 +203,12 @@ func TestDeployRefusesARunTargetThatCannotServeAHub(t *testing.T) {
 					},
 				})
 
-				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
+				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil, nil)
 				assertRunTargetRefusal(t, err, wants[target]...)
 				// The ordering is the requirement. The first refusal is already
 				// the whole answer, so a supervisor's retry re-runs it with no
 				// install, push, or write to repeat.
-				if _, again := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil); !errors.Is(again, ErrRunTargetUnservable) {
+				if _, again := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil, nil); !errors.Is(again, ErrRunTargetUnservable) {
 					t.Fatalf("retry err = %v, want the same terminal run-target refusal", again)
 				}
 				if runs := fr.recordedRuns(); len(runs) != 0 {
@@ -228,7 +229,7 @@ func TestDeployRefusesARunTargetThatCannotServeAHub(t *testing.T) {
 
 				fr := refusingRunner(t)
 				m := newTestManager(t, testRegistry(t, host), fr, Options{})
-				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
+				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil, nil)
 				assertRunTargetRefusal(t, err, wants[target]...)
 				if runs := fr.recordedRuns(); len(runs) != 0 {
 					t.Fatalf("the refused install reached the runner: %v", runs)
@@ -461,9 +462,7 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 	}, startFn: goodStartFn(t)}
 	requireProtocolUpgrade(t, fr)
 	modelLegacySelectedProcess(t, fr, host)
-	m := newTestManager(t, testRegistry(t, host), fr, Options{
-		sleep: func(context.Context, time.Duration) error { return nil },
-	})
+	m := newSleeplessTestManager(t, host, fr)
 	testDeployRecorder(t, m)
 	testRestartRecorder(t, m)
 
@@ -543,9 +542,7 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 	fixture := modelSelectedProcess(t, fr, "/home/dev/.local/bin/evener", "oldsha", "newsha")
 	fixture.sha = "newsha"
 	fixture.endpointAlias = "evener hub endpoint --json"
-	m := newTestManager(t, testRegistry(t, host), fr, Options{
-		sleep: func(context.Context, time.Duration) error { return nil },
-	})
+	m := newSleeplessTestManager(t, host, fr)
 	testDeployRecorder(t, m)
 	testRestartRecorder(t, m)
 
@@ -612,7 +609,7 @@ func TestDeployTargetEmptyResolvesRemotePATH(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	want := pushBinaryRemote("/home/dev/.local/bin/evener", 1)
@@ -656,7 +653,7 @@ func TestDeployQuotesRemotePaths(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if dir := path.Dir(target); !strings.Contains(testDirRemote, "test -d "+shellquote.RemoteWord(dir)) {
@@ -700,7 +697,7 @@ func TestDeployResolvesSymlinkTarget(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if !strings.Contains(pushRemote, pushBinaryRemote(realPath, 1)) {
@@ -959,7 +956,7 @@ func TestDeployBuildsFromTheConfiguredSource(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{BuildSource: source})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	got, err := os.ReadFile(marker)
@@ -1068,7 +1065,7 @@ func TestDeployDoesNotBuildFromAnUnconfiguredWorkingDirectory(t *testing.T) {
 	// The push path specifically: with no build source configured it must not
 	// build from the working-directory checkout. (deploy would take the installer
 	// fallback here.)
-	_, err := m.deployPush(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil)
+	_, err := m.deployPush(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil)
 	if err == nil {
 		t.Fatal("deploy succeeded with no configured build source")
 	}
@@ -1141,10 +1138,10 @@ func TestVerifyBuildSourceRevisionMustMatchController(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "cmd", "evener"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, root, "init", "-q")
-	gitIn(t, root, "add", ".")
-	gitIn(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
-	short := gitIn(t, root, "rev-parse", "HEAD")[:7]
+	gittest.Run(t, root, "init", "-q")
+	gittest.Run(t, root, "add", ".")
+	gittest.Run(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
+	short := gittest.Run(t, root, "rev-parse", "HEAD")[:7]
 
 	orig := buildinfo.GitSHA
 	t.Cleanup(func() { buildinfo.GitSHA = orig })
@@ -1157,8 +1154,8 @@ func TestVerifyBuildSourceRevisionMustMatchController(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("second\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, root, "add", ".")
-	gitIn(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "second")
+	gittest.Run(t, root, "add", ".")
+	gittest.Run(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "second")
 	_, err := verifyBuildSource(root)
 	if err == nil {
 		t.Fatal("verifyBuildSource accepted a checkout at a revision other than the controller's build")
@@ -1188,10 +1185,10 @@ func TestVerifyBuildRevisionRefusesDirtyController(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "cmd", "evener"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, root, "init", "-q")
-	gitIn(t, root, "add", ".")
-	gitIn(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
-	short := gitIn(t, root, "rev-parse", "HEAD")[:7]
+	gittest.Run(t, root, "init", "-q")
+	gittest.Run(t, root, "add", ".")
+	gittest.Run(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
+	short := gittest.Run(t, root, "rev-parse", "HEAD")[:7]
 
 	origSHA, origDirty := buildinfo.GitSHA, buildinfo.GitDirty
 	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty = origSHA, origDirty })
@@ -1238,19 +1235,6 @@ func TestDeployTargetRefusesMultilineCommandV(t *testing.T) {
 	}
 }
 
-// gitIn runs a git command in dir for the build-source tests, failing on error.
-// The env overrides keep it independent of the developer's global git config.
-func gitIn(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v: %s", args, err, out)
-	}
-	return strings.TrimSpace(string(out))
-}
-
 // clearBuildSHA makes the build-source revision check a no-op for tests that
 // build from a throwaway checkout with no git history, independent of whether
 // the test binary itself carries buildinfo ldflags.
@@ -1279,10 +1263,10 @@ func TestVerifyBuildRevisionRefusesDirtySource(t *testing.T) {
 	if err := os.WriteFile(tracked, []byte("one\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, root, "init", "-q")
-	gitIn(t, root, "add", ".")
-	gitIn(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
-	short := gitIn(t, root, "rev-parse", "HEAD")[:7]
+	gittest.Run(t, root, "init", "-q")
+	gittest.Run(t, root, "add", ".")
+	gittest.Run(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
+	short := gittest.Run(t, root, "rev-parse", "HEAD")[:7]
 
 	orig := buildinfo.GitSHA
 	t.Cleanup(func() { buildinfo.GitSHA = orig })
@@ -1306,7 +1290,7 @@ func TestVerifyBuildRevisionRefusesDirtySource(t *testing.T) {
 	}
 
 	// An untracked file is part of what `go build` compiles, so it counts too.
-	gitIn(t, root, "checkout", "--", "tracked.txt")
+	gittest.Run(t, root, "checkout", "--", "tracked.txt")
 	if err := os.WriteFile(filepath.Join(root, "untracked.go"), []byte("package extra\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1489,7 +1473,7 @@ func TestDeployPushCreatesMissingEvenerPathTarget(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v (a not-yet-installed evener_path must be creatable)", err)
 	}
 	if !strings.Contains(pushJoined, pushBinaryRemote("/opt/evener/bin/evener", 1)) {
@@ -1527,7 +1511,7 @@ func TestDeployPushFallsBackToDefaultTargetOnFreshHost(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{BuildBinary: writeStageBinary})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
+	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil, nil)
 	if err != nil {
 		t.Fatalf("deploy: %v (a fresh host with no evener must be provisionable)", err)
 	}
@@ -1574,7 +1558,7 @@ func TestDeployPrefersTheOperatorArtifactOverTheBuildSource(t *testing.T) {
 		BuildSource: t.TempDir(),
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if string(pushed) != "artifact-bytes" {
@@ -1662,7 +1646,7 @@ func TestDevControllerPreservesCompatibleBuildButExplicitDeployWorks(t *testing.
 	if m.deployRequired(facts) {
 		t.Fatal("a compatible startup contract required deployment")
 	}
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if builds != 1 {
@@ -1696,7 +1680,7 @@ func TestDirtyControllerRefusalsNameTheRemedy(t *testing.T) {
 				return nil
 			},
 		})
-		_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
+		_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil, nil)
 		if !errors.Is(err, ErrControllerDirty) {
 			t.Fatalf("err = %v, want ErrControllerDirty", err)
 		}

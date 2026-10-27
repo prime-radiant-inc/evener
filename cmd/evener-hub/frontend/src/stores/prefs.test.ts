@@ -1,10 +1,9 @@
-import { decodeLocalConfig, makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { decodeLocalConfig } from "@evener/appwire-client";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import {
   clampSidebarWidth,
-  dualWriteTranscriptDisplayLegacy,
   hasTranscriptDisplayLocal,
   initPrefs,
   migrateLegacyTranscriptDisplay,
@@ -17,7 +16,6 @@ import {
   SIDEBAR_WIDTH_MAX,
   SIDEBAR_WIDTH_MIN,
   usePrefsStore,
-  writeLegacyBooleanPreference,
 } from "./prefs";
 
 beforeAll(() => {
@@ -675,7 +673,7 @@ describe("usePrefsStore hook", () => {
 });
 
 describe("transcript display legacy adapters", () => {
-  test("migrates legacy values to both layout keys and retains every old key", () => {
+  test("migrates legacy values to both layout keys and consumes the old keys", () => {
     localStorage.setItem(KEY("transcriptRoundTimings"), "0");
     localStorage.setItem(KEY("transcriptTokenCounts"), "1");
     localStorage.setItem(KEY("transcriptHookExitsNormal"), "1");
@@ -697,11 +695,11 @@ describe("transcript display legacy adapters", () => {
     expect(decodeLocalConfig(readTranscriptDisplayLocal("mobile"))).toEqual(migrated);
     expect(hasTranscriptDisplayLocal("desktop")).toBe(true);
     expect(hasTranscriptDisplayLocal("mobile")).toBe(true);
-    expect(readLegacyPreference("transcriptRoundTimings")).toBe("0");
-    expect(readLegacyPreference("transcriptTokenCounts")).toBe("1");
-    expect(readLegacyPreference("transcriptHookExitsNormal")).toBe("1");
-    expect(readLegacyPreference("transcriptPromptLoaded")).toBe("0");
-    expect(readLegacyPreference("showCost")).toBe("1");
+    expect(readLegacyPreference("transcriptRoundTimings")).toBeNull();
+    expect(readLegacyPreference("transcriptTokenCounts")).toBeNull();
+    expect(readLegacyPreference("transcriptHookExitsNormal")).toBeNull();
+    expect(readLegacyPreference("transcriptPromptLoaded")).toBeNull();
+    expect(readLegacyPreference("showCost")).toBeNull();
   });
 
   test("uses the specified defaults when a legacy key is present but malformed", () => {
@@ -729,45 +727,46 @@ describe("transcript display legacy adapters", () => {
     expect(hasTranscriptDisplayLocal("mobile")).toBe(false);
   });
 
-  test("maps all-on hooks to all and preserves the old values", () => {
+  test("maps all-on hooks to all", () => {
     localStorage.setItem(KEY("transcriptHookExitsAll"), "1");
     localStorage.setItem(KEY("transcriptHookExitsNormal"), "1");
     const migrated = migrateLegacyTranscriptDisplay();
     expect(migrated?.advanced.hookExits).toBe("all");
-    expect(readLegacyPreference("transcriptHookExitsAll")).toBe("1");
-    expect(readLegacyPreference("transcriptHookExitsNormal")).toBe("1");
   });
 
-  test("guarded bool writes use literal 1/0 and removal targets only the layout key", () => {
-    writeLegacyBooleanPreference("showCost", true);
-    expect(localStorage.getItem(KEY("showCost"))).toBe("1");
-    writeLegacyBooleanPreference("showCost", false);
-    expect(localStorage.getItem(KEY("showCost"))).toBe("0");
+  test("an already-migrated profile drops its stale legacy keys, so clearing overrides stays cleared", () => {
+    localStorage.setItem(KEY("showCost"), "1");
+    localStorage.setItem(KEY("transcriptDisplay.desktop"), "encoded");
+    localStorage.setItem(KEY("transcriptDisplay.mobile"), "encoded");
+    expect(migrateLegacyTranscriptDisplay()).toBeUndefined();
+    expect(readLegacyPreference("showCost")).toBeNull();
+    removeTranscriptDisplayLocal("desktop");
+    removeTranscriptDisplayLocal("mobile");
+    expect(migrateLegacyTranscriptDisplay()).toBeUndefined();
+    expect(hasTranscriptDisplayLocal("desktop")).toBe(false);
+  });
 
+  test("a single layout key does not prove migration finished, so the old keys stay", () => {
+    localStorage.setItem(KEY("showCost"), "1");
+    localStorage.setItem(KEY("transcriptDisplay.desktop"), "encoded");
+    expect(migrateLegacyTranscriptDisplay()).toBeUndefined();
+    expect(readLegacyPreference("showCost")).toBe("1");
+  });
+
+  test("clearing both layout overrides after migration does not resurrect the old flags", () => {
+    localStorage.setItem(KEY("showCost"), "1");
+    expect(migrateLegacyTranscriptDisplay()).toBeDefined();
+    removeTranscriptDisplayLocal("desktop");
+    removeTranscriptDisplayLocal("mobile");
+    expect(migrateLegacyTranscriptDisplay()).toBeUndefined();
+    expect(hasTranscriptDisplayLocal("desktop")).toBe(false);
+  });
+
+  test("removal targets only the layout key", () => {
+    localStorage.setItem(KEY("showCost"), "0");
     localStorage.setItem(KEY("transcriptDisplay.desktop"), "encoded");
     removeTranscriptDisplayLocal("desktop");
     expect(localStorage.getItem(KEY("transcriptDisplay.desktop"))).toBeNull();
     expect(localStorage.getItem(KEY("showCost"))).toBe("0");
-  });
-
-  test("dual-write adapter writes exact 1/0 values for all legacy keys", () => {
-    dualWriteTranscriptDisplayLegacy(
-      makeTranscriptDisplayConfig(
-        { kind: "preset", level: "activity" },
-        {
-          roundTimings: true,
-          tokenCounts: false,
-          estimatedCost: true,
-          promptEvents: true,
-          hookExits: "all",
-        },
-      ),
-    );
-    expect(localStorage.getItem(KEY("transcriptRoundTimings"))).toBe("1");
-    expect(localStorage.getItem(KEY("transcriptTokenCounts"))).toBe("0");
-    expect(localStorage.getItem(KEY("transcriptHookExitsAll"))).toBe("1");
-    expect(localStorage.getItem(KEY("transcriptHookExitsNormal"))).toBe("0");
-    expect(localStorage.getItem(KEY("transcriptPromptLoaded"))).toBe("1");
-    expect(localStorage.getItem(KEY("showCost"))).toBe("1");
   });
 });

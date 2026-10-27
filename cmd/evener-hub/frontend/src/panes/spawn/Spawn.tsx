@@ -13,6 +13,8 @@ import {
   friendlyLaunchErrorMessage,
   harnessSupportsPluginSelection,
   harnessUsesEvenerModels,
+  hostRequest,
+  isLocalHost,
   matchBuiltinInvocation,
   mergeSlashCommands,
   type PathValidation,
@@ -36,7 +38,6 @@ import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
 import { useExtensionsStore } from "../../stores/extensions";
-import { hostRequest, isLocalHost } from "../../stores/hostRouting";
 import { withLaunchConfig } from "../../stores/launchConfig";
 import { selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";

@@ -1,16 +1,11 @@
 // @vitest-environment node
 
-import type {
-  AnyNotification,
-  ConnectionState,
-  Thread,
-  ThreadCapabilities,
-  ThreadReadResponse,
-} from "@evener/appwire-client";
+import type { AnyNotification, ConnectionState, Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { beforeEach, describe, expect, test } from "vitest";
+import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
 import { connectionStore } from "../../../../stores/connection";
 import {
   putThreadModel,
@@ -18,26 +13,11 @@ import {
   resetThreadsStoreForTests,
   threadsStore,
 } from "../../../../stores/threads";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../../threadTestUtils";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 import { ackAskUserCall, askArgs, askPendingStatusChanged, ONE_QUESTION } from "./askDockTestUtils";
 
 // --- fixtures (mirrors stores/threads.test.ts's own harness) -------------
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -330,12 +310,7 @@ describe("sendBatch", () => {
     const batchId = await setupOneBatch(fake);
     askDockStore.setAnswer("ref_a", "call_1:0", { kind: "skip" });
     fake.on("turn/start", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
       turn: { id: "turn_2", status: "inProgress", itemsView: "" },
     }));
 
@@ -353,12 +328,7 @@ describe("sendBatch", () => {
     const fake = connectFakeClient();
     const batchId = await setupOneBatch(fake);
     fake.on("turn/start", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
       turn: { id: "turn_2", status: "inProgress", itemsView: "" },
     }));
     await askDockStore.sendBatch("ref_a", batchId);

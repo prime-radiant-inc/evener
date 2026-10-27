@@ -165,8 +165,7 @@ func TestDelegateSendWaitAnswersWhileAnEarlierResultIsDeferred(t *testing.T) {
 
 	// TRIPWIRE: half the send's max_wait_ms. Every step is a scripted in-process
 	// answer, so the turn ends within a second unless the send sits out its wait.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

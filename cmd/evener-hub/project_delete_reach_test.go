@@ -183,10 +183,7 @@ func TestProjectDeleteResumeFindsReachedSubagentInAnotherProjectDirectory(t *tes
 	}
 	removeProjectSessionFile = oldRemove
 
-	restored := hubcore.NewPastIndex(filepath.Join(f.root, "projects", "*"))
-	if _, err := restored.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	restored := newRebuiltPastIndex(t, filepath.Join(f.root, "projects", "*"))
 	_ = NewWebServer(hubcore.WebConfig{HubStateRoot: f.root, StateDir: f.root, Past: restored, Roster: hubcore.NewRosterWithEntries()})
 	if f.metaExists(f.stateB, f.roamingChild) {
 		t.Fatal("resume did not finish deleting the subagent from its own project's directory")

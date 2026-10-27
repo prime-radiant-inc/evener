@@ -27,7 +27,7 @@ func TestDelegateAttentionDriveStaleSelectionPreservesNextOwnerRun(t *testing.T)
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
-			if err := root.subagents.get(fixture.childID).sess.FollowUp("queued follow-up work"); err != nil {
+			if err := root.subagents.get(fixture.childID).sess.Enqueue(context.Background(), "queued follow-up work"); err != nil {
 				t.Errorf("queue attention follow-up: %v", err)
 			}
 			return llm.Response{Message: llm.Assistant("attention requires no action")}

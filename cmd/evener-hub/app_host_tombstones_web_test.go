@@ -30,11 +30,7 @@ func TestHostTombstoneTreeMergeAndManifest(t *testing.T) {
 	cfg.RemoteThreadCache = &hubcore.RemoteThreadCache{}
 	hub, web := newHubRPCTestServerWithWeb(t, cfg)
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, nil); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
@@ -198,11 +194,7 @@ func TestHostTombstoneMergeDoesNotShadowLiveRows(t *testing.T) {
 	cfg.RemoteThreadCache = &hubcore.RemoteThreadCache{}
 	hub, web := newHubRPCTestServerWithWeb(t, cfg)
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, nil); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}

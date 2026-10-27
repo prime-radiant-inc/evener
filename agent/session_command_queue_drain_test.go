@@ -27,8 +27,6 @@ func TestSelectDrainNextActionRunsACommandOnlyQueuedEntry(t *testing.T) {
 		{"command-only entry runs", drainInputs{QueuedCommands: 1}, runQueued, false},
 		{"command-only entry runs while awaiting", drainInputs{Awaiting: true, QueuedCommands: 1}, runQueued, true},
 		{"command-only entry outranks a notification", drainInputs{NotificationsPending: true, QueuedCommands: 2}, runQueued, false},
-		{"a follow-up still outranks it", drainInputs{FollowUp: "FOLLOWUP_3660", QueuedCommands: 1}, runFollowUp, false},
-		{"awaiting holds a follow-up but runs the command", drainInputs{Awaiting: true, FollowUp: "FOLLOWUP_3660", QueuedCommands: 1}, runQueued, true},
 		{"command-only entry outranks a deferred continuation", drainInputs{HaveDeferredCont: true, QueuedCommands: 1}, runQueued, true},
 	}
 	for _, tc := range cases {

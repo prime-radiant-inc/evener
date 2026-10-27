@@ -173,7 +173,7 @@ func (s *Session) PendingAskArguments() [][]byte {
 // injectDrainedSteering/injectPostToolSteering run MID-ROUND, well before
 // any such entry, and the server owns the ask boundary: the wire's
 // EvenerThread.AskPending (hydrate) and ThreadStatusChangedParams.AskPending
-// (stamped on every status change, server/appwire_runtime.go's
+// (stamped on every status change, server/appwire_status_stamps.go's
 // stampAskPendingOnStatusChange) are wire-authoritative, and the client
 // trusts that flag rather than re-deriving the boundary itself
 // (appwire-client/typescript/reducer.test.ts's "askPending is

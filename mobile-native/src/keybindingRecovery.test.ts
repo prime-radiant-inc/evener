@@ -6,7 +6,7 @@ import type {
 	KeybindingsRule,
 } from "@evener/appwire-client";
 import { memoryDraftStorage } from "@evener/appwire-client/testing/draftStorage";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { NativePreferences } from "./nativePreferences";
 
 const getMethod = "evener/settings/keybindings/get";

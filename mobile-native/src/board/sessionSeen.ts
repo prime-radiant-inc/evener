@@ -3,7 +3,7 @@
 // blue dot too.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { useEffect, useRef } from "react";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { hubTime } from "./attention";
 import { type BoardSeen, hubSeenMarks } from "./hubSeen";
 

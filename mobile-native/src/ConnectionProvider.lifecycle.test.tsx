@@ -5,7 +5,7 @@
 // storage) are stand-ins.
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { ConnectionProvider, useConnection } from "./ConnectionProvider";
 import type { DraftStorage } from "./newSession";
 import { bindCreation, creationStore } from "./newSession/creations";

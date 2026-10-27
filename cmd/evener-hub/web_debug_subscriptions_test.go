@@ -22,8 +22,7 @@ func TestWebDebugSubscriptionsRequiresAuthentication(t *testing.T) {
 
 func TestWebDebugSubscriptionsReturnsLiveRegistrySnapshot(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{AuthToken: "debug-secret"})
-	conn := web.appRPC.NewConnection("conn-http-debug")
-	conn.Subscribe("local:thread-http")
+	seedSubscription(t, web.appRPC, "local:thread-http")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/debug/subscriptions", nil)
 	req.Header.Set("Authorization", "Bearer debug-secret")
@@ -39,7 +38,7 @@ func TestWebDebugSubscriptionsReturnsLiveRegistrySnapshot(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode snapshot: %v (body %q)", err, rec.Body.String())
 	}
-	if len(got.Subscriptions) != 1 || got.Subscriptions[0].ConnectionID != "conn-http-debug" || got.Subscriptions[0].ThreadID != "local:thread-http" || got.Subscriptions[0].Buffering {
+	if len(got.Subscriptions) != 1 || got.Subscriptions[0].ConnectionID == "" || got.Subscriptions[0].ThreadID != "local:thread-http" || got.Subscriptions[0].Buffering {
 		t.Fatalf("subscriptions = %+v", got.Subscriptions)
 	}
 }

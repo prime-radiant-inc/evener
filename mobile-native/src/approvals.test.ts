@@ -1,9 +1,8 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it, vi } from "vitest";
 import type { SandboxEscalationRequested, Thread } from "@evener/appwire-client";
-import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
-import { createActivityStore } from "../../mobile/src/state/activity";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { type ConversationClientLike, createConversationService } from "./conversation/services/conversation";
+import { createConversationStore } from "./conversation/state/conversation";
 import { ApprovalControls } from "./approvalControls";
 
 const pending: SandboxEscalationRequested = {
@@ -361,10 +360,9 @@ it("does not resurrect an approval resolved while an older snapshot is in flight
 		},
 	});
 	const service = createConversationService(client),
-		store = createConversationStore(),
-		sink = createActivityStore().getState();
-	await store.getState().openProjected(service, sink, "local:s");
-	const refresh = store.getState().rehydrate(service, sink);
+		store = createConversationStore();
+	await store.getState().openProjected(service, "local:s");
+	const refresh = store.getState().rehydrate(service);
 	await began;
 	store.getState().applyNotification({
 		method: "evener/sandbox/escalation/resolved",
@@ -407,9 +405,8 @@ it("keeps resolutions delivered between the initial snapshot and its response", 
 		},
 	});
 	const service = createConversationService(client),
-		store = createConversationStore(),
-		sink = createActivityStore().getState();
-	const open = store.getState().openProjected(service, sink, "local:s");
+		store = createConversationStore();
+	const open = store.getState().openProjected(service, "local:s");
 	await began;
 	notification({
 		method: "evener/sandbox/escalation/resolved",
@@ -430,7 +427,7 @@ it("unsubscribes a failed initial read", async () => {
 		},
 	});
 	const store = createConversationStore();
-	await store.getState().openProjected(createConversationService(client), createActivityStore().getState(), "local:s");
+	await store.getState().openProjected(createConversationService(client), "local:s");
 	expect(store.getState().status).toBe("error");
 	expect(unsubscribed).toBe(1);
 });

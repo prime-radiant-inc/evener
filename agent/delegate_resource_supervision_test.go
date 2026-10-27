@@ -120,7 +120,7 @@ func TestDelegateResourceSupervision_AttentionFollowUpRequiresReport(t *testing.
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
-			if err := root.subagents.get(fixture.childID).sess.FollowUp("queued follow-up work"); err != nil {
+			if err := root.subagents.get(fixture.childID).sess.Enqueue(context.Background(), "queued follow-up work"); err != nil {
 				t.Fatal(err)
 			}
 			return llm.Response{Message: llm.Assistant("attention requires no action")}
@@ -176,7 +176,7 @@ func TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn(t
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
-			if err := root.subagents.get(fixture.childID).sess.FollowUp("queued follow-up work"); err != nil {
+			if err := root.subagents.get(fixture.childID).sess.Enqueue(context.Background(), "queued follow-up work"); err != nil {
 				t.Fatal(err)
 			}
 			return llm.Response{Message: llm.Assistant("attention requires no action")}
@@ -233,8 +233,8 @@ func TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn(t
 // child and driveChildIfNotStopGated falls through to
 // driveSubagentNotificationTurn, which launches a second, UNLEASED
 // EntryNotification turn on the session the generation is about to run. The two
-// turns then share one drain ladder and popFollowUp (a destructive pop with no
-// owner check) lets the unleased turn steal the run's follow-up. The send path
+// turns then share one drain ladder and the queue pop (a destructive pop with no
+// owner check) lets the unleased turn steal the run's queued input. The send path
 // must take the drive claim atomically with its drivability check and hold it
 // across the whole window, so the child refuses the drive-down.
 func TestDelegateResourceSupervision_CommittedSendStartRefusesASecondTurn(t *testing.T) {
