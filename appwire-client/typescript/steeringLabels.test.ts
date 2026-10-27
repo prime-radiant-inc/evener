@@ -27,9 +27,10 @@ test("puts the engineering labels in plain words (spec 5)", () => {
   });
 });
 
+// "agent-message" is a retired kind: old transcripts carry it and fold to the bare label.
 test("names no kind it doesn't know, rather than inventing a label from a slug", () => {
   const bare = steeringLabel(undefined);
-  for (const kind of ["some-future-kind", "toString"]) {
+  for (const kind of ["some-future-kind", "toString", "agent-message"]) {
     expect(labelledSteeringKind(kind), kind).toBeUndefined();
     expect(steeringLabel(kind), kind).toBe(bare);
   }
@@ -45,8 +46,8 @@ test("says a steer as the system's, naming its kind, or bare when the kind has n
 
 test("a steer from the session's parent agent says so, whatever its kind", () => {
   const fromParent = steeringLabel(undefined, "parent");
-  expect(steeringLabel("agent-message", "parent")).toBe(fromParent);
+  expect(steeringLabel("human-note", "parent")).toBe(fromParent);
   expect(steeringLabel("compact-nudge", "parent")).toBe(fromParent);
   expect(fromParent).not.toBe(steeringLabel(undefined));
-  expect(fromParent).not.toBe(steeringLabel("agent-message"));
+  expect(fromParent).not.toBe(steeringLabel("human-note"));
 });

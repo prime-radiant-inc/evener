@@ -82,7 +82,7 @@ func TestRetainedSymlinkInstallTarget(t *testing.T) {
 			}
 			intent := m.deploymentIntent(false, hubIdentity{})
 			intent.binding = newEffectBinding(host, func() error { return nil })
-			if _, _, err := m.deployForOperation(t.Context(), host, facts, intent); err == nil {
+			if _, _, err := m.deployForOperation(t.Context(), host, facts, intent, nil); err == nil {
 				t.Fatal("initial deployment did not retain interrupted write")
 			}
 			retained := m.pendingRestart(host.Name)
@@ -103,7 +103,7 @@ func TestRetainedSymlinkInstallTarget(t *testing.T) {
 				t.Fatal(err)
 			}
 			repair = true
-			_, _, err = m.deployForOperation(t.Context(), host, Preflight{Host: host.Name, OS: "linux", Arch: "amd64", UID: "1000", ExecutableMissing: true}, retained)
+			_, _, err = m.deployForOperation(t.Context(), host, Preflight{Host: host.Name, OS: "linux", Arch: "amd64", UID: "1000", ExecutableMissing: true}, retained, nil)
 			data, readErr := os.ReadFile(target)
 			if readErr != nil {
 				t.Fatal(readErr)

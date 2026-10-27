@@ -652,8 +652,7 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 // target_busy with nothing written: the send takes the child's drive guard
 // before it commits its start, so no start is committed that the child then
 // can't take. The hook stands in for a real racer that doesn't check the
-// send's claim, such as startOrSteerSubagentRun setting running or
-// trySetDisposeGate gating the child for disposal.
+// send's claim, such as trySetDisposeGate gating the child for disposal.
 func TestDelegateSendToAChildThatTurnsBusyCommitsNothing(t *testing.T) {
 	t.Parallel()
 	held := holdDelegateReleasedByTheController(t)

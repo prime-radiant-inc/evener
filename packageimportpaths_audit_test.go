@@ -133,6 +133,27 @@ func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
 	}
 }
 
+// The native app does not bundle the web app's source, so a relative import
+// from mobile-native into cmd/evener-hub/frontend/src is refused; the same
+// import from the web tree into its own source is ordinary, and a harness under
+// frontend/scripts is out of the swept web source.
+func TestPackageImportPathsCheckKeepsNativeOutOfTheWebTree(t *testing.T) {
+	files := cleanPackageImportTree()
+	files["mobile-native/src/newSession/reachesWeb.ts"] = "import { usePreview } from \"../../../cmd/evener-hub/frontend/src/panes/spawn/usePreview\";\n"
+	files["mobile-native/src/harness.test.ts"] = "import { fault } from \"../../cmd/evener-hub/frontend/scripts/retryguard/wireFault.mjs\";\n"
+	files["cmd/evener-hub/frontend/src/local.ts"] = "import { x } from \"../../src/panes/x\";\n"
+	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
+	if passed {
+		t.Fatalf("the gate passed a native import of the web tree:\n%s", output)
+	}
+	if !strings.Contains(output, "reachesWeb.ts") {
+		t.Fatalf("the gate named no offending file:\n%s", output)
+	}
+	if strings.Contains(output, "harness.test.ts") || strings.Contains(output, "local.ts") {
+		t.Fatalf("the gate named an import it should allow:\n%s", output)
+	}
+}
+
 // The price of the broader substring rule: grep cannot tell a commented-out
 // import naming the package by path from a live one, so a quoted path in a
 // comment is refused too. Spell the package name or drop the line.

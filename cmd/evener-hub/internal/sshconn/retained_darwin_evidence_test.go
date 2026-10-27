@@ -127,7 +127,7 @@ func TestRetainedDarwinReinstallOwnership(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := m.deployForOperation(t.Context(), host, facts, m.deploymentIntent(false, hubIdentity{})); err == nil {
+			if _, _, err := m.deployForOperation(t.Context(), host, facts, m.deploymentIntent(false, hubIdentity{}), nil); err == nil {
 				t.Fatal("initial write did not retain a failed deployment")
 			}
 			retained := m.pendingRestart(host.Name)
@@ -137,7 +137,7 @@ func TestRetainedDarwinReinstallOwnership(t *testing.T) {
 			recorded = retained.selected.report.Running
 			repair, selected.executableAbsent = true, true
 			selected.stopped = mode == "stopped-free" || mode == "launchd-stopped"
-			_, _, err = m.deployForOperation(t.Context(), host, Preflight{Host: host.Name, OS: "darwin", Arch: "arm64", UID: "1000", ExecutableMissing: true}, retained)
+			_, _, err = m.deployForOperation(t.Context(), host, Preflight{Host: host.Name, OS: "darwin", Arch: "arm64", UID: "1000", ExecutableMissing: true}, retained, nil)
 			if mode == "live" || mode == "stopped-free" || mode == "launchd-live" || mode == "launchd-stopped" {
 				if err != nil || writes != 2 || m.pendingRestart(host.Name).active() {
 					t.Fatalf("authorized Darwin repair: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))

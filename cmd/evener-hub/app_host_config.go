@@ -166,7 +166,7 @@ type hostManagerConfig struct {
 	// production they are the sshconn Manager's DeployForOperation and
 	// RestartForOperation; a nil pair (tests, embedders) fails the operation's
 	// worker with the refusal the missing seam means.
-	deployHost  func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, restart bool, beforeMutation func() error, journals ...sshconn.DeploymentJournal) (string, sshconn.Preflight, error)
+	deployHost  func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, restart bool, beforeMutation func() error, journal *sshconn.DeploymentJournal) (string, sshconn.Preflight, error)
 	restartHost func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, beforeMutation func() error) (string, error)
 	// recoverDeployment renews and recovers an unfinished deployment or saved
 	// command before Restart attaches. Execution revalidates the bound entry

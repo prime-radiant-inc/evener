@@ -217,7 +217,7 @@ func TestDeploySelectedOldImageBeforeFirstWrite(t *testing.T) {
 			if automatic {
 				_, err = m.Ensure(t.Context(), host.Name)
 			} else {
-				_, _, err = m.DeployForOperation(t.Context(), host, selectedRestartFacts(), true, nil)
+				_, _, err = m.DeployForOperation(t.Context(), host, selectedRestartFacts(), true, nil, nil)
 			}
 			wantBridges := 0
 			if automatic {

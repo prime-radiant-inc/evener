@@ -1,10 +1,14 @@
 import type { LaunchConfigLayer, PluginPreviewResponse } from "@evener/appwire-client";
+import {
+  type PluginPreviewLoadState,
+  type PluginPreviewReadArgs,
+  SCOPED_HOST_READ_DEBOUNCE_MS,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, renderHook } from "@testing-library/react";
 import { useLayoutEffect } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { type PluginPreviewLoadState, type UsePluginPreviewArgs, usePluginPreview } from "./usePluginPreview";
-import { SCOPED_HOST_READ_DEBOUNCE_MS } from "./useScopedHostRead";
+import { usePluginPreview } from "./usePluginPreview";
 
 const RESPONSE: PluginPreviewResponse = { plugins: [] };
 
@@ -29,10 +33,10 @@ describe("usePluginPreview", () => {
           if (previousStatus === "error") throw new Error("old request failed");
           return RESPONSE;
         });
-        const initialProps: UsePluginPreviewArgs = { client, cwd: "/a", launchOverrides: {}, pluginRevision: 0 };
+        const initialProps: PluginPreviewReadArgs = { client, cwd: "/a", launchOverrides: {}, pluginRevision: 0 };
         const observed: PluginPreviewLoadState[] = [];
         const { result, rerender } = renderHook(
-          (args: UsePluginPreviewArgs) => {
+          (args: PluginPreviewReadArgs) => {
             const preview = usePluginPreview(args);
             useLayoutEffect(() => {
               observed.push(preview.state);
@@ -81,8 +85,8 @@ describe("usePluginPreview", () => {
         });
         const client = new FakeClient();
         client.on("evener/plugin/preview", () => pending);
-        const initialProps: UsePluginPreviewArgs = { client, cwd: "/a", launchOverrides: {}, pluginRevision: 0 };
-        const { result, rerender } = renderHook((args: UsePluginPreviewArgs) => usePluginPreview(args), {
+        const initialProps: PluginPreviewReadArgs = { client, cwd: "/a", launchOverrides: {}, pluginRevision: 0 };
+        const { result, rerender } = renderHook((args: PluginPreviewReadArgs) => usePluginPreview(args), {
           initialProps,
         });
         await act(async () => {
@@ -129,8 +133,10 @@ describe("usePluginPreview", () => {
       vi.useFakeTimers();
       const client = new FakeClient();
       client.on("evener/plugin/preview", () => RESPONSE);
-      const initialProps: UsePluginPreviewArgs = { client, cwd: "/a", launchOverrides: {}, pluginRevision: 0 };
-      const { result, rerender } = renderHook((args: UsePluginPreviewArgs) => usePluginPreview(args), { initialProps });
+      const initialProps: PluginPreviewReadArgs = { client, cwd: "/a", launchOverrides: {}, pluginRevision: 0 };
+      const { result, rerender } = renderHook((args: PluginPreviewReadArgs) => usePluginPreview(args), {
+        initialProps,
+      });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(SCOPED_HOST_READ_DEBOUNCE_MS);
       });

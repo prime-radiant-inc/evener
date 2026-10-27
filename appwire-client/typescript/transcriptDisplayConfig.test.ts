@@ -9,14 +9,11 @@ import {
   contentSummary,
   contentVectorForConfig,
   decodeLocalConfig,
-  dualWriteLegacyPreferences,
   encodeLocalConfig,
   fromWireConfig,
   fromWireDefault,
   fromWireDefaults,
-  type LegacyPreferenceKey,
   legacyConfigFromValues,
-  legacyWritesFromConfig,
   makeTranscriptDisplayConfig,
   normalizeConfig,
   normalizeContent,
@@ -375,40 +372,5 @@ describe("transcript display config", () => {
       hookExits: "none",
     });
     expect(legacyConfigFromValues({})).toBeUndefined();
-  });
-
-  test("dual-writes every legacy boolean with exact 1/0 semantics", () => {
-    const writes: Partial<Record<LegacyPreferenceKey, boolean>> = {};
-    dualWriteLegacyPreferences(
-      makeTranscriptDisplayConfig(
-        { kind: "preset", level: "activity" },
-        {
-          roundTimings: true,
-          tokenCounts: false,
-          estimatedCost: true,
-          promptEvents: false,
-          hookExits: "all",
-        },
-      ),
-      (key, value) => {
-        writes[key] = value;
-      },
-    );
-    expect(writes).toEqual({
-      transcriptRoundTimings: true,
-      transcriptTokenCounts: false,
-      transcriptHookExitsAll: true,
-      transcriptHookExitsNormal: false,
-      transcriptPromptLoaded: false,
-      showCost: true,
-    });
-    expect(legacyWritesFromConfig(makeTranscriptDisplayConfig())).toEqual({
-      transcriptRoundTimings: false,
-      transcriptTokenCounts: false,
-      transcriptHookExitsAll: false,
-      transcriptHookExitsNormal: false,
-      transcriptPromptLoaded: false,
-      showCost: false,
-    });
   });
 });

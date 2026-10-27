@@ -107,7 +107,7 @@ func TestRetainedAdhocReinstallStoppedEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := m.deployForOperation(t.Context(), host, facts, m.deploymentIntent(false, hubIdentity{})); err == nil {
+			if _, _, err := m.deployForOperation(t.Context(), host, facts, m.deploymentIntent(false, hubIdentity{}), nil); err == nil {
 				t.Fatal("initial write did not retain a failed deployment")
 			}
 			retained := m.pendingRestart(host.Name)
@@ -118,7 +118,7 @@ func TestRetainedAdhocReinstallStoppedEvidence(t *testing.T) {
 			if mode == "other-lock-owner" {
 				hold()
 			}
-			_, _, err = m.deployForOperation(t.Context(), host, Preflight{Host: host.Name, OS: "linux", Arch: "amd64", UID: "1000", ExecutableMissing: true}, retained)
+			_, _, err = m.deployForOperation(t.Context(), host, Preflight{Host: host.Name, OS: "linux", Arch: "amd64", UID: "1000", ExecutableMissing: true}, retained, nil)
 			lockIndependent := mode == "stopped-free" || mode == "other-lock-owner" || mode == "lock-probe-failed" || mode == "lock-probe-malformed" || mode == "lock-owner-at-write"
 			if lockIndependent {
 				if err != nil || writes != 2 || m.pendingRestart(host.Name).active() {
@@ -193,7 +193,7 @@ func TestCrashedRetainedRepairStartsWithoutHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := m.deployForOperation(t.Context(), host, facts, m.deploymentIntent(true, hubIdentity{})); err == nil {
+	if _, _, err := m.deployForOperation(t.Context(), host, facts, m.deploymentIntent(true, hubIdentity{}), nil); err == nil {
 		t.Fatal("initial write did not fail")
 	}
 	retained := m.pendingRestart(host.Name)

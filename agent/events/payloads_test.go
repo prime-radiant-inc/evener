@@ -277,7 +277,6 @@ func TestSteeringKindConstants(t *testing.T) {
 	want := map[string]string{
 		"interrupted":         SteeringKindInterrupted,
 		"interrupted-salvage": SteeringKindInterruptedSalvage,
-		"agent-message":       SteeringKindAgentMessage,
 		"hook-context":        SteeringKindHookContext,
 		"precompact-hook":     SteeringKindPrecompactHook,
 		"compact-nudge":       SteeringKindCompactNudge,

@@ -118,6 +118,13 @@ actions (`refresh`, `loadMore`, `refreshLoaded`, `reset`) over a
 `evener/archived/list`, paged by cursor and refreshed in place (a refresh
 sends the list's revision and keeps its rows when the hub answers
 unchanged); the host resets it when its connection is replaced or recovers.
+The scoped host read store, `createScopedHostReadStore()`, is the debounced
+read about one host and project behind the New session plugin preview and the
+web slash catalog: `start(inputs)` begins a read and returns its cancel,
+`view(inputs)` reports the state for the inputs now (keeping the last response
+for the same client, host and project, never another request's), and `retry()`
+asks again. `pluginPreviewReadInputs` builds the plugin preview's inputs; each
+app binds the store with a thin React hook.
 The hub's own update check, install, and restart,
 `createHubUpdateController({ client, awaitRestart })`, is the same triple
 with the restart wait as a port: each app says how it notices the new hub.

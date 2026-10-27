@@ -104,6 +104,7 @@ jobs:
       # Named for the run so two failures on the same PR do not collide.
       # The cascade guard keeps its evidence the same way (its temp dir is
       # KeptTempDir, which on a runner is /tmp), so its path is collected too.
+      # So are the background Jobs and job output paging guards'.
       - name: Keep the browser guards' artifacts
         if: failure()
         uses: actions/upload-artifact@v7
@@ -112,6 +113,8 @@ jobs:
           path: |
             /tmp/skillguard-browser-*/artifacts/**
             /tmp/cascadeguard-browser-*/**
+            /tmp/backgroundjobsguard-*/**
+            /tmp/joboutputpagingguard-*/**
           retention-days: 7
           # The step also fires when make build-web is what failed, and then
           # there is nothing to collect: say so quietly instead of adding a
