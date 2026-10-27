@@ -57,7 +57,7 @@ default).**"); this card only runs with the raised config below.
   Raise `MaxSubagentDepth` to 2 on the spawn so the root's
   own allowance is 2 ("A root session's allowance equals
   `MaxSubagentDepth`"): pass it in `launch_overrides`. The
-  wire key is `maxSubagentDepth` (camelCase, `appwire/types.go:2046`):
+  wire key is `maxSubagentDepth` (camelCase, `appwire/types_auth_commands.go#LaunchConfigLayer`):
 
   ```json
   {"prompt":"...","model":"openai/gpt-5.5","working_dir":"$tmpdir",

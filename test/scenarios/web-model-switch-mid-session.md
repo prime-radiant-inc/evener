@@ -7,7 +7,7 @@ messages are queued" (rejected until the queue drains — the daemon's
 `processing` flag covers the whole drain loop, so there is no reachable turn
 boundary until it empties). Exercises the status strip's model switcher
 (`panes/session/chrome/ModelSwitch.tsx`), the `thread/model/set` RPC
-(`appwire/types.go:19`), and the `thread/model/changed` broadcast (`:94`).
+(`appwire/types_protocol.go#MethodThreadModelSet`), and the `thread/model/changed` broadcast (`appwire/types_protocol.go#NotifyThreadModelChanged`).
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. The

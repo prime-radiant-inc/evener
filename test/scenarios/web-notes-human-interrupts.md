@@ -1,7 +1,7 @@
 # web-notes-human-interrupts: a human note interrupts the turn, labels the divider, and survives rejoin
 
 **What this covers**: the human whiteboard path end to end on the web
-surface. `notes/human/set` (`appwire/types.go:810-824`,
+surface. `notes/human/set` (`appwire/types_thread.go#NotesHumanSetParams`,
 `agent/session_notes_rpc.go:SetHumanNote`) stores the note, emits
 `evener/notes/updated`, and injects a steer that interrupts the running turn;
 the projector labels the steering divider `Human note`
@@ -25,7 +25,7 @@ work. It exercises four things in one run:
   (`cmd/evener-hub/app_session_resume.go:91-102`), which pre-flight gates on
   the `shared-notes` capability and resumes an exited session first, like
   `goal/set`. Same retry-safe-mutation shape as the goal precedent:
-  `clientMutationId` + `expectedInstanceId` (`appwire/types.go:813-818`).
+  `clientMutationId` + `expectedInstanceId` (`appwire/types_thread.go#NotesHumanSetParams`).
 - **The human-note steer interrupts the model loop** — `executeAtomic`
   durably accepts the canonical note, one typed pending steering entry and
   the receipt together (`agent/session_notes_rpc.go:SetHumanNote`). One
@@ -112,7 +112,7 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
     "note":"prefer tabs over spaces in every example"}}
    ```
    Param and response shapes are `appwire.NotesHumanSetParams` /
-   `NotesHumanSetResponse` (`appwire/types.go:813-824`); the response's
+   `NotesHumanSetResponse` (`appwire/types_thread.go#NotesHumanSetResponse`); the response's
    `note` is the stored post-clamp value, which is what every downstream
    consumer converges on. **Expected:** no error (an `Unavailable` here means
    the `shared-notes` capability gate refused, or the source is gone). The

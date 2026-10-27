@@ -81,7 +81,7 @@ head and runs it as a fresh user turn.
    **There is no REST route for queue.** The old `/s/<id>/queue` shim died
    with the vanilla frontend, and the session REST namespace is gone.
    `turn/queue` lives only on the AppWire WebSocket
-   (`appwire/types.go#MethodTurnQueue`), so this leg needs one of:
+   (`appwire/types_protocol.go#MethodTurnQueue`), so this leg needs one of:
 
    - **[browser-free]** dial `ws://127.0.0.1:$PORT/rpc` with
      `Authorization: Bearer $TOKEN`, `initialize`, then call
@@ -225,7 +225,7 @@ head and runs it as a fresh user turn.
   `The user interrupted the previous turn`,
   `agent/session_lifecycle.go:720`). The turn is reported
   `status=interrupted` on `turn/completed` — the `TurnStatus` enum has no
-  `canceled` value at all (`appwire/types.go:166-171`), so a controller
+  `canceled` value at all (`appwire/types_protocol.go#TurnStatusInProgress`), so a controller
   grepping for that literal will never find it. The session remains alive —
   steps 3-5 below still work on the same SID. Send a follow-up `/send`
   immediately and it must complete normally. Falsification: state stays
