@@ -28,7 +28,6 @@ import type {
 	ThreadModel,
 	TranscriptDisplayConfigV1,
 	TurnModel,
-	WarningParams,
 } from "@evener/appwire-client";
 import {
 	applyNotification,
@@ -36,11 +35,9 @@ import {
 	configFingerprint,
 	copyItemTextPresence,
 	deriveSendQueueAvailability,
-	foldWarningParams,
 	ITEM_OMISSION_TOLERANT_FIELDS,
 	isStaleCursorError,
 	itemIdentityMatches,
-	joinWarningParts,
 	mergeOlderItemPage,
 	notificationTargetsThread,
 	notificationTouchesTranscript,
@@ -61,11 +58,9 @@ import { create } from "zustand";
 import type { BoundText, MobileConversation, MobileTimelineItem } from "../../projectedRows";
 import {
 	attachmentSourceId,
-	attachmentSourceIdentity,
 	capItems,
 	failureRowIdentity,
 	MAX_ITEM_BYTES,
-	ownTimelineIdentities,
 	projectConversation,
 	projectTimeline,
 	truncateItem as sharedTruncateItem,
@@ -96,7 +91,9 @@ import {
 	type ConversationMutationSubmitter,
 	MutationNotSentError,
 } from "./conversationMutation";
-import { arrivalAnchor, reconcileCrossTurnReissues, splitClusterAtAnchors } from "./rowTransforms";
+import { createBoundedTextCache } from "./boundedText";
+import { reconcileCrossTurnReissues } from "./rowTransforms";
+import { createTransientWarnings } from "./transientWarnings";
 
 export type ConversationStatus = "idle" | "opening" | "open" | "error" | "closed";
 
@@ -776,31 +773,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		return turns === next.turns ? next : withSyncedHistoryTurns({ ...next, turns: [...turns] }, turns);
 	}
 
-	// The phone's two display bounds, as one pass over the projected rows: the
-	// newest RETAINED_ITEM_CAP rows, each text-bearing field cut to
-	// MAX_ITEM_BYTES with the marker. Every path that publishes a conversation
-	// runs it, so the bound is a property of what is displayed rather than of
-	// the sequence of frames that produced it. The model behind the rows keeps
-	// its full text (#1535 asks whether the package should bound that).
-	//
-	// The rows are rebuilt from the model on every frame, but the model hands
-	// back the SAME string reference for text no frame touched, so each bound
-	// string is cached under the source string it came from and reused until
-	// that reference changes: a transcript of settled rows is not re-encoded
-	// per delta. The cache is rebuilt from the rows of each publish (the
-	// previous one is read through, then dropped), so it holds only what is on
-	// screen and needs no invalidation of its own. The one item a delta is
-	// streaming into does re-encode once per frame, because its text really is
-	// new each time — #1535 is where that stops growing.
-	let boundedText = new Map<string, string>();
-	// The cache belongs to the conversation whose rows it bound: every string
-	// in it is held by that conversation's model or its rows, so once the
-	// conversation is dropped the cache is the only thing retaining them. Every
-	// transition that drops the conversation releases it. A suspend does not:
-	// the rows stay on screen for the resume, which republishes the same text.
-	function releaseBoundedTextCache(): void {
-		boundedText = new Map();
-	}
+	const boundedText = createBoundedTextCache();
 	// Whether a folded model can change a row. projectConversation reads two of
 	// the model's own fields: `turns` — every turn, item, status and error a row
 	// is made of hangs off it — and `askPending`, the wire fact liveAskQuestions
@@ -814,39 +787,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		return applied.turns !== previous.turns || applied.askPending !== previous.askPending;
 	}
 
-	// RoboRev round 34: turn-independent warnings — a warning that arrives
-	// with no active turn — are real server diagnostics the wire drops: the
-	// reducer has nowhere transcript-true to fold one (its "warning" case
-	// returns only the liveness restamp when no turn is active), and the
-	// transcript never persists warnings, so no read can recover what the
-	// frame carried either. Main's row applier displayed them as live-owned
-	// rows; this store's rows are a projection of the model, so a row the
-	// model cannot hold lives here, as transient display state outside it.
-	// Every timeline rebuild passes through capAndTruncate, the display
-	// boundary, which seats each notice at the position it arrived at
-	// (round 35: re-appended at the tail, a notice sank below rows that
-	// arrived later and the retained window could never evict it), and
-	// the conversation transitions that clear the page history clear
-	// these with it, so a notice never crosses threads.
-	const transientWarnings: {
-		row: MobileTimelineItem;
-		anchor: string | null;
-	}[] = [];
-	let liveNoticeSerial = 0;
-	// The row an idle warning displays as: the same attention row the
-	// canonical projection builds for a model warning item projectedRows.ts's
-	// warningItem — kind "failure", title its own field, message and hint
-	// joined as detail), under the live serial identity main's applier
-	// used, since there is no model item to share an identity with.
-	function idleWarningRow(params: WarningParams): MobileTimelineItem {
-		const folded = foldWarningParams(params);
-		return {
-			kind: "failure",
-			id: `warning:${(liveNoticeSerial += 1)}`,
-			title: folded.title ?? "Warning",
-			detail: joinWarningParts([folded.text, folded.hint]),
-		};
-	}
+	const transientWarnings = createTransientWarnings();
 
 	// Whether the reader follows the live end (setFollowingLiveEnd).
 	let followingLiveEnd = true;
@@ -880,167 +821,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		conversation: MobileConversation;
 		trimmed: boolean;
 	} {
-		const previous = boundedText;
-		const next = new Map<string, string>();
-		const bound: BoundText = (text) => {
-			const cached = next.get(text) ?? previous.get(text);
-			const bounded = cached ?? truncateText(text, MAX_ITEM_BYTES);
-			next.set(text, bounded);
-			// A published row carries its BOUNDED text, so the next publish binds
-			// that string, not the one the model handed over. Bounding a bounded
-			// string is a no-op (truncateText never returns more than the limit), so
-			// record it as its own answer and the row costs one encode for its life
-			// rather than one more on every publish after the first.
-			if (bounded !== text) next.set(bounded, bounded);
-			return bounded;
-		};
-		const seated = seatTransientWarnings(conversation.items);
+		const pass = boundedText.begin();
+		const seated = transientWarnings.seat(conversation.items);
 		const capped = retainedRows(seated);
-		const items = capped.map((item) => truncateItem(item, bound));
-		const retainedIdentities = new Set(items.map(timelineIdentity));
-		for (let index = transientWarnings.length - 1; index >= 0; index -= 1) {
-			if (!retainedIdentities.has(timelineIdentity(transientWarnings[index].row))) {
-				transientWarnings.splice(index, 1);
-			}
-		}
-		boundedText = next;
+		const items = capped.map((item) => truncateItem(item, pass.bound));
+		transientWarnings.prune(new Set(items.map(timelineIdentity)));
+		pass.commit();
 		return { conversation: { ...conversation, items }, trimmed: capped.length < seated.length };
-	}
-
-	function seatTransientWarnings(items: MobileTimelineItem[]): MobileTimelineItem[] {
-		const carriedIdentities = new Set(items.map(timelineIdentity));
-		const noticesByAnchor = new Map<string, MobileTimelineItem[]>();
-		const noticesBeforeEverything: MobileTimelineItem[] = [];
-		for (const notice of transientWarnings) {
-			if (carriedIdentities.has(timelineIdentity(notice.row))) continue;
-			if (notice.anchor === null) {
-				noticesBeforeEverything.push(notice.row);
-				continue;
-			}
-			const bucket = noticesByAnchor.get(notice.anchor);
-			if (bucket === undefined) {
-				noticesByAnchor.set(notice.anchor, [notice.row]);
-			} else {
-				bucket.push(notice.row);
-			}
-		}
-		const seated: MobileTimelineItem[] = [...noticesBeforeEverything];
-		for (let index = 0; index < items.length; index += 1) {
-			const item = items[index];
-			seated.push(item);
-			// RoboRev round 37: anchors resolve through the identities the row
-			// OWNS, not just its own top-level one — pagination can seat an older
-			// tool directly beside the one a notice anchored to, and the next
-			// projection then clusters the two under the older's identity: the
-			// anchored row stays visible as a member while its identity stops
-			// matching, which used to retire the notice with the prune. The
-			// size guard keeps the common no-notice publish at one check per
-			// row.
-			if (noticesByAnchor.size === 0) continue;
-			const identities = ownTimelineIdentities(item);
-			const bucketsByIdentity = new Map<string, MobileTimelineItem[]>();
-			for (const identity of identities) {
-				const bucket = noticesByAnchor.get(identity);
-				if (bucket !== undefined) bucketsByIdentity.set(identity, bucket);
-			}
-			if (bucketsByIdentity.size === 0) continue;
-			// A notice anchored through an attachment row's source identity
-			// seats after the attachments that follow the anchored row, never
-			// between them: capItems' cap cut drops a leading attachment
-			// whose source fell off the cut and only scans a LEADING RUN of
-			// attachments, so a notice seated inside that run would become
-			// the first retained row at the cut and the orphans behind it
-			// would survive — their lingering source identities then make
-			// loadOlder's F10 admission rule refuse genuine older page copies
-			// of those sources, forever. The run spans every attachment the
-			// anchored row OWNS the source of — a clustered activity carries
-			// the attachments of all its members, so a notice anchored to one
-			// member seats after them all. This is also the position the
-			// notice arrived at: the attachments row was the nearest row when
-			// it landed (RoboRev panel round 2).
-			let attachmentsEnd = index;
-			while (attachmentsEnd + 1 < items.length) {
-				const next = items[attachmentsEnd + 1];
-				const source = attachmentSourceIdentity(next);
-				if (source === null || !identities.has(source)) break;
-				attachmentsEnd += 1;
-			}
-			// R38: the cluster grew past the anchored member — split it there
-			// so the notice keeps its arrival position above the members that
-			// arrived later. Only when no attachment run follows: that notice
-			// arrived after the attachments, and the whole-row seat below them
-			// is its arrival position.
-			if (attachmentsEnd === index && item.kind === "activity") {
-				const split = splitClusterAtAnchors(item, bucketsByIdentity);
-				if (split !== null) {
-					seated.pop();
-					seated.push(...split);
-					continue;
-				}
-			}
-			for (let attach = index + 1; attach <= attachmentsEnd; attach += 1) {
-				seated.push(items[attach]);
-			}
-			index = attachmentsEnd;
-			for (const bucket of bucketsByIdentity.values()) {
-				seated.push(...bucket);
-			}
-		}
-		return seated;
-	}
-
-	// A level change hides rows without withdrawing them from the model, and
-	// the prune in capAndTruncate retires a notice only when its own row left
-	// the window. But the seating walk consumes a notice only at a DISPLAYED
-	// anchor row, so a notice whose anchor the new level hides never seats
-	// and the prune mistakes it for withdrawn. Re-anchor each such notice to
-	// the nearest row the new level still displays at or above its arrival
-	// position — the closest visible seat, not a retirement — and to null
-	// (before everything) when nothing at or above it survives. The anchor
-	// only moves up: on switch-back to the richer level the notice sits at
-	// its re-anchored position, below rows that arrived after it, the
-	// disclosed cost of keeping it visible through the level change.
-	function reanchorTransientWarnings(oldItems: MobileTimelineItem[], newItems: MobileTimelineItem[]): void {
-		if (transientWarnings.length === 0) return;
-		const displayedIdentities = new Set<string>();
-		for (const row of newItems) {
-			for (const identity of ownTimelineIdentities(row)) {
-				displayedIdentities.add(identity);
-			}
-		}
-		for (const notice of transientWarnings) {
-			const anchor = notice.anchor;
-			if (anchor === null || displayedIdentities.has(anchor)) continue;
-			// The anchor's arrival position in the rows leaving the screen.
-			let arrival = -1;
-			for (let index = 0; index < oldItems.length; index += 1) {
-				const row = oldItems[index];
-				if (row === undefined) continue;
-				for (const identity of ownTimelineIdentities(row)) {
-					if (identity === anchor) {
-						arrival = index;
-						break;
-					}
-				}
-				if (arrival >= 0) break;
-			}
-			// The nearest displayed row at or above it, re-anchored through
-			// one of that row's own displayed identities so the next seating
-			// walk resolves the anchor as written.
-			let reanchor: string | null = null;
-			for (let above = arrival; above >= 0; above -= 1) {
-				const candidate = oldItems[above];
-				if (candidate === undefined) continue;
-				for (const identity of ownTimelineIdentities(candidate)) {
-					if (displayedIdentities.has(identity)) {
-						reanchor = identity;
-						break;
-					}
-				}
-				if (reanchor !== null) break;
-			}
-			notice.anchor = reanchor;
-		}
 	}
 
 	// C1+I1: Deferred trailing-reread request. When a rehydrate detects the
@@ -1693,7 +1480,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// seat each notice whose anchor they include BEFORE the display
 				// boundary runs, or the seating walk drops it and the prune
 				// retires it as if the model had withdrawn the anchor.
-				reanchorTransientWarnings(conversation.items, projected.items);
+				transientWarnings.reanchor(conversation.items, projected.items);
 				const { conversation: bounded, trimmed } = capAndTruncate(projected);
 				// The retained-turn bound every other publish runs, against the
 				// level-independent window (retentionWindowItems): the level
@@ -1758,8 +1545,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				loadOlderToken += 1;
 				// C1+I1: clear any stale deferred trailing-reread request.
 				trailingReread = null;
-				transientWarnings.length = 0;
-				releaseBoundedTextCache();
+				transientWarnings.clear();
+				boundedText.release();
 				retireMutationAttempt();
 				set({
 					status: "opening",
@@ -1828,8 +1615,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				loadOlderToken += 1;
 				// C1+I1: clear any stale deferred trailing-reread request.
 				trailingReread = null;
-				transientWarnings.length = 0;
-				releaseBoundedTextCache();
+				transientWarnings.clear();
+				boundedText.release();
 				// Reset thread-scoped state (draft, pending mutation) — presentation state
 				// now lives outside the store (in live-ui-store).
 				retireMutationAttempt();
@@ -2254,7 +2041,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					let seatedRehydrateItems: MobileTimelineItem[] | null = null;
 					if (sameInstance) {
 						const rehydrateModel = { ...merged, turns: mergedTurns };
-						const rehydrateSeated = seatTransientWarnings(projectTimeline(rehydrateModel, undefined, projectConfig));
+						const rehydrateSeated = transientWarnings.seat(projectTimeline(rehydrateModel, undefined, projectConfig));
 						// RoboRev panel: the keep-window is level-independent at this
 						// merge too — a coarse rehydrate must not shed the payloads of
 						// the turns the level hides (retentionWindowItems unions the
@@ -2268,7 +2055,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						seatedRehydrateItems = rehydrateSeated;
 					}
 					if (replacesInstance) {
-						transientWarnings.length = 0;
+						transientWarnings.clear();
 					}
 					// The snapshot's thread-level fields are authoritative (see the
 					// response-cut note by applyThreadNotification); the rows are a
@@ -2576,7 +2363,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						const mergedModel = withSyncedHistoryTurns({ ...currentConv, turns: strippedPageTurns }, strippedPageTurns);
 						// The page merge projects at the user's display config, exactly
 						// as the rehydrate and frame paths do: one projector, one level.
-						const mergedInput = seatTransientWarnings(
+						const mergedInput = transientWarnings.seat(
 							projectTimeline(mergedModel, undefined, get().displayConfig ?? undefined),
 						);
 						// Paging never ends on a trim: a page that lands while the
@@ -3060,8 +2847,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				loadOlderToken += 1;
 				// C1+I1: clear any stale deferred trailing-reread request.
 				trailingReread = null;
-				transientWarnings.length = 0;
-				releaseBoundedTextCache();
+				transientWarnings.clear();
+				boundedText.release();
 				detachPendingRows();
 				forgetPendingProvenance();
 				boundService = null;
@@ -3159,17 +2946,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				const unplacedWarningNotice =
 					n.method === "warning" &&
 					(!applied.activeTurnId || !applied.turns.some((turn) => turn.id === applied.activeTurnId))
-						? idleWarningRow(n.params)
+						? transientWarnings.record(n.params, state.conversation.items)
 						: null;
-				if (unplacedWarningNotice !== null) {
-					transientWarnings.push({
-						row: unplacedWarningNotice,
-						anchor: arrivalAnchor(
-							state.conversation.items,
-							new Set(transientWarnings.map((notice) => timelineIdentity(notice.row))),
-						),
-					});
-				}
 				if (applied !== state.conversation) {
 					if (changesRows(state.conversation, applied) || unplacedWarningNotice !== null) {
 						// The frame's rows project at the user's display config — the
@@ -3287,8 +3065,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				loadOlderToken += 1;
 				// C1+I1: clear any stale deferred trailing-reread request.
 				trailingReread = null;
-				transientWarnings.length = 0;
-				releaseBoundedTextCache();
+				transientWarnings.clear();
+				boundedText.release();
 				detachPendingRows();
 				forgetPendingProvenance();
 				boundService = null;
