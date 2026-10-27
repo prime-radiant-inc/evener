@@ -219,102 +219,18 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 
 	budget := newGlobBudget("grep")
 	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s, budget: budget, ctx: ctx}}
-	// Never list or read into a masked subtree while collecting .gitignore
-	// rules — see the matching comment in glob above.
-	ignores, err := loadIgnoreSet(ctx, fsys, func(relPath string) bool {
-		abs := filepath.Join(canonical, relPath)
-		return s.underMasked(abs) || walkSkipsPseudoDir(canonical, abs)
-	}, budget, wholeBaseIgnoreScope())
-	if err != nil {
-		return "", err
-	}
-	excludedByIgnore := 0
-	oversized := 0
-	err = secureBrowseWalkDir(fsys, ".", func(rel string, d fs.DirEntry, walkErr error) error {
-		if cancelErr := ctx.Err(); cancelErr != nil {
-			return cancelErr
-		}
-		if walkErr != nil {
-			// loadIgnoreSet's walk above already visits every directory this
-			// one would — its skip set (dot-prefixed and masked directories)
-			// is a strict subset of this walk's (which also skips gitignored
-			// ones) — so it always reaches an oversized directory first on
-			// any static tree and this guard cannot be reached that way. It
-			// is reachable only when a directory grows past the entry bound
-			// in the gap between the two passes, which
-			// TestSandboxedGrepWalkCarriesTheEntriesRefusalWhenADirectoryGrowsAfterIgnoreDiscovery
-			// forces by stubbing secureBrowseWalkDir itself to grow the tree
-			// after ignore discovery has already listed it.
-			if _, refused := errors.AsType[*globBudgetError](walkErr); refused {
-				return walkErr
-			}
-			return nil //nolint:nilerr // skip unreadable / symlink-refused entries and keep walking
-		}
-		abs := filepath.Join(canonical, rel)
-		if s.underMasked(abs) {
-			if d.IsDir() {
-				return fs.SkipDir // never descend into a masked subtree
-			}
-			return nil
-		}
-		if d.IsDir() {
-			if rel != "." {
-				if strings.HasPrefix(d.Name(), ".") {
-					return fs.SkipDir
-				}
-				if ignores.matches(rel, true) {
-					excludedByIgnore++
-					return fs.SkipDir
-				}
-				if walkSkipsPseudoDir(canonical, abs) {
-					return fs.SkipDir
-				}
-			}
-			// fs.WalkDir never follows a directory symlink, so this walk
-			// cannot cycle back into itself the way the glob pattern walk's
-			// ancestor check has to guard against — the same reason ignore
-			// discovery's own budget charge above is always cycleSafe.
-			// Charged only here, once the masked/dot/gitignore skips above
-			// have already passed, so a directory the walk is about to skip
-			// anyway costs nothing.
-			if berr := budget.listing(true); berr != nil {
-				return berr
-			}
-			return nil
-		}
-		// Skip hidden and gitignored files
-		if strings.HasPrefix(d.Name(), ".") {
-			return nil
-		}
-		if ignores.matches(rel, false) {
-			excludedByIgnore++
-			return nil
-		}
-		if selected, selErr := grepFileSelected(d.Name(), rel, globFilters, skip); !selected {
-			return selErr
-		}
-		data, rerr := secureBrowseReadFile(fsys, rel)
-		if rerr != nil {
-			if cancelErr := ctx.Err(); cancelErr != nil {
-				return cancelErr
-			}
-			if errors.Is(rerr, errGrepFileTooLarge) {
-				oversized++
-			}
-			return nil //nolint:nilerr // best-effort grep: skip unreadable files
-		}
-		if a.feed(rel, data) {
-			return fs.SkipAll
-		}
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	return a.finishWalk(excludedByIgnore, oversized), nil
+	return grepTreeWalk{
+		ctx:         ctx,
+		acc:         a,
+		globFilters: globFilters,
+		skip:        skip,
+		root:        canonical,
+		ignoreFS:    fsys,
+		budget:      budget,
+		walk:        func(fn fs.WalkDirFunc) error { return secureBrowseWalkDir(fsys, ".", fn) },
+		read:        func(rel string) ([]byte, error) { return secureBrowseReadFile(fsys, rel) },
+		masked:      s.underMasked,
+	}.run()
 }
 
 // grepNamedFile searches the one file a grep's path names, given its
