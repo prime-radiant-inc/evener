@@ -2976,9 +2976,25 @@ function ConversationScreenView({
 		const targetKey = recovery.targetKey;
 		void (async () => {
 			const runtime = getNativeMutationRuntime();
+			drafts.retryPendingHandoffs();
 			await reconcileEditedResends(runtime, targetKey, document);
 			const retained = await runtime.read(targetKey);
-			const deliberatelyReleased = new Set(draft.record.releasedRecoveryIds ?? []);
+			const handoffPending = drafts.hasPendingHandoff({
+				hubId: route.params.hubId,
+				sessionRef: route.params.ref,
+			});
+			// A row whose submission is still running on this chain must not be
+			// restored; the ledger's open obligation owns it until it completes.
+			const pendingObligations = drafts.openObligationRecoveryIds({
+				hubId: route.params.hubId,
+				sessionRef: route.params.ref,
+			});
+			const deliberatelyReleased = new Set([
+				...(draft.record.releasedRecoveryIds ?? []),
+				...(draft.record.unconfirmedComposer?.recoveryIds ?? []),
+				...pendingObligations,
+			]);
+			if (handoffPending) return;
 			for (const row of retained.recovery) {
 				if (!current || imageSelection.getSnapshot().busy) return;
 				if (row.recoveryKind === "editing" && !deliberatelyReleased.has(row.clientMutationId))

@@ -1,4 +1,4 @@
-import type { DraftHandoffEdge, DraftHandoffGraph } from "./draftHandoffLedger";
+import type { DraftHandoffEdge, DraftHandoffEndpoint, DraftHandoffGraph } from "./draftHandoffLedger";
 
 /** One read of the ledger. A failing read is an incomplete graph, never a
  * partial one: settlement must not be planned against edges it could not see. */
@@ -27,6 +27,39 @@ export function readHandoffGraph(ledger: { readGraph(): DraftHandoffGraph }): Ha
 	} catch {
 		return { state: "incomplete" };
 	}
+}
+
+/** Follow the newest live edge from an origin to the identity that currently
+ * owns its composition. A visited set stops a malformed cycle from spinning. */
+export function terminalDestination(
+	edges: readonly DraftHandoffEdge[],
+	origin: DraftHandoffEndpoint,
+): DraftHandoffEndpoint {
+	const seen = new Set<string>();
+	let current = origin;
+	for (;;) {
+		const key = `${current.hubId}\u0000${current.sessionRef}`;
+		if (seen.has(key)) return current;
+		seen.add(key);
+		const outgoing = edges
+			.filter((edge) => edge.state !== "cleaned" && sameEndpoint(edge.from, current))
+			.sort((a, b) =>
+				a.createdAt === b.createdAt
+					? a.edgeId < b.edgeId
+						? -1
+						: a.edgeId > b.edgeId
+							? 1
+							: 0
+					: a.createdAt - b.createdAt,
+			);
+		const newest = outgoing[outgoing.length - 1];
+		if (newest === undefined) return current;
+		current = newest.to;
+	}
+}
+
+function sameEndpoint(a: DraftHandoffEndpoint, b: DraftHandoffEndpoint): boolean {
+	return a.hubId === b.hubId && a.sessionRef === b.sessionRef;
 }
 
 /** Deterministic settlement planning over the durable graph.

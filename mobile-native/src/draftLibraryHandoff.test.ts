@@ -296,4 +296,102 @@ describe("durable handoff library", () => {
 			ledger.readGraph().edges.filter((edge) => edge.from.sessionRef === "a" && edge.to.sessionRef === "b"),
 		).toHaveLength(1);
 	});
+
+	test("a plain send's completion clears the destination capture and settles", async () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), { draft: "current", unconfirmed: null });
+		const draftLibrary = library();
+		const source = draftLibrary.open(destination("a"));
+		let settle!: (sent: boolean) => void;
+		const submitted = source.submit(
+			() =>
+				new Promise<boolean>((resolve) => {
+					settle = () => resolve(true);
+				}),
+		);
+		const token = repository.read(destination("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		expect(repository.read(destination("b"))).toMatchObject({
+			unconfirmed: "current",
+			unconfirmedCaptureToken: token,
+		});
+
+		settle(true);
+		await submitted;
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "settled" });
+		expect(repository.read(destination("b"))).toMatchObject({ draft: "", unconfirmed: null });
+		expect(repository.read(destination("b")).unconfirmedCaptureToken).toBeUndefined();
+	});
+
+	test("recovery does not restore a capture whose submission is still running", async () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const draftLibrary = library();
+		const source = draftLibrary.open(destination("a"));
+		let settle!: (sent: boolean) => void;
+		const submitted = source.submit(
+			() =>
+				new Promise<boolean>((resolve) => {
+					settle = () => resolve(true);
+				}),
+		);
+		const token = repository.read(destination("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+
+		// The screen must skip this row while the obligation is open.
+		expect(draftLibrary.openObligationRecoveryIds(destination("b"))).toEqual(new Set(["recovered-a"]));
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("pending");
+
+		settle(true);
+		await submitted;
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		expect(repository.read(destination("b"))).toMatchObject({ unconfirmed: null });
+		expect(draftLibrary.openObligationRecoveryIds(destination("b"))).toEqual(new Set());
+	});
+
+	test("an inherited submission's completion reaches a two-hop terminal", async () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const draftLibrary = library();
+		const source = draftLibrary.open(destination("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		expect(draftLibrary.handoff(destination("b"), destination("c"))).toBe(true);
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("pending");
+		expect(edgeFor(ledger, "b", "c")?.state).toBe("pending");
+
+		finish();
+		await submitted;
+		// The completion is delivered by the ledger to the terminal identity.
+		expect(repository.read(destination("c"))).toMatchObject({
+			draft: "",
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "b", "c")?.state).toBe("settled");
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
+		expect(repository.read(destination("b"))).toEqual({ draft: "", unconfirmed: null });
+		expect(repository.read(destination("c")).completedCommandRecoveryIds).toEqual(["recovered-a"]);
+	});
 });

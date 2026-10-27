@@ -38,7 +38,9 @@ function obligation(obligationId: string, state: DraftSubmissionObligation["stat
 		chainId: "chain",
 		origin: endpoint("a"),
 		state,
+		recoveryIds: [],
 		completedCommandIds: [],
+		releasedRecoveryIds: [],
 		createdAt: 0,
 		resolvedAt: state === "open" ? null : 1,
 	};

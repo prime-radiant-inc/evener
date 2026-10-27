@@ -311,7 +311,7 @@ describe("handoff chain obligations", () => {
 		reject(new MutationNotSentError("the session retired"));
 		expect(await submitted).toBe("not-sent");
 		expect(storageLedger.readGraph().obligations).toMatchObject([
-			{ obligationId: token, origin: endpoint("a"), state: "failed" },
+			{ obligationId: token, origin: endpoint("a"), state: "not-sent" },
 		]);
 	});
 
@@ -382,7 +382,7 @@ describe("handoff chain obligations", () => {
 		expect(resolved[0][1]).toBe("completed");
 	});
 
-	test("a failed resolution after retirement is retried by the successor's reload", async () => {
+	test("a failed resolution after retirement is retried by the library's recovery pass", async () => {
 		const { storageLedger, repository } = setup();
 		repository.write(endpoint("a"), {
 			draft: "current",
@@ -407,10 +407,10 @@ describe("handoff chain obligations", () => {
 
 		finish();
 		await submitted;
-		// The first resolution write failed after retirement; the successor owns
-		// the retry, so a reload there resolves the obligation.
+		// The first resolution write failed after retirement; the library retries
+		// every retired document before restoring or settling.
 		expect(storageLedger.readGraph().obligations).toMatchObject([{ state: "open" }]);
-		library.open(endpoint("b")).retry();
+		library.retryPendingHandoffs();
 		expect(storageLedger.readGraph().obligations).toMatchObject([
 			{ state: "completed", completedCommandIds: ["recovered-a"] },
 		]);

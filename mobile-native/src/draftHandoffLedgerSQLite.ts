@@ -35,7 +35,9 @@ interface ObligationRow {
 	origin_hub_id: string;
 	origin_ref: string;
 	state: DraftSubmissionState;
+	recovery_ids: string;
 	completed_command_ids: string;
+	released_recovery_ids: string;
 	created_at: number;
 	resolved_at: number | null;
 }
@@ -119,7 +121,9 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			 origin_hub_id TEXT NOT NULL,
 			 origin_ref TEXT NOT NULL,
 			 state TEXT NOT NULL,
+			 recovery_ids TEXT NOT NULL DEFAULT '[]',
 			 completed_command_ids TEXT NOT NULL DEFAULT '[]',
+			 released_recovery_ids TEXT NOT NULL DEFAULT '[]',
 			 created_at INTEGER NOT NULL,
 			 resolved_at INTEGER)`,
 		);
@@ -133,6 +137,18 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			 edge_id TEXT NOT NULL,
 			 PRIMARY KEY (chain_id, hub_id, session_ref, recovery_id))`,
 		);
+		// Additive columns for tables an earlier build of this branch created.
+		this.addColumnIfMissing("draft_handoff_edges", "composed_at", "INTEGER");
+		this.addColumnIfMissing("draft_submission_obligations", "recovery_ids", "TEXT NOT NULL DEFAULT '[]'");
+		this.addColumnIfMissing("draft_submission_obligations", "released_recovery_ids", "TEXT NOT NULL DEFAULT '[]'");
+	}
+
+	private addColumnIfMissing(table: string, column: string, definition: string): void {
+		const columns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
+		if (columns.some((existing) => existing.name === column)) return;
+		withSavepoint(this.db, `draft_handoff_add_${table}_${column}`, () => {
+			this.db.execSync(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+		});
 	}
 
 	/** Create the chain's edge inside the retarget savepoint. The inbound edge
@@ -388,14 +404,15 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 		});
 	}
 
-	beginSubmission(obligationId: string, origin: DraftHandoffEndpoint): void {
+	beginSubmission(obligationId: string, origin: DraftHandoffEndpoint, recoveryIds: readonly string[] = []): void {
 		this.db.runSync(
 			`INSERT OR IGNORE INTO draft_submission_obligations
-			 (obligation_id, origin_hub_id, origin_ref, state, completed_command_ids, created_at)
-			 VALUES (?, ?, ?, 'open', '[]', ?)`,
+			 (obligation_id, origin_hub_id, origin_ref, state, recovery_ids, completed_command_ids, created_at)
+			 VALUES (?, ?, ?, 'open', ?, '[]', ?)`,
 			obligationId,
 			origin.hubId,
 			origin.sessionRef,
+			JSON.stringify([...new Set(recoveryIds)]),
 			this.#now(),
 		);
 	}
@@ -404,18 +421,21 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 		obligationId: string,
 		state: Exclude<DraftSubmissionState, "open">,
 		completedCommandIds: readonly string[] = [],
+		releasedRecoveryIds: readonly string[] = [],
 	): void {
 		withSavepoint(this.db, "draft_handoff_resolve_submission", () => {
 			const existing = this.obligation(obligationId);
 			if (existing === undefined) return;
 			const completed = [...new Set([...existing.completedCommandIds, ...completedCommandIds])];
+			const released = [...new Set([...existing.releasedRecoveryIds, ...releasedRecoveryIds])];
 			if (existing.state === "open") {
 				this.db.runSync(
 					`UPDATE draft_submission_obligations
-					 SET state = ?, completed_command_ids = ?, resolved_at = ?
+					 SET state = ?, completed_command_ids = ?, released_recovery_ids = ?, resolved_at = ?
 					 WHERE obligation_id = ?`,
 					state,
 					JSON.stringify(completed),
+					JSON.stringify(released),
 					this.#now(),
 					obligationId,
 				);
@@ -423,10 +443,15 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			}
 			// A retried completion may carry ids the first write missed; the state
 			// and resolution time stay the first one's.
-			if (existing.state === state && completed.length !== existing.completedCommandIds.length)
+			if (
+				existing.state === state &&
+				(completed.length !== existing.completedCommandIds.length ||
+					released.length !== existing.releasedRecoveryIds.length)
+			)
 				this.db.runSync(
-					`UPDATE draft_submission_obligations SET completed_command_ids = ? WHERE obligation_id = ?`,
+					`UPDATE draft_submission_obligations SET completed_command_ids = ?, released_recovery_ids = ? WHERE obligation_id = ?`,
 					JSON.stringify(completed),
+					JSON.stringify(released),
 					obligationId,
 				);
 		});
@@ -563,7 +588,7 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			obligations,
 			claimAt: row.claim_at,
 			deliveredHash: row.delivered_hash,
-			composedAt: row.composed_at,
+			composedAt: row.composed_at ?? null,
 			supersededBy: row.superseded_by,
 			createdAt: row.created_at,
 			stateChangedAt: row.state_changed_at,
@@ -576,7 +601,9 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			chainId: row.chain_id,
 			origin: { hubId: row.origin_hub_id, sessionRef: row.origin_ref },
 			state: row.state,
+			recoveryIds: JSON.parse(row.recovery_ids) as string[],
 			completedCommandIds: JSON.parse(row.completed_command_ids) as string[],
+			releasedRecoveryIds: JSON.parse(row.released_recovery_ids) as string[],
 			createdAt: row.created_at,
 			resolvedAt: row.resolved_at,
 		};

@@ -153,6 +153,41 @@ describe("draft handoff ledger", () => {
 		expect(ledger.readGraph().edges[0]).toMatchObject({ state: "settled", deliveredHash: "fingerprint" });
 	});
 
+	test("migrates a table created before the composed marker", () => {
+		const { database, port } = openSqliteSyncDouble();
+		databases.push(database);
+		// The shape an earlier build of this branch created: no composed_at and
+		// no obligation delivery columns.
+		database.exec(`CREATE TABLE draft_handoff_edges (
+			edge_id TEXT PRIMARY KEY, chain_id TEXT NOT NULL,
+			from_hub_id TEXT NOT NULL, from_ref TEXT NOT NULL,
+			to_hub_id TEXT NOT NULL, to_ref TEXT NOT NULL,
+			state TEXT NOT NULL, claim_at INTEGER, delivered_hash TEXT, superseded_by TEXT,
+			created_at INTEGER NOT NULL, state_changed_at INTEGER NOT NULL)`);
+		database.exec(`CREATE TABLE draft_submission_obligations (
+			obligation_id TEXT PRIMARY KEY, chain_id TEXT,
+			origin_hub_id TEXT NOT NULL, origin_ref TEXT NOT NULL,
+			state TEXT NOT NULL, completed_command_ids TEXT NOT NULL DEFAULT '[]',
+			created_at INTEGER NOT NULL, resolved_at INTEGER)`);
+		database
+			.prepare(
+				`INSERT INTO draft_handoff_edges
+				 (edge_id, chain_id, from_hub_id, from_ref, to_hub_id, to_ref, state, created_at, state_changed_at)
+				 VALUES ('old', 'chain', 'hub', 'a', 'hub', 'b', 'pending', 1, 1)`,
+			)
+			.run();
+
+		const ledger = new DraftHandoffLedgerSQLite(port, { now: () => 1000, createId: () => "new" });
+		expect(ledger.readGraph().edges[0]).toMatchObject({ edgeId: "old", composedAt: null });
+		// Both the new column and the obligation delivery columns must be usable.
+		ledger.recordComposed("old");
+		ledger.beginSubmission("obligation-1", a, ["recovered-a"]);
+		expect(ledger.readGraph().edges[0].composedAt).toBe(1000);
+		expect(ledger.readGraph().obligations).toMatchObject([
+			{ obligationId: "obligation-1", recoveryIds: ["recovered-a"], releasedRecoveryIds: [] },
+		]);
+	});
+
 	test("sets the downstream edge before its predecessor", () => {
 		const { ledger } = setup();
 		const downstream = ledger.createEdge({ chainId: "chain", from: b, to: c });

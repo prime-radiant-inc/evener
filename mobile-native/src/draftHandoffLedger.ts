@@ -43,7 +43,9 @@ export interface DraftHandoffEdge {
 	stateChangedAt: number;
 }
 
-export type DraftSubmissionState = "open" | "completed" | "failed";
+/** `not-sent` is a proven local refusal whose capture must be cleared;
+ * `failed` never reached a decision and leaves the capture recoverable. */
+export type DraftSubmissionState = "open" | "completed" | "not-sent" | "failed";
 
 export interface DraftSubmissionObligation {
 	obligationId: string;
@@ -51,7 +53,11 @@ export interface DraftSubmissionObligation {
 	chainId: string | null;
 	origin: DraftHandoffEndpoint;
 	state: DraftSubmissionState;
+	/** Recovery sources this submission captured at its origin. */
+	recoveryIds: string[];
 	completedCommandIds: string[];
+	/** Sources the completed submission also releases at the destination. */
+	releasedRecoveryIds: string[];
 	createdAt: number;
 	resolvedAt: number | null;
 }
@@ -73,13 +79,18 @@ export interface CreateDraftHandoffEdgeInput {
 /** The submission side a draft document needs: record the obligation before a
  * transport call, resolve it when the submission settles. */
 export interface DraftSubmissionLedger {
-	beginSubmission(obligationId: string, origin: DraftHandoffEndpoint): void;
+	beginSubmission(obligationId: string, origin: DraftHandoffEndpoint, recoveryIds?: readonly string[]): void;
 	resolveSubmission(
 		obligationId: string,
 		state: Exclude<DraftSubmissionState, "open">,
 		completedCommandIds?: readonly string[],
+		releasedRecoveryIds?: readonly string[],
 	): void;
 }
+
+/** What a draft document needs to deliver its own completion: record/resolve
+ * the obligation and find the chain's terminal identity. */
+export type DraftCompletionLedger = DraftSubmissionLedger & Pick<DraftHandoffLedger, "readGraph">;
 
 export interface DraftHandoffLedger extends DraftSubmissionLedger {
 	/** Called inside the retarget savepoint that moves the mutation rows. */

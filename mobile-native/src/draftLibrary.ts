@@ -3,9 +3,9 @@ import type {
 	DraftHandoffDelivery,
 	DraftHandoffEdge,
 	DraftHandoffLedger,
-	DraftSubmissionLedger,
+	DraftSubmissionObligation,
 } from "./draftHandoffLedger";
-import { orderHandoffGraph, readHandoffGraph } from "./draftHandoffGraph";
+import { orderHandoffGraph, readHandoffGraph, terminalDestination } from "./draftHandoffGraph";
 import type { DraftDestination, DraftRecord, DraftRepository } from "./draftRepository";
 
 export type DraftStorage = Pick<
@@ -32,6 +32,9 @@ export class DraftLibrary {
 	) {}
 
 	open(destination: DraftDestination): DraftDocument {
+		// A resolved completion is applied before a screen reads the document, so
+		// it never renders a stale capture.
+		this.applyObligationsFor(destination);
 		let sessions = this.hubs.get(destination.hubId);
 		if (!sessions) {
 			sessions = new Map();
@@ -45,7 +48,10 @@ export class DraftLibrary {
 				this.createImageId,
 				undefined,
 				undefined,
-				this.handoffLedger as (() => DraftSubmissionLedger) | undefined,
+				this.handoffLedger,
+				(terminal, record) => {
+					this.hubs.get(terminal.hubId)?.get(terminal.sessionRef)?.adopt(record);
+				},
 			);
 			sessions.set(destination.sessionRef, document);
 		}
@@ -90,6 +96,8 @@ export class DraftLibrary {
 	retryPendingHandoffs(): void {
 		const ledger = this.handoffLedger?.();
 		if (ledger === undefined) return;
+		// A retired document can still hold a resolution its ledger write missed.
+		for (const documents of this.retired.values()) for (const document of documents) document.retry();
 		const load = readHandoffGraph(ledger);
 		if (load.state !== "ready") return;
 		this.cleanFinished(ledger, load.graph);
@@ -252,7 +260,7 @@ export class DraftLibrary {
 		}
 		destination.adopt(snapshot.record);
 		if (destination !== source) {
-			source.retireInto(destination);
+			source.retire();
 			this.rememberRetired(edge.from.hubId, source);
 			const sessions = this.hubs.get(edge.from.hubId);
 			if (sessions?.get(edge.from.sessionRef) === source) sessions.delete(edge.from.sessionRef);
@@ -301,6 +309,67 @@ export class DraftLibrary {
 	private cleanFinished(ledger: DraftHandoffLedger, graph: { edges: DraftHandoffEdge[] }): void {
 		for (const edge of graph.edges)
 			if (edge.state === "settled" || edge.state === "refused") this.tryClean(ledger, edge.edgeId);
+	}
+
+	/** Recovery sources of submissions still running on this destination's chain.
+	 * The screen must not restore those rows while their obligation is open. */
+	openObligationRecoveryIds(destination: DraftDestination): Set<string> {
+		const ledger = this.handoffLedger?.();
+		if (ledger === undefined) return new Set();
+		let graph;
+		try {
+			graph = ledger.readGraph();
+		} catch {
+			return new Set();
+		}
+		const ids = new Set<string>();
+		for (const obligation of graph.obligations) {
+			if (obligation.state !== "open") continue;
+			if (!sameDestination(terminalDestination(graph.edges, obligation.origin), destination)) continue;
+			for (const id of obligation.recoveryIds) ids.add(id);
+		}
+		return ids;
+	}
+
+	/** Apply a resolved completion to the record of one destination before it is
+	 * opened. Idempotent: the capture token is cleared once. */
+	private applyObligationsFor(destination: DraftDestination): void {
+		const ledger = this.handoffLedger?.();
+		if (ledger === undefined) return;
+		let graph;
+		try {
+			graph = ledger.readGraph();
+		} catch {
+			return;
+		}
+		for (const obligation of graph.obligations) {
+			if (!clearsCapture(obligation.state)) continue;
+			if (!sameDestination(terminalDestination(graph.edges, obligation.origin), destination)) continue;
+			this.applyCompletion(obligation, terminalDestination(graph.edges, obligation.origin));
+		}
+	}
+
+	/** The recovery pass: every resolved completion still waiting on a capture is
+	 * applied to the record that owns it. */
+	private applyCompletion(obligation: DraftSubmissionObligation, terminal: DraftDestination): void {
+		const open = this.hubs.get(terminal.hubId)?.get(terminal.sessionRef);
+		let current: DraftRecord;
+		if (open?.getSnapshot().loaded) current = open.getSnapshot().record;
+		else {
+			try {
+				current = this.repository().read(terminal);
+			} catch {
+				return;
+			}
+		}
+		if (current.unconfirmedCaptureToken !== obligation.obligationId) return;
+		const next = mergeCompletion(current, obligation);
+		try {
+			this.repository().write(terminal, next);
+		} catch {
+			return;
+		}
+		open?.adopt(next);
 	}
 
 	private tryClean(ledger: DraftHandoffLedger, edgeId: string): void {
@@ -365,6 +434,12 @@ function releasedSources(record: DraftRecord): string[] {
 	];
 }
 
+/** A completed submission, or a proven local refusal, owns the destination
+ * capture. A plain failed operation leaves it recoverable. */
+function clearsCapture(state: DraftSubmissionObligation["state"]): boolean {
+	return state === "completed" || state === "not-sent";
+}
+
 function deliveriesFor(
 	edge: DraftHandoffEdge,
 	completed: readonly string[],
@@ -386,6 +461,24 @@ function deliveriesFor(
 			edgeId: edge.edgeId,
 		})),
 	];
+}
+
+/** Clear a resolved submission's capture and merge the ids it delivered. */
+function mergeCompletion(record: DraftRecord, obligation: DraftSubmissionObligation): DraftRecord {
+	const next: DraftRecord = {
+		...record,
+		unconfirmed: null,
+		unconfirmedImages: undefined,
+		unconfirmedComposer: undefined,
+		unconfirmedCaptureToken: undefined,
+	};
+	if (obligation.completedCommandIds.length)
+		next.completedCommandRecoveryIds = [
+			...new Set([...(record.completedCommandRecoveryIds ?? []), ...obligation.completedCommandIds]),
+		];
+	if (obligation.releasedRecoveryIds.length)
+		next.releasedRecoveryIds = [...new Set([...(record.releasedRecoveryIds ?? []), ...obligation.releasedRecoveryIds])];
+	return next;
 }
 
 /** A destination that holds any composition, marker, or parked work refuses a
