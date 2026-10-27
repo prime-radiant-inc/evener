@@ -489,6 +489,43 @@ describe("durable handoff library", () => {
 		expect(draftLibrary.openObligationRecoveryIds(destination("b"))).toEqual(new Set());
 	});
 
+	test("a transfer without its composed marker keeps destination recovery suppressed", async () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const flakyLedger = flaky(ledger, "recordComposed", 1);
+		const draftLibrary = library(() => flakyLedger);
+		const source = draftLibrary.open(destination("a"));
+		let settle!: (sent: boolean) => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					settle = () => resolve(true);
+				}),
+		);
+		const token = repository.read(destination("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		// The transfer committed without its composed marker: durable capture
+		// evidence places the running submission at the destination while the
+		// graph still names the origin as the chain's terminal.
+		expect(repository.read(destination("b")).unconfirmedCaptureToken).toBe(token);
+		// The screen's restore guard follows the durable capture, so the
+		// destination's reconciliation must skip the still-running command's row.
+		expect(draftLibrary.openObligationRecoveryIds(destination("b"))).toEqual(new Set(["recovered-a"]));
+		expect(draftLibrary.openObligationRecoveryIds(destination("a"))).toEqual(new Set());
+
+		settle(true);
+		await submitted;
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		expect(repository.read(destination("b")).completedCommandRecoveryIds).toEqual(["recovered-a"]);
+		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
+	});
+
 	test("a refusal write failure leaves the hop pending until the ledger accepts it", () => {
 		const { ledger, repository, library } = setup();
 		repository.write(destination("a"), {

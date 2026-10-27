@@ -1,4 +1,5 @@
 import {
+	type CompletionDeliveryOutcome,
 	captureInFlight,
 	type DraftCompletionDelivery,
 	DraftDocument,
@@ -458,12 +459,56 @@ export class DraftLibrary {
 	): boolean {
 		const completed = [...(record.completedCommandRecoveryIds ?? [])];
 		const released = releasedSources(record);
+		// Resolved dispositions must reach the identity that owns the mutation
+		// rows, wherever the capture settled. Retargets move a chain's rows on
+		// with the identity while the composition - and its completion markers -
+		// can stay at this hop, and a marker written only here cannot clean a row
+		// that targets another identity: the executed command would stay
+		// restorable there.
+		if (!this.forwardDispositions(ledger, edge, completed, released)) return false;
 		try {
 			ledger.settleEdge(edge.edgeId, deliveriesFor(edge, completed, released), deliveredHash);
 		} catch {
 			return false;
 		}
 		destination.adopt(record);
+		return true;
+	}
+
+	/** Write completed and released markers at the identity the retargets moved
+	 * the chain's mutation rows on to, when the rows traveled past this edge's
+	 * own destination. False when the forwarding write cannot land, so
+	 * settlement retries with the dispositions still recorded at the hop. */
+	private forwardDispositions(
+		ledger: DraftHandoffLedger,
+		edge: DraftHandoffEdge,
+		completed: readonly string[],
+		released: readonly string[],
+	): boolean {
+		if (!completed.length && !released.length) return true;
+		const load = readHandoffGraph(ledger);
+		if (load.state !== "ready") return false;
+		// The rows start from this edge's destination and follow the chain's
+		// composed continuations onward: this edge delivered its dispositions at
+		// its destination, so only a continuation that carried the identity
+		// further can have carried the rows further too.
+		const rowOwner = terminalDestination(load.graph.edges, edge.to, edge.chainId);
+		if (sameDestination(rowOwner, edge.to)) return true;
+		const document = this.open(rowOwner);
+		let current = document.getSnapshot();
+		if (!current.loaded) {
+			document.retry();
+			current = document.getSnapshot();
+		}
+		// An unloaded or unsaved row owner must not receive markers through an
+		// empty snapshot; the edge stays pending and the next retry forwards.
+		if (!current.loaded || current.error !== null) return false;
+		try {
+			if (completed.length && !document.adoptCompletedCommandRecovery(completed)) return false;
+			if (released.length && !document.releaseRecoverySources(released)) return false;
+		} catch {
+			return false;
+		}
 		return true;
 	}
 
@@ -486,13 +531,19 @@ export class DraftLibrary {
 		const ids = new Set<string>();
 		for (const obligation of graph.obligations) {
 			if (obligation.state !== "open") continue;
-			if (
-				!sameDestination(
-					terminalDestination(graph.edges, obligation.origin, obligation.chainId ?? undefined),
-					destination,
-				)
-			)
-				continue;
+			// Exclusions follow durable capture ownership, not the graph's routing:
+			// a transfer whose composed-marker write failed leaves the capture at
+			// its destination while the graph still names the origin, and
+			// restore-capable reconciliation at the capture's owner is what could
+			// resurrect the still-running command and clear its capture token.
+			const owner = captureTerminal(graph.edges, obligation, (endpoint) => {
+				try {
+					return this.repository().read(endpoint);
+				} catch {
+					return undefined;
+				}
+			});
+			if (!sameDestination(owner, destination)) continue;
 			for (const id of obligation.recoveryIds) ids.add(id);
 		}
 		return ids;
@@ -538,28 +589,38 @@ export class DraftLibrary {
 
 	/** Merge a delivered completion into the terminal's live document when one
 	 * is open, so its unsaved edits and pending image data survive through the
-	 * document's own persistence path. A live document that cannot adopt the
-	 * completion is stale or already consumed the capture, so the persisted
-	 * record at the terminal decides. */
-	private deliverCompletionAt(terminal: DraftDestination, completion: DraftCompletionDelivery): boolean {
+	 * document's own persistence path. A clean live document that cannot adopt
+	 * the completion never held the capture - its snapshot is stale against a
+	 * durable write another instance committed - so the persisted record at the
+	 * terminal decides. A live document with a pending save error owns newer
+	 * state instead: the completion merges through its own save path, never
+	 * through the persisted record behind it. */
+	private deliverCompletionAt(
+		terminal: DraftDestination,
+		completion: DraftCompletionDelivery,
+	): CompletionDeliveryOutcome {
 		const open = this.hubs.get(terminal.hubId)?.get(terminal.sessionRef);
-		if (open?.getSnapshot().loaded && open.adoptCompletion(completion)) return true;
+		const live = open?.getSnapshot();
+		if (open !== undefined && live?.loaded) {
+			if (open.adoptCompletion(completion)) return "delivered";
+			if (live.error !== null) return open.mergeCompletionThroughLiveState(completion);
+		}
 		let current: DraftRecord;
 		try {
 			current = this.repository().read(terminal);
 		} catch {
-			return false;
+			return "unowned";
 		}
-		if (current.unconfirmedCaptureToken !== completion.captureToken) return false;
+		if (current.unconfirmedCaptureToken !== completion.captureToken) return "unowned";
 		// A recovered message's capture settles through its resend receipt,
 		// which the receipt-acknowledging coordinator clears.
-		if (messageAdmissionCapture(completion, current)) return true;
+		if (messageAdmissionCapture(completion, current)) return "delivered";
 		try {
 			this.repository().write(terminal, mergeCompletion(current, completion));
 		} catch {
-			return false;
+			return "unowned";
 		}
-		return true;
+		return "delivered";
 	}
 
 	private tryClean(ledger: DraftHandoffLedger, edgeId: string): void {

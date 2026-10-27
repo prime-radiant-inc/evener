@@ -37,6 +37,18 @@ export interface DraftCompletionDelivery {
 	releasedRecoveryIds: readonly string[];
 }
 
+/** The outcome of delivering a completion at a terminal identity. */
+export type CompletionDeliveryOutcome =
+	/** The completion landed durably, or its capture settles through the
+	 * resend receipt the receipt-acknowledging coordinator owns. */
+	| "delivered"
+	/** A live document at the terminal owns the completion through its own
+	 * save path: the persisted record must not be written behind the unsaved
+	 * images and edits it holds. The completion is retried with that document. */
+	| "owned-live"
+	/** Nothing at this terminal owns the capture; the caller may keep looking. */
+	| "unowned";
+
 /** Capture tokens of submissions this process started and has not yet
  * resolved durably. The set is process state, never durable: a process that
  * dies takes its in-flight submissions with it, so a durable open obligation
@@ -245,7 +257,10 @@ export class DraftDocument {
 		/** Deliver a resolved submission's completion at the terminal identity.
 		 * The library merges it into the live document it holds there, so the
 		 * destination's unsaved edits and pending image data survive. */
-		private deliverCompletionTo?: (terminal: DraftDestination, completion: DraftCompletionDelivery) => boolean,
+		private deliverCompletionTo?: (
+			terminal: DraftDestination,
+			completion: DraftCompletionDelivery,
+		) => CompletionDeliveryOutcome,
 	) {
 		this.retry();
 	}
@@ -373,6 +388,41 @@ export class DraftDocument {
 			return true;
 		} catch {
 			return false;
+		}
+	}
+
+	/** The persisted record holds a capture this document's live state has
+	 * already consumed or never saw, while a failed save left the document
+	 * holding newer state - a restored image, unsaved edits - that the
+	 * persisted record cannot see. The completion merges through this
+	 * document's own save path, because writing the persisted record behind it
+	 * would delete image bytes the live draft still references and make every
+	 * later save retry fail. The document owns the capture; the completion
+	 * retries here until its save succeeds. */
+	mergeCompletionThroughLiveState(completion: DraftCompletionDelivery): CompletionDeliveryOutcome {
+		const { record, loaded } = this.snapshot;
+		if (this.forgotten || this.retired || !loaded) return "unowned";
+		// A different submission owns this document's live capture; the
+		// persisted record this completion names cannot be written through it.
+		if (record.unconfirmedCaptureToken !== undefined && record.unconfirmedCaptureToken !== completion.captureToken)
+			return "unowned";
+		let durable: DraftRecord;
+		try {
+			durable = this.repository().read(this.destination);
+		} catch {
+			// Ownership cannot be proven either way; never touch the persisted
+			// record while this document holds unsaved state.
+			return "owned-live";
+		}
+		if (durable.unconfirmedCaptureToken !== completion.captureToken) return "unowned";
+		// A recovered message's capture settles through its resend receipt,
+		// which the receipt-acknowledging coordinator clears.
+		if (messageAdmissionCapture(completion, record) || messageAdmissionCapture(completion, durable)) return "delivered";
+		try {
+			this.persist(mergeCompletion(record, completion), true);
+			return "delivered";
+		} catch {
+			return "owned-live";
 		}
 	}
 
@@ -921,10 +971,16 @@ export class DraftDocument {
 		// unsaved edits and pending image bytes the persisted record cannot see,
 		// so the library merges the completion through that document's own
 		// persistence path.
-		if (this.deliverCompletionTo?.(terminal, completion)) {
+		const outcome = this.deliverCompletionTo?.(terminal, completion);
+		if (outcome === "delivered") {
 			this.syncOriginCapture(completion);
 			return true;
 		}
+		// A live document at the terminal owns the completion through its own
+		// save path: writing the persisted record behind the unsaved images and
+		// edits it holds would delete bytes its later save retries still need.
+		// The library's reconciliation pass retries the completion there.
+		if (outcome === "owned-live") return false;
 		if (self) return false;
 		// Without a live document the persisted record at the terminal is
 		// authoritative.

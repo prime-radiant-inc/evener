@@ -540,4 +540,144 @@ describe("handoff chain obligations", () => {
 		library.retryPendingHandoffs();
 		expect(storageLedger.readGraph().edges[0]).toMatchObject({ state: "settled" });
 	});
+
+	test("a completion does not delete image bytes a live document's failed restore retains", async () => {
+		const { storageLedger, repository } = setup();
+		// The destination's first save fails once: the restored image stays in
+		// the live document while the persisted record keeps the capture.
+		let failWrite = true;
+		const flakyRepository = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "write" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (failWrite && (args[0] as { sessionRef?: string } | undefined)?.sessionRef === "b") {
+							failWrite = false;
+							throw new Error("save failed");
+						}
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		const library = new DraftLibrary(
+			() => flakyRepository,
+			undefined,
+			() => storageLedger,
+		);
+		repository.write(
+			endpoint("a"),
+			{
+				draft: "current[image 1]",
+				unconfirmed: null,
+				images: [{ id: "photo", marker: 1, mediaType: "image/png" }],
+			},
+			[{ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" }],
+		);
+		const source = library.open(endpoint("a"));
+		let settle!: (sent: boolean) => void;
+		const submitted = source.submit(
+			() =>
+				new Promise<boolean>((resolve) => {
+					settle = () => resolve(true);
+				}),
+		);
+		const token = repository.read(endpoint("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		expect(library.handoff(endpoint("a"), endpoint("b"))).toBe(true);
+		const atB = library.open(endpoint("b"));
+		atB.restore();
+		// The failed restore kept the image in the live document's unsaved state
+		// while the persisted record still holds the capture token.
+		const live = atB.getSnapshot();
+		expect(live.error).not.toBeNull();
+		expect(live.record).toMatchObject({ draft: "current[image 1]" });
+		expect(repository.read(endpoint("b")).unconfirmedCaptureToken).toBe(token);
+
+		settle(true);
+		await submitted;
+		// The completion merges through the live document's own save path; the
+		// persisted record behind it was never written, so the image bytes the
+		// restored draft references survive and later saves keep working.
+		expect(repository.read(endpoint("b"))).toMatchObject({ draft: "current[image 1]", unconfirmed: null });
+		expect(repository.read(endpoint("b")).unconfirmedCaptureToken).toBeUndefined();
+		expect(repository.read(endpoint("b")).images).toEqual([{ id: "photo", marker: 1, mediaType: "image/png" }]);
+		expect(repository.imageInputs(endpoint("b"), [{ id: "photo", marker: 1, mediaType: "image/png" }])).toEqual([
+			expect.objectContaining({ data: "AQID" }),
+		]);
+		expect(atB.getSnapshot().error).toBeNull();
+		expect(() => atB.retry()).not.toThrow();
+		library.retryPendingHandoffs();
+		expect(storageLedger.readGraph().edges.every((edge) => edge.state !== "pending")).toBe(true);
+	});
+
+	test("a settled completion's markers reach the identity owning the retargeted rows", async () => {
+		const { storage, storageLedger, repository, library } = setup();
+		// A submitting outbox row lets each retarget move recovery rows with it.
+		const intent = (note: string): MutationIntent => ({
+			targetRef: targetKey("a"),
+			threadId: "thread-a",
+			method: "notes/human/set",
+			payload: { ref: "a", expectedInstanceId: "instance-a", note },
+			attachments: [],
+			optimisticDisplay: null,
+		});
+		await storage.enqueueIntent(intent("drives the retarget"));
+		const captured = await storage.enqueueIntent(intent("recovered command input"));
+		await storage.transferToRecovery(captured.clientMutationId, "editing");
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: [captured.clientMutationId] },
+		});
+		// An occupied intermediate identity with its own draft.
+		repository.write(endpoint("b"), { draft: "b work", unconfirmed: null });
+		const source = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+
+		// Two retargets move the recovered row to the terminal identity.
+		resume(storage, "a", "b");
+		resume(storage, "b", "c");
+		expect(await storage.getRecovery(captured.clientMutationId)).toMatchObject({ targetRef: targetKey("c") });
+
+		// The occupied intermediate's own draft moves on first; the delayed
+		// predecessor then lands its running capture at the intermediate.
+		library.retryPendingHandoffs();
+		expect(repository.read(endpoint("c")).draft).toBe("b work");
+		expect(repository.read(endpoint("b")).unconfirmedCaptureToken).toBeDefined();
+
+		// Late command completion: the markers land at the capture's owner.
+		finish();
+		await submitted;
+		expect(repository.read(endpoint("b")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
+
+		library.retryPendingHandoffs();
+		// The settled dispositions reach the identity that owns the row...
+		expect(repository.read(endpoint("c")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
+		// ...so the already-executed command cannot be restored there.
+		expect(
+			library.open(endpoint("c")).appendEditedRecovery({
+				version: 1,
+				clientMutationId: captured.clientMutationId,
+				targetRef: targetKey("c"),
+				method: "turn/start",
+				payload: { input: [{ type: "text", text: "encoded" }] },
+				attachments: [],
+				composerText: "encoded",
+				optimisticDisplay: {},
+				intentSequence: 1,
+				createdAt: 1,
+				state: "canceled",
+				attempted: false,
+				recoveryKind: "editing",
+			}),
+		).toBe("already-restored");
+		expect(storageLedger.readGraph().edges.find((edge) => edge.from.sessionRef === "a")?.state).toBe("settled");
+	});
 });
