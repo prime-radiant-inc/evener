@@ -6,7 +6,7 @@
   font-display: swap;
 }
 
-/* Only the /comic root receives the illustration's own lettering and palette. */
+/* Only the Comic presentation receives the illustration's lettering and palette. */
 .comicRoot {
   --comic-paper: var(--surface-0);
   --comic-ink: var(--ink-hi);
@@ -16,17 +16,19 @@
   --font-sans: var(--comic-font);
   --font-prose: var(--comic-font);
   --ask-tab-font: var(--comic-font);
-  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
   background: var(--comic-paper);
   color: var(--comic-ink);
   font-family: var(--comic-font);
 }
 
-.comicRoot[data-comic-route="picker"] { height: 100dvh; overflow: auto; }
-.comicRoot[data-comic-route="session"] { display: flex; flex-direction: column; height: 100dvh; }
-.session { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
-.session > header, .controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2); }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2); }
 .reader { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
+.paneBody { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; }
 .scroll { position: relative; flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .sourcePanel { min-width: 0; display: grid; }
 
@@ -198,11 +200,6 @@
 .spotlight .stage::before { opacity: .22; }
 .spotlight .figure { height: 327px; bottom: -97px; width: 35%; left: 13%; }
 .spotlight.panel[data-comic-speaker="assistant"] .figure { left: auto; right: 13%; }
-
-@media (max-width: 899px) {
-  /* The keyboard covers the safe area; reserve their union inside the root. */
-  .comicRoot[data-comic-route="session"] { padding-bottom: max(var(--keyboard-inset, 0px), env(safe-area-inset-bottom)); }
-}
 
 @media (max-width: 760px) {
   .row { grid-template-columns: minmax(0, 1fr); gap: 12px; }

@@ -5,6 +5,39 @@ import { readComicPosition } from "./readerPosition";
 import { useComicReader } from "./useComicReader";
 
 afterEach(() => sessionStorage.clear());
+test("retained seats keep distinct semantic points across presentation unmounts", () => {
+  const a = {};
+  const b = {};
+  const firstPosition = {
+    mode: "away" as const,
+    sessionRef: "local:A",
+    path: ["child"],
+    entryId: "first",
+    offset: 12,
+    viewportOffset: 24,
+  };
+  const secondPosition = {
+    mode: "away" as const,
+    sessionRef: "local:A",
+    path: [],
+    entryId: "second",
+    offset: 5,
+    viewportOffset: 10,
+  };
+  const first = renderHook(() => useComicReader("local:A", a));
+  const second = renderHook(() => useComicReader("local:A", b));
+  act(() => first.result.current.save(firstPosition));
+  act(() => second.result.current.save(secondPosition));
+  first.unmount();
+  second.unmount();
+  const returned = renderHook(() => useComicReader("local:A", a));
+  expect(returned.result.current.position).toEqual(firstPosition);
+  returned.unmount();
+  const reloaded = renderHook(() => useComicReader("local:A", {}));
+  expect(reloaded.result.current.position).toEqual(secondPosition);
+  reloaded.unmount();
+});
+
 test("commits one standalone lifetime and retires it on ref change", () => {
   const mounted = renderHook(({ ref }) => useComicReader(ref), {
     initialProps: { ref: "local:A" },
