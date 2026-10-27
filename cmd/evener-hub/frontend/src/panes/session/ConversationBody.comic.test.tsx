@@ -532,12 +532,29 @@ test("a selected recovery owner and its structured attachment survive both modes
   view.unmount();
 });
 
-test("question answers and approvals hand off without duplicate controls or messages", async () => {
+test.each([false, true])("question answers and approvals hand off through the menu with mobile=%s", async (mobile) => {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: mobile && query === "(max-width: 899px)",
+    media: query,
+    addEventListener() {},
+    removeEventListener() {},
+  }));
+  transcriptDisplayStore.getState().setViewport(mobile ? "mobile" : "desktop");
   const geometry = installTranscriptGeometry(() => ({ width: 800, viewportHeight: 900, rowHeights: [100, 100, 400] }));
   onTestFinished(() => geometry.restore());
   const fake = await setup();
   await mount(fake);
   await waitFor(() => expect(editor()).toBeDefined());
+  const owner = lifetime();
+  const composer = owner.composer;
+  async function choosePresentation(value: "Standard" | "Comic") {
+    expect(screen.getAllByRole("button", { name: "Session actions", hidden: true })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /verbosity/i }));
+    await act(async () => fireEvent.click(screen.getByRole("radio", { name: value })));
+    expect(lifetime()).toBe(owner);
+    expect(lifetime().composer).toBe(composer);
+  }
   act(() => {
     ackAskUserCall(fake, ref, "turn-1", "ask-item", "ask-call", [
       {
@@ -564,23 +581,25 @@ test("question answers and approvals hand off without duplicate controls or mess
   });
   await act(async () => geometry.notify());
   fireEvent.click(await screen.findByRole("radio", { name: /ALPHA/ }));
-  await presentation("comic");
+  expect(document.querySelector('[contenteditable="true"]')?.closest("[hidden][inert]")).toBeInstanceOf(HTMLElement);
+  await choosePresentation("Comic");
   expect(screen.getAllByRole("radio", { name: /ALPHA/ })).toHaveLength(1);
   expect((screen.getByRole("radio", { name: /ALPHA/ }) as HTMLInputElement).checked).toBe(true);
   expect(
     within(screen.getByRole("group", { name: /sandbox approval/i })).getAllByRole("button", { name: /allow/i }),
   ).toHaveLength(1);
   expect(document.querySelector("[data-comic-composer] form")?.hasAttribute("inert")).toBe(true);
-  await presentation("standard");
+  await choosePresentation("Standard");
   expect((screen.getByRole("radio", { name: /ALPHA/ }) as HTMLInputElement).checked).toBe(true);
-  await presentation("comic");
+  expect(document.querySelector('[contenteditable="true"]')?.closest("[hidden][inert]")).toBeInstanceOf(HTMLElement);
+  await choosePresentation("Comic");
   act(() => connectionStore.setState({ state: "idle" }));
   fireEvent.click(screen.getByRole("button", { name: /send answers/i }));
   await waitFor(async () => expect(await storage.listOutbox(ref)).toHaveLength(1));
   await act(async () => {
     expect(JSON.stringify((await storage.listOutbox(ref))[0]?.payload)).toContain("ALPHA");
   });
-  await presentation("standard");
+  await choosePresentation("Standard");
   expect(screen.queryByRole("radio", { name: /ALPHA/ })).toBeNull();
   await act(async () => {
     expect(await storage.listOutbox(ref)).toHaveLength(1);
