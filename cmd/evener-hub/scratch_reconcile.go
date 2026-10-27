@@ -9,22 +9,27 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
+var scanScratchTreeRootIDs = agentsandbox.SessionScratchTreeRootIDs
+
 // reconcileArchivedScratch removes the scratch tree of every session the rail
 // files as archived, by any rule (an explicit decision, age, or an archived
 // project; pastArchived), unless the session's daemon is still running. It runs
 // after every archive and daemon exit and at startup, so it also catches
 // sessions that aged into the archive and daemons that exited while the hub
 // was down. It visits only the trees that exist, not every recorded session.
-func reconcileArchivedScratch(cfg hubcore.WebConfig, now time.Time) {
-	if cfg.Past == nil || cfg.Archive == nil {
+func reconcileArchivedScratch(ctx context.Context, cfg hubcore.WebConfig, now time.Time) {
+	if ctx.Err() != nil || cfg.Past == nil || cfg.Archive == nil {
 		return
 	}
 	decisions, err := cfg.Archive.Decisions()
-	if err != nil {
+	if err != nil || ctx.Err() != nil {
 		return
 	}
 	daemonTempDirs := recordedScratchTempDirs(cfg.Past)
-	for _, id := range agentsandbox.SessionScratchTreeRootIDs(daemonTempDirs...) {
+	for _, id := range scanScratchTreeRootIDs(ctx, daemonTempDirs...) {
+		if ctx.Err() != nil {
+			return
+		}
 		entry, known := cfg.Past.FindIndexed(id)
 		if !known {
 			continue
@@ -37,7 +42,10 @@ func reconcileArchivedScratch(cfg hubcore.WebConfig, now time.Time) {
 			}
 		}
 		// Best-effort: a tree it cannot take now is retried on the next pass.
-		if pastArchived(entry, decisions, now) {
+		if ctx.Err() != nil {
+			return
+		}
+		if pastArchived(entry, decisions, now) && ctx.Err() == nil {
 			_ = agentsandbox.RemoveSessionScratchTree(id, daemonTempDirs...)
 		}
 	}
@@ -82,7 +90,7 @@ func (r *scratchReconciler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-r.kick:
-			reconcileArchivedScratch(r.cfg, time.Now())
+			reconcileArchivedScratch(ctx, r.cfg, time.Now())
 		}
 	}
 }
