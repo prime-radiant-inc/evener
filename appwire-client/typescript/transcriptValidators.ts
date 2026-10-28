@@ -109,6 +109,7 @@ function validPosition(value: unknown): value is ThreadItemPosition {
 }
 
 const ITEM_MODEL_KEYS = new Set([
+  "authorship",
   "id",
   "turnId",
   "transcriptKey",

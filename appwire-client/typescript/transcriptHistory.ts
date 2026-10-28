@@ -609,6 +609,10 @@ export function pruneBackgroundHistoryBodies<M extends ThreadModel>(model: M): T
             turnId: item.turnId,
             type: item.type,
             text: "",
+            // Pending-question owners still need resolution boundaries when
+            // the body is absent, including the non-resolving human-note case.
+            ...(item.type === "steering" && item.source !== undefined ? { source: item.source } : {}),
+            ...(item.type === "steering" && item.steeringKind !== undefined ? { steeringKind: item.steeringKind } : {}),
             ...(item.transcriptKey === undefined ? {} : { transcriptKey: item.transcriptKey }),
             ...(item.position === undefined ? {} : { position: { ...item.position } }),
             ...(item.version === undefined ? {} : { version: item.version }),

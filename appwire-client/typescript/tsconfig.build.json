@@ -137,6 +137,8 @@
     "state/credentials/authStatuses.ts",
     "state/credentials/index.ts",
     "state/credentials/instances.ts",
+    "state/credentials/listing.ts",
+    "state/refetchDebounce.ts",
     "state/extensions/index.ts",
     "state/extensions/hubWriteGate.ts",
     "state/extensions/keyedRevision.ts",

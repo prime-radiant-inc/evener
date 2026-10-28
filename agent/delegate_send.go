@@ -371,7 +371,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		s.sendersWG.Done()
 		return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, err, nil)
 	}
-	if err := runtime.preseedInput(sub.sess, message, started.transcriptPath); err != nil {
+	if err := runtime.preseedInput(sub.sess, message, started.transcriptPath, s.transcriptAuthor()); err != nil {
 		plans, completeErr := s.delegateController.CompleteStartInput(claim, false, delegatePermanentStartFailure(err, "input_persist_failed"))
 		s.sendersWG.Done()
 		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, errors.Join(err, completeErr), nil)

@@ -1,10 +1,12 @@
 // Wire-item hydration: image mapping, text-presence and identity-only marks,
 // stable-delegate helpers, and the wire-to-model item conversions. A leaf over
-// `model`, `stableDelegate` and `types.gen`.
+// model types, identity validation and generated wire types.
 
 import { pendingTextJoined } from "./chunkview";
 import type { ItemImage, ItemModel, ThreadModel, TurnModel } from "./model";
 import { joinDelegateState, revisionOf } from "./stableDelegate";
+import { isValidTranscriptRef } from "./steeringNotifications";
+import { isRecord } from "./transcriptValidators";
 import type {
   EvenerDelegateInfo,
   InputItem,
@@ -12,6 +14,7 @@ import type {
   Thread,
   ThreadItem,
   ThreadReadResponse,
+  TranscriptAuthorship,
   Turn,
 } from "./types.gen";
 
@@ -248,6 +251,7 @@ export function markItemIdentityOnly(item: ItemModel): ItemModel {
 // fresh side's own property wins, even when its value is undefined), where
 // the property's presence — read below — is the absence marker.
 export const itemNullishMergedFields = new Set([
+  "authorship",
   "position",
   "toolName",
   "callId",
@@ -309,6 +313,57 @@ export function itemIsIdentityOnly(item: ItemModel): boolean {
   });
 }
 
+export function normalizeAuthorship(value: unknown): TranscriptAuthorship | undefined {
+  if (!isRecord(value) || typeof value.inherited !== "boolean") return undefined;
+  const neutral: TranscriptAuthorship = { author: { kind: "unknown" }, inherited: value.inherited };
+  const author = value.author;
+  if (!isRecord(author)) return neutral;
+  const { kind, sessionRef, ownerRef, delegateId, delegateName } = author;
+  if (kind === "human" || kind === "system" || kind === "unknown") {
+    if ([sessionRef, ownerRef, delegateId, delegateName].some((field) => field !== undefined && field !== "")) {
+      return neutral;
+    }
+    return { author: { kind }, inherited: value.inherited };
+  }
+  const validRef = (ref: unknown): ref is string => typeof ref === "string" && isValidTranscriptRef(ref);
+  if (kind !== "agent" || !validRef(sessionRef)) return neutral;
+  const hasOwner = ownerRef !== undefined && ownerRef !== "";
+  const hasDelegate = delegateId !== undefined && delegateId !== "";
+  if (hasOwner !== hasDelegate) return neutral;
+  if (
+    hasOwner &&
+    (!validRef(ownerRef) ||
+      typeof delegateId !== "string" ||
+      !/^dlg_[A-Za-z0-9._~-]+$/.test(delegateId) ||
+      delegateId.includes(".."))
+  )
+    return neutral;
+  if (delegateName !== undefined && (typeof delegateName !== "string" || (delegateName !== "" && !hasDelegate)))
+    return neutral;
+  let boundedName = "";
+  if (typeof delegateName === "string") {
+    const runes: string[] = [];
+    for (const rune of delegateName) {
+      if (runes.length === 200) {
+        runes[199] = "…";
+        break;
+      }
+      runes.push(rune);
+    }
+    boundedName = runes.join("");
+  }
+  return {
+    author: {
+      kind,
+      sessionRef,
+      ...(typeof ownerRef === "string" && ownerRef !== "" ? { ownerRef } : {}),
+      ...(typeof delegateId === "string" && delegateId !== "" ? { delegateId } : {}),
+      ...(boundedName !== "" ? { delegateName: boundedName } : {}),
+    },
+    inherited: value.inherited,
+  };
+}
+
 // imageSessionRoute threads through wireItemToModel/wireToTurnModel from the
 // callers that can name the serving session — hydrateThread's wire
 // thread.sessionId (falling back to the thread id, mirroring
@@ -343,6 +398,8 @@ export function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): I
     startedAt: epochMsToISO(item.startedAt),
     completedAt: epochMsToISO(item.completedAt),
   };
+  const authorship = normalizeAuthorship(item.authorship);
+  if (authorship !== undefined) model.authorship = authorship;
   setItemTextPresence(model, item.text === undefined ? "omitted" : "provided");
   if (item.transcriptKey !== undefined) model.transcriptKey = item.transcriptKey;
   if (item.position !== undefined) model.position = { ...item.position };

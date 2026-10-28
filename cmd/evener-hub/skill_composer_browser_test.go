@@ -636,12 +636,13 @@ func skillGuardSessionRef(entry rendezvous.Entry) string {
 }
 
 type skillGuardHelper struct {
-	cmd      *exec.Cmd
-	logPath  string
-	control  string
-	stopOnce sync.Once
-	waitOnce sync.Once
-	waitDone chan error
+	cmd            *exec.Cmd
+	logPath        string
+	control        string
+	stopOnce       sync.Once
+	waitOnce       sync.Once
+	waitDone       chan error
+	productionWait bool
 }
 
 // wait returns the one shared cmd.Wait result. A raw second cmd.Wait fails
@@ -652,7 +653,16 @@ func (h *skillGuardHelper) wait() <-chan error {
 	h.waitOnce.Do(func() {
 		h.waitDone = make(chan error, 1)
 		go func() {
-			h.waitDone <- h.cmd.Wait()
+			if h.productionWait {
+				// HubSpawner owns cmd.Wait. Observe its reaping, as the onboarding
+				// guard does, rather than racing it with a second Wait call.
+				for h.cmd.Process != nil && !errors.Is(h.cmd.Process.Signal(syscall.Signal(0)), os.ErrProcessDone) {
+					time.Sleep(10 * time.Millisecond)
+				}
+				h.waitDone <- nil
+			} else {
+				h.waitDone <- h.cmd.Wait()
+			}
 			// Close after the one send: the first receiver gets the real
 			// error, every later receiver (the cleanup fallback) gets the
 			// zero value immediately instead of blocking forever on a drained
@@ -710,13 +720,51 @@ func skillGuardStartHelper(t *testing.T, fixture *skillGuardFixture, index int) 
 	if index == 1 {
 		name = "beta"
 	}
+	cmd, helper := skillGuardHelperCommand(t, fixture, index, name, nil, os.Environ())
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper %s: %v", name, err)
+	}
+	skillGuardHelperMu.Lock()
+	skillGuardHelpers[index] = helper
+	skillGuardHelperMu.Unlock()
+
+	// Wait for this helper's own real rendezvous registration, never first-found.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, err := rendezvous.List(fixture.runDir)
+		if err == nil {
+			for _, e := range entries {
+				if e.PID == cmd.Process.Pid && e.Address != "" && e.SessionID != "" {
+					return e
+				}
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("helper %s never registered its rendezvous entry (log: %s)", name, helper.logPath)
+	return rendezvous.Entry{}
+}
+
+// skillGuardHelperCommand prepares one generation; the caller starts it. A
+// production launch keeps resolved args/env and HubSpawner's sole Wait owner.
+func skillGuardHelperCommand(t *testing.T, fixture *skillGuardFixture, index int, name string, serveArgs, env []string) (*exec.Cmd, *skillGuardHelper) {
+	t.Helper()
+	control, requestLog := fixture.control[index], fixture.requestLog[index]
+	if len(serveArgs) > 0 {
+		control = filepath.Join(fixture.artifact, name+"-control.jsonl")
+		requestLog = filepath.Join(fixture.artifact, name+"-requests.jsonl")
+		if err := os.WriteFile(control, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cfgPath := filepath.Join(fixture.artifact, fmt.Sprintf("helper-%s-config.json", name))
-	cfg, err := json.Marshal(map[string]string{
+	cfg, err := json.Marshal(map[string]any{
 		"workDir":     fixture.workDir[index],
 		"stateDir":    fixture.stateDir[index],
 		"runDir":      fixture.runDir,
-		"requestLog":  fixture.requestLog[index],
-		"controlPath": fixture.control[index],
+		"requestLog":  requestLog,
+		"controlPath": control,
+		"serveArgs":   serveArgs,
 	})
 	if err != nil {
 		t.Fatalf("marshal helper config: %v", err)
@@ -732,15 +780,8 @@ func skillGuardStartHelper(t *testing.T, fixture *skillGuardFixture, index int) 
 	cmd := exec.Command(fixture.helperBin, "-test.run", "^TestSkillBrowserDaemonHelper$", "-skill-browser-config="+cfgPath)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.Env = os.Environ()
-	if err := cmd.Start(); err != nil {
-		logFile.Close()
-		t.Fatalf("start helper %s: %v", name, err)
-	}
-	skillGuardHelperMu.Lock()
-	skillGuardHelpers[index] = &skillGuardHelper{cmd: cmd, logPath: logPath, control: fixture.control[index]}
-	helper := skillGuardHelpers[index]
-	skillGuardHelperMu.Unlock()
+	cmd.Env = env
+	helper := &skillGuardHelper{cmd: cmd, logPath: logPath, control: control, productionWait: len(serveArgs) > 0}
 	// Failure paths that abort before the explicit stop loop must not leak the
 	// helper daemon: cleanup stops it too (a no-op when the explicit stop
 	// already ran) before the log is closed.
@@ -750,23 +791,7 @@ func skillGuardStartHelper(t *testing.T, fixture *skillGuardFixture, index int) 
 		}
 		_ = logFile.Close()
 	})
-
-	// Wait for this helper's own rendezvous registration (real registration,
-	// not a synthetic one).
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		entries, err := rendezvous.List(fixture.runDir)
-		if err == nil {
-			for _, e := range entries {
-				if e.PID == cmd.Process.Pid && e.Address != "" && e.SessionID != "" {
-					return e
-				}
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatalf("helper %s never registered its rendezvous entry (log: %s)", name, logPath)
-	return rendezvous.Entry{}
+	return cmd, helper
 }
 
 func skillGuardStopHelper(t *testing.T, index int) {

@@ -30,6 +30,7 @@ import {
   activityThread,
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import { readDraft } from "../session/composer/draft";
 import { replaceEditorText } from "../session/testing/editor";
@@ -55,6 +56,7 @@ beforeEach(() => {
   resetNavigationStoreForTests();
   resetWorkspaceStoreForTests();
   resetTranscriptViewRegistryForTests();
+  resetTranscriptDisplayStoreForTests();
   height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 500 });
 });
@@ -249,6 +251,52 @@ function inspectedCascade() {
   recordCascadeOrigin(inspector, source);
   return { source, inspector };
 }
+
+test.each(["loading", "deleted"])("a %s nested seat keeps its presentation return control", async (state) => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const { fake, response } = fixture();
+  const pending = deferred<ThreadReadResponse>();
+  fake.on("thread/read", ({ ref, requestGeneration }) => {
+    if (ref === "child") {
+      if (state === "loading") return pending.promise;
+      throw new WireError("child deleted", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    }
+    return { ...response(ref!), requestGeneration };
+  });
+  transcriptDisplayStore.getState().setPresentation("desktop", "comic");
+  mount(fake);
+  await waitFor(() =>
+    expect(document.querySelector('[data-comic-session="root"] [data-comic-text]')?.textContent).toBe(
+      "root content old-root",
+    ),
+  );
+  if (state === "deleted") await waitFor(() => expect(threadsStore.getState().deletedRefs.has("child")).toBe(true));
+  const pane = currentPane();
+  const lifetime = conversationPaneLifetime(pane);
+  const source = lifetime.composers.get("child");
+  expect(source).toBeDefined();
+  const url = window.location.href;
+  const child = cascadeScope("child", "cascade-column");
+  fireEvent.click(within(child).getByRole("button", { name: "Verbosity" }));
+  await act(async () => fireEvent.click(screen.getByRole("radio", { name: "Standard" })));
+  expect(transcriptDisplayStore.getState().presentation.desktop).toBe("standard");
+  expect(currentPane()).toBe(pane);
+  expect(conversationPaneLifetime(currentPane()).composers.get("child")).toBe(source);
+  expect(window.location.href).toBe(url);
+  expect(cascadeScope("child", "cascade-column").querySelector("[data-comic-font]")).toBeNull();
+  expect(within(cascadeScope("child", "cascade-column")).getByRole("button", { name: "Verbosity" })).toBeTruthy();
+});
 
 test("genuine cascade column movement supersedes reflow without Return or neighboring movement", async () => {
   const { fake, response } = fixture();

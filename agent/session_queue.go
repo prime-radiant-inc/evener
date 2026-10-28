@@ -982,6 +982,9 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 	t.CommandInput = commandInput
 	t.Message = appendSelectedCommands(t.Message, commandInput, commandBodies)
 	t.SteeringSource = msg.Source
+	if msg.Source == events.SteeringSourceUser {
+		t.Authorship = humanTranscriptAuthorship()
+	}
 	t.SteeringKind = msg.Kind
 	t.ClientMutationID = msg.ClientMutationID
 	t.StableTurnID = msg.StableTurnID

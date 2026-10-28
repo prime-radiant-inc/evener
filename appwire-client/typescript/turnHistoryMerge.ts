@@ -433,6 +433,7 @@ function mergePageItem(older: ItemModel, newer: ItemModel): ItemModel {
     mergeItemIdentityMetadata(older, {
       ...older,
       ...newer,
+      authorship: newer.authorship ?? older.authorship,
       text: textSource.text,
       toolName: newer.toolName ?? older.toolName,
       callId: newer.callId ?? older.callId,

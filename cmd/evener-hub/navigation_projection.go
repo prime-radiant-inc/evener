@@ -1231,6 +1231,7 @@ func navigationAliasLocation(id, kind string, root hubapi.NavigationSessionLocat
 		Revision:     root.Revision,
 		Ref:          ref.String(),
 		TopLevelRef:  root.TopLevelRef,
+		TopLevel:     kind == "session",
 		Catalog:      root.Catalog,
 		ProjectKey:   root.ProjectKey,
 		Tier:         root.Tier,

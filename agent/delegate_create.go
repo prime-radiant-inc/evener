@@ -255,7 +255,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if err != nil {
 		return createResult(runtime.failAdoptedStart(started, isolation, prepared, err, "input_admission_failed"))
 	}
-	preseedErr := runtime.preseedInput(prepared.sub.sess, task, started.transcriptPath)
+	preseedErr := runtime.preseedInput(prepared.sub.sess, task, started.transcriptPath, s.transcriptAuthor())
 	if preseedErr != nil {
 		finish := delegatePermanentStartFailure(preseedErr, "input_persist_failed")
 		plans, completeErr := s.delegateController.CompleteStartInput(claim, false, finish)
@@ -670,7 +670,7 @@ func (runtime delegateRuntime) adopt(prepared *preparedSubagentRun) error {
 	return nil
 }
 
-func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPath string) error {
+func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPath string, author schema.TranscriptAuthor) error {
 	if err := child.maybeAppendEnvironmentContext(); err != nil {
 		return fmt.Errorf("append environment context: %w", err)
 	}
@@ -678,7 +678,12 @@ func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPat
 	if observer := child.cfg.testOnly.delegateInitialInputAppend; observer != nil {
 		observer(child)
 	}
-	if err := child.appendTurnWithSyncedTranscriptMessage(schema.TurnUserInput, message, message); err != nil {
+	turn := schema.NewTurn(schema.TurnUserInput, message)
+	turn.Authorship = &schema.TranscriptAuthorship{Author: author}
+	if err := child.appendTurnAfterTranscriptWrite(turn,
+		func() error { return child.writeTranscriptSyncedLocked(turn) },
+		func() { child.history = append(child.history, turn) },
+	); err != nil {
 		return err
 	}
 	data, err := readStrictChildTranscript(transcriptPath, child.stateDir, child.ID(), child.strictTranscriptMaxLineBytes)
