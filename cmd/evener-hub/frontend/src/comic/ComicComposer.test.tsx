@@ -470,6 +470,61 @@ test("IME confirmation never submits and keyboard reads the current enterToSend 
   await waitFor(async () => expect(await storage.listOutbox(ref)).toHaveLength(1));
 });
 
+test.each(["keyboard", "button"] as const)(
+  "question interruption without compositionend restores %s submission",
+  async (control) => {
+    const fake = await setup("active", true);
+    const publishPending = (askPending: boolean) =>
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { ref, threadId: `thread-${ref}`, status: { type: askPending ? "awaiting" : "idle" }, askPending },
+      });
+    act(() => publishPending(false));
+    const source = sourceFor();
+    render(<ComicComposer source={source} />);
+    await settle(source);
+    act(() => connectionStore.setState({ state: "idle" }));
+    const message = editor();
+    const text = "INTERRUPTED_IME_DRAFT";
+    replaceEditorText(message, text);
+    const submit = () => {
+      if (control === "keyboard") fireEvent.keyDown(message, { key: "Enter", ctrlKey: true });
+      else fireEvent.click(screen.getByTestId("composer-submit"));
+    };
+    fireEvent.compositionStart(message);
+    submit();
+    await settle(source);
+    expect(await storage.listOutbox(ref)).toEqual([]);
+    expect(source.getSnapshot().text).toBe(text);
+
+    act(() => publishPending(true));
+    expect(askDockStore.getState().byRef.get(ref)?.batches).toHaveLength(1);
+    expect(message.closest("[hidden][inert]")).not.toBeNull();
+    expect(readComposerDraft(ref).text).toBe(text);
+    // The hidden form receives no compositionend before the question resolves.
+    act(() => publishPending(false));
+    expect(askDockStore.getState().byRef.get(ref)?.batches ?? []).toEqual([]);
+    expect(message.closest("[hidden], [inert]")).toBeNull();
+    expect(editor()).toBe(message);
+    expect(message.textContent).toBe(text);
+    // Returning to the editor also clears ProseMirror's own composition state.
+    fireEvent.mouseDown(message);
+    fireEvent.mouseUp(message);
+    submit();
+    await waitFor(async () => expect(await storage.listOutbox(ref)).toHaveLength(1));
+    expect(await storage.listOutbox(ref)).toMatchObject([
+      {
+        method: "turn/start",
+        payload: { ref, input: [{ type: "text", text }] },
+        clientMutationId: expect.any(String),
+      },
+    ]);
+    await waitFor(() => expect(message.textContent).toBe(""));
+    expect(source.getSnapshot().text).toBe("");
+    expect(readComposerDraft(ref).text).toBe("");
+  },
+);
+
 test("Send and Stop are distinct controls with the existing activation delay", async () => {
   const fake = await setup("active");
   fake.on("turn/interrupt", (p) => ({

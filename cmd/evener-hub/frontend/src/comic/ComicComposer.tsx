@@ -48,6 +48,10 @@ export function ComicComposer({
   const editor = useRef<SkillEditorHandle>(null);
   const mounted = useRef(false);
   const composing = useRef(false);
+  useEffect(() => {
+    // Hiding the editor for a question may prevent compositionend from firing.
+    if (askPending) composing.current = false;
+  }, [askPending]);
   const cursor = useRef<number | null>(null);
   const [cursorEpoch, setCursorEpoch] = useState(0);
   const restoreCursor = useCallback((position: number) => {
