@@ -1,16 +1,22 @@
 package agent
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 func newTimerTestJM(t *testing.T) (*jobManager, *agenttest.FakeClock, chan jobNotification) {
@@ -680,55 +686,265 @@ func TestConditionFireBudget_OneChunkStopsAtTheBudget(t *testing.T) {
 
 // TestConditionFireBudget_TeardownLeavesAConcurrentClearsConfigAlone pins who
 // owns a config when a model-requested clear lands on the same key while the
-// over-budget teardown is persisting. The clear detaches the config and drops
-// its frames under its own rejecting mark; the budget teardown then finds the
-// key gone. Releasing that config anyway — clearing the mark, parking it for
-// flush — would hand a config that belongs to neither jm.watches nor
-// terminalFlush back to a fire that is still in flight.
+// over-budget teardown is persisting. The competing clear owns removal, but
+// both already-produced obligations must survive it, recover canonical custody
+// and reach a successful provider response exactly once without another firing.
 //
 // The append seam drives the race deterministically: the concurrent clear runs
 // inside the durable append of the budget teardown's own cleared event, which is
 // exactly the window between the mark and the detach.
 func TestConditionFireBudget_TeardownLeavesAConcurrentClearsConfigAlone(t *testing.T) {
 	t.Parallel()
-	jm := newTestJM(t)
-	jm.enqueue = func(jobNotification) {}
-	cfg := installCallerSendWatchWithPending(t, jm)
-	key := watchKey{
-		VisibleSessionID: jm.sessionID,
-		Target:           runtimeMessageAliasCaller,
-		SendTo:           runtimeMessageAliasCaller,
+	adapter := finiteUpdateAdapter(t)
+	gate := make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	adapter.finiteScript("root", updateGate(gate, updateReply(finalResponse("clear-receipt-83"))))
+	clock := agenttest.NewFakeClock()
+	s := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
+		cfg.clock = clock
+		cfg.ForceRealIO = true
+	})
+	jm := s.jobManager
+	ctx, cancel := context.WithCancel(context.Background())
+	var processDone chan struct{}
+	fs := &watchOrderingWriteFS{Fs: afero.NewOsFs()}
+	realAppendEvents := jm.appendEvents
+	// Release and join before the fixture closes the real controller and writer,
+	// including on an assertion failure while the provider response is held.
+	t.Cleanup(func() {
+		cancel()
+		release()
+		if processDone != nil {
+			<-processDone
+		}
+		fs.blocked.Store(false)
+		jm.appendEvents = realAppendEvents
+	})
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatal(err)
+	}
+	writer, entries, err := transcript.OpenWriterForSessionWithFS(fs, s.TranscriptPath(), s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.TrackFailures(entries, s.fork.divergence)
+	s.attachTranscript(writer)
+	fs.blocked.Store(true) // Refuse custody before writing any watch bytes.
+	args := watchArgs{
+		Source: "self", Target: runtimeMessageAliasCaller, Events: []string{"communicate"},
+		Send: &watchSendArgs{To: runtimeMessageAliasCaller, Message: "clear-payload-83"},
+		Note: "clear-note-83",
+	}
+	res, err := jm.configureWatch(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jm.mu.Lock()
+	key, cfg, ok := jm.watchConfigByIDLocked(res.WatchID)
+	jm.mu.Unlock()
+	if !ok {
+		t.Fatal("missing live registration")
 	}
 
-	realAppendEvents := jm.appendEvents
 	won := false
-	jm.appendEvents = func(events []jobstore.Event) error {
-		for _, event := range events {
-			if event.Kind != jobstore.EventWatchCleared || won {
+	var clearResult watchResult
+	var clearErr error
+	var liveBeforeClear, liveAfterClear bool
+	jm.appendEvents = func(batch []jobstore.Event) error {
+		for _, event := range batch {
+			if event.Kind != jobstore.EventWatchCleared || event.WatchID != res.WatchID || event.Watch == nil || event.Watch.EndReason != "budget_exhausted" || won {
 				continue
 			}
 			won = true
-			if _, err := jm.clearWatchByID(cfg.watchID); err != nil {
-				t.Errorf("concurrent clear: %v", err)
-			}
+			jm.mu.Lock()
+			liveBeforeClear = jm.watches[key] == cfg
+			jm.mu.Unlock()
+			clearResult, clearErr = jm.clearWatchByID(cfg.watchID)
+			jm.mu.Lock()
+			liveAfterClear = jm.watches[key] == cfg
+			jm.mu.Unlock()
 		}
-		return realAppendEvents(events)
+		return realAppendEvents(batch)
 	}
-	for range watchDeliveryBudget - 1 {
+	for range watchDeliveryBudget {
 		onSessionEventKD(jm, events.EventCommunicate, nil)
 	}
 	jm.appendEvents = realAppendEvents
-	if !won {
-		t.Fatal("the concurrent clear never ran; the budget teardown did not persist a cleared event")
+	if !won || !liveBeforeClear || liveAfterClear || clearErr != nil || clearResult.WatchID != res.WatchID || clearResult.Watching {
+		t.Fatalf("competing clear: ran=%t live before/after=%t/%t result=%+v error=%v", won, liveBeforeClear, liveAfterClear, clearResult, clearErr)
 	}
 
 	jm.mu.Lock()
 	live, rejecting, parked, pending := jm.watches[key] == cfg, cfg.rejectingDelivery, jm.terminalFlush[cfg], len(cfg.pending)
+	fires := cfg.conditionFires
 	jm.mu.Unlock()
-	if live || !rejecting || parked || pending != 0 {
-		t.Fatalf("after a clear won the key = live:%t rejecting:%t parked:%t pending:%d, want the clear's own dropped-and-rejecting config, untouched by the budget teardown",
-			live, rejecting, parked, pending)
+	if live || rejecting || !parked || pending != 2 || fires != watchDeliveryBudget || jm.watchCount() != 0 {
+		t.Fatalf("after competing clear: live=%t rejecting=%t parked=%t pending=%d fires=%d", live, rejecting, parked, pending, fires)
 	}
+	clears := producerSourceEvents(t, jm, jobstore.EventWatchCleared)
+	if len(clears) != 2 || clears[0].Watch.EndReason != "cleared" || clears[1].Watch.EndReason != "budget_exhausted" || clears[0].WatchID != res.WatchID || clears[1].WatchID != res.WatchID {
+		t.Fatalf("clear append ordering=%+v, want competing clear before budget append", clears)
+	}
+	produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+	if len(produced) != watchDeliveryBudget+1 {
+		t.Fatalf("produced versions=%d, want fifty firings and one budget notice", len(produced))
+	}
+	firing, notice := *produced[watchDeliveryBudget-1].WatchSend, *produced[watchDeliveryBudget].WatchSend
+	wantKey := jobstore.WatchSendKey{VisibleSessionID: s.ID(), WatchID: res.WatchID, WatchTarget: runtimeMessageAliasCaller,
+		ResolvedWatchedIdentity: runtimeMessageAliasCaller, ResolvedSendTo: runtimeMessageAliasCaller, WatchGeneration: cfg.generation}
+	noticeKey := wantKey
+	noticeKey.ResolvedWatchedIdentity = ""
+	if firing.Key != wantKey || notice.Key != noticeKey || firing.DeliveryID == "" || notice.DeliveryID == "" || firing.DeliveryID == notice.DeliveryID || firing.UpdateSeq != watchDeliveryBudget || notice.UpdateSeq != watchDeliveryBudget+1 || firing.CoalescedCount != watchDeliveryBudget-1 || notice.CoalescedCount != 0 || firing.CallbackFrame || !notice.CallbackFrame || notice.EndNotice || notice.TriggerReason != "budget_exhausted" {
+		t.Fatalf("distinct retained firing/notice identities: firing=%+v notice=%+v", firing, notice)
+	}
+	states := []jobstore.WatchSendState{firing, notice}
+	ids := make([]string, 0, 2)
+	for _, state := range states {
+		if state.ReceiverSessionID != s.ID() || state.ReceiverDelegateID != "" {
+			t.Fatalf("wrong intended destination: %+v", state)
+		}
+		ids = append(ids, fmt.Sprintf("watch:%s:%d", state.DeliveryID, state.UpdateSeq))
+		requireWatchSettlement(t, jm, state, 0)
+	}
+	if err := jm.dispatchProducedWatchSendsFrom(jm.store.LoadWatchSends); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("receiver outage error=%v, want filesystem permission refusal", err)
+	}
+	if fs.rejected.Load() == 0 || producerRecordCount(t, s) != 0 || len(adapter.requestsFor("root")) != 0 {
+		t.Fatal("receiver outage did not precede canonical acceptance and provider execution")
+	}
+	if err := watchUnobservedError(readAttentionTranscriptEntries(t, s.TranscriptPath()), ids, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	wake := make(chan struct{}, 1)
+	s.SetNotifyFunc(func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	})
+	fs.blocked.Store(false)
+	// Only the already-armed transport retry runs, with no new input or firing.
+	clock.Advance(jobNotificationRetryInitialDelay)
+	clock.Drain()
+	awaitSignal(t, wake, "canonical receiver wake after storage recovery")
+	for _, state := range states {
+		requireWatchSettlement(t, jm, state, 1)
+	}
+	if jm.hasPendingWatchSends() || producerRecordCount(t, s) != 2 || len(adapter.requestsFor("root")) != 0 {
+		t.Fatal("recovery did not transfer exactly both obligations before model execution")
+	}
+	if err := watchUnobservedError(readAttentionTranscriptEntries(t, s.TranscriptPath()), ids, 1); err != nil {
+		t.Fatal(err)
+	}
+	canonical := make(map[string]string)
+	for _, entry := range readAttentionTranscriptEntries(t, s.TranscriptPath()) {
+		if entry.Turn.AttentionID != "" {
+			canonical[entry.Turn.AttentionID] = entry.Turn.Message.Text()
+		}
+	}
+	for i, state := range states {
+		// Compare the transported whole payload, not hardcoded notification copy.
+		// Explicit sends omit their transport-only delivery_id line at custody.
+		want := strings.ReplaceAll(state.Frame, "delivery_id: "+state.DeliveryID+"\n", "")
+		if canonical[ids[i]] != want {
+			t.Fatalf("canonical payload differs from retained source %s", ids[i])
+		}
+	}
+	processed := make(chan error, 1)
+	processDone = make(chan struct{})
+	go func() {
+		defer close(processDone)
+		_, err := s.ProcessInputKind(ctx, "", nil, EntryNotification)
+		processed <- err
+	}()
+	request := adapter.waitForRequests(t, "root", 1)[0]
+	for _, id := range ids {
+		matches := 0
+		for _, msg := range request.Messages {
+			if msg.Role == llm.RoleUser && canonical[id] != "" && strings.Contains(msg.Text(), canonical[id]) {
+				matches++
+			}
+		}
+		if matches != 1 {
+			t.Fatalf("presenting request contains canonical ID %s in %d messages, want one", id, matches)
+		}
+	}
+	if !requestMessagesContainText(request.Messages, args.Send.Message) || !requestMessagesContainText(request.Messages, args.Note) {
+		t.Fatal("presenting request lost caller-supplied send payload or note")
+	}
+	if err := watchUnobservedError(readAttentionTranscriptEntries(t, s.TranscriptPath()), ids, 1); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if err := <-processed; err != nil {
+		t.Fatal(err)
+	}
+	<-processDone
+	adapter.mu.Lock()
+	responses := append([]llm.Response(nil), adapter.answered["root"]...)
+	adapter.mu.Unlock()
+	if len(responses) != 1 || responses[0].ID == "" || len(adapter.requestsFor("root")) != 1 {
+		t.Fatal("expected exactly one successful presenting response")
+	}
+	finished := readAttentionTranscriptEntries(t, s.TranscriptPath())
+	if err := watchResponseCoverageError(finished, responses[0].ID, ids); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		if err := incidentCustodyError(finished, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertNotificationPending(t, s, []string{})
+	// Neither a matching event after clear nor repeated transport can resurrect
+	// the registration, produce condition 51, or duplicate custody/observation.
+	onSessionEventKD(jm, events.EventCommunicate, nil)
+	clock.Advance(jobNotificationRetryMaxDelay)
+	clock.Drain()
+	if err := jm.dispatchProducedWatchSendsFrom(jm.store.LoadWatchSends); err != nil {
+		t.Fatal(err)
+	}
+	jm.mu.Lock()
+	_, _, live = jm.watchConfigByIDLocked(res.WatchID)
+	fires = cfg.conditionFires
+	jm.mu.Unlock()
+	if live || jm.watchCount() != 0 || fires != watchDeliveryBudget || len(producerSourceEvents(t, jm, jobstore.EventWatchSendPending)) != len(produced) || len(producerSourceEvents(t, jm, jobstore.EventWatchCleared)) != len(clears) || jm.hasPendingWatchSends() || producerRecordCount(t, s) != 2 || len(adapter.requestsFor("root")) != 1 {
+		t.Fatal("post-clear event or transport retry resurrected, fired, lost or duplicated an obligation")
+	}
+	for _, state := range states {
+		requireWatchSettlement(t, jm, state, 1)
+	}
+	acks := producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)
+	drops := producerSourceEvents(t, jm, jobstore.EventWatchSendDropped)
+	if len(acks) != 2 || len(drops) != watchDeliveryBudget-1 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendEvicted)) != 0 {
+		t.Fatal("source did not acknowledge exactly both retained obligations without loss")
+	}
+	// Only the unaccepted coalesced predecessors may be discarded. Neither
+	// retained head may be mistaken for one of those superseded versions.
+	for _, old := range produced[:watchDeliveryBudget-1] {
+		matched := 0
+		for _, drop := range drops {
+			if drop.WatchSend != nil && drop.WatchSend.Key == old.WatchSend.Key && drop.WatchSend.DeliveryID == old.WatchSend.DeliveryID && drop.WatchSend.UpdateSeq == old.WatchSend.UpdateSeq {
+				matched++
+			}
+		}
+		if matched != 1 {
+			t.Fatalf("superseded version %s:%d dropped %d times, want once", old.WatchSend.DeliveryID, old.WatchSend.UpdateSeq, matched)
+		}
+	}
+	for _, ack := range acks {
+		matched := false
+		for _, state := range states {
+			if ack.WatchSend != nil && ack.WatchSend.Key == state.Key && ack.WatchSend.DeliveryID == state.DeliveryID && ack.WatchSend.UpdateSeq == state.UpdateSeq {
+				matched = true
+			}
+		}
+		if !matched {
+			t.Fatalf("source acknowledged an unexpected key or payload version: %+v", ack.WatchSend)
+		}
+	}
+	t.Logf("competing clear removed live key before budget append returned, firing=%s:%d notice=%s:%d, recovered custody=2 acknowledgements=2, response=%s observed both once", firing.DeliveryID, firing.UpdateSeq, notice.DeliveryID, notice.UpdateSeq, responses[0].ID)
 }
 
 // TestConditionFireBudget_MatchDuringTeardownIsRefused pins the breaker against
