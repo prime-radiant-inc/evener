@@ -6,7 +6,7 @@ import { validConsumedClientMutationIds } from "./dispatcher";
 export function notificationMutationIdentities(n: AnyNotification): string[] {
   if (n.method === "thread/queueChanged") {
     // consumedClientMutationIds names what THIS push's drain took off the
-    // queue (issue #1704); it settles by the same positive-evidence rule as
+    // queue; it settles by the same positive-evidence rule as
     // the ids still queued.
     return [
       ...(n.params.queue.clientMutationIds ?? []),

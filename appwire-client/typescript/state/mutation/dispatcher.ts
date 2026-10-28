@@ -8,10 +8,9 @@
 // serialized dispatch per target ref (a second submission for the same thread
 // waits rather than racing), a receipt reconciled into storage before the next
 // attempt, a terminal refusal turned into a recovery record with the daemon's
-// own reason, a transient backpressure refusal kept queued for a later event
-// (#4342), and an outcome nobody can vouch for left blockedUnknown — never
-// retried until an authoritative read has settled it (#1116's standing
-// decision).
+// own reason, a transient backpressure refusal kept queued for a later event,
+// and an outcome nobody can vouch for left blockedUnknown — never
+// retried until an authoritative read has settled it.
 //
 // Everything host-shaped is a parameter: the storage is D26's
 // MutationOutboxStorage port, and the surfaces that react to an outcome
@@ -60,7 +59,7 @@ export interface MutationDispatcherOptions<A extends MutationAttachmentRef = Mut
   getClient: MutationDispatchClientLookup;
   onStorageChange?: (targetRefs: string[], cause?: MutationStorageChangeCause) => void;
   onBlockedMutation?: (targetRef: string, client: AppwireClientLike) => void;
-  // #4342: fired when the hub refused an attempt in band as transient
+  // Fired when the hub refused an attempt in band as transient
   // backpressure (notAccepted plus an automatic retry disposition) — the
   // record stays queued and this callback owns surfacing the busy state and
   // pacing the next attempt. The error is the hub's own refusal, so a host
@@ -246,7 +245,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         // forwarding, appwire.InvalidParams, which names no clientMutationId)
         // — an identical retry can never succeed. Retaining "submitting"
         // here turned one malformed intent at the FIFO head into a
-        // permanently parked thread (kata wr3s). Recovery preserves the text
+        // permanently parked thread. Recovery preserves the text
         // and surfaces the failure; the FIFO advances.
         if (data?.clientMutationId === undefined && refusedBeforeRunning(error)) {
           await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data));
@@ -256,7 +255,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         return "stop";
       }
       if (data?.mutationOutcome === "notAccepted" && data.retryDisposition === "automatic") {
-        // #4342: the hub refused the attempt in band without queueing it —
+        // The hub refused the attempt in band without queueing it —
         // this attempt never reached the queue, so it stays rolled back in
         // the FIFO while any earlier or concurrent unresolved attempt's
         // evidence survives. The busy surface and the pacing arm only when
@@ -339,7 +338,7 @@ export const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set(
 // error message, then nothing -- a row with no reason is still better than a
 // row that claims a reason it does not have.
 //
-// This is the storage side of kata 2f41. A refused Steer or Stop rendered as a
+// This is the storage side of surfacing refusals. A refused Steer or Stop rendered as a
 // bare recovery row is indistinguishable from a queued one, which is how five
 // rejections in a mutation journal produced nothing on screen.
 function rejectionReason(error: unknown, data: ReturnType<typeof mutationErrorData>): string | undefined {

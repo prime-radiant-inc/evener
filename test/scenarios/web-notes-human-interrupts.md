@@ -16,7 +16,7 @@ and at e2e level by step 6 below).
 The Go layer covers the store, the steer, and the gate with unit tests
 (`agent/session_notes_test.go:TestSetHumanNoteStoresAndSteers`,
 `TestSetHumanNoteRetryOfOneOuterIDSteersOnce`,
-`cmd/evener-hub/app_rpc_test.go:11332`
+`cmd/evener-hub/app_rpc_test.go:1485`
 `TestHubRPCNotesHumanSetGatedByCapability`); this is the live-stack
 counterpart that proves the interrupt, the label, and the rejoin actually
 work. It exercises four things in one run:
