@@ -3267,6 +3267,74 @@ it("a wedged storage read abandons the open at the backstop and hands the pane t
   }
 });
 
+it("an open superseded by a settlement that recovered nothing reports the miss instead of success", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = () =>
+    new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  // The open's storage read wedges. A resync then triggers a tracked read
+  // that settles without publishing anything here: its wire call fails and
+  // the repository holds no resident foreground range for the pane, so the
+  // settling completion ends the open's wait with nothing recovered and no
+  // hydration or failure retry far enough along to own the display. A
+  // success verdict for that would claim a convergence nobody owns; the
+  // verdict must report the miss instead (the status and the stranding
+  // marker the paced recovery chain runs on), so the pane keeps a
+  // recovery owner — the claim machinery re-reads from the wire, that read
+  // succeeds and heals the display, and the open the claim then runs
+  // wedges on the same storage until the pinned backstop. The verdict, not
+  // the convergence, is the pinned contract.
+  let wireReads = 0;
+  client.on("thread/read", (params) => {
+    wireReads += 1;
+    const echoed = { ...read, requestGeneration: params.requestGeneration };
+    // The resync's read is the first through this handler: it fails on the
+    // wire, and the failure retry it arms echoes, so the display converges.
+    return wireReads === 1 ? Promise.reject(new Error("wire unavailable")) : echoed;
+  });
+  setSessionCacheStalledOpenForTests(250);
+  setSessionCacheOpenBackstopForTests(40);
+  const opened = threadsStore.getState().ensureThread(ref);
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref, threadId: "thread-a" },
+  });
+  try {
+    await opened;
+    expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("recovery-needed");
+    expect(productionEntryTranscriptForTests(ref).localOpenDeadlineMissed).toBe(true);
+    await settleEntryTranscriptForTests(ref);
+    expect((bodies() ?? []).length).toBe(225);
+  } finally {
+    setSessionCacheStalledOpenForTests(5000);
+    setSessionCacheOpenBackstopForTests(10000);
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
 it("a failed concurrent refresh while a recovery's read is held does not settle the composed completion early", async () => {
   const storage = cache();
   const realGetLatestWindow = storage.getLatestWindow.bind(storage);

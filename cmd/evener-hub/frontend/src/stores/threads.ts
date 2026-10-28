@@ -728,6 +728,7 @@ export function productionEntryTranscriptForTests(ref: string) {
     reader: route?.reader,
     lastLocalOpenStatus: route?.lastLocalOpenStatus,
     lastLocalOpenUsable: route?.lastLocalOpenUsable,
+    localOpenDeadlineMissed: route?.localOpenDeadlineMissed,
   };
 }
 
@@ -962,7 +963,7 @@ function holdsCompleteForegroundWindow(model: ThreadModel | undefined): boolean 
   );
 }
 
-async function openEntryTranscript(ref: string, recovery = false): Promise<boolean> {
+async function openEntryTranscript(ref: string, recovery = false, sourcePublished = false): Promise<boolean> {
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref || !fixture.repository) return true;
   const repository = fixture.repository;
@@ -1047,13 +1048,36 @@ async function openEntryTranscript(ref: string, recovery = false): Promise<boole
         ]);
     if (result && "supersededBySource" in result) {
       // A tracked hydration settled while this open's local read was still
-      // pending. Nothing is stranded: the source lifecycle owns the display's
-      // convergence, so no stranding strand is armed and the reader stays
+      // pending. When the repository still holds the foreground range, the
+      // source lifecycle owns the display's convergence: nothing is
+      // stranded, no recovery strand is armed, and the reader stays
       // attached — a held pane keeps its reader so the repository cannot
-      // reclaim the bodies behind the healed display. The still-running local
-      // read publishes late under the route's existing publication fences.
-      fixture.lastLocalOpenStatus = "superseded-by-source";
-      return true;
+      // reclaim the bodies behind the healed display. The still-running
+      // local read publishes late under the route's existing publication
+      // fences. A repository that moved past the pane's demand — its range
+      // reclaimed behind a reconciliation boundary — can serve neither the
+      // display nor a late publish, and the settling read itself recovered
+      // nothing, so no hydration or failure retry owns what is missing.
+      // A re-open the caller's own machinery published the model for — the
+      // claim's post-hydration certification — is source-owned the same way:
+      // the display holds what the claim just published, so a settling
+      // confirmation certifies rather than strands.
+      if (sourcePublished || repository.holdsResidentForegroundRange()) {
+        fixture.lastLocalOpenStatus = "superseded-by-source";
+        return true;
+      }
+      // A settlement that recovered nothing — a failed read, or a successful
+      // response the repository rejected behind a newer recorded update —
+      // owns no convergence, and a success verdict here would strand what
+      // the retired deadline used to hand to the paced recovery. Report the
+      // miss verdict instead: the stranding marker and the false return arm
+      // the same one-owner chain the deadline miss arms, while the
+      // still-running local read keeps publishing under the existing
+      // late-result fences.
+      fixture.lastLocalOpenStatus = "recovery-needed";
+      fixture.localOpenDeadlineMissed = true;
+      if (openingOwned()) fixture.lastLocalOpenUsable = false;
+      return false;
     }
     if (!result) {
       // A stalled restore keeps the established view standing only while that
@@ -7440,7 +7464,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         try {
           const model = await inflight;
           if (model) {
-            if (!(await openEntryTranscript(ref))) scheduleEntryOpeningRecovery(ref);
+            if (!(await openEntryTranscript(ref, false, true))) scheduleEntryOpeningRecovery(ref);
             return;
           }
         } catch (err) {
