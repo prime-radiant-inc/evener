@@ -239,7 +239,9 @@ evener fuzz-harvest --state-dir ~/.local/state/evener --surface toolargs
 ```
 
 Each target directory holds at most `--max-per-target` files (default 100,
-counting what is already committed), so a re-run cannot regrow a pruned corpus.
+counting what is already committed), which bounds how far a re-run can regrow a
+pruned corpus. Run `--prune` after a harvest to drop what the new seeds
+duplicate.
 `evener fuzz-harvest --prune <testdata/fuzz/FuzzName dir>` (repeatable) drops the
 harvester-written seeds (full 64-hex names) that add no covered block, measured
 over the target's module under `-tags evenerfuzz`, after the target's `f.Add`

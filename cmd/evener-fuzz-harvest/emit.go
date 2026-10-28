@@ -15,7 +15,8 @@ type Emitter struct {
 	dryRun       bool
 	maxSeedBytes int
 	// maxPerTarget caps the files a target directory may hold, counting those
-	// already on disk, so re-harvesting cannot regrow a pruned corpus.
+	// already on disk, which bounds how far a re-harvest can regrow a corpus
+	// until the next --prune.
 	maxPerTarget int
 	seen         map[string]bool
 	dirCount     map[string]int
