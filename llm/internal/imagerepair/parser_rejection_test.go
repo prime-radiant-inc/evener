@@ -184,7 +184,18 @@ func TestScanJPEGCancellationBoundaries(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				c := &cancelAfterChecks{Context: ctx, cancel: cancel, remaining: n}
 				_, ok := scanJPEG(c, input)
+				// The verdict must be the scanner's own: a run the counter
+				// canceled mid-scan has to report refusal, and only a run
+				// that finished without cancellation may report success.
+				// Read the context before the cleanup cancellation.
+				canceledMidScan := ctx.Err() != nil
 				cancel()
+				if canceledMidScan && ok {
+					t.Fatalf("run %d was canceled mid-scan but the scan reported success", n)
+				}
+				if !canceledMidScan && !ok {
+					t.Fatalf("run %d finished without cancellation but the scan reported refusal", n)
+				}
 				if ok {
 					completed = true
 					break

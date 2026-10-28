@@ -60,12 +60,21 @@ func TestStreamReasoningOnlyClosesAtDone(t *testing.T) {
 	var reasoningEndSeen, finishSeen bool
 	for _, ev := range events {
 		if ev.Type == llm.StreamEventReasoningEnd {
+			if finishSeen {
+				t.Fatalf("reasoning ended only after the finish event: %+v", events)
+			}
 			reasoningEndSeen = true
 		}
 		if ev.Type == llm.StreamEventFinish {
 			finishSeen = true
-			if reasoningEndSeen && ev.Response != nil && ev.Response.Text() != "" {
-				t.Fatal("a reasoning-only stream settles with no text content")
+			if !reasoningEndSeen {
+				t.Fatalf("finish event before the reasoning segment closed: %+v", events)
+			}
+			if ev.Response == nil {
+				t.Fatal("the finish event must carry the settled response")
+			}
+			if text := ev.Response.Text(); text != "" {
+				t.Fatalf("a reasoning-only stream settles with no text content, got %q", text)
 			}
 		}
 	}

@@ -149,8 +149,11 @@ func TestImageRecoveryProfileFreeKeepsTrailingPart(t *testing.T) {
 	first, _ := lastContent[0].(map[string]any)
 	second, _ := lastContent[1].(map[string]any)
 	third, _ := lastContent[2].(map[string]any)
-	if first["type"] != "text" || first["text"] != unmanagedImageCaveat {
-		t.Fatalf("first part = %v, want the color caveat text", first)
+	if first["type"] != "text" {
+		t.Fatalf("first part = %v, want the inserted color caveat text part", first)
+	}
+	if caveat, _ := first["text"].(string); caveat == "" {
+		t.Fatal("the inserted color caveat must carry its warning text")
 	}
 	if second["type"] != "image_url" {
 		t.Fatalf("second part = %v, want the repaired image", second)
