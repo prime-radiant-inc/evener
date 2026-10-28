@@ -994,8 +994,14 @@ async function openEntryTranscript(ref: string, recovery = false): Promise<boole
           new Promise<undefined>((resolve) => {
             timer = setTimeout(
               () => {
+                // A held pane keeps a reader through the swap: the repository
+                // reclaims the bodies behind a displayed window the moment it
+                // has none, and the next publication would then replace that
+                // display with the body-suppressed model.
+                if (fixture.reader === reader) {
+                  fixture.reader = heldCountsAtStore(ref) ? repository.attachReader() : undefined;
+                }
                 reader.dispose();
-                if (fixture.reader === reader) fixture.reader = undefined;
                 resolve(undefined);
                 // A recovery attempt outlasts the lookup deadline on purpose:
                 // a read that answers slower than the deadline but successfully

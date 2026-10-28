@@ -18,6 +18,7 @@ import {
 	bandOf,
 	type ClassifiedRow,
 	lastLine,
+	plural,
 	stateWord,
 	subagentChipText,
 	type Usual,
@@ -100,7 +101,7 @@ export function spokenAge(age: string): string {
 	const match = /^(\d+)([mhd])$/.exec(age);
 	if (!match) return age;
 	const count = Number(match[1]);
-	return `${count} ${UNITS[match[2]]}${count === 1 ? "" : "s"}`;
+	return plural(count, UNITS[match[2]]);
 }
 
 /** A group's header: a Live band, or a search group. */

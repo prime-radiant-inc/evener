@@ -472,14 +472,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := resolvedPlugins.ValidateSelection(); err != nil {
 		return err
 	}
-	if _, err := agent.ParseProviderIdleTimeout(*lf.providerIdleTimeout); err != nil {
+	settings, err := resolveLaunchSettings(*lf.providerIdleTimeout, *lf.apiLog, *lf.openAIResponsesContinuation)
+	if err != nil {
 		return err
 	}
-	apiLogEnabled, apiLogErr := parseAPILog(*lf.apiLog)
-	if apiLogErr != nil {
-		return apiLogErr
-	}
-	resolvedOpenAIResponsesContinuation := resolveOpenAIResponsesContinuation(*lf.openAIResponsesContinuation, nil)
 
 	if *lf.cpuProfile != "" {
 		stop, err := deps.startCPUProfile(*lf.cpuProfile)
@@ -579,7 +575,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		resumeModel = resumedMeta.Model
 	}
 	var modelRef cmdutil.ModelRef
-	var err error
 	if resuming {
 		modelRef, err = cmdutil.ResolveResumeModelRef(*lf.model, envvars.EVENERModel.Getenv(), resumeProvider, resumeModel)
 	} else {
@@ -611,7 +606,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return err
 	}
 	defer closeClient() //nolint:errcheck
-	reserveSession, closeAPILog, err := deps.attachAPILogger(client, sd, os.Stderr, apiLogEnabled)
+	reserveSession, closeAPILog, err := deps.attachAPILogger(client, sd, os.Stderr, settings.apiLogEnabled)
 	if err != nil {
 		return err
 	}
@@ -685,7 +680,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		NonInteractive:              *nonInteractive,
 		SystemPromptAsUser:          *lf.systemPromptAsUser,
 		ModelFallbacks:              []string(modelFallbacks),
-		OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
+		OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 		ProviderIdleTimeout:         *lf.providerIdleTimeout,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
@@ -738,7 +733,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			AcquireSessionOwnership:     reserveSession,
 			OwnershipAlreadyAcquired:    true,
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
-			OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
+			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 			ProviderIdleTimeout:         *lf.providerIdleTimeout,
 			AgentsDocPath:               *agentsDoc,
 		})

@@ -369,17 +369,17 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	claim, err := s.delegateController.BeginStartInput(started.lease)
 	if err != nil {
 		s.sendersWG.Done()
-		return runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, err)
+		return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, err, nil)
 	}
 	if err := runtime.preseedInput(sub.sess, message, started.transcriptPath); err != nil {
 		plans, completeErr := s.delegateController.CompleteStartInput(claim, false, delegatePermanentStartFailure(err, "input_persist_failed"))
 		s.sendersWG.Done()
-		return runtime.stableSendFailureOutcome(ctx, started, waiter, maxWaitMS, plans, errors.Join(err, completeErr))
+		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, errors.Join(err, completeErr), nil)
 	}
 	plans, err := s.delegateController.CompleteStartInput(claim, true, delegateFinish{})
 	if err != nil {
 		s.sendersWG.Done()
-		return runtime.stableSendFailureOutcome(ctx, started, waiter, maxWaitMS, plans, err)
+		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, err, nil)
 	}
 	if err := s.executeDelegateMutationPlans(plans); err != nil {
 		s.sendersWG.Done()
@@ -424,17 +424,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if waiter == nil {
 		return stableDelegateSendOutcome{result: result}
 	}
-	waitCtx := ctx
-	if maxWaitMS > 0 {
-		var cancel context.CancelFunc
-		waitDuration := time.Duration(maxWaitMS) * time.Millisecond
-		waitCtx, cancel = context.WithTimeout(ctx, waitDuration)
-		defer cancel()
-		if observe := s.cfg.testOnly.delegateInlineWaitReady; observe != nil {
-			observe(waitCtx, waitDuration)
-		}
-	}
-	resolution := s.delegateController.waitForDelegateInline(waitCtx, waiter)
+	resolution := runtime.waitInline(ctx, waiter, maxWaitMS)
 	if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
 		result.TimedOut = true
 		return stableDelegateSendOutcome{result: result}
@@ -529,17 +519,43 @@ func descriptorProvenance(descriptor delegatestore.Descriptor) *provenance.Causa
 	return provenance.Clone(descriptor.Provenance)
 }
 
-func (runtime delegateRuntime) failStableSendStart(ctx context.Context, started delegateStartCommit, delegateID string, waiter *delegateInlineWaiter, maxWaitMS int, cause error) stableDelegateSendOutcome {
-	return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, nil)
+// waitInline waits for the inline waiter to resolve, bounded by maxWaitMS when
+// positive.
+func (runtime delegateRuntime) waitInline(ctx context.Context, waiter *delegateInlineWaiter, maxWaitMS int) delegateInlineResolution {
+	s := runtime.owner
+	waitCtx := ctx
+	if maxWaitMS > 0 {
+		var cancel context.CancelFunc
+		waitDuration := time.Duration(maxWaitMS) * time.Millisecond
+		waitCtx, cancel = context.WithTimeout(ctx, waitDuration)
+		defer cancel()
+		if observe := s.cfg.testOnly.delegateInlineWaitReady; observe != nil {
+			observe(waitCtx, waitDuration)
+		}
+	}
+	return s.delegateController.waitForDelegateInline(waitCtx, waiter)
+}
+
+// populateFailedSendResultFromPacket fills a failed start's result from a
+// terminal packet that answered it. The durable outcome already seeded Status
+// and Reason, and wins over what the packet's own report derives.
+func populateFailedSendResultFromPacket(result *sendMessageResult, packet delegatestore.TerminalPacket) {
+	durableStatus := result.Status
+	durableReason := result.Reason
+	populateStableDelegateSendResult(result, packet)
+	if durableReason != "" {
+		result.Reason = durableReason
+	}
+	if durableStatus != jobstore.StatusRunning {
+		result.Status = durableStatus
+	}
+	result.Action = "completed"
+	result.RunningInBackground = false
 }
 
 func (runtime delegateRuntime) failStableSendStartAfterDispatch(ctx context.Context, started delegateStartCommit, delegateID string, waiter *delegateInlineWaiter, maxWaitMS int, cause error, afterDispatch func()) stableDelegateSendOutcome {
 	plans, finishErr := runtime.owner.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(cause, "construction_failed"))
 	return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, errors.Join(cause, finishErr), afterDispatch)
-}
-
-func (runtime delegateRuntime) stableSendFailureOutcome(ctx context.Context, started delegateStartCommit, waiter *delegateInlineWaiter, maxWaitMS int, plans delegateMutationPlans, cause error) stableDelegateSendOutcome {
-	return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, cause, nil)
 }
 
 func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context.Context, started delegateStartCommit, waiter *delegateInlineWaiter, maxWaitMS int, plans delegateMutationPlans, cause error, afterDispatch func()) stableDelegateSendOutcome {
@@ -558,32 +574,12 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 		// max_wait (#3502).
 		return stableDelegateSendOutcome{result: result}
 	}
-	waitCtx := ctx
-	if maxWaitMS > 0 {
-		var cancel context.CancelFunc
-		waitDuration := time.Duration(maxWaitMS) * time.Millisecond
-		waitCtx, cancel = context.WithTimeout(ctx, waitDuration)
-		defer cancel()
-		if observe := runtime.owner.cfg.testOnly.delegateInlineWaitReady; observe != nil {
-			observe(waitCtx, waitDuration)
-		}
-	}
-	resolution := runtime.owner.delegateController.waitForDelegateInline(waitCtx, waiter)
+	resolution := runtime.waitInline(ctx, waiter, maxWaitMS)
 	if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
 		result.TimedOut = true
 		return stableDelegateSendOutcome{result: result}
 	}
-	durableStatus := result.Status
-	durableReason := result.Reason
-	populateStableDelegateSendResult(&result, *resolution.packet)
-	if durableReason != "" {
-		result.Reason = durableReason
-	}
-	if durableStatus != jobstore.StatusRunning {
-		result.Status = durableStatus
-	}
-	result.Action = "completed"
-	result.RunningInBackground = false
+	populateFailedSendResultFromPacket(&result, *resolution.packet)
 	return inlineOutcome(result, resolution)
 }
 
@@ -612,17 +608,7 @@ func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateM
 	deliveryID := delegateDeliveryID(started.lease.delegateID, started.lease.generation)
 	for _, delivery := range plans.deliveries {
 		if delivery.delegateID == started.lease.delegateID && delivery.deliveryID == deliveryID {
-			durableStatus := result.Status
-			durableReason := result.Reason
-			populateStableDelegateSendResult(&result, delivery.packet)
-			if durableReason != "" {
-				result.Reason = durableReason
-			}
-			if durableStatus != jobstore.StatusRunning {
-				result.Status = durableStatus
-			}
-			result.Action = "completed"
-			result.RunningInBackground = false
+			populateFailedSendResultFromPacket(&result, delivery.packet)
 			break
 		}
 	}

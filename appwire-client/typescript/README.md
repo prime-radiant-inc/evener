@@ -202,7 +202,12 @@ establish range coverage or own persisted turn metadata.
 `joinWarningParts`, the bounded raw-frame fallback) lives in `warningFold.ts`, a
 leaf module the reducer imports and that imports nothing from it. The cache
 and checkpoint shape validators (`valid*`, the persisted-record types they
-check) live in `transcriptValidators.ts`, a leaf over `model` and `types.gen`. Further
+check) live in `transcriptValidators.ts`, and wire-item hydration (image mapping,
+the omitted-text and identity-only marks, `wireItemToModel`, the tool-id
+predicates) in `transcriptItems.ts`; both are leaves over `model` and
+`types.gen`. The tool-call fold and turn/page history merge
+(`mergeTurnHistory*`, `mergeOlderItemPageWithFolds`, `itemIdentityMatches`) live in
+`turnHistoryMerge.ts`, which imports `transcriptItems` only. Further
 reducer pieces follow the same rule: a split-out module never imports
 `reducer.ts`.
 

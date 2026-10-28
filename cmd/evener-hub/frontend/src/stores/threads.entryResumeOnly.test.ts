@@ -2,11 +2,12 @@ import "fake-indexeddb/auto";
 import type { AnyNotification, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
 import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore } from "./connection";
 import { isResumeOnly } from "./recoveryFence";
 import { productionEntryTranscriptForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
@@ -26,12 +27,8 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  fake.on("thread/unsubscribe", () => ({}));
-  connectionStore.getState().connect(fake);
-  return fake;
-}
+const connectFakeClient = () => connectReadyFakeClient((fake) => fake.on("thread/unsubscribe", () => ({})));
+
 function resumeOnlySnapshot(ref: string, foldable = false): ThreadReadResponse {
   const response = currentRead(ref);
   response.thread.status = { type: "notLoaded" };

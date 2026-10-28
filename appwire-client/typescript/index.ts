@@ -525,9 +525,6 @@ export type {
   CachedSessionRecord,
   CurrentTranscriptAdmission,
   NotificationRoutingKey,
-  OlderItemPageMerge,
-  TurnHistoryFoldDetail,
-  TurnHistoryMergeResult,
 } from "./reducer";
 export {
   applyHistoryReadFailure,
@@ -538,31 +535,19 @@ export {
   cachedSessionRecord,
   collectAuthoritativeMutationIds,
   comparePositions,
-  copyItemTextPresence,
   currentTranscriptState,
   decodeCurrentTranscriptState,
   decodeTranscriptItem,
   encodeTranscriptItem,
   hydrateThread,
   ITEM_OMISSION_TOLERANT_FIELDS,
-  imageSessionRouteForSession,
   invalidateHistory,
   issueLatestWindowRead,
-  isToolCallItemId,
-  isToolResultItemId,
-  itemIdentityMatches,
-  itemTextPresence,
-  joinedReasoningParagraphs,
-  markItemIdentityOnly,
-  markItemTextOmitted,
   mergeOlderItemPage,
-  mergeOlderItemPageWithFolds,
   mergeTailTurns,
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
-  mergeTurnHistory,
-  mergeTurnHistoryWithFolds,
   notificationRoutingKey,
   notificationTargetsThread,
   notificationTouchesTranscript,
@@ -865,6 +850,16 @@ export type {
   TranscriptDraftStorage,
 } from "./transcriptDisplayStore";
 export { createTranscriptDisplayStore, fromWireChange, transcriptDisplaySupport } from "./transcriptDisplayStore";
+export {
+  copyItemTextPresence,
+  imageSessionRouteForSession,
+  isToolCallItemId,
+  isToolResultItemId,
+  itemTextPresence,
+  joinedReasoningParagraphs,
+  markItemIdentityOnly,
+  markItemTextOmitted,
+} from "./transcriptItems";
 export type {
   ProjectedAnchor,
   ProjectedEntry,
@@ -895,6 +890,13 @@ export {
   type RetryTurnThread,
   TURN_CONTINUATION_TEXT,
 } from "./turnContinuation";
+export type { OlderItemPageMerge, TurnHistoryFoldDetail, TurnHistoryMergeResult } from "./turnHistoryMerge";
+export {
+  itemIdentityMatches,
+  mergeOlderItemPageWithFolds,
+  mergeTurnHistory,
+  mergeTurnHistoryWithFolds,
+} from "./turnHistoryMerge";
 export type * from "./types.gen";
 export {
   HOST_REQUEST_METHODS,

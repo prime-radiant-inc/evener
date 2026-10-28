@@ -105,10 +105,16 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 		p, prof = estimatePressure()
 	}
 
-	// Layer 3 (replaced): Session-log checkpoint.
+	// Layer 3 (replaced): Session-log checkpoint. checkpointed is what this
+	// pass's checkpoint folded, which a summary completing the same fold reads
+	// the partner's messages from.
+	var checkpointed []schema.Turn
 	if p >= s.cm.CheckpointThreshold || (tripwire && assumptionStillGoverns(tripwireProf, prof)) {
 		s.cm.applyLayer(ctx, emitFn, history, prof, "session_log_checkpoint", schema.TurnCheckpoint, func(h []schema.Turn) ([]schema.Turn, error) {
-			return s.sessionLogCheckpointWithMeta(h, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx)), nil
+			var folded []schema.Turn
+			h, folded = s.sessionLogCheckpointWithMeta(h, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))
+			checkpointed = folded
+			return h, nil
 		})
 		compacted = true
 		p, prof = estimatePressure()
@@ -117,7 +123,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	// Layer 4: LLM summarization fallback.
 	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
 		if s.cm.applyLayer(ctx, emitFn, history, prof, "summarize", schema.TurnSummary, func(h []schema.Turn) ([]schema.Turn, error) {
-			return s.cm.summarizeWithLLM(ctx, h, s.cm.PreserveRecentTurns)
+			return s.cm.summarizeFold(ctx, h, s.cm.PreserveRecentTurns, "", checkpointed)
 		}) {
 			compacted = true
 		}
@@ -140,17 +146,20 @@ func (s *SessionLogStrategy) sessionLogCheckpoint(history []schema.Turn, preserv
 	if s != nil && s.cm != nil {
 		meta = &s.cm.Meta
 	}
-	return s.sessionLogCheckpointWithMeta(history, preserveRecent, meta)
+	result, _ := s.sessionLogCheckpointWithMeta(history, preserveRecent, meta)
+	return result
 }
 
-func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn, preserveRecent int, meta *CompactionMeta) []schema.Turn {
+// sessionLogCheckpointWithMeta also returns the turns the checkpoint folded
+// (nil when it folded nothing), for a summary completing the same fold.
+func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn, preserveRecent int, meta *CompactionMeta) ([]schema.Turn, []schema.Turn) {
 	if attentionTransparentTurnCount(history) <= preserveRecent {
-		return history
+		return history, nil
 	}
 
-	cutoff := safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
+	cutoff := foldCutoff(history, preserveRecent)
 	if cutoff < 0 {
-		return history
+		return history, nil
 	}
 
 	// Extract original prompt from old history (same logic as checkpoint()).
@@ -180,7 +189,7 @@ func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn,
 	result := make([]schema.Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)
 	result = append(result, history[cutoff:]...)
-	return result
+	return result, history[:cutoff:cutoff]
 }
 
 // extractOriginalPrompt finds the original user prompt from history, handling

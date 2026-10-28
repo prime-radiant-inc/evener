@@ -15,6 +15,7 @@ import {
 	attentionState,
 	compactDuration,
 	DELEGATE_QUIET_AFTER_MS,
+	parseTimestampMs,
 	quietState,
 	taskSettledCount,
 } from "@evener/appwire-client";
@@ -133,9 +134,7 @@ export function bandOf(state: BoardState): Band | null {
 /** A hub timestamp in milliseconds, or null when the hub sent none or one
  * that doesn't parse. */
 export function hubTime(value?: string | null): number | null {
-	if (!value) return null;
-	const time = Date.parse(value);
-	return Number.isFinite(time) ? time : null;
+	return parseTimestampMs(value ?? undefined) ?? null;
 }
 
 // A row without a readable updated_at sorts as the oldest.
