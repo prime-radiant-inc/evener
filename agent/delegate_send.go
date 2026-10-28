@@ -536,6 +536,23 @@ func (runtime delegateRuntime) waitInline(ctx context.Context, waiter *delegateI
 	return s.delegateController.waitForDelegateInline(waitCtx, waiter)
 }
 
+// populateFailedSendResultFromPacket fills a failed start's result from a
+// terminal packet that answered it. The durable outcome already seeded Status
+// and Reason, and wins over what the packet's own report derives.
+func populateFailedSendResultFromPacket(result *sendMessageResult, packet delegatestore.TerminalPacket) {
+	durableStatus := result.Status
+	durableReason := result.Reason
+	populateStableDelegateSendResult(result, packet)
+	if durableReason != "" {
+		result.Reason = durableReason
+	}
+	if durableStatus != jobstore.StatusRunning {
+		result.Status = durableStatus
+	}
+	result.Action = "completed"
+	result.RunningInBackground = false
+}
+
 func (runtime delegateRuntime) failStableSendStart(ctx context.Context, started delegateStartCommit, delegateID string, waiter *delegateInlineWaiter, maxWaitMS int, cause error) stableDelegateSendOutcome {
 	return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, nil)
 }
@@ -570,17 +587,7 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 		result.TimedOut = true
 		return stableDelegateSendOutcome{result: result}
 	}
-	durableStatus := result.Status
-	durableReason := result.Reason
-	populateStableDelegateSendResult(&result, *resolution.packet)
-	if durableReason != "" {
-		result.Reason = durableReason
-	}
-	if durableStatus != jobstore.StatusRunning {
-		result.Status = durableStatus
-	}
-	result.Action = "completed"
-	result.RunningInBackground = false
+	populateFailedSendResultFromPacket(&result, *resolution.packet)
 	return inlineOutcome(result, resolution)
 }
 
@@ -609,17 +616,7 @@ func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateM
 	deliveryID := delegateDeliveryID(started.lease.delegateID, started.lease.generation)
 	for _, delivery := range plans.deliveries {
 		if delivery.delegateID == started.lease.delegateID && delivery.deliveryID == deliveryID {
-			durableStatus := result.Status
-			durableReason := result.Reason
-			populateStableDelegateSendResult(&result, delivery.packet)
-			if durableReason != "" {
-				result.Reason = durableReason
-			}
-			if durableStatus != jobstore.StatusRunning {
-				result.Status = durableStatus
-			}
-			result.Action = "completed"
-			result.RunningInBackground = false
+			populateFailedSendResultFromPacket(&result, delivery.packet)
 			break
 		}
 	}
