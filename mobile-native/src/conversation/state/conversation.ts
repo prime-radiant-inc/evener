@@ -84,6 +84,7 @@ import {
 	MutationNotSentError,
 } from "./conversationMutation";
 import { createBoundedTextCache } from "./boundedText";
+import { createTrailingReread } from "./trailingReread";
 import { createPendingMutationBinding, samePendingRows } from "./pendingMutations";
 import { reconcileCrossTurnReissues } from "./rowTransforms";
 import { createTransientWarnings } from "./transientWarnings";
@@ -823,94 +824,24 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		return { conversation: { ...conversation, items }, trimmed: capped.length < seated.length };
 	}
 
-	// C1+I1: Deferred trailing-reread request. When a rehydrate detects the
-	// mutation owner changed during its await, it stores a deferred trailing
-	// request with the EXACT binding snapshot captured at schedule time (not
-	// recaptured inside the effect). The request is drained exactly once after
-	// the mutation settles (pendingSubmission cleared; a failedSubmission is
-	// already terminal, so it drains exactly as the failed record did). If the
-	// binding changed (switch to B), the stored binding is stale and the request
-	// is dropped. Additional mutation revisions create at most one later need.
-	interface TrailingReread {
-		binding: RequestBinding;
-		mutationRev: number;
-	}
-	let trailingReread: TrailingReread | null = null;
-
-	// C1+I1: Store a deferred trailing reread with the exact binding captured
-	// at schedule time. Does NOT schedule through the scheduler yet — the
-	// request is drained when the mutation settles. If a request is already
-	// pending, it is overwritten (at most one later need per mutation revision).
-	function scheduleTrailingReread(): void {
-		const binding = captureBinding();
-		if (binding === null) return;
-		trailingReread = { binding, mutationRev: mutationOwnerRev };
-		// The mutation may have already settled (e.g., the send completed before
-		// the rehydrate was released). Try to drain immediately — if the mutation
-		// is still pending, drainTrailingReread will defer.
-		drainTrailingReread();
-	}
-
-	// C1+I1: Drain the deferred trailing reread after a mutation settles. The
-	// mutation must be terminal (no in-flight pendingSubmission). The
-	// stored binding is validated — if stale (switch to B), the request is
-	// dropped. Exactly one reread is scheduled through the store-owned scheduler.
-	// The effect validates the exact captured binding (NOT recapturing current),
-	// AND rechecks the captured/current monotonic mutation revision and true
-	// terminal status INSIDE the scheduler effect immediately before any read.
-	// If a newer mutation is pending after enqueue, do zero read; atomically
-	// restore one binding-owned deferred request for that mutation revision and
-	// let its settle hook drain exactly once. Keep separate queued/deferred
-	// identity so no duplicate effects/third reread.
-	function drainTrailingReread(): void {
-		if (trailingReread === null) return;
-		// Only drain if the mutation has settled (no in-flight attempt; a
-		// retained failure is already terminal). A still-pending attempt keeps
-		// the request deferred.
-		const currentSubmission = storeGet?.().pendingSubmission;
-		if (currentSubmission !== null && currentSubmission !== undefined) {
-			return;
-		}
-		const { binding } = trailingReread;
-		// Capture the mutation revision at enqueue time — the effect will compare
-		// this against the current revision to detect a newer pending mutation
-		// that started after enqueue.
-		const enqueueMutationRev = mutationOwnerRev;
-		trailingReread = null;
-		// C1: Validate the EXACT captured binding — if stale (switch to B),
-		// drop the request. Never recapture the current binding here.
-		if (!isBindingCurrent(binding)) return;
-		// Schedule one trailing reread through the store-owned scheduler. The
-		// effect validates the exact captured binding again (double-check after
-		// the scheduler microtask), rechecks mutation revision and terminal status,
-		// and calls rehydrate with the captured service — never the
-		// closure's. If a newer mutation is pending, the effect re-defers instead
-		// of reading.
-		scheduler.request(binding.ref, async () => {
-			// C1: Re-validate the exact captured binding after the microtask.
-			if (!isBindingCurrent(binding)) return;
-			// Residual 1: Recheck mutation revision and true terminal status INSIDE
-			// the effect immediately before any read. If the mutation revision
-			// advanced since enqueue AND a mutation is currently in flight, a newer
-			// mutation started after enqueue — do zero read. Atomically restore one
-			// binding-owned deferred request for the newer mutation revision and let
-			// its settle hook drain exactly once.
-			if (mutationOwnerRev !== enqueueMutationRev) {
-				const submission = storeGet?.().pendingSubmission;
-				if (submission !== null && submission !== undefined) {
-					// Newer mutation is pending — re-defer for this revision. The
-					// binding stays the same (already validated). The settle hook
-					// (called when M2 settles) will drainTrailingReread exactly once.
-					trailingReread = { binding, mutationRev: mutationOwnerRev };
-					return; // zero read
-				}
-			}
+	const trailingReread = createTrailingReread<RequestBinding>({
+		captureBinding: () => captureBinding(),
+		isBindingCurrent: (binding) => isBindingCurrent(binding),
+		mutationRev: () => mutationOwnerRev,
+		mutationPending: () => {
+			const submission = storeGet?.().pendingSubmission;
+			return submission !== null && submission !== undefined;
+		},
+		enqueue: (ref, effect) => {
+			scheduler.request(ref, effect);
+		},
+		reread: async (binding) => {
 			// captureBinding only returns non-null when boundProjected is true, so
 			// binding.projected is always true here.
 			if (!binding.projected) return;
 			await storeGet?.().rehydrate(binding.service);
-		});
-	}
+		},
+	});
 
 	// The store owns ONE drain scheduler for its entire lifetime. Lifecycle,
 	// activity rehydrate, structural notification gaps, and mutation capability
@@ -1414,7 +1345,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// Fix round 1 I2: invalidate page ownership on conversation transition.
 				loadOlderToken += 1;
 				// C1+I1: clear any stale deferred trailing-reread request.
-				trailingReread = null;
+				trailingReread.clear();
 				transientWarnings.clear();
 				boundedText.release();
 				retireMutationAttempt();
@@ -1484,7 +1415,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// Fix round 1 I2: invalidate page ownership on conversation transition.
 				loadOlderToken += 1;
 				// C1+I1: clear any stale deferred trailing-reread request.
-				trailingReread = null;
+				trailingReread.clear();
 				transientWarnings.clear();
 				boundedText.release();
 				// Reset thread-scoped state (draft, pending mutation) — presentation state
@@ -1559,7 +1490,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				conversationGen += 1;
 				bindingEpoch += 1;
 				loadOlderToken += 1;
-				trailingReread = null;
+				trailingReread.clear();
 				boundService = null;
 				boundProjected = false;
 				retireMutationAttempt();
@@ -1593,7 +1524,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				const gen = ++conversationGen;
 				bindingEpoch += 1;
 				loadOlderToken += 1;
-				trailingReread = null;
+				trailingReread.clear();
 				boundService = service;
 				boundProjected = true;
 				retireMutationAttempt();
@@ -1748,8 +1679,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// yet — the request is drained when the mutation settles. If a
 						// request is already pending, it is overwritten (at most one per
 						// mutation revision).
-						if (trailingReread === null) {
-							scheduleTrailingReread();
+						if (!trailingReread.isPending()) {
+							trailingReread.schedule();
 						}
 						// Preserve current draft only — do not publish projection.
 						set({ draft: currentSnapshot.draft });
@@ -2556,7 +2487,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							});
 						}
 						// I1: mutation settled (success) — drain deferred trailing reread.
-						drainTrailingReread();
+						trailingReread.drain();
 					}
 				} catch (err) {
 					// A proven local refusal made nothing durable and sent nothing:
@@ -2572,7 +2503,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					handleMutationError(err, state.ref, mutationId, "send", draftText, revisionAtSubmit, entryErrorRev);
 					// I1: mutation settled (failed terminal) — drain deferred trailing
 					// reread after handleMutationError sets the failed state.
-					drainTrailingReread();
+					trailingReread.drain();
 				}
 			},
 
@@ -2627,7 +2558,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							});
 						}
 						// I1: mutation settled (success) — drain deferred trailing reread.
-						drainTrailingReread();
+						trailingReread.drain();
 					}
 				} catch (err) {
 					if (err instanceof MutationNotSentError) {
@@ -2639,7 +2570,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					handleMutationError(err, state.ref, mutationId, "queue", draftText, revisionAtSubmit, entryErrorRev);
 					// I1: mutation settled (failed terminal) — drain deferred trailing
 					// reread after handleMutationError sets the failed state.
-					drainTrailingReread();
+					trailingReread.drain();
 				}
 			},
 
@@ -2685,7 +2616,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							});
 						}
 						// I1: mutation settled (success) — drain deferred trailing reread.
-						drainTrailingReread();
+						trailingReread.drain();
 					}
 				} catch (err) {
 					// C1: Recheck the exact operation binding after the await.
@@ -2693,7 +2624,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					handleMutationError(err, state.ref, mutationId, "interrupt", null, revisionAtSubmit, entryErrorRev);
 					// I1: mutation settled (failed terminal) — drain deferred trailing
 					// reread after handleMutationError sets the failed state.
-					drainTrailingReread();
+					trailingReread.drain();
 				}
 			},
 
@@ -2707,7 +2638,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// Fix round 1 I2: invalidate page ownership on conversation transition.
 				loadOlderToken += 1;
 				// C1+I1: clear any stale deferred trailing-reread request.
-				trailingReread = null;
+				trailingReread.clear();
 				transientWarnings.clear();
 				boundedText.release();
 				pendingBinding.detach();
@@ -2925,7 +2856,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// Fix round 1 I2: invalidate page ownership on conversation transition.
 				loadOlderToken += 1;
 				// C1+I1: clear any stale deferred trailing-reread request.
-				trailingReread = null;
+				trailingReread.clear();
 				transientWarnings.clear();
 				boundedText.release();
 				pendingBinding.detach();
