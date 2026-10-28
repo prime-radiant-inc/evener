@@ -842,7 +842,8 @@ test("a settle whose displaced entry was cleaned mid-write keeps the leased rank
     await saving;
 
     const preserved = (await storage.listRecovery(ref))[0];
-    expect(preserved?.clientMutationId).not.toBe(original.clientMutationId);
+    if (!preserved) throw new Error("missing preserved row");
+    expect(preserved.clientMutationId).not.toBe(original.clientMutationId);
     expect(preserved).toMatchObject({ composerText: "local preserved work" });
     // The preserved row succeeds the pick at the leased rank, not at
     // background rank.
