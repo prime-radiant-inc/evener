@@ -3053,6 +3053,109 @@ it("a source hydration settling mid-lookup supersedes the open without arming th
   await lease.release();
 });
 
+it("a pane reopened over a pending initial claim settles its held open from the claim's settlement", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  // A cached shell's pane closes and reopens while a background lease
+  // preserves its pending initial claim. The reopened pane's local lookup is
+  // wedged, so its pending open can only end by observing the claim's
+  // successful source settlement — it must not ride the open backstop while
+  // the source has already restored the display.
+  let withheldWindowReads = 0;
+  let holding = false;
+  const localReadEntered = deferred<void>();
+  const localReadReleased = deferred<void>();
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    if (holding) {
+      holding = false;
+      localReadEntered.resolve();
+      return localReadReleased.promise.then(() =>
+        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+      ) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  let wireReads = 0;
+  const claimWireReadEntered = deferred<void>();
+  const claimWireReadReleased = deferred<void>();
+  client.on("thread/read", (params) => {
+    wireReads += 1;
+    if (wireReads === 1) {
+      claimWireReadEntered.resolve();
+      return claimWireReadReleased.promise.then(() => ({ ...read, requestGeneration: params.requestGeneration }));
+    }
+    return { ...read, requestGeneration: params.requestGeneration };
+  });
+  try {
+    // The first pane's bounded open misses against the wedged read, so the
+    // pane starts its initial claim and parks the claim's wire read.
+    withheldWindowReads = 1;
+    setSessionCacheOpenBackstopForTests(40);
+    const openedByFirstPane = threadsStore.getState().ensureThread(ref);
+    await claimWireReadEntered.promise;
+    // Close the pane: the background lease preserves the pending claim, the
+    // recorded route and the shell display for the reopened pane.
+    threadsStore.getState().releaseThread(ref);
+    // Reopen under the real backstop: the new pane's open parks on its own
+    // held local lookup, joining the preserved claim's route.
+    setSessionCacheOpenBackstopForTests(10000);
+    holding = true;
+    const openedBySecondPane = threadsStore.getState().ensureThread(ref);
+    await localReadEntered.promise;
+    // The claim's source read now settles and publishes the full model. The
+    // reopened pane's pending open must settle from THE CLAIM's settlement.
+    claimWireReadReleased.resolve();
+    const settled = await Promise.race([
+      openedBySecondPane.then(() => true),
+      new Promise((r) => setTimeout(r, 400)).then(() => false),
+    ]);
+    expect(settled).toBe(true);
+    expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("superseded-by-source");
+    expect(wireReads).toBe(1);
+    localReadReleased.resolve();
+    await openedBySecondPane;
+    await openedByFirstPane;
+    await drainSettleSteps();
+    expect(bodies()).toContain("row-26");
+    expect(bodies()).toContain("row-225");
+  } finally {
+    setSessionCacheOpenBackstopForTests(10000);
+    setSessionCacheStalledOpenForTests(5000);
+    claimWireReadReleased.resolve();
+    localReadReleased.resolve();
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
 it("an ordinary open outlives the retired lookup deadline while the backstop says so", async () => {
   const storage = cache();
   const realGetLatestWindow = storage.getLatestWindow.bind(storage);

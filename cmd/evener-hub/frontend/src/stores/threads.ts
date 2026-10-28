@@ -1010,7 +1010,13 @@ async function openEntryTranscript(ref: string, recovery = false, sourcePublishe
     const established = fixture.lastLocalOpenUsable && repository.holdsEstablishedView();
     let stalled = false;
     const restore = established ? reader.openLocal(200) : undefined;
-    settlement = established || recovery ? undefined : nextTrackedHydrationSettlement(ref);
+    // An open the caller's own machinery just published for (sourcePublished)
+    // excludes that publication's own registration from its settlement wait:
+    // the claim's hydration settling would otherwise certify this re-open
+    // before its local promotion ran, stranding a body-suppressed display no
+    // recovery chain owns. Every later, foreign settlement still supersedes.
+    const selfPublication = sourcePublished ? trackedHydrationCompletions.get(ref) : undefined;
+    settlement = established || recovery ? undefined : nextTrackedHydrationSettlement(ref, selfPublication);
     const result = established
       ? await Promise.race([
           restore,
@@ -1817,7 +1823,17 @@ const trackedHydrationCompletions = new Map<string, Promise<void>>();
 // that is still current settles; settlement means settled-either-way: a
 // published heal and a failed read both end the local wait, because from
 // either outcome the source lifecycle owns the display's convergence.
-const hydrationSettlementWaiters = new Map<string, Set<() => void>>();
+const hydrationSettlementWaiters = new Map<string, Set<HydrationSettlementWaiter>>();
+
+// A parked waiter plus the one registration whose settlement it must NOT
+// observe: an open the caller's own machinery just published for must not be
+// ended by that very publication's settlement (the claim's own hydration
+// certifying its own re-open before the local promotion ran) — it stays
+// parked for every later, foreign settlement.
+type HydrationSettlementWaiter = {
+  wake: () => void;
+  except?: unknown;
+};
 
 // A waiter handle: `settled` resolves when the next tracked hydration for
 // the ref settles either way; `cancel` unparks a waiter whose open ended
@@ -1828,23 +1844,23 @@ type HydrationSettlementWait = {
   cancel: () => void;
 };
 
-function nextTrackedHydrationSettlement(ref: string): HydrationSettlementWait {
-  let wake!: () => void;
+function nextTrackedHydrationSettlement(ref: string, except?: unknown): HydrationSettlementWait {
+  let waiter!: HydrationSettlementWaiter;
   const settled = new Promise<void>((resolve) => {
-    wake = () => resolve();
+    waiter = { wake: resolve, except };
     let waiters = hydrationSettlementWaiters.get(ref);
     if (!waiters) {
       waiters = new Set();
       hydrationSettlementWaiters.set(ref, waiters);
     }
-    waiters.add(wake);
+    waiters.add(waiter);
   });
   return {
     settled,
     cancel: () => {
       const waiters = hydrationSettlementWaiters.get(ref);
       if (!waiters) return;
-      waiters.delete(wake);
+      waiters.delete(waiter);
       if (waiters.size === 0) hydrationSettlementWaiters.delete(ref);
     },
   };
@@ -1856,6 +1872,32 @@ function registerHydrationCompletion(ref: string, completion: Promise<void>): vo
     () => settleHydrationRegistration(ref, completion),
     () => settleHydrationRegistration(ref, completion),
   );
+}
+
+// A tracked read normally publishes its own settlement in
+// trackedHydrationCompletions so waiting consumers await its convergence.
+// A caller that already holds a wider registration for this ref — the
+// opening-recovery chain registers its whole span — must keep that wider
+// promise as the one consumers capture mid-read, so this read joins under
+// it instead of displacing it.
+// Compose with the opening-recovery chain's registration when one is
+// outstanding rather than displacing it: the chain's span is wider than
+// this hydration, and a consumer that starts waiting while this read runs
+// must still span the recovery behind it. Hydration-only registrations
+// still displace each other — the newer attempt owns the ref's
+// convergence. The compose is allSettled on purpose: a rejected hydration
+// is the failed refresh's own concern and must not settle the composed
+// completion while the chain's span is still pending, or a waiting
+// consumer resumes before recovery establishes the display and cursor.
+function registerHydrationSettlement(ref: string, hydration: Promise<unknown>): void {
+  const outstandingRecovery = openingRecoveryCompletions.get(ref);
+  const completion = outstandingRecovery
+    ? Promise.allSettled([hydration, outstandingRecovery]).then(() => undefined)
+    : hydration.then(
+        () => undefined,
+        () => undefined,
+      );
+  registerHydrationCompletion(ref, completion);
 }
 
 // The map holds only pending registrations: an entry leaves through this
@@ -1870,10 +1912,16 @@ function settleHydrationRegistration(ref: string, completion: Promise<void>): vo
   trackedHydrationCompletions.delete(ref);
   const waiters = hydrationSettlementWaiters.get(ref);
   if (!waiters) return;
-  hydrationSettlementWaiters.delete(ref);
-  for (const wake of waiters) {
-    wake();
+  const remaining = new Set<HydrationSettlementWaiter>();
+  for (const waiter of waiters) {
+    if (waiter.except === completion) {
+      remaining.add(waiter);
+      continue;
+    }
+    waiter.wake();
   }
+  if (remaining.size === 0) hydrationSettlementWaiters.delete(ref);
+  else hydrationSettlementWaiters.set(ref, remaining);
 }
 
 // The identity a pending hydration accepts frames for. Both facts come from an
@@ -6897,31 +6945,7 @@ async function refreshTrackedThreadNow(
     if (isDiscardedReadResult(pending, result.model)) return pending.baseModel ?? null;
     return publishAndReconcileThreadHydration(ref, pending, result, reopenOnlyClientMutationId, intent);
   });
-  // A tracked read normally publishes its own settlement in
-  // trackedHydrationCompletions so waiting consumers await its convergence.
-  // A caller that already holds a wider registration for this ref — the
-  // opening-recovery chain registers its whole span — must keep that wider
-  // promise as the one consumers capture mid-read, so this read joins under
-  // it instead of displacing it.
-  if (registerCompletion) {
-    // Compose with the opening-recovery chain's registration when one is
-    // outstanding rather than displacing it: the chain's span is wider than
-    // this hydration, and a consumer that starts waiting while this read runs
-    // must still span the recovery behind it. Hydration-only registrations
-    // still displace each other — the newer attempt owns the ref's
-    // convergence. The compose is allSettled on purpose: a rejected hydration
-    // is the failed refresh's own concern and must not settle the composed
-    // completion while the chain's span is still pending, or a waiting
-    // consumer resumes before recovery establishes the display and cursor.
-    const outstandingRecovery = openingRecoveryCompletions.get(ref);
-    const completion = outstandingRecovery
-      ? Promise.allSettled([hydration, outstandingRecovery]).then(() => undefined)
-      : hydration.then(
-          () => undefined,
-          () => undefined,
-        );
-    registerHydrationCompletion(ref, completion);
-  }
+  if (registerCompletion) registerHydrationSettlement(ref, hydration);
   const hasPublishedModel = threadsStore.getState().threads.has(ref);
   // A failed targeted predecessor may already have removed `previous`.
   // Keep the newest targeted read adoptable by the still-active initial
@@ -7476,6 +7500,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // promise — a separate object from `inflight` — so without a catch
       // here a failed hydrate becomes an unhandled rejection on top of the
       // one every caller already observes via `await inflight` below.
+      // The pane's initial claim settles the same registration a tracked
+      // refresh does: a pane that closes while the claim is pending and
+      // reopens over the shell the background lease preserves observes the
+      // claim's settlement from its own pending open instead of riding the
+      // backstop. Replacement ownership is unchanged (the identity check and
+      // displacement below), and the claim's own post-hydration re-open
+      // excludes this registration from its wait (see selfPublication), so
+      // the certification still promotes rather than self-certifying.
+      registerHydrationSettlement(ref, hydration);
       inflightHydrates.start(ref, hydration, hydrationClient, hydrationEpoch);
       return hydration;
     };
