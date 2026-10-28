@@ -38,6 +38,30 @@ func TestE2E_ManagerReadinessSavedAttributionAndReplaySSH(t *testing.T) {
 	t.Cleanup(provider.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
+	a, aHuman, b, bHuman, _, bHubID := startManagerReadinessAttachedFixture(ctx, t, provider)
+	manager, err := clientRequest[appwire.ThreadStartResponse](ctx, bHuman, appwire.MethodThreadStart, appwire.ThreadStartParams{Harness: "evener", CWD: b.workDir, Model: b.model, Manager: true, LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	managerRef := manager.Thread.Evener.Ref
+	t.Cleanup(func() {
+		shutdown, stop := context.WithTimeout(context.Background(), 20*time.Second)
+		defer stop()
+		if _, err := clientRequest[appwire.EmptyResponse](shutdown, bHuman, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: managerRef}); err != nil {
+			t.Errorf("B Manager shutdown: %v", err)
+		}
+	})
+	// Calling the existing workflow twice routes both actions through the B
+	// Manager's tools. Empty host name selects B-local; the second call crosses
+	// B's attached-host registry to A.
+	acceptanceRemoteManagerInput(ctx, t, provider, b, b, bHuman, bHuman, managerRef, "", bHubID)
+	acceptanceRemoteManagerInput(ctx, t, provider, b, a, bHuman, aHuman, managerRef, "readiness-a", bHubID)
+}
+
+// startManagerReadinessAttachedFixture connects the existing two-hub SSH
+// fixture in both directions. B's identity comes from its configured store.
+func startManagerReadinessAttachedFixture(ctx context.Context, t *testing.T, provider *fakellm.Server) (hubStack, *appwire.Client, hubStack, *appwire.Client, string, string) {
+	t.Helper()
 	a, aHuman, _, hostDir, bAddr, _ := startManagerAcceptanceSSHFixture(t, provider, ctx)
 	tokenBytes, err := os.ReadFile(filepath.Join(hostDir, "state", "auth-token"))
 	if err != nil {
@@ -67,21 +91,5 @@ func TestE2E_ManagerReadinessSavedAttributionAndReplaySSH(t *testing.T) {
 	if bHubID == "" {
 		t.Fatal("B durable hub identity is empty")
 	}
-	manager, err := clientRequest[appwire.ThreadStartResponse](ctx, bHuman, appwire.MethodThreadStart, appwire.ThreadStartParams{Harness: "evener", CWD: b.workDir, Model: b.model, Manager: true, LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	managerRef := manager.Thread.Evener.Ref
-	t.Cleanup(func() {
-		shutdown, stop := context.WithTimeout(context.Background(), 20*time.Second)
-		defer stop()
-		if _, err := clientRequest[appwire.EmptyResponse](shutdown, bHuman, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: managerRef}); err != nil {
-			t.Errorf("B Manager shutdown: %v", err)
-		}
-	})
-	// Calling the existing workflow twice routes both actions through the B
-	// Manager's tools. Empty host name selects B-local; the second call crosses
-	// B's attached-host registry to A.
-	acceptanceRemoteManagerInput(ctx, t, provider, b, b, bHuman, bHuman, managerRef, "", bHubID)
-	acceptanceRemoteManagerInput(ctx, t, provider, b, a, bHuman, aHuman, managerRef, hostName, bHubID)
+	return a, aHuman, b, bHuman, hostDir, bHubID
 }

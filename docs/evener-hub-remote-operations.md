@@ -125,10 +125,14 @@ through the Manager's `delegate` branch is deferred; start a worker through the
 remote host's own client, then use its source-qualified ref. Discovery of an empty
 remote host and its model catalog does not create a worker there.
 
-The remote sandbox-approval route is implemented but has not been exercised
-with a live remote prompt; local no-browser approval does not prove that branch.
+The real two-hub localhost SSH
+[remote approval test](../cmd/evener-hub/manager_readiness_approval_test.go)
+checks a restricted worker's denied write, a Manager's shared watch and approval
+without a browser subscriber, the changed file and the saved Manager-attributed
+decision and successful tool result. Only the external model responses are
+scripted. Live-model behavior and non-localhost deployment remain unqualified.
 
-**Remote Manager `job_watch` uses the same shared hub subscription path as human clients.** It supports targeted status, question, approval and communicate notifications plus accepted terminal completion. Question/answer/completion and saved Manager actor attribution are qualified through real two-hub SSH acceptance without a browser. A Manager attach or clear preserves existing human subscribers. Daemon socket reconnect is separately checked for local and remote routing with the original human subscriber retained; this is not a claim about SSH bridge reconnect. Resync re-reads authoritative state regardless of event selectors, retains the watched execution on the same generation, and ends the old watch on replacement. Live remote sandbox approval remains unexercised end to end.
+**Remote Manager `job_watch` uses the same shared hub subscription path as human clients.** It supports targeted status, question, approval and communicate notifications plus accepted terminal completion. Question/answer/completion and saved Manager actor attribution are qualified through real two-hub SSH acceptance without a browser. A Manager attach or clear preserves existing human subscribers. Daemon socket reconnect is separately checked for local and remote routing with the original human subscriber retained; this is not a claim about SSH bridge reconnect. Resync re-reads authoritative state regardless of event selectors, retains the watched execution on the same generation, and ends the old watch on replacement.
 
 Run the actual SSH acceptance explicitly with
 `EVENER_SSH_E2E=1 EVENER_SSH_E2E_DEPLOY=1 go test ./cmd/evener-hub -run '^TestE2E_ManagerAcceptance$' -count=1`.
