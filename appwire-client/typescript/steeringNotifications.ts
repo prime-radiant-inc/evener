@@ -3,7 +3,7 @@
 // them is parsing rather than guessing.
 //
 // NOTHING EMITS THE "Observer callback:" HEADER ANY MORE. Its producer was
-// deleted with agent.EntryWatchDelivery (kata z5fm), and a watch-origin
+// deleted with agent.EntryWatchDelivery, and a watch-origin
 // observer's terminal communicate now reaches its parent as the ordinary
 // <delegate-notification> frame. parseObserverCallback stays because
 // transcripts are DURABLE: a thread recorded while the producer existed still
@@ -215,7 +215,7 @@ interface NotificationBlockFragment {
 // </job-notification> block. The per-block match MUST be non-greedy: a single
 // steering turn can carry several blocks joined by newlines, and a greedy match
 // would span the first opening tag to the last closing tag and aggregate
-// distinct notifications into one (contracts §17).
+// distinct notifications into one.
 function splitNotificationBlocks(text: string): NotificationBlockFragment[] {
   const pattern = /<(job|delegate)-notification\s+[^>]*>[\s\S]*?<\/\1-notification>/g;
   const fragments: NotificationBlockFragment[] = [];
@@ -356,7 +356,7 @@ interface TerminalPacket {
   kind: string;
   // The settled outcome: metadata's delegatestore.OutcomeStatus, or the one
   // the packet kind implies when metadata carries none (the fold's own bare
-  // stop packet, agent/internal/delegatestore/fold.go, #3114).
+  // stop packet, agent/internal/delegatestore/fold.go).
   outcome: string;
   message: string;
   // A code (delegatestore reasons); `error` is a failed run's cause in words.
@@ -373,7 +373,7 @@ interface TerminalPacket {
   structuredResult?: unknown;
   structuredResultValid?: boolean;
   structuredResultReason?: string;
-  // Where the result came from (#3548): a result schema's own output, or a
+  // Where the result came from: a result schema's own output, or a
   // no-schema delegate's captured default envelope (whose data the card
   // renders). Absent on frames recorded before the marker existed, where the
   // default-envelope shape heuristic remains the fallback.
@@ -533,7 +533,7 @@ function delegatePacketNotification(
   // explicit null) passes through as-is for the card's value grammar.
   const reported = packet.kind === "reported";
   const captured = packet.structuredResult !== undefined ? packet.structuredResult : envelope?.data;
-  // #3548: the packet names its capture source, so a result schema whose output
+  // The packet names its capture source, so a result schema whose output
   // wears the default envelope's exact shape is never mistaken for a no-schema
   // capture. A "schema" source keeps the result whole. Any other source,
   // "default_envelope" included, still requires the exact default shape
@@ -609,7 +609,7 @@ function decodeNotificationAttributeEntities(text: string): string {
 // producer-side escaping (agent/job_notify.go's escapeNotificationText) for
 // text interpolated into a <job-notification> wrapper. The parser no longer
 // re-escapes any output of its own (it decodes once and hands callers plain
-// text, issue #3086), but the paired encoder stays a package export: it is the
+// text), but the paired encoder stays a package export: it is the
 // wire contract's TypeScript half, and dropping it would break consumers of
 // @evener/appwire-client.
 export function escapeNotificationEntities(text: string): string {
@@ -662,11 +662,11 @@ function notificationTone(attrs: Record<string, string>, communicate: Communicat
   // watch frames below: the watcher missed something. Defense in depth —
   // watch diagnostics normally arrive as job notifications (which check
   // this in jobNotificationTone), but no watch-shaped failure must ever
-  // read as an expected outcome (combined RoboRev review).
+  // read as an expected outcome.
   if (isWatchDeliveryFailure(decodeNotificationAttributeEntities(attrs.reason ?? "").trim())) {
     return "warning";
   }
-  // Mockups 23-job-watch §E: a fired watch is the expected outcome, never
+  // A fired watch is the expected outcome, never
   // something needing a human — no watch notification earns a tone chip,
   // ever (not the timer, not a match, not even the budget auto-clear: the
   // words carry it). Watch events short-circuit before the concerns/
@@ -695,8 +695,7 @@ function notificationTone(attrs: Record<string, string>, communicate: Communicat
 // "watch send " prefix with its trailing space covers the send-rail family
 // present and future; the others are stable producer wordings named
 // explicitly. A failed delivery is not a firing — it titles and tones as a
-// failure so it cannot present as a successful trigger (combined RoboRev
-// review).
+// failure so it cannot present as a successful trigger.
 function isWatchDeliveryFailure(reason: string): boolean {
   return (
     reason.startsWith("watch send ") ||
@@ -720,13 +719,13 @@ function jobNotificationTone(
   if (isWatchDeliveryFailure(decodeNotificationAttributeEntities(attrs.reason ?? "").trim())) {
     return "warning";
   }
-  // Same §E rule as notificationTone above: watch and watch-send deliveries
+  // Same rule as notificationTone above: watch and watch-send deliveries
   // are expected outcomes. The budget auto-clear notice carries the same
   // watch event as a fire (agent's watchNotification), so this
   // covers it too — its "matched 50 times" words carry the signal. The check
   // mirrors the parser's type detection (event OR status "watch"): a
   // status-only watch frame is still a watch delivery, never a chip
-  // (combined RoboRev review) — and neither is a watch_id-reclassified
+  // — and neither is a watch_id-reclassified
   // delivery: a self/parent job.notification watch's enriched frame carries
   // the completed job's event/status/reason, so the attr check cannot see it
   // as a watch, but the parser's type can. The completed job's own exit must
@@ -748,22 +747,21 @@ function jobNotificationTone(
 function titleForJobNotification(attrs: Record<string, string>, type: string, prose?: string): string {
   if (type === "watch-send") return "Watch delivered";
   if (type === "watch") {
-    // Derive the title from the trigger, not from job presence (RoboRev PR
-    // #954): only an output_match fire is an "Output matched on …". A timer
+    // Derive the title from the trigger, not from job presence: only an output_match fire is an "Output matched on …". A timer
     // prose lead ("Timer fired …") keeps a timer title; an event fire
     // ("event: …" reason) names the event.
     // The reason is producer-escaped (escapeNotificationText) and
     // parseQuotedAttrs does not decode, so decode before matching — a
-    // pattern containing & < > must title decoded (RoboRev PR #954 review 3).
+    // pattern containing & < > must title decoded.
     const reason = decodeNotificationAttributeEntities(attrs.reason ?? "").trim();
-    // Teardown notices are endings, never firings (RoboRev PR #954 review 3):
+    // Teardown notices are endings, never firings:
     // watchEndedUnfiredMessage / watchLostAtRestartMessage start with
     // "watch ended:", watchBudgetClearedMessage with "watch cleared:". The
     // prose/reason carries which watch and why, so the title stays short.
     if (reason.startsWith("watch ended:")) return "Watch ended";
     if (reason.startsWith("watch cleared:")) return "Watch auto-cleared";
     // A failed delivery is not a firing — it titles as what it is, never
-    // "Watch fired on <job>" (combined RoboRev review). Checked before the
+    // "Watch fired on <job>". Checked before the
     // trigger fallthroughs below.
     if (isWatchDeliveryFailure(reason)) return "Watch delivery failed";
     const jobId = (attrs.job_id ?? "").trim();
@@ -858,8 +856,7 @@ function notificationSecondary(
   // The reason is producer-escaped (see titleForJobNotification above), so it
   // is decoded here too; a bare timer reason ("after"/"repeat") humanizes
   // from the prose lead's seconds instead ("after 5m" / "every 5m"), falling
-  // back to the raw reason when the prose does not match (RoboRev PR #954
-  // review 3).
+  // back to the raw reason when the prose does not match.
   if (notificationType === "watch") {
     const reason = decodeNotificationAttributeEntities(attrs.reason ?? "").trim();
     // A watch_id-reclassified completion carries the job's completion reason,
@@ -905,7 +902,7 @@ function notificationSecondary(
 // (formatJobNotificationBlock's fallthrough — the excerpt is ignored for watch
 // frames), keeping the trigger in the escaped reason attr. For that shape the
 // card synthesizes prose from the reason so the expanded card shows what fired
-// instead of the generic sentence (RoboRev PR #954 combined review). The
+// instead of the generic sentence. The
 // synthesis names the trigger, never invented output context — the reason
 // carries the matched pattern / event name, not surrounding output.
 // watchNoteSection splits an already-DECODED notification body into its lead
@@ -940,7 +937,7 @@ function watchProse(attrs: Record<string, string>, bodyText: string): string {
   // is the same generic "Job <id> watch." sentence as a condition fire's
   // (formatJobNotificationBlock's non-empty-JobID fallthrough covers every
   // reason). Only a body that already carries the reason passes through; a
-  // generic body falls to the reason below (combined RoboRev review). Both
+  // generic body falls to the reason below. Both
   // sides are decoded here, so the comparison sees literal text.
   if (reason.startsWith("watch ended:") || reason.startsWith("watch cleared:")) {
     if (decodedBody.includes(reason)) return decodedBody;
@@ -1006,7 +1003,7 @@ function parseJobNotification(block: string): ParsedNotification | null {
   // is ignored for watch frames, so there is no matched output to carry).
   // The reason attr holds the actual trigger ("output_match: …" /
   // "event: …"), so the card synthesizes its prose from the reason instead
-  // of showing the generic sentence (RoboRev PR #954 combined review).
+  // of showing the generic sentence.
   // Teardown notices ("watch ended:" / "watch cleared:") and timer/event
   // bodies already carry their own prose and pass through untouched.
   // The parser decodes the body once, so callers read plain text.
@@ -1023,7 +1020,7 @@ function parseJobNotification(block: string): ParsedNotification | null {
   // calls communicate to produce it - agent/session_tools_communicate.go).
   // Gate on the actual job type, not on whether the excerpt happens to parse
   // as JSON with message/data keys: shell stdout is literal output even when
-  // it coincidentally looks like an envelope (kata 9cnq). The excerpt is
+  // it coincidentally looks like an envelope. The excerpt is
   // already body-decoded above, and the producer leaves JSON quotes literal.
   const communicate = attrs.job_type === "delegate" ? parseCommunicateEnvelope(excerpt) : null;
   const transcriptRef = isValidTranscriptRef(attrs.transcript_ref) ? attrs.transcript_ref : undefined;
@@ -1077,8 +1074,8 @@ function parseObserverCallback(stripped: string): ParsedNotification | null {
   const marker = "\noutput: ";
   const idx = withoutHeader.indexOf(marker);
   const output = idx === -1 ? "" : withoutHeader.slice(idx + marker.length).trim();
-  // The observer's own `message:` prose is the real signal (floor parity-m4
-  // §8:239 "body = observer-callback prose"). With an `output:` envelope the
+  // The observer's own `message:` prose is the real signal (the body is the
+  // observer-callback prose). With an `output:` envelope the
   // communicate message/excerpt carries the body; with NO output (the daemon's
   // historic `Observer callback:\nmessage: X` shape)
   // the prose is the ONLY content, so surface it rather than dropping it to the
