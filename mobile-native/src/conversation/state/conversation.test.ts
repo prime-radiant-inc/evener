@@ -836,13 +836,7 @@ describe("ConversationStore", () => {
 				turnsPage: turnsPage(
 					[
 						wireTurnFragment("t0", [
-							{
-								id: "m1",
-								turnId: "t0",
-								type: "userMessage",
-								text: "page text",
-								status: "completed",
-							} as ThreadItem,
+							{ ...userMessageItem("m1", "page text"), turnId: "t0", status: "completed" } as ThreadItem,
 						]),
 					],
 					"c2",
@@ -876,15 +870,7 @@ describe("ConversationStore", () => {
 						makeTurn({
 							id: "t1",
 							status: "completed",
-							items: [
-								{
-									id: "user",
-									turnId: "t1",
-									type: "userMessage",
-									text: "look",
-									status: "completed",
-								} as ThreadItem,
-							],
+							items: [{ ...userMessageItem("user", "look"), turnId: "t1", status: "completed" } as ThreadItem],
 						}),
 					],
 				}),
@@ -897,11 +883,9 @@ describe("ConversationStore", () => {
 					[
 						wireTurnFragment("t0", [
 							{
-								id: "user",
+								...userMessageItem("user", "look"),
 								transcriptKey: "user",
 								turnId: "t0",
-								type: "userMessage",
-								text: "look",
 								status: "completed",
 								images: [{ type: "image", mediaType: "image/png", data: "AQID" }],
 							} as ThreadItem,
@@ -3844,17 +3828,7 @@ describe("ConversationStore", () => {
 			const { store } = await openRunningTurn([], {}, true);
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...{
-								type: "agentMessage",
-								id: "item-a",
-								text: "Hello",
-								status: "inProgress",
-							},
-							turnId: "t1",
-						},
-					],
+					items: [{ ...agentMessageItem("item-a", "Hello", "inProgress"), turnId: "t1" }],
 				}),
 			);
 			expect(rowById(store, "item-a")).toMatchObject({ kind: "assistant", markdown: "Hello" });
@@ -3864,17 +3838,7 @@ describe("ConversationStore", () => {
 			const { store } = await openRunningTurn([agentMessageItem("item-a", "old", "inProgress")], {}, true);
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...{
-								type: "agentMessage",
-								id: "item-a",
-								text: "new text",
-								status: "inProgress",
-							},
-							turnId: "t1",
-						},
-					],
+					items: [{ ...agentMessageItem("item-a", "new text", "inProgress"), turnId: "t1" }],
 				}),
 			);
 			expect(rowById(store, "item-a")).toMatchObject({ kind: "assistant", markdown: "new text" });
@@ -3933,17 +3897,7 @@ describe("ConversationStore", () => {
 			await store.getState().open(service, "ref-1");
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...{
-								type: "userMessage",
-								id: "wire-new",
-								transcriptKey: "stable-message",
-								text: "new",
-							},
-							turnId: "t1",
-						},
-					],
+					items: [{ ...userMessageItem("wire-new", "new"), transcriptKey: "stable-message", turnId: "t1" }],
 				}),
 			);
 			const items = rows(store);
@@ -3966,10 +3920,7 @@ describe("ConversationStore", () => {
 		// family, which the projector renders as one clustered row.
 		const clusterPair = (over: Partial<ThreadItem> = {}): ThreadItem[] => [
 			{
-				type: "commandExecution",
-				id: "call-first",
-				toolName: "shell",
-				status: "inProgress",
+				...commandExecItem("call-first", "shell", "inProgress"),
 				outputImages: [{ source: "old", url: "https://hub.test/old" }],
 			} as ThreadItem,
 			{
@@ -3988,14 +3939,9 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...{
-								type: "commandExecution",
-								id: "call-first",
-								toolName: "shell",
-								status: "completed",
-								output: "updated",
-								outputImages: [{ source: "new", url: "https://hub.test/new" }],
-							},
+							...commandExecItem("call-first", "shell", "completed"),
+							output: "updated",
+							outputImages: [{ source: "new", url: "https://hub.test/new" }],
 							turnId: "t1",
 						},
 					],
@@ -4019,19 +3965,13 @@ describe("ConversationStore", () => {
 			const { store } = await openRunningTurn(
 				[
 					{
-						type: "commandExecution",
-						id: "wire-first",
+						...commandExecItem("wire-first", "shell", "completed"),
 						transcriptKey: "first",
-						toolName: "shell",
-						status: "completed",
 						outputImages: [{ source: "first", url: "https://hub.test/first" }],
 					} as ThreadItem,
 					{
-						type: "commandExecution",
-						id: "wire-later",
+						...commandExecItem("wire-later", "shell", "inProgress"),
 						transcriptKey: "later",
-						toolName: "shell",
-						status: "inProgress",
 						outputImages: [{ source: "old", url: "https://hub.test/old" }],
 					} as ThreadItem,
 				],
@@ -4042,14 +3982,9 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...{
-								type: "commandExecution",
-								id: "new-wire-later",
-								transcriptKey: "later",
-								toolName: "shell",
-								status: "inProgress",
-								outputImages: [{ source: "new", url: "https://hub.test/new" }],
-							},
+							...commandExecItem("new-wire-later", "shell", "inProgress"),
+							transcriptKey: "later",
+							outputImages: [{ source: "new", url: "https://hub.test/new" }],
 							turnId: "t1",
 						},
 					],
@@ -4086,14 +4021,9 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...{
-								type: "commandExecution",
-								id: "new-wire-later",
-								transcriptKey: "later",
-								toolName: "shell",
-								status: "completed",
-								output: "updated",
-							},
+							...commandExecItem("new-wire-later", "shell", "completed"),
+							transcriptKey: "later",
+							output: "updated",
 							turnId: "t1",
 						},
 					],
@@ -4138,15 +4068,10 @@ describe("ConversationStore", () => {
 					historyUpdated({
 						items: [
 							{
-								...{
-									type: "commandExecution",
-									id: "new-wire-later",
-									transcriptKey: "later",
-									toolName: "shell",
-									status: "failed",
-									output: "failed",
-									error: "boom",
-								},
+								...commandExecItem("new-wire-later", "shell", "failed"),
+								transcriptKey: "later",
+								output: "failed",
+								error: "boom",
 								turnId: "t1",
 							},
 						],
@@ -4158,19 +4083,13 @@ describe("ConversationStore", () => {
 					makeReadProjectionResult(
 						runningTurnThread([
 							{
-								type: "commandExecution",
-								id: "wire-first",
+								...commandExecItem("wire-first", "shell", "completed"),
 								transcriptKey: "first",
-								toolName: "shell",
-								status: "completed",
 								output: "authoritative first",
 							} as ThreadItem,
 							{
-								type: "commandExecution",
-								id: "wire-later",
+								...commandExecItem("wire-later", "shell", "completed"),
 								transcriptKey: "later",
-								toolName: "shell",
-								status: "completed",
 								output: "failed",
 								error: "boom",
 							} as ThreadItem,
@@ -4232,13 +4151,7 @@ describe("ConversationStore", () => {
 			// The reread's snapshot has caught up with the middle member only.
 			service.readProjectionResult = makeReadProjectionResult(
 				runningTurnThread([
-					{
-						type: "commandExecution",
-						id: "m2",
-						toolName: "shell",
-						status: "completed",
-						output: "m2 authoritative",
-					} as ThreadItem,
+					{ ...commandExecItem("m2", "shell", "completed"), output: "m2 authoritative" } as ThreadItem,
 				]),
 			);
 			await store.getState().rehydrate(service);
@@ -4300,11 +4213,8 @@ describe("ConversationStore", () => {
 			service.readProjectionResult = makeReadProjectionResult(
 				runningTurnThread([
 					{
-						type: "commandExecution",
-						id: "wire-first",
+						...commandExecItem("wire-first", "shell", "completed"),
 						transcriptKey: "key-first",
-						toolName: "shell",
-						status: "completed",
 						output: "authoritative",
 					} as ThreadItem,
 				]),
@@ -4336,11 +4246,8 @@ describe("ConversationStore", () => {
 			const { store, service } = await openRunningTurn(
 				[
 					{
-						type: "commandExecution",
-						id: "old-wire",
+						...commandExecItem("old-wire", "shell", "inProgress"),
 						transcriptKey: "later",
-						toolName: "shell",
-						status: "inProgress",
 						outputImages: [{ source: "old", url: "old" }],
 					} as ThreadItem,
 				],
@@ -4357,14 +4264,9 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...{
-								type: "commandExecution",
-								id: "new-wire-later",
-								transcriptKey: "later",
-								toolName: "shell",
-								status: "completed",
-								output: "done",
-							},
+							...commandExecItem("new-wire-later", "shell", "completed"),
+							transcriptKey: "later",
+							output: "done",
 							turnId: "t1",
 						},
 					],
@@ -4380,11 +4282,8 @@ describe("ConversationStore", () => {
 				makeReadProjectionResult(
 					runningTurnThread([
 						{
-							type: "commandExecution",
-							id: "new-wire-later",
+							...commandExecItem("new-wire-later", "shell", "completed"),
 							transcriptKey: "later",
-							toolName: "shell",
-							status: "completed",
 							output: "done",
 							outputImages: [],
 						} as ThreadItem,
@@ -4398,19 +4297,10 @@ describe("ConversationStore", () => {
 		it("carries a later member's completion into the cluster row", async () => {
 			const { store } = await openRunningTurn(
 				[
+					{ ...commandExecItem("wire-first", "shell", "completed"), transcriptKey: "first" } as ThreadItem,
 					{
-						type: "commandExecution",
-						id: "wire-first",
-						transcriptKey: "first",
-						toolName: "shell",
-						status: "completed",
-					} as ThreadItem,
-					{
-						type: "commandExecution",
-						id: "wire-later",
+						...commandExecItem("wire-later", "shell", "inProgress"),
 						transcriptKey: "later",
-						toolName: "shell",
-						status: "inProgress",
 					} as ThreadItem,
 				],
 				{},
@@ -4420,15 +4310,10 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...{
-								type: "commandExecution",
-								id: "new-wire-later",
-								transcriptKey: "later",
-								toolName: "shell",
-								status: "completed",
-								output: "updated",
-								outputImages: [{ source: "new", url: "new" }],
-							},
+							...commandExecItem("new-wire-later", "shell", "completed"),
+							transcriptKey: "later",
+							output: "updated",
+							outputImages: [{ source: "new", url: "new" }],
 							turnId: "t1",
 						},
 					],
@@ -4460,18 +4345,7 @@ describe("ConversationStore", () => {
 			);
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...{
-								type: "commandExecution",
-								id: "call-later",
-								toolName: "shell",
-								status: "completed",
-								error: "boom",
-							},
-							turnId: "t1",
-						},
-					],
+					items: [{ ...commandExecItem("call-later", "shell", "completed"), error: "boom", turnId: "t1" }],
 				}),
 			);
 			const activities = rows(store).filter((item) => item.kind === "activity");
@@ -4512,17 +4386,7 @@ describe("ConversationStore", () => {
 			expect(rowById(store, "item-a")).toMatchObject({ streaming: true });
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...{
-								type: "agentMessage",
-								id: "item-a",
-								text: "streaming text",
-								status: "completed",
-							},
-							turnId: "t1",
-						},
-					],
+					items: [{ ...agentMessageItem("item-a", "streaming text", "completed"), turnId: "t1" }],
 				}),
 			);
 			// The turn is still running, so the row settles when the turn does —
@@ -4580,18 +4444,7 @@ describe("ConversationStore", () => {
 			const { store } = await openRunningTurn([], {}, true);
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...{
-								type: "commandExecution",
-								id: "tool-missed",
-								toolName: "shell",
-								status: "completed",
-								output: "done",
-							},
-							turnId: "t1",
-						},
-					],
+					items: [{ ...commandExecItem("tool-missed", "shell", "completed"), output: "done", turnId: "t1" }],
 				}),
 			);
 			// The completed item is inserted (UPSERT), not lost.
@@ -4608,15 +4461,10 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...{
-								type: "commandExecution",
-								id: "tool-reasoning-1",
-								toolName: "Reasoning",
-								callId: "call-reasoning-1",
-								status: "completed",
-								output: "thoughts",
-								argumentsJson: '{"summary":"thinking"}',
-							},
+							...commandExecItem("tool-reasoning-1", "Reasoning", "completed"),
+							callId: "call-reasoning-1",
+							output: "thoughts",
+							argumentsJson: '{"summary":"thinking"}',
 							turnId: "t1",
 						},
 					],
@@ -4637,17 +4485,7 @@ describe("ConversationStore", () => {
 			const { store } = await openRunningTurn([], {}, true);
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...{
-								type: "reasoning",
-								id: "reason-notify-1",
-								status: "inProgress",
-								text: "analyzing",
-							},
-							turnId: "t1",
-						},
-					],
+					items: [{ ...reasoningItem("reason-notify-1", "analyzing", "inProgress"), turnId: "t1" }],
 				}),
 			);
 			expect(rowById(store, "reason-notify-1")).toMatchObject({
@@ -4678,17 +4516,7 @@ describe("ConversationStore", () => {
 				const { store } = await openRunningTurn([], {}, true);
 				store.getState().applyNotification(
 					historyUpdated({
-						items: [
-							{
-								...{
-									type: "reasoning",
-									id: "reason-authoritative-1",
-									status: "inProgress",
-									text: "old reasoning",
-								},
-								turnId: "t1",
-							},
-						],
+						items: [{ ...reasoningItem("reason-authoritative-1", "old reasoning", "inProgress"), turnId: "t1" }],
 					}),
 				);
 				store.getState().applyNotification(
@@ -4719,17 +4547,7 @@ describe("ConversationStore", () => {
 			const { store } = await openRunningTurn([], {}, true);
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...{
-								type: "reasoning",
-								id: "reason-settled-1",
-								status: "completed",
-								text: "final reasoning",
-							},
-							turnId: "t1",
-						},
-					],
+					items: [{ ...reasoningItem("reason-settled-1", "final reasoning", "completed"), turnId: "t1" }],
 				}),
 			);
 			expect(rowById(store, "reason-settled-1")).toMatchObject({
@@ -5110,17 +4928,7 @@ describe("ConversationStore", () => {
 					bootGeneration: "1",
 					epoch: 1,
 					snapshot: { incarnation: "inc-1", length: 1 },
-					items: [
-						{
-							...{
-								type: "userMessage",
-								id: "msg-live",
-								text: "hi",
-								images: [{ url: src, name: largeName }],
-							},
-							turnId: "t1",
-						},
-					],
+					items: [{ ...userMessageItem("msg-live", "hi"), images: [{ url: src, name: largeName }], turnId: "t1" }],
 				},
 			} as AnyNotification);
 			const item = store.getState().conversation?.items.find((candidate) => candidate.id === "msg-live:attachments");
@@ -5209,17 +5017,7 @@ describe("ConversationStore", () => {
 			const before = store.getState().conversation;
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...{
-								type: "agentMessage",
-								id: "item-a",
-								text: "done",
-								status: "completed",
-							},
-							turnId: "t1",
-						},
-					],
+					items: [{ ...agentMessageItem("item-a", "done", "completed"), turnId: "t1" }],
 				}),
 			);
 			expect(store.getState().conversation).toBe(before);
@@ -5445,18 +5243,7 @@ describe("ConversationStore", () => {
 			const initialReads = service.readProjectionCalls.length;
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...{
-								type: "commandExecution",
-								id: "ask-1",
-								toolName: "ask_user",
-								status: "inProgress",
-								argumentsJson: VALID_ASK_ARGS,
-							},
-							turnId: "t1",
-						},
-					],
+					items: [{ ...askUserItem("ask-1", VALID_ASK_ARGS, "inProgress"), turnId: "t1" }],
 				}),
 			);
 			await Promise.resolve();
@@ -5473,18 +5260,7 @@ describe("ConversationStore", () => {
 			const initialReads = service.readProjectionCalls.length;
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...{
-								type: "commandExecution",
-								id: "ask-1",
-								toolName: "ask_user",
-								status: "completed",
-								argumentsJson: VALID_ASK_ARGS,
-							},
-							turnId: "t1",
-						},
-					],
+					items: [{ ...askUserItem("ask-1", VALID_ASK_ARGS, "completed"), turnId: "t1" }],
 				}),
 			);
 			// The item alone is not the whole signal (#1731 round 4): the status
@@ -5777,17 +5553,7 @@ describe("ConversationStore", () => {
 			// alone cannot be what clears the warning (RoboRev round 3).
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...{
-								type: "userMessage",
-								id: "real-1",
-								text: "the real message",
-								transcriptEntryIndex: 3,
-							},
-							turnId: "t1",
-						},
-					],
+					items: [{ ...userMessageItem("real-1", "the real message"), transcriptEntryIndex: 3, turnId: "t1" }],
 				}),
 			);
 			store.getState().applyNotification(warningFrame({ message: "careful" }));
@@ -5981,17 +5747,7 @@ describe("ConversationStore", () => {
 
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...{
-								type: "userMessage",
-								id: "user-1",
-								text: "updated input",
-								transcriptEntryIndex: 4,
-							},
-							turnId: "t1",
-						},
-					],
+					items: [{ ...userMessageItem("user-1", "updated input"), transcriptEntryIndex: 4, turnId: "t1" }],
 				}),
 			);
 
@@ -6349,17 +6105,11 @@ describe("ConversationStore", () => {
 						status: "completed",
 						items: [
 							{
-								type: "commandExecution",
-								id: "a-tool",
-								toolName: "shell",
-								status: "completed",
+								...commandExecItem("a-tool", "shell", "completed"),
 								description: "first audit",
 							} as ThreadItem,
 							{
-								type: "commandExecution",
-								id: "b-tool",
-								toolName: "shell",
-								status: "completed",
+								...commandExecItem("b-tool", "shell", "completed"),
 								description: "second audit",
 							} as ThreadItem,
 						],
@@ -6389,10 +6139,7 @@ describe("ConversationStore", () => {
 					turns: [{ id: "t2", itemsView: "default", status: "inProgress" }],
 					items: [
 						{
-							type: "commandExecution",
-							id: "c-tool",
-							toolName: "shell",
-							status: "completed",
+							...commandExecItem("c-tool", "shell", "completed"),
 							description: "third audit",
 							turnId: "t2",
 						} as ThreadItem,
@@ -6449,15 +6196,7 @@ describe("ConversationStore", () => {
 			store.getState().applyNotification(
 				historyUpdated({
 					turns: [{ id: "t2", itemsView: "default", status: "inProgress" }],
-					items: [
-						{
-							type: "commandExecution",
-							id: "c-tool",
-							toolName: "shell",
-							status: "completed",
-							turnId: "t2",
-						} as ThreadItem,
-					],
+					items: [{ ...commandExecItem("c-tool", "shell", "completed"), turnId: "t2" } as ThreadItem],
 				}),
 			);
 			const split = rows(store).filter((row) => row.kind === "activity");
@@ -6568,17 +6307,7 @@ describe("ConversationStore", () => {
 			// and the notice must stay seated.
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...{
-								type: "userMessage",
-								id: "wire-new",
-								transcriptKey: "stable-message",
-								text: "reissued",
-							},
-							turnId: "t1",
-						},
-					],
+					items: [{ ...userMessageItem("wire-new", "reissued"), transcriptKey: "stable-message", turnId: "t1" }],
 				}),
 			);
 			const reissued = rows(store);
@@ -6752,13 +6481,8 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...{
-								type: "commandExecution",
-								id: "command-1",
-								toolName: "shell",
-								description: "Inspect the source tree",
-								status: "completed",
-							},
+							...commandExecItem("command-1", "shell", "completed"),
+							description: "Inspect the source tree",
 							turnId: "t1",
 						},
 					],
@@ -6776,12 +6500,8 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...{
-								type: "userMessage",
-								id: "fork-source",
-								text: "fork from this input",
-								transcriptEntryIndex: 8,
-							},
+							...userMessageItem("fork-source", "fork from this input"),
+							transcriptEntryIndex: 8,
 							turnId: "t1",
 						},
 					],
@@ -7104,10 +6824,7 @@ describe("ConversationStore", () => {
 							id: "t1",
 							items: [
 								{
-									type: "commandExecution",
-									id: "src-1",
-									toolName: "shell",
-									status: "completed",
+									...commandExecItem("src-1", "shell", "completed"),
 									output: "done",
 									outputImages: [{ source: "s", url: "https://example.com/img.png" }],
 								} as ThreadItem,
@@ -10849,15 +10566,7 @@ describe("ConversationStore", () => {
 					turns: [
 						makeTurn({
 							id: "t0",
-							items: [
-								{
-									type: "commandExecution",
-									id: "call-1",
-									toolName: "shell",
-									status: "completed",
-									output: "held output",
-								} as ThreadItem,
-							],
+							items: [{ ...commandExecItem("call-1", "shell", "completed"), output: "held output" } as ThreadItem],
 						}),
 					],
 				}),
@@ -12011,20 +11720,8 @@ describe("ConversationStore", () => {
 	async function beginHeldClusterRehydrate() {
 		const { store, service, thread } = await openRunningTurn(
 			[
-				{
-					type: "commandExecution",
-					id: "wire-first",
-					transcriptKey: "first",
-					toolName: "shell",
-					status: "inProgress",
-				} as ThreadItem,
-				{
-					type: "commandExecution",
-					id: "wire-later",
-					transcriptKey: "later",
-					toolName: "shell",
-					status: "inProgress",
-				} as ThreadItem,
+				{ ...commandExecItem("wire-first", "shell", "inProgress"), transcriptKey: "first" } as ThreadItem,
+				{ ...commandExecItem("wire-later", "shell", "inProgress"), transcriptKey: "later" } as ThreadItem,
 			],
 			{},
 			true,
@@ -13082,10 +12779,7 @@ describe("ConversationStore", () => {
 						id: "t1",
 						items: [
 							{
-								type: "commandExecution",
-								id: "tool-1",
-								toolName: "bash",
-								status: "completed",
+								...commandExecItem("tool-1", "bash", "completed"),
 								argumentsJson: "{}",
 								output: "done",
 							} as ThreadItem,
@@ -13908,12 +13602,9 @@ describe("ConversationStore", () => {
 					[
 						wireTurnFragment("t1", [
 							{
-								id: "X",
+								...agentMessageItem("X", "page answer", "completed"),
 								turnId: "t1",
-								type: "agentMessage",
-								text: "page answer",
 								position: { entry: 10, item: 0 },
-								status: "completed",
 							} as ThreadItem,
 						]),
 					],
@@ -13935,12 +13626,9 @@ describe("ConversationStore", () => {
 					],
 					items: [
 						{
-							id: "X",
+							...agentMessageItem("X", "page answer settled", "completed"),
 							turnId: "t1",
 							transcriptKey: "K",
-							type: "agentMessage",
-							text: "page answer settled",
-							status: "completed",
 						} as ThreadItem,
 					].map((it) => ({ ...it, turnId: it.turnId ?? "t1" })),
 				}),
@@ -13995,13 +13683,10 @@ describe("ConversationStore", () => {
 					[
 						wireTurnFragment("t1", [
 							{
-								id: "X",
+								...agentMessageItem("X", "page answer", "completed"),
 								turnId: "t1",
 								transcriptKey: "K1",
-								type: "agentMessage",
-								text: "page answer",
 								position: { entry: 10, item: 0 },
-								status: "completed",
 							} as ThreadItem,
 						]),
 					],
@@ -14050,12 +13735,9 @@ describe("ConversationStore", () => {
 					],
 					items: [
 						{
-							id: "X",
+							...agentMessageItem("X", "page answer", "completed"),
 							turnId: "t1",
 							transcriptKey: "K1",
-							type: "agentMessage",
-							text: "page answer",
-							status: "completed",
 						} as ThreadItem,
 					].map((it) => ({ ...it, turnId: it.turnId ?? "t1" })),
 				}),
@@ -14138,10 +13820,8 @@ describe("ConversationStore", () => {
 					[
 						wireTurnFragment("t0", [
 							{
-								id: "u-older",
+								...userMessageItem("u-older", "see attached"),
 								turnId: "t0",
-								type: "userMessage",
-								text: "see attached",
 								images: [{ type: "image", name: "shot.png", metadata: { sha } }],
 								position: { entry: 1, item: 0 },
 							} as ThreadItem,
@@ -14543,12 +14223,9 @@ describe("ConversationStore", () => {
 							status: "inProgress",
 							items: [
 								{
-									id: "act",
+									...commandExecItem("act", "shell", "inProgress"),
 									turnId: "t1",
-									type: "commandExecution",
-									toolName: "shell",
 									callId: "c1",
-									status: "inProgress",
 								} as ThreadItem,
 							],
 						}),
@@ -14669,12 +14346,9 @@ describe("ConversationStore", () => {
 							status: "completed",
 							items: [
 								{
-									id: "k1",
+									...agentMessageItem("k1", "retained text", "completed"),
 									transcriptKey: "k1",
 									turnId: "t1",
-									type: "agentMessage",
-									text: "retained text",
-									status: "completed",
 								} as ThreadItem,
 							],
 						}),
@@ -14695,12 +14369,9 @@ describe("ConversationStore", () => {
 							usage: { inputTokens: 500, outputTokens: 20 },
 							items: [
 								{
-									id: "k1",
+									...agentMessageItem("k1", "page text", "completed"),
 									transcriptKey: "k1",
 									turnId: "t0",
-									type: "agentMessage",
-									text: "page text",
-									status: "completed",
 								} as ThreadItem,
 							],
 						},
@@ -14873,10 +14544,8 @@ describe("ConversationStore", () => {
 					[
 						wireTurnFragment("t0", [
 							{
-								id: "older-row",
+								...userMessageItem("older-row", "older"),
 								turnId: "t0",
-								type: "userMessage",
-								text: "older",
 								position: { entry: 1, item: 0 },
 								status: "completed",
 							} as ThreadItem,
@@ -14926,13 +14595,7 @@ describe("ConversationStore", () => {
 				turnsPage: turnsPage(
 					[
 						wireTurnFragment("t0", [
-							{
-								id: "u",
-								turnId: "t0",
-								type: "agentMessage",
-								text: "page text",
-								status: "completed",
-							} as ThreadItem,
+							{ ...agentMessageItem("u", "page text", "completed"), turnId: "t0" } as ThreadItem,
 						]),
 					],
 					undefined,
@@ -14961,12 +14624,9 @@ describe("ConversationStore", () => {
 							status: "completed",
 							items: [
 								{
-									id: "u",
+									...agentMessageItem("u", "page text", "completed"),
 									transcriptKey: "k",
 									turnId: "t9",
-									type: "agentMessage",
-									text: "page text",
-									status: "completed",
 								} as ThreadItem,
 							],
 						}),
@@ -15018,12 +14678,9 @@ describe("ConversationStore", () => {
 							status: "completed",
 							items: [
 								{
-									id: "k2",
+									...agentMessageItem("k2", "retained t1 text", "completed"),
 									transcriptKey: "k2",
 									turnId: "t1",
-									type: "agentMessage",
-									text: "retained t1 text",
-									status: "completed",
 								} as ThreadItem,
 							],
 						}),
@@ -15044,12 +14701,9 @@ describe("ConversationStore", () => {
 							usage: { inputTokens: 500, outputTokens: 20 },
 							items: [
 								{
-									id: "k1",
+									...agentMessageItem("k1", "page text", "completed"),
 									transcriptKey: "k1",
 									turnId: "t0",
-									type: "agentMessage",
-									text: "page text",
-									status: "completed",
 								} as ThreadItem,
 							],
 						},
@@ -15077,20 +14731,14 @@ describe("ConversationStore", () => {
 							usage: { inputTokens: 10, outputTokens: 1 },
 							items: [
 								{
-									id: "k1",
+									...agentMessageItem("k1", "page text", "completed"),
 									transcriptKey: "k1",
 									turnId: "tp",
-									type: "agentMessage",
-									text: "page text",
-									status: "completed",
 								} as ThreadItem,
 								{
-									id: "k2",
+									...agentMessageItem("k2", "retained t1 text", "completed"),
 									transcriptKey: "k2",
 									turnId: "tp",
-									type: "agentMessage",
-									text: "retained t1 text",
-									status: "completed",
 								} as ThreadItem,
 							],
 						},
@@ -15149,14 +14797,9 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...{
-								type: "commandExecution",
-								id: "wire-Z-source",
-								transcriptKey: "key-Z",
-								toolName: "shell",
-								status: "completed",
-								output: "done",
-							},
+							...commandExecItem("wire-Z-source", "shell", "completed"),
+							transcriptKey: "key-Z",
+							output: "done",
 							turnId: "t1",
 						},
 					],
@@ -15208,15 +14851,10 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...{
-								type: "commandExecution",
-								id: "wire-Z-source",
-								transcriptKey: "key-Z",
-								toolName: "shell",
-								status: "completed",
-								output: "done",
-								outputImages: [],
-							},
+							...commandExecItem("wire-Z-source", "shell", "completed"),
+							transcriptKey: "key-Z",
+							output: "done",
+							outputImages: [],
 							turnId: "t1",
 						},
 					],
@@ -15267,14 +14905,9 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...{
-								type: "commandExecution",
-								id: "wire-p3-new",
-								transcriptKey: "key-p3",
-								toolName: "shell",
-								status: "completed",
-								output: "done",
-							},
+							...commandExecItem("wire-p3-new", "shell", "completed"),
+							transcriptKey: "key-p3",
+							output: "done",
 							turnId: "t1",
 						},
 					],
@@ -15319,15 +14952,10 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...{
-								type: "commandExecution",
-								id: "wire-Z",
-								transcriptKey: "key-Z",
-								toolName: "shell",
-								status: "completed",
-								output: "done",
-								outputImages: [{ source: "z", url: "https://example.com/z.png" }],
-							},
+							...commandExecItem("wire-Z", "shell", "completed"),
+							transcriptKey: "key-Z",
+							output: "done",
+							outputImages: [{ source: "z", url: "https://example.com/z.png" }],
 							turnId: "t1",
 						},
 					],
@@ -15374,15 +15002,10 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...{
-								type: "commandExecution",
-								id: "new-wire-Z",
-								transcriptKey: "key-Z",
-								toolName: "shell",
-								status: "completed",
-								output: "done",
-								outputImages: [{ source: "new", url: "https://example.com/new.png" }],
-							},
+							...commandExecItem("new-wire-Z", "shell", "completed"),
+							transcriptKey: "key-Z",
+							output: "done",
+							outputImages: [{ source: "new", url: "https://example.com/new.png" }],
 							turnId: "t1",
 						},
 					],
@@ -15428,10 +15051,8 @@ describe("ConversationStore", () => {
 					[
 						wireTurnFragment("tp", [
 							{
-								id: "page-row",
+								...userMessageItem("page-row", "page text"),
 								turnId: "tp",
-								type: "userMessage",
-								text: "page text",
 								position: { entry: 1, item: 0 },
 								status: "completed",
 							} as ThreadItem,
@@ -15523,10 +15144,8 @@ describe("ConversationStore", () => {
 					[
 						wireTurnFragment("tp", [
 							{
-								id: "page-row",
+								...userMessageItem("page-row", "page text"),
 								turnId: "tp",
-								type: "userMessage",
-								text: "page text",
 								position: { entry: 1, item: 0 },
 								status: "completed",
 							} as ThreadItem,
@@ -17024,10 +16643,7 @@ describe("ConversationStore", () => {
 						items: [
 							userMessageItem("u1", "please audit the config"),
 							{
-								type: "commandExecution",
-								id: "c1",
-								toolName: "shell",
-								status: "completed",
+								...commandExecItem("c1", "shell", "completed"),
 								description: "  run the audit  ",
 								argumentsJson: JSON.stringify({ cmd: "ls" }),
 								output: "tool output text",
@@ -17089,15 +16705,7 @@ describe("ConversationStore", () => {
 					makeTurn({
 						id: "t0",
 						status: "completed",
-						items: [
-							{
-								type: "commandExecution",
-								id: "c1",
-								toolName: "shell",
-								status: "completed",
-								description: hugeSummary,
-							} as ThreadItem,
-						],
+						items: [{ ...commandExecItem("c1", "shell", "completed"), description: hugeSummary } as ThreadItem],
 					}),
 				],
 			});
@@ -17251,13 +16859,7 @@ describe("ConversationStore", () => {
 				turnsPage: turnsPage(
 					[
 						wireTurnFragment("t0", [
-							{
-								id: "r1",
-								turnId: "t0",
-								type: "reasoning",
-								text: "the thought",
-								status: "completed",
-							} as ThreadItem,
+							{ ...reasoningItem("r1", "the thought", "completed"), turnId: "t0" } as ThreadItem,
 						]),
 					],
 					"c2",
@@ -17300,13 +16902,7 @@ describe("ConversationStore", () => {
 				turnsPage: turnsPage(
 					[
 						wireTurnFragment("t0", [
-							{
-								id: "r1",
-								turnId: "t0",
-								type: "reasoning",
-								text: "the thought",
-								status: "completed",
-							} as ThreadItem,
+							{ ...reasoningItem("r1", "the thought", "completed"), turnId: "t0" } as ThreadItem,
 						]),
 					],
 					"c2",
