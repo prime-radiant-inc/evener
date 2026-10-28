@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { projectComicDelegates } from "../comic/delegates";
 import { type ComicSubchatState, useComicSubchats } from "../comic/useComicSubchats";
 import { resetTranscriptPagingForTests } from "../panes/session/transcript/useTranscript";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore } from "./connection";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
@@ -56,12 +57,8 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  fake.on("thread/unsubscribe", () => ({}));
-  connectionStore.getState().connect(fake);
-  return fake;
-}
+const connectFakeClient = () => connectReadyFakeClient((fake) => fake.on("thread/unsubscribe", () => ({})));
+
 async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
 }

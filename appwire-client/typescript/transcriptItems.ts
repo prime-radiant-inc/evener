@@ -463,3 +463,18 @@ export const isToolCallId = (id: string) => id.startsWith("item_tool_") && !isTo
 // the only other holder of.
 export const isToolResultItemId: (id: string) => boolean = isToolResultId;
 export const isToolCallItemId: (id: string) => boolean = isToolCallId;
+
+// The escaped /s/{route} fragment the hub serves sha-addressed image bytes
+// under. The hub's own stamp (sessionImageURL, output_images.go) escapes the
+// wire Thread.sessionId with url.PathEscape — never the stable workspace ref
+// (handleSessionImage looks the id up in Past.Find, where a ref like
+// local:stable finds nothing, and a stable ref can name a different session
+// than the one that served the bytes). encodeURIComponent is the matching
+// client-side escape. An empty id names no fetchable route, so the sha branch
+// stays dark for it. A session id never carries a slash (identifier's
+// base62 UUIDv7), and any foreign ref form the page route cannot serve keeps
+// the branch dark too.
+export function imageSessionRouteForSession(sessionId: string): string | undefined {
+  if (sessionId === "" || sessionId.includes("/")) return undefined;
+  return encodeURIComponent(sessionId);
+}

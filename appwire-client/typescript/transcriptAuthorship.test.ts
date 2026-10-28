@@ -7,9 +7,9 @@ import {
   encodeTranscriptItem,
   hydrateThread,
   mergeTranscriptItemVersioned,
-  mergeTurnHistory,
   threadModelFromCache,
 } from "./reducer";
+import { mergeTurnHistory } from "./turnHistoryMerge";
 
 const author = {
   author: {
@@ -126,7 +126,7 @@ test("authorship survives real normalization, history update, overlay and cache 
 
 test("sparse merges retain attribution but authoritative unknown or absent replacements clear it", () => {
   const held = first(hydrated());
-  const sparse: ItemModel = { id: "item", turnId: "turn", type: "agentMessage", text: "answer" };
+  const sparse: ItemModel = { ...first(hydrated(null)), authorship: undefined };
   const merged = mergeTurnHistory(
     [{ id: "turn", status: "completed", items: [held] }],
     [{ id: "turn", status: "completed", items: [sparse] }],

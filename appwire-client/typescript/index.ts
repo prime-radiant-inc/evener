@@ -525,9 +525,6 @@ export type {
   CachedSessionRecord,
   CurrentTranscriptAdmission,
   NotificationRoutingKey,
-  OlderItemPageMerge,
-  TurnHistoryFoldDetail,
-  TurnHistoryMergeResult,
 } from "./reducer";
 export {
   applyHistoryReadFailure,
@@ -544,18 +541,13 @@ export {
   encodeTranscriptItem,
   hydrateThread,
   ITEM_OMISSION_TOLERANT_FIELDS,
-  imageSessionRouteForSession,
   invalidateHistory,
   issueLatestWindowRead,
-  itemIdentityMatches,
   mergeOlderItemPage,
-  mergeOlderItemPageWithFolds,
   mergeTailTurns,
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
-  mergeTurnHistory,
-  mergeTurnHistoryWithFolds,
   notificationRoutingKey,
   notificationTargetsThread,
   notificationTouchesTranscript,
@@ -860,6 +852,7 @@ export type {
 export { createTranscriptDisplayStore, fromWireChange, transcriptDisplaySupport } from "./transcriptDisplayStore";
 export {
   copyItemTextPresence,
+  imageSessionRouteForSession,
   isToolCallItemId,
   isToolResultItemId,
   itemTextPresence,
@@ -897,6 +890,13 @@ export {
   type RetryTurnThread,
   TURN_CONTINUATION_TEXT,
 } from "./turnContinuation";
+export type { OlderItemPageMerge, TurnHistoryFoldDetail, TurnHistoryMergeResult } from "./turnHistoryMerge";
+export {
+  itemIdentityMatches,
+  mergeOlderItemPageWithFolds,
+  mergeTurnHistory,
+  mergeTurnHistoryWithFolds,
+} from "./turnHistoryMerge";
 export type * from "./types.gen";
 export {
   HOST_REQUEST_METHODS,

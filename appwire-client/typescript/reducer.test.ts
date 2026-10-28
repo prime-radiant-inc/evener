@@ -15,19 +15,22 @@ import {
   decodeTranscriptItem,
   encodeTranscriptItem,
   hydrateThread,
-  imageSessionRouteForSession,
   mergeOlderItemPage,
   mergeTranscriptItemVersioned,
   mergeTranscriptTurnVersioned,
-  mergeTurnHistory,
-  mergeTurnHistoryWithFolds,
   notificationTargetsThread,
   notificationTouchesTranscript,
   prependOlderTurns,
   resolvePendingEscalation,
 } from "./reducer";
 import { itemAt, turnAt } from "./testing/modelAccessors";
-import { itemTextPresence, markItemIdentityOnly, markItemTextOmitted } from "./transcriptItems";
+import {
+  imageSessionRouteForSession,
+  itemTextPresence,
+  markItemIdentityOnly,
+  markItemTextOmitted,
+} from "./transcriptItems";
+import { mergeTurnHistory, mergeTurnHistoryWithFolds } from "./turnHistoryMerge";
 import type {
   AnyNotification,
   EvenerDelegateInfo,
