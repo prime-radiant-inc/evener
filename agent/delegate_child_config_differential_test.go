@@ -21,13 +21,18 @@ import (
 // delegate is created, and from the frozen descriptor plus the live parent when
 // a cold restore rebuilds it. Every data field of the restored child's
 // SessionConfig must equal the fresh child's, except the ones listed here.
-// Pointers, funcs, channels and interfaces are live wiring and are not compared.
+// Funcs, channels and pointers to non-scalars are live wiring: only their
+// presence is compared.
 var freshVersusRestoredChildConfigExemptions = []string{
 	// A restore announces itself to plugins as a resume; a fresh child does not.
 	"cfg.SessionStartKind",
 	// Only the child-ID input for NewSession; the restored child's ID comes
 	// from its saved metadata instead.
 	"cfg.spawn.sessionID",
+	// A restored child does not carry the tree's turn counters, so the tree's
+	// concurrency budget does not cover its own delegates. Removed with the fix.
+	"cfg.spawn.treeCounter",
+	"cfg.spawn.driveCounter",
 }
 
 // Pins that a cold-restored delegate runs with the same configuration it had
@@ -68,12 +73,18 @@ func TestRestoredDelegateChildConfigMatchesFreshChild(t *testing.T) {
 				UserInstructionOverride: "override",
 				SystemPromptAppend:      []string{"append"},
 				ModelFallbacks:          []string{"openai/gpt-5.2"},
+				EnableLoopDetection:     new(true),
+				SandboxNet:              new(true),
 				testOnly:                testOnly,
 			})
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
 			}
-			created := root.createDelegate(context.Background(), delegateArgs{Task: "differential", DelegationAllowance: new(0)})
+			created := root.createDelegate(context.Background(), delegateArgs{
+				Task:                "differential",
+				DelegationAllowance: new(0),
+				ResultSchema:        map[string]any{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "string"}}},
+			})
 			if created.Err != nil {
 				t.Fatalf("createDelegate: %v", created.Err)
 			}
@@ -123,11 +134,27 @@ func TestRestoredDelegateChildConfigMatchesFreshChild(t *testing.T) {
 }
 
 // diffConfigData appends the path of every data field that differs between a
-// and b. Live wiring (pointers, funcs, channels, interfaces) is skipped.
+// and b. Live wiring (funcs, channels, non-scalar pointers) is skipped.
 func diffConfigData(a, b reflect.Value, path string, out *[]string) {
 	switch a.Kind() {
-	case reflect.Func, reflect.Chan, reflect.Pointer, reflect.Interface, reflect.UnsafePointer:
+	case reflect.Func, reflect.Chan, reflect.UnsafePointer:
 		return
+	case reflect.Pointer:
+		// A pointer to a scalar is optional configuration; any other pointer is
+		// live wiring and only its presence is compared.
+		if a.IsNil() != b.IsNil() {
+			*out = append(*out, path)
+		} else if !a.IsNil() && a.Elem().Kind() <= reflect.Float64 {
+			diffConfigData(a.Elem(), b.Elem(), path, out)
+		}
+	case reflect.Interface:
+		// An interface holds either wiring (which recursion skips) or data such
+		// as a decoded JSON schema, whose contents are compared.
+		if a.IsNil() != b.IsNil() || (!a.IsNil() && a.Elem().Type() != b.Elem().Type()) {
+			*out = append(*out, path)
+		} else if !a.IsNil() {
+			diffConfigData(a.Elem(), b.Elem(), path, out)
+		}
 	case reflect.Struct:
 		for i := 0; i < a.NumField(); i++ {
 			diffConfigData(a.Field(i), b.Field(i), path+"."+a.Type().Field(i).Name, out)
