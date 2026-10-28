@@ -26,11 +26,11 @@ func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) 
 		func(llm.Request) llm.Response { return finalResponse("warm result") },
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
-	sub := warmStableSupervisionDelegate(t, root, fixture)
+	// A served root can recheck after quiescence and arm a retry for the
+	// diagnostic append, so leave its wake consumer unstarted.
+	sub := warmStableDelegateUnservedRoot(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
-	// A receiver retry left by the warm turn may notice the durable append.
-	// Keep admission refused while inspecting pending attention on its old,
-	// finished channel, rather than racing that retry into generation 2.
+	// Keep admission refused while inspecting the warm run's finished channel.
 	if !sub.trySetDisposeGate() {
 		t.Fatal("gate quiescent child during pending diagnostic")
 	}
