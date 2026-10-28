@@ -1,4 +1,4 @@
-package agent
+package hostresources
 
 import (
 	"encoding/json"
@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // resourceFixtureEnv keeps the environment snapshot on the real production
@@ -92,7 +92,7 @@ func resourceFixtureNoCgroup() map[string]string {
 
 func resourceCapsJSON(t *testing.T, env *resourceFixtureEnv) map[string]any {
 	t.Helper()
-	info := envInfoFromEnv(env, clock.Real())
+	info := schema.EnvironmentInfo{Resources: CapsFromEnv(env)}
 	data, err := json.Marshal(info)
 	if err != nil {
 		t.Fatalf("marshal EnvironmentInfo: %v", err)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/frontmatter"
 	"primeradiant.com/evener/agent/internal/tool"
 )
 
@@ -197,8 +198,8 @@ func (s *Session) stampMemoryPage(rel string, raw []byte) (stamped []byte, notes
 	// updated is written by hand, unquoted, so it reads back as a YAML date.
 	// Valid frontmatter that can't take a key line, such as a flow mapping,
 	// stays unstamped rather than unreadable.
-	stamped = setMemoryFrontmatterField(repairMemoryFrontmatter(raw), "updated: "+s.sclock().Now().UTC().Format(time.DateOnly)+"\n")
-	stamped = setMemoryFrontmatterField(stamped, memoryYAMLField("by", s.ID()))
+	stamped = frontmatter.SetField(repairMemoryFrontmatter(raw), "updated: "+s.sclock().Now().UTC().Format(time.DateOnly)+"\n")
+	stamped = frontmatter.SetField(stamped, frontmatter.YAMLField("by", s.ID()))
 	switch page := parseMemoryPage(rel, stamped, time.Time{}); {
 	case page.Unreadable:
 		notes = memoryUnreadableFrontmatterNote

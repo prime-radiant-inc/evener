@@ -24,5 +24,5 @@ func memoryPageFromFields(args map[string]any) (string, error) {
 	if _, _, hasBlock := frontmatter.Split(strings.TrimLeft(body, " \t\r\n")); hasBlock {
 		return "", errMemoryBodyFrontmatter
 	}
-	return "---\n" + memoryYAMLField("when", when) + "---\n\n" + body, nil
+	return "---\n" + frontmatter.YAMLField("when", when) + "---\n\n" + body, nil
 }

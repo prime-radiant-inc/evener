@@ -139,7 +139,8 @@ lower layer imports a higher one.
   `SessionMeta` / `ConfigSnapshot` / `EnvironmentInfo`), `events`, `execenv`. No
   intra-`agent` dependencies.
 - **Subsystems** — `agent/internal/tool` (tool registry + builtins), `provider` (model
-  profiles), `transcript` (JSONL writer/reader), `mcpconfig`, `skill`, `task`.
+  profiles), `transcript` (JSONL writer/reader), `mcpconfig`, `skill`, `task`,
+  `hostresources` (cgroup-aware CPU and memory caps for the environment snapshot).
 - **Engine internals** (`agent/internal/…`, off the public surface) — `contextmgr`
   (context-pressure management: compaction + the pluggable strategies + recall),
   `sessionlog` (the shared session-action-log substrate), `hooks` (the plugin/hook
