@@ -3469,6 +3469,27 @@ describe("ConversationStore", () => {
 			expect(service.olderRequests).toEqual([{ cursor: "cursor-1", before: { entry: 200, item: 0 } }]);
 		});
 
+		it("keeps rows from every loaded page through a refresh and a reconnect", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(200, 300) });
+			service.olderCursor = "cursor-2";
+			const store = createConversationStore();
+			await store.getState().openProjected(service, "ref-1");
+			store.getState().setFollowingLiveEnd(false);
+			service.olderItems = { items: positionedRows(100, 200), nextCursor: "cursor-1" };
+			expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+			service.olderItems = { items: positionedRows(0, 100), nextCursor: undefined, hasEarlierItems: false };
+			expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+			const expected = positionedRows(0, 300).map((row) => row.id);
+			expect(store.getState().conversation?.items.map((row) => row.id)).toEqual(expected);
+
+			await store.getState().rehydrate(service);
+			expect(store.getState().conversation?.items.map((row) => row.id)).toEqual(expected);
+
+			await store.getState().resumeProjected(service, "ref-1");
+			expect(store.getState().conversation?.items.map((row) => row.id)).toEqual(expected);
+		});
+
 		it("keeps the pages you load while reading above, and trims them when you return to the live end", async () => {
 			const service = new FakeConversationService();
 			service.openConv = makeConversation({ items: positionedRows(100, 550) });

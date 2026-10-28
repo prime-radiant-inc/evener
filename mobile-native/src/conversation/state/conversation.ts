@@ -22,7 +22,6 @@
 import type {
 	AnyNotification,
 	InputItem,
-	ItemModel,
 	MutationReceipt,
 	ThreadItemPosition,
 	ThreadModel,
@@ -33,11 +32,8 @@ import {
 	applyNotification,
 	applyReadModel,
 	configFingerprint,
-	copyItemTextPresence,
 	deriveSendQueueAvailability,
-	ITEM_OMISSION_TOLERANT_FIELDS,
 	isStaleCursorError,
-	itemIdentityMatches,
 	mergeOlderItemPage,
 	notificationTargetsThread,
 	notificationTouchesTranscript,
@@ -51,7 +47,6 @@ import type { BoundText, MobileConversation, MobileTimelineItem } from "../../pr
 import {
 	attachmentSourceId,
 	capItems,
-	failureRowIdentity,
 	MAX_ITEM_BYTES,
 	projectConversation,
 	projectTimeline,
@@ -84,9 +79,15 @@ import {
 	MutationNotSentError,
 } from "./conversationMutation";
 import { createBoundedTextCache } from "./boundedText";
-import { createTrailingReread } from "./trailingReread";
 import { createPendingMutationBinding, samePendingRows } from "./pendingMutations";
-import { reconcileCrossTurnReissues } from "./rowTransforms";
+import {
+	historyNewlyInvalidated,
+	pageContributedKeys,
+	reconcileCrossTurnReissues,
+	stripFieldsOmittedByRead,
+	withSyncedHistoryTurns,
+} from "./rowTransforms";
+import { createTrailingReread } from "./trailingReread";
 import { createTransientWarnings } from "./transientWarnings";
 
 export type ConversationStatus = "idle" | "opening" | "open" | "error" | "closed";
@@ -665,53 +666,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	// applyHydrationResponseCut drops its buffer at the same point for the same
 	// reason.
 	//
-	// loadOlder and rehydrate fold page/reread content into `turns` through
-	// applyReadModel/mergeOlderItemPage/reconcileCrossTurnReissues, which read
-	// and write model.history.turns — the versioned record every OTHER live
-	// frame (history/updated, overlay/*, via applyNotification -> the
-	// reducer's withDisplay) rebuilds `turns` FROM. Left unsynced, a page turn
-	// or a rehydrate's retained history lives only in `turns`, and the next
-	// such frame silently drops it (withDisplay derives `turns` from
-	// model.history.turns, not from the caller's prior `turns`). Both callers
-	// must therefore commit the SAME final turns array into both fields; this
-	// is the one place that happens.
-	//
-	// A model whose `.history` was never established (no read has gone
-	// through applyReadModel/mergeOlderItemPage's own versioned branch yet —
-	// in production this is momentary, since every hydrate already stamps one
-	// via hydrateThread's own snapshot branch; the mobile test suite's legacy
-	// non-versioned fixtures can hold one indefinitely) mints one now, seeded
-	// with these turns: applyReadModel otherwise reads an eternally-empty
-	// held.turns forever and silently discards whatever this merge just
-	// produced the very next time it runs. The seeded bootGeneration stays ""
-	// — never a real one's spelling — so a model that only ever went through
-	// this seeding, and never a real read, still reads as NOT-really-versioned
-	// to the one other place that cares (reducer.ts's "warning" case: it folds
-	// a warning into the active turn's items on a legacy model, and shows it
-	// as an overlay notice, not yet implemented, on a real v6 one — see its
-	// own comment).
-	function withSyncedHistoryTurns<M extends MobileConversation>(model: M, turns: readonly TurnModel[]): M {
-		const turnsArray = [...turns];
-		if (model.history === undefined) {
-			return {
-				...model,
-				history: {
-					bootGeneration: "",
-					epoch: 0,
-					length: 0,
-					appliedGeneration: 0,
-					issuedGeneration: 0,
-					deferredPages: [],
-					turns: turnsArray,
-				},
-			};
-		}
-		return { ...model, history: { ...model.history, turns: turnsArray } };
-	}
-
 	// A turn a history/updated frame marks itemsView "full" carries its
 	// complete current item list in this frame's own `items` (turnId-matched) —
-	// never accumulated across frames (Go's Turn.ItemsView, appwire/types.go).
+	// never accumulated across frames (Go's Turn.ItemsView, appwire/types_turn.go).
 	// The shared reducer's mergeHistory deliberately never removes an item (an
 	// invariant reducer.history.test.ts pins for every OTHER caller), so a full
 	// turn's withdrawal of an item it omits is this store's own product
@@ -1754,48 +1711,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						sameInstance && currentConvForMerge !== null
 							? [...reconcileCrossTurnReissues(currentConvForMerge.turns, appliedModel.turns)]
 							: [...appliedModel.turns];
-					// mergeReplacedItem (reducer.ts) is deliberately omission-tolerant
-					// per field (ITEM_OMISSION_TOLERANT_FIELDS)
-					// — an incremental history/updated delta naturally omits a field it
-					// did not change, and that must fall back to the held value, not
-					// clear it). A full thread/read snapshot is not incremental: it
-					// describes the item's CURRENT complete state, so a field it omits
-					// for an item it otherwise covers is genuinely absent now — a
-					// payload a live frame added while this same read was in flight
-					// (an image, a tool's output) must not survive past a clean
-					// covering snapshot that says nothing about it. This strips
-					// exactly that: only for an item this read's OWN turns actually
-					// name (an item outside its window is untouched, page or not —
-					// mergeHistory never even saw it to begin with).
 					if (sameInstance && currentConvForMerge !== null) {
-						const freshItemByIdentity = new Map<string, ItemModel>();
-						for (const turn of conversation.turns) {
-							for (const item of turn.items) {
-								freshItemByIdentity.set(item.transcriptKey ?? item.id, item);
-								freshItemByIdentity.set(item.id, item);
-							}
-						}
-						mergedTurns = mergedTurns.map((turn) => {
-							let turnChanged = false;
-							const items = turn.items.map((item) => {
-								const fresh =
-									freshItemByIdentity.get(item.transcriptKey ?? item.id) ?? freshItemByIdentity.get(item.id);
-								if (fresh === undefined || !itemIdentityMatches(item, fresh)) return item;
-								let stripped: ItemModel | undefined;
-								for (const field of ITEM_OMISSION_TOLERANT_FIELDS) {
-									const heldValue = (item as unknown as Record<string, unknown>)[field];
-									const freshValue = (fresh as unknown as Record<string, unknown>)[field];
-									if (heldValue === undefined || freshValue !== undefined) continue;
-									stripped ??= copyItemTextPresence(item, { ...item });
-									(stripped as unknown as Record<string, unknown>)[field] = Array.isArray(heldValue) ? [] : undefined;
-								}
-								if (stripped === undefined) return item;
-								turnChanged = true;
-								return stripped;
-							});
-							if (!turnChanged) return turn;
-							return { ...turn, items };
-						});
+						mergedTurns = stripFieldsOmittedByRead(mergedTurns, conversation.turns);
 					}
 					const merged = withSyncedHistoryTurns({ ...appliedModel, turns: mergedTurns }, mergedTurns);
 					// The wire-truth cursor is applyReadModel's own: it already keeps
@@ -2045,40 +1962,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// response rather than merge fold provenance: the versioned
 						// merge never renames an item's identity across turns, so a raw
 						// page item's identity is exactly the identity it merges under.
-						const beforeIdentities = new Set<string>();
-						for (const turn of currentConv.turns) {
-							for (const item of turn.items) {
-								beforeIdentities.add(item.transcriptKey ?? item.id);
-								beforeIdentities.add(item.id);
-							}
-						}
-						const rawPageIdentities = new Set<string>();
-						for (const turn of result.turnsPage.data) {
-							for (const item of turn.items ?? []) {
-								rawPageIdentities.add(item.transcriptKey ?? item.id);
-								rawPageIdentities.add(item.id);
-							}
-						}
-						// A failed turn projects its own row keyed failure:<turnId>
-						// (projectedRows.ts), never an item identity — count it too, or
-						// a page whose only contribution is a failure row reports none.
-						// A real v6 turn id is
-						// stable (mergeHistory never renames one), so the raw page
-						// turn's own id is exactly the merged output's id.
-						for (const turn of result.turnsPage.data) {
-							if (turn.error !== undefined) rawPageIdentities.add(failureRowIdentity(turn.id));
-						}
-						// itemKeys is the reader's no-progress signal (nonempty clears
-						// its retry guard): an identity already held before this page
-						// merged in contributed nothing new, whatever field the page's
-						// own (possibly higher-version) copy carried — a page that only
-						// re-serves retained content, even under a different turn id
-						// (reconcileCrossTurnReissues below folds that away), must
-						// report empty.
-						const pageKeys = new Set<string>();
-						for (const id of rawPageIdentities) {
-							if (!beforeIdentities.has(id)) pageKeys.add(id);
-						}
+						const pageKeys = pageContributedKeys(currentConv.turns, result.turnsPage.data);
 						const versionedMerge = mergeOlderItemPage(currentConv, result.turnsPage);
 						if (versionedMerge === currentConv) {
 							// A real discard (pageDisposition's "discard" branch, or a
@@ -2121,11 +2005,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							// misses a re-invalidation (the awaited signal moving from one
 							// real epoch/incarnation to a newer one) entirely. Compare the
 							// signal that actually changes instead.
-							const newlyInvalidated =
-								heldHistory?.invalidatedAtGeneration === undefined ||
-								heldHistory.awaited?.bootGeneration !== mergedHistory.awaited?.bootGeneration ||
-								heldHistory.awaited?.epoch !== mergedHistory.awaited?.epoch ||
-								heldHistory.pendingIncarnation !== mergedHistory.pendingIncarnation;
+							const newlyInvalidated = historyNewlyInvalidated(heldHistory, mergedHistory);
 							if (newlyInvalidated) {
 								requestRehydrate(currentConv.ref);
 							} else if (get().latestReadState === "ready") {

@@ -200,7 +200,9 @@ establish range coverage or own persisted turn metadata.
 
 `reducer.ts` holds the transcript reducer. The warning fold (`foldWarningParams`,
 `joinWarningParts`, the bounded raw-frame fallback) lives in `warningFold.ts`, a
-leaf module the reducer imports and that imports nothing from it. Further
+leaf module the reducer imports and that imports nothing from it. The cache
+and checkpoint shape validators (`valid*`, the persisted-record types they
+check) live in `transcriptValidators.ts`, a leaf over `model` and `types.gen`. Further
 reducer pieces follow the same rule: a split-out module never imports
 `reducer.ts`.
 

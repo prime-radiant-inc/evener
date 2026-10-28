@@ -1005,7 +1005,7 @@ export function endTurn(thread: Thread, turn: Turn, status: "completed" | "inter
 }
 
 // The first question of the session's pending ask, as the daemon summarizes
-// it for the Board's row (appwire/types.go's PendingQuestion).
+// it for the Board's row (appwire/types_thread.go's PendingQuestion).
 function pendingQuestionOf(ask: Question[]): PendingQuestion {
 	const [first] = ask;
 	if (!first) throw new Error("a pending question needs an ask");

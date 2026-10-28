@@ -141,7 +141,7 @@ export function isSessionResting(statusType: string): boolean {
 // session arrives in (cmd/evener-hub/app_threadread.go's
 // pastEntryThreadForList stamps it) and "closed" is a live session that shut
 // down in front of the client; both are appwire's own vocabulary
-// (appwire/types.go's ThreadStatus* constants). "ended" never crosses the
+// (appwire/types_protocol.go's ThreadStatus* constants). "ended" never crosses the
 // wire, but deriveSendQueueAvailability treats it as terminal, so it is
 // matched here too rather than leaving the two modules disagreeing about the
 // same word. One set for every client, so none keeps its own copy.

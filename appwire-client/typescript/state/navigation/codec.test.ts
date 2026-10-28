@@ -171,7 +171,7 @@ test("codec accepts stateless records and rejects obsolete entity and container 
 
 // --- Additive keys on value records ------------------------------------------
 // A newer hub adds optional keys to value records without a protocol version
-// bump (appwire/types.go ProtocolVersion; #1208, #2453). The codec accepts a
+// bump (appwire/types_protocol.go ProtocolVersion; #1208, #2453). The codec accepts a
 // value record carrying a key it does not know, still validates every key it
 // does know, and drops the unknown key before anything installs the record:
 // it never reaches the normalized graph, the rendered rows, or merge's

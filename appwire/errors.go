@@ -988,6 +988,7 @@ var RetrySafeMutationMethods = []string{
 	MethodTurnCancelQueued,
 	MethodThreadClear,
 	MethodNotesHumanSet,
+	MethodUrlsRemove,
 }
 
 // RetrySafeMutationMethod reports whether name is a retry-safe mutation

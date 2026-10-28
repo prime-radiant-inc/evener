@@ -17,7 +17,7 @@ export interface ItemFailureSignals {
 }
 
 // A shell call's process exit code. The daemon never fabricates exitCode as 0
-// (appwire/types.go's ThreadItem.ExitCode doc), so a defined nonzero value is
+// (appwire/types_turn.go's ThreadItem.ExitCode doc), so a defined nonzero value is
 // an honest signal that the process exited nonzero even when Error is empty
 // (e.g. `make test` failing with no denial or exception). A real 0 is a clean
 // exit, distinct from undefined — never conflate the two.

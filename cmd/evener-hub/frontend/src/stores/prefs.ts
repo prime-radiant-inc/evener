@@ -5,26 +5,21 @@
 // instead. Every key lives under the "evener.prefs.<name>" contract (wave-7
 // plan): a flat, one-value-per-key namespace, NOT the legacy's per-section
 // JSON blobs (evener-hub.composer, evener-hub.transcript.systemStatus, ...).
-// evener.prefs.enterToSend/evener.prefs.showCost are PINNED: this is a live
-// contract reachable from Settings today, not a hypothetical one - Settings
-// -> Display's own setEnterToSend/setShowCost (below) write both keys, and
-// Composer.tsx reads enterToSend from this same store on every render and
-// keydown. The encoding already broke this contract once during
-// development: commit 932eeddca ("fix boolean encoding to '1'/'0'
-// (cross-wave contract break)") fixed readBool/writeBool back from a brief
-// "true"/"false" regression. Never repeat it - the key names and encoding
+// evener.prefs.enterToSend is PINNED: this is a live contract reachable from
+// Settings today, not a hypothetical one - Settings -> Display's own
+// setEnterToSend (below) writes it, and Composer.tsx reads enterToSend from
+// this same store on every render and keydown. The encoding already broke this
+// contract once during development: commit 932eeddca ("fix boolean encoding to
+// '1'/'0' (cross-wave contract break)") fixed readBool/writeBool back from a
+// brief "true"/"false" regression. Never repeat it - the key name and encoding
 // are permanent, not just this store's own choice, the way every other key
 // below is. The PIN covers the key NAME and the value ENCODING; a default
 // (what an unset key reads as) is a product decision and stays free to
 // change - a browser with a stored "1"/"0" is unaffected either way.
 //
-// transcript.roundTimings / transcript.tokenCounts / showCost each gate one
-// segment of the per-turn transcript meta line (TurnSeparator: duration,
-// token counts, cost). All three default OFF: the transcript is for prose
-// and tool calls, and the session Details panel already carries the exact
-// figures. The footer status strip's session-total cost is NOT gated by
-// showCost - that is the glance-level supervisory number, not per-turn
-// clutter.
+// Transcript display settings (round timings, token counts, cost, hook
+// exits, prompt loaded) live in transcriptDisplay.ts, not here; the pre-v1
+// global keys are only read, once, by migrateLegacyTranscriptDisplay.
 //
 // Hydrated once from localStorage at module load (mirroring every other
 // store's singleton-at-import-time shape - connection.ts/threads.ts/
@@ -90,7 +85,6 @@ export type FontSizePref = "s" | "m" | "l" | "xl";
 // tokens.css keys --session-measure off <body data-transcript-measure>
 // (44rem reading, 64rem wide).
 export type TranscriptMeasurePref = "reading" | "wide";
-export type TranscriptStatusKey = "roundTimings" | "tokenCounts" | "hookExitsAll" | "hookExitsNormal" | "promptLoaded";
 export type NotificationKey = "title" | "favicon" | "os" | "sound";
 export type NotificationsLoudScopePref = "asks" | "all";
 // How the rail's session tree groups (the organize-by control in the rail
@@ -111,11 +105,9 @@ export interface PrefsStoreState {
   sidebarGrouping: SidebarGroupingPref;
   fontSize: FontSizePref;
   transcriptMeasure: TranscriptMeasurePref;
-  transcript: Record<TranscriptStatusKey, boolean>;
   // Composer prefs (Display section, parity-m7-settings.md §5). Field names
   // match the PINNED evener.prefs.enterToSend / evener.prefs.showCost keys.
   enterToSend: boolean;
-  showCost: boolean;
   // Keybindings (Settings -> Keybindings): whether character-key triggers -
   // today exactly the "?" cheatsheet-overlay trigger - are live. WCAG 2.1.4
   // requires a way to turn single-character shortcuts off; default ON (the
@@ -140,9 +132,7 @@ export interface PrefsStoreState {
   setSidebarGrouping(value: SidebarGroupingPref): void;
   setFontSize(value: FontSizePref): void;
   setTranscriptMeasure(value: TranscriptMeasurePref): void;
-  setTranscriptStatus(key: TranscriptStatusKey, value: boolean): void;
   setEnterToSend(value: boolean): void;
-  setShowCost(value: boolean): void;
   setCharacterKeyTriggers(value: boolean): void;
   setLastSettingsSection(value: string | null): void;
   setNotification(key: NotificationKey, value: boolean): void;
@@ -256,11 +246,11 @@ export function migrateLegacyTranscriptDisplay(): TranscriptDisplayConfigV1 | un
 }
 
 // "1"/"0", not JS's "true"/"false": every boolean this store persists
-// (enterToSend, showCost, every transcript.* and notifications.* member)
+// (enterToSend and every notifications.* member)
 // uses this one encoding, so readBool/writeBool only have to get it right
-// once. evener.prefs.enterToSend/evener.prefs.showCost in
-// particular are a live contract reachable from Settings today (Display's
-// own setEnterToSend/setShowCost, Composer.tsx's own enterToSend read) -
+// once. evener.prefs.enterToSend in
+// particular is a live contract reachable from Settings today (Display's
+// own setEnterToSend, Composer.tsx's own enterToSend read) -
 // this encoding already broke that contract once during development
 // (commit 932eeddca, "fix boolean encoding to '1'/'0' (cross-wave contract
 // break)"): switching back to "true"/"false" would silently strand every
@@ -327,58 +317,17 @@ const TRANSCRIPT_MEASURE_VALUES: readonly TranscriptMeasurePref[] = ["reading", 
 const LOUD_SCOPE_VALUES: readonly NotificationsLoudScopePref[] = ["asks", "all"];
 const SIDEBAR_GROUPING_VALUES: readonly SidebarGroupingPref[] = ["host-project", "project-host"];
 
-// Per-field localStorage key names for the two grouped record fields -
-// transcript/notifications are exposed as small in-memory records for a
-// convenient single destructure at each section's call site, but each
+// Per-field localStorage key names for the grouped notifications record -
+// exposed as a small in-memory record for a convenient single destructure at
+// the section's call site, but each
 // member still round-trips through its OWN flat evener.prefs.<name> key
 // (never one shared JSON blob), per this file's own top comment.
-const TRANSCRIPT_KEY_NAMES: Record<TranscriptStatusKey, string> = {
-  roundTimings: "transcriptRoundTimings",
-  tokenCounts: "transcriptTokenCounts",
-  hookExitsAll: "transcriptHookExitsAll",
-  hookExitsNormal: "transcriptHookExitsNormal",
-  promptLoaded: "transcriptPromptLoaded",
-};
-
 const NOTIFICATION_KEY_NAMES: Record<NotificationKey, string> = {
   title: "notificationsTitle",
   favicon: "notificationsFavicon",
   os: "notificationsOs",
   sound: "notificationsSound",
 };
-
-function loadTranscript(): Record<TranscriptStatusKey, boolean> {
-  return {
-    // On by default as of the five-participant study (docs/web-ui/ux-plan-2026-07.md).
-    // Its most-repeated finding, from four participants independently on
-    // different tasks, was that the older server-rendered UI showed per-step
-    // timing with zero clicks and this one showed none anywhere - and that,
-    // not typography, was why the old build read better.
-    //
-    // It defaulted off for a good reason that has since expired: the old form
-    // was a nine-field raw dump of nanosecond durations (kata 7zkv reworked it
-    // into a summary). What renders now is one line per round plus a short
-    // suffix on tool-call summaries the eye already scans, with the breakdown
-    // collapsed behind a click.
-    //
-    // A persona panel voted 3-1 to keep it off, arguing per-row chrome taxes
-    // readers who never look at it. The fifth participant used a real session
-    // both ways and overruled that: the panel was weighing hypothetical
-    // clutter, while four people doing real work each independently noticed
-    // the absence.
-    roundTimings: readBool(TRANSCRIPT_KEY_NAMES.roundTimings, true),
-    tokenCounts: readBool(TRANSCRIPT_KEY_NAMES.tokenCounts, false),
-    hookExitsAll: readBool(TRANSCRIPT_KEY_NAMES.hookExitsAll, false),
-    hookExitsNormal: readBool(TRANSCRIPT_KEY_NAMES.hookExitsNormal, false),
-    // Defaults ON, unlike its two neighbours, because it is the only one of the
-    // three that governs items the transcript ALREADY renders: the system-prompt
-    // scaffold and each "prompt loaded" notice are unfiltered until this pref
-    // gains a consumer. Off would make a working, visible feature disappear for
-    // everyone who never opened Settings. The hook toggles govern lines nothing
-    // renders yet, so off costs those nothing.
-    promptLoaded: readBool(TRANSCRIPT_KEY_NAMES.promptLoaded, true),
-  };
-}
 
 // code-wins (wave-7 pre-adjudication): the floor doc's own §6 flags a
 // copy/code discrepancy (page copy claimed title/favicon default on; both
@@ -500,9 +449,7 @@ function loadInitialState(): Omit<
   | "setSidebarGrouping"
   | "setFontSize"
   | "setTranscriptMeasure"
-  | "setTranscriptStatus"
   | "setEnterToSend"
-  | "setShowCost"
   | "setCharacterKeyTriggers"
   | "setLastSettingsSection"
   | "setNotification"
@@ -524,9 +471,7 @@ function loadInitialState(): Omit<
     sidebarGrouping: readEnum("sidebarGrouping", SIDEBAR_GROUPING_VALUES, "project-host"),
     fontSize,
     transcriptMeasure,
-    transcript: loadTranscript(),
     enterToSend: readBool("enterToSend", false),
-    showCost: readBool("showCost", false),
     characterKeyTriggers: readBool("characterKeyTriggers", true),
     lastSettingsSection: readRaw("lastSettingsSection"),
     notifications: loadNotifications(),
@@ -585,19 +530,9 @@ export const prefsStore = createStore<PrefsStoreState>((set) => ({
     set({ transcriptMeasure: value });
   },
 
-  setTranscriptStatus(key, value) {
-    writeBool(TRANSCRIPT_KEY_NAMES[key], value);
-    set((s) => ({ transcript: { ...s.transcript, [key]: value } }));
-  },
-
   setEnterToSend(value) {
     writeBool("enterToSend", value);
     set({ enterToSend: value });
-  },
-
-  setShowCost(value) {
-    writeBool("showCost", value);
-    set({ showCost: value });
   },
 
   setCharacterKeyTriggers(value) {

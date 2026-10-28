@@ -388,15 +388,7 @@ func NewServer(cfg ServerConfig) *Server {
 			Version:    buildinfo.Version(),
 			SourceID:   "local",
 			SubscriptionAdmissionResolver: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
-				params, ok := decodeSubscriptionAdmissionParams(msg)
-				if !ok {
-					return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
-				}
-				threadID, target := runtime.appReadTarget(params)
-				if threadID == "" {
-					return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionUnresolved}
-				}
-				return appserver.SubscriptionAdmissionResolution{Key: target, Intent: appserver.SubscriptionAdmissionResolved}
+				return runtime.resolveSubscriptionAdmission(msg)
 			},
 			Features: appwire.FeatureSet{
 				ThreadList:        true,
@@ -431,30 +423,52 @@ func NewServer(cfg ServerConfig) *Server {
 	return s
 }
 
+// resolveSubscriptionAdmission classifies a thread/read or thread/unsubscribe
+// request for ordered dispatch. Params that do not decode are Invalid, as on
+// the hub; a request that is not a subscribe at all is NotSubscribe.
+func (s *Server) resolveSubscriptionAdmission(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
+	params, ok, malformed := decodeSubscriptionAdmissionParams(msg)
+	if malformed {
+		return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionInvalid}
+	}
+	if !ok {
+		return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
+	}
+	threadID, target := s.appReadTarget(params)
+	if threadID == "" {
+		return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionUnresolved}
+	}
+	return appserver.SubscriptionAdmissionResolution{Key: target, Intent: appserver.SubscriptionAdmissionResolved}
+}
+
 // decodeSubscriptionAdmissionParams decodes msg's thread/read or
 // thread/unsubscribe request params into a ThreadReadParams, the wire decode
-// step of SubscriptionAdmissionResolver above: ok is false for a message the
-// resolver does not apply to (not a request, or a method other than the two
-// it admits) or params it cannot decode. Pulled out as its own function so
-// the decode of client-supplied JSON, not the admission semantics that need a
-// live Server to resolve against, is what a fuzz target exercises
+// step of resolveSubscriptionAdmission: ok is false for a message the
+// resolver does not apply to (not a request, a method other than the two it
+// admits, or a read that does not subscribe), and malformed is true for
+// params it cannot decode. Pulled out as its own function so the decode of
+// client-supplied JSON, not the admission semantics that need a live Server
+// to resolve against, is what a fuzz target exercises
 // (FuzzDecodeSubscriptionAdmissionParams).
-func decodeSubscriptionAdmissionParams(msg appwire.Message) (params appwire.ThreadReadParams, ok bool) {
+func decodeSubscriptionAdmissionParams(msg appwire.Message) (params appwire.ThreadReadParams, ok, malformed bool) {
 	if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
-		return appwire.ThreadReadParams{}, false
+		return appwire.ThreadReadParams{}, false, false
 	}
 	if msg.Request.Method == appwire.MethodThreadUnsubscribe {
 		var unsubscribe appwire.ThreadUnsubscribeParams
 		if json.Unmarshal(msg.Request.Params, &unsubscribe) != nil {
-			return appwire.ThreadReadParams{}, false
+			return appwire.ThreadReadParams{}, false, true
 		}
 		params.ThreadID, params.Ref = unsubscribe.ThreadID, unsubscribe.Ref
-		return params, true
+		return params, true, false
 	}
-	if json.Unmarshal(msg.Request.Params, &params) != nil || !params.Subscribe {
-		return appwire.ThreadReadParams{}, false
+	if json.Unmarshal(msg.Request.Params, &params) != nil {
+		return appwire.ThreadReadParams{}, false, true
 	}
-	return params, true
+	if !params.Subscribe {
+		return appwire.ThreadReadParams{}, false, false
+	}
+	return params, true, false
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
