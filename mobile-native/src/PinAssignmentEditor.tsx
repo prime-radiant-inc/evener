@@ -5,6 +5,7 @@ import type { PinAssignmentSelection } from "./pinAssignmentDrafts";
 import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { Button, Group, Row, TextFieldRow } from "./sheet/Grouped";
 import { Spinner } from "./sheet/Spinner";
+import { CATEGORY_NAME_MAX_CODE_POINTS } from "./navigationActionRepository";
 
 export type PinAssignmentSection = { id: string; name: string; count: number };
 export interface PinAssignmentEditorProps {
@@ -41,7 +42,7 @@ const BLOCKED = {
 
 function validName(name: string) {
 	const length = Array.from(name.trim()).length;
-	return length >= 1 && length <= 80;
+	return length >= 1 && length <= CATEGORY_NAME_MAX_CODE_POINTS;
 }
 export function PinAssignmentEditor({
 	status,
@@ -152,7 +153,7 @@ export function PinAssignmentEditor({
 					/>
 				</Group>
 				{creating && !validName(selection?.kind === "new" ? selection.name : "") ? (
-					<Copy muted>Use 1–80 characters.</Copy>
+					<Copy muted>Use 1–{CATEGORY_NAME_MAX_CODE_POINTS} characters.</Copy>
 				) : null}
 				<View style={[styles.row, { flexWrap: "wrap" }]}>
 					<Button

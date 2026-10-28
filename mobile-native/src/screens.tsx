@@ -186,12 +186,8 @@ import { NotesBar } from "./session/NotesBar";
 import { type NotesHost, notesHosts } from "./session/NotesSheet";
 import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
 import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
-import {
-	confirmShutDown,
-	type SessionInfoAction,
-	type SessionInfoHost,
-	sessionInfoHosts,
-} from "./session/SessionInfoSheet";
+import { type SessionInfoAction, type SessionInfoHost, sessionInfoHosts } from "./session/SessionInfoSheet";
+import { confirmShutDown } from "./session/confirmShutDown";
 import { SessionNotice } from "./session/SessionNotice";
 import { useSessionRestart } from "./session/sessionRestart";
 import {
