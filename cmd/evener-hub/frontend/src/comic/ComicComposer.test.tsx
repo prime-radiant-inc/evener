@@ -4,6 +4,7 @@ import {
   type ThreadCapabilities,
   type ThreadReadResponse,
 } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { subagentOutcomesDelegatesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -11,21 +12,29 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { askDockStore, resetAskDockStoreForTests } from "../panes/session/composer/askDock/askDockStore";
 import { Composer } from "../panes/session/composer/Composer";
+import { resetComposerFocusStoreForTests } from "../panes/session/composer/composerFocus";
 import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "../panes/session/composer/quoteInsert";
 import { type ComposerSourceState, createComposerSourceState } from "../panes/session/composer/sourceState";
 import { CommittedSession } from "../panes/session/testing/CommittedSession";
 import { editorCursor, replaceEditorText, selectEditorText } from "../panes/session/testing/editor";
 import { ClientProvider } from "../shell/clientContext";
+import { NeedsYouProvider } from "../shell/NeedsYouProvider";
+import { CommandPalette } from "../shell/palette/CommandPalette";
+import { openPalette, paletteStore } from "../shell/palette/paletteController";
 import { navigate, paneToURL } from "../shell/routing";
-import { resetWorkspaceStoreForTests } from "../shell/workspace";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import { useCommandCatalog } from "../stores/commandCatalog";
 import { connectionStore } from "../stores/connection";
 import { MutationOutboxIndexedDB } from "../stores/mutationOutboxIndexedDB";
+import { resetNavigationStoreForTests } from "../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../stores/transcriptDisplay";
+import { getToasts, resetToastStoreForTests } from "../widgets/toast/store";
 import { ComicComposer } from "./ComicComposer";
 import { readComicPosition, writeComicPosition } from "./readerPosition";
 
@@ -37,6 +46,8 @@ const capabilities = {
   interrupt: true,
   skillInput: true,
   commandInput: true,
+  clear: true,
+  goal: true,
 } as ThreadCapabilities;
 let storage: MutationOutboxIndexedDB;
 let sources: ComposerSourceState[];
@@ -57,6 +68,12 @@ beforeEach(() => {
   resetPendingTurnsStoreForTests();
   resetPrefsStoreForTests();
   resetWorkspaceStoreForTests();
+  resetNavigationStoreForTests();
+  resetQuoteInsertStoreForTests();
+  resetComposerFocusStoreForTests();
+  resetToastStoreForTests();
+  useCommandCatalog.setState(useCommandCatalog.getInitialState());
+  paletteStore.setState({ open: false, query: "", openSeq: 0 });
   resetTranscriptDisplayStoreForTests();
   transcriptDisplayStore.getState().setPresentation("desktop", "comic");
   storage = new MutationOutboxIndexedDB();
@@ -161,6 +178,209 @@ async function settle(source?: ComposerSourceState) {
     await source?.flushRecoveryWrites();
   });
 }
+
+test.each([
+  ["/goal investigate", "goal/set"],
+  ["/clear", "thread/clear"],
+] as const)("palette handoff %s executes the builtin rather than a chat turn", async (invocation, method) => {
+  const fake = await setup();
+  fake.on("goal/set", () => ({ started: false }));
+  fake.on("thread/clear", async (params) => ({
+    ref,
+    thread: { ...(await fake.request("thread/read", { ref, includeTurns: true })).thread, turns: [] },
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: `thread-${ref}`,
+      projectionState: "reflected",
+    },
+  }));
+  const source = sourceFor();
+  const paneId = "palette-comic";
+  workspaceStore.setState({
+    panes: [{ id: paneId, type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: paneId,
+  });
+  render(
+    <ClientProvider client={fake}>
+      <NeedsYouProvider>
+        <CommandPalette />
+        <ComicComposer source={source} paneId={paneId} />
+      </NeedsYouProvider>
+    </ClientProvider>,
+  );
+  await settle(source);
+  act(() => openPalette(invocation));
+  const handoff = screen.getAllByRole("option").find((row) => row.dataset.kind === "handoff");
+  expect(handoff).toBeDefined();
+  fireEvent.click(handoff!);
+  await waitFor(() => expect(source.getSnapshot().text).toBe(`${invocation} `));
+  expect(paletteStore.getState().open).toBe(false);
+  expect(fake.calls.some((call) => call.method === method)).toBe(false);
+  await act(async () => fireEvent.click(screen.getByTestId("composer-submit")));
+  await settle(source);
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/queue")).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1);
+  if (method === "goal/set") {
+    expect(fake.calls.find((call) => call.method === method)?.params).toEqual({ ref, objective: "investigate" });
+  } else {
+    expect(threadsStore.getState().threads.get(ref)?.turns).toEqual([]);
+  }
+  await waitFor(() => expect(editor().textContent).toBe(""));
+  expect(readComposerDraft(ref).text).toBe("");
+});
+
+test.each([
+  { outcome: "failure", edit: "none" },
+  { outcome: "failure", edit: "newer" },
+  { outcome: "success", edit: "newer" },
+  { outcome: "success", edit: "same-text" },
+])("builtin $outcome preserves $edit edits and rejects duplicate presses", async ({ outcome, edit }) => {
+  const fake = await setup();
+  const command = deferred<{ started: boolean }>();
+  fake.on("goal/set", () => command.promise);
+  const source = sourceFor();
+  const view = render(<ComicComposer source={source} paneId="command-pane" />);
+  await settle(source);
+  const invocation = "/goal COMMAND_OBJECTIVE";
+  act(() => requestQuoteInsert(ref, invocation, "prefix", "command-pane"));
+  const form = view.container.querySelector("form")!;
+  act(() => {
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+  });
+  expect(fake.calls.filter((call) => call.method === "goal/set")).toHaveLength(1);
+  expect((screen.getByTestId("composer-submit") as HTMLButtonElement).disabled).toBe(true);
+  if (edit !== "none") {
+    replaceEditorText(editor(), "NEWER_DRAFT");
+    if (edit === "same-text") replaceEditorText(editor(), invocation);
+  }
+  // A newer ordinary message cannot escape the command's busy fence either.
+  fireEvent.submit(form);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  await act(async () => {
+    if (outcome === "failure") command.reject(new Error("COMMAND_FAILURE"));
+    else command.resolve({ started: false });
+  });
+  await waitFor(() => expect((screen.getByTestId("composer-submit") as HTMLButtonElement).disabled).toBe(false));
+  const expected = edit === "newer" ? "NEWER_DRAFT" : invocation;
+  expect(source.getSnapshot().text).toBe(expected);
+  expect(editor().textContent).toBe(expected);
+  expect(readComposerDraft(ref).text).toBe(expected);
+  expect(getToasts().map((toast) => toast.kind)).toEqual(outcome === "failure" ? ["error"] : []);
+  expect(fake.calls.filter((call) => call.method === "goal/set")).toHaveLength(1);
+});
+
+test.each(["unknown", "plugin", "skill", "command", "attachment"] as const)(
+  "%s input falls through builtin interception without losing its content",
+  async (kind) => {
+    const fake = await setup();
+    useCommandCatalog.setState({ commands: [{ name: "review", description: "", source: "plugin" }] });
+    const text =
+      kind === "unknown"
+        ? "/unknown PAYLOAD"
+        : kind === "plugin"
+          ? "/review PAYLOAD"
+          : kind === "attachment"
+            ? "/goal PAYLOAD [image 1]"
+            : "/goal PAYLOAD";
+    writeComposerDraft(ref, {
+      text,
+      skillNames: kind === "skill" ? ["goal"] : [],
+      commandNames: kind === "command" ? ["goal"] : [],
+      mentions: kind === "skill" || kind === "command" ? [{ kind, name: "goal", offset: 0 }] : [],
+    });
+    const source = sourceFor();
+    if (kind === "attachment") {
+      source.attachments.setState({
+        items: [{ marker: 1, name: "fixture.png", mediaType: "image/png", data: "AQID", pending: false }],
+      });
+    }
+    render(<ComicComposer source={source} />);
+    await settle(source);
+    act(() => connectionStore.setState({ state: "idle" }));
+    fireEvent.click(screen.getByTestId("composer-submit"));
+    await waitFor(async () => expect(await storage.listOutbox(ref)).toHaveLength(1));
+    const [row] = await storage.listOutbox(ref);
+    expect(row).toMatchObject({
+      method: "turn/start",
+      composerText: text,
+      payload: {
+        ref,
+        input: [
+          { type: "text", text: kind === "attachment" ? expect.stringContaining("/goal PAYLOAD") : text },
+          ...(kind === "skill" || kind === "command"
+            ? [{ type: kind, name: "goal" }]
+            : kind === "attachment"
+              ? [expect.objectContaining({ type: "image", mediaType: "image/png", data: "AQID" })]
+              : []),
+        ],
+      },
+    });
+    expect(fake.calls.filter((call) => call.method === "goal/set")).toEqual([]);
+    await waitFor(() => expect(editor().textContent).toBe(""));
+  },
+);
+
+test.each(["/clear", "/queue QUEUED_BODY", "/steer STEERED_BODY", "/drain-as-steer"])(
+  "a live recovery fence refuses %s without parking intent",
+  async (invocation) => {
+    const fake = await setup("active");
+    const source = sourceFor();
+    const view = render(<ComicComposer source={source} paneId="fenced-pane" />);
+    await settle(source);
+    act(() => requestQuoteInsert(ref, invocation, "prefix", "fenced-pane"));
+    act(() => {
+      // Arm after the rendered command catalog, then press before React commits.
+      threadsStore.setState({ restartBlockingObligations: new Map([[ref, Symbol("command-recovery")]]) });
+      fireEvent.submit(view.container.querySelector("form")!);
+    });
+    await settle(source);
+    expect(getToasts().map((toast) => toast.kind)).toEqual(["error"]);
+    expect(source.getSnapshot().text).toBe(invocation);
+    expect(await storage.listOutbox(ref)).toEqual([]);
+    expect(fake.calls.filter((call) => call.method === "thread/clear" || call.method.startsWith("turn/"))).toEqual([]);
+  },
+);
+
+test.each(["queue", "steer"] as const)("/%s submits only its parsed body with durable ownership", async (verb) => {
+  await setup("active");
+  const source = sourceFor();
+  render(<ComicComposer source={source} paneId="message-command-pane" />);
+  await settle(source);
+  act(() => connectionStore.setState({ state: "idle" }));
+  act(() => requestQuoteInsert(ref, `/${verb} MESSAGE_BODY`, "prefix", "message-command-pane"));
+  fireEvent.keyDown(editor(), { key: "Enter", ctrlKey: true });
+  await waitFor(async () => expect(await storage.listOutbox(ref)).toHaveLength(1));
+  expect(await storage.listOutbox(ref)).toMatchObject([
+    {
+      method: `turn/${verb}`,
+      payload: { ref, input: [{ type: "text", text: "MESSAGE_BODY" }] },
+      clientMutationId: expect.any(String),
+    },
+  ]);
+  await waitFor(() => expect(editor().textContent).toBe(""));
+  expect(readComposerDraft(ref).text).toBe("");
+});
+
+test("a live unavailable steer preserves the literal invocation without sending", async () => {
+  const fake = await setup("active");
+  const source = sourceFor();
+  const view = render(<ComicComposer source={source} paneId="steer-pane" />);
+  await settle(source);
+  act(() => requestQuoteInsert(ref, "/steer MESSAGE_BODY", "prefix", "steer-pane"));
+  act(() => {
+    const state = threadsStore.getState();
+    const model = state.threads.get(ref)!;
+    threadsStore.setState({ threads: new Map(state.threads).set(ref, { ...model, status: { type: "idle" } }) });
+    fireEvent.submit(view.container.querySelector("form")!);
+  });
+  await settle(source);
+  expect(getToasts().map((toast) => toast.kind)).toEqual(["error"]);
+  expect(source.getSnapshot().text).toBe("/steer MESSAGE_BODY");
+  expect(await storage.listOutbox(ref)).toEqual([]);
+  expect(fake.calls.filter((call) => call.method.startsWith("turn/"))).toEqual([]);
+});
 
 test.each(["comic", "standard"] as const)(
   "%s composer stays hidden and inert across pending body pruning and restoration",

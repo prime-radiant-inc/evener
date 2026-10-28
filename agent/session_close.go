@@ -378,8 +378,7 @@ func (s *Session) beginClosing(forceTerminal, markClosed bool) (turns int, emitE
 	s.responseSideEffectsMu.Lock()
 	s.mu.Lock()
 	turns = s.modelResponses
-	emitEnd = forceTerminal || !s.sessionEndEmitted
-	s.sessionEndEmitted = true
+	emitEnd = s.claimSessionEndLocked(forceTerminal)
 	if s.state == SessionProcessing {
 		s.endTurnLocked() // dying turn's work counts and it ends now
 	}

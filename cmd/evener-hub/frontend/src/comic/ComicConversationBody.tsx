@@ -107,7 +107,7 @@ export function ComicConversationBody({
                   if (url !== null) navigate(url);
                 }}
               />
-              <ComicInteractions sessionRef={ref} />
+              <ComicInteractions sessionRef={ref} paneId={seat.viewFallbackId} />
             </div>
           ),
           footer: (

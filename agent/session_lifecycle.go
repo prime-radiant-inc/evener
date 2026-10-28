@@ -370,7 +370,7 @@ func (s *Session) discardRestoredCandidate() {
 	s.closeOnce.Do(func() {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
-		s.sessionEndEmitted = true
+		s.suppressSessionEndLocked()
 		s.closing = true
 		s.state = SessionClosed
 		subs := s.subagents.drainForClose()
@@ -678,7 +678,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.mu.Unlock()
 		return "", nil
 	}
-	s.sessionEndEmitted = false
+	s.rearmSessionEndLocked()
 	// Mark the session as in-turn for the duration of this input. SetGoal/ClearGoal
 	// read this under s.mu to coordinate the idle kick against the drain-loop gate
 	// (spec §7): while it is set, an idle kick is suppressed (the gate backs the
@@ -856,10 +856,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				if markerAccepted {
 					s.mu.Lock()
 					turns := s.modelResponses
-					emitEnd := !s.sessionEndEmitted
-					if emitEnd {
-						s.sessionEndEmitted = true
-					}
+					emitEnd := s.claimSessionEndLocked(false)
 					s.mu.Unlock()
 					if emitEnd {
 						s.emit(events.SessionEndData{
@@ -916,9 +913,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 							next = queued.Text
 							nextImages = queued.Images
 							processCtx = s.claimedInputContext(cfg.nextTurnContext(), queued)
-							s.mu.Lock()
-							s.sessionEndEmitted = false
-							s.mu.Unlock()
+							s.rearmSessionEnd()
 							continue
 						}
 					}
@@ -1053,9 +1048,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			next = queued.Text
 			nextImages = queued.Images
 			processCtx = s.claimedInputContext(processCtx, queued)
-			s.mu.Lock()
-			s.sessionEndEmitted = false
-			s.mu.Unlock()
+			s.rearmSessionEnd()
 			continue
 		}
 
@@ -1130,11 +1123,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// here). If the goal is no longer active, drop the stale continuation and
 			// fall through to settle + idle; if it is active, run a FRESH render of the
 			// CURRENT objective so a retarget pursues the new goal.
-			s.mu.Lock()
-			if !s.closingOrClosedLocked() {
-				s.sessionEndEmitted = false
-			}
-			s.mu.Unlock()
+			s.rearmSessionEndUnlessClosing()
 			if cont, ok := s.currentGoalContinuation(); ok {
 				next = cont
 				nextImages = nil
@@ -1154,17 +1143,15 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.reconcileRecordedSteering()
 		s.armAwaitingAtSettle(strings.TrimSpace(strings.Join(outputs, "\n")) != "", goalKicked)
 		s.mu.Lock()
-		if !s.sessionEndEmitted {
-			s.sessionEndEmitted = true
-			turns := s.modelResponses
-			s.mu.Unlock()
+		turns := s.modelResponses
+		emitEnd := s.claimSessionEndLocked(false)
+		s.mu.Unlock()
+		if emitEnd {
 			s.emit(events.SessionEndData{
 				Reason: "input_complete",
 				State:  s.WireState(),
 				Turns:  turns,
 			})
-		} else {
-			s.mu.Unlock()
 		}
 		return strings.Join(outputs, "\n"), nil
 	}
@@ -1185,10 +1172,7 @@ func (s *Session) endInputAtTurnFailure() {
 	s.mu.Lock()
 	closed := s.closingOrClosedLocked()
 	turns := s.modelResponses
-	emitEnd := !s.sessionEndEmitted && !closed
-	if emitEnd {
-		s.sessionEndEmitted = true
-	}
+	emitEnd := !closed && s.claimSessionEndLocked(false)
 	s.mu.Unlock()
 	if emitEnd {
 		s.emit(events.SessionEndData{
@@ -2673,9 +2657,7 @@ func (s *Session) finishNotificationNoop() {
 	s.resumeQuietRest = s.quietRestBeforeInput
 	s.mu.Unlock()
 	s.finishProcessingAtBoundary(context.Background(), rest)
-	s.mu.Lock()
-	s.sessionEndEmitted = true
-	s.mu.Unlock()
+	s.suppressSessionEnd()
 }
 
 func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]deliverableJobNotification, []jobNotification, []deliverableJobNotification) {

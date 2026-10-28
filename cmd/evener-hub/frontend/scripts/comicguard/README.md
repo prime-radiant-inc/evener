@@ -1,33 +1,5 @@
 # Comic Chat browser guard
 
-## Temporary CI runtime trace, not acceptance
-
-`runtime-trace.patch` temporarily adds private data-only observations to Comic's
-reader, child publication and `useTranscript` owner binding. CI applies it with
-`git apply --check` then `git apply`, builds fresh with `make build-web`, and runs
-the unchanged `make test-web-browser` gate with `EVENER_COMIC_GUARD_TRACE=1`.
-Other jobs, assertions, deadlines and browser concurrency are unchanged.
-`COMICGUARD_EVIDENCE_DIR=/tmp/comicguard-runtime-trace` keeps evidence outside
-the Go fixture's successful-cleanup directory; CI uploads it on either verdict.
-
-The runner installs the collector only for the first later-child reload document,
-dumps `runtime-trace.json` in the existing verdict `finally`, and removes the
-new-document script. Dump failures are separate and never replace a browser
-failure. The ring retains at most 2048 events with sequence, dropped count,
-monotonic time and document time origin. Only the fixture root/child refs and
-allowlisted primitive fields survive. No transcript, draft, error text, raw
-models, live owners, extra DOM/Range scans or per-event CDP traffic are exported.
-Opaque owner/promise IDs, binding snapshots and before/after request state can
-distinguish a repeated in-flight request from a new loading transition; network
-evidence still decides whether an actual page request occurred. Observation adds
-synchronous work and can perturb scheduling. A passing diagnostic is not a fix.
-
-Local checks: `node --test scripts/comicguard/runtime-trace.test.mjs` from the
-frontend directory, then apply the patch, build fresh, and run the ordinary Go
-command below once with the trace flag and a fresh evidence directory. Before
-final acceptance, reverse/check the patch, remove all temporary trace tooling,
-runner and workflow wiring, and build fresh again. Never reuse instrumented dist.
-
 From the repository root:
 
 ```sh

@@ -94,27 +94,8 @@ jobs:
           bwrap --unshare-user --unshare-pid --die-with-parent --new-session \
             --ro-bind / / --proc /proc --dev /dev --argv0 true -- true
 
-      # Temporary, one-run Comic diagnostic. This instrumented build is not acceptance.
-      - name: Apply temporary Comic runtime trace and build fresh
-        run: |
-          git apply --check cmd/evener-hub/frontend/scripts/comicguard/runtime-trace.patch
-          git apply cmd/evener-hub/frontend/scripts/comicguard/runtime-trace.patch
-          make build-web
-
       - name: Build and browser guards
-        env:
-          EVENER_COMIC_GUARD_TRACE: "1"
-          COMICGUARD_EVIDENCE_DIR: /tmp/comicguard-runtime-trace
         run: make test-web-browser
-
-      - name: Keep temporary Comic runtime trace on either verdict
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: comic-runtime-trace-${{ github.run_id }}-${{ github.run_attempt }}
-          path: /tmp/comicguard-runtime-trace/**
-          retention-days: 7
-          if-no-files-found: warn
 
       - name: Install native and shared journey dependencies
         run: |

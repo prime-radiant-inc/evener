@@ -123,6 +123,14 @@ once through the shared source, preserving existing skill and command identities
 and placing the caret at the insertion boundary. Switching to Standard does not
 replay a consumed insertion.
 
+Both presentations use `useBuiltinSubmission` for typed and palette-inserted
+session commands. Known built-ins execute instead of sending literal chat;
+unknown and plugin commands, and drafts carrying attachments or selected skills
+or commands, keep ordinary message routing. Queue and Steer submit their parsed
+body through the shared durable input owner. Busy and live recovery fences apply
+before execution, and success clears only the unchanged draft. Failure and newer
+edits preserve the user's work.
+
 An explicit Send-driven resume owns dispatch for its source and resolved
 destination until identity and outbox reconciliation finish. Reconnect reads
 cannot release that ownership, even when they permit ordinary folded Send.
@@ -130,7 +138,9 @@ Completion wakes eligible pending mutations with their original mutation IDs;
 Stop cancellation and failed-resume recovery keep their existing owners.
 
 Pending root questions use the existing AskDock and suppress the ordinary message
-surface. The shared question owner retains known pending questions, answers,
+surface. Answering the last question restores focus only to the answering pane,
+even when another pane shows the same conversation with its own draft.
+The shared question owner retains known pending questions, answers,
 notes and the active tab when background history drops cached bodies, including
 during responsive pane remounts. Retention requires the same canonical call and
 pending state. Resolution, replacement or removal clears the question through
