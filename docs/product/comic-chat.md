@@ -138,8 +138,10 @@ Completion wakes eligible pending mutations with their original mutation IDs;
 Stop cancellation and failed-resume recovery keep their existing owners.
 
 Pending root questions use the existing AskDock and suppress the ordinary message
-surface. Answering the last question restores focus only to the answering pane,
-even when another pane shows the same conversation with its own draft.
+surface. Stop remains available while the run is active, including when other
+tools continue alongside a pending question. Stopping preserves the hidden draft.
+Answering the last question restores focus only to the answering pane, even when
+another pane shows the same conversation with its own draft.
 The shared question owner retains known pending questions, answers,
 notes and the active tab when background history drops cached bodies, including
 during responsive pane remounts. Retention requires the same canonical call and
@@ -221,9 +223,10 @@ loaded source waits for composed layout before any missing-source fallback. User
 movement cancels pending restoration. A collapsed branch keeps its small anchor
 for reopening; a parent end target does not follow later child panels.
 The shared transcript hook captures the older-page scheduling key with its
-loading state. Comic uses that snapshot for continuation, so a delayed child
-publication cannot mark a newer page requested while the previous load is still
-finishing.
+loading state. The shared history owner coalesces demand and paces retries;
+Comic requests continuation while the saved source is missing and that owner is
+idle. Hydration may replace a cached window and later return to its cursor, so
+an earlier request for that cursor does not prove its page was fetched.
 If a saved child never hydrates and the shared owner confirms deletion,
 restoration settles at its parent strip. Temporary loading or repair preserves
 the saved intent until recovery or user movement. **Jump to latest** releases
