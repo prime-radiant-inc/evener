@@ -156,8 +156,10 @@ type hubRuntime struct {
 	sshManager       *sshconn.Manager
 	opsStore         *hostops.Store
 	// opsUnavailable marks a hub whose operation store failed to open: it serves
-	// its hosts, refuses host changes, and retries the open in the background.
+	// its hosts, refuses host changes, and retries the open in the background
+	// through reopenOps.
 	opsUnavailable bool
+	reopenOps      func() (*hostops.Store, error)
 
 	resumeLocks               *hubcore.ResumeLocks
 	deletionStore             *hubcore.DeletionStore
@@ -470,12 +472,7 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	// in the background. A corrupt store file takes the custody-first quarantine
 	// when its custody can be shown whole; a file whose custody cannot is left
 	// where it is, and the same retry covers it.
-	var err error
-	r.opsStore, err = openHostOpsStore(r.hubStateRoot, r.stderr, hostOperationRetention(cfg))
-	if err != nil {
-		r.opsUnavailable = true
-		r.logf("host operation store unavailable; hosts keep serving and host changes pause while the hub retries: %v", err)
-	}
+	r.openOpsStore()
 	boot := hostBootDocument(cfg, r.opsStore)
 	r.hostEntries = boot.Hosts
 	// Config loading already validated these through hostreg.New; build the
@@ -484,6 +481,7 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	// counters first, so a hub.toml host with no persisted record is minted
 	// above every mark the records carry (registry spec 08 §1) rather than below
 	// a mark another name retained.
+	var err error
 	r.hostRegistry, err = hostreg.NewSeeded(r.hostEntries, boot.Records.highWaterMarks())
 	if err != nil {
 		return nil, fmt.Errorf("validate hosts: %w", err)
@@ -906,7 +904,7 @@ func (r *hubRuntime) retryHostRecords(ctx context.Context, manage *hubHostManage
 		}
 		var store *hostops.Store
 		if manage.opsStore() == nil {
-			opened, err := openHostOpsStore(r.hubStateRoot, r.stderr, hostOperationRetention(r.cfg))
+			opened, err := r.reopenOps()
 			if err != nil {
 				r.logf("host operation store still unavailable: %v", err)
 				delay = min(delay*2, hostRecordsRetryMax)
@@ -921,4 +919,20 @@ func (r *hubRuntime) retryHostRecords(ctx context.Context, manage *hubHostManage
 		}
 		delay = min(delay*2, hostRecordsRetryMax)
 	}
+}
+
+// openOpsStore opens the operation store at startup. A store that cannot open
+// does not stop the hub: it serves the hosts in hub.toml, refuses host changes
+// and retries the open in the background.
+func (r *hubRuntime) openOpsStore() {
+	r.reopenOps = func() (*hostops.Store, error) {
+		return openHostOpsStore(r.hubStateRoot, r.stderr, hostOperationRetention(r.cfg))
+	}
+	store, err := r.reopenOps()
+	if err != nil {
+		r.opsUnavailable = true
+		r.logf("host operation store unavailable; hosts keep serving and host changes pause while the hub retries: %v", err)
+		return
+	}
+	r.opsStore = store
 }

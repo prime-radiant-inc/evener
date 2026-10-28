@@ -117,10 +117,12 @@ func TestOpenHostOpsStoreReportsEveryOpenFailureWithoutAHandle(t *testing.T) {
 	}
 }
 
-// TestOpenHostOpsStoreReportsAnIncompleteCustody pins the open's other
-// refusal: a corrupt file whose custody cannot be shown complete is reported
-// with the store-corrupt class, and nothing is renamed or rewritten.
-func TestOpenHostOpsStoreReportsAnIncompleteCustody(t *testing.T) {
+// TestOpenHostOpsStoreSetsAsideAStoreWhoseCustodyCannotBeProven pins the open's
+// answer to a corrupt file the custody-first quarantine refuses: the file is
+// kept byte for byte beside the store, and a fresh, empty store opens at the
+// path, so the hub keeps working and rebuilds what it can instead of waiting on
+// a file nobody can repair.
+func TestOpenHostOpsStoreSetsAsideAStoreWhoseCustodyCannotBeProven(t *testing.T) {
 	stateRoot := t.TempDir()
 	path := hostops.StorePath(stateRoot)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -132,24 +134,33 @@ func TestOpenHostOpsStoreReportsAnIncompleteCustody(t *testing.T) {
 	}
 	var logged strings.Builder
 	store, err := openHostOpsStore(stateRoot, &logged, hostops.RetentionPolicy{})
-	if store != nil {
-		t.Fatalf("openHostOpsStore returned a store for an unprovable custody snapshot")
+	if err != nil || store == nil {
+		t.Fatalf("openHostOpsStore = (%v, %v), want a fresh store", store, err)
 	}
-	if !errors.Is(err, hostops.ErrStoreCorrupt) {
-		t.Fatalf("openHostOpsStore = %v, want an ErrStoreCorrupt refusal", err)
+	if records := store.Records(); len(records) != 0 {
+		t.Fatalf("the fresh store carries records: %+v", records)
 	}
-	body, readErr := os.ReadFile(path)
-	if readErr != nil {
-		t.Fatalf("ReadFile(%s): %v", path, readErr)
-	}
-	if string(body) != truncated {
-		t.Fatalf("the refused boot rewrote the corrupt file:\n%s", body)
+	if _, _, imported := store.HostRecords(); imported {
+		t.Fatal("the fresh store claims imported host records")
 	}
 	entries, readErr := os.ReadDir(filepath.Dir(path))
 	if readErr != nil {
 		t.Fatalf("ReadDir: %v", readErr)
 	}
-	if len(entries) != 1 || entries[0].Name() != "operations.json" {
-		t.Fatalf("the refused boot left quarantine artifacts behind: %v", entries)
+	var kept []string
+	for _, entry := range entries {
+		if entry.Name() == "operations.json" {
+			continue
+		}
+		body, readErr := os.ReadFile(filepath.Join(filepath.Dir(path), entry.Name()))
+		if readErr != nil {
+			t.Fatalf("ReadFile(%s): %v", entry.Name(), readErr)
+		}
+		if string(body) == truncated {
+			kept = append(kept, entry.Name())
+		}
+	}
+	if len(kept) != 1 {
+		t.Fatalf("the corrupt bytes were kept in %d file(s) (%v), want exactly one", len(kept), kept)
 	}
 }

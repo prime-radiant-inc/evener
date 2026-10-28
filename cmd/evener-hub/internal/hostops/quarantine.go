@@ -914,3 +914,21 @@ func checkQuarantineBytes(raw []byte) error {
 	}
 	return validateRawFieldKeys(raw)
 }
+
+// unprovableAsideInfix names the file SetAsideUnprovable keeps: distinct from
+// the custody-first quarantine's aside, which always has a custody file beside it.
+const unprovableAsideInfix = ".unprovable-"
+
+// SetAsideUnprovable moves a corrupt store file whose custody cannot be shown
+// whole out of the way, keeping every byte, so a fresh store can open at path.
+// The custody-first quarantine refuses such a file because it cannot prove the
+// names it would carry; a caller that must keep serving anyway sets the file
+// aside and rebuilds what it can from elsewhere. It returns the path the file
+// was kept at.
+func SetAsideUnprovable(path string) (string, error) {
+	aside := path + unprovableAsideInfix + quarantineStamp(nowUTC())
+	if err := renameStoreAside(afero.NewOsFs(), path, aside, storeFaults{}); err != nil && !RenameLanded(err) {
+		return "", err
+	}
+	return aside, nil
+}

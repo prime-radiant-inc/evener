@@ -390,7 +390,21 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 // inert, and a crashed probe's temp/target file is a stray nothing else will
 // remove.
 func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.RetentionPolicy) (*hostops.Store, error) {
-	store, err := hostops.OpenWithRetention(hostops.StorePath(stateRoot), retention)
+	storePath := hostops.StorePath(stateRoot)
+	store, err := hostops.OpenWithRetention(storePath, retention)
+	if errors.Is(err, hostops.ErrQuarantineIncomplete) {
+		// The corrupt file's custody cannot be shown whole, so the quarantine
+		// will not carry its names. The hub keeps working anyway: the file is
+		// kept, byte for byte, beside the store, and a fresh store opens. What
+		// can be rebuilt (the host records from hub.toml and the live
+		// registry) is; the operation history in the file is not carried over.
+		aside, moveErr := hostops.SetAsideUnprovable(storePath)
+		if moveErr != nil {
+			return nil, fmt.Errorf("host operation store: %w; setting it aside failed: %w", err, moveErr)
+		}
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store was corrupt and its custody could not be shown whole (%v); kept it at %s and opened a fresh store\n", err, aside)
+		store, err = hostops.OpenWithRetention(storePath, retention)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("host operation store: %w", err)
 	}

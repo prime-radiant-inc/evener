@@ -81,20 +81,20 @@ func (m *hubHostManager) mutationRefusal() error {
 //     configured store failed to open, hosts keep serving and mutations refuse.
 func (m *hubHostManager) bootRecords() {
 	ops := m.opsStore()
-	switch {
-	case ops == nil:
+	if ops == nil {
 		m.bootLegacyRecords()
 		if m.cfg.opsUnavailable {
 			m.refuseMutations("the operation store is unavailable")
 		}
-	default:
-		if _, _, imported := ops.HostRecords(); imported {
-			m.bootStoreRecords(ops)
-			return
-		}
-		m.bootLegacyRecords()
-		m.migrateLegacyRecords(ops)
+		return
 	}
+	if _, _, imported := ops.HostRecords(); imported {
+		m.bootStoreRecords(ops)
+		return
+	}
+	m.keepPreRecordsCopy()
+	m.bootLegacyRecords()
+	m.migrateLegacyRecords(ops)
 }
 
 // attachOps brings the records to the state a boot would have, after the hub
@@ -144,13 +144,33 @@ func (m *hubHostManager) migrateLegacyRecords(ops *hostops.Store) {
 	m.cfg.store.installRecords(records)
 	m.useRecordStore(hostOpsRecordStore{path: m.cfg.configPath, ops: ops, logf: m.cfg.logf})
 	m.logf("moved %d host record(s) from %s into the operation store", len(set.HostRecords), m.cfg.configPath)
-	m.stripLegacySections()
+	m.stripLegacySections(false)
+}
+
+// keepPreRecordsCopy keeps the hub.toml an upgrade found, before the legacy boot
+// rewrites it. Only a file that holds record sections has an original worth
+// keeping: a file with the hosts alone loses nothing the upgrade did not
+// already lose to every earlier rewrite.
+func (m *hubHostManager) keepPreRecordsCopy() {
+	path := m.cfg.configPath
+	if path == "" {
+		return
+	}
+	doc, raw, err := readHubTOMLDocument(path)
+	if err != nil || len(legacyRecordSections(doc)) == 0 {
+		return
+	}
+	if err := keepPreRecordsCopy(path, raw); err != nil {
+		m.logf("the original %s was not kept: %v", path, err)
+	}
 }
 
 // stripLegacySections drops the reserved record sections from hub.toml once
-// the store holds the records, after keeping one copy of the file as it was.
-// The strip is idempotent and failure is retried by the next boot.
-func (m *hubHostManager) stripLegacySections() {
+// the store holds the records. The original was kept before the legacy boot
+// rewrote it (keepPreRecordsCopy), or, for a file that reached this point
+// without a copy, is kept now. The strip is idempotent and failure is retried
+// by the next boot.
+func (m *hubHostManager) stripLegacySections(keepCopy bool) {
 	path := m.cfg.configPath
 	if path == "" {
 		return
@@ -169,9 +189,11 @@ func (m *hubHostManager) stripLegacySections() {
 		m.logf("hub.toml record sections not dropped: %s is unreadable", path)
 		return
 	}
-	if err := keepPreRecordsCopy(path, raw); err != nil {
-		m.logf("hub.toml record sections not dropped: %v", err)
-		return
+	if keepCopy {
+		if err := keepPreRecordsCopy(path, raw); err != nil {
+			m.logf("hub.toml record sections not dropped: %v", err)
+			return
+		}
 	}
 	hosts := hostEntriesWithIdentity(cfg.Hosts, hostRecordSet{})
 	if err := writeHubTOMLHostsOnly(path, hosts, hosts); err != nil {
@@ -218,7 +240,7 @@ func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
 	m.cfg.store.setRecordMaps(records.Tombstones, records.PrunedReceipts)
 	m.cfg.store.setStoreSync(nil)
 	m.cfg.store.setRemnantMaps(records.StagedReceipts, records.TeardownRemnants, records.TeardownAttempts)
-	m.stripLegacySections()
+	m.stripLegacySections(true)
 	doc, hasFile := store.load()
 	if hasFile {
 		m.rollBackUnlandedCommits(doc)

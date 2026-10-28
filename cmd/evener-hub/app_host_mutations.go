@@ -169,8 +169,8 @@ func (m *hubHostManager) admitMutation(ctx context.Context, kind hostMutationKin
 	if replay, err = m.replayArm(kind, name, mutationID); err != nil || replay != nil {
 		return nil, replay, err
 	}
-	if err = m.mutationRefusal(); err != nil {
-		return nil, nil, err
+	if refusal := m.mutationRefusal(); refusal != nil {
+		return nil, nil, refusal
 	}
 	if replay, err = m.settleOrphanMarker(ctx, kind, name, mutationID); err != nil || replay != nil {
 		return nil, replay, err
