@@ -3,6 +3,7 @@ package plugins
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -486,5 +487,382 @@ func TestCopyTreeOverwritesExistingFilesInFull(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(dst, "f"))
 	if err != nil || string(got) != "new" {
 		t.Fatalf("overwritten file = %q, %v", got, err)
+	}
+}
+
+func TestAuditRefusesLinkThatReachesGitMetadata(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, ".git", "config"), "token")
+	if err := os.Symlink(".git/config", filepath.Join(dir, "leak")); err != nil {
+		t.Fatal(err)
+	}
+	if err := auditPluginContent(dir); err == nil {
+		t.Fatal("a prepared link reaching Git metadata passed the audit")
+	}
+}
+
+func TestAuditReportsUnreadableContent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based refusal is invisible to root")
+	}
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "secret", "entry"), "token")
+	if err := os.Chmod(filepath.Join(dir, "secret"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "secret"), 0o700) })
+	if err := auditPluginContent(dir); err == nil {
+		t.Fatal("an unreadable content tree passed the audit")
+	}
+}
+
+func TestTargetTouchesGitOutsideTheContentRoot(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		root   string
+		target string
+		want   bool
+	}{
+		{
+			name:   "git component after shared prefix",
+			root:   "/store/marketplace",
+			target: "/store/cache/.git/config",
+			want:   true,
+		},
+		{
+			name:   "no git component after shared prefix",
+			root:   "/store/marketplace",
+			target: "/store/cache/revision",
+			want:   false,
+		},
+		{
+			name:   "target is an ancestor of the root",
+			root:   "/store/marketplace/plugin",
+			target: "/store",
+			want:   false,
+		},
+	}
+	for _, tc := range cases {
+		if got := targetTouchesGit(tc.root, tc.target); got != tc.want {
+			t.Errorf("%s: targetTouchesGit(%q, %q) = %v, want %v", tc.name, tc.root, tc.target, got, tc.want)
+		}
+	}
+}
+
+func TestRelForDiagnosticFallsBackToBaseOutsideRoot(t *testing.T) {
+	t.Parallel()
+	if got := relForDiagnostic("relative-root", "/absolute/path.md"); got != "path.md" {
+		t.Fatalf("relForDiagnostic outside the root = %q, want the base name", got)
+	}
+}
+
+// Not parallel: moves run through the package's moveRename seam.
+func TestMoveNoReplaceTakesNumberedSibling(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	writeTestFile(t, filepath.Join(src, "entry"), "token")
+	dst := filepath.Join(t.TempDir(), "entry")
+	writeTestFile(t, filepath.Join(dst, "occupied"), "foreign")
+
+	if err := moveNoReplace(src, dst, filepath.Join(t.TempDir(), "journal", "marker")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "occupied")); err != nil || string(got) != "foreign" {
+		t.Fatalf("taken destination was replaced: %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dst+"-1", "entry")); err != nil || string(got) != "token" {
+		t.Fatalf("numbered sibling = %q, %v", got, err)
+	}
+}
+
+// Not parallel: moves run through the package's moveRename seam.
+func TestMoveNoReplaceRefusesUnusableDestination(t *testing.T) {
+	parent := t.TempDir()
+	blocked := filepath.Join(parent, "file")
+	if err := os.WriteFile(blocked, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := moveNoReplace(filepath.Join(parent, "src"), filepath.Join(blocked, "entry"), ""); err == nil {
+		t.Fatal("a destination under a regular file was accepted")
+	}
+
+	long := filepath.Join(parent, strings.Repeat("x", 300))
+	if err := os.WriteFile(filepath.Join(parent, "src"), []byte("token"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := moveNoReplace(filepath.Join(parent, "src"), long, ""); err == nil {
+		t.Fatal("an over-long destination name was accepted")
+	}
+}
+
+// Not parallel: moves run through the package's moveRename seam.
+func TestMoveEntryCrossDeviceCopyFailureLeavesNothingBehind(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based failure is invisible to root")
+	}
+	src := filepath.Join(t.TempDir(), "src")
+	writeTestFile(t, filepath.Join(src, "nested", "entry"), "token")
+	if err := os.Chmod(filepath.Join(src, "nested"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(src, "nested"), 0o700) })
+	dst := filepath.Join(t.TempDir(), "archive", "entry")
+
+	oldRename := moveRename
+	t.Cleanup(func() { moveRename = oldRename })
+	moveRename = func(from, to string) error {
+		return &os.LinkError{Op: "rename", Old: from, New: to, Err: syscall.EXDEV}
+	}
+
+	if err := moveNoReplace(src, dst, ""); err == nil {
+		t.Fatal("a cross-device move of an unreadable tree succeeded")
+	}
+	if _, err := os.Lstat(dst); !os.IsNotExist(err) {
+		t.Fatalf("failed copy left a destination behind: %v", err)
+	}
+}
+
+// Not parallel: moves run through the package's moveRename seam.
+func TestMoveEntryCrossDeviceMarkerFailures(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-based marker refusal is invisible to root")
+	}
+	src := filepath.Join(t.TempDir(), "src")
+	if err := os.WriteFile(src, []byte("token"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldRename := moveRename
+	t.Cleanup(func() { moveRename = oldRename })
+	moveRename = func(from, to string) error {
+		return &os.LinkError{Op: "rename", Old: from, New: to, Err: syscall.EXDEV}
+	}
+
+	parent := t.TempDir()
+	blockingFile := filepath.Join(parent, "file")
+	if err := os.WriteFile(blockingFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := moveNoReplace(src, filepath.Join(parent, "dst"), filepath.Join(blockingFile, "marker")); err == nil {
+		t.Fatal("a marker under a regular file was accepted")
+	}
+
+	marker := filepath.Join(parent, "marker-dir")
+	if err := os.Mkdir(marker, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := moveNoReplace(src, filepath.Join(parent, "dst2"), marker); err == nil {
+		t.Fatal("a marker naming a directory was accepted")
+	}
+}
+
+// Not parallel: moves run through the package's moveRename seam.
+func TestMoveEntryCrossDeviceRemovalFailureKeepsJournalMarker(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based removal failure is invisible to root")
+	}
+	src := filepath.Join(t.TempDir(), "src")
+	writeTestFile(t, filepath.Join(src, "entry"), "token")
+	if err := os.Chmod(src, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(src, 0o755) })
+	marker := filepath.Join(t.TempDir(), "journal", "entry.pending")
+	dst := filepath.Join(t.TempDir(), "archive", "entry")
+	// The cross-device copy under dst inherits the read-only mode too, and
+	// either copy would otherwise defeat TempDir's own cleanup.
+	t.Cleanup(func() {
+		_ = os.Chmod(src, 0o755)
+		_ = os.Chmod(dst, 0o755)
+	})
+
+	oldRename := moveRename
+	t.Cleanup(func() { moveRename = oldRename })
+	moveRename = func(from, to string) error {
+		return &os.LinkError{Op: "rename", Old: from, New: to, Err: syscall.EXDEV}
+	}
+
+	err := moveNoReplace(src, dst, marker)
+	if err == nil {
+		t.Fatal("a cross-device move that could not remove the source reported success")
+	}
+	body, readErr := os.ReadFile(marker)
+	if readErr != nil {
+		t.Fatalf("journal marker missing after the interrupted removal: %v", readErr)
+	}
+	if string(body) != src {
+		t.Fatalf("journal marker names %q, want the archived source path %q", body, src)
+	}
+}
+
+// Not parallel: publishStaged is driven through a swapped rename.
+func TestPublishStagedCannotStageBesideTheDestination(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based staging failure is invisible to root")
+	}
+	finalParent := t.TempDir()
+	if err := os.Chmod(finalParent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(finalParent, 0o700) })
+	staging := t.TempDir()
+	writeTestFile(t, filepath.Join(staging, "entry"), "token")
+
+	err := publishStaged(staging, filepath.Join(finalParent, "published"), func(string, string) error {
+		return &os.LinkError{Op: "rename", Err: syscall.EXDEV}
+	})
+	if err == nil {
+		t.Fatal("cross-device publication staged beside an unwritable destination")
+	}
+}
+
+// Not parallel: publishStaged is driven through a swapped rename.
+func TestPublishStagedCrossDeviceCopyFailureReclaimsScratch(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based copy failure is invisible to root")
+	}
+	staging := t.TempDir()
+	writeTestFile(t, filepath.Join(staging, "entry"), "token")
+	writeTestFile(t, filepath.Join(staging, "secret", "entry"), "token")
+	if err := os.Chmod(filepath.Join(staging, "secret"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(staging, "secret"), 0o700) })
+	finalParent := t.TempDir()
+	calls := 0
+
+	err := publishStaged(staging, filepath.Join(finalParent, "published"), func(from, to string) error {
+		calls++
+		return &os.LinkError{Op: "rename", Old: from, New: to, Err: syscall.EXDEV}
+	})
+	if err == nil {
+		t.Fatal("a cross-device publication of an unreadable tree succeeded")
+	}
+	leftovers, globErr := filepath.Glob(filepath.Join(finalParent, publishScratchPrefix+"*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("failed cross-device copy left scratch behind: %v", leftovers)
+	}
+}
+
+// Not parallel: publishStaged is driven through a swapped rename.
+func TestPublishStagedCrossDeviceRetryFailureReclaimsScratch(t *testing.T) {
+	staging := t.TempDir()
+	writeTestFile(t, filepath.Join(staging, "entry"), "token")
+	finalParent := t.TempDir()
+	calls := 0
+
+	err := publishStaged(staging, filepath.Join(finalParent, "published"), func(from, to string) error {
+		calls++
+		if calls == 1 {
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: syscall.EXDEV}
+		}
+		return os.ErrPermission
+	})
+	if err == nil {
+		t.Fatal("a cross-device publication whose retry rename failed reported success")
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("retry failure = %v, want the rename sentinel", err)
+	}
+	leftovers, globErr := filepath.Glob(filepath.Join(finalParent, publishScratchPrefix+"*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("failed cross-device retry left scratch behind: %v", leftovers)
+	}
+}
+
+func TestReclaimPublishScratchIgnoresMissingParent(t *testing.T) {
+	t.Parallel()
+	reclaimPublishScratch(filepath.Join(t.TempDir(), "missing"))
+}
+
+func TestReclaimPublishScratchRemovesOrphanMarkersAndKeepsUnmarkedScratch(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	old := time.Now().Add(-2 * abandonedPublishScratch)
+	orphan := filepath.Join(parent, publishScratchPrefix+"gone"+publishScratchMarkerSuffix)
+	if err := os.WriteFile(orphan, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(orphan, old, old); err != nil {
+		t.Fatal(err)
+	}
+	unmarked := filepath.Join(parent, publishScratchPrefix+"nomarker")
+	if err := os.Mkdir(unmarked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(unmarked, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	reclaimPublishScratch(parent)
+	if _, err := os.Lstat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("orphan marker survived: %v", err)
+	}
+	if _, err := os.Lstat(unmarked); err != nil {
+		t.Fatalf("scratch without a marker was reclaimed: %v", err)
+	}
+}
+
+func TestCopyTreeExactRefusesFileDestinationRoot(t *testing.T) {
+	t.Parallel()
+	src := t.TempDir()
+	writeTestFile(t, filepath.Join(src, "entry"), "token")
+	dst := filepath.Join(t.TempDir(), "occupied")
+	if err := os.WriteFile(dst, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyTreeExact(src, dst); err == nil {
+		t.Fatal("a regular-file destination root was accepted")
+	}
+	if body, err := os.ReadFile(dst); err != nil || len(body) != 0 {
+		t.Fatalf("file destination root was replaced: %q, %v", body, err)
+	}
+}
+
+func TestCopyTreeExactRefusesNestedDestinationCollision(t *testing.T) {
+	t.Parallel()
+	src := t.TempDir()
+	writeTestFile(t, filepath.Join(src, "nested", "entry"), "token")
+	dst := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dst, "nested"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyTreeExact(src, dst); err == nil {
+		t.Fatal("a directory nested under a regular file was accepted")
+	}
+	if got, err := os.ReadFile(filepath.Join(src, "nested", "entry")); err != nil || string(got) != "token" {
+		t.Fatalf("source entry = %q, %v", got, err)
+	}
+}
+
+func TestCopyEntryExactRefusesMissingSource(t *testing.T) {
+	t.Parallel()
+	if err := copyEntryExact(filepath.Join(t.TempDir(), "missing"), filepath.Join(t.TempDir(), "dst")); err == nil {
+		t.Fatal("a missing archive entry was accepted")
+	}
+}
+
+func TestCopyEntryExactRefusesOccupiedSymlinkDestination(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	src := filepath.Join(parent, "alias")
+	if err := os.Symlink("config", src); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(parent, "taken")
+	if err := os.WriteFile(dst, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyEntryExact(src, dst); err == nil {
+		t.Fatal("an occupied symlink destination was accepted")
+	}
+	if got, err := os.ReadFile(dst); err != nil || len(got) != 0 {
+		t.Fatalf("occupied destination was replaced: %q, %v", got, err)
 	}
 }

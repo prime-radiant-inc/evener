@@ -767,3 +767,19 @@ func TestRecentSetForgetsItsOldestPastCapacity(t *testing.T) {
 		t.Fatalf("after a delete and two puts: len %d, 2 present %v; want 3 and false", set.len(), ok)
 	}
 }
+
+// The accessors a measurement reads start at zero, and a closed overlay
+// ignores later recorded entries rather than growing its anchor.
+func TestOverlayAccessorsStartCleanAndClosedIgnoresRecords(t *testing.T) {
+	t.Parallel()
+	o := newOverlay()
+	if got := o.NoticeBytes(); got != 0 {
+		t.Fatalf("NoticeBytes = %d on a fresh overlay", got)
+	}
+	o.Close()
+	before := o.Snapshot()
+	o.Recorded(assistantRecord(1, "t1", "r1", textPart("after close")))
+	if after := o.Snapshot(); len(after) != len(before) {
+		t.Fatalf("a record after Close changed the snapshot: %d -> %d", len(before), len(after))
+	}
+}

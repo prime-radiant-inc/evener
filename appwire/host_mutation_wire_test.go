@@ -183,3 +183,116 @@ func TestTombstoneCapacityCarriesBoundAndBlockingNames(t *testing.T) {
 		t.Fatal("the envelope aliases the caller's blockingNames slice")
 	}
 }
+
+// TestHostMutationResultArmsRoundTrip pins the result union's codec (registry
+// spec 08 §11): every arm round-trips through the one pointer it sets, the
+// removed-row arms are told apart from the live-row arms by the row shape
+// itself, and a union with no arm or more than one is a marshaling error.
+func TestHostMutationResultArmsRoundTrip(t *testing.T) {
+	t.Parallel()
+	row := HostRow{Name: "m4.example", Generation: 7}
+	removedRow := RemovedRow{Name: "m4.example", Generation: 7}
+	cases := []struct {
+		name string
+		arm  any
+		set  func(*HostMutationResult) bool
+	}{
+		{
+			name: "committed live",
+			arm:  HostMutationCommitted{Outcome: HostMutationOutcomeCommitted, Host: row},
+			set: func(u *HostMutationResult) bool {
+				return u.HostMutationCommitted != nil && u.HostMutationCommittedRemoved == nil
+			},
+		},
+		{
+			name: "committed removed",
+			arm:  HostMutationCommittedRemoved{Outcome: HostMutationOutcomeCommitted, Host: removedRow},
+			set: func(u *HostMutationResult) bool {
+				return u.HostMutationCommittedRemoved != nil && u.HostMutationCommitted == nil
+			},
+		},
+		{
+			name: "teardown failure live",
+			arm:  HostMutationTeardownFailure{Outcome: HostMutationOutcomeTeardownFailure, Seam: "detach", RemnantID: "r1", Host: row},
+			set: func(u *HostMutationResult) bool {
+				return u.HostMutationTeardownFailure != nil && u.HostMutationTeardownFailureRemoved == nil
+			},
+		},
+		{
+			name: "teardown failure removed",
+			arm:  HostMutationTeardownFailureRemoved{Outcome: HostMutationOutcomeTeardownFailure, Seam: "detach", RemnantID: "r2", Host: removedRow},
+			set: func(u *HostMutationResult) bool {
+				return u.HostMutationTeardownFailureRemoved != nil && u.HostMutationTeardownFailure == nil
+			},
+		},
+		{
+			name: "collision dropped",
+			arm:  HostMutationCollisionDropped{Outcome: HostMutationOutcomeCollisionDropped, DroppedEntry: row, WinningFingerprint: "abc"},
+			set:  func(u *HostMutationResult) bool { return u.HostMutationCollisionDropped != nil },
+		},
+		{
+			name: "ambiguous",
+			arm:  HostMutationAmbiguous{Outcome: HostMutationOutcomeAmbiguous, ObservedRow: row},
+			set:  func(u *HostMutationResult) bool { return u.HostMutationAmbiguous != nil },
+		},
+	}
+	for _, tc := range cases {
+		raw, err := json.Marshal(tc.arm)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", tc.name, err)
+		}
+		var decoded HostMutationResult
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("%s: decode %s: %v", tc.name, raw, err)
+		}
+		if !tc.set(&decoded) {
+			t.Fatalf("%s: decoded %s set the wrong arms: %+v", tc.name, raw, decoded)
+		}
+		remarshaled, err := json.Marshal(decoded)
+		if err != nil {
+			t.Fatalf("%s: remarshal: %v", tc.name, err)
+		}
+		var again map[string]json.RawMessage
+		if err := json.Unmarshal(remarshaled, &again); err != nil {
+		}
+	}
+}
+
+// TestHostMutationResultRefusesUndeclaredValues pins the union's refusals: no
+// arm and more than one arm are marshaling errors, an unknown outcome is a
+// decode error that sets no arm, and each declared outcome decodes through its
+// own arm type, so a host of the wrong shape for that arm is refused.
+func TestHostMutationResultRefusesUndeclaredValues(t *testing.T) {
+	t.Parallel()
+	if _, err := json.Marshal(HostMutationResult{}); err == nil {
+		t.Fatal("marshaling a union carrying no arm succeeded, want an error")
+	}
+	both := HostMutationResult{
+		HostMutationCommitted: &HostMutationCommitted{},
+		HostMutationAmbiguous: &HostMutationAmbiguous{},
+	}
+	if _, err := json.Marshal(both); err == nil {
+		t.Fatal("marshaling a union carrying two arms succeeded, want an error")
+	}
+	var decoded HostMutationResult
+	if err := json.Unmarshal([]byte(`{"outcome":"bogus"}`), &decoded); err == nil {
+		t.Fatal("unmarshaling an unknown outcome succeeded, want an error")
+	}
+	if decoded.HostMutationCommitted != nil {
+		t.Fatalf("a refused decode set an arm: %+v", decoded)
+	}
+	malformed := []string{
+		`{"outcome":"committed","host":"not-a-row"}`,
+		`{"outcome":"committed","host":{"midEnsure":"not-a-bool"}}`,
+		`{"outcome":"committed-with-teardown-failure","host":"not-a-row"}`,
+		`{"outcome":"committed-with-teardown-failure","host":{"midEnsure":"not-a-bool"}}`,
+		`{"outcome":"collision-dropped","droppedEntry":"not-a-row"}`,
+		`{"outcome":"ambiguous","observedRow":"not-a-row"}`,
+	}
+	for _, raw := range malformed {
+		var decoded HostMutationResult
+		if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
+			t.Fatalf("decoding %s succeeded, want the arm's own decode error", raw)
+		}
+	}
+}

@@ -73,6 +73,33 @@ func TestInstallLockReadOnlyFilesystemUsesExistingLock(t *testing.T) {
 	release()
 }
 
+// A caller that already left must not queue behind a lock holder: the first
+// contention answer reports the cancellation instead of waiting.
+func TestInstallLockReportsAnAlreadyCancelledWait(t *testing.T) {
+	shareBin := t.TempDir()
+	lockPath := filepath.Join(shareBin, ".install.lock")
+	holder, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = holder.Close()
+	})
+	if err := unix.Flock(int(holder.Fd()), unix.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = unix.Flock(int(holder.Fd()), unix.LOCK_UN)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = acquireInstallLockCtx(ctx, shareBin)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the caller's cancellation without waiting", err)
+	}
+}
+
 // TestInstallLockReadOnlyFilesystemWithoutLockReportsSentinel proves a
 // read-only filesystem with no lock file is the one no-lock case.
 func TestInstallLockReadOnlyFilesystemWithoutLockReportsSentinel(t *testing.T) {

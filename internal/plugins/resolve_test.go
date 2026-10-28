@@ -1808,3 +1808,459 @@ func TestResolveForLaunch_SkippedComponentFileIsADiagnosticNotAnExclusion(t *tes
 		t.Fatalf("diagnostics = %+v, want one naming the skipped file", got.Diagnostics)
 	}
 }
+
+// Not parallel: swaps the package's copyBundledPayload seam.
+func TestPreviewForLaunch_CopyFailureRemovesStaging(t *testing.T) {
+	m := NewManager(t.TempDir())
+	oldCopy := copyBundledPayload
+	t.Cleanup(func() { copyBundledPayload = oldCopy })
+	copyBundledPayload = func(string, fs.FS) error { return os.ErrPermission }
+
+	res, err := m.PreviewForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.ValidateSelection(); err == nil {
+		t.Fatal("a bundled plugin whose copy failed was reported selectable")
+	}
+	var copyFailure *LaunchPluginDiagnostic
+	for i := range res.Diagnostics {
+		if res.Diagnostics[i].Name == "coordinator-workflow" && res.Diagnostics[i].Source == LaunchPluginSourceBundled {
+			copyFailure = &res.Diagnostics[i]
+		}
+	}
+	if copyFailure == nil {
+		t.Fatalf("diagnostics = %+v, want one for the failed bundled copy", res.Diagnostics)
+	}
+	leftovers, globErr := filepath.Glob(filepath.Join(m.bundledPublishingDir(), "*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("failed preview left staging behind: %v", leftovers)
+	}
+	published, globErr := filepath.Glob(filepath.Join(m.Root, "bundled", "coordinator-workflow-*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(published) != 0 {
+		t.Fatalf("failed preview published something: %v", published)
+	}
+}
+
+func TestResolveForLaunch_DuplicateAndEmptySelectionNames(t *testing.T) {
+	t.Parallel()
+	m := NewManager(t.TempDir())
+	names := []string{"missing", "missing", ""}
+
+	res, err := m.ResolveForLaunch(context.Background(), nil, &names)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.ValidateSelection(); err == nil {
+		t.Fatal("invalid selection names passed validation")
+	}
+	counts := map[string]int{}
+	for _, selectionErr := range res.SelectionErrors {
+		counts[selectionErr.Name]++
+	}
+	// One duplicate report plus one unresolvable report per request of the
+	// same name, and one for the empty name.
+	if counts["missing"] != 3 || counts[""] != 1 {
+		t.Fatalf("selection errors = %+v", res.SelectionErrors)
+	}
+}
+
+func TestNewBundledStagingRefusesMissingParent(t *testing.T) {
+	t.Parallel()
+	staging, err := newBundledStaging(filepath.Join(t.TempDir(), "missing"), "base", "digest", func() {})
+	if err == nil || staging != nil {
+		t.Fatalf("newBundledStaging = %v, %v, want an error", staging, err)
+	}
+}
+
+// Not parallel: swaps the package's copyBundledPayload seam.
+func TestMaterializeBundledPlugin_AuditFailurePublishesNothing(t *testing.T) {
+	m := NewManager(t.TempDir())
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := m.bundledPluginPath("coordinator-workflow", digest)
+	oldCopy := copyBundledPayload
+	t.Cleanup(func() { copyBundledPayload = oldCopy })
+	copyBundledPayload = func(dst string, _ fs.FS) error {
+		return os.MkdirAll(filepath.Join(dst, ".git"), 0o700)
+	}
+
+	if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err == nil {
+		t.Fatal("a payload carrying Git metadata was published")
+	}
+	if _, err := os.Lstat(dest); !os.IsNotExist(err) {
+		t.Fatalf("destination occupied after a failed audit: %v", err)
+	}
+}
+
+// Not parallel: swaps the package's copyBundledPayload seam.
+func TestMaterializeBundledPlugin_PublishFailureWithForeignDestinationFile(t *testing.T) {
+	m := NewManager(t.TempDir())
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := m.bundledPluginPath("coordinator-workflow", digest)
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, []byte("foreign"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldCopy := copyBundledPayload
+	t.Cleanup(func() { copyBundledPayload = oldCopy })
+	copyBundledPayload = func(dst string, _ fs.FS) error {
+		return os.WriteFile(filepath.Join(dst, "plugin.md"), []byte("content"), 0o644)
+	}
+
+	if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err == nil {
+		t.Fatal("publication over a foreign file reported success")
+	}
+	if got, err := os.ReadFile(dest); err != nil || string(got) != "foreign" {
+		t.Fatalf("foreign destination = %q, %v, want it untouched", got, err)
+	}
+}
+
+// chmodRestore widens every directory under root back to 0700 so a read-only
+// staging parent cannot defeat t.TempDir's own cleanup.
+func chmodRestore(t *testing.T, root string) {
+	t.Helper()
+	t.Cleanup(func() {
+		_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err == nil && info.IsDir() {
+				_ = os.Chmod(path, 0o700)
+			}
+			return nil
+		})
+	})
+}
+
+// Not parallel: swaps the package's copyBundledPayload seam.
+func TestMaterializeBundledPlugin_PublishFailureWithVacantDestination(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based rename failure is invisible to root")
+	}
+	m := NewManager(t.TempDir())
+	chmodRestore(t, m.Root)
+	oldCopy := copyBundledPayload
+	t.Cleanup(func() { copyBundledPayload = oldCopy })
+	copyBundledPayload = func(dst string, _ fs.FS) error {
+		if err := os.WriteFile(filepath.Join(dst, "plugin.md"), []byte("content"), 0o644); err != nil {
+			return err
+		}
+		// The payload can no longer be renamed out of its staging parent.
+		return os.Chmod(filepath.Dir(dst), 0o555)
+	}
+
+	if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err == nil {
+		t.Fatal("publication whose rename failed reported success")
+	}
+	matches, globErr := filepath.Glob(filepath.Join(m.bundledDir(), "coordinator-workflow-*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("failed publication left a destination behind: %v", matches)
+	}
+}
+
+// Not parallel: swaps the package's copyBundledPayload seam.
+func TestMaterializeBundledPlugin_ConflictRetryFailureRestoresSetAsideCopy(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based rename failure is invisible to root")
+	}
+	m := NewManager(t.TempDir())
+	chmodRestore(t, m.Root)
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := m.bundledPluginPath("coordinator-workflow", digest)
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "foreign.md"), []byte("foreign"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldCopy := copyBundledPayload
+	t.Cleanup(func() { copyBundledPayload = oldCopy })
+	copyBundledPayload = func(dst string, _ fs.FS) error {
+		if err := os.WriteFile(filepath.Join(dst, "plugin.md"), []byte("content"), 0o644); err != nil {
+			return err
+		}
+		return os.Chmod(filepath.Dir(dst), 0o555)
+	}
+
+	if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err == nil {
+		t.Fatal("publication whose retry failed reported success")
+	}
+	if got, err := os.ReadFile(filepath.Join(dest, "foreign.md")); err != nil || string(got) != "foreign" {
+		t.Fatalf("set-aside copy was not put back: %q, %v", got, err)
+	}
+	if _, err := os.Lstat(dest + conflictSuffix); !os.IsNotExist(err) {
+		t.Fatalf("conflict slot survived the restored copy: %v", err)
+	}
+}
+
+func TestRestoreBundledConflictLeavesOccupiedDestinationsAlone(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	dest := filepath.Join(parent, "dest")
+	if err := os.Mkdir(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := restoreBundledConflict(dest); got != nil {
+		t.Fatalf("restoreBundledConflict over an occupied destination = %v", got)
+	}
+	if got := restoreBundledConflict(filepath.Join(parent, "gone")); got != nil {
+		t.Fatalf("restoreBundledConflict with nothing set aside = %v", got)
+	}
+}
+
+func TestRestoreBundledConflictReportsUnmovableCopy(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based rename failure is invisible to root")
+	}
+	parent := t.TempDir()
+	aside := filepath.Join(parent, "dest"+conflictSuffix)
+	if err := os.Mkdir(aside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+
+	warnings := restoreBundledConflict(filepath.Join(parent, "dest"))
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want one for the copy that could not be put back", warnings)
+	}
+	if _, err := os.Lstat(aside); err != nil {
+		t.Fatalf("set-aside copy did not survive the failed restore: %v", err)
+	}
+}
+
+func TestPrepareBundledStoreRefusesUnresolvedRoot(t *testing.T) {
+	t.Parallel()
+	m := NewManager("relative-root")
+	_, _, _, err := m.prepareBundledStore(context.Background(), "coordinator-workflow", publishBundledStore)
+	if !errors.Is(err, errStoreRootNotAbsolute) {
+		t.Fatalf("prepareBundledStore with a relative root = %v, want the not-absolute sentinel", err)
+	}
+}
+
+func TestPrepareBundledStoreRefusesUnusableStorePaths(t *testing.T) {
+	t.Parallel()
+	blocked := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocked, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := NewManager(blocked).prepareBundledStore(context.Background(), "coordinator-workflow", publishBundledStore); err == nil {
+		t.Fatal("a store root that is a regular file was accepted")
+	}
+
+	m := NewManager(t.TempDir())
+	if err := os.WriteFile(filepath.Join(m.Root, "bundled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := m.prepareBundledStore(context.Background(), "coordinator-workflow", publishBundledStore); err == nil {
+		t.Fatal("a bundled store that is a regular file was accepted")
+	}
+}
+
+func TestPrepareBundledStore_CanceledCallerOnPublishedCopy(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, _, err := m.prepareBundledStore(ctx, "coordinator-workflow", publishBundledStore)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("prepareBundledStore for a caller that left = %v, want the context error", err)
+	}
+}
+
+func TestPrepareBundledStore_SetAsideFailureKeepsTheConflict(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based removal failure is invisible to root")
+	}
+	m := NewManager(t.TempDir())
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := m.bundledPluginPath("coordinator-workflow", digest)
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "foreign.md"), []byte("foreign"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dest+conflictSuffix, "occupant"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The previous slot holds content this code cannot remove, so the
+	// set-aside must fail before the destination moves anywhere.
+	previous := dest + conflictSuffix + previousSuffix
+	if err := os.MkdirAll(filepath.Join(previous, "stuck"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(previous, "stuck", "entry"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(previous, "stuck"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(previous, "stuck"), 0o700) })
+
+	if _, _, _, err := m.prepareBundledStore(context.Background(), "coordinator-workflow", publishBundledStore); err == nil {
+		t.Fatal("a set-aside that could not clear its previous slot reported success")
+	}
+	if got, err := os.ReadFile(filepath.Join(dest, "foreign.md")); err != nil || string(got) != "foreign" {
+		t.Fatalf("conflicting destination = %q, %v, want it untouched", got, err)
+	}
+}
+
+func TestClassifyBundledDestinationRefusesWhatItCannotRead(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based classification is invisible to root")
+	}
+	store := t.TempDir()
+	if err := os.Chmod(store, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(store, 0o700) })
+	if _, err := classifyBundledDestination(filepath.Join(store, "entry"), "digest"); err == nil {
+		t.Fatal("classification through an unreadable parent reported success")
+	}
+}
+
+func TestClassifyBundledDestinationTreatsUnreadableFilesAsConflicts(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based classification is invisible to root")
+	}
+	dest := t.TempDir()
+	secret := filepath.Join(dest, "secret.md")
+	if err := os.WriteFile(secret, []byte("token"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(secret, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(secret, 0o600) })
+
+	state, err := classifyBundledDestination(dest, "digest")
+	if err != nil || state != bundledDestinationConflict {
+		t.Fatalf("classification of an unreadable tree = %v, %v, want a conflict", state, err)
+	}
+}
+
+func TestSetAsideBundledConflictRefusesUnmovableSlots(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based rename failures are invisible to root")
+	}
+	parent := t.TempDir()
+	// A previous copy that cannot be renamed back into the slot fails the
+	// set-aside before anything moves.
+	dest := filepath.Join(parent, "dest")
+	previous := filepath.Join(parent, "dest"+conflictSuffix+previousSuffix)
+	if err := os.Mkdir(previous, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// An occupied slot that cannot be renamed away fails the set-aside.
+	aside := filepath.Join(parent, "dest2"+conflictSuffix)
+	if err := os.Mkdir(aside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A destination that cannot be moved into a vacant slot fails too.
+	dest3 := filepath.Join(parent, "dest3")
+	if err := os.Mkdir(dest3, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+
+	if _, err := setAsideBundledConflict(dest); err == nil {
+		t.Fatal("a set-aside whose previous copy could not be restored reported success")
+	}
+	if _, err := os.Lstat(previous); err != nil {
+		t.Fatalf("previous copy did not survive the failed restore: %v", err)
+	}
+
+	if _, err := setAsideBundledConflict(filepath.Join(parent, "dest2")); err == nil {
+		t.Fatal("a set-aside whose occupied slot could not be moved reported success")
+	}
+	if _, err := os.Lstat(aside); err != nil {
+		t.Fatalf("occupied slot did not survive: %v", err)
+	}
+
+	if _, err := setAsideBundledConflict(dest3); err == nil {
+		t.Fatal("a set-aside whose destination could not be moved reported success")
+	}
+	if _, err := os.Lstat(dest3); err != nil {
+		t.Fatalf("destination did not survive the failed move: %v", err)
+	}
+}
+
+func TestReclaimableBundledConflictsIgnoreForeignNamesAndMissingStores(t *testing.T) {
+	t.Parallel()
+	m := NewManager(t.TempDir())
+	if got := m.reclaimableBundledConflicts(filepath.Join(m.Root, "missing")); got != nil {
+		t.Fatalf("reclaimable conflicts in a missing store = %v", got)
+	}
+	if err := os.MkdirAll(m.bundledDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(m.bundledDir(), "unparsable"+conflictSuffix), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.reclaimableBundledConflicts(m.bundledDir()); len(got) != 0 {
+		t.Fatalf("a conflict slot without a digest name was reclaimed: %v", got)
+	}
+}
+
+func TestSplitBundledDigestName(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		base   string
+		name   string
+		digest string
+		ok     bool
+	}{
+		{base: "widget-0123456789abcdef", name: "widget", digest: "0123456789abcdef", ok: true},
+		{base: "-0123456789abcdef", ok: false},
+		{base: "widget-0123456789ABCDE1", ok: false},
+		{base: "widget-0123456789abcde", ok: false},
+		{base: "widgetX0123456789abcdef", ok: false},
+	}
+	for _, tc := range cases {
+		name, digest, ok := splitBundledDigestName(tc.base)
+		if ok != tc.ok || (ok && (name != tc.name || digest != tc.digest)) {
+			t.Errorf("splitBundledDigestName(%q) = %q, %q, %v", tc.base, name, digest, ok)
+		}
+	}
+}
+
+func TestMustSubFSRefusesInvalidDirectories(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("mustSubFS accepted an invalid directory")
+		}
+	}()
+	mustSubFS(os.DirFS(t.TempDir()), "../escape")
+}
