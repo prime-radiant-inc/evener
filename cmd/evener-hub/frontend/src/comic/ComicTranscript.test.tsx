@@ -178,6 +178,7 @@ test("indexes each reader once and reuses its entries across visible rows and pr
   };
   const older = history();
   const mounted = render(<Reader entries={entries} older={older} strips={[strip]} subchats={subchats} />);
+  const renderedRootText = "literal fixture text\n";
   const checkContent = (rootText: string, childText: string) => {
     expect(
       mounted.container.querySelector('[data-comic-session="local:test"] [data-comic-entry="m"] [data-comic-text]')
@@ -188,8 +189,15 @@ test("indexes each reader once and reuses its entries across visible rows and pr
         `[data-comic-session="${strip.childRef}"] [data-comic-entry="m"] [data-comic-text]`,
       )?.textContent,
     ).toBe(childText);
+    const sources = [
+      ...mounted.container.querySelectorAll<HTMLElement>('[data-comic-session="local:test"] [data-comic-entry="m"]'),
+    ];
+    expect(
+      sources.map((node) => entry.text.slice(Number(node.dataset.comicStart), Number(node.dataset.comicEnd))).join(""),
+    ).toBe(entry.text);
+    expect(sources[0]?.querySelector("em")?.textContent).toBe("text");
   };
-  await waitFor(() => checkContent(entry.text, childEntry.text));
+  await waitFor(() => checkContent(renderedRootText, childEntry.text));
   expect(rootMap).toHaveBeenCalledTimes(1);
   expect(childMap).toHaveBeenCalledTimes(1);
   rootMap.mockClear();
@@ -200,7 +208,7 @@ test("indexes each reader once and reuses its entries across visible rows and pr
 
   expect(rootMap).not.toHaveBeenCalled();
   expect(childMap).not.toHaveBeenCalled();
-  checkContent(entry.text, childEntry.text);
+  checkContent(renderedRootText, childEntry.text);
 
   const updatedEntry = { ...childEntry, text: "CHILD_UPDATED" };
   const changed = { ...child, entries: [updatedEntry, childSecond] };
@@ -212,7 +220,7 @@ test("indexes each reader once and reuses its entries across visible rows and pr
       subchats={{ ...subchats, readers: new Map([[JSON.stringify(child.path), changed]]) }}
     />,
   );
-  await waitFor(() => checkContent(entry.text, updatedEntry.text));
+  await waitFor(() => checkContent(renderedRootText, updatedEntry.text));
 });
 
 test("retains an absent saved anchor while shared pages advance, and stops on failure or user movement", async () => {
@@ -257,7 +265,9 @@ test("keeps itemless errors in distinct canonical groups through switching and p
   for (const mode of ["plain", "comic"] as const) {
     mounted.rerender(<Reader entries={[{ ...entry, id: "preceding" }, entry, error]} mode={mode} older={older} />);
     await waitFor(() =>
-      expect(mounted.container.querySelector('[data-comic-entry="m"] [data-comic-text]')?.textContent).toBe(entry.text),
+      expect(mounted.container.querySelector('[data-comic-entry="m"] [data-comic-text]')?.textContent).toBe(
+        mode === "plain" ? entry.text : "literal fixture text\n",
+      ),
     );
     expect(
       mounted.container
@@ -709,7 +719,10 @@ test.each([false, true])(
       }
       const destination = port.ownerDocument;
       const previous = destination === document ? popout : document;
-      const text = port.querySelector('[data-comic-entry="m"] [data-comic-text]')!.firstChild!;
+      const content = port.querySelector('[data-comic-entry="m"] [data-comic-text]');
+      if (!content) throw new Error("missing selectable content");
+      const text = destination.createTreeWalker(content, NodeFilter.SHOW_TEXT).nextNode();
+      if (!text) throw new Error("missing selectable glyphs");
       expect(text.nodeType).toBe(Node.TEXT_NODE);
       expect(text.textContent!.length).toBeGreaterThan(0);
       const range = destination.createRange();

@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { ComicPanel } from "./ComicPanel";
 import { composeComicRows } from "./layout";
+import { projectComicMarkdown } from "./markdown";
 import { createComicMeasurer, loadComicFonts } from "./measure";
 import { type ComicEntry, projectComicConversation } from "./projection";
 
@@ -26,8 +27,13 @@ function entry(fields: Partial<ComicEntry> = {}): ComicEntry {
 }
 
 function panel(value: ComicEntry, start = 0, end = value.text.length) {
+  const document = projectComicMarkdown(value.text.slice(start, end), value.streaming);
+  const part = document.parts[0];
+  if (!part) throw new Error("missing part");
   return (
     <ComicPanel
+      document={document}
+      part={part}
       entry={value}
       slice={{ entryId: value.id, start, end }}
       composition="wide"
@@ -36,6 +42,52 @@ function panel(value: ComicEntry, start = 0, end = value.text.length) {
     />
   );
 }
+
+test("formatted dialogue and technical inserts preserve semantic source order", () => {
+  const codeFixture = "  let x = 1;\n\treturn x;";
+  const value = entry({
+    text: `# Heading\n\n**Bold** [link][ref]\n\n- item\n\n\`\`\`ts\n${codeFixture}\n\`\`\`\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\nAfter\n\n[ref]: https://example.com/path`,
+    images: [{ src: "data:image/png;base64,iVBORw0KGgo=", name: "last.png" }],
+  });
+  const panels = composeComicRows([value], 1200, () => true).flatMap((row) => row.panels);
+  const { container } = render(
+    panels.map((item) => (
+      <ComicPanel key={item.slice.start} entry={value} {...item} scene="room" expression="neutral" />
+    )),
+  );
+  expect(container.querySelectorAll("h1, strong, ul, a, table")).toHaveLength(5);
+  expect(container.querySelector("a")?.getAttribute("href")).toBe("https://example.com/path");
+  expect(container.querySelector("pre code")?.textContent).toBe(codeFixture);
+  const inserts = [...container.querySelectorAll("article")].filter((article) => article.querySelector("pre, table"));
+  expect(inserts).toHaveLength(2);
+  for (const insert of inserts)
+    expect(insert.querySelectorAll("[data-comic-scene], [data-comic-balloon]")).toHaveLength(0);
+  expect(container.querySelectorAll("[data-testid='image-gallery-thumb']")).toHaveLength(1);
+});
+
+test("a code-only thought keeps every line and its final images without an empty character panel", () => {
+  const code = Array.from({ length: 140 }, (_, line) => `\trow_${line}  `).join("\n");
+  const value = entry({
+    kind: "thought",
+    text: `\n\n\`\`\`mermaid\n${code}\n\`\`\`\n\n`,
+    images: [{ src: "data:image/png;base64,iVBORw0KGgo=", name: "last.png" }],
+  });
+  const panels = composeComicRows([value], 390, () => false).flatMap((row) => row.panels);
+  expect(panels).toHaveLength(1);
+  const { container } = render(
+    panels.map((item) => (
+      <ComicPanel key={item.slice.start} entry={value} {...item} scene="room" expression="neutral" />
+    )),
+  );
+  expect(container.querySelectorAll("article")).toHaveLength(1);
+  expect(
+    container.querySelectorAll("[data-comic-scene], [data-comic-balloon], [data-comic-thought-trail]"),
+  ).toHaveLength(0);
+  expect(container.querySelector("pre code")?.textContent).toBe(code);
+  expect(container.querySelector("article")?.getAttribute("data-comic-speaker")).toBe(value.speaker);
+  expect(container.querySelector("[data-comic-identity]")?.textContent).toContain(value.persona?.badge);
+  expect(container.querySelectorAll("[data-testid='image-gallery-thumb']")).toHaveLength(1);
+});
 
 test("selectable balloon text is the literal UTF-16 slice", () => {
   const value = entry();
@@ -268,7 +320,9 @@ test("a mixed message preserves every text unit and renders one ordered image ga
       { src: "data:image/png;base64,iVBORw0KGgp=", name: "second.png" },
     ],
   });
-  const panels = composeComicRows([value], 1200, (text) => text.length <= 18).flatMap((row) => row.panels);
+  const panels = composeComicRows([value], 1200, (_document, part) => part.input.length <= 18).flatMap(
+    (row) => row.panels,
+  );
   expect(panels.length).toBeGreaterThan(2);
   let offset = 0;
   for (const { slice } of panels) {
@@ -280,9 +334,11 @@ test("a mixed message preserves every text unit and renders one ordered image ga
 
   const { container } = render(
     <div>
-      {panels.map(({ slice, composition }) => (
+      {panels.map(({ slice, composition, document, part }) => (
         <ComicPanel
           key={slice.start}
+          document={document}
+          part={part}
           entry={value}
           slice={slice}
           composition={composition}
@@ -313,7 +369,7 @@ test("a mixed message preserves every text unit and renders one ordered image ga
 test("an image-only user message retains its gallery without inventing text", () => {
   const value = entry({ text: "", images: [{ src: "data:image/png;base64,iVBORw0KGgo=", name: "user.png" }] });
   const rows = composeComicRows([value], 1200, () => true);
-  expect(rows.map((row) => row.panels)).toEqual([
+  expect(rows.map((row) => row.panels.map(({ slice, composition }) => ({ slice, composition })))).toEqual([
     [{ slice: { entryId: value.id, start: 0, end: 0 }, composition: "wide" }],
   ]);
   const { container } = render(panel(value));
@@ -330,6 +386,12 @@ test("stage pose is stable for an entry and presentation never infers a result",
   expect(rendered.container.querySelector("[data-comic-scene] img")?.getAttribute("src")).toBe(pose);
   rendered.rerender(
     <ComicPanel
+      document={projectComicMarkdown(value.text, false)}
+      part={
+        projectComicMarkdown(value.text, false).parts[0] as NonNullable<
+          ReturnType<typeof projectComicMarkdown>["parts"][0]
+        >
+      }
       entry={value}
       slice={{ entryId: value.id, start: 0, end: value.text.length }}
       composition="wide"
@@ -346,7 +408,10 @@ test("DOM probe checks both balloon geometries and can be disposed", () => {
   document.body.append(root);
   const measure = createComicMeasurer(root);
   expect(root.querySelector("[data-comic-probe]")).not.toBeNull();
-  measure.fits("words", "wide", "thought");
+  const doc = projectComicMarkdown("words", false);
+  const part = doc.parts[0];
+  if (!part) throw new Error("missing part");
+  measure.fits(doc, part, "wide", "thought");
   expect(root.querySelector("[data-comic-probe]")?.getAttribute("data-comic-kind")).toBe("thought");
   measure.dispose();
   expect(root.querySelector("[data-comic-probe]")).toBeNull();

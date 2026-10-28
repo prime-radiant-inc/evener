@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComicRow } from "./layout";
+import { projectComicMarkdown } from "./markdown";
 import { findComicAnchorRow, readComicPosition, readComicPositionRecord, writeComicPosition } from "./readerPosition";
 
 afterEach(() => {
@@ -7,9 +8,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 test("finds the same source offset after continuation boundaries change", () => {
+  const document = projectComicMarkdown("abcdefghijkl", false);
+  const part = document.parts[0];
+  if (!part) throw new Error("missing part");
   const rows: ComicRow[] = [
-    { id: "m:0", panels: [{ slice: { entryId: "m", start: 0, end: 5 }, composition: "wide" }] },
-    { id: "m:5", panels: [{ slice: { entryId: "m", start: 5, end: 12 }, composition: "wide" }] },
+    { id: "m:0", panels: [{ slice: { entryId: "m", start: 0, end: 5 }, composition: "wide", document, part }] },
+    { id: "m:5", panels: [{ slice: { entryId: "m", start: 5, end: 12 }, composition: "wide", document, part }] },
   ];
   expect(
     findComicAnchorRow(rows, {

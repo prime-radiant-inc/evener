@@ -41,7 +41,11 @@ describe.each(["dialogue", "thought"] as const)("%s partition", (kind) => {
         expect(boundaries.has(part.start)).toBe(true);
         expect(boundaries.has(part.end)).toBe(true);
       }
-      const rows = composeComicRows([entry(`item-${kind}`, kind, original)], 760, (text) => text.length <= 13);
+      const rows = composeComicRows(
+        [entry(`item-${kind}`, kind, original)],
+        760,
+        (_document, part) => part.input.length <= 13,
+      );
       expect(rows.every((row) => row.panels.length === 1)).toBe(true);
       expect(
         rows.flatMap((row) => row.panels.map(({ slice }) => original.slice(slice.start, slice.end))).join(""),
@@ -74,7 +78,11 @@ test("pairs only adjacent single-slice dialogue within a strip", () => {
     entry("long", "dialogue", "abcdefghij"),
     entry("after", "dialogue", "Yes."),
   ];
-  const rows = composeComicRows(entries, 1100, (text, composition) => composition !== "paired" || text.length <= 6);
+  const rows = composeComicRows(
+    entries,
+    1100,
+    (_document, part, composition) => composition !== "paired" || part.input.length <= 6,
+  );
   expect(rows.map((row) => row.panels.map((panel) => panel.slice.entryId))).toEqual([
     ["a", "b"],
     ["c"],
@@ -86,7 +94,7 @@ test("pairs only adjacent single-slice dialogue within a strip", () => {
   expect(composeComicRows(entries, 760, () => true).every((row) => row.panels.length === 1)).toBe(true);
 });
 
-test("keeps short dialogue paired above the one-column boundary without stretching a lone panel", () => {
+test("pairs two short dialogues above the one-column boundary and keeps a lone dialogue single", () => {
   const entries = [entry("a", "dialogue", "Hello."), entry("b", "dialogue", "Hi.")];
   expect(composeComicRows(entries, 761, () => true).map((row) => row.panels.length)).toEqual([2]);
   expect(composeComicRows(entries.slice(0, 1), 1360, () => true).map((row) => row.panels.length)).toEqual([1]);
@@ -100,7 +108,7 @@ test("a continuation is wide and a spotlight is settled short dialogue only", ()
     entry("stream", "dialogue", "Working"),
   ];
   entries[2] = { ...entries[2], streaming: true } as ComicEntry;
-  const rows = composeComicRows(entries, 1200, (text) => text.length <= 30);
+  const rows = composeComicRows(entries, 1200, (_document, part) => part.input.length <= 30);
   expect(rows.map((row) => row.panels.map((p) => [p.slice.entryId, p.composition]))).toEqual([
     [["first", "wide"]],
     [["first", "wide"]],
@@ -128,4 +136,34 @@ test("a short image-bearing dialogue never becomes a spotlight", () => {
     images: [{ src: "data:image/png;base64,iVBORw0KGgo=", name: "photo.png" }],
   };
   expect(composeComicRows([mixed], 1200, () => true)[0]?.panels[0]?.composition).toBe("wide");
+});
+
+test("formatted continuations break between blocks, not inside emphasis or references", () => {
+  const source = "# Heading\n\n**A long intact emphasis**\n\n[link][ref]\n\n[ref]: https://example.com";
+  const rows = composeComicRows(
+    [entry("formatted", "dialogue", source)],
+    390,
+    (_document, part) => part.input.length < 25,
+  );
+  const panels = rows.flatMap((row) => row.panels);
+  expect(panels).toHaveLength(3);
+  expect(panels.map(({ slice }) => source.slice(slice.start, slice.end)).join("")).toBe(source);
+  expect(panels.map(({ slice }) => slice.start)).toEqual([0, 11, 39]);
+  expect(panels.map(({ part }) => part.input.includes("[ref]: https://example.com"))).toEqual([true, true, true]);
+});
+
+test("technical blocks bypass balloon budgets even in a thought and never pair", () => {
+  const source = `\`\`\`ts\n${"X".repeat(400)}\n\`\`\``;
+  const calls: string[] = [];
+  const rows = composeComicRows(
+    [entry("code", "thought", source), entry("next", "dialogue", "Next")],
+    1200,
+    (_document, part) => {
+      calls.push(part.kind);
+      return false;
+    },
+  );
+  expect(rows[0]?.panels.map((panel) => panel.composition)).toEqual(["insert"]);
+  expect(calls).not.toContain("code");
+  expect(rows[0]?.panels[0]?.slice).toEqual({ entryId: "code", start: 0, end: source.length });
 });

@@ -1,8 +1,23 @@
+import { type ComicMarkdownDocument, type ComicMarkdownPart, projectComicMarkdown } from "./markdown";
 import type { ComicEntry } from "./projection";
 
 export type ComicSlice = { entryId: string; start: number; end: number };
-export type ComicComposition = "wide" | "paired" | "spotlight";
-export type ComicRow = { id: string; panels: readonly { slice: ComicSlice; composition: ComicComposition }[] };
+export type ComicComposition = "wide" | "paired" | "spotlight" | "insert";
+export type ComicFits = (
+  document: ComicMarkdownDocument,
+  part: ComicMarkdownPart,
+  composition: ComicComposition,
+  kind: ComicEntry["kind"],
+) => boolean;
+export type ComicRow = {
+  id: string;
+  panels: readonly {
+    slice: ComicSlice;
+    composition: ComicComposition;
+    document: ComicMarkdownDocument;
+    part: ComicMarkdownPart;
+  }[];
+};
 
 type Offset = { start: number; end: number };
 
@@ -43,26 +58,36 @@ export function splitComicText(text: string, fits: (candidate: string) => boolea
 export function composeComicRows(
   entries: readonly ComicEntry[],
   viewportWidth: number,
-  fits: (text: string, composition: ComicComposition, kind: ComicEntry["kind"]) => boolean,
+  fits: ComicFits,
 ): readonly ComicRow[] {
   const rows: ComicRow[] = [];
+  const documents = entries.map((entry) => projectComicMarkdown(entry.text, entry.streaming));
   for (let index = 0; index < entries.length; index += 1) {
     const current = entries[index];
-    if (!current) continue;
+    const document = documents[index];
+    if (!current || !document) continue;
     const next = entries[index + 1];
-    const pairable = (value: ComicEntry) =>
+    const nextDocument = documents[index + 1];
+    const pairable = (value: ComicEntry, doc: ComicMarkdownDocument) =>
       value.kind === "dialogue" &&
       !value.streaming &&
       !value.images?.length &&
       !!value.text &&
-      fits(value.text, "paired", value.kind);
-    if (viewportWidth > 760 && next && pairable(current) && pairable(next)) {
+      doc.parts.length === 1 &&
+      doc.parts[0]?.kind === "prose" &&
+      fits(doc, doc.parts[0], "paired", value.kind);
+    if (viewportWidth > 760 && next && nextDocument && pairable(current, document) && pairable(next, nextDocument)) {
       rows.push({
         id: `${current.id}:${next.id}`,
-        panels: [current, next].map((value) => ({
-          slice: { entryId: value.id, start: 0, end: value.text.length },
-          composition: "paired" as const,
-        })),
+        panels: [current, next].flatMap((value, i) => {
+          const doc = i ? nextDocument : document;
+          return doc.parts.map((part) => ({
+            slice: { entryId: value.id, start: 0, end: value.text.length },
+            composition: "paired" as const,
+            document: doc,
+            part,
+          }));
+        }),
       });
       index += 1;
       continue;
@@ -73,14 +98,62 @@ export function composeComicRows(
       !current.images?.length &&
       current.text.length > 0 &&
       current.text.length <= 80 &&
-      fits(current.text, "spotlight", current.kind);
+      document.parts.length === 1 &&
+      document.parts[0]?.kind === "prose" &&
+      fits(document, document.parts[0], "spotlight", current.kind);
     const composition: ComicComposition = spotlight ? "spotlight" : "wide";
-    const slices = splitComicText(current.text, (text) => fits(text, composition, current.kind));
-    for (const slice of slices) {
-      rows.push({
-        id: `${current.id}:${slice.start}`,
-        panels: [{ slice: { entryId: current.id, ...slice }, composition: slice.start ? "wide" : composition }],
+    for (const part of document.parts) {
+      const candidate = (start: number, end: number): ComicMarkdownPart => ({
+        ...part,
+        start,
+        end,
+        input: current.text.slice(start, end),
+        visible: [
+          { text: current.text.slice(start, end), offsets: Array.from({ length: end - start }, (_, i) => start + i) },
+        ],
       });
+      let parts = part.plain
+        ? splitComicText(part.input, (text) => fits(document, { ...part, input: text }, composition, current.kind)).map(
+            (offset) => candidate(part.start + offset.start, part.start + offset.end),
+          )
+        : [part];
+      if (!part.plain && part.kind === "prose" && part.blocks?.length) {
+        parts = [];
+        let pending: ComicMarkdownPart | undefined;
+        const withReferences = (input: string) => (document.references ? `${input}\n\n${document.references}` : input);
+        let input = "";
+        for (const block of part.blocks) {
+          const joined = input ? `${input}\n\n${block.input}` : block.input;
+          const combined = {
+            ...part,
+            start: pending?.start ?? block.start,
+            end: block.end,
+            input: withReferences(joined),
+            visible: [...(pending?.visible ?? []), ...block.visible],
+            blocks: undefined,
+          };
+          if (pending && !fits(document, combined, composition, current.kind)) {
+            parts.push(pending);
+            pending = undefined;
+          }
+          input = pending ? joined : block.input;
+          pending = pending ? combined : { ...part, ...block, input: withReferences(input), blocks: undefined };
+        }
+        if (pending) parts.push(pending);
+      }
+      for (const piece of parts) {
+        rows.push({
+          id: `${current.id}:${piece.start}`,
+          panels: [
+            {
+              slice: { entryId: current.id, start: piece.start, end: piece.end },
+              document,
+              part: piece,
+              composition: piece.kind !== "prose" ? "insert" : piece.start ? "wide" : composition,
+            },
+          ],
+        });
+      }
     }
   }
   return rows;

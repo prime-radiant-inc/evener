@@ -52,6 +52,7 @@
 }
 
 .row > :only-child { grid-column: 1 / -1; }
+.row:has(.insert) { grid-template-columns: minmax(0, var(--comic-insert-max-width)); }
 
 .panel {
   box-sizing: border-box;
@@ -128,6 +129,13 @@
   overflow-wrap: anywhere;
   user-select: text;
 }
+
+.formattedText { white-space: normal; }
+.insert { max-width: var(--comic-insert-max-width); }
+.technicalScroll { min-width: 0; overflow-x: auto; margin: var(--space-3); user-select: text; }
+.technicalContent { width: max-content; min-width: 100%; }
+/* Caller-owned renderLine content supplies intrinsic line width without changing CodeBlock's CSS. */
+.codeLine { white-space: pre; overflow-wrap: normal; }
 
 .balloon:not(.thought, .captionBalloon)::before,
 .balloon:not(.thought, .captionBalloon)::after {
