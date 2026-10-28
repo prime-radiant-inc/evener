@@ -554,4 +554,55 @@ func TestHostsKeepServingWhenTheStoreHoldsRecordsThisBuildCannotRead(t *testing.
 	if !reflect.DeepEqual(before, after) {
 		t.Fatal("the unreadable records were rewritten")
 	}
+
+	// Once the store holds records this build reads, the next attempt settles
+	// them and host changes resume with no restart.
+	repaired := foreign
+	repaired.Hosts = map[string]json.RawMessage{"keep": json.RawMessage(`{"incarnation_id":"inc-keep","presence_epoch":1}`)}
+	if err := store.CommitHostRecords(repaired, hostops.HostMirror{}); err != nil {
+		t.Fatalf("repair the records: %v", err)
+	}
+	m.attachOps(nil)
+	if err := m.mutationRefusal(); err != nil {
+		t.Fatalf("host changes are still refused after the records became readable: %v", err)
+	}
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
+		t.Fatalf("Add after the records became readable: %v", err)
+	}
+}
+
+// TestStartupRebuildsTheRecordsWhenTheStoreIsSetAside pins the corrupt-store
+// disposition end to end: a store file whose custody cannot be proven is kept
+// aside, startup opens a fresh store and serves the hosts in hub.toml, the
+// host records are rebuilt into it, and host changes work.
+func TestStartupRebuildsTheRecordsWhenTheStoreIsSetAside(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "keep", SSH: "keep.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	stateRoot := t.TempDir()
+	path := hostops.StorePath(stateRoot)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"version":1,"sequence":0,"allocatorHighWaterMark":2,"records":[`), 0o600); err != nil {
+		t.Fatalf("write the corrupt store: %v", err)
+	}
+	r := &hubRuntime{hubStateRoot: stateRoot, stderr: new(bytes.Buffer)}
+
+	r.openOpsStore()
+
+	if r.opsStore == nil || r.opsUnavailable {
+		t.Fatalf("runtime = store %v unavailable %v, want a fresh store and no pause", r.opsStore, r.opsUnavailable)
+	}
+	m, store := bootOverStore(t, configPath, stateRoot)
+	if rows := hostRows(t, m); rows["keep"].Name != "keep" || rows["keep"].Removed {
+		t.Fatalf("the hosts in hub.toml are not served: %+v", rows)
+	}
+	if records := mustRecords(t, store); records.HostRecords["keep"].IncarnationID == "" {
+		t.Fatalf("the host records were not rebuilt into the fresh store: %+v", records.HostRecords)
+	}
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
+		t.Fatalf("Add after the rebuild: %v", err)
+	}
 }
