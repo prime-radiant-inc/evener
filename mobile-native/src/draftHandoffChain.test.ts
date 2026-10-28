@@ -963,4 +963,178 @@ describe("handoff chain obligations", () => {
 		expect(repository.read(endpoint("c")).draft).toBe("second");
 		expect(storageLedger.readGraph().edges.every((edge) => edge.state !== "pending")).toBe(true);
 	});
+
+	test("a committed continuation settles an edge without its composed marker", async () => {
+		const { storageLedger, repository } = setup();
+		const failing = flaky(storageLedger, "recordComposed", 1);
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => failing,
+		);
+		repository.write(
+			endpoint("a"),
+			{
+				draft: "work[image 1]",
+				unconfirmed: null,
+				composer: { recoveryIds: ["recovered-a"] },
+				images: [{ id: "photo", marker: 1, mediaType: "image/png" }],
+			},
+			[{ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" }],
+		);
+		const source = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		// The first transfer commits; its composed-marker write fails.
+		expect(library.handoff(endpoint("a"), endpoint("b"))).toBe(true);
+		// The continuation carries the composition onward before any retry,
+		// leaving the first edge's destination empty.
+		expect(library.handoff(endpoint("b"), endpoint("c"))).toBe(true);
+		expect(repository.read(endpoint("b"))).toEqual({ draft: "", unconfirmed: null });
+
+		finish();
+		await submitted;
+		library.retryPendingHandoffs();
+		// The first hop settles from the committed continuation instead of
+		// re-transferring the retired source - whose image bytes the first
+		// transfer already moved - and duplicating the composition.
+		expect(storageLedger.readGraph().edges.every((edge) => edge.state !== "pending")).toBe(true);
+		const firstHop = storageLedger.readGraph().edges.find((edge) => edge.from.sessionRef === "a");
+		expect(firstHop?.resolvedAs).toBe("settled");
+		expect(repository.read(endpoint("b"))).toEqual({ draft: "", unconfirmed: null });
+		expect(repository.read(endpoint("c"))).toMatchObject({
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+	});
+
+	test("a retried begin attaches to a recorded edge and reconciles its completion", async () => {
+		const { storage, storageLedger, repository } = setup();
+		const intent = (note: string): MutationIntent => ({
+			targetRef: targetKey("a"),
+			threadId: "thread-a",
+			method: "notes/human/set",
+			payload: { ref: "a", expectedInstanceId: "instance-a", note },
+			attachments: [],
+			optimisticDisplay: null,
+		});
+		await storage.enqueueIntent(intent("drives the retarget"));
+		const captured = await storage.enqueueIntent(intent("recovered command input"));
+		await storage.transferToRecovery(captured.clientMutationId, "editing");
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: [captured.clientMutationId] },
+		});
+		// An occupied destination refuses the handoff.
+		repository.write(endpoint("b"), { draft: "b work", unconfirmed: null });
+		let failBegin = true;
+		const failing = new Proxy(storageLedger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "beginSubmission" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (failBegin) throw new Error("ledger down");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftHandoffLedger;
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => failing,
+		);
+		const source = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		const token = repository.read(endpoint("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+
+		// The edge and the retargeted row are recorded while the obligation's
+		// begin is still failing: the hop refuses without waiting.
+		resume(storage, "a", "b");
+		library.retryPendingHandoffs();
+		expect(storageLedger.readGraph().obligations).toEqual([]);
+		expect(storageLedger.readGraph().edges[0]).toMatchObject({ state: "refused" });
+
+		// Storage recovers; the command completes. The retried begin registers
+		// the obligation, and its completion reconciles the dispositions with the
+		// identity that owns the retargeted row.
+		failBegin = false;
+		finish();
+		await submitted;
+		library.retryPendingHandoffs();
+		expect(storageLedger.readGraph().obligations).toMatchObject([{ state: "completed" }]);
+		expect(repository.read(endpoint("b")).completedCommandRecoveryIds).toEqual([captured.clientMutationId]);
+		expect(
+			library.open(endpoint("b")).appendEditedRecovery({
+				version: 1,
+				clientMutationId: captured.clientMutationId,
+				targetRef: targetKey("b"),
+				method: "turn/start",
+				payload: { input: [{ type: "text", text: "encoded" }] },
+				attachments: [],
+				composerText: "encoded",
+				optimisticDisplay: {},
+				intentSequence: 1,
+				createdAt: 1,
+				state: "canceled",
+				attempted: false,
+				recoveryKind: "editing",
+			}),
+		).toBe("already-restored");
+	});
+
+	test("a self completion saves through the normal path and clears a save error", async () => {
+		const { storageLedger, repository } = setup();
+		// The submission's own write succeeds; the mid-flight edit's write fails.
+		let writes = 0;
+		const flakyRepository = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "write" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if ((args[0] as { sessionRef?: string } | undefined)?.sessionRef === "a" && ++writes === 2)
+							throw new Error("save failed");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		const library = new DraftLibrary(
+			() => flakyRepository,
+			undefined,
+			() => storageLedger,
+		);
+		repository.write(endpoint("a"), { draft: "current", unconfirmed: null });
+		const document = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = document.submit(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		// Typing during the submission hits a transient save failure.
+		document.edit("typed mid-flight");
+		expect(document.getSnapshot().error).not.toBeNull();
+
+		finish();
+		await submitted;
+		// The completion saves through the document's normal path: storage
+		// recovered, so the error clears and sending is available again.
+		expect(document.getSnapshot().error).toBeNull();
+		expect(repository.read(endpoint("a"))).toMatchObject({ draft: "typed mid-flight", unconfirmed: null });
+	});
 });

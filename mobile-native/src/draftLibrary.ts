@@ -113,6 +113,10 @@ export class DraftLibrary {
 		if (sameDestination(from, to)) return true;
 		const ledger = this.availableHandoffLedger();
 		if (ledger === undefined) return false;
+		// A begin the source document still owes the ledger rides this edge:
+		// flush it first, so the edge is recorded with the open obligation
+		// attached and its decision waits for the running submission.
+		this.open(from).flushObligationResolutions();
 		const pending = this.pendingEdge(ledger, from, to);
 		if (pending !== undefined) return this.applyEdge(ledger, pending);
 		// A source that gave its composition away and composed nothing since
@@ -151,6 +155,11 @@ export class DraftLibrary {
 		for (const entry of this.retired.values()) entry.document.retry();
 		const load = readHandoffGraph(ledger);
 		if (load.state !== "ready") return;
+		// Resolved dispositions reach the identities owning their recovery rows
+		// even when no edge waited for their obligation - an unrecorded begin
+		// retried after its handoff already decided, or a completion delivered
+		// at a stranded capture.
+		this.reconcileDispositionsToRowOwners(ledger, load.graph);
 		// A reconciled obligation unblocks the edges waiting on it, so the
 		// ordering must read the graph that exists after the reconciliation.
 		if (this.reconcileAbandonedObligations(ledger, load.graph)) {
@@ -372,9 +381,34 @@ export class DraftLibrary {
 			// the destination's durable record prove the capture and metadata
 			// identity too.
 			if (destinationNow === edge.deliveredHash) {
-				if (this.transferProven(ledger, edge, snapshot.record))
-					return mayDecide ? this.settle(ledger, edge, destination, current.record, edge.deliveredHash) : true;
+				if (this.transferProven(ledger, edge, snapshot.record)) {
+					try {
+						// The transfer committed without its composed marker; repair
+						// it so the graph routes this chain to the identity that
+						// holds the composition.
+						ledger.recordComposed(edge.edgeId);
+					} catch {
+						// The marker stays missing; the next retry repairs it.
+					}
+					return mayDecide;
+				}
 			}
+			// A committed continuation can have carried exactly this composition
+			// onward from the destination while this edge's composed-marker write
+			// failed: composing again from the retired source would duplicate the
+			// composition at the destination, and an image-bearing snapshot has no
+			// bytes left at the source to re-transfer at all.
+			if (
+				graph.edges.some(
+					(continuation) =>
+						continuation.edgeId !== edge.edgeId &&
+						continuation.chainId === edge.chainId &&
+						sameDestination(continuation.from, edge.to) &&
+						continuation.deliveredHash === edge.deliveredHash &&
+						(continuation.resolvedAs === "settled" || continuation.composedAt !== null),
+				)
+			)
+				return mayDecide ? this.settle(ledger, edge, destination, current.record, edge.deliveredHash) : true;
 			if (compositionFingerprint(snapshot.record) !== edge.deliveredHash)
 				return mayDecide ? this.refuse(ledger, edge, source) : false;
 			// The intended write never landed (or cannot be proven); fall
@@ -535,6 +569,19 @@ export class DraftLibrary {
 		released: readonly string[],
 	): boolean {
 		if (!completed.length && !released.length) return true;
+		return this.writeDispositionsAtRowOwners(ledger, edge.to, edge.chainId, completed, released);
+	}
+
+	/** The row-owner half of disposition forwarding, shared by settlement,
+	 * refusal, and the late reconciliation of obligations no edge waited for.
+	 * `skip` is the identity that already received the dispositions. */
+	private writeDispositionsAtRowOwners(
+		ledger: DraftHandoffLedger,
+		skip: DraftHandoffEndpoint,
+		chainId: string,
+		completed: readonly string[],
+		released: readonly string[],
+	): boolean {
 		// Durable row ownership first: the mutation tables name the identity
 		// each row currently targets, across refused handoffs and uncomposed
 		// edges alike. Ledgers without that query fall back to the graph's
@@ -542,12 +589,12 @@ export class DraftLibrary {
 		const owners = ledger.recoveryRowOwners?.([...completed, ...released]);
 		const rowOwners: DraftHandoffEndpoint[] = [];
 		if (owners !== undefined) {
-			for (const owner of owners) if (!sameDestination(owner, edge.to)) rowOwners.push(owner);
+			for (const owner of owners) if (!sameDestination(owner, skip)) rowOwners.push(owner);
 		} else {
 			const load = readHandoffGraph(ledger);
 			if (load.state !== "ready") return false;
-			const traced = terminalDestination(load.graph.edges, edge.to, edge.chainId);
-			if (!sameDestination(traced, edge.to)) rowOwners.push(traced);
+			const traced = terminalDestination(load.graph.edges, skip, chainId);
+			if (!sameDestination(traced, skip)) rowOwners.push(traced);
 		}
 		for (const rowOwner of rowOwners) {
 			const document = this.open(rowOwner);
@@ -572,6 +619,27 @@ export class DraftLibrary {
 			}
 		}
 		return true;
+	}
+
+	/** Resolved dispositions reach the identities owning their recovery rows
+	 * even when no edge ever waited for their obligation - an unrecorded begin
+	 * retried after its handoff decided, or a completion stranded at a capture
+	 * whose rows moved on. Idempotent: markers already present write nothing. */
+	private reconcileDispositionsToRowOwners(ledger: DraftHandoffLedger, graph: DraftHandoffGraph): void {
+		for (const obligation of graph.obligations) {
+			if (!clearsCapture(obligation.state)) continue;
+			const completed = obligation.state === "completed" ? obligation.completedCommandIds : [];
+			const released = obligation.releasedRecoveryIds;
+			if (!completed.length && !released.length) continue;
+			const owner = captureTerminal(graph.edges, obligation, (endpoint) => {
+				try {
+					return this.repository().read(endpoint);
+				} catch {
+					return undefined;
+				}
+			});
+			this.writeDispositionsAtRowOwners(ledger, owner, obligation.chainId ?? "", completed, released);
+		}
 	}
 
 	private cleanFinished(ledger: DraftHandoffLedger, graph: { edges: DraftHandoffEdge[] }): void {

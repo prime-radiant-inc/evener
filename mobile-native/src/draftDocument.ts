@@ -968,11 +968,14 @@ export class DraftDocument {
 			if (messageAdmissionCapture(completion, current)) return true;
 			const next = mergeCompletion(current, completion);
 			try {
-				this.repository().write(terminal, next);
+				// The normal save path: pending image data flushes with the
+				// completion and a save error the submission outlived clears
+				// when this write succeeds, instead of leaving the document
+				// sending-disabled after storage recovered.
+				this.persist(next, true);
 			} catch {
 				return false;
 			}
-			this.update({ record: next });
 			return true;
 		}
 		// Never write a completion through a retired origin: its snapshot can be

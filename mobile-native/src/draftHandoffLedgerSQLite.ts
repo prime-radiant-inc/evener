@@ -438,16 +438,42 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 	}
 
 	beginSubmission(obligationId: string, origin: DraftHandoffEndpoint, recoveryIds: readonly string[] = []): void {
-		this.db.runSync(
-			`INSERT OR IGNORE INTO draft_submission_obligations
-			 (obligation_id, origin_hub_id, origin_ref, state, recovery_ids, completed_command_ids, created_at)
-			 VALUES (?, ?, ?, 'open', ?, '[]', ?)`,
-			obligationId,
-			origin.hubId,
-			origin.sessionRef,
-			JSON.stringify([...new Set(recoveryIds)]),
-			this.#now(),
-		);
+		withSavepoint(this.db, "draft_handoff_begin_submission", () => {
+			this.db.runSync(
+				`INSERT OR IGNORE INTO draft_submission_obligations
+				 (obligation_id, origin_hub_id, origin_ref, state, recovery_ids, completed_command_ids, created_at)
+				 VALUES (?, ?, ?, 'open', ?, '[]', ?)`,
+				obligationId,
+				origin.hubId,
+				origin.sessionRef,
+				JSON.stringify([...new Set(recoveryIds)]),
+				this.#now(),
+			);
+			// A begin the document retried after storage recovered can arrive
+			// once its origin already recorded a handoff: the pending edges from
+			// this origin would carry the submission's composition, so they must
+			// wait for its resolution like an edge created after the begin would.
+			this.db.runSync(
+				`INSERT OR IGNORE INTO draft_handoff_edge_obligations (edge_id, obligation_id)
+				 SELECT edge_id, ? FROM draft_handoff_edges
+				 WHERE from_hub_id = ? AND from_ref = ? AND state = 'pending'`,
+				obligationId,
+				origin.hubId,
+				origin.sessionRef,
+			);
+			// Ride the chain of the edge that carries it, so later continuations
+			// adopt the obligation too.
+			this.db.runSync(
+				`UPDATE draft_submission_obligations
+				 SET chain_id = COALESCE((
+					 SELECT edge.chain_id FROM draft_handoff_edges edge
+					 JOIN draft_handoff_edge_obligations link ON link.edge_id = edge.edge_id
+					 WHERE link.obligation_id = ? LIMIT 1), chain_id)
+				 WHERE obligation_id = ? AND chain_id IS NULL`,
+				obligationId,
+				obligationId,
+			);
+		});
 	}
 
 	resolveSubmission(
