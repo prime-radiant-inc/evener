@@ -1086,7 +1086,7 @@ function parseObserverCallback(stripped: string): ParsedNotification | null {
   const proseOnly = idx === -1 ? withoutHeader.replace(/^message: /, "").trim() : "";
   const communicate = parseCommunicateEnvelope(output);
   // Observer callbacks are coerced from success to warning - a callback firing
-  // at all is a thing the reader should notice (legacy renderer-format.js:392).
+  // at all is a thing the reader should notice.
   const rawTone = notificationTone({ event: "observer_callback" }, communicate);
   return {
     type: "observer-callback",

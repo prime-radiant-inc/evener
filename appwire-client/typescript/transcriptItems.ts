@@ -1,10 +1,12 @@
 // Wire-item hydration: image mapping, text-presence and identity-only marks,
 // stable-delegate helpers, and the wire-to-model item conversions. A leaf over
-// `model`, `stableDelegate` and `types.gen`.
+// model types, identity validation and generated wire types.
 
 import { pendingTextJoined } from "./chunkview";
 import type { ItemImage, ItemModel, ThreadModel, TurnModel } from "./model";
 import { joinDelegateState, revisionOf } from "./stableDelegate";
+import { isValidTranscriptRef } from "./steeringNotifications";
+import { isRecord } from "./transcriptValidators";
 import type {
   EvenerDelegateInfo,
   InputItem,
@@ -12,6 +14,7 @@ import type {
   Thread,
   ThreadItem,
   ThreadReadResponse,
+  TranscriptAuthorship,
   Turn,
 } from "./types.gen";
 
@@ -83,16 +86,14 @@ export function epochSecondsToISO(seconds: number | undefined): string | undefin
 
 // ItemModel.images/outputImages carry a resolved src alongside the wire's own
 // name/path/(source) fields (ItemImage, model.ts) rather than collapsing to
-// just src. src keeps preferring url — the field the legacy web client
-// (cmd/evener-hub/assets/renderer.js: imagesForUserItem, renderToolOutputImages)
-// treats as the <img src> — then the inline data-URI bytes, then a
+// just src. src prefers url — the field an <img> takes as its src — then the inline data-URI bytes, then a
 // sha-addressed /s/{route}/images/{sha} route rebuilt from metadata["sha"]
 // when the serving session is known (the wire Thread.sessionId, mirroring
 // stampThreadImageURLs' sessionID-over-ID preference in output_images.go;
 // imageSessionRoute undefined keeps that branch dark), then path or name,
 // exactly as before; name/path/source ride alongside src unresolved so a
 // renderer can caption the image instead of losing everything but whichever
-// field happened to win that fallback (kata byq2). Bytes beat the
+// field happened to win that fallback. Bytes beat the
 // synthesized route because they render unconditionally while the route 404s
 // whenever the session is absent from the hub's Past index
 // (handleSessionImage, image_serve.go) — so the route only ever fires for
@@ -120,7 +121,7 @@ export function imagesToItemImagesForSession(
   // data, no url/path — appwire_projection.go's projectUserInputImages), so
   // when no server route is named, the bytes themselves are the src. Falling
   // through to the bare name gave the browser a relative URL that 404s, and
-  // ImageGallery drops an unloadable src — no thumbnail at all (kata w53n).
+  // ImageGallery drops an unloadable src — no thumbnail at all.
   return images.map((img) => ({
     src: img.url ?? inlineImageSrc(img) ?? metadataShaImageSrc(img, imageSessionRoute) ?? img.path ?? img.name ?? "",
     name: img.name,
@@ -193,7 +194,7 @@ function setItemTextPresence(item: ItemModel, presence: ItemTextPresence): ItemM
 // clone sites spread items to patch fields, and the presence marker below is
 // non-enumerable, so every clone must re-apply it or a stripped sparse item
 // reads as an authoritative empty settle and blocks the page that later
-// brings its real text (RoboRev round 9).
+// brings its real text.
 export function copyItemTextPresence(source: ItemModel, target: ItemModel): ItemModel {
   const presence = (source as InternalItemModel)[ITEM_TEXT_PRESENCE];
   return presence === undefined ? target : setItemTextPresence(target, presence);
@@ -248,6 +249,7 @@ export function markItemIdentityOnly(item: ItemModel): ItemModel {
 // fresh side's own property wins, even when its value is undefined), where
 // the property's presence — read below — is the absence marker.
 export const itemNullishMergedFields = new Set([
+  "authorship",
   "position",
   "toolName",
   "callId",
@@ -284,8 +286,7 @@ export const freshSuppliedNullishFallbackFields = new Set([
 // the marker exists precisely because shape alone cannot prove intent. An
 // unmarked item is identity-only only when it says so structurally: its
 // text is omitted (never a textSource winner) and every field it carries
-// is one the merge would NOT keep from it — each by its own rule (review
-// rounds 16 and 23): the nullish-fallback fields fall through on undefined
+// is one the merge would NOT keep from it — each by its own rule: the nullish-fallback fields fall through on undefined
 // AND null, the rank-merged status on undefined, and the spread-merged
 // fields by property presence, where an own undefined is an explicit CLEAR
 // the merge keeps — content, not absence. Hydration never creates those
@@ -307,6 +308,57 @@ export function itemIsIdentityOnly(item: ItemModel): boolean {
     // clear, which the merge keeps — content.
     return false;
   });
+}
+
+export function normalizeAuthorship(value: unknown): TranscriptAuthorship | undefined {
+  if (!isRecord(value) || typeof value.inherited !== "boolean") return undefined;
+  const neutral: TranscriptAuthorship = { author: { kind: "unknown" }, inherited: value.inherited };
+  const author = value.author;
+  if (!isRecord(author)) return neutral;
+  const { kind, sessionRef, ownerRef, delegateId, delegateName } = author;
+  if (kind === "human" || kind === "system" || kind === "unknown") {
+    if ([sessionRef, ownerRef, delegateId, delegateName].some((field) => field !== undefined && field !== "")) {
+      return neutral;
+    }
+    return { author: { kind }, inherited: value.inherited };
+  }
+  const validRef = (ref: unknown): ref is string => typeof ref === "string" && isValidTranscriptRef(ref);
+  if (kind !== "agent" || !validRef(sessionRef)) return neutral;
+  const hasOwner = ownerRef !== undefined && ownerRef !== "";
+  const hasDelegate = delegateId !== undefined && delegateId !== "";
+  if (hasOwner !== hasDelegate) return neutral;
+  if (
+    hasOwner &&
+    (!validRef(ownerRef) ||
+      typeof delegateId !== "string" ||
+      !/^dlg_[A-Za-z0-9._~-]+$/.test(delegateId) ||
+      delegateId.includes(".."))
+  )
+    return neutral;
+  if (delegateName !== undefined && (typeof delegateName !== "string" || (delegateName !== "" && !hasDelegate)))
+    return neutral;
+  let boundedName = "";
+  if (typeof delegateName === "string") {
+    const runes: string[] = [];
+    for (const rune of delegateName) {
+      if (runes.length === 200) {
+        runes[199] = "…";
+        break;
+      }
+      runes.push(rune);
+    }
+    boundedName = runes.join("");
+  }
+  return {
+    author: {
+      kind,
+      sessionRef,
+      ...(typeof ownerRef === "string" && ownerRef !== "" ? { ownerRef } : {}),
+      ...(typeof delegateId === "string" && delegateId !== "" ? { delegateId } : {}),
+      ...(boundedName !== "" ? { delegateName: boundedName } : {}),
+    },
+    inherited: value.inherited,
+  };
 }
 
 // imageSessionRoute threads through wireItemToModel/wireToTurnModel from the
@@ -343,6 +395,8 @@ export function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): I
     startedAt: epochMsToISO(item.startedAt),
     completedAt: epochMsToISO(item.completedAt),
   };
+  const authorship = normalizeAuthorship(item.authorship);
+  if (authorship !== undefined) model.authorship = authorship;
   setItemTextPresence(model, item.text === undefined ? "omitted" : "provided");
   if (item.transcriptKey !== undefined) model.transcriptKey = item.transcriptKey;
   if (item.position !== undefined) model.position = { ...item.position };

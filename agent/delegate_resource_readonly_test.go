@@ -17,14 +17,14 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
-func TestStableDelegateReadOnly_HistoricalSendRendersWithoutLiveAlias(t *testing.T) {
+func TestDelegateReadOnly_HistoricalSendRendersWithoutLiveAlias(t *testing.T) {
 	got := toolInputSummary("job_send_message", json.RawMessage(`{"target":"job_historical_activation","message":"what happened?"}`))
 	if got != "job_historical_activation `what happened?`" {
 		t.Fatalf("historical send summary = %q", got)
 	}
 }
 
-func TestStableDelegateReadOnly_ActivityPreservesTimingUsageQuietWorktreeAndDiagnostics(t *testing.T) {
+func TestDelegateReadOnly_ActivityPreservesTimingUsageQuietWorktreeAndDiagnostics(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t,
@@ -46,7 +46,7 @@ func TestStableDelegateReadOnly_ActivityPreservesTimingUsageQuietWorktreeAndDiag
 	startedAt := time.Unix(10, 0).UTC()
 	latestAt := time.Unix(14, 0).UTC()
 	endedAt := time.Unix(18, 0).UTC()
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		result:                  "complete",
 		communicated:            true,
 		structuredResult:        nil,
@@ -114,7 +114,7 @@ func TestStableDelegateReadOnly_ActivityPreservesTimingUsageQuietWorktreeAndDiag
 	}
 }
 
-func TestStableDelegateReadOnly_OneSampledClockDrivesQuietRunningAndDuration(t *testing.T) {
+func TestDelegateReadOnly_OneSampledClockDrivesQuietRunningAndDuration(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	seedStableToolRunningDelegate(t, s, "dlg_clock_a", "", time.Unix(100, 0).UTC())
@@ -148,7 +148,7 @@ func TestStableDelegateReadOnly_OneSampledClockDrivesQuietRunningAndDuration(t *
 	}
 }
 
-func TestStableDelegateReadOnly_ColdAndLiveProjectionMatch(t *testing.T) {
+func TestDelegateReadOnly_ColdAndLiveProjectionMatch(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t,
@@ -158,7 +158,7 @@ func TestStableDelegateReadOnly_ColdAndLiveProjectionMatch(t *testing.T) {
 	)
 	descriptor := stableReadonlyDescriptor(s, "dlg_parity")
 	startedAt := time.Unix(100, 0).UTC()
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		result: "done", communicated: true, descriptor: descriptor,
 		startedAt: startedAt, latestActivityAt: startedAt.Add(time.Second), endedAt: startedAt.Add(2 * time.Second),
 	})
@@ -179,7 +179,7 @@ func TestStableDelegateReadOnly_ColdAndLiveProjectionMatch(t *testing.T) {
 	}
 }
 
-func TestStableDelegateReadOnly_ActivityProjectsPublicLifecycleAndInternalPhase(t *testing.T) {
+func TestDelegateReadOnly_ActivityProjectsPublicLifecycleAndInternalPhase(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t,
@@ -250,7 +250,7 @@ func TestStableDelegateReadOnly_ActivityProjectsPublicLifecycleAndInternalPhase(
 	}
 }
 
-func TestStableDelegateReadOnly_MissingFilesRemainMissing(t *testing.T) {
+func TestDelegateReadOnly_MissingFilesRemainMissing(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()

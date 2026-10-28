@@ -1041,57 +1041,6 @@ func TestCovDelegateSendResultFormat(t *testing.T) {
 	}
 }
 
-// TestCovDelegateWorktreeToolResultFrom covers delegateWorktreeToolResultFrom.
-func TestCovDelegateWorktreeToolResultFrom(t *testing.T) {
-	t.Parallel()
-	// nil — returns nil.
-	if delegateWorktreeToolResultFrom(nil) != nil {
-		t.Fatal("nil should return nil")
-	}
-
-	// Valid worktree.
-	wt := &delegateWorktreeReport{
-		Path:         "/path",
-		Branch:       "main",
-		HeadSHA:      "abc123",
-		Ahead:        3,
-		Dirty:        true,
-		DisposalHint: "dispose me",
-	}
-	result := delegateWorktreeToolResultFrom(wt)
-	if result == nil {
-		t.Fatal("should return non-nil")
-	}
-	if result.Path != "/path" || result.Branch != "main" || result.HeadSHA != "abc123" {
-		t.Fatalf("mismatch: %+v", result)
-	}
-	if result.Ahead != 3 || result.Dirty != true {
-		t.Fatalf("ahead/dirty mismatch: %+v", result)
-	}
-	if result.DisposalHint != "dispose me" {
-		t.Fatalf("disposal hint: %q", result.DisposalHint)
-	}
-}
-
-// TestCovDelegateSandboxToolResultFrom covers delegateSandboxToolResultFrom.
-func TestCovDelegateSandboxToolResultFrom(t *testing.T) {
-	t.Parallel()
-	// nil — returns nil.
-	if delegateSandboxToolResultFrom(nil) != nil {
-		t.Fatal("nil should return nil")
-	}
-
-	// Valid sandbox.
-	sb := &delegateSandboxReport{Mode: "bwrap", Network: true}
-	result := delegateSandboxToolResultFrom(sb)
-	if result == nil {
-		t.Fatal("should return non-nil")
-	}
-	if result.Mode != "bwrap" || !result.Network {
-		t.Fatalf("mismatch: %+v", result)
-	}
-}
-
 // TestCovDecodeDelegateArgs covers decodeDelegateArgs: validation branches.
 func TestCovDecodeDelegateArgs2(t *testing.T) {
 	t.Parallel()
@@ -1259,15 +1208,15 @@ func TestCovConsumeTerminalJobNotification(t *testing.T) {
 	}
 }
 
-// TestCovProjectStableDelegateListItem is a helper test covering the projection
+// TestCovProjectDelegateListItem is a helper test covering the projection
 // of a stable delegate into a job list entry (used by job_list).
-func TestCovProjectStableDelegateListItem(t *testing.T) {
+func TestCovProjectDelegateListItem(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	startedAt := now.Add(-10 * time.Second)
 	endedAt := now.Add(-2 * time.Second)
 	latestActivityAt := now.Add(-3 * time.Second)
-	entry := projectStableDelegateListItem(now, stableDelegateVisibleRow{
+	entry := projectDelegateListItem(now, delegateVisibleRow{
 		depth: 2,
 		snapshot: delegateSnapshot{
 			id: "dlg_1", parentID: "dlg_parent", lifecycle: delegateLifecycleIdle,

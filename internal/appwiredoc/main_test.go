@@ -120,7 +120,7 @@ func TestBuildIncludesJobActivityTypes(t *testing.T) {
 	}
 }
 
-func TestBuildIncludesStableDelegateInfo(t *testing.T) {
+func TestBuildIncludesDelegateInfo(t *testing.T) {
 	d := build()
 	for _, tv := range d.Types {
 		if tv.Name != "EvenerDelegateInfo" {

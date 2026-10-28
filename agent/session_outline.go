@@ -72,7 +72,7 @@ type jobResult struct {
 
 func (r jobResult) effectiveJobID() string {
 	// DelegateID is the fallback, checked last: the stable-delegate result shape
-	// (agent/session_tools.go's stableDelegateCreateResult, agent/session_tools_jobs.go's
+	// (agent/session_tools.go's delegateCreateResult, agent/session_tools_jobs.go's
 	// delegateSendResult) carries no job_id family member at all, so without this
 	// fallback a delegate/delegate_send result always has an empty job identity
 	// (issue #194).

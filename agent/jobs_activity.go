@@ -192,16 +192,16 @@ type activityContinuation struct {
 // activitySessionSnapshot is the lock-free input to the activity projection.
 // Traversal owns constructing it; projection only consumes cloned job records.
 type activitySessionSnapshot struct {
-	SessionID       string
-	Ref             string
-	Label           string
-	RootID          string
-	Revision        uint64
-	Jobs            []*jobstore.JobRecord
-	LiveJobs        map[string]*jobstore.JobRecord
-	StableDelegates map[string]delegateSnapshot
-	Usage           *appwire.EvenerUsage // cumulative self-only tokens; nil = unknown
-	Diagnostics     []string
+	SessionID   string
+	Ref         string
+	Label       string
+	RootID      string
+	Revision    uint64
+	Jobs        []*jobstore.JobRecord
+	LiveJobs    map[string]*jobstore.JobRecord
+	Delegates   map[string]delegateSnapshot
+	Usage       *appwire.EvenerUsage // cumulative self-only tokens; nil = unknown
+	Diagnostics []string
 	// JobsEpoch and DelegatesEpoch are historicalJobFoldCache's and
 	// historicalDelegateFoldCache's current generation counters for this
 	// session's own jobs.jsonl and the delegates.jsonl it folds,
@@ -520,8 +520,8 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 	snapshot := loaded.snapshot
 	snapshot.Children = make(map[string]*activitySessionSnapshot)
 	snapshot.Errors = make(map[string]error)
-	for _, delegateID := range sortedStableActivityDelegateIDs(snapshot.StableDelegates) {
-		row := snapshot.StableDelegates[delegateID]
+	for _, delegateID := range sortedStableActivityDelegateIDs(snapshot.Delegates) {
+		row := snapshot.Delegates[delegateID]
 		childID, err := activityChildSessionForStable(row)
 		if err != nil {
 			key := delegateID
@@ -630,7 +630,7 @@ func buildActivityContinuationAt(loc activitySessionLocator, cont activityContin
 		return nil, 0, 0, err
 	}
 	delegateID := cont.Path[hop]
-	if row, ok := loaded.snapshot.StableDelegates[delegateID]; ok {
+	if row, ok := loaded.snapshot.Delegates[delegateID]; ok {
 		childID, err := activityChildSessionForStable(row)
 		if err != nil {
 			return nil, 0, 0, err
@@ -666,19 +666,19 @@ func loadLiveActivityBase(s *Session) (activityLoadedBase, error) {
 		return activityLoadedBase{}, errors.New("session unavailable")
 	}
 	snapshot := activitySessionSnapshot{
-		SessionID:       s.ID(),
-		Ref:             encodeRef("", s.ID()),
-		Label:           liveActivitySessionLabel(s),
-		RootID:          activityCurrentRootID(s.jobActivityClock, s.ID()),
-		Revision:        activityCurrentRootRevision(s.jobActivityClock),
-		Jobs:            []*jobstore.JobRecord{},
-		LiveJobs:        map[string]*jobstore.JobRecord{},
-		StableDelegates: map[string]delegateSnapshot{},
+		SessionID: s.ID(),
+		Ref:       encodeRef("", s.ID()),
+		Label:     liveActivitySessionLabel(s),
+		RootID:    activityCurrentRootID(s.jobActivityClock, s.ID()),
+		Revision:  activityCurrentRootRevision(s.jobActivityClock),
+		Jobs:      []*jobstore.JobRecord{},
+		LiveJobs:  map[string]*jobstore.JobRecord{},
+		Delegates: map[string]delegateSnapshot{},
 	}
 	if s.delegateController != nil {
 		for _, row := range s.delegateController.Snapshot().rows {
 			if row.descriptor.OwnerSessionID == s.ID() {
-				snapshot.StableDelegates[row.id] = row
+				snapshot.Delegates[row.id] = row
 			}
 		}
 	}
@@ -815,13 +815,13 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 		DelegatesJournalUnreadable: base.DelegatesJournalUnreadable,
 		Jobs:                       []*jobstore.JobRecord{},
 		LiveJobs:                   map[string]*jobstore.JobRecord{},
-		StableDelegates:            make(map[string]delegateSnapshot, 1),
+		Delegates:                  make(map[string]delegateSnapshot, 1),
 		Diagnostics:                append([]string(nil), base.Diagnostics...),
 		Children:                   make(map[string]*activitySessionSnapshot),
 		Errors:                     make(map[string]error),
 	}
-	if row, ok := base.StableDelegates[delegateID]; ok {
-		filtered.StableDelegates[delegateID] = row
+	if row, ok := base.Delegates[delegateID]; ok {
+		filtered.Delegates[delegateID] = row
 		if child != nil && row.descriptor.ChildSessionID != "" {
 			filtered.Children[row.descriptor.ChildSessionID] = child
 		}
@@ -923,7 +923,7 @@ func activitySnapshotPersistedRevision(snapshot *activitySessionSnapshot, rootID
 		if (nodeRoot == "" || rootID == "" || nodeRoot == rootID) && node.Revision > maxRevision {
 			maxRevision = node.Revision
 		}
-		for _, row := range node.StableDelegates {
+		for _, row := range node.Delegates {
 			if row.revision > maxRevision {
 				maxRevision = row.revision
 			}
@@ -1105,7 +1105,7 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 		job := projectActivityJob(rec, snapshot.Ref)
 		projected.Entries = append(projected.Entries, appwire.JobActivityEntry{Kind: "shell", Job: &job})
 	}
-	for _, delegateID := range sortedStableActivityDelegateIDs(snapshot.StableDelegates) {
+	for _, delegateID := range sortedStableActivityDelegateIDs(snapshot.Delegates) {
 		if entryIndex < effectiveResumeIndex {
 			entryIndex++
 			continue
@@ -1116,7 +1116,7 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 			return projected
 		}
 		entryIndex++
-		delegate := projectStableActivityDelegate(snapshot, snapshot.StableDelegates[delegateID], budget, depth, path, resumeIndex)
+		delegate := projectStableActivityDelegate(snapshot, snapshot.Delegates[delegateID], budget, depth, path, resumeIndex)
 		projected.Entries = append(projected.Entries, appwire.JobActivityEntry{Kind: "delegate", Delegate: &delegate})
 	}
 
@@ -1126,7 +1126,7 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 
 func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegateSnapshot, budget *activityBudget, depth int, path []string, resumeIndex int) appwire.JobActivityDelegate {
 	descriptor := row.descriptor
-	status := projectStableDelegateStatus(budget.now, row)
+	status := projectDelegateStatus(budget.now, row)
 	// Mandate and Task carry the same text; truncate it once rather than
 	// repeating the work for each copy.
 	task := activitybound.Truncate(descriptor.Task, activityMaxDelegateProseRunes)

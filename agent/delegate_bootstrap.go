@@ -89,12 +89,12 @@ func (s *Session) bootstrapDelegateResources() error {
 	s.delegateController = controller
 	s.delegateRootSessionID = s.id
 	s.ownsDelegateController = true
-	controller.emitUpdate = s.emitStableDelegateUpdate
+	controller.emitUpdate = s.emitDelegateUpdate
 	s.pendingDelegateDeliveries = append(s.pendingDelegateDeliveries, pendingDeliveries...)
 	return nil
 }
 
-func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
+func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 	if s == nil || s.delegateController == nil {
 		return
 	}

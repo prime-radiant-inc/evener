@@ -22,7 +22,7 @@ import {
 	type MarketplaceAddParams,
 	type PluginEntry,
 } from "@evener/appwire-client";
-import { HubWriteBusyError, MARKETPLACE_REFETCH_DEBOUNCE_MS } from "@evener/appwire-client/state/extensions";
+import { HubWriteBusyError, REFETCH_DEBOUNCE_MS } from "@evener/appwire-client/state/extensions";
 import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../conversation/services/conversation";
 import { fonts } from "../design/tokens";
@@ -170,7 +170,7 @@ it("sends a branch or tag with a git url add request", async () => {
 async function marketplacesChanged(hub: { notify(method: string): void }) {
 	await act(async () => {
 		hub.notify("evener/marketplace/updated");
-		await new Promise((resolve) => setTimeout(resolve, MARKETPLACE_REFETCH_DEBOUNCE_MS));
+		await new Promise((resolve) => setTimeout(resolve, REFETCH_DEBOUNCE_MS));
 	});
 }
 

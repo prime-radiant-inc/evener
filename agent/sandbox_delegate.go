@@ -504,7 +504,7 @@ func (s *Session) restoreDelegateSandboxFloor(descriptor *delegatestore.Descript
 	// persist and no resume to re-apply it to — and the descriptor keeps the empty
 	// snapshot the create path wrote, which is exactly what re-derives this same
 	// floor against the host the next resume actually runs on.
-	if snapshot := stableDelegateSandboxSnapshot(policy); snapshot != nil && descriptor.Sandbox == nil {
+	if snapshot := delegateSandboxSnapshot(policy); snapshot != nil && descriptor.Sandbox == nil {
 		descriptor.Sandbox = snapshot
 		descriptor.Config.Sandbox = snapshot.Mode
 		descriptor.Config.SandboxNet = nil

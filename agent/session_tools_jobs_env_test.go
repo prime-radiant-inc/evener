@@ -7,7 +7,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
-func TestProjectStableDelegateStatus_EnvironmentFields(t *testing.T) {
+func TestProjectDelegateStatus_EnvironmentFields(t *testing.T) {
 	t.Parallel()
 	netDisabled := false
 	snapshot := delegateSnapshot{
@@ -27,7 +27,7 @@ func TestProjectStableDelegateStatus_EnvironmentFields(t *testing.T) {
 	}
 
 	now := time.Date(2026, 9, 2, 19, 10, 7, 0, time.UTC)
-	result := projectStableDelegateStatus(now, snapshot)
+	result := projectDelegateStatus(now, snapshot)
 
 	if result.Cwd != "/home/user/project" {
 		t.Errorf("Cwd = %q, want %q", result.Cwd, "/home/user/project")
@@ -46,7 +46,7 @@ func TestProjectStableDelegateStatus_EnvironmentFields(t *testing.T) {
 	}
 }
 
-func TestProjectStableDelegateStatus_NilSandboxNetworkDefaultsToTrue(t *testing.T) {
+func TestProjectDelegateStatus_NilSandboxNetworkDefaultsToTrue(t *testing.T) {
 	t.Parallel()
 	snapshot := delegateSnapshot{
 		id:        "dlg_test_net",
@@ -61,7 +61,7 @@ func TestProjectStableDelegateStatus_NilSandboxNetworkDefaultsToTrue(t *testing.
 		},
 	}
 
-	result := projectStableDelegateStatus(time.Now(), snapshot)
+	result := projectDelegateStatus(time.Now(), snapshot)
 
 	if result.SandboxNetwork == nil {
 		t.Fatal("SandboxNetwork is nil, want true (effective default for nil network)")
@@ -71,7 +71,7 @@ func TestProjectStableDelegateStatus_NilSandboxNetworkDefaultsToTrue(t *testing.
 	}
 }
 
-func TestProjectStableDelegateStatus_NoSandboxOmitsFields(t *testing.T) {
+func TestProjectDelegateStatus_NoSandboxOmitsFields(t *testing.T) {
 	t.Parallel()
 	snapshot := delegateSnapshot{
 		id:        "dlg_test_nosandbox",
@@ -83,7 +83,7 @@ func TestProjectStableDelegateStatus_NoSandboxOmitsFields(t *testing.T) {
 		},
 	}
 
-	result := projectStableDelegateStatus(time.Now(), snapshot)
+	result := projectDelegateStatus(time.Now(), snapshot)
 
 	if result.SandboxMode != "" {
 		t.Errorf("SandboxMode = %q, want empty (no sandbox)", result.SandboxMode)

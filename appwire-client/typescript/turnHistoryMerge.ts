@@ -22,7 +22,7 @@ import type { ThreadTurnsListResponse } from "./types.gen";
 // entry). Collapse them the way the live path already produces a single item:
 // the call supplies id + argumentsJSON + startedAt, the result supplies output +
 // error + exitCode + completedAt + settled status. A turn emptied by the merge is
-// dropped unless it was already empty or carries canonical turn metadata. (zrzr)
+// dropped unless it was already empty or carries canonical turn metadata.
 // Item payloads lose page ownership during retained placement. Keep the
 // original source values beside the folded turns so inherited fields do not
 // acquire the freshness of the item that carried them. The merge tree records
@@ -48,15 +48,15 @@ type ItemContribution = {
 type ToolItemMergeContext = {
   provenance: WeakMap<ItemModel, ToolItemProvenance>;
   // The results the tool fold absorbed onto each rewritten call, keyed by
-  // the rewritten call (review round 16). Retention-only metadata: the
+  // the rewritten call. Retention-only metadata: the
   // window bound needs it — a folded call is the only payload behind its
   // result's row once the row set keeps the result but not the call —
   // but it must stay OUT of the provenance membership, whose consumers
   // (the strip's real-source test, duplicate-reconciliation freshness)
   // treat a surviving candidate as a source the call never merged from.
   toolResultFolds: WeakMap<ItemModel, readonly ItemModel[]>;
-  // The content the fold kept, written where the fold decided to keep it
-  // (RoboRev round 5, panel Medium): one record per merged item — the
+  // The content the fold kept, written where the fold decided to keep it:
+  // one record per merged item — the
   // supplier sets per surviving field, and the identity anchors. The
   // identity edges record it beside the membership they already write;
   // the tool rewrite records the winners its own scan selected, dropping
@@ -128,9 +128,9 @@ function recordMergedToolItem(
 // value (null falls through to the other side), status by the rank chain's
 // kept value, and the spread-merged fields by property presence — so a
 // supplier set never names a side the merge would have read through to the
-// other (#2213 final-verdict Medium: strict value equality let an explicit
-// empty text and an omitted text share the supply, because both hydrate to
-// "" and the marker is invisible to Object.entries). The identity anchors
+// other (strict value equality would let an explicit empty text and an
+// omitted text share the supply, because both hydrate to "" and the marker
+// is invisible to Object.entries). The identity anchors
 // record every input regardless — an item whose anchors all sit on one side
 // exists only because that side does. Chained edges resolve through the
 // input's own record: an untouched original speaks for itself, a folded one
@@ -433,6 +433,7 @@ function mergePageItem(older: ItemModel, newer: ItemModel): ItemModel {
     mergeItemIdentityMetadata(older, {
       ...older,
       ...newer,
+      authorship: newer.authorship ?? older.authorship,
       text: textSource.text,
       toolName: newer.toolName ?? older.toolName,
       callId: newer.callId ?? older.callId,
@@ -546,7 +547,7 @@ function mergePageItems(older: ItemModel[], newer: ItemModel[], context?: ToolIt
 // keeps, so it never makes an item fresh — an unpositioned skeleton folding
 // an older reissue must not tie with the positioned restored item beside it
 // and let display order hand the stale text the win.
-// Review rounds 17 and 19: the precedence itself is FIELD-scoped. A
+// The precedence itself is FIELD-scoped. A
 // fresh input supplying one payload field (a status-only fragment)
 // makes the merged item fresh, but its freshness covers only the fields
 // that fresh input supplied: fields the item inherited from older-side
@@ -560,10 +561,10 @@ function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeCont
   for (const item of items) {
     // A fold can GROW its item's identity — a keyless older alias takes
     // the transcript key of the reissue it folded — so the merged result
-    // can identity-match an accumulated candidate the original did not
-    // (review round 20): keep folding the merged result against the
-    // accumulated candidates until no match remains. Each step consumes
-    // one candidate, so the loop always ends.
+    // can identity-match an accumulated candidate the original did not:
+    // keep folding the merged result against the accumulated candidates
+    // until no match remains. Each step consumes one candidate, so the loop
+    // always ends.
     let current = item;
     for (;;) {
       const index = reconciled.findIndex((candidate) => itemIdentityMatches(candidate, current));
@@ -585,10 +586,10 @@ function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeCont
         context === undefined
           ? mergePageItem(olderItem, newerItem)
           : reconcileDuplicatesByFields(existing, current, context);
-      // The provenance records in LIST order, not freshness order (review
-      // round 21): a side's leaves must read, in the tool fold's reversed
-      // candidate walk, in the same precedence the per-field resolution
-      // used — the later duplicate that won a field is found first.
+      // The provenance records in LIST order, not freshness order: a side's
+      // leaves must read, in the tool fold's reversed candidate walk, in the
+      // same precedence the per-field resolution used — the later duplicate
+      // that won a field is found first.
       // Freshness order here would leave an older call alias ahead of the
       // duplicate that won its output, and a result fragment omitting the
       // field would fold the stale alias's value back in. The fresh/older
@@ -603,28 +604,26 @@ function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeCont
 }
 
 // The fields an item's FRESH inputs supplied — the fields its freshness
-// actually covers (review round 17). Text counts as supplied only when a
+// actually covers. Text counts as supplied only when a
 // fresh leaf PROVIDED it (the omitted marker means the wire carried
-// none). Every other field counts by the merge's OWN rule for it (review
-// rounds 20 and 22): the nullish-fallback fields only when the leaf
+// none). Every other field counts by the merge's OWN rule for it: the nullish-fallback fields only when the leaf
 // carries a value (null falls through to the older side), the rank-merged
 // status only when a fresh leaf's status is the value the merge kept
-// (review round 24: a lower-ranked fresh status loses to the older
-// alias's, and the inherited value must not claim precedence), and the
+// (a lower-ranked fresh status loses to the older alias's, and the
+// inherited value must not claim precedence), and the
 // spread-merged fields by property PRESENCE — a fresh leaf's own
 // undefined clears the field, and the
 // clearing property must claim precedence or a later stale duplicate's
 // value survives the reconciliation. An identity-only leaf supplies
-// nothing at all — not even its identity (review round 19: a remembered
-// skeleton must not claim per-field precedence over a restored item's
-// fields) — and an item the context never saw speaks only for itself.
+// nothing at all — not even its identity (a remembered skeleton must not
+// claim per-field precedence over a restored item's fields) — and an item the context never saw speaks only for itself.
 function freshSuppliedFields(context: ToolItemMergeContext, item: ItemModel): ReadonlySet<string> {
   const supplied = new Set<string>();
   // The rank rule: a fresh leaf's status only reaches the merge when it
   // wins the rank chain — an inProgress fragment under a failed alias
   // leaves the alias's failure in place — so the merged status counts as
   // fresh-supplied only when a fresh leaf's own status is what the merge
-  // kept (review round 24).
+  // kept.
   let statusSupplied = false;
   const record = (leaf: ItemModel): void => {
     if (itemIsIdentityOnly(leaf)) return;
@@ -633,8 +632,7 @@ function freshSuppliedFields(context: ToolItemMergeContext, item: ItemModel): Re
       if (key === "text") continue;
       if (freshSuppliedNullishFallbackFields.has(key)) {
         // The merge inherits the older side's value when the leaf's is
-        // null or undefined, so neither counts as supplied (review
-        // round 20).
+        // null or undefined, so neither counts as supplied.
         if (value !== null && value !== undefined) supplied.add(key);
         continue;
       }
@@ -644,7 +642,7 @@ function freshSuppliedFields(context: ToolItemMergeContext, item: ItemModel): Re
       }
       // Every other field is spread-merged by property presence: the
       // leaf's own undefined CLEARS the field, and the clearing property
-      // counts as supplied (review round 22).
+      // counts as supplied.
       supplied.add(key);
     }
     if (itemTextPresence(leaf) === "provided") supplied.add("text");
@@ -674,7 +672,7 @@ function freshSuppliedOverlay(item: ItemModel, freshSupplied: ReadonlySet<string
   return overlay;
 }
 
-// Per-field reconciliation of a duplicate pair (review rounds 17-19):
+// Per-field reconciliation of a duplicate pair:
 // each side's fresh inputs supply fields, and a field supplied fresh by
 // one side wins over a value the other side merely inherited from older
 // inputs — whichever duplicate is earlier in the list, and whether or
@@ -1032,7 +1030,7 @@ export interface TurnHistoryFoldDetail extends TurnHistoryMergeResult {
   toolResultFoldSources: (item: ItemModel) => readonly ItemModel[];
   // Whether the inputs `side` names contributed content the item carries
   // — read from the keep-decisions the fold edges recorded where they
-  // happened, never re-derived here (RoboRev round 5): the supplier sets
+  // happened, never re-derived here: the supplier sets
   // per surviving field (a side counts for a field only when it holds
   // every supplier — removing it loses the field) and the identity
   // anchors (a side holding them all owns the item outright), the
@@ -1046,7 +1044,7 @@ export interface TurnHistoryFoldDetail extends TurnHistoryMergeResult {
   // a re-derivation after the fact. Warnings never claim (the walk's own
   // rule); an item this merge never saw as an older input claims (true),
   // the safe direction for a caller gating on the answer. Published for the
-  // mobile store's alias-consumption gate (#2152): the store consumes this
+  // mobile store's alias-consumption gate: the store consumes this
   // answer instead of re-deriving the field rules store-side.
   olderItemAddsCoverage: (item: ItemModel) => boolean;
 }
@@ -1470,7 +1468,7 @@ function mergeTurnHistoryWithContext(
     if (fresh === undefined || olderTurnContributes(group.turn, fresh)) olderContributed = true;
   }
 
-  // The store's alias-consumption gate (#2152) asks the package's own
+  // The store's alias-consumption gate asks the package's own
   // answer for one retained item: whether its persisted content adds
   // coverage the fresh side lacks, judged through THIS merge's live view —
   // the same host, contributor-chain, and fold-survival rules the walk

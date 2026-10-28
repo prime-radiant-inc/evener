@@ -59,20 +59,20 @@ func TestRuntimeForDelegateOwner_NilController(t *testing.T) {
 	}
 }
 
-// TestEmitStableDelegateUpdate_NilSession covers the nil-session guard
-// in emitStableDelegateUpdate (lines 1944-1946).
-func TestEmitStableDelegateUpdate_NilSession(t *testing.T) {
+// TestEmitDelegateUpdate_NilSession covers the nil-session guard
+// in emitDelegateUpdate (lines 1944-1946).
+func TestEmitDelegateUpdate_NilSession(t *testing.T) {
 	t.Parallel()
 	var s *Session
-	s.emitStableDelegateUpdate(delegateUpdatePlan{})
+	s.emitDelegateUpdate(delegateUpdatePlan{})
 	// Should not panic.
 }
 
-// TestEmitStableDelegateUpdate_NilController covers the nil-controller guard
-// in emitStableDelegateUpdate (lines 1944-1946).
-func TestEmitStableDelegateUpdate_NilController(t *testing.T) {
+// TestEmitDelegateUpdate_NilController covers the nil-controller guard
+// in emitDelegateUpdate (lines 1944-1946).
+func TestEmitDelegateUpdate_NilController(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	s.emitStableDelegateUpdate(delegateUpdatePlan{})
+	s.emitDelegateUpdate(delegateUpdatePlan{})
 	// Should not panic.
 }

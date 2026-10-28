@@ -101,7 +101,7 @@ type subagent struct {
 	nudgeEnabled          bool                      // true for default subagents that should be nudged to communicate
 	cancel                context.CancelFunc        // cancels the current run's context
 	cancelRequested       bool                      // set by requestRunCancel (either caller), so finalize maps a context.Canceled run to cancelled
-	userStopRequested     bool                      // set by requestRunCancel(true): S6's direct user stop (StopDelegateRun), read by stableDelegateFinish so only this path reports "Stopped by the user."
+	userStopRequested     bool                      // set by requestRunCancel(true): S6's direct user stop (StopDelegateRun), read by buildDelegateFinish so only this path reports "Stopped by the user."
 	settlementClaimed     bool                      // cancellation admission closes after the run's final pre-settlement check
 	agentType             string                    // plugin agent type name; empty for default subagents
 	createdAt             time.Time                 // set once at spawn; never reset on resume
@@ -487,7 +487,7 @@ func frozenSubagentToolNames(allTools bool, allowed, denied []string) []string {
 	}
 }
 
-func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate bool, isolation string) []string {
+func delegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate bool, isolation string) []string {
 	if reg == nil {
 		return nil
 	}
@@ -535,7 +535,7 @@ func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, al
 	return names
 }
 
-func frozenStableDelegateSandboxMatches(env execenv.ExecutionEnvironment, want *delegatestore.SandboxSnapshot) bool {
+func frozenDelegateSandboxMatches(env execenv.ExecutionEnvironment, want *delegatestore.SandboxSnapshot) bool {
 	got := sandboxSnapshotFromEnv(env)
 	if got == nil || want == nil {
 		return got == nil && want == nil
@@ -699,7 +699,7 @@ func (s *Session) sharedWorkspaceDelegateWarning(requestedIsolation string) stri
 	return ""
 }
 
-func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor delegatestore.Descriptor, watchParent bool, selection subagentModelSelection, inheritedContext []transcript.Entry) (*preparedSubagentRun, error) {
+func (s *Session) prepareDelegateRun(ctx context.Context, descriptor delegatestore.Descriptor, watchParent bool, selection subagentModelSelection, inheritedContext []transcript.Entry) (*preparedSubagentRun, error) {
 	if selection.profile == nil || selection.profile.ID() != descriptor.ResolvedProfileID || selection.profile.Model() != descriptor.ResolvedModel {
 		actual := "<nil>"
 		if selection.profile != nil {
@@ -1225,7 +1225,7 @@ func (s *Session) prepareChildEnvironment(ctx context.Context, workingDir, sessi
 		}
 	}
 	if frozen != nil {
-		if subEnv == nil || subEnv.WorkingDirectory() != frozen.WorkingDir || localEnvPolicyName(subEnv) != frozen.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(subEnv, frozen.Sandbox) {
+		if subEnv == nil || subEnv.WorkingDirectory() != frozen.WorkingDir || localEnvPolicyName(subEnv) != frozen.LocalEnvPolicy || !frozenDelegateSandboxMatches(subEnv, frozen.Sandbox) {
 			actualWorkingDir := ""
 			if subEnv != nil {
 				actualWorkingDir = subEnv.WorkingDirectory()
@@ -1732,7 +1732,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			if err != nil {
 				err = a.gateFatalRunError(err)
 			}
-			finish = a.stableDelegateFinish(res, err)
+			finish = a.buildDelegateFinish(res, err)
 			break
 		}
 		settlementClaim, continueRun, settleErr := a.sess.delegateController.BeginRunFinalization(lease, settlementMode, err)
@@ -1741,13 +1741,13 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				err = errors.Join(err, settleErr)
 			}
 			if settlementMode == delegateSettlementTerminal {
-				if stableDelegateFatalRun(err) {
+				if delegateFatalRun(err) {
 					err = a.gateFatalRunError(err)
 				}
 			} else if err != nil {
 				err = a.gateFatalRunError(err)
 			}
-			finish = a.stableDelegateFinish(res, err)
+			finish = a.buildDelegateFinish(res, err)
 			break
 		}
 		if continueRun {
@@ -1771,23 +1771,23 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			err = errors.Join(err, attentionErr)
 		}
 		if settlementClaim.mode == delegateSettlementTerminal {
-			if stableDelegateFatalRun(err) {
+			if delegateFatalRun(err) {
 				err = a.gateFatalRunError(err)
 			}
-			finish = a.stableDelegateFinish(res, err)
+			finish = a.buildDelegateFinish(res, err)
 			break
 		}
 		if attentionErr != nil {
 			if err != nil {
 				err = a.gateFatalRunError(err)
 			}
-			finish = a.stableDelegateFinish(res, err)
+			finish = a.buildDelegateFinish(res, err)
 			break
 		}
 		if err != nil {
 			err = a.gateFatalRunError(err)
 		}
-		finish = a.stableDelegateFinish(res, err)
+		finish = a.buildDelegateFinish(res, err)
 		decision, decisionErr := a.sess.delegateController.completionDecision(lease)
 		if decisionErr != nil {
 			err = errors.Join(err, decisionErr)
@@ -1811,7 +1811,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			if err != nil {
 				err = a.gateFatalRunError(err)
 			}
-			finish = a.stableDelegateFinish(res, err)
+			finish = a.buildDelegateFinish(res, err)
 		}
 		break
 	}
@@ -2021,20 +2021,20 @@ func delegateSettlementModeForRun(err error, cancelRequested bool) delegateSettl
 	return classifyRunEnd(err, cancelRequested).mode
 }
 
-func stableDelegateFatalRun(err error) bool {
+func delegateFatalRun(err error) bool {
 	return classifyRunEnd(err, false).fatal
 }
 
-func stableDelegateFinish(sess *Session, result string, runErr error) delegateFinish {
+func buildDelegateFinish(sess *Session, result string, runErr error) delegateFinish {
 	inputs := delegateTerminalRunInputs{session: sess, result: result, runErr: runErr}
 	inputs.captureCommunicateReport(sess)
-	finish := stableDelegateFinishFromRun(inputs)
+	finish := delegateFinishFromRun(inputs)
 	return finish
 }
 
-func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFinish {
+func (a *subagent) buildDelegateFinish(result string, runErr error) delegateFinish {
 	if a == nil || a.sess == nil {
-		return stableDelegateFinish(nil, result, runErr)
+		return buildDelegateFinish(nil, result, runErr)
 	}
 	endedAt := a.sess.sclock().Now()
 	a.mu.Lock()
@@ -2071,14 +2071,14 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 		}
 		controller.mu.Unlock()
 	}
-	inputs.worktree = reporter.stableDelegateWorktreeReport(descriptor)
+	inputs.worktree = reporter.descriptorWorktreeReport(descriptor)
 	// SessionScratchDir is a reporting-only accessor (never provisions), so this
 	// is safe to read even on an externally cancelled run — it costs nothing and
 	// carries no side effect, matching the worktree report above.
 	if le, ok := a.sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
 		inputs.scratchPath = le.SessionScratchDir()
 	}
-	finish := stableDelegateFinishFromRun(inputs)
+	finish := delegateFinishFromRun(inputs)
 	if finish.outcome == delegatestore.OutcomeFailed && a.sess.hasSalvageFromFinalRound() && finish.packet != nil {
 		finish.packet.Warnings = appendUniqueStrings(finish.packet.Warnings, delegateSalvagedDraftNote)
 	}
@@ -2162,9 +2162,9 @@ type delegateTerminalWorktreeReport struct {
 	Dirty   bool   `json:"dirty"`
 }
 
-// stableDelegateFinishFromRun constructs the one immutable packet used by
+// delegateFinishFromRun constructs the one immutable packet used by
 // settlement, crash replay, and owner delivery.
-func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinish {
+func delegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinish {
 	message := strings.TrimSpace(inputs.result)
 	if message == "" && inputs.runErr != nil {
 		message = inputs.runErr.Error()

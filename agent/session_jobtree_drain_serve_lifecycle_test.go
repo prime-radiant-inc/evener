@@ -96,7 +96,7 @@ func TestServeDrainAbandonsARealStopPendingDelegate(t *testing.T) {
 	if err := root.executeDelegateMutationPlans(stopPlans); err != nil {
 		t.Fatalf("execute stop plans: %v", err)
 	}
-	row, ok := root.directStableDelegateForChildSession(created.ChildSessionID)
+	row, ok := root.directDelegateForChildSession(created.ChildSessionID)
 	if !ok || row.pendingStopSeq == 0 {
 		t.Fatalf("real stop did not leave pending stop: ok=%v row=%#v", ok, row)
 	}

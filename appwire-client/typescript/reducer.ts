@@ -362,7 +362,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         // support alone). A set cut before the
         // turn therefore describes the wrong session by the time the composer
         // reads it back, which is how a running session came to show no Steer,
-        // no Stop and a dead Send until the page was reloaded (kata 06t8).
+        // no Stop and a dead Send until the page was reloaded.
         // Same absent-means-no-update rule as the count above: a source that
         // omits the capability sends none, and clearing on absence would strip
         // the session of every action it advertised.

@@ -53,7 +53,7 @@ native:agent:.:FuzzDelegateConversationTransitions
 native:agent:.:FuzzDelegateRestartEquivalence
 native:agent:.:FuzzDelegateReclaimStopRestart
 native:agent:.:FuzzDelegateAttentionFold
-native:agent:.:FuzzStableDelegateWatchDelivery
+native:agent:.:FuzzDelegateWatchDelivery
 native:agent:.:FuzzTranscriptReplay
 native:agent:.:FuzzTranscriptReplayStructured
 native:agent:.:FuzzTranscriptReadersAgree
