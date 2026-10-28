@@ -84,7 +84,7 @@ func TestHubAtomicRejoinUsesRelaySessionRead(t *testing.T) {
 	}
 	// The hub commits the handoff after the response enters the connection's
 	// send queue, so this goroutine can get here before Commit runs (the same
-	// scheduling race app_rpc_test.go's retry test hit on a starved runner).
+	// scheduling race the relay retry tests in app_rpc_relay_recovery_test.go hit on a starved runner).
 	select {
 	case <-handoff.committed:
 	case <-time.After(time.Second):

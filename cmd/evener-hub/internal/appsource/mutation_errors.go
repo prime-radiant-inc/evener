@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"syscall"
 
@@ -39,15 +40,22 @@ func remoteHubUnavailable(id, detail string) appwire.WireError {
 }
 
 // isTransportLoss reports the failure shapes every source's transport shares:
-// the peer is gone (refused, reset, broken pipe, EOF), a deadline passed, or a
-// library wrapped one of those without exposing the sentinel. Each source adds
-// the shapes only its own transport produces.
+// the peer is gone (refused, reset, broken pipe, EOF), this end's write side is
+// already closed (pipe, descriptor, network connection or appwire stream), a
+// deadline passed, or a library wrapped one of those without exposing the
+// sentinel. A closed write says the connection failed mid-call, not that the
+// request was never sent, so a mutation that hits one is outcome-unknown. Each
+// source adds the shapes only its own transport produces.
 func isTransportLoss(err error) bool {
 	if errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.EPIPE) ||
 		errors.Is(err, io.EOF) ||
 		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, os.ErrClosed) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, appwire.ErrStreamClosed) ||
 		errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}

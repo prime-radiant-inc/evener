@@ -22,6 +22,11 @@ import { VirtualList, type VirtualListHandle } from "../widgets";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { setCacheChannelFactoryForTests } from "./cacheLifetime";
 import { connectionStore } from "./connection";
+import {
+  productionEntryTranscriptForTests,
+  setProductionEntryCacheForTests,
+  setSessionCacheStalledOpenForTests,
+} from "./entryTranscriptRoutes";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "./projectionWork";
@@ -38,10 +43,7 @@ import {
   clearCachedSessions,
   countCachedSessions,
   markCacheSessionsDeleted,
-  productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
-  setSessionCacheStalledOpenForTests,
   settleBackgroundTranscriptsForTests,
   settleEntryTranscriptForTests,
   subscribeCacheWrites,

@@ -19,6 +19,7 @@ import { connectionStore } from "../../../stores/connection";
 import * as navigationModule from "../../../stores/navigation/store";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -107,10 +108,9 @@ function SessionChrome(props: ComponentProps<typeof SessionChromeView>) {
 }
 
 function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  chromeClient = fake;
-  connectionStore.getState().connect(fake);
-  return fake;
+  return connectReadyFakeClient((fake) => {
+    chromeClient = fake;
+  });
 }
 
 // We can't easily spy on the toast store from outside, so we mount Toast

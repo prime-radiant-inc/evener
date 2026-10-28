@@ -33,7 +33,7 @@
   readable from the REST detail and the doctor transcript, not from the page.
 
 The Go layer covers the gate and persistence with unit tests
-(`cmd/evener-hub/app_rpc_test.go:5873` `TestHubRPCGoalSetGatedByCapability`,
+(`cmd/evener-hub/app_rpc_test.go:771` `TestHubRPCGoalSetGatedByCapability`,
 `agent/session_goal_*_test.go`); this is the live web counterpart that
 proves the palette, the goal row, and the marker actually render.
 

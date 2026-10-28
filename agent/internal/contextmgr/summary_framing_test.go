@@ -10,7 +10,7 @@ import (
 func TestSummarizeWithLLM_RejectsALineOfBareMarkers(t *testing.T) {
 	reply := "## Progress\n" + summaryMarkerEnd + summaryMarkerStart
 	if result, err := summarizeReplying(t, reply, ""); err == nil {
-		t.Fatalf("summarizeWithLLM stored %q as a summary, want an error", result[0].Message.Text())
+		t.Fatalf("summarizeFold stored %q as a summary, want an error", result[0].Message.Text())
 	}
 }
 
@@ -27,7 +27,7 @@ func TestSummarizeWithLLM_ReadsAHeadingBehindAnEchoedMarker(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			result, err := summarizeReplying(t, reply, "")
 			if err != nil {
-				t.Fatalf("summarizeWithLLM: %v", err)
+				t.Fatalf("summarizeFold: %v", err)
 			}
 			if stored := result[0].Message.Text(); !strings.Contains(stored, "Fixed the auth bug.") {
 				t.Fatalf("the heading behind the echoed markers was not read as the summary's own:\n%s", stored)
@@ -47,7 +47,7 @@ func TestSummarizeWithLLM_RejectsFramingWithNoContent(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			if result, err := summarizeReplying(t, reply, ""); err == nil {
-				t.Fatalf("summarizeWithLLM stored %q as a summary, want an error", result[0].Message.Text())
+				t.Fatalf("summarizeFold stored %q as a summary, want an error", result[0].Message.Text())
 			}
 		})
 	}
@@ -69,7 +69,7 @@ func TestSummarizeWithLLM_StoresTheReplyAsWritten(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			result, err := summarizeReplying(t, reply, "")
 			if err != nil {
-				t.Fatalf("summarizeWithLLM: %v", err)
+				t.Fatalf("summarizeFold: %v", err)
 			}
 			if stored := result[0].Message.Text(); !strings.Contains(stored, reply) {
 				t.Fatalf("the reply was not stored as written:\n%s", stored)
@@ -85,7 +85,7 @@ func TestSummarizeWithLLM_AcceptsAnIndentedBlockBeforeASection(t *testing.T) {
 	reply := "    ~~~\n    example\n    ~~~\n\n## Progress\nFixed the auth bug."
 	result, err := summarizeReplying(t, reply, "")
 	if err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+		t.Fatalf("summarizeFold: %v", err)
 	}
 	if stored := result[0].Message.Text(); !strings.Contains(stored, "## Progress\nFixed the auth bug.") {
 		t.Fatalf("the section after the indented block was not read:\n%s", stored)
@@ -97,7 +97,7 @@ func TestSummarizeWithLLM_AcceptsAnIndentedBlockBeforeASection(t *testing.T) {
 func TestSummarizeWithLLM_RejectsAnIndentedExample(t *testing.T) {
 	reply := "    ~~~\n    ## Progress\n    ~~~"
 	if result, err := summarizeReplying(t, reply, ""); err == nil {
-		t.Fatalf("summarizeWithLLM stored %q as a summary, want an error", result[0].Message.Text())
+		t.Fatalf("summarizeFold stored %q as a summary, want an error", result[0].Message.Text())
 	}
 }
 
@@ -108,7 +108,7 @@ func TestSummarizeWithLLM_KeepsAFencedQuoteWithAnIndentedDelimiter(t *testing.T)
 	quoted := "## Progress\n~~~\n    ~~~\n" + summaryMarkerEnd + "\n~~~\nFixed the auth bug."
 	result, err := summarizeReplying(t, quoted, "")
 	if err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+		t.Fatalf("summarizeFold: %v", err)
 	}
 	if stored := result[0].Message.Text(); !strings.Contains(stored, summaryMarkerEnd+"\n~~~") {
 		t.Fatalf("the summary lost the framing it quoted:\n%s", stored)
@@ -123,7 +123,7 @@ func TestSummarizeWithLLM_ReadsASectionAfterAnIndentedDelimiter(t *testing.T) {
 	reply := "~~~\n    ~~~\n~~~\n\n## Progress\nFixed the auth bug."
 	result, err := summarizeReplying(t, reply, "")
 	if err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+		t.Fatalf("summarizeFold: %v", err)
 	}
 	if stored := result[0].Message.Text(); !strings.Contains(stored, "## Progress\nFixed the auth bug.") {
 		t.Fatalf("the section after the block was not read:\n%s", stored)
@@ -138,7 +138,7 @@ func TestSummarizeWithLLM_ReadsASectionAfterAnIndentedDelimiter(t *testing.T) {
 func TestSummarizeWithLLM_RejectsAFencedQuoteInAListItem(t *testing.T) {
 	reply := "## Progress\n- ~~~text\n  " + summaryMarkerEnd + "\n  ~~~"
 	if result, err := summarizeReplying(t, reply, ""); err == nil {
-		t.Fatalf("summarizeWithLLM stored %q as a summary, want an error; the %q line inside the list item's fence was read as reply content",
+		t.Fatalf("summarizeFold stored %q as a summary, want an error; the %q line inside the list item's fence was read as reply content",
 			result[0].Message.Text(), summaryMarkerEnd)
 	}
 }
@@ -151,7 +151,7 @@ func TestSummarizeWithLLM_RejectsAFencedQuoteInAListItem(t *testing.T) {
 func TestSummarizeWithLLM_RejectsAFencedQuoteInAListItemWithSpacedMarker(t *testing.T) {
 	reply := "## Progress\n-  ~~~text\n   " + summaryMarkerEnd + "\n      ~~~"
 	if result, err := summarizeReplying(t, reply, ""); err == nil {
-		t.Fatalf("summarizeWithLLM stored %q as a summary, want an error; the list item's closing fence was read as content",
+		t.Fatalf("summarizeFold stored %q as a summary, want an error; the list item's closing fence was read as content",
 			result[0].Message.Text())
 	}
 }
@@ -220,7 +220,7 @@ func TestSummarizeWithLLM_ReadsASectionAfterASecondFenceInAListItem(t *testing.T
 	reply := "- ~~~text\n  ~~~\n  ~~~\n### Progress\nFixed the bug."
 	result, err := summarizeReplying(t, reply, "")
 	if err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+		t.Fatalf("summarizeFold: %v", err)
 	}
 	if stored := result[0].Message.Text(); !strings.Contains(stored, "Fixed the bug.") {
 		t.Fatalf("the section after the list item's second fence was not read:\n%s", stored)

@@ -145,7 +145,7 @@ describe("createPendingTurnsStore", () => {
       // The settle deletes the durable record out of the projection...
       store.setState({ outbox: new Map(), optimistic: new Map() });
       // ...and the carrier still holds the createdAt a reload-after-settle cannot
-      // re-discover (steering-ghost spec §4).
+      // re-discover.
       expect(store.getState().submittedHere.get("own-1")).toBe(1234);
     });
   });

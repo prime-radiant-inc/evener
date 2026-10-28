@@ -5,13 +5,12 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore } from "./connection";
+import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   acquireBackgroundThread,
   clearCachedSessions,
-  productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
   settleEntryTranscriptForTests,
   threadsStore,
 } from "./threads";

@@ -5,15 +5,10 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "./connection";
+import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { holdNextWriteTransaction, nextRealTask } from "./testing/stalledIndexedDB";
-import {
-  acquireBackgroundThread,
-  productionEntryTranscriptForTests,
-  resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
-  settleBackgroundTranscriptsForTests,
-} from "./threads";
+import { acquireBackgroundThread, resetThreadsStoreForTests, settleBackgroundTranscriptsForTests } from "./threads";
 
 // Mechanism probe for settleBackgroundTranscriptsForTests. Before 6d-2b the
 // transcript write/checkpoint work lived in TranscriptResidency and its

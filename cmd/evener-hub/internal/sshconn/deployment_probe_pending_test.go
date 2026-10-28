@@ -17,7 +17,7 @@ func TestRetainedDeploymentExecutableProbeIsBounded(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener"}
 	entered := make(chan bool, 1)
 	var probeErr error
-	base := cannedRun(map[string][]byte{"launch-check": []byte("{")})
+	base := cannedRun(map[remoteOp][]byte{opLaunchCheck: []byte("{")})
 	fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		if strings.HasSuffix(strings.Join(argv, " "), "if test -x /opt/evener; then exit 0; else exit 1; fi") {
 			_, bounded := ctx.Deadline()

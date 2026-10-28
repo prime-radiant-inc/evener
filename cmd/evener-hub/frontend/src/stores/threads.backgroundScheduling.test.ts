@@ -5,13 +5,13 @@ import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
   threadsStore,
 } from "./threads";
 

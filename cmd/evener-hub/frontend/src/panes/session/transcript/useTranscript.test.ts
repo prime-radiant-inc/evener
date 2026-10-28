@@ -8,13 +8,13 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { conversationPaneLifetime } from "../../../shell/paneLifetime";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
+import { setProductionEntryCacheForTests } from "../../../stores/entryTranscriptRoutes";
 import { activityDelegate } from "../../../stores/sessionActivityTestUtils";
 import { SessionEntryCache } from "../../../stores/sessionEntryCache";
 import { observeProductionEntryForTests } from "../../../stores/testing/entryProductionHarness";
 import {
   acquireBackgroundThread,
   resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
   settleEntryTranscriptForTests,
   threadsStore,
 } from "../../../stores/threads";

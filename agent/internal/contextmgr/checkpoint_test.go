@@ -273,7 +273,7 @@ func TestCheckpoint_NoHistoryToCheckpoint(t *testing.T) {
 	}
 }
 
-// H1: checkpoint and summarizeWithLLM must not produce invalid message ordering.
+// H1: checkpoint and summarizeFold must not produce invalid message ordering.
 // If preserveRecent falls mid-pair (e.g., starts on a TurnTool), the cutoff must
 // be adjusted backward to include the preceding assistant turn.
 func TestCheckpoint_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {

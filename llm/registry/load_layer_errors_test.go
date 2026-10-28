@@ -135,11 +135,13 @@ func TestCloneAnyValueKindsAreIndependent(t *testing.T) {
 
 func TestKeepMatchingRowsNilInNilOut(t *testing.T) {
 	t.Parallel()
-	if got := keepMatchingRows(nil, []string{"*"}); got != nil {
+	// The kept map main's signature adds only answers for glob-shaped row
+	// ids; with none in play the patterns do all the matching.
+	if got := keepMatchingRows(nil, []string{"*"}, nil); got != nil {
 		t.Fatalf("keepMatchingRows(nil) = %v, want nil", got)
 	}
 	rows := map[string]Model{"a": {}, "b": {}}
-	got := keepMatchingRows(rows, []string{"a*"})
+	got := keepMatchingRows(rows, []string{"a*"}, nil)
 	if len(got) != 1 {
 		t.Fatalf("keepMatchingRows = %v, want only a", got)
 	}
