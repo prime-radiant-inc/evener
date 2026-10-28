@@ -131,10 +131,6 @@ vi.mock("expo-sqlite", async () => {
 	};
 });
 // The organization journal names each change it records.
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => `change-${Math.random()}`,
-	getRandomValues: (array: Uint8Array) => array,
-}));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
 vi.mock("expo-secure-store", () => ({

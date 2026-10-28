@@ -11,8 +11,6 @@ import { useCoordinatorState } from "./useCoordinatorState";
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 // SessionLink's module also holds the durable outbox, which opens sqlite.
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
-
 const read = (status: string): ThreadReadResponse =>
 	({
 		thread: {

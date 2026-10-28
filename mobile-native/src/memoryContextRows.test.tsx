@@ -64,10 +64,6 @@ vi.mock("expo-secure-store", () => ({
 	setItemAsync: async () => undefined,
 	deleteItemAsync: async () => undefined,
 }));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "test-uuid",
-	getRandomValues: (array: Uint8Array) => array,
-}));
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite/kv-store", () => {
 	const values = new Map<string, string>();
