@@ -539,6 +539,7 @@ export function ComicTranscript({
           return;
         }
         if (target.history.hasOlder) {
+          if (target.history.loadingOlder) lastPage.current = undefined;
           const page = target.history.olderPageKey ?? undefined;
           if (!target.history.loadingOlder && !target.history.olderError && lastPage.current !== page) {
             lastPage.current = page;
@@ -581,6 +582,9 @@ export function ComicTranscript({
       return;
     const history = target.history;
     if (history.hasOlder) {
+      // Suppress repeated idle publications, not a cursor reused after shared
+      // demand: hydration can rewind it before the owner's retry completes.
+      if (history.loadingOlder) lastPage.current = undefined;
       const page = history.olderPageKey ?? target.entries.map((entry) => entry.id).join("\n");
       if (!history.loadingOlder && !history.olderError && lastPage.current !== page) {
         lastPage.current = page;

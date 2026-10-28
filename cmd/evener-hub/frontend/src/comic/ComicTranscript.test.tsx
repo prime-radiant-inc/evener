@@ -541,7 +541,7 @@ test.each(["invalid capture", "delayed backward key"] as const)(
 
 async function mountGestureReader(
   atTop = false,
-  nested?: { node: ReactNode; position: Extract<ComicReadingPosition, { mode: "away" }> },
+  nested?: { node: ReactNode; position: Extract<ComicReadingPosition, { mode: "away" }>; initialEntryId?: string },
 ) {
   // Deterministic consumer-protocol geometry, not native browser layout.
   let port: HTMLDivElement;
@@ -604,9 +604,7 @@ async function mountGestureReader(
   const mounted = render(nested?.node ?? <Reader older={older} />);
   port = mounted.container.querySelector("[data-comic-scroll]")!.firstElementChild as HTMLDivElement;
   await waitFor(() =>
-    expect(
-      port.querySelector(`[data-comic-entry="${position.mode === "away" ? position.entryId : "m"}"]`),
-    ).not.toBeNull(),
+    expect(port.querySelector(`[data-comic-entry="${nested?.initialEntryId ?? position.entryId}"]`)).not.toBeNull(),
   );
   act(() => publish!());
   const frames = new Map<number, FrameRequestCallback>();
@@ -1411,6 +1409,7 @@ test.each([
   { intent: "continue", recorded: true, opening: "after page", delivery: "current" },
   { intent: "continue", recorded: true, opening: "none", delivery: "retained idle" },
   { intent: "continue", recorded: true, opening: "none", delivery: "resident replacement" },
+  { intent: "continue", recorded: true, opening: "none", delivery: "partial replacement" },
 ])(
   "saved child restoration owns the next accepted page only while active: $intent, recorded=$recorded, opening=$opening, delivery=$delivery",
   async ({ intent, recorded, opening, delivery }) => {
@@ -1447,6 +1446,8 @@ test.each([
       ? { bootGeneration: "1", snapshot: { incarnation: "child-incarnation", length: 140 } }
       : {};
     const replaceResident = delivery === "resident replacement";
+    const replacePartial = delivery === "partial replacement";
+    const replaceCache = replaceResident || replacePartial;
     let reopening = false;
     let acceptReplacement!: () => void;
     let staleProjectionSeen = false;
@@ -1459,19 +1460,26 @@ test.each([
         thread: wireThread(p.ref, { turns: [turn("current", 96)] }),
         olderCursor: "96",
       };
-      if (!replaceResident) return response;
+      if (!replaceCache) return response;
       if (!reopening) {
-        // Persist a real resident source, as the browser does before reload.
+        // Persist either the source or a partial window still ahead of it.
         const cached = {
           ...turn("current", 96),
-          hasEarlierItems: false,
+          hasEarlierItems: replacePartial,
           hasLaterItems: false,
-          items: [...turn("saved-child", 16).items, ...turn("middle", 56).items, ...turn("current", 96).items],
+          items: [
+            ...(replacePartial ? [] : turn("saved-child", 16).items),
+            ...turn("middle", 56).items,
+            ...turn("current", 96).items,
+          ],
         };
-        return { ...response, thread: wireThread(p.ref, { turns: [cached] }), olderCursor: undefined };
+        return {
+          ...response,
+          thread: wireThread(p.ref, { turns: [cached] }),
+          olderCursor: replacePartial ? "56" : undefined,
+        };
       }
-      // Let the committed cache restore first, then publish the actual partial
-      // hydration response. No mocked reconcile or manual model replacement.
+      // Hold real hydration while the cached window reaches the reader.
       return new Promise<ThreadReadResponse>((resolve) => {
         acceptReplacement = () => resolve(response);
       });
@@ -1494,8 +1502,7 @@ test.each([
     });
     connectionStore.getState().connect(client);
     if (recorded) {
-      // Persist the fixture, then reopen through the real cache. The replacement
-      // case starts resident, the other cases start with only the newest fragment.
+      // Persist the fixture, then reopen through the real cache.
       await threadsStore.getState().ensureThread(strip.childRef);
       await settleEntryTranscriptForTests(strip.childRef);
       await threadsStore.getState().releaseThread(strip.childRef);
@@ -1537,9 +1544,26 @@ test.each([
       viewportOffset: 24,
     };
     writeComicPosition("local:test", position);
-    const geometry = replaceResident ? await mountGestureReader(false, { node: <Root />, position }) : undefined;
+    const geometry = replaceCache
+      ? await mountGestureReader(false, { node: <Root />, position, initialEntryId: replacePartial ? "m" : undefined })
+      : undefined;
     const mounted = geometry?.mounted ?? render(<Root />);
-    if (geometry) {
+    if (replacePartial) {
+      await waitFor(() =>
+        expect(pagingByRef.get(strip.childRef)?.paging.getSnapshot()).toMatchObject({
+          loading: false,
+          pending: true,
+          error: null,
+        }),
+      );
+      expect(threadsStore.getState().threads.get(strip.childRef)?.olderCursor).toBe("56");
+      expect(childState.readers.get(childKey)?.entries.some((value) => value.id === position.entryId)).toBe(false);
+      expect(childState.readers.get(childKey)?.history.loadingOlder).toBe(true);
+      expect(requests).toEqual([]);
+      expect(readComicPosition("local:test")).toEqual(position);
+      await act(async () => acceptReplacement());
+      await waitFor(() => expect(threadsStore.getState().threads.get(strip.childRef)?.olderCursor).toBe("96"));
+    } else if (geometry) {
       await waitFor(() => expect(threadsStore.getState().localOpenings.has(strip.childRef)).toBe(false));
       geometry.publish();
       expect(geometry.geometry.sourceY - geometry.port.scrollTop).toBe(position.viewportOffset);
@@ -1657,7 +1681,7 @@ test.each([
         expect(childState.readers.get(JSON.stringify(position.path))?.history.loadingOlder).toBe(false),
       );
     }
-    if (replaceResident) await waitFor(() => expect(requests).toEqual(["96", "56"]));
+    if (replaceCache) await waitFor(() => expect(requests).toEqual(["96", "56"]));
     expect(requests).toEqual(intent === "continue" ? ["96", "56"] : ["96"]);
     const child = childState.readers.get(JSON.stringify(position.path))!;
     expect(child.entries.some((value) => value.id === "middle")).toBe(true);
