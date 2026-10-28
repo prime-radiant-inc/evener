@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -244,7 +245,24 @@ const (
 	opLaunchCheck   remoteOp = "launch-check"
 	opHealth        remoteOp = "api/health"
 	opListenerProbe remoteOp = "lsof -ti"
-	opBinaryInstall remoteOp = "binary install"
+	opBinaryInstall remoteOp = "binary push or install"
+
+	opRelaunch        remoteOp = "relaunch hub"
+	opUserName        remoteOp = "user lookup"
+	opProcessFiles    remoteOp = "lsof -p"
+	opProcessAlive    remoteOp = "kill -s 0"
+	opProcessKill     remoteOp = "kill"
+	opProcessArgv     remoteOp = "process argv"
+	opProcessCmdline  remoteOp = "process cmdline"
+	opSystemdUnits    remoteOp = "systemctl list-units"
+	opSystemdRestart  remoteOp = "systemctl restart"
+	opSystemdStart    remoteOp = "systemctl start"
+	opLaunchdList     remoteOp = "launchctl list"
+	opLaunchdKick     remoteOp = "launchctl kickstart"
+	opInstallDirProbe remoteOp = "test -d"
+	opExecutableProbe remoteOp = "test -x"
+	opResolveExec     remoteOp = "evener_resolve"
+	opCommandLookup   remoteOp = "command -v evener"
 )
 
 // classifyRemote returns the operation argv performs on the host, or
@@ -256,6 +274,38 @@ func classifyRemote(argv []string) remoteOp {
 		return opListenerProbe
 	case strings.Contains(joined, `mv "$tmp"`) || strings.Contains(joined, "evener-install.XXXXXX"):
 		return opBinaryInstall
+	case strings.Contains(joined, "nohup"):
+		return opRelaunch
+	case strings.Contains(joined, "lsof -p"):
+		return opProcessFiles
+	case strings.Contains(joined, "kill -s 0"):
+		return opProcessAlive
+	case strings.Contains(joined, "kill -- "):
+		return opProcessKill
+	case strings.Contains(joined, "-ww -o "):
+		return opProcessArgv
+	case strings.Contains(joined, "/cmdline"):
+		return opProcessCmdline
+	case strings.Contains(joined, "systemctl restart"):
+		return opSystemdRestart
+	case strings.Contains(joined, "systemctl start"):
+		return opSystemdStart
+	case strings.Contains(joined, "list-units"):
+		return opSystemdUnits
+	case strings.Contains(joined, "launchctl list"):
+		return opLaunchdList
+	case strings.Contains(joined, "launchctl kickstart"):
+		return opLaunchdKick
+	case strings.Contains(joined, "if test -x"):
+		return opExecutableProbe
+	case strings.Contains(joined, "test -d"):
+		return opInstallDirProbe
+	case strings.Contains(joined, "command -v evener"):
+		return opCommandLookup
+	case strings.Contains(joined, "evener_resolve"):
+		return opResolveExec
+	case strings.HasSuffix(joined, "id -un"), strings.Contains(joined, "ps -o user="):
+		return opUserName
 	case strings.HasSuffix(joined, "hub endpoint --json"):
 		return opHubEndpoint
 	case strings.HasSuffix(joined, "uname -s"):
@@ -273,6 +323,34 @@ func classifyRemote(argv []string) remoteOp {
 	default:
 		return opUnknown
 	}
+}
+
+// requireNoRemoteOps fails the test when the fake host was asked to perform any
+// of ops.
+func requireNoRemoteOps(t *testing.T, fr *fakeRunner, what string, ops ...remoteOp) {
+	t.Helper()
+	for _, argv := range fr.recordedRuns() {
+		if slices.Contains(ops, classifyRemote(argv)) {
+			t.Fatalf("%s: %v", what, argv)
+		}
+	}
+}
+
+// resolveTarget returns the path an opResolveExec command resolves.
+func resolveTarget(argv []string) string {
+	joined := strings.Join(argv, " ")
+	return strings.TrimSpace(joined[strings.LastIndex(joined, "evener_resolve ")+len("evener_resolve "):])
+}
+
+// resolveAnswers answers an opResolveExec command from a table of the real
+// path each target resolves to. A target the table lacks fails to resolve, as
+// a missing file does on a host.
+func resolveAnswers(argv []string, resolved map[string]string) ([]byte, error) {
+	target := resolveTarget(argv)
+	if real, ok := resolved[target]; ok {
+		return []byte(real + "\n"), nil
+	}
+	return nil, fmt.Errorf("resolver: %s: no such file or directory", target)
 }
 
 // cannedRun returns a runFn answering the standard preflight commands, with
@@ -362,35 +440,34 @@ func deployRunnerForFixture(t *testing.T, goos, goarch string, launch func(call 
 	launchCalls, healthCalls := 0, 0
 	fr := &fakeRunner{
 		runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.HasSuffix(joined, "uname -s"):
+			switch classifyRemote(argv) {
+			case opUnameKernel:
 				return []byte(osName + "\n"), nil
-			case strings.HasSuffix(joined, "uname -m"):
+			case opUnameArch:
 				return []byte(archName + "\n"), nil
-			case strings.Contains(joined, "XDG_STATE_HOME"):
+			case opEnvironment:
 				return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-			case strings.HasSuffix(joined, "id -u"):
+			case opUserID:
 				return []byte("1000\n"), nil
-			case strings.Contains(joined, "launch-check"):
+			case opLaunchCheck:
 				out, err := launch(launchCalls)
 				launchCalls++
 				return out, err
-			case strings.Contains(joined, "test -d /opt/evener/bin"):
+			case opInstallDirProbe:
 				return nil, nil
-			case strings.Contains(joined, "if test -x /opt/evener/bin/evener"):
+			case opExecutableProbe:
 				return nil, nil // This fixture's installed executable is runnable.
-			case strings.Contains(joined, "evener_resolve"):
+			case opResolveExec:
 				return []byte("/opt/evener/bin/evener\n"), nil
-			case strings.Contains(joined, "list-units"):
+			case opSystemdUnits:
 				return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
-			case strings.Contains(joined, "systemctl restart"), strings.Contains(joined, "systemctl start"):
+			case opSystemdRestart, opSystemdStart:
 				return nil, nil
-			case strings.Contains(joined, "api/health"):
+			case opHealth:
 				out, err := health(healthCalls)
 				healthCalls++
 				return out, err
-			case strings.Contains(joined, "cat >"):
+			case opBinaryInstall:
 				if stdin != nil {
 					_, _ = io.ReadAll(stdin)
 				}
