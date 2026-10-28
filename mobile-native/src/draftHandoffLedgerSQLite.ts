@@ -341,8 +341,11 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 	 * composer reconciliation costs what is unresolved, not the device's whole
 	 * submission history. A failed resolution retires its obligation from the
 	 * load: its capture stays recoverable in the draft record, which routine
-	 * work never touches, so it owes no reconciliation. Settled history's
-	 * deliveries are not included: nothing in the routine pass reads them. */
+	 * work never touches, so it owes no reconciliation - unless an edge still
+	 * pending cites it, because an obligation the graph does not know blocks
+	 * that edge's planning. The dependencies a pending edge cites load with
+	 * it for the same reason. Settled history's deliveries are not included:
+	 * nothing in the routine pass reads them. */
 	readOutstandingGraph(): DraftHandoffGraph {
 		const obligations = this.db
 			.getAllSync<ObligationRow>(
@@ -391,11 +394,45 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			}
 			frontier = next;
 		}
-		return {
-			edges: [...edges.values()].map((row) => this.mapEdge(row)),
-			obligations,
-			deliveries: [],
-		};
+		const outstandingEdges = [...edges.values()].map((row) => this.mapEdge(row));
+		// Edges still pending or awaiting cleanup can name history the
+		// filters above exclude: dependencies that cleaned, whose ids must
+		// exist to plan the edges that cite them, and applied or failed
+		// obligations they carry - an obligation the ledger never heard of
+		// blocks planning, so one that merely resolved must not vanish from
+		// the known set. Both loads stay bounded by the edges already
+		// included, never by the device's history.
+		const edgeIds = new Set(outstandingEdges.map((edge) => edge.edgeId));
+		const missingEdgeIds = [
+			...new Set(outstandingEdges.flatMap((edge) => edge.dependencies).filter((id) => !edgeIds.has(id))),
+		];
+		if (missingEdgeIds.length !== 0) {
+			const placeholders = missingEdgeIds.map(() => "?").join(", ");
+			for (const row of this.db.getAllSync<EdgeRow>(
+				`SELECT * FROM draft_handoff_edges WHERE edge_id IN (${placeholders}) ORDER BY created_at, rowid`,
+				...missingEdgeIds,
+			))
+				if (!edgeIds.has(row.edge_id)) {
+					edgeIds.add(row.edge_id);
+					outstandingEdges.push(this.mapEdge(row));
+				}
+		}
+		const knownObligationIds = new Set(obligations.map((obligation) => obligation.obligationId));
+		const missingObligationIds = [
+			...new Set(outstandingEdges.flatMap((edge) => edge.obligations).filter((id) => !knownObligationIds.has(id))),
+		];
+		if (missingObligationIds.length !== 0) {
+			const placeholders = missingObligationIds.map(() => "?").join(", ");
+			for (const row of this.db.getAllSync<ObligationRow>(
+				`SELECT * FROM draft_submission_obligations WHERE obligation_id IN (${placeholders}) ORDER BY created_at, rowid`,
+				...missingObligationIds,
+			))
+				if (!knownObligationIds.has(row.obligation_id)) {
+					knownObligationIds.add(row.obligation_id);
+					obligations.push(this.mapObligation(row));
+				}
+		}
+		return { edges: outstandingEdges, obligations, deliveries: [] };
 	}
 
 	claimDestination(edgeId: string): boolean {

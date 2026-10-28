@@ -29,7 +29,11 @@ import type { DraftComposerMetadata, DraftDestination, DraftRecord, DraftReposit
 export type DraftStorage = Pick<
 	DraftRepository,
 	"read" | "write" | "transfer" | "removeHub" | "imageInputs" | "refsWithDrafts"
->;
+> & {
+	/** Durable evidence of a handoff edge's committed transfer, when the
+	 * drafts store keeps one. */
+	readTransferEvidence?: (edgeId: string) => { hubId: string; sessionRef: string; deliveredHash: string } | undefined;
+};
 
 /** One document per destination keeps pending work coherent across navigation.
  * Handoffs themselves live in the durable ledger: this class reads the graph,
@@ -289,7 +293,13 @@ export class DraftLibrary {
 	}
 
 	private applyEdge(ledger: DraftHandoffLedger, edge: DraftHandoffEdge): boolean {
-		const load = readHandoffGraph(ledger);
+		// The resolution-reconciliation path prices in unresolved work only:
+		// it runs after every submission resolves, so the whole-history read
+		// here would grow every ordinary send's cost with the device's
+		// history. The outstanding graph holds every non-cleaned edge plus
+		// the cleaned paths outstanding obligations reached, the dependencies
+		// its edges cite, and every obligation those edges carry.
+		const load = readOutstandingHandoffGraph(ledger);
 		if (load.state !== "ready") return false;
 		// The caller's edge object can predate this call's own writes (a
 		// transfer pass in the same retry); only the freshly read edge carries
@@ -423,14 +433,21 @@ export class DraftLibrary {
 				)
 			)
 				return mayDecide ? this.settle(ledger, edge, destination, current.record, edge.deliveredHash) : true;
-			// A retained retired snapshot is durable evidence its transfer
-			// committed - rememberRetired runs only after the repository write -
-			// so it never re-transfers. A destination that moved on from the
-			// delivered evidence, cleared or recomposed, must never be
-			// overwritten: the mirror of the rule that newer source work is
-			// never deleted. The edge settles from the delivered evidence and
-			// the destination keeps whatever it holds now.
-			if (this.retired.has(edge.edgeId)) return mayDecide ? this.settleDelivered(ledger, edge, snapshot.record) : true;
+			// A committed transfer is durable evidence, never memory: the
+			// drafts store recorded it in the transfer's own savepoint, so a
+			// restart cannot lose it the way the in-memory retired map can.
+			// The source endpoint's current record is not this edge's
+			// transfer material anymore - the reopened endpoint can hold
+			// newer work - so it is never re-transferred and never deleted. A
+			// destination that moved on from the delivered evidence, cleared
+			// or recomposed, is never overwritten either: the mirror of the
+			// rule that newer source work survives. The edge settles from the
+			// delivered evidence and both sides keep what they hold now.
+			const retained = this.retired.get(edge.edgeId);
+			const committed = retained !== undefined || this.transferCommitted(edge.edgeId);
+			if (committed === undefined) return false;
+			if (committed)
+				return mayDecide ? this.settleDelivered(ledger, edge, retained?.document.getSnapshot().record) : true;
 			// A live source whose composition no longer matches the recorded
 			// delivery hash was edited after a transfer that never landed: no
 			// retirement exists, so nothing reached the destination. Refusing
@@ -456,7 +473,10 @@ export class DraftLibrary {
 				if (!data) throw new Error("Saved image is unavailable.");
 				return { ...image, data };
 			});
-			this.repository().transfer(edge.from, edge.to, snapshot.record, additions);
+			this.repository().transfer(edge.from, edge.to, snapshot.record, additions, {
+				edgeId: edge.edgeId,
+				deliveredHash: intended,
+			});
 		} catch {
 			return false;
 		}
@@ -580,13 +600,19 @@ export class DraftLibrary {
 	}
 
 	/** Settle an edge whose transfer already committed, from the delivered
-	 * evidence the retained retired snapshot holds. The destination keeps
-	 * whatever it holds now - its own newer work, or its own clearing - while
-	 * the delivery's dispositions still reach the identities owning their
-	 * rows. */
-	private settleDelivered(ledger: DraftHandoffLedger, edge: DraftHandoffEdge, delivered: DraftRecord): boolean {
-		const completed = [...(delivered.completedCommandRecoveryIds ?? [])];
-		const released = releasedSources(delivered);
+	 * evidence. The destination keeps whatever it holds now - its own newer
+	 * work, or its own clearing - while the delivery's dispositions still
+	 * reach the identities owning their rows. After a restart only the
+	 * durable evidence remains: the transferred record is wherever the
+	 * destination left it, so no disposition of the moved record survives
+	 * to forward. */
+	private settleDelivered(
+		ledger: DraftHandoffLedger,
+		edge: DraftHandoffEdge,
+		delivered: DraftRecord | undefined,
+	): boolean {
+		const completed = [...(delivered?.completedCommandRecoveryIds ?? [])];
+		const released = delivered === undefined ? [] : releasedSources(delivered);
 		if (!this.forwardDispositions(ledger, edge, completed, released)) return false;
 		try {
 			ledger.settleEdge(edge.edgeId, deliveriesFor(edge, completed, released), edge.deliveredHash ?? "");
@@ -594,6 +620,19 @@ export class DraftLibrary {
 			return false;
 		}
 		return true;
+	}
+
+	/** Whether the drafts store holds durable evidence this edge's transfer
+	 * committed: written in the transfer's own savepoint. Undefined when the
+	 * store cannot answer - unknown evidence never authorizes a destructive
+	 * re-transfer. */
+	private transferCommitted(edgeId: string): boolean | undefined {
+		try {
+			const evidence = this.repository().readTransferEvidence?.(edgeId);
+			return evidence !== undefined && evidence !== null;
+		} catch {
+			return undefined;
+		}
 	}
 
 	/** Write completed and released markers at every identity that durably owns

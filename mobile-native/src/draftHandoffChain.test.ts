@@ -1166,6 +1166,42 @@ describe("handoff chain obligations", () => {
 		expect(storageLedger.readGraph().edges[0].resolvedAs).toBe("settled");
 	});
 
+	test("a restart never re-transfers newer source work", () => {
+		const { storageLedger, repository } = setup();
+		// The transfer commits; its composed marker and its settlement both
+		// fail, so the edge stays pending with only durable transfer evidence.
+		const failing = flaky(flaky(storageLedger, "recordComposed", 1), "settleEdge", 1);
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => failing,
+		);
+		repository.write(endpoint("a"), { draft: "original work", unconfirmed: null });
+		expect(library.handoff(endpoint("a"), endpoint("b"))).toBe(false);
+		expect(storageLedger.readGraph().edges[0]).toMatchObject({ state: "pending", composedAt: null });
+
+		// The destination clears its copy, and the reopened source composes
+		// fresh work: the reviewer's exact recovery sequence.
+		library.open(endpoint("b")).edit("");
+		library.open(endpoint("a")).edit("newer work");
+
+		// A restart loses the in-memory retired map that carried the
+		// committed-transfer proof until now: only durable evidence may
+		// protect the newer source work.
+		const restarted = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => storageLedger,
+		);
+		restarted.retryPendingHandoffs();
+		// The retry must not move the source's newer durable work to the
+		// cleared destination; the committed transfer's durable evidence
+		// settles the edge instead, and the newer work survives untouched.
+		expect(repository.read(endpoint("a"))).toMatchObject({ draft: "newer work" });
+		expect(repository.read(endpoint("b"))).toEqual({ draft: "", unconfirmed: null });
+		expect(storageLedger.readGraph().edges[0].resolvedAs).toBe("settled");
+	});
+
 	test("a live source edited after a failed transfer moves its current record", () => {
 		const { storageLedger, repository } = setup();
 		// The delivery marker records, then the transfer savepoint fails once.

@@ -966,7 +966,10 @@ export class DraftDocument {
 		if (ledger === undefined) return false;
 		let graph;
 		try {
-			graph = ledger.readGraph();
+			// The send path prices in unresolved work only: the outstanding
+			// graph holds this capture's obligation and the routing closure
+			// from its origin, never the device's whole submission history.
+			graph = ledger.readOutstandingGraph?.() ?? ledger.readGraph();
 		} catch {
 			return false;
 		}

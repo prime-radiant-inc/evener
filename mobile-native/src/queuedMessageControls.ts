@@ -65,7 +65,7 @@ export async function reconcileEditedResends(
 	runtime: NativeMutationRuntime,
 	targetKey: string,
 	document: DraftDocument,
-	excluded: ReadonlySet<string> = new Set(),
+	ownership: () => ReadonlySet<string> | undefined = () => new Set<string>(),
 ): Promise<void> {
 	const previous = reconciliations.get(document);
 	const current = (previous ?? Promise.resolve())
@@ -90,9 +90,24 @@ export async function reconcileEditedResends(
 			// settling it here would clear the capture the completion needs to
 			// attach, so an open obligation owns this whole capture: skip the
 			// restore-capable steps and let the completion reconcile it.
-			if (sourceIds.some((id) => excluded.has(id))) return;
+			// Ownership is read here, inside the serialized operation, never
+			// trusted from queue time: a handoff can adopt a running
+			// command's capture into this document while this reconciliation
+			// waits behind its predecessor.
+			const excluded = ownership();
+			if (excluded === undefined || sourceIds.some((id) => excluded.has(id))) return;
+			// Ownership and capture identity are revalidated across the reads
+			// below: a capture that changed hands or changed identity
+			// mid-flight is never restored or settled here.
+			const captureToken = document.getSnapshot().record.unconfirmedCaptureToken;
+			const stale = () => {
+				const record = document.getSnapshot().record;
+				if (record.unconfirmedCaptureToken !== captureToken) return true;
+				const now = ownership();
+				return now === undefined || sourceIds.some((id) => now.has(id));
+			};
 			const receipt = await runtime.readRecoveryResend(targetKey, sourceIds);
-			if (!ready(document, targetKey)) return;
+			if (!ready(document, targetKey) || stale()) return;
 			if (receipt) {
 				// The captured owner and acknowledgment marker commit together in drafts.
 				// Never acknowledge mutation storage before that write succeeds.
@@ -106,7 +121,7 @@ export async function reconcileEditedResends(
 			const retained = (await runtime.read(targetKey)).recovery.filter((source) =>
 				sourceIds.includes(source.clientMutationId),
 			);
-			if (ready(document, targetKey)) document.restoreEditedRecovery(retained);
+			if (ready(document, targetKey) && !stale()) document.restoreEditedRecovery(retained);
 		});
 	reconciliations.set(document, current);
 	try {

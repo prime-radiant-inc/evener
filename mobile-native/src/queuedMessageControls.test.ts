@@ -301,13 +301,133 @@ test("an open obligation's capture survives resend reconciliation at an adopted 
 	library.retryPendingHandoffs();
 	const pendingObligations = library.openObligationRecoveryIds(resumedDestination);
 	expect(pendingObligations).toEqual(new Set([captured]));
-	await reconcileEditedResends(f.runtime, resumedKey, resumed, pendingObligations);
+	await reconcileEditedResends(f.runtime, resumedKey, resumed, () => pendingObligations);
 	// The still-running command keeps its capture...
 	expect(resumed.getSnapshot().record).toMatchObject({ unconfirmed: "edited recovered text" });
 
 	// ...so its completion attaches and records the command's sources.
 	finish();
 	await submitted;
+	expect(resumed.getSnapshot().record).toMatchObject({
+		unconfirmed: null,
+		completedCommandRecoveryIds: [captured],
+	});
+	expect(f.repository.read(resumedDestination)).toMatchObject({
+		unconfirmed: null,
+		completedCommandRecoveryIds: [captured],
+	});
+});
+
+test("reconciliation re-reads obligation ownership inside the serialized operation", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	f.document.edit("current");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	f.document.edit("edited recovered text");
+
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage.handoffLedger,
+	);
+	const source = library.open(destination);
+	let finish!: () => void;
+	const submitted = source.submitBuiltinCommand(
+		() =>
+			new Promise<boolean>((resolve) => {
+				finish = () => resolve(true);
+			}),
+	);
+	// Another waiting message is what drives the resume and moves the
+	// claimed row's recovery to the resumed identity.
+	await f.enqueue();
+
+	const resumedRef = "session-resumed";
+	const resumedKey = nativeMutationTargetKey(destination.hubId, resumedRef);
+	const resumedDestination = { hubId: destination.hubId, sessionRef: resumedRef };
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: resumedKey,
+			wireRef: resumedRef,
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toHaveLength(1);
+	expect(library.handoff(destination, resumedDestination)).toBe(true);
+	const resumed = library.open(resumedDestination);
+	// The adopted destination is not submitting; only the ledger shows that
+	// the command is still running.
+	expect(resumed.getSnapshot().submitting).toBe(false);
+
+	// The screen captured its exclusion set before the handoff adopted the
+	// running command's capture here. Ownership is passed as a reader, so the
+	// serialized reconciliation observes the handoff's ownership when it
+	// actually runs instead of restoring the capture with stale exclusions
+	// and clearing the token its completion still needs.
+	await reconcileEditedResends(f.runtime, resumedKey, resumed, () =>
+		library.openObligationRecoveryIds(resumedDestination),
+	);
+	// The still-running command keeps its capture...
+	expect(resumed.getSnapshot().record).toMatchObject({ unconfirmed: "edited recovered text" });
+
+	// ...so its completion attaches and records the command's sources.
+	finish();
+	await submitted;
+	expect(resumed.getSnapshot().record).toMatchObject({
+		unconfirmed: null,
+		completedCommandRecoveryIds: [captured],
+	});
+	expect(f.repository.read(resumedDestination)).toMatchObject({
+		unconfirmed: null,
+		completedCommandRecoveryIds: [captured],
+	});
+});
+
+test("a completion after a handoff never reads the whole submission history", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	f.document.edit("current");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	f.document.edit("edited recovered text");
+
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage.handoffLedger,
+	);
+	const source = library.open(destination);
+	let finish!: () => void;
+	const submitted = source.submitBuiltinCommand(
+		() =>
+			new Promise<boolean>((resolve) => {
+				finish = () => resolve(true);
+			}),
+	);
+	await f.enqueue();
+
+	const resumedRef = "session-resumed";
+	const resumedKey = nativeMutationTargetKey(destination.hubId, resumedRef);
+	const resumedDestination = { hubId: destination.hubId, sessionRef: resumedRef };
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: resumedKey,
+			wireRef: resumedRef,
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toHaveLength(1);
+	expect(library.handoff(destination, resumedDestination)).toBe(true);
+	const resumed = library.open(resumedDestination);
+
+	// The send path prices in unresolved work only: an ordinary successful
+	// send must never read the device's whole submission history.
+	const history = vi.spyOn(f.runtime.storage.handoffLedger, "readGraph");
+	finish();
+	await submitted;
+	expect(history).not.toHaveBeenCalled();
+	history.mockRestore();
+	// The bounded graph still routes the completion to the identity that
+	// owns the capture, so the executed command is not restorable there.
 	expect(resumed.getSnapshot().record).toMatchObject({
 		unconfirmed: null,
 		completedCommandRecoveryIds: [captured],

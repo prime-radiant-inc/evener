@@ -48,6 +48,12 @@ export class DraftRepository {
 	readonly creation: CreationDraftRepository;
 	constructor(private readonly db: SqliteSync) {
 		this.creation = new CreationDraftRepository(db);
+		// Durable evidence of committed handoff transfers: written inside the
+		// transfer's own savepoint, so a restart cannot lose the proof the
+		// way the library's in-memory retired map can.
+		db.execSync(`CREATE TABLE IF NOT EXISTS draft_transfer_log (
+      edge_id TEXT PRIMARY KEY, hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, delivered_hash TEXT NOT NULL
+    )`);
 		db.execSync(`CREATE TABLE IF NOT EXISTS draft_images (
       hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, id TEXT NOT NULL,
       media_type TEXT NOT NULL, data TEXT NOT NULL,
@@ -297,12 +303,46 @@ export class DraftRepository {
 
 	/** Move one destination's complete draft, image bytes and settlement
 	 * markers to another in one savepoint. The source is removed only after the
-	 * destination write commits, so a failed handoff leaves both recoverable. */
-	transfer(from: DraftDestination, to: DraftDestination, record: DraftRecord, additions: DraftImageData[] = []): void {
+	 * destination write commits, so a failed handoff leaves both recoverable.
+	 * `evidence` records the handoff edge this move serves inside the same
+	 * savepoint, so the committed transfer survives a restart as durable
+	 * evidence. */
+	transfer(
+		from: DraftDestination,
+		to: DraftDestination,
+		record: DraftRecord,
+		additions: DraftImageData[] = [],
+		evidence?: { edgeId: string; deliveredHash: string },
+	): void {
 		withSavepoint(this.db, "draft_transfer", () => {
+			if (evidence !== undefined) {
+				this.db.runSync(
+					`INSERT INTO draft_transfer_log (edge_id, hub_id, session_ref, delivered_hash)
+					 VALUES (?, ?, ?, ?)
+					 ON CONFLICT (edge_id) DO UPDATE SET hub_id = excluded.hub_id,
+						 session_ref = excluded.session_ref, delivered_hash = excluded.delivered_hash`,
+					evidence.edgeId,
+					to.hubId,
+					to.sessionRef,
+					evidence.deliveredHash,
+				);
+			}
 			this.write(to, record, additions);
 			this.remove(from);
 		});
+	}
+
+	/** Durable evidence that a handoff edge's transfer committed: written in
+	 * the transfer's own savepoint, so it survives restarts and the
+	 * destination later clearing or recomposing its copy. */
+	readTransferEvidence(edgeId: string): { hubId: string; sessionRef: string; deliveredHash: string } | undefined {
+		return (
+			this.db.getFirstSync<{ hubId: string; sessionRef: string; deliveredHash: string }>(
+				`SELECT hub_id AS "hubId", session_ref AS "sessionRef", delivered_hash AS "deliveredHash"
+				 FROM draft_transfer_log WHERE edge_id = ?`,
+				edgeId,
+			) ?? undefined
+		);
 	}
 
 	remove(destination: DraftDestination): void {

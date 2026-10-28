@@ -2894,7 +2894,17 @@ function ConversationScreenView({
 			// could be restored and its capture cleared before its completion
 			// attaches.
 			if (pendingObligations === undefined) return;
-			await reconcileEditedResends(runtime, targetKey, document, pendingObligations);
+			// Ownership is passed as a reader, so the serialized reconciliation
+			// re-reads it when it actually runs: a handoff can adopt a running
+			// command's capture into this document while the reconciliation
+			// waits behind its predecessor, and the set read here would be
+			// stale by then.
+			await reconcileEditedResends(runtime, targetKey, document, () =>
+				drafts.openObligationRecoveryIds({
+					hubId: route.params.hubId,
+					sessionRef: route.params.ref,
+				}),
+			);
 			const retained = await runtime.read(targetKey);
 			const handoffPending = drafts.hasPendingHandoff({
 				hubId: route.params.hubId,
