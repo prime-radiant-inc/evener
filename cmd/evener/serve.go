@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"os"
@@ -30,7 +29,6 @@ import (
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
-	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
@@ -837,222 +835,17 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return c.Commit(claim)
 		}
 	}
-	retirementObserve := func(event, rootID string) {
-		if deps.retirementObserve != nil {
-			deps.retirementObserve(event, rootID)
-		}
-	}
+	retiring := &serveRetirement{deps: deps, live: live, retirement: retirement, rvRegistration: rvRegistration, commit: commitRetirement, ctx: ctx, cancel: cancel}
 	if err := retirement.AttachRoot(sess); err != nil {
 		sess.Close()
 		listener.Close() //nolint:errcheck // as above
 		return fmt.Errorf("retirement root: %w", err)
 	}
-	retirementObserve("root_published", sess.ID())
-	// consumeRetirementClaim is the single pipeline both triggers share. Any
-	// failure before Commit aborts the claim and leaves the daemon resident.
-	// Past Commit admission is closed permanently, so teardown runs under the
-	// daemon's own lifetime context rather than the caller's request context: a
-	// client that disconnects mid-teardown must not be able to wedge the process
-	// in "retiring". Exit is unconditional once Commit returns — a teardown
-	// failure is reported, never fatal to terminating the process.
-	consumeRetirementClaim := func(reqCtx context.Context, claim *agent.RetirementClaim) error {
-		root := live.session()
-		retirementObserve("claim_consumed", root.ID())
-		// Every failure before Commit must abort the claim, or it wedges in
-		// preparing and the daemon never retires and never recovers. This is
-		// deliberately NOT a defer: a failure at or after Commit must leave the
-		// process retiring, not abort it.
-		failBeforeCommit := func(err error) error {
-			_ = retirement.Abort(claim, "prepare_failed")
-			return err
-		}
-		if !rendezvous.StrongOwnershipAvailable() {
-			return failBeforeCommit(errors.New("retirement requires strong rendezvous ownership, unavailable on this platform"))
-		}
-		prepared, err := retirement.Prepare(reqCtx, claim)
-		if err != nil {
-			return failBeforeCommit(fmt.Errorf("retirement preparation: %w", err))
-		}
-		retirementObserve("prepared", root.ID())
-		if !live.reserveRetirementExit(root) {
-			return failBeforeCommit(errors.New("retirement exit is no longer owned by the prepared root"))
-		}
-		if err := commitRetirement(retirement, claim); err != nil {
-			// The process did not commit, so the exit is genuinely still
-			// undecided: drop the reservation reserveRetirementExit took before
-			// the claim aborts.
-			live.releaseRetirementExit()
-			return failBeforeCommit(fmt.Errorf("retirement commit: %w", err))
-		}
-		retirementObserve("committed", root.ID())
-		// Post-commit teardown is daemon-owned, not request-owned. The ctx used
-		// here is the daemon's lifetime context (the incoming request context is
-		// reqCtx): a committed retirement already closed admission forever, so
-		// request cancellation must never strand the process. The drain stays
-		// bounded by retirementReaderDrainBudget.
-		drainCtx, drainCancel := context.WithTimeout(ctx, retirementReaderDrainBudget)
-		drainErr := retirement.DrainReaders(drainCtx)
-		drainCancel()
-		var teardownErr error
-		if drainErr != nil {
-			serveLogf(os.Stderr, root.ID(), "retirement reader drain failed: %v", drainErr)
-			teardownErr = fmt.Errorf("retirement reader drain: %w", drainErr)
-		} else if err := agent.ReleaseForRetirement(ctx, prepared); err != nil {
-			serveLogf(os.Stderr, root.ID(), "retirement release failed: %v", err)
-			teardownErr = fmt.Errorf("retirement release: %w", err)
-		} else {
-			retirementObserve("released", root.ID())
-		}
-		// Exit is unconditional after Commit: teardown success is not the
-		// precondition for terminating the process. The cancel is what starts
-		// that exit -- the shutdown goroutine below waits on ctx.Done() -- so on
-		// the RPC trigger it must not run until the accepted response has reached
-		// the transport. Cancelling from inside the handler starts the shutdown
-		// pass before the response frame is written, which leaves the caller with
-		// a transport error and the Hub with a failure banner despite a
-		// successful retirement. AfterResponseWritten runs the cancel once that
-		// frame has been written, or at connection teardown if it never could be,
-		// so exit is preserved. The idle-timer trigger runs on the daemon's own
-		// lifetime context, which carries no connection, so it reports false and
-		// cancels immediately.
-		if !appserver.AfterResponseWritten(reqCtx, cancel) {
-			cancel()
-		}
-		if teardownErr != nil {
-			return &retirementTeardownError{err: teardownErr}
-		}
-		return nil
-	}
-	// requireExactOwnership is the one exact-ownership fence behind both
-	// identity-fenced daemon control RPCs: the current rendezvous entry must
-	// exist and the caller's generation fingerprint must match it, where an
-	// unrendered (empty) generation never compares equal. The retire path runs
-	// it again between TryManualClaim and the claim's prepare so a thread/clear
-	// that swapped ownership under an uncommitted claim cannot be retired by its
-	// predecessor's stale row.
-	requireExactOwnership := func(generation string) error {
-		entry, ok := rvRegistration.Entry()
-		if !ok {
-			return appwire.Unavailable("daemon rendezvous not registered")
-		}
-		if generation == "" || generation != rendezvous.OwnershipFingerprint(entry) {
-			return appwire.Conflict("daemon identity does not match current ownership")
-		}
-		return nil
-	}
-	// requestRetirement serves evener/daemon/retire. Exact-ownership
-	// revalidation runs BEFORE the admission fence is touched: a caller
-	// holding a stale generation (same PID, drifted identity) gets a conflict
-	// and no claim is consumed.
-	requestRetirement := func(ctx context.Context, params appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
-		if err := requireExactOwnership(params.Identity.Generation); err != nil {
-			return appwire.DaemonRetireResponse{}, err
-		}
-		// claim_attempted marks the instant between the pre-claim identity check
-		// and the admission fence: the caller's generation has been accepted but
-		// TryManualClaim has not run. It is an observability beat outside every
-		// lock (retirementObserve is nil in production) so a test can interleave
-		// a thread/clear into exactly the window this closure must still defend.
-		// TryManualClaim widens that window: it first waits, up to the namer's
-		// timeout, for a session namer to settle (#3921). The ownership re-check
-		// after the claim covers the wider window the same way.
-		retirementObserve("claim_attempted", live.session().ID())
-		claim, snap, err := retirement.TryManualClaim(ctx)
-		if err != nil {
-			return appwire.DaemonRetireResponse{}, err
-		}
-		if claim == nil {
-			return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(snap)}, nil
-		}
-		// The pre-claim check above and TryManualClaim are not atomic: a thread/clear
-		// can run to completion between them. It holds its own admission lease
-		// (so TryClaim declines while it is in flight), rewrites rendezvous
-		// ownership to the replacement, swaps the session and re-roots the
-		// controller, then releases. The claim TryClaim just took is therefore
-		// against whatever root is current now, not necessarily the generation
-		// the caller proved. Re-read ownership and abort the uncommitted claim if
-		// it moved, so a stale request can never retire its replacement. The
-		// abort is essential: a claim left in "preparing" wedges the daemon.
-		if err := requireExactOwnership(params.Identity.Generation); err != nil {
-			_ = retirement.Abort(claim, "prepare_failed")
-			return appwire.DaemonRetireResponse{}, err
-		}
-		if err := consumeRetirementClaim(ctx, claim); err != nil {
-			// A post-commit teardown failure means the retirement already
-			// succeeded — admission is closed for good and the process exits —
-			// so it is reported as accepted. The failure is logged (serveLogf)
-			// and stays in the lifecycle's Failure field; it is observability,
-			// not an RPC error the caller could misread as a refused retire.
-			if _, ok := errors.AsType[*retirementTeardownError](err); !ok {
-				return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, err
-			}
-		}
-		return appwire.DaemonRetireResponse{Accepted: true, Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, nil
-	}
+	retiring.observe("root_published", sess.ID())
 	srv.SetDaemonLifecycle(func() appwire.DaemonLifecycle {
 		return server.DaemonLifecycleFromSnapshot(retirement.Snapshot())
-	}, requestRetirement)
-	// requestIdleTimeoutSet serves evener/daemon/idle-timeout/set. Like retire,
-	// the exact-ownership fence runs BEFORE the controller is touched, so a
-	// caller holding a stale generation (same PID, drifted identity) gets a
-	// conflict and no deadline moves.
-	requestIdleTimeoutSet := func(_ context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
-		if err := requireExactOwnership(params.Identity.Generation); err != nil {
-			return appwire.DaemonIdleTimeoutSetResponse{}, err
-		}
-		if params.TimeoutMillis < 0 {
-			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.InvalidParams("timeoutMillis must not be negative")
-		}
-		// maxIdleTimeoutMillis is the largest value whose nanosecond conversion
-		// cannot overflow time.Duration: larger values would wrap — 1<<58 millis
-		// lands on exactly zero, a success response that silently disabled
-		// automatic retirement.
-		const maxIdleTimeoutMillis = math.MaxInt64 / int64(time.Millisecond)
-		if params.TimeoutMillis > maxIdleTimeoutMillis {
-			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.InvalidParams("timeoutMillis exceeds the maximum representable duration")
-		}
-		// idle_timeout_attempted marks the instant between the pre-retarget
-		// identity check and the controller write: the caller's generation has
-		// been accepted but Retarget has not run. Like claim_attempted above, it
-		// is an observability beat outside every lock (retirementObserve is nil
-		// in production) so a test can interleave a thread/clear into exactly
-		// the window the revalidation below must still defend.
-		retirementObserve("idle_timeout_attempted", live.session().ID())
-		prev, token, err := retirement.RetargetStamped(time.Duration(params.TimeoutMillis) * time.Millisecond)
-		if err != nil {
-			return appwire.DaemonIdleTimeoutSetResponse{}, err
-		}
-		// idle_timeout_written parks the handler immediately after the
-		// controller write and before the revalidation fence — the exact
-		// window in which a later legitimate writer's deadline must survive
-		// the stale request's revert. Same contract as idle_timeout_attempted:
-		// observability only, nil in production.
-		retirementObserve("idle_timeout_written", live.session().ID())
-		// The pre-retarget check and Retarget are not atomic: a thread/clear can
-		// run to completion between them (mutations do not serialize with each
-		// other), re-rooting the controller to the replacement — and the write
-		// above then moved the REPLACEMENT's deadline, so a bare conflict would
-		// leave the harm in place. Re-read ownership and, if it moved, undo the
-		// write by its token: UndoRetarget restores the deadline the write
-		// replaced, but only while this request's write is still the newest — a
-		// later legitimate writer (the replacement's own archive decision) owns
-		// the deadline now and must survive the refusal, even when it chose the
-		// same value, which a value comparison could not tell apart. A clear
-		// that completed before this write reset the fresh root to the
-		// configured baseline, so this write landed after that reset and the
-		// undo below is the only thing that can take it back; a clear that
-		// completes after the write has already superseded this write's token
-		// with its own reset, and the undo correctly yields. Refuse like the
-		// retire path does after its claim. The undo is best-effort: a
-		// controller that is no longer resident never restores (the process is
-		// preparing or retiring and its deadline no longer matters).
-		if err := requireExactOwnership(params.Identity.Generation); err != nil {
-			retirement.UndoRetarget(token, prev)
-			return appwire.DaemonIdleTimeoutSetResponse{}, err
-		}
-		return appwire.DaemonIdleTimeoutSetResponse{Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, nil
-	}
-	srv.SetDaemonIdleTimeoutSet(requestIdleTimeoutSet)
+	}, retiring.requestRetirement)
+	srv.SetDaemonIdleTimeoutSet(retiring.requestIdleTimeoutSet)
 	// Install the retirement admission boundary on the router. Every routed
 	// handler is classified by access kind (server/appwire_retirement_admission.go):
 	// a mutation holds a lease for the handler's duration and is refused while
@@ -1304,7 +1097,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if err := retirement.AttachRoot(newSess); err != nil {
 			serveLogf(os.Stderr, newSess.ID(), "retirement root re-attach failed: %v", err)
 		}
-		retirementObserve("root_published", newSess.ID())
+		retiring.observe("root_published", newSess.ID())
 		// The commit above zeroed the envelope with the identity it described.
 		// Re-seed from the replacement session here rather than inside the
 		// commit: sampling every facet reads jobs.jsonl and the task store, and
@@ -1553,7 +1346,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		retirementLoopDone = make(chan struct{})
 		go func() {
 			defer close(retirementLoopDone)
-			_ = retirement.Run(ctx, consumeRetirementClaim, func(attempt agent.RetirementAttempt) {
+			_ = retirement.Run(ctx, retiring.consumeClaim, func(attempt agent.RetirementAttempt) {
 				serveLogf(os.Stderr, live.session().ID(), "%s", retirementAttemptSummary(attempt))
 			})
 		}()

@@ -5,6 +5,7 @@
 // races the spec's scenario 13 concedes — the shared-lookup join (Review
 // Focus 5), the release during the lookup, and the lookup that lost its own
 // deadline race.
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { type TestThreadOverrides, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
 import type {
@@ -16,12 +17,17 @@ import type {
   Turn,
   TurnModel,
 } from "@evener/appwire-client";
-import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient, RequestHandler } from "@evener/appwire-client/testing/fakeClient";
 import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
 import { setCacheChannelFactoryForTests } from "./cacheLifetime";
 import { connectionStore } from "./connection";
+import {
+  isEntryTranscriptLocalOpening,
+  productionEntryTranscriptForTests,
+  setProductionEntryCacheForTests,
+} from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "./projectionWork";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
@@ -33,13 +39,10 @@ import {
   backgroundTranscriptSnapshotForTests,
   clearCachedSessions,
   installHydrationRetrySchedulerForTests,
-  isEntryTranscriptLocalOpening,
   markCacheSessionsDeleted,
   pendingThreadHydrationBaseModelsForTests,
   pendingThreadHydrationUpdatesForTests,
-  productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
   settleBackgroundTranscriptsForTests,
   threadsStore,
 } from "./threads";
@@ -99,8 +102,7 @@ function turnFixture(id: string, text = "cached turn"): TurnModel & Turn {
 let connectedFakeClient: FakeClient | undefined;
 
 function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
+  const fake = connectReadyFakeClient();
   connectedFakeClient = fake;
   return fake;
 }

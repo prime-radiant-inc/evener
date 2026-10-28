@@ -20,14 +20,9 @@ import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore } from "./connection";
+import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
-import {
-  pendingThreadHydrationUpdatesForTests,
-  productionEntryTranscriptForTests,
-  resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
-  threadsStore,
-} from "./threads";
+import { pendingThreadHydrationUpdatesForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
