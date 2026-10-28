@@ -1181,6 +1181,99 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			loadOlderToken += 1;
 			return { trimmedAbove: true, loadingOlder: false };
 		};
+		// send and queue are one submission that differs only in the availability
+		// check the caller's kind demands.
+		const submitDraft = async (
+			kind: "send" | "queue",
+			check: (conversation: MobileConversation, state: ConversationState) => void,
+			service: ConversationService,
+			input: InputItem[],
+			context?: ConversationMutationContext,
+			precondition?: () => boolean,
+		): Promise<void> => {
+			const state = get();
+			if (state.conversation === null) return;
+			check(state.conversation, state);
+			// C1: Capture a service-specific operation binding. If the supplied
+			// service is wrong (A after B bound), zero request/state change.
+			const opBinding = captureOperationBinding(service);
+			if (opBinding === null) return;
+			const draftText = state.draft;
+			const mutationId = ++currentMutationId;
+			const revisionAtSubmit = draftRevision;
+			// Clearing the draft via set() (not setDraft) does NOT increment
+			// draftRevision — so any subsequent setDraft call (including
+			// type-then-delete) increments the revision and is detected as an edit.
+			// Fix round 1 I3: atomically clear prior error with the new attempt
+			// (the press also ends any retained failure's marker).
+			set({
+				draft: "",
+				pendingSubmission: { kind },
+				failedSubmission: null,
+				lastAcceptedMutation: null,
+				error: null,
+			});
+			// I1: Capture the error-owner revision AFTER installing the pending
+			// mutation + error-clear (the set wrapper incremented errorOwnerRev
+			// for the error: null transition). A newer error owner that writes
+			// during the await will increment errorOwnerRev past this captured
+			// value, so this mutation's success/failure cannot clear or overwrite
+			// it.
+			const entryErrorRev = errorOwnerRev;
+			try {
+				const admission = await dispatchMutation(
+					service,
+					kind,
+					opBinding,
+					state.conversation,
+					input,
+					context,
+					precondition,
+				);
+				// C1: Recheck the exact operation binding after the await.
+				if (!isBindingCurrent(opBinding)) return;
+				recordAdmittedMutation(admission, mutationId, kind);
+				// F4: Check the ownership token — out-of-order completion cannot
+				// clear a newer mutation's state.
+				if (mutationId === currentMutationId) {
+					const accepted = acceptedMutation(kind, admission);
+					// I1: Clear pending fields unconditionally (this mutation owns
+					// them), but clear error only if the error-owner revision is
+					// unchanged — revision equality ONLY, no || error === null
+					// shortcut. A newer clear-to-null or ABA-null owns error.
+					if (entryErrorRev === errorOwnerRev) {
+						set({
+							pendingSubmission: null,
+							lastAcceptedMutation: accepted,
+							error: null,
+						});
+					} else {
+						set({
+							pendingSubmission: null,
+							lastAcceptedMutation: accepted,
+						});
+					}
+					// I1: mutation settled (success) — drain deferred trailing reread.
+					trailingReread.drain();
+				}
+			} catch (err) {
+				// A proven local refusal made nothing durable and sent nothing:
+				// hand the outcome back even when this view's binding has since
+				// retired, so the shared document keeps the draft and leaves no
+				// ghost. Only a still-current binding owns the store's marker.
+				if (err instanceof MutationNotSentError) {
+					if (isBindingCurrent(opBinding) && mutationId === currentMutationId) set({ pendingSubmission: null });
+					throw err;
+				}
+				// C1: Recheck the exact operation binding after the await.
+				if (!isBindingCurrent(opBinding)) return;
+				handleMutationError(err, state.ref, mutationId, kind, draftText, revisionAtSubmit, entryErrorRev);
+				// I1: mutation settled (failed terminal) — drain deferred trailing
+				// reread after handleMutationError sets the failed state.
+				trailingReread.drain();
+			}
+		};
+
 		return {
 			ref: null,
 			profileId: null,
@@ -2303,155 +2396,26 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				return pendingBinding.refresh();
 			},
 
-			async send(service, input, context, precondition) {
-				const state = get();
-				if (state.conversation === null) return;
-				requireControl(state.conversation, "send", "send");
-				// C1: Capture a service-specific operation binding. If the supplied
-				// service is wrong (A after B bound), zero request/state change.
-				const opBinding = captureOperationBinding(service);
-				if (opBinding === null) return;
-				const draftText = state.draft;
-				const mutationId = ++currentMutationId;
-				const revisionAtSubmit = draftRevision;
-				// Clearing the draft via set() (not setDraft) does NOT increment
-				// draftRevision — so any subsequent setDraft call (including
-				// type-then-delete) increments the revision and is detected as an edit.
-				// Fix round 1 I3: atomically clear prior error with the new attempt
-				// (the press also ends any retained failure's marker).
-				set({
-					draft: "",
-					pendingSubmission: { kind: "send" },
-					failedSubmission: null,
-					lastAcceptedMutation: null,
-					error: null,
-				});
-				// I1: Capture the error-owner revision AFTER installing the pending
-				// mutation + error-clear (the set wrapper incremented errorOwnerRev
-				// for the error: null transition). A newer error owner that writes
-				// during the await will increment errorOwnerRev past this captured
-				// value, so this mutation's success/failure cannot clear or overwrite
-				// it.
-				const entryErrorRev = errorOwnerRev;
-				try {
-					const admission = await dispatchMutation(
-						service,
-						"send",
-						opBinding,
-						state.conversation,
-						input,
-						context,
-						precondition,
-					);
-					// C1: Recheck the exact operation binding after the await.
-					if (!isBindingCurrent(opBinding)) return;
-					recordAdmittedMutation(admission, mutationId, "send");
-					// F4: Check the ownership token — out-of-order completion cannot
-					// clear a newer mutation's state.
-					if (mutationId === currentMutationId) {
-						const accepted = acceptedMutation("send", admission);
-						// I1: Clear pending fields unconditionally (this mutation owns
-						// them), but clear error only if the error-owner revision is
-						// unchanged — revision equality ONLY, no || error === null
-						// shortcut. A newer clear-to-null or ABA-null owns error.
-						if (entryErrorRev === errorOwnerRev) {
-							set({
-								pendingSubmission: null,
-								lastAcceptedMutation: accepted,
-								error: null,
-							});
-						} else {
-							set({
-								pendingSubmission: null,
-								lastAcceptedMutation: accepted,
-							});
-						}
-						// I1: mutation settled (success) — drain deferred trailing reread.
-						trailingReread.drain();
-					}
-				} catch (err) {
-					// A proven local refusal made nothing durable and sent nothing:
-					// hand the outcome back even when this view's binding has since
-					// retired, so the shared document keeps the draft and leaves no
-					// ghost. Only a still-current binding owns the store's marker.
-					if (err instanceof MutationNotSentError) {
-						if (isBindingCurrent(opBinding) && mutationId === currentMutationId) set({ pendingSubmission: null });
-						throw err;
-					}
-					// C1: Recheck the exact operation binding after the await.
-					if (!isBindingCurrent(opBinding)) return;
-					handleMutationError(err, state.ref, mutationId, "send", draftText, revisionAtSubmit, entryErrorRev);
-					// I1: mutation settled (failed terminal) — drain deferred trailing
-					// reread after handleMutationError sets the failed state.
-					trailingReread.drain();
-				}
+			send(service, input, context, precondition) {
+				return submitDraft(
+					"send",
+					(conversation) => requireControl(conversation, "send", "send"),
+					service,
+					input,
+					context,
+					precondition,
+				);
 			},
 
-			async queue(service, input, context, precondition) {
-				const state = get();
-				if (state.conversation === null) return;
-				requireQueue(state.conversation, state.pendingMutations);
-				// C1: Capture a service-specific operation binding.
-				const opBinding = captureOperationBinding(service);
-				if (opBinding === null) return;
-				const draftText = state.draft;
-				const mutationId = ++currentMutationId;
-				const revisionAtSubmit = draftRevision;
-				// Fix round 1 I3: atomically clear prior error with the new attempt
-				// (the press also ends any retained failure's marker).
-				set({
-					draft: "",
-					pendingSubmission: { kind: "queue" },
-					failedSubmission: null,
-					lastAcceptedMutation: null,
-					error: null,
-				});
-				// I1: Capture error-owner revision AFTER installing pending+error-clear.
-				const entryErrorRev = errorOwnerRev;
-				try {
-					const admission = await dispatchMutation(
-						service,
-						"queue",
-						opBinding,
-						state.conversation,
-						input,
-						context,
-						precondition,
-					);
-					// C1: Recheck the exact operation binding after the await.
-					if (!isBindingCurrent(opBinding)) return;
-					recordAdmittedMutation(admission, mutationId, "queue");
-					if (mutationId === currentMutationId) {
-						const accepted = acceptedMutation("queue", admission);
-						// I1: clear error only if error-owner revision is unchanged —
-						// revision equality ONLY.
-						if (entryErrorRev === errorOwnerRev) {
-							set({
-								pendingSubmission: null,
-								lastAcceptedMutation: accepted,
-								error: null,
-							});
-						} else {
-							set({
-								pendingSubmission: null,
-								lastAcceptedMutation: accepted,
-							});
-						}
-						// I1: mutation settled (success) — drain deferred trailing reread.
-						trailingReread.drain();
-					}
-				} catch (err) {
-					if (err instanceof MutationNotSentError) {
-						if (isBindingCurrent(opBinding) && mutationId === currentMutationId) set({ pendingSubmission: null });
-						throw err;
-					}
-					// C1: Recheck the exact operation binding after the await.
-					if (!isBindingCurrent(opBinding)) return;
-					handleMutationError(err, state.ref, mutationId, "queue", draftText, revisionAtSubmit, entryErrorRev);
-					// I1: mutation settled (failed terminal) — drain deferred trailing
-					// reread after handleMutationError sets the failed state.
-					trailingReread.drain();
-				}
+			queue(service, input, context, precondition) {
+				return submitDraft(
+					"queue",
+					(conversation, state) => requireQueue(conversation, state.pendingMutations),
+					service,
+					input,
+					context,
+					precondition,
+				);
 			},
 
 			async interrupt(service) {
