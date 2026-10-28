@@ -94,8 +94,7 @@ func TestExtractRecordedResponse_MalformedOutputEntries(t *testing.T) {
 func TestExtractRecordedResponse_ReasoningSummaryShapes(t *testing.T) {
 	body := []byte(`{"id":"r","status":"completed","output":[` +
 		`{"type":"reasoning","content":"plain-text","summary":["str",{"text":"   "},{"text":"kept sum"}]},` +
-		`{"type":"reasoning","id":"rs_2","content":["str",{"text":""},{"text":"t1"}],"summary":"not-an-array"}]}` +
-		`]}`)
+		`{"type":"reasoning","id":"rs_2","content":["str",{"text":""},{"text":"t1"}],"summary":"not-an-array"}]}`)
 	resp, err := ExtractRecordedResponse(body, "m")
 	if err != nil {
 		t.Fatalf("ExtractRecordedResponse: %v", err)

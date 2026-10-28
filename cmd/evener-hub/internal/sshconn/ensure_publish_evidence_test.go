@@ -148,8 +148,18 @@ func TestEnsurePairsDetachedWhenReplacementDiesAfterAnnounce(t *testing.T) {
 	var published *Channel
 	var once sync.Once
 	events := &ensureEvidenceEvents{}
+	// The supervisor started at the announce wakes on the close and recovers
+	// the host: once the host gate frees, its reconnect publishes a healthy
+	// replacement, and afterPublish would overwrite published before the final
+	// assertion reads it — the same race class the adjacent tests park. Park
+	// the supervisor in beforeSuperviseGate until the assertions are done; the
+	// deferred open releases it ahead of the manager cleanup's Close.
+	supGate := newGateHook()
+	supGate.arm()
+	defer supGate.open()
 	m, _ := newEnsureEvidenceManager(t, Options{
-		afterPublish: func(_ string, ch *Channel) { published = ch },
+		afterPublish:        func(_ string, ch *Channel) { published = ch },
+		beforeSuperviseGate: func(string, *Channel) { supGate.hook() },
 		OnEvent: func(ev Event) {
 			events.record(ev)
 			if ev.Kind == EventAttached {
@@ -161,6 +171,7 @@ func TestEnsurePairsDetachedWhenReplacementDiesAfterAnnounce(t *testing.T) {
 	if !errors.Is(err, ErrManagerClosed) {
 		t.Fatalf("Ensure = %v, want ErrManagerClosed for a replacement closed after its announce", err)
 	}
+	supGate.wait(t, "the announced replacement's supervisor")
 	if !events.has(EventDetached, StateDisconnected) {
 		t.Fatal("the announced replacement's detach was never paired")
 	}

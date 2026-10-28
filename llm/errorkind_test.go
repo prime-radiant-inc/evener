@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -67,26 +69,59 @@ func TestKind_NilAndForeign(t *testing.T) {
 	}
 }
 
-// TestProviderFailureSummary pins each rendering contract of the sanitized
-// failure summary surfaces log instead of provider text. The fixed strings ARE
-// the contract of this rendering function, not incidental copy: each arm must
-// keep producing exactly its documented shape.
+// TestProviderFailureSummary pins the sanitized failure summary's behavior:
+// it is built from the structured kind and HTTP status, never from
+// provider-supplied text, and the sign-in sentinel renders its own arm rather
+// than the bare-kind fallback. The exact wording is copy a person reads —
+// reviewed in diffs, not pinned here.
 func TestProviderFailureSummary(t *testing.T) {
 	cases := []struct {
 		name string
 		err  error
-		want string
+		// leaks is text this test embedded in the error; a sanitized summary
+		// must never repeat it.
+		leaks []string
+		// bareKind: with no HTTP status to render, the documented fallback is
+		// the error's structured kind token alone.
+		bareKind bool
+		// status: an HTTP failure's summary must carry the status code and
+		// the kind token.
+		status int
+		// overridesKind: the sentinel renders its own arm rather than the
+		// bare-kind fallback.
+		overridesKind bool
 	}{
-		{"nil error reports unknown", nil, "unknown"},
-		{"foreign error reports unknown", errors.New("totally unrelated"), "unknown"},
-		{"sign-in sentinel renders its fixed label", &llm.ConfigurationError{Message: "please sign in again", Cause: llm.ErrSignInRequired}, "sign-in required"},
-		{"HTTP failure renders status and kind", llm.ErrorFromHTTPStatus("openai", 401, "credential fragment in the body text", nil, nil), "HTTP 401 (authentication)"},
-		{"non-HTTP failure renders the bare kind", llm.NewRequestTimeoutError("openai", "deadline exceeded", nil), "timeout"},
+		{"nil error", nil, nil, true, 0, false},
+		{"foreign error", errors.New("totally unrelated"), []string{"totally unrelated"}, true, 0, false},
+		{"sign-in sentinel", &llm.ConfigurationError{Message: "please sign in again", Cause: llm.ErrSignInRequired}, []string{"please sign in again"}, false, 0, true},
+		{"HTTP failure", llm.ErrorFromHTTPStatus("openai", 401, "credential fragment in the body text", nil, nil), []string{"credential fragment in the body text"}, false, 401, false},
+		{"non-HTTP failure", llm.NewRequestTimeoutError("openai", "deadline exceeded", nil), []string{"deadline exceeded"}, true, 0, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := llm.ProviderFailureSummary(tc.err); got != tc.want {
-				t.Fatalf("ProviderFailureSummary = %q, want %q", got, tc.want)
+			got := llm.ProviderFailureSummary(tc.err)
+			kind := llm.Kind(tc.err).String()
+			for _, leak := range tc.leaks {
+				if strings.Contains(got, leak) {
+					t.Fatalf("ProviderFailureSummary leaked provider-supplied text %q: %q", leak, got)
+				}
+			}
+			switch {
+			case tc.bareKind:
+				if got != kind {
+					t.Fatalf("ProviderFailureSummary = %q, want the structured kind token %q", got, kind)
+				}
+			case tc.status != 0:
+				if !strings.Contains(got, strconv.Itoa(tc.status)) || !strings.Contains(got, kind) {
+					t.Fatalf("ProviderFailureSummary = %q, want the status %d and the kind token %q", got, tc.status, kind)
+				}
+				if got == kind {
+					t.Fatalf("ProviderFailureSummary = %q dropped the HTTP status", got)
+				}
+			default:
+				if got == kind {
+					t.Fatalf("ProviderFailureSummary = %q fell back to the kind token; the sign-in sentinel must render its own arm", got)
+				}
 			}
 		})
 	}

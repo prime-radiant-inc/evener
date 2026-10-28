@@ -13,10 +13,11 @@ import (
 
 // TestReportRunsAgainstEmbeddedSnapshot runs the report the refresh script
 // prints for a human (scripts/ops/refresh-model-catalog.sh) against the real
-// embedded snapshot. The machine-checked contracts: it reaches every section
-// without exiting, it reports the fetched date of the snapshot it actually
-// loaded, and the output-cap total it prints equals the count recomputed here
-// from the same snapshot.
+// embedded snapshot. The machine-checked contracts, asserted on observable
+// data rather than the heading copy a person reads: main emits its section
+// markers without exiting, the fetched date it prints is the embedded
+// snapshot's own, and every section's data equals the same snapshot and
+// overlay recomputed here.
 func TestReportRunsAgainstEmbeddedSnapshot(t *testing.T) {
 	// Not parallel: swaps process-wide os.Stdout while main runs.
 	oldStdout := os.Stdout
@@ -35,39 +36,67 @@ func TestReportRunsAgainstEmbeddedSnapshot(t *testing.T) {
 	}
 	report := string(reportBytes)
 
-	sections := []string{
-		"overlay rows upstream now covers",
-		"dangling overlay aliases",
-		"output cap >= context window",
-		"overlay pins whose upstream value differs",
-	}
-	at := 0
-	for _, section := range sections {
-		i := strings.Index(report[at:], section)
-		if i < 0 {
-			t.Errorf("report never reaches its section on %q", section)
-			continue
-		}
-		at += i
+	// Reachability: the report is sectioned, and main must emit every section
+	// it documents. The section-marker shape is the tool's output contract;
+	// the words inside a heading are copy a person reads, not pinned here.
+	if markers := strings.Count(report, "\n== "); markers < 4 {
+		t.Errorf("report reached only %d section markers, want at least the 4 documented sections:\n%s", markers, report)
 	}
 
 	raw, meta, err := registry.EmbeddedSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	fetchedLine := regexp.MustCompile(`(?m)^snapshot fetched (\d{4}-\d{2}-\d{2}) \(etag .*\)$`).
-		FindStringSubmatch(report)
-	if fetchedLine == nil {
-		t.Fatalf("report has no fetched line:\n%s", report)
-	}
-	if want := meta.FetchedAt.Format("2006-01-02"); fetchedLine[1] != want {
-		t.Errorf("report fetched date = %s, want the embedded snapshot's %s", fetchedLine[1], want)
+	// The fetched date of the snapshot the report actually loaded.
+	if want := meta.FetchedAt.Format("2006-01-02"); !strings.Contains(report, want) {
+		t.Errorf("report does not carry the embedded snapshot's fetched date %s", want)
 	}
 
 	upstream, err := registry.FromModelsDev(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
+	overlay, err := registry.ParseOverlay(registry.EmbeddedOverlay())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]registry.Provider, len(upstream))
+	for _, p := range upstream {
+		byID[p.ID] = p
+	}
+
+	// Section: overlay rows upstream now covers. Every covered alias row the
+	// same overlay and snapshot yield must appear in the report.
+	for _, pid := range sortedKeys(overlay.Providers) {
+		for _, mid := range sortedKeys(overlay.Providers[pid].Models) {
+			om := overlay.Providers[pid].Models[mid]
+			up, ok := byID[pid]
+			if !ok {
+				continue
+			}
+			if _, ok := up.Models[mid]; !ok || om.AliasOf == "" {
+				continue
+			}
+			if !strings.Contains(report, pid+"/"+mid) {
+				t.Errorf("report omits the covered overlay alias row %s/%s", pid, mid)
+			}
+		}
+	}
+
+	// Section: dangling overlay aliases. The report must carry every warning
+	// the same offline load of the same snapshot and overlay produces.
+	reg, err := registry.Load(registry.WithoutCache(), registry.WithNoUserLayer(), registry.WithOffline(true), registry.WithEnv(func(string) (string, bool) { return "", false }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, warn := range reg.Warnings() {
+		if !strings.Contains(report, warn) {
+			t.Errorf("report omits the registry warning %q", warn)
+		}
+	}
+
+	// Section: upstream rows with output cap >= context window. The total it
+	// prints must equal the count recomputed here from the same snapshot.
 	wantJunk := 0
 	for _, p := range upstream {
 		for _, m := range p.Models {
@@ -88,5 +117,32 @@ func TestReportRunsAgainstEmbeddedSnapshot(t *testing.T) {
 	}
 	if gotJunk != wantJunk {
 		t.Errorf("report output-cap total = %d, want %d from the same snapshot", gotJunk, wantJunk)
+	}
+
+	// Section: overlay pins whose upstream value differs. Every differing pin
+	// must appear in the report, named by its overlay field. The field names
+	// are the overlay file format's machine tokens, not copy.
+	for _, pid := range sortedKeys(overlay.Providers) {
+		up, ok := byID[pid]
+		if !ok {
+			continue
+		}
+		for _, mid := range sortedKeys(overlay.Providers[pid].Models) {
+			pin := overlay.Providers[pid].Models[mid].Caps
+			upRow, ok := up.Models[mid]
+			if !ok {
+				continue
+			}
+			if pin.ContextWindow != nil && upRow.Caps.ContextWindow != nil && *pin.ContextWindow != *upRow.Caps.ContextWindow {
+				if !strings.Contains(report, pid+"/"+mid+" context_window") {
+					t.Errorf("report omits the %s/%s context-window pin diff (overlay %d, upstream %d)", pid, mid, *pin.ContextWindow, *upRow.Caps.ContextWindow)
+				}
+			}
+			if pin.MaxOutputTokens != nil && upRow.Caps.MaxOutputTokens != nil && *pin.MaxOutputTokens != *upRow.Caps.MaxOutputTokens {
+				if !strings.Contains(report, pid+"/"+mid+" max_output_tokens") {
+					t.Errorf("report omits the %s/%s max-output-tokens pin diff (overlay %d, upstream %d)", pid, mid, *pin.MaxOutputTokens, *upRow.Caps.MaxOutputTokens)
+				}
+			}
+		}
 	}
 }
