@@ -121,9 +121,15 @@ func (f hostRecordsFile) state() (*hostRecordsState, error) {
 	state.Hosts, state.Generations, state.Receipts = *f.Hosts, *f.Generations, *f.Receipts
 	state.Tombstones, state.PrunedReceipts = *f.Tombstones, *f.PrunedReceipts
 	state.StagedReceipts, state.Remnants, state.Attempts = *f.StagedReceipts, *f.Remnants, *f.Attempts
-	if err := state.validate(); err != nil {
+	// The bounds apply to what the next write emits, not to the spelling the file
+	// happened to use: the JSON encoder escapes <, > and & as six bytes, so a
+	// record the file holds near its bound could otherwise grow past it on the
+	// next write and make the store refuse its own file.
+	canonical, err := state.canonicalAndBounded()
+	if err != nil {
 		return nil, err
 	}
+	state.HostRecords = canonical
 	return state, nil
 }
 
@@ -200,6 +206,23 @@ func (r HostRecords) validate() error {
 		return fmt.Errorf("%w: the family is %d bytes, over the %d-byte bound", ErrInvalidHostRecords, total, MaxHostRecordsBytes)
 	}
 	return nil
+}
+
+// canonicalAndBounded validates the family, puts every value in the form the
+// store file writes, and validates that form again: the second pass is the one
+// that holds the sizes a write will actually emit.
+func (r HostRecords) canonicalAndBounded() (HostRecords, error) {
+	if err := r.validate(); err != nil {
+		return HostRecords{}, err
+	}
+	canonical, err := r.canonical()
+	if err != nil {
+		return HostRecords{}, err
+	}
+	if err := canonical.validate(); err != nil {
+		return HostRecords{}, err
+	}
+	return canonical, nil
 }
 
 // canonical returns the family with every value in the form the store file
@@ -292,13 +315,10 @@ func (s *Store) writeHostRecords(records HostRecords, mirror HostMirror, importe
 	if s == nil {
 		return errors.New("hostops: store is not configured")
 	}
-	if err := records.validate(); err != nil {
-		return err
-	}
 	if err := validateMirror(mirror); err != nil {
 		return err
 	}
-	canonical, err := records.canonical()
+	canonical, err := records.canonicalAndBounded()
 	if err != nil {
 		return err
 	}
