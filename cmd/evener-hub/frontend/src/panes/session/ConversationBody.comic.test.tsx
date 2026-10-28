@@ -21,7 +21,10 @@ import { readComposerDraft, writeComposerDraft } from "./composer/draft";
 import { resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import { requestQuoteInsert, resetQuoteInsertStoreForTests, useQuoteInsertRequest } from "./composer/quoteInsert";
+import { useBuiltinSubmission } from "./composer/useBuiltinSubmission";
+import { useComposerActions } from "./composer/useComposerActions";
 import { CommittedSession } from "./testing/CommittedSession";
+import { createTestComposerSource } from "./testing/composerSource";
 import { editorCursor, replaceEditorText, selectEditorText } from "./testing/editor";
 import "./testing/editorGeometry";
 import "./index";
@@ -105,6 +108,7 @@ async function setup(status = "idle") {
           interrupt: true,
           skillInput: true,
           commandInput: true,
+          forkFromTurn: true,
         } as ThreadCapabilities,
         mutationStateAuthoritative: true,
         queue: { revision: 0 },
@@ -147,6 +151,150 @@ function preservedDraft() {
   return { text, skillNames, commandNames, mentions, activeRecoveryId };
 }
 const editor = () => screen.getByRole("textbox", { name: "Message" });
+
+test.each([
+  ["standard", "comic", "success"],
+  ["comic", "standard", "success"],
+  ["standard", "comic", "failure"],
+  ["comic", "standard", "failure"],
+] as const)("held builtin survives %s → %s on %s", async (from, to, outcome) => {
+  const fake = await setup();
+  const child = (await fake.request("thread/read", { ref: "local:aside-child", includeTurns: true })).thread;
+  let finish!: (value: { thread: Thread }) => void;
+  let fail!: (error: Error) => void;
+  const held = new Promise<{ thread: Thread }>((resolve, reject) => {
+    finish = resolve;
+    fail = reject;
+  });
+  fake.on("thread/fork", () => held);
+  await presentation(from);
+  await mount(fake);
+  replaceEditorText(editor(), "/aside");
+  const source = lifetime().composer;
+  const press = () => fireEvent.submit(editor().closest("form")!);
+  act(() => {
+    press();
+    press();
+  });
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/fork")).toHaveLength(1));
+  await presentation(to);
+  expect(lifetime().composer).toBe(source);
+  expect(editor().textContent).toBe("/aside");
+  act(press);
+  try {
+    expect(fake.calls.filter((c) => c.method === "thread/fork")).toHaveLength(1);
+    expect((screen.getByTestId("composer-submit") as HTMLButtonElement).disabled).toBe(true);
+  } finally {
+    await act(async () => {
+      if (outcome === "failure") fail(new Error("ASIDE_HANDOFF_FAILURE"));
+      else finish({ thread: child });
+    });
+  }
+  if (outcome === "failure") {
+    expect(editor().textContent).toBe("/aside");
+    expect((screen.getByTestId("composer-submit") as HTMLButtonElement).disabled).toBe(false);
+    fake.on("thread/fork", () => ({ thread: child }));
+    await act(async () => press());
+    expect(fake.calls.filter((c) => c.method === "thread/fork")).toHaveLength(2);
+  }
+  expect(source?.getSnapshot().text).toBe("");
+  replaceEditorText(editor(), "usable after settlement");
+  expect((screen.getByTestId("composer-submit") as HTMLButtonElement).disabled).toBe(false);
+});
+
+test.each(["idle", "active"])(
+  "held builtin fences %s presses per source and preserves retyped draft",
+  async (status) => {
+    const fake = await setup(status);
+    const child = (await fake.request("thread/read", { ref: "local:aside-child", includeTurns: true })).thread;
+    let finish!: (value: { thread: Thread }) => void;
+    const held = new Promise<{ thread: Thread }>((resolve) => {
+      finish = resolve;
+    });
+    fake.on("thread/fork", () => held);
+    const source = createTestComposerSource(ref, "first-source");
+    const other = createTestComposerSource(ref, "independent-source");
+    const hook = renderHook(() => useBuiltinSubmission(source));
+    const ordinary = renderHook(() => useComposerActions(source));
+    const independent = renderHook(() => useBuiltinSubmission(other));
+    act(() => {
+      source.editText("/aside");
+      other.editText("/aside");
+    });
+    const staleActions = ordinary.result.current;
+    try {
+      await act(async () => {
+        hook.result.current.submitBuiltin();
+        hook.result.current.submitBuiltin();
+        source.editText("newer ordinary draft");
+        await staleActions.submit("send");
+        await staleActions.submit("queue");
+        await staleActions.submit("steer");
+      });
+      expect(fake.calls.filter((c) => c.method.startsWith("turn/"))).toEqual([]);
+      await act(async () => expect(await storage.listOutbox(ref)).toEqual([]));
+      expect(source.getSnapshot().text).toBe("newer ordinary draft");
+      expect(ordinary.result.current.busy).toBe(true);
+      await act(async () => independent.result.current.submitBuiltin());
+      expect(fake.calls.filter((c) => c.method === "thread/fork")).toHaveLength(2);
+      // Equal literal text is still a newer edit, not the submitted revision.
+      act(() => source.editText("/aside"));
+    } finally {
+      await act(async () => finish({ thread: child }));
+    }
+    expect(source.getSnapshot().text).toBe("/aside");
+    expect(other.getSnapshot().text).toBe("");
+    expect(ordinary.result.current.busy).toBe(false);
+    act(() => connectionStore.setState({ state: "idle" }));
+    await act(async () => {
+      source.editText("ordinary submission after settlement");
+      await ordinary.result.current.submitFromLiveState();
+    });
+    await act(async () =>
+      expect(await storage.listOutbox(ref)).toMatchObject([
+        {
+          method: status === "idle" ? "turn/start" : "turn/queue",
+          payload: { input: [{ type: "text", text: "ordinary submission after settlement" }] },
+        },
+      ]),
+    );
+  },
+);
+
+test("disposed builtin settlement cannot write or release a replacement source", async () => {
+  const fake = await setup();
+  const child = (await fake.request("thread/read", { ref: "local:aside-child", includeTurns: true })).thread;
+  const completions: ((value: { thread: Thread }) => void)[] = [];
+  fake.on("thread/fork", () => new Promise<{ thread: Thread }>((resolve) => completions.push(resolve)));
+  const old = createTestComposerSource(ref, "old-source");
+  const hook = renderHook(() => useBuiltinSubmission(old));
+  act(() => old.editText("/aside"));
+  await act(async () => hook.result.current.submitBuiltin());
+  hook.unmount();
+  old.dispose();
+  const snapshot = old.getSnapshot();
+  const publish = vi.fn();
+  const unsubscribe = old.subscribe(publish);
+  const replacement = createTestComposerSource(ref, "new-source");
+  const next = renderHook(() => useBuiltinSubmission(replacement));
+  act(() => replacement.editText("/aside"));
+  await act(async () => next.result.current.submitBuiltin());
+  expect(fake.calls.filter((c) => c.method === "thread/fork")).toHaveLength(2);
+  try {
+    await act(async () => completions[0]!({ thread: child }));
+    expect(old.getSnapshot()).toBe(snapshot);
+    expect(publish).not.toHaveBeenCalled();
+    expect(replacement.getSnapshot().text).toBe("/aside");
+    expect(next.result.current.actions.busy).toBe(true);
+    await act(async () => next.result.current.submitBuiltin());
+    expect(fake.calls.filter((c) => c.method === "thread/fork")).toHaveLength(2);
+  } finally {
+    unsubscribe();
+    await act(async () => completions[1]!({ thread: child }));
+  }
+  expect(next.result.current.actions.busy).toBe(false);
+  expect(replacement.getSnapshot().text).toBe("");
+});
 
 test.each([
   ["comic", "prefix"],
