@@ -3,6 +3,7 @@ package responses
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -13,11 +14,11 @@ import (
 // stream event plus the accumulated final response.
 func responsesEvents(t *testing.T, events ...string) ([]llm.StreamEvent, *llm.Response) {
 	t.Helper()
-	sse := ""
+	var sse strings.Builder
 	for _, ev := range events {
-		sse += "data: " + ev + "\n\n"
+		sse.WriteString("data: " + ev + "\n\n")
 	}
-	srv, _ := server(t, 200, sse)
+	srv, _ := server(t, 200, sse.String())
 	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), userReq("hi"), liveRes(srv, openaiCaps))
 	if err != nil {
 		t.Fatalf("Stream: %v", err)

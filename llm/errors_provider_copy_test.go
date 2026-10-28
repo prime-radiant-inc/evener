@@ -205,7 +205,7 @@ func TestEveryProviderAttributedErrorCopies(t *testing.T) {
 		// value and these methods must not be the ones that silently skip.
 		&AbortError{nonHTTPBaseError{provider: "p", message: "canceled"}},
 		&InvalidToolCallError{nonHTTPBaseError{provider: "p", message: "bad tool call"}},
-		&NoObjectGeneratedError{nonHTTPBaseError: nonHTTPBaseError{provider: "p", message: "no object"}, RawText: "raw"},
+		&NoObjectGeneratedError{nonHTTPBaseError{provider: "p", message: "no object"}, "raw"},
 	)
 	for _, err := range cases {
 		if providerOf(err) == "" {

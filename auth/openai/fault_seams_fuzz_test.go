@@ -56,7 +56,7 @@ func FuzzAuthOpenAIFaultSeams(f *testing.F) {
 			old := marshalDeviceRequest
 			marshalDeviceRequest = func(any) ([]byte, error) { return nil, errors.New("marshal") }
 			t.Cleanup(func() { marshalDeviceRequest = old })
-				if selector%17 == 2 {
+			if selector%17 == 2 {
 				_, _ = RequestDeviceCode(context.Background(), nil, Config{})
 			} else {
 				_, _, _ = PollDeviceAuthOnce(context.Background(), nil, Config{}, DeviceCode{})

@@ -223,7 +223,6 @@ func TestDeployRefusedWhenTokenSupersededUnderGate(t *testing.T) {
 
 func TestDeployRefusedWhenTokensTargetNoLongerResolves(t *testing.T) {
 	t.Parallel()
-	entry := deployTestHost()
 	m, store, entry, _ := deployRefusalFixture(t, deploySeams{})
 	token := mintDeployTokenWithTarget(t, store, m, entry, "/a/target/the/host/no/longer/resolves")
 	_, err := m.Deploy(context.Background(), appwire.HostDeployParams{

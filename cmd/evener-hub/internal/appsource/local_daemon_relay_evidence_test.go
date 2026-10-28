@@ -254,8 +254,7 @@ func TestLocalDaemonReadThreadSubscribeStoresLegacyRelay(t *testing.T) {
 	t.Run("falls back to the request identity without a daemon ref", func(t *testing.T) {
 		t.Parallel()
 		source := newLegacyRelaySource(t, "")
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 		if _, err := source.ReadThread(ctx, legacyRelayReadParams); err != nil {
 			t.Fatalf("subscribe read: %v", err)
 		}
@@ -265,8 +264,7 @@ func TestLocalDaemonReadThreadSubscribeStoresLegacyRelay(t *testing.T) {
 	t.Run("resubscribe resolves the previous pending relay", func(t *testing.T) {
 		t.Parallel()
 		source := newLegacyRelaySource(t, "local:thread-1")
-		firstCtx, cancelFirst := context.WithCancel(context.Background())
-		defer cancelFirst()
+		firstCtx := t.Context()
 		if _, err := source.ReadThread(firstCtx, legacyRelayReadParams); err != nil {
 			t.Fatalf("first subscribe read: %v", err)
 		}
@@ -312,8 +310,7 @@ func TestLocalDaemonSubscribeThreadLegacyRelayArms(t *testing.T) {
 	t.Run("listen failure aborts the pending handoff and closes the lease", func(t *testing.T) {
 		t.Parallel()
 		source := newLegacyRelaySource(t, "local:thread-1")
-		readCtx, cancelRead := context.WithCancel(context.Background())
-		defer cancelRead()
+		readCtx := t.Context()
 		if _, err := source.ReadThread(readCtx, legacyRelayReadParams); err != nil {
 			t.Fatalf("subscribe read: %v", err)
 		}
@@ -341,14 +338,12 @@ func TestLocalDaemonSubscribeThreadLegacyRelayArms(t *testing.T) {
 	t.Run("subscription ends when its lease is released", func(t *testing.T) {
 		t.Parallel()
 		source := newLegacyRelaySource(t, "local:thread-1")
-		readCtx, cancelRead := context.WithCancel(context.Background())
-		defer cancelRead()
+		readCtx := t.Context()
 		if _, err := source.ReadThread(readCtx, legacyRelayReadParams); err != nil {
 			t.Fatalf("subscribe read: %v", err)
 		}
 
-		subscribeCtx, cancelSubscribe := context.WithCancel(context.Background())
-		defer cancelSubscribe()
+		subscribeCtx := t.Context()
 		out, err := source.SubscribeThread(subscribeCtx, legacyRelayReadParams)
 		if err != nil {
 			t.Fatalf("SubscribeThread: %v", err)

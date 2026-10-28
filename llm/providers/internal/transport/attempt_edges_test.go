@@ -25,7 +25,7 @@ func TestFatalStreamErrorForwardsItsCause(t *testing.T) {
 		t.Fatal("errors.Is must reach the wrapped cause")
 	}
 	var detected *FatalStreamError
-	if !errors.As(fmt.Errorf("stream: %w", fatal), &detected) || detected.Err != cause {
+	if !errors.As(fmt.Errorf("stream: %w", fatal), &detected) || !errors.Is(detected.Err, cause) {
 		t.Fatalf("errors.As through a wrap = %v, want the original wrapper", detected)
 	}
 }

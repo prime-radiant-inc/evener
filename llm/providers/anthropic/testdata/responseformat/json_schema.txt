@@ -1,0 +1,6 @@
+sys prompt
+
+Output only valid JSON that matches this JSON Schema. Do not include any extra text.
+
+JSON Schema:
+{"properties":{"x":{"type":"string"}},"type":"object"}

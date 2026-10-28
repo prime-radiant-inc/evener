@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -205,7 +206,10 @@ func buildFuzzResponsesRequest(model, system, user string, toolArgs, toolParams 
 //     "tools" is absent from the top level (request.go's lite shape);
 //   - each shapeSel mode asserts the wire shape it routes to (text-phase
 //     grouping, document parts, reasoning summaries, tool-result content,
-//     the passthrough of provider options on a reasoning-off row, …).
+//     provider options kept or dropped per the row's reasoning cap, …).
+//     Every option-derived expectation is read off the request and the caps
+//     the builder branches on, so independently fuzzed bits cannot contradict
+//     the oracle the way a hardcoded combo can.
 func FuzzResponsesBuildBody(f *testing.F) {
 	f.Add("gpt-test", "be terse", "hello", []byte(`{"city":"paris"}`), []byte(`{"type":"object","properties":{"x":{"type":"string"}}}`), byte(0), byte(0), byte(0))
 	f.Add("gpt-5", "", "", []byte(`{}`), []byte(`{"oneOf":[{"type":"string"}]}`), byte(3), byte(0), byte(0))
@@ -248,6 +252,20 @@ func FuzzResponsesBuildBody(f *testing.F) {
 	// An include list that already names the encrypted-reasoning sentinel must
 	// not duplicate it when the reasoning include is attached.
 	f.Add("m", "s", "u", []byte(`{}`), []byte(`{}`), byte(2), byte(16), byte(11))
+	// The interacting option pairs the derived oracles must survive: a
+	// reasoning-capable row keeping its provider options, recognized and
+	// case-variant by-name response formats, a structured-output-off
+	// json_schema row, a strict override riding the lite tools prefix, an
+	// error tool result reaching the wrapped output shape, and a request
+	// include list under both the drop and the pass-through rows.
+	f.Add("m", "s", "u", []byte(`{}`), []byte(`{}`), byte(0), byte(144), byte(0))
+	f.Add("json", "s", "u", []byte(`{}`), []byte(`{}`), byte(25), byte(0), byte(0))
+	f.Add("JSON", "s", "u", []byte(`{}`), []byte(`{}`), byte(25), byte(0), byte(0))
+	f.Add("json_schema", "s", "u", []byte(`{}`), []byte(`{"type":"object"}`), byte(25), byte(8), byte(0))
+	f.Add("m", "s", "u", []byte(`{}`), []byte(`{"type":"object","properties":{"x":{"type":"string"}}}`), byte(131), byte(3), byte(0))
+	f.Add("m", "sys", "u", []byte(`{}`), []byte(`{}`), byte(1), byte(0), byte(8))
+	f.Add("m", "s", "u", []byte(`{}`), []byte(`{}`), byte(0), byte(128), byte(11))
+	f.Add("m", "s", "u", []byte(`{}`), []byte(`{}`), byte(2), byte(144), byte(11))
 
 	f.Fuzz(func(t *testing.T, model, system, user string, toolArgs, toolParams []byte, sel, capSel, shapeSel byte) {
 		req := buildFuzzResponsesRequest(model, system, user, toolArgs, toolParams, sel, capSel, shapeSel)
@@ -304,22 +322,39 @@ func FuzzResponsesBuildBody(f *testing.F) {
 			}
 		}
 		if capSel&128 == 128 {
-			if _, has := body["reasoning"]; has {
-				t.Fatalf("a reasoning-off row must drop the reasoning provider option: %#v", body["reasoning"])
-			}
-			if _, has := body["include"]; has {
-				t.Fatalf("a reasoning-off row must drop the include provider option: %#v", body["include"])
-			}
 			if body["fuzz_keep"] != "kept" {
 				t.Fatalf("unrelated provider options must survive: %#v", body)
+			}
+			// The reasoning-off passthrough skip is the only drop: a row whose
+			// reasoning cap is on passes the options through, so the presence
+			// expectations read off the cap bit, not off the option block.
+			if capSel&16 == 16 {
+				reasoning, _ := body["reasoning"].(map[string]any)
+				if reasoning["effort"] != "high" {
+					t.Fatalf("a reasoning-capable row must keep the reasoning provider option: %#v", body["reasoning"])
+				}
+				if got := jsonOf(t, body["include"]); got != `["`+encryptedReasoning+`"]` {
+					t.Fatalf("a reasoning-capable row must keep the include provider option: %s", got)
+				}
+			} else {
+				if _, has := body["reasoning"]; has {
+					t.Fatalf("a reasoning-off row must drop the reasoning provider option: %#v", body["reasoning"])
+				}
+				// A request include list (shapeSel mode 11) survives the drop.
+				if _, has := body["include"]; has && int(shapeSel)%12 != 11 {
+					t.Fatalf("a reasoning-off row must drop the include provider option: %#v", body["include"])
+				}
 			}
 		}
 
 		if (sel>>3)%4 == 3 {
-			// The by-name response format arm maps "" (and "text") and unknown
-			// type names to no format at all.
-			if _, has := body["text"]; has {
-				t.Fatalf("response format %q must map to no text.format on the wire: %#v", model, body["text"])
+			// The by-name response format arm routes by type name: "", "text",
+			// and unknown names map to no format at all, while the recognized
+			// names build one — case and surrounding whitespace included.
+			name := strings.ToLower(strings.TrimSpace(model))
+			recognized := name == "json" || name == "json_schema"
+			if _, has := body["text"]; has != recognized {
+				t.Fatalf("response format %q must map to %s text.format on the wire: %#v", model, map[bool]string{true: "a", false: "no"}[recognized], body["text"])
 			}
 		}
 		if sel%5 == 4 && sel&64 == 64 {
@@ -329,14 +364,33 @@ func FuzzResponsesBuildBody(f *testing.F) {
 			}
 		}
 		if sel&128 == 128 && capSel&2 == 2 {
-			tools, _ := body["tools"].([]map[string]any)
-			if len(tools) == 0 || tools[0]["strict"] != (sel&1 == 1) {
-				t.Fatalf("tools[0].strict = %#v, want the per-tool override %v", tools, sel&1 == 1)
+			var toolRows []map[string]any
+			if lite {
+				input, _ := body["input"].([]any)
+				first, _ := input[0].(map[string]any)
+				carried, _ := first["tools"].([]any)
+				for _, t := range carried {
+					if m, ok := t.(map[string]any); ok {
+						toolRows = append(toolRows, m)
+					}
+				}
+			} else {
+				toolRows, _ = body["tools"].([]map[string]any)
+			}
+			if len(toolRows) == 0 || toolRows[0]["strict"] != (sel&1 == 1) {
+				t.Fatalf("tools[0].strict = %#v, want the per-tool override %v", toolRows, sel&1 == 1)
 			}
 			if sel&1 == 1 {
-				params, _ := tools[0]["parameters"].(map[string]any)
-				if params == nil || params["additionalProperties"] != false {
-					t.Fatalf("a strict tool must carry the strictified schema: %#v", tools[0]["parameters"])
+				var schema map[string]any
+				_ = json.Unmarshal(toolParams, &schema)
+				if schema == nil {
+					schema = map[string]any{"type": "object"}
+				}
+				if typ, _ := schema["type"].(string); typ == "object" {
+					params, _ := toolRows[0]["parameters"].(map[string]any)
+					if params == nil || params["additionalProperties"] != false {
+						t.Fatalf("a strict tool must carry the strictified schema: %#v", toolRows[0]["parameters"])
+					}
 				}
 			}
 		}
@@ -422,10 +476,26 @@ func FuzzResponsesBuildBody(f *testing.F) {
 			}
 		case 8:
 			for _, m := range itemMaps {
-				if m["type"] == "function_call_output" {
-					if m["output"] != `{"sh":true}` {
-						t.Fatalf("a non-string tool-result content must marshal to JSON: %s", inputJSON)
+				if m["type"] != "function_call_output" {
+					continue
+				}
+				out, _ := m["output"].(string)
+				if sel&1 == 1 {
+					var wrapped map[string]any
+					if err := json.Unmarshal([]byte(out), &wrapped); err != nil {
+						t.Fatalf("an error tool result must wrap its content in JSON: %s", inputJSON)
 					}
+					if isErr, _ := wrapped["is_error"].(bool); !isErr {
+						t.Fatalf("an error tool result must flag is_error: %s", inputJSON)
+					}
+					content, _ := wrapped["content"].(map[string]any)
+					if content["sh"] != true {
+						t.Fatalf("the wrapped content must carry the tool result: %s", inputJSON)
+					}
+					continue
+				}
+				if out != `{"sh":true}` {
+					t.Fatalf("a non-string tool-result content must marshal to JSON: %s", inputJSON)
 				}
 			}
 		case 10:
@@ -433,9 +503,8 @@ func FuzzResponsesBuildBody(f *testing.F) {
 				t.Fatalf("an unknown role must leave no wire trace: %s", inputJSON)
 			}
 		case 11:
-			include, _ := body["include"].([]string)
-			if len(include) != 1 || include[0] != encryptedReasoning {
-				t.Fatalf("include = %v, want the sentinel exactly once (no duplicate)", include)
+			if got := jsonOf(t, body["include"]); got != `["`+encryptedReasoning+`"]` {
+				t.Fatalf("include = %s, want the sentinel exactly once (no duplicate)", got)
 			}
 		}
 

@@ -3,6 +3,7 @@ package hostops
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -431,10 +432,7 @@ func TestQuarantineCustodyArmsRefuseTheBoot(t *testing.T) {
 			seed: func(t *testing.T, path string) {
 				body := validCustodyBody(t, path, func(m map[string]any) {
 					ownership := m["ownership"].([]any)
-					second := map[string]any{}
-					for k, v := range ownership[0].(map[string]any) {
-						second[k] = v
-					}
+					second := maps.Clone(ownership[0].(map[string]any))
 					second["host"] = "hC"
 					m["ownership"] = append(ownership, second)
 				})
@@ -449,10 +447,7 @@ func TestQuarantineCustodyArmsRefuseTheBoot(t *testing.T) {
 			seed: func(t *testing.T, path string) {
 				body := validCustodyBody(t, path, func(m map[string]any) {
 					ownership := m["ownership"].([]any)
-					second := map[string]any{}
-					for k, v := range ownership[0].(map[string]any) {
-						second[k] = v
-					}
+					second := maps.Clone(ownership[0].(map[string]any))
 					second["quarantineRecordId"] = "00000000000000000008"
 					m["ownership"] = append(ownership, second)
 				})
@@ -551,10 +546,7 @@ func TestQuarantineCustodyArmsRefuseTheBoot(t *testing.T) {
 			seed: func(t *testing.T, path string) {
 				body := validCustodyBody(t, path, func(m map[string]any) {
 					fences := m["fences"].([]any)
-					second := map[string]any{}
-					for k, v := range fences[0].(map[string]any) {
-						second[k] = v
-					}
+					second := maps.Clone(fences[0].(map[string]any))
 					second["host"] = "hC"
 					m["fences"] = append(fences, second)
 				})

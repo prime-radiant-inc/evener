@@ -388,8 +388,10 @@ func TestRetryRunBudgetExhaustionReportsTheRunBudgetSentinel(t *testing.T) {
 	for _, reserve := range []time.Duration{0, 200 * time.Millisecond} {
 		clock := &stepClock{steps: []time.Duration{0, 2 * time.Second}}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
 		_, err := Retry(WithRunBudget(ctx), wallBudgetPolicy(clock.now, time.Hour, reserve), noSleepRetry, nil, alwaysRateLimited)
+		// Release in the loop body, not via defer: the budget context is
+		// per-iteration, and the assertions below cannot outlive this arm.
+		cancel()
 		if !errors.Is(err, ErrRunBudgetExhausted) {
 			t.Fatalf("reserve %v: err = %v, want the run-budget sentinel", reserve, err)
 		}

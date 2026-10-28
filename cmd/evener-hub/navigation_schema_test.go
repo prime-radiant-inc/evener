@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -652,21 +653,21 @@ func TestNavigationSessionValueValidatesCompactActivityCounts(t *testing.T) {
 func TestValidateNavigationMetadataRejectsSelectorMismatches(t *testing.T) {
 	t.Parallel()
 	generation, revision := navigationSchemaGeneration, navigationSchemaRevision
-	paged := `{"generation_id":"` + generation + `","revision":` + fmt.Sprint(revision) + `,"offset":0,"limit":50,"remaining":0,"truncated":false}`
-	catalog := `{"generation_id":"` + generation + `","revision":` + fmt.Sprint(revision) + `,"offset":0,"limit":100,"remaining":0}`
-	project := `{"generation_id":"` + generation + `","revision":` + fmt.Sprint(revision) + `,"key":"schema-project","current_remaining":0,"recent_remaining":0,"archived_remaining":0,"truncated":false}`
-	location := `{"generation_id":"` + generation + `","revision":` + fmt.Sprint(revision) + `,"ref":"local:schema-session","top_level_ref":"local:schema-session","top_level":true}`
+	paged := `{"generation_id":"` + generation + `","revision":` + strconv.FormatUint(revision, 10) + `,"offset":0,"limit":50,"remaining":0,"truncated":false}`
+	catalog := `{"generation_id":"` + generation + `","revision":` + strconv.FormatUint(revision, 10) + `,"offset":0,"limit":100,"remaining":0}`
+	project := `{"generation_id":"` + generation + `","revision":` + strconv.FormatUint(revision, 10) + `,"key":"schema-project","current_remaining":0,"recent_remaining":0,"archived_remaining":0,"truncated":false}`
+	location := `{"generation_id":"` + generation + `","revision":` + strconv.FormatUint(revision, 10) + `,"ref":"local:schema-session","top_level_ref":"local:schema-session","top_level":true}`
 	tests := []struct {
 		name string
 		key  navigationResourceKey
 		raw  string
 	}{
 		{"catalog offset mismatch", navigationResourceKey{Kind: navigationResourceProjects, Offset: 0, Limit: 100},
-			`{"generation_id":"` + generation + `","revision":` + fmt.Sprint(revision) + `,"offset":1,"limit":100,"remaining":0}`},
+			`{"generation_id":"` + generation + `","revision":` + strconv.FormatUint(revision, 10) + `,"offset":1,"limit":100,"remaining":0}`},
 		{"project key mismatch", navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "schema-project"},
-			`{"generation_id":"` + generation + `","revision":` + fmt.Sprint(revision) + `,"key":"other","current_remaining":0,"recent_remaining":0,"archived_remaining":0,"truncated":false}`},
+			`{"generation_id":"` + generation + `","revision":` + strconv.FormatUint(revision, 10) + `,"key":"other","current_remaining":0,"recent_remaining":0,"archived_remaining":0,"truncated":false}`},
 		{"location ref mismatch", navigationResourceKey{Kind: navigationResourceLocation, ID: "local:schema-session"},
-			`{"generation_id":"` + generation + `","revision":` + fmt.Sprint(revision) + `,"ref":"local:other","top_level_ref":"local:schema-session","top_level":true}`},
+			`{"generation_id":"` + generation + `","revision":` + strconv.FormatUint(revision, 10) + `,"ref":"local:other","top_level_ref":"local:schema-session","top_level":true}`},
 		{"unknown kind", navigationResourceKey{Kind: navigationResourceKind("bogus")}, `{}`},
 	}
 	for _, test := range tests {

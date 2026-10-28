@@ -174,7 +174,7 @@ func TestScanJPEGRejections(t *testing.T) {
 // returned the refused scan.
 func TestScanJPEGCancellationBoundaries(t *testing.T) {
 	inputs := map[string][]byte{
-		"entropy step check": minimalJPEG(bytes.Repeat([]byte{0}, 8192)),
+		"entropy step check": minimalJPEG(make([]byte, 8192)),
 		"fill step check":    minimalJPEG(bytes.Repeat([]byte{0xFF}, 8190)),
 	}
 	for name, input := range inputs {

@@ -63,8 +63,7 @@ func TestResponsesRequestFingerprintRejectsAnUnmarshalableBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("fingerprint of an unmarshalable body succeeded")
 	}
-	var unsupported *json.UnsupportedTypeError
-	if !errors.As(err, &unsupported) {
+	if _, ok := errors.AsType[*json.UnsupportedTypeError](err); !ok {
 		t.Fatalf("err = %v, want the json marshal failure wrapped", err)
 	}
 }

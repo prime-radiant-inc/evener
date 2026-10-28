@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"sync"
 	"testing"
@@ -242,9 +243,7 @@ func TestFromGeminiResponseDecoderArms(t *testing.T) {
 			if err := json.Unmarshal([]byte(partExtra), &extra); err != nil {
 				t.Fatalf("test fixture: %v", err)
 			}
-			for k, v := range extra {
-				part[k] = v
-			}
+			maps.Copy(part, extra)
 		}
 		return map[string]any{"candidates": []any{map[string]any{
 			"content": map[string]any{"parts": []any{part}},

@@ -49,10 +49,11 @@ func TestAuthFingerprintGCADCStoreRotates(t *testing.T) {
 		}
 		return fp
 	}
-	if mk(t, first) != mk(t, first) {
+	fpOne, fpTwo := mk(t, first), mk(t, first)
+	if fpOne != fpTwo {
 		t.Fatal("an unchanged stored credential must keep the fingerprint stable")
 	}
-	if mk(t, first) == mk(t, second) {
+	if fpOne == mk(t, second) {
 		t.Fatal("a rotated stored credential must rotate the fingerprint")
 	}
 }
@@ -94,10 +95,11 @@ func TestAuthFingerprintStoreIsTerminalMaterial(t *testing.T) {
 		}
 		return fp
 	}
-	if mk(t, "sk-one") == mk(t, "sk-two") {
+	keyOne, keyTwo := mk(t, "sk-one"), mk(t, "sk-one")
+	if keyOne == mk(t, "sk-two") {
 		t.Fatal("a rotated stored key must rotate the fingerprint")
 	}
-	if mk(t, "sk-one") != mk(t, "sk-one") {
+	if keyOne != keyTwo {
 		t.Fatal("an unchanged stored key must keep the fingerprint stable")
 	}
 }

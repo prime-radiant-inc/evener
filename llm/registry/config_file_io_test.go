@@ -3,6 +3,7 @@ package registry
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -103,6 +104,12 @@ func TestReadConfigFileDirectoryPath(t *testing.T) {
 
 func TestWriteConfigFileUnwritableParent(t *testing.T) {
 	t.Parallel()
+	// Root and Windows write through a 0o500 directory, so the unwritable
+	// parent cannot actually refuse the write there (the sibling guard in
+	// write_test.go).
+	if os.Geteuid() == 0 || runtime.GOOS == "windows" {
+		t.Skip("needs a directory the process cannot write")
+	}
 	ro := t.TempDir()
 	if err := os.Chmod(ro, 0o500); err != nil {
 		t.Skipf("cannot drop write permission: %v", err)

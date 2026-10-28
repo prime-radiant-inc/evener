@@ -51,11 +51,18 @@ func TestRelayLeaseReadWithRoutePublicationNilArms(t *testing.T) {
 func TestRelayListenerForwardStopsWhenDoneClosesMidDelivery(t *testing.T) {
 	t.Parallel()
 	listener := relayDispatchListener(context.Background(), 1)
-	go listener.forward()
+	forwardDone := make(chan struct{})
+	go func() {
+		listener.forward()
+		close(forwardDone)
+	}()
 	// The unbuffered send completes only once forward has received the
-	// delivery, so forward is parked on the blocked out send when done closes.
+	// delivery, so forward holds it when done closes. Nobody receives on out
+	// until the goroutine is joined, so the done arm is the only ready case
+	// of the inner select and the closed-channel read below is deterministic.
 	listener.in <- RelayDelivery{}
 	listener.close()
+	<-forwardDone
 	if _, ok := <-listener.out; ok {
 		t.Fatal("forward should close out without delivering after done")
 	}
@@ -65,9 +72,16 @@ func TestRelayListenerForwardStopsWhenContextCancelsMidDelivery(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	listener := relayDispatchListener(ctx, 1)
-	go listener.forward()
+	forwardDone := make(chan struct{})
+	go func() {
+		listener.forward()
+		close(forwardDone)
+	}()
 	listener.in <- RelayDelivery{}
 	cancel()
+	// Withhold the out receiver until the goroutine has exited, so the
+	// cancellation arm is the only ready case of the inner select.
+	<-forwardDone
 	if _, ok := <-listener.out; ok {
 		t.Fatal("forward should close out without delivering after context cancellation")
 	}
@@ -313,8 +327,18 @@ func TestRelaySessionRecoveryBacksOffBetweenFailedReads(t *testing.T) {
 	t.Parallel()
 	var attempts atomic.Int32
 	attempted := make(chan struct{}, 4)
+	release := make(chan struct{})
 	connect := func(context.Context, uint64, func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error) {
-		attempts.Add(1)
+		if attempts.Add(1) == 2 {
+			// Park the second dial: while it is held, no later backoff can
+			// fire a third attempt and race the test's exact-two assertion.
+			select {
+			case attempted <- struct{}{}:
+			default:
+			}
+			<-release
+			return nil, nil, appwire.SessionUnavailable("dial refused")
+		}
 		select {
 		case attempted <- struct{}{}:
 		default:
@@ -337,13 +361,16 @@ func TestRelaySessionRecoveryBacksOffBetweenFailedReads(t *testing.T) {
 		close(done)
 	}()
 
-	// Each attempt signals as it happens; the second arrives only after the
-	// recovery loop's first backoff, so both receives await real completion.
+	// Each attempt signals as it happens; the second is parked inside the
+	// dial until the test releases it, so both receives await real
+	// completion and the loop cannot run past the second attempt first.
 	<-attempted
 	<-attempted
-	// Closing the lease removes the recovery loop's only listener and
-	// idle-closes the session, so recovery returns after its backoff timer.
+	// Closing the lease removes the recovery loop's only listener
+	// synchronously and idle-closes the session, so once the parked dial is
+	// released the loop-top check ends recovery instead of dialing again.
 	lease.Close()
+	close(release)
 	<-done
 
 	if got := attempts.Load(); got != 2 {

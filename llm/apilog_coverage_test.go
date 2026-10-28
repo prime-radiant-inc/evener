@@ -356,8 +356,7 @@ func TestNewAPILoggerRejectsAnUnusableDirectory(t *testing.T) {
 	if err == nil || logger != nil {
 		t.Fatalf("NewAPILogger under a file path = (%v, %v), want an error and no logger", logger, err)
 	}
-	var pathErr *fs.PathError
-	if !errors.As(err, &pathErr) {
+	if _, ok := errors.AsType[*fs.PathError](err); !ok {
 		t.Fatalf("err = %v, want the directory check's path error", err)
 	}
 }

@@ -95,8 +95,7 @@ func TestListModelsUnparseableURL(t *testing.T) {
 	if err == nil {
 		t.Fatal("an unparseable base URL must fail models.list")
 	}
-	var uerr *url.Error
-	if !errors.As(err, &uerr) {
+	if _, ok := errors.AsType[*url.Error](err); !ok {
 		t.Fatalf("err = %T %v, want the url parse error", err, err)
 	}
 }

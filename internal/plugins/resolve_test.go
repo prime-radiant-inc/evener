@@ -359,10 +359,10 @@ func writeCountedPlugin(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, filepath.Join(dir, ".claude-plugin/plugin.json"), string(body))
-	writeTestFile(t, filepath.Join(dir, "skills/one/SKILL.md"), "---\nname: one\ndescription: one\n---\none\n")
-	writeTestFile(t, filepath.Join(dir, "agents/one.md"), "---\nname: one\ndescription: one\n---\none\n")
-	writeTestFile(t, filepath.Join(dir, "commands/one.md"), "one\n")
+	writeTestFile(t, filepath.Join(dir, ".claude-plugin", "plugin.json"), string(body))
+	writeTestFile(t, filepath.Join(dir, "skills", "one", "SKILL.md"), "---\nname: one\ndescription: one\n---\none\n")
+	writeTestFile(t, filepath.Join(dir, "agents", "one.md"), "---\nname: one\ndescription: one\n---\none\n")
+	writeTestFile(t, filepath.Join(dir, "commands", "one.md"), "one\n")
 }
 
 // A bundled plugin (shipped inside the binary) is a launch candidate only when

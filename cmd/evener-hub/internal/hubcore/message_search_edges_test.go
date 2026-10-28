@@ -40,9 +40,9 @@ func TestOpenMessageSearchPathFailures(t *testing.T) {
 // stubTranscriptReads replaces the index's transcript read for the next calls,
 // returning the scripted result and restoring the real read after.
 func stubTranscriptReads(index *MessageSearch, result func(path string, held *appwire.SnapshotIdentity) (transcriptItems, error)) (restore func()) {
-	real := index.read
+	prev := index.read
 	index.read = result
-	return func() { index.read = real }
+	return func() { index.read = prev }
 }
 
 func TestMessageSearchRefreshFailureArms(t *testing.T) {

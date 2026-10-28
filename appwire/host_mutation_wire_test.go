@@ -252,8 +252,18 @@ func TestHostMutationResultArmsRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: remarshal: %v", tc.name, err)
 		}
-		var again map[string]json.RawMessage
+		// The round trip must carry the arm's whole payload: decode both the
+		// remarshaled body and the original, and compare them as values, so a
+		// decode failure or a dropped field cannot pass as a round trip.
+		var again, original any
 		if err := json.Unmarshal(remarshaled, &again); err != nil {
+			t.Fatalf("%s: decode remarshal %s: %v", tc.name, remarshaled, err)
+		}
+		if err := json.Unmarshal(raw, &original); err != nil {
+			t.Fatalf("%s: decode original %s: %v", tc.name, raw, err)
+		}
+		if !reflect.DeepEqual(again, original) {
+			t.Fatalf("%s: remarshal %s did not round-trip the arm's payload %s", tc.name, remarshaled, raw)
 		}
 	}
 }

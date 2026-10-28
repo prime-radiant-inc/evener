@@ -372,7 +372,7 @@ func establishBoundedItemState(t *testing.T, source *LocalDaemonSource) (appitem
 
 // readAgain reissues the candidates read against the same thread, so a
 // transition test can observe what the second read returns.
-func readAgain(_ *testing.T, source *LocalDaemonSource, ctx context.Context) (ItemCandidateResult, error) {
+func readAgain(ctx context.Context, source *LocalDaemonSource) (ItemCandidateResult, error) {
 	return source.ReadItemCandidates(ctx, appwire.ThreadReadParams{Ref: "local:thread"})
 }
 
@@ -685,7 +685,7 @@ func TestLocalDaemonHiddenHistoryArms(t *testing.T) {
 			return itemPageResponse(positionedItems(1, 1), ""), nil
 		})
 		first, _ := source.itemSnapshots.get("local:thread")
-		result, err := readAgain(t, source, t.Context())
+		result, err := readAgain(t.Context(), source)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -703,7 +703,7 @@ func TestLocalDaemonHiddenHistoryArms(t *testing.T) {
 		source := newHiddenHistoryCase(t, func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 			return appwire.ThreadTurnsListResponse{}, pageFailure
 		})
-		_, err := readAgain(t, source, t.Context())
+		_, err := readAgain(t.Context(), source)
 		if !errors.Is(err, pageFailure) {
 			t.Fatalf("hidden page failure = %v, want the page's own error", err)
 		}
@@ -713,7 +713,7 @@ func TestLocalDaemonHiddenHistoryArms(t *testing.T) {
 		source := newHiddenHistoryCase(t, func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 			return appwire.ThreadTurnsListResponse{Data: []appwire.Turn{{ID: "turn-1", Items: positionedItems(1, 1)}}}, nil
 		})
-		_, err := readAgain(t, source, t.Context())
+		_, err := readAgain(t.Context(), source)
 		requireWireError(t, err, appwire.CodeInvalidParams)
 	})
 	t.Run("page turn without an id", func(t *testing.T) {
@@ -721,7 +721,7 @@ func TestLocalDaemonHiddenHistoryArms(t *testing.T) {
 		source := newHiddenHistoryCase(t, func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 			return appwire.ThreadTurnsListResponse{Data: []appwire.Turn{{ID: "", Items: positionedItems(1, 1), ItemsView: appwire.TurnItemsViewFragment}}}, nil
 		})
-		if _, err := readAgain(t, source, t.Context()); err == nil {
+		if _, err := readAgain(t.Context(), source); err == nil {
 			t.Fatal("hidden page turn without an id was accepted")
 		}
 	})
@@ -730,7 +730,7 @@ func TestLocalDaemonHiddenHistoryArms(t *testing.T) {
 		source := newHiddenHistoryCase(t, func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 			return itemPageResponse(decreasingItems(), ""), nil
 		})
-		if _, err := readAgain(t, source, t.Context()); err == nil {
+		if _, err := readAgain(t.Context(), source); err == nil {
 			t.Fatal("non-increasing hidden page positions were accepted")
 		}
 	})
@@ -739,7 +739,7 @@ func TestLocalDaemonHiddenHistoryArms(t *testing.T) {
 		source := newHiddenHistoryCase(t, func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 			return itemPageResponse(nil, ""), nil
 		})
-		if _, err := readAgain(t, source, t.Context()); err == nil {
+		if _, err := readAgain(t.Context(), source); err == nil {
 			t.Fatal("empty hidden page without a continuation was accepted")
 		}
 	})
@@ -748,7 +748,7 @@ func TestLocalDaemonHiddenHistoryArms(t *testing.T) {
 		source := newHiddenHistoryCase(t, func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 			return itemPageResponse(positionedItems(3, 4), ""), nil
 		})
-		_, err := readAgain(t, source, t.Context())
+		_, err := readAgain(t.Context(), source)
 		requireInverseStale(t, err)
 	})
 	t.Run("garbage continuation cursor is stale", func(t *testing.T) {
@@ -756,7 +756,7 @@ func TestLocalDaemonHiddenHistoryArms(t *testing.T) {
 		source := newHiddenHistoryCase(t, func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 			return itemPageResponse(positionedItems(1, 1), "garbage-cursor"), nil
 		})
-		_, err := readAgain(t, source, t.Context())
+		_, err := readAgain(t.Context(), source)
 		requireInverseStale(t, err)
 	})
 	t.Run("continuation cursor naming another boundary is stale", func(t *testing.T) {
@@ -765,7 +765,7 @@ func TestLocalDaemonHiddenHistoryArms(t *testing.T) {
 		source := newHiddenHistoryCase(t, func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 			return itemPageResponse(positionedItems(1, 1), wrongBoundary), nil
 		})
-		_, err := readAgain(t, source, t.Context())
+		_, err := readAgain(t.Context(), source)
 		requireInverseStale(t, err)
 	})
 	t.Run("repeated continuation cursor is a cycle", func(t *testing.T) {
@@ -773,7 +773,7 @@ func TestLocalDaemonHiddenHistoryArms(t *testing.T) {
 		source := newHiddenHistoryCase(t, func(_ int, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 			return itemPageResponse(positionedItems(1, 1), params.Cursor), nil
 		})
-		if _, err := readAgain(t, source, t.Context()); err == nil {
+		if _, err := readAgain(t.Context(), source); err == nil {
 			t.Fatal("repeated continuation cursor was accepted as progress")
 		}
 	})
@@ -785,7 +785,7 @@ func TestLocalDaemonHiddenHistoryArms(t *testing.T) {
 			cancel()
 			return itemPageResponse(positionedItems(1, 1), olderCursor), nil
 		})
-		_, err := readAgain(t, source, ctx)
+		_, err := readAgain(ctx, source)
 		requireCanceled(t, err)
 	})
 	t.Run("canceled final page", func(t *testing.T) {
@@ -796,7 +796,7 @@ func TestLocalDaemonHiddenHistoryArms(t *testing.T) {
 			cancel()
 			return itemPageResponse(positionedItems(1, 1), ""), nil
 		})
-		_, err := readAgain(t, source, ctx)
+		_, err := readAgain(ctx, source)
 		requireCanceled(t, err)
 	})
 }
@@ -829,7 +829,7 @@ func TestAdvanceItemSnapshotArms(t *testing.T) {
 			return itemPageResponse(positionedItems(1, 1), ""), nil
 		})
 		before, _ := source.itemSnapshots.get("local:thread")
-		result, err := readAgain(t, source, t.Context())
+		result, err := readAgain(t.Context(), source)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -843,7 +843,7 @@ func TestAdvanceItemSnapshotArms(t *testing.T) {
 			return itemPageResponse(positionedItems(3, 4), ""), nil
 		})
 		before, _ := source.itemSnapshots.get("local:thread")
-		result, err := readAgain(t, source, t.Context())
+		result, err := readAgain(t.Context(), source)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -857,7 +857,7 @@ func TestAdvanceItemSnapshotArms(t *testing.T) {
 		source := newAdvanceCase(t, func(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 			return appwire.ThreadTurnsListResponse{}, pageFailure
 		})
-		_, err := readAgain(t, source, t.Context())
+		_, err := readAgain(t.Context(), source)
 		if !errors.Is(err, pageFailure) {
 			t.Fatalf("authentication page failure = %v, want the page's own error", err)
 		}
@@ -870,7 +870,7 @@ func TestAdvanceItemSnapshotArms(t *testing.T) {
 			cancel()
 			return itemPageResponse(positionedItems(1, 1), ""), nil
 		})
-		_, err := readAgain(t, source, ctx)
+		_, err := readAgain(ctx, source)
 		requireCanceled(t, err)
 	})
 	t.Run("garbage retained native cursor", func(t *testing.T) {
@@ -884,7 +884,7 @@ func TestAdvanceItemSnapshotArms(t *testing.T) {
 		}
 		state.NativeCursor = "garbage-cursor"
 		source.itemSnapshots.put("local:thread", state)
-		_, err := readAgain(t, source, t.Context())
+		_, err := readAgain(t.Context(), source)
 		requireInverseStale(t, err)
 	})
 	t.Run("retained last position outside the complete read", func(t *testing.T) {
@@ -902,7 +902,7 @@ func TestAdvanceItemSnapshotArms(t *testing.T) {
 		state.NativeCursor = olderCursor
 		source.itemSnapshots.put("local:thread", state)
 		before := state
-		result, err := readAgain(t, source, t.Context())
+		result, err := readAgain(t.Context(), source)
 		if err != nil {
 			t.Fatal(err)
 		}

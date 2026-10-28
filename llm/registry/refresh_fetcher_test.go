@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -183,6 +184,11 @@ func TestRefreshWriteFailuresKeepCache(t *testing.T) {
 
 	t.Run("unwritable state root", func(t *testing.T) {
 		t.Parallel()
+		// Root and Windows write through a 0o500 directory, so the
+		// unwritable state root cannot actually refuse the write there.
+		if os.Geteuid() == 0 || runtime.GOOS == "windows" {
+			t.Skip("needs a directory the process cannot write")
+		}
 		ro := t.TempDir()
 		if err := os.Chmod(ro, 0o500); err != nil {
 			t.Skipf("cannot drop write permission: %v", err)
@@ -196,6 +202,11 @@ func TestRefreshWriteFailuresKeepCache(t *testing.T) {
 
 	t.Run("304 with an unwritable catalog dir", func(t *testing.T) {
 		t.Parallel()
+		// Root and Windows write through a 0o500 directory, so the
+		// unwritable catalog dir cannot actually refuse the write there.
+		if os.Geteuid() == 0 || runtime.GOOS == "windows" {
+			t.Skip("needs a directory the process cannot write")
+		}
 		state := t.TempDir()
 		f := &fakeFetch{body: fixtureBytes(t), etag: "a"}
 		if _, err := Refresh(context.Background(), RefreshOptions{StateRoot: state, Fetcher: f.fetcher(), Force: true, Baseline: fixtureBytes(t)}); err != nil {

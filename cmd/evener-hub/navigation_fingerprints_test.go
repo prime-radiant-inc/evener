@@ -269,7 +269,7 @@ func (unavailableNavigationSource) Capture(context.Context, string, time.Time) (
 func TestNavigationServiceRefusesReadsWithoutSourceContextOrLifecycle(t *testing.T) {
 	t.Parallel()
 	service := newNavigationService(navigationServiceConfig{})
-	if _, err := service.ensureSnapshot(nil, false, nil); err == nil {
+	if _, err := service.ensureSnapshot(nil, false, nil); err == nil { //nolint:staticcheck // a nil context is exactly the refusal under test
 		t.Error("a nil context was accepted")
 	}
 	if _, err := service.ensureSnapshot(context.Background(), false, nil); err == nil {
