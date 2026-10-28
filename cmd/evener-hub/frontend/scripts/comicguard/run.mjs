@@ -373,7 +373,7 @@ async function journey(page, fixture, endpoint) {
     writeFileSync(`${fixture.evidenceDir}/${name}.png`, Buffer.from(shot.result.data, "base64"));
   };
   const record = async (name, point, end = false) => {
-    const value = await until(name, () => read(point), value => value && value.mounted > 0 && !value.missingArt.length && (end ? value.endGap <= 2 : point ? value.point && Math.abs(value.point.y - point.viewportOffset) <= 2 : true) && (value.mode !== 'comic' || !name.startsWith('away-width') || value.panels.some(panel => Math.abs(panel.panel.width-value.probe.panel.width)<1 && Math.abs(panel.text.width-value.probe.text.width)<1 && panel.text.font===value.probe.text.font)));
+    const value = await until(name, () => read(point), value => value && value.mounted > 0 && !value.missingArt.length && (end ? value.endGap <= 2 : point ? value.point && Math.abs(value.point.y - point.viewportOffset) <= 2 : true) && (!canonicalFailure || !name.startsWith('initial-error-') || value.parts.some(part => part.entryId === `${canonicalFailure.items[1].id}:turn-error`)) && (value.mode !== 'comic' || !name.startsWith('away-width') || value.panels.some(panel => Math.abs(panel.panel.width-value.probe.panel.width)<1 && Math.abs(panel.text.width-value.probe.text.width)<1 && panel.text.font===value.probe.text.font)));
     if (value.overflow > 1 || value.pageOverflow > 1 || value.clipped.length || value.mounted > 35 || value.missingArt.length) throw new Error(`${name}: bad geometry ${JSON.stringify(value)}`);
     if (value.path !== new URL(route).pathname || value.ref !== fixture.refs.live) throw new Error(`${name}: wrong authenticated conversation route ${JSON.stringify(value)}`);
     if (name === "away-before-font" && sourceCoverage !== fixture.expectedSourceText) throw new Error("complete independent literal source was not rendered exactly once");
@@ -384,16 +384,10 @@ async function journey(page, fixture, endpoint) {
       if (value.errorGroups.length || value.parts.some(part => part.entryId.endsWith(':turn-error') && part.entryId !== `${failureItem.id}:turn-error`)) throw new Error(`${name}: canonical item-backed error misgrouped ${JSON.stringify(value)}`);
     }
     if (value.mode === "comic" && name.startsWith("away-width") && !value.panels.some(panel => Math.abs(panel.panel.width - value.probe.panel.width) < 1 && Math.abs(panel.text.width - value.probe.text.width) < 1 && panel.text.font === value.probe.text.font)) throw new Error(`${name}: probe does not match a rendered panel ${JSON.stringify(value)}`);
-    if (value.mode === 'comic' && (name === 'initial-end' || name.startsWith('away-width'))) {
+    if (canonicalFailure && name.startsWith('initial-error-')) verifyCanonicalErrorMounted(value, `${canonicalFailure.items[1].id}:turn-error`, name);
+    if (value.mode === 'comic' && (name === 'initial-end' || name.startsWith('away-width') || name === 'real-pair-850')) {
       const geometry = await evaluateHere(`(${panelWidthCases.toString()})()`);
-      const cap = 26 * geometry.rootFontSize;
-      for (const [composition, measured] of Object.entries({single:geometry.single, paired:geometry.paired})) {
-        if (measured.panel > cap + 1 || measured.panel > geometry.availableWidth + 1 || (geometry.availableWidth > cap + 1 && measured.panel >= geometry.availableWidth) || Math.abs(measured.panel - measured.probe) > 1) throw Error(`${name}: ${composition} panel/probe width exceeds 26rem or disagrees ${JSON.stringify(geometry)}`);
-        if (Math.abs(measured.left - geometry.readerLeft) > 1) throw Error(`${name}: ${composition} panel lost the left reading edge ${JSON.stringify(geometry)}`);
-      }
-      if (geometry.availableWidth > cap + 1 && geometry.single.right >= geometry.readerRight) throw Error(`${name}: single panel stretched into its gutter ${JSON.stringify(geometry)}`);
-      if (geometry.width > 760 && Math.abs(geometry.paired.secondLeft - geometry.paired.firstRight - 15) > 1) throw Error(`${name}: paired panels lost their 15px gap ${JSON.stringify(geometry)}`);
-      if (geometry.width <= 760 && (geometry.single.right > geometry.readerRight + 1 || geometry.paired.right > geometry.readerRight + 1)) throw Error(`${name}: phone panel outside reader ${JSON.stringify(geometry)}`);
+      verifyPanelWidths(geometry, name, name === 'real-pair-850');
       writeFileSync(`${fixture.evidenceDir}/panel-width-${value.width}.json`, JSON.stringify(geometry, null, 2));
     }
     for (const part of value.parts) {
@@ -434,6 +428,32 @@ async function journey(page, fixture, endpoint) {
   await until("initial real comic", () => read(), value => value?.parts.some(part => fixture.expectedSourceText.includes(part.text) && part.text.length > 100));
   if (!focused) {
   const initialEnd = await record("initial-end", null, true);
+  const canonicalTurns = incoming.flatMap(frame => {
+    const payload = JSON.parse(frame);
+    return payload.result?.thread?.turns ?? payload.result?.turns ?? [];
+  }).filter(turn => turn.id === failedTurn.turnId);
+  writeFileSync(`${fixture.evidenceDir}/failed-turn-canonical.json`, JSON.stringify(canonicalTurns, null, 2));
+  canonicalFailure = canonicalTurns.at(-1);
+  if (!canonicalFailure || canonicalFailure.status !== "failed" || canonicalFailure.error?.cause?.kind !== "provider" || canonicalFailure.error.cause.provider !== "openai" || canonicalFailure.items.length !== 2 || canonicalFailure.items[0].type !== "userMessage" || canonicalFailure.items[1].type !== "systemMessage" || canonicalFailure.items[1].eventKind !== "error" || canonicalFailure.items[1].status !== "failed") throw new Error(`unexpected canonical provider failure: ${JSON.stringify(canonicalTurns)}`);
+  verifyCanonicalErrorMounted(initialEnd, `${canonicalFailure.items[1].id}:turn-error`, 'initial-end');
+  // The end-following checkpoint keeps this item mounted while changing width
+  // and presentation; an away-point virtual window may omit it legitimately.
+  const mountLatestError = async () => evaluateHere(`(() => {
+    const port=window.__comicRoot().querySelector('[data-comic-scroll]').firstElementChild;
+    port.scrollTop=port.scrollHeight;
+    return new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  })()`);
+  for (const width of [390, 1360]) {
+    await page.send('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});
+    await mountLatestError();
+    await record(`initial-error-width-${width}`, null);
+  }
+  await select('View', 'plain');
+  await mountLatestError();
+  await record('initial-error-plain', null);
+  await select('View', 'comic');
+  await mountLatestError();
+  await record('initial-error-comic', null);
   // Scroll a literal source point into view as a reader would. No model/store injection.
   const findSource = () => until('literal source mounted within virtual rows', () => evaluateHere(`(() => {
     const source = [...window.__comicRoot()?.querySelectorAll('[data-comic-entry]')].find(node => node.querySelector('[data-comic-text]')?.textContent.startsWith('COMIC_READ_SOURCE_3f'));
@@ -450,13 +470,7 @@ async function journey(page, fixture, endpoint) {
   const covered = new Map();
   for (let step = 0; step < 80; step++) {
     const parts = (await read()).parts.filter(part => part.entryId === sourceEntryId);
-    const seen = new Set();
-    for (const part of parts) {
-      if (seen.has(part.start)) throw Error('literal source slice duplicated in virtual row');
-      seen.add(part.start);
-      if (part.text !== fixture.expectedSourceText.slice(part.start, part.end) || (covered.has(part.start) && covered.get(part.start).end !== part.end)) throw Error('literal source slice changed during virtual traversal');
-      covered.set(part.start, part);
-    }
+    collectSourceSlices(covered, parts, fixture.expectedSourceText);
     const ordered = [...covered.values()].sort((a,b) => a.start-b.start);
     if (ordered[0]?.start === 0 && ordered.at(-1)?.end === fixture.expectedSourceText.length && ordered.every((part,index) => index === 0 || ordered[index-1].end === part.start)) {
       sourceCoverage = ordered.map(part => part.text).join('');
@@ -474,7 +488,7 @@ async function journey(page, fixture, endpoint) {
     await evaluateHere('new Promise(resolve=>requestAnimationFrame(resolve))');
   }
   if (sourceCoverage !== fixture.expectedSourceText) throw Error('complete independent literal source was not rendered exactly once across virtual rows');
-  writeFileSync(`${fixture.evidenceDir}/literal-source-coverage.json`, JSON.stringify([...covered.values()].sort((a,b) => a.start-b.start).map(({start,end}) => ({start,end})),null,2));
+  writeFileSync(`${fixture.evidenceDir}/literal-source-coverage.json`, JSON.stringify([...covered.values()].sort((a,b) => a.start-b.start).map(({rowId,start,end}) => ({rowId,start,end})),null,2));
   await findSource();
   const target = await evaluateHere(`(() => {
     const source = [...window.__comicRoot()?.querySelectorAll('[data-comic-entry]')].find(node => node.querySelector('[data-comic-text]')?.textContent.startsWith('COMIC_READ_SOURCE_3f'));
@@ -494,14 +508,6 @@ async function journey(page, fixture, endpoint) {
   let point = await until("captured source point", () => read(), value => value?.saved?.mode === "away" && value.saved.entryId === target && value.saved.offset > 0);
   point = { ...point.saved, text: fixture.expectedSourceText };
   await record("away-before-font", point);
-  const canonicalTurns = incoming.flatMap(frame => {
-    const payload = JSON.parse(frame);
-    return payload.result?.thread?.turns ?? payload.result?.turns ?? [];
-  }).filter(turn => turn.id === failedTurn.turnId);
-  writeFileSync(`${fixture.evidenceDir}/failed-turn-canonical.json`, JSON.stringify(canonicalTurns, null, 2));
-  canonicalFailure = canonicalTurns.at(-1);
-  if (!canonicalFailure || canonicalFailure.status !== "failed" || canonicalFailure.error?.cause?.kind !== "provider" || canonicalFailure.error.cause.provider !== "openai" || canonicalFailure.items.length !== 2 || canonicalFailure.items[0].type !== "userMessage" || canonicalFailure.items[1].type !== "systemMessage" || canonicalFailure.items[1].eventKind !== "error" || canonicalFailure.items[1].status !== "failed") throw new Error(`unexpected canonical provider failure: ${JSON.stringify(canonicalTurns)}`);
-  if (!initialEnd.parts.some(part => part.entryId === `${canonicalFailure.items[1].id}:turn-error`) || initialEnd.errorGroups.length) throw new Error(`canonical provider failure did not render as an item-backed error at end: ${JSON.stringify(initialEnd)}`);
   // A pre-content failure is NOT itemless: the runtime records both user input
   // and a positioned TURN_FAILURE. Keep that distinction, never fake an empty turn.
   await record("provider-failure-away", point);
@@ -559,7 +565,7 @@ async function journey(page, fixture, endpoint) {
   if (clicked.scrollTop !== clickTarget.scrollTop || clickEvents.map(event => event.type).join(',') !== 'pointerdown,pointerup' || !clickEvents.every(event => event.trusted && event.pointerType === 'mouse' && event.scrollTop === clickTarget.scrollTop)) throw new Error(`native click did not complete without scrolling: ${JSON.stringify({clickTarget, clickEvents, after:clicked.scrollTop})}`);
   writeFileSync(`${fixture.evidenceDir}/native-click.json`, JSON.stringify({ clickTarget, clickEvents, after: clicked.scrollTop }, null, 2));
 
-  for (const width of [1360, 760, 600, 390, 320, 1360]) {
+  for (const width of [1360, 850, 760, 600, 390, 320, 1360]) {
     await page.send("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
     await record(`away-width-${width}`, point);
     await screenshot(width === 320 ? "phone" : width === 1360 ? "desktop" : `width-${width}`);
@@ -685,6 +691,21 @@ async function journey(page, fixture, endpoint) {
     await page.send("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
     await record(`end-width-${width}`, null, true);
   }
+  await page.send('Emulation.setDeviceMetricsOverride',{width:850,height:900,deviceScaleFactor:1,mobile:false});
+  await until('genuine paired source row at transition width', async () => {
+    const found = await evaluateHere(`(() => {
+      const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;
+      const pair=[...port.querySelectorAll('[data-comic-row]')].find(row=>row.querySelectorAll('[data-comic-entry] article').length===2);
+      if(pair)return pair.dataset.comicRow;
+      const deltaY=-Math.max(120,port.clientHeight/2);
+      port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY}));
+      port.scrollTop=Math.max(0,port.scrollTop+deltaY);
+      return null;
+    })()`);
+    if (!found) await evaluateHere('new Promise(resolve=>requestAnimationFrame(resolve))');
+    return found;
+  });
+  await record('real-pair-850', null);
   writeFileSync(`${fixture.evidenceDir}/root-reads.json`, JSON.stringify({ reads: outgoing.filter(frame => frame.method === 'thread/read'), maxPages, pageReads, wireTrace }, null, 2));
   if (maxPages !== 1 || pageReads.length < 6) throw new Error(`shared sequential paging not exercised: ${JSON.stringify({maxPages, pageReads})}`);
   }
@@ -1257,11 +1278,41 @@ export function cachedReloadRecovery({trace,documentOrigin,currentDocumentOrigin
   return {ready,connection,hydration,pages,requests,noInput};
 }
 
+export function verifyPanelWidths(geometry, name, requirePaired = false) {
+  const cap = 26 * geometry.rootFontSize;
+  if (requirePaired && !geometry.paired) throw Error(`${name}: real paired row not mounted ${JSON.stringify(geometry)}`);
+  for (const [composition, measured] of Object.entries({single:geometry.single, paired:geometry.paired})) {
+    if (!measured) continue;
+    if (measured.panel > cap + 1 || measured.panel > geometry.availableWidth + 1 || (geometry.availableWidth > cap + 1 && measured.panel >= geometry.availableWidth) || Math.abs(measured.panel - measured.probe) > 1) throw Error(`${name}: ${composition} panel/probe width exceeds 26rem or disagrees ${JSON.stringify(geometry)}`);
+    if (Math.abs(measured.left - geometry.readerLeft) > 1) throw Error(`${name}: ${composition} panel lost the left reading edge ${JSON.stringify(geometry)}`);
+  }
+  if (geometry.availableWidth > cap + 1 && geometry.single.right >= geometry.readerRight) throw Error(`${name}: single panel stretched into its gutter ${JSON.stringify(geometry)}`);
+  if (geometry.paired && geometry.width > 760 && Math.abs(geometry.paired.secondLeft - geometry.paired.firstRight - 15) > 1) throw Error(`${name}: paired panels lost their 15px gap ${JSON.stringify(geometry)}`);
+  if (geometry.width <= 760 && (geometry.single.right > geometry.readerRight + 1 || (geometry.paired && geometry.paired.right > geometry.readerRight + 1))) throw Error(`${name}: phone panel outside reader ${JSON.stringify(geometry)}`);
+}
+
+export function verifyCanonicalErrorMounted(value, entryId, name) {
+  if (!value.mounted || !value.parts.some(part => part.entryId === entryId)) throw Error(`${name}: canonical item-backed error missing at mounted checkpoint`);
+  if (value.errorGroups.length) throw Error(`${name}: canonical item-backed error misgrouped ${JSON.stringify(value.errorGroups)}`);
+}
+
+export function collectSourceSlices(covered, parts, sourceText) {
+  const seen = new Set();
+  for (const part of parts) {
+    if (seen.has(part.start)) throw Error('literal source slice duplicated in virtual row');
+    seen.add(part.start);
+    const previous = covered.get(part.start);
+    if (previous && previous.rowId !== part.rowId) throw Error('literal source range assigned to different virtual row');
+    if (part.text !== sourceText.slice(part.start, part.end) || (previous && previous.end !== part.end)) throw Error('literal source slice changed during virtual traversal');
+    covered.set(part.start, part);
+  }
+}
+
 function readGeometry(point, ref) {
   const port = window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;
   if (!port) return null;
   const sources = [...port.querySelectorAll('[data-comic-entry]')];
-  const parts = sources.map(node => ({ sessionRef: node.dataset.comicSession, path: JSON.parse(node.dataset.comicPath ?? '[]'), entryId: node.dataset.comicEntry, start: +node.dataset.comicStart, end: +node.dataset.comicEnd, text: node.querySelector('[data-comic-text]')?.textContent ?? '' }));
+  const parts = sources.map(node => ({ sessionRef: node.dataset.comicSession, path: JSON.parse(node.dataset.comicPath ?? '[]'), rowId: node.closest('[data-comic-row]')?.dataset.comicRow, entryId: node.dataset.comicEntry, start: +node.dataset.comicStart, end: +node.dataset.comicEnd, text: node.querySelector('[data-comic-text]')?.textContent ?? '' }));
   const source = point && sources.find(node => node.dataset.comicSession === (point.sessionRef ?? ref) && node.dataset.comicPath === JSON.stringify(point.path ?? []) && node.dataset.comicEntry === point.entryId && +node.dataset.comicStart <= point.offset && (+node.dataset.comicEnd > point.offset || (point.offset === 0 && +node.dataset.comicEnd === 0)));
   let selected = null;
   if (source) {
@@ -1313,15 +1364,20 @@ function panelWidthCases() {
     sample.append(wrapper);
     return wrapper.querySelector('article');
   };
-  root.append(sample);
+  const singleProbe = probe.cloneNode(true);
+  singleProbe.style.width = `${availableWidth}px`;
+  const pairedProbe = probe.cloneNode(true);
+  pairedProbe.style.width = `${innerWidth > 760 ? (availableWidth - 15) / 2 : availableWidth}px`;
+  root.append(sample, singleProbe, pairedProbe);
   try {
     const first = append();
     const width = node => node.getBoundingClientRect().width;
-    const single = {panel:width(first), probe:width(probe), left:first.getBoundingClientRect().left, right:first.getBoundingClientRect().right};
-    const second = append();
-    const paired = {panel:width(first), probe:width(probe), left:first.getBoundingClientRect().left, firstRight:first.getBoundingClientRect().right, secondLeft:second.getBoundingClientRect().left, right:second.getBoundingClientRect().right};
+    const single = {panel:width(first), probe:width(singleProbe), left:first.getBoundingClientRect().left, right:first.getBoundingClientRect().right};
+    const pairedRow = [...port.querySelectorAll('[data-comic-row]')].find(node => node.querySelectorAll('[data-comic-entry] article').length === 2);
+    const [pairedFirst, pairedSecond] = pairedRow?.querySelectorAll('[data-comic-entry] article') ?? [];
+    const paired = pairedFirst && pairedSecond ? {rowId:pairedRow.dataset.comicRow, panel:width(pairedFirst), probe:width(pairedProbe), left:pairedFirst.getBoundingClientRect().left, firstRight:pairedFirst.getBoundingClientRect().right, secondLeft:pairedSecond.getBoundingClientRect().left, right:pairedSecond.getBoundingClientRect().right} : null;
     return {width:innerWidth, availableWidth, rootFontSize, readerLeft:row.getBoundingClientRect().left, readerRight:row.getBoundingClientRect().right, single, paired};
-  } finally { sample.remove(); }
+  } finally { sample.remove(); singleProbe.remove(); pairedProbe.remove(); }
 }
 
 export function verifyRemoteRequests(trace, {parentRef, childRef} = {}) {
