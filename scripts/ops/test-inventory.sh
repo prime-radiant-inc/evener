@@ -27,7 +27,7 @@ set -euo pipefail
 usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 die() { echo "test-inventory: $*" >&2; exit 2; }
 
-root="$(cd "$(dirname "$0")/../.." && pwd)"
+root="$(cd "$(dirname "$0")/../.." && pwd -P)"
 
 [ $# -ge 1 ] || usage
 cmd="$1"; shift
@@ -48,18 +48,25 @@ $out"
   vitest)
     [ $# -ge 1 ] || usage
     command -v jq >/dev/null || die "jq is required"
-    tmp="$(mktemp)"; names="$(mktemp)"
+    scratch="${TMPDIR:-/tmp}"
+    tmp="$(mktemp "$scratch/test-inventory.XXXXXX")"; names="$(mktemp "$scratch/test-inventory.XXXXXX")"
     trap 'rm -f "$tmp" "$names"' EXIT
-    for f in "$@"; do [ -f "$root/$f" ] || die "no such file (relative to the repo root): $f"; done
+    # Absolute, normalized paths: vitest reports absolute file names, and the
+    # tree is chosen by prefix.
+    abs=()
+    for f in "$@"; do
+      [ -f "$root/$f" ] || die "no such file (relative to the repo root): $f"
+      abs+=("$(cd "$(dirname "$root/$f")" && pwd -P)/$(basename "$f")")
+    done
     # Each test tree has its own vitest config, and a config silently skips
     # files outside its include globs, so list per tree and require that every
     # requested file shows up in its tree's listing.
     for tree in mobile-native cmd/evener-hub/frontend; do
       files=()
-      for f in "$@"; do
+      for f in "${abs[@]}"; do
         case "$f" in
-          mobile-native/*) [ "$tree" = mobile-native ] && files+=("$root/$f") ;;
-          *) [ "$tree" = cmd/evener-hub/frontend ] && files+=("$root/$f") ;;
+          "$root"/mobile-native/*) [ "$tree" = mobile-native ] && files+=("$f") ;;
+          *) [ "$tree" = cmd/evener-hub/frontend ] && files+=("$f") ;;
         esac
       done
       [ ${#files[@]} -gt 0 ] || continue
@@ -76,7 +83,8 @@ $out"
   diff)
     [ $# -eq 2 ] || usage
     [ -f "$1" ] && [ -f "$2" ] || die "both arguments must be files"
-    tmp1="$(mktemp)"; tmp2="$(mktemp)"
+    scratch="${TMPDIR:-/tmp}"
+    tmp1="$(mktemp "$scratch/test-inventory.XXXXXX")"; tmp2="$(mktemp "$scratch/test-inventory.XXXXXX")"
     trap 'rm -f "$tmp1" "$tmp2"' EXIT
     LC_ALL=C sort "$1" > "$tmp1" || die "cannot read $1"
     LC_ALL=C sort "$2" > "$tmp2" || die "cannot read $2"
