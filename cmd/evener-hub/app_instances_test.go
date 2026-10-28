@@ -5389,3 +5389,37 @@ func TestResolvedInstanceForMatchesLaunchTransportForImplicitProvider(t *testing
 		t.Fatalf("fallback auth = %q, want the launch's %q: the view must show the scheme the bare launch signs with", inst.Auth, launch.Transport.Auth)
 	}
 }
+
+// TestRemoval_RestoreFrameFollowsWhatCarriesTheInstance pins which failed
+// restores read as a standing removal: only an implicit instance carried by a
+// credential this call deleted. An authored entry and a provider-carried row
+// stay configured.
+func TestRemoval_RestoreFrameFollowsWhatCarriesTheInstance(t *testing.T) {
+	cases := []struct {
+		name         string
+		authored     bool
+		source       string
+		wantSupplies removalSupply
+		wantStands   bool
+	}{
+		{"authored entry with a stored key", true, "store", supplyAny, false},
+		{"implicit instance carried by a stored key", false, "store", supplyStoredKey, true},
+		{"implicit instance carried by OAuth", false, "oauth", supplyOAuth, true},
+		{"implicit instance carried by the provider", false, "env", supplyConfig, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &removal{authored: tc.authored, locked: registry.Instance{CredentialSource: tc.source}}
+			supplies, frame := r.restoreFrame()
+			if supplies != tc.wantSupplies {
+				t.Fatalf("supplies = %v, want %v", supplies, tc.wantSupplies)
+			}
+			if got := errors.Is(frame, errRemovalStands); got != tc.wantStands {
+				t.Fatalf("removal stands = %v, want %v", got, tc.wantStands)
+			}
+			if !tc.wantStands && !errors.Is(frame, errInstanceStillConfigured) {
+				t.Fatalf("frame = %v, want the configured frame", frame)
+			}
+		})
+	}
+}
