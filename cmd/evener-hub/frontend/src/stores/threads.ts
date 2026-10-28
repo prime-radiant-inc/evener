@@ -974,12 +974,14 @@ async function openEntryTranscript(ref: string, recovery = false, sourcePublishe
   try {
     // A fenced baseline retires the attached reader's captured opening state:
     // its openLocal answers the stale refusal without reading storage, so a
-    // recovery re-open reads through a fresh reader. A held pane keeps one
-    // attached either way, mirroring the backstop's swap, so the repository
-    // cannot reclaim the bodies behind the display it still shows.
+    // recovery re-open reads through a fresh reader. Attach the replacement
+    // before disposing the fenced one — a sole-reader disposal synchronously
+    // reclaims the recorded bodies behind a display that may still hold a
+    // usable live tail — mirroring the backstop's held-pane swap ordering.
     if (recovery && fixture.reader) {
-      fixture.reader.dispose();
+      const fenced = fixture.reader;
       fixture.reader = heldCountsAtStore(ref) ? fixture.repository.attachReader() : undefined;
+      fenced.dispose();
     }
     fixture.reader ??= fixture.repository.attachReader();
     // Ongoing repository publication: every accepted recorded update republishes
