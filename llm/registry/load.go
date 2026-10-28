@@ -512,7 +512,7 @@ func (rec *record) keepInheritedRows(patterns []string) {
 		}
 	}
 	for i := range rec.layers {
-		rec.layers[i].rows = keepMatchingRows(rec.layers[i].rows, patterns)
+		rec.layers[i].rows = keepMatchingRows(rec.layers[i].rows, patterns, rec.head.Models)
 	}
 }
 
@@ -772,19 +772,30 @@ func (rec *record) fold(src Provider, tag string, presets map[string]Transport) 
 }
 
 // keepMatchingRows returns a fresh map holding only rows's entries whose id
-// matches at least one pattern (nil in, nil out): the caller's map may be
-// shared with a base record, so this never mutates rows in place.
-func keepMatchingRows(rows map[string]Model, patterns []string) map[string]Model {
+// matches at least one pattern (nil in, nil out), plus the glob rows that
+// shape a kept row (a kept id matches the glob), so a narrowed instance keeps
+// the shaping its rows resolve with. The caller's map may be shared with a
+// base record, so this never mutates rows in place.
+func keepMatchingRows(rows map[string]Model, patterns []string, kept map[string]Model) map[string]Model {
 	if rows == nil {
 		return nil
 	}
 	out := make(map[string]Model, len(rows))
 	for id, m := range rows {
-		if matchesAnyGlob(patterns, id) {
+		if matchesAnyGlob(patterns, id) || (isGlob(id) && globShapesAnyKept(id, kept)) {
 			out[id] = m
 		}
 	}
 	return out
+}
+
+func globShapesAnyKept(glob string, kept map[string]Model) bool {
+	for id := range kept {
+		if matchGlob(glob, id) {
+			return true
+		}
+	}
+	return false
 }
 
 // foldModel overlays one layer's row onto the merged row head. Hidden comes
