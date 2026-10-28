@@ -696,6 +696,21 @@ async function openedProjectedStore(
 	return { service, store };
 }
 
+// The page the retained-window suites load ahead of a running turn: one
+// settled wire turn of zero-usage rows under the first cursor, so the load
+// lands and no older cursor remains afterwards.
+async function loadFillerPage(
+	store: ReturnType<typeof createConversationStore>,
+	service: FakeConversationService,
+): Promise<void> {
+	store.setState({ olderCursor: "cursor-1" });
+	service.olderItems = {
+		turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+		nextCursor: undefined,
+	};
+	await store.getState().loadOlder(service);
+}
+
 // --- store tests -------------------------------------------------------------
 
 // RoboRev round 2 (panel Low): makeConversation's row-fixture conversion
@@ -4204,7 +4219,7 @@ describe("ConversationStore", () => {
 			// as a duplicate.
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [{ ...{ type: "userMessage", id: "u-later", turnId: "t1", text: "later" }, turnId: "t1" }],
+					items: [{ ...{ type: "userMessage", id: "u-later", turnId: "t1", text: "later" } }],
 				}),
 			);
 			expect(
@@ -5380,15 +5395,7 @@ describe("ConversationStore", () => {
 		// the canonical read is the one honest way to drop them: settling a turn
 		// that still holds warning items must request that read.
 		it("rereads when a bare turn/completed settles a turn still holding warning items, and the read drops them", async () => {
-			const service = new FakeConversationService();
-			service.readProjectionResult = makeReadProjectionResult(
-				makeThread({
-					turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
-					evener: evenerWith({ activeTurnId: "t1" }),
-				}),
-			);
-			const store = createConversationStore();
-			await store.getState().openProjected(service, "ref-1");
+			const { service, store } = await openRunningTurn([], {});
 			store.getState().applyNotification(warningFrame({ message: "careful" }));
 			expect(store.getState().conversation?.items.filter((row) => row.kind === "failure")).toHaveLength(1);
 			const initialReads = service.readProjectionCalls.length;
@@ -5420,21 +5427,8 @@ describe("ConversationStore", () => {
 		// the model and the transient warning returned. The rehydrate must keep
 		// live-only warnings out of the retained turn history it merges.
 		it("the settle reread's warning cleanup sticks across later frames once page turns are loaded", async () => {
-			const service = new FakeConversationService();
-			service.readProjectionResult = makeReadProjectionResult(
-				makeThread({
-					turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
-					evener: evenerWith({ activeTurnId: "t1" }),
-				}),
-			);
-			const store = createConversationStore();
-			await store.getState().openProjected(service, "ref-1");
-			store.setState({ olderCursor: "cursor-1" });
-			service.olderItems = {
-				turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-				nextCursor: undefined,
-			};
-			await store.getState().loadOlder(service);
+			const { service, store } = await openRunningTurn([], {});
+			await loadFillerPage(store, service);
 			expect(store.getState().conversation?.turns.map((turn) => turn.id)).toEqual(["t0", "t1"]);
 
 			store.getState().applyNotification(warningFrame({ message: "careful" }));
@@ -5466,21 +5460,8 @@ describe("ConversationStore", () => {
 		});
 
 		it("a settle reread whose fresh window re-issues the turn's content under a new id still drops the transient warning", async () => {
-			const service = new FakeConversationService();
-			service.readProjectionResult = makeReadProjectionResult(
-				makeThread({
-					turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
-					evener: evenerWith({ activeTurnId: "t1" }),
-				}),
-			);
-			const store = createConversationStore();
-			await store.getState().openProjected(service, "ref-1");
-			store.setState({ olderCursor: "cursor-1" });
-			service.olderItems = {
-				turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-				nextCursor: undefined,
-			};
-			await store.getState().loadOlder(service);
+			const { service, store } = await openRunningTurn([], {});
+			await loadFillerPage(store, service);
 
 			// The warned turn also carries real content the transcript persists:
 			// the turn stays inside the keep-window through it, so compaction
@@ -13447,15 +13428,7 @@ describe("ConversationStore", () => {
 		// key-first identity — treated the surviving page history as unowned
 		// and an omitting rehydrate dropped it.
 		it("migrates a page item's claim to the transcript key a completion reissues it under", async () => {
-			const service = new FakeConversationService();
-			service.readProjectionResult = makeReadProjectionResult(
-				makeThread({
-					turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
-					evener: evenerWith({ activeTurnId: "t1" }),
-				}),
-			);
-			const store = createConversationStore();
-			await store.getState().openProjected(service, "ref-1");
+			const { service, store } = await openRunningTurn([], {});
 			// The page fragment of the active turn carries a KEYLESS item: the
 			// ownership record claims its bare wire id.
 			store.setState({ olderCursor: "cursor-1" });
@@ -13528,15 +13501,7 @@ describe("ConversationStore", () => {
 		// live item to page history; an omitting rehydrate then kept live
 		// content the wire had withdrawn.
 		it("keeps a same-id different-key item from adopting the bare-id claim another item owns", async () => {
-			const service = new FakeConversationService();
-			service.readProjectionResult = makeReadProjectionResult(
-				makeThread({
-					turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
-					evener: evenerWith({ activeTurnId: "t1" }),
-				}),
-			);
-			const store = createConversationStore();
-			await store.getState().openProjected(service, "ref-1");
+			const { service, store } = await openRunningTurn([], {});
 			// The page fragment of t1 carries a KEYED item: the claim records the
 			// key and the bare wire id.
 			store.setState({ olderCursor: "cursor-1" });
@@ -13569,15 +13534,9 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...({
-								id: "X",
-								turnId: "t2",
-								transcriptKey: "K2",
-								type: "agentMessage",
-								text: "live answer",
-								status: "completed",
-							} as ThreadItem),
+							...agentMessageItem("X", "live answer", "completed"),
 							turnId: "t2",
+							transcriptKey: "K2",
 						},
 					],
 				}),
@@ -13720,26 +13679,10 @@ describe("ConversationStore", () => {
 			// holds it: page ownership registers (RoboRev round 17), and a
 			// live frame then brings the same item into the active turn —
 			// page-owned history AND the running row.
-			store.setState({ olderCursor: "cursor-1" });
-			service.olderItems = {
-				turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-				nextCursor: undefined,
-			};
-			await store.getState().loadOlder(service);
+			await loadFillerPage(store, service);
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...({
-								id: "item-a",
-								turnId: "t1",
-								type: "agentMessage",
-								text: "Hello",
-								status: "inProgress",
-							} as ThreadItem),
-							turnId: "t1",
-						},
-					],
+					items: [{ ...agentMessageItem("item-a", "Hello", "inProgress"), turnId: "t1" }],
 				}),
 			);
 
@@ -13770,38 +13713,13 @@ describe("ConversationStore", () => {
 		});
 
 		it("a full turn completion withdraws a page-loaded item it omits", async () => {
-			const service = new FakeConversationService();
-			service.readProjectionResult = makeReadProjectionResult(
-				makeThread({
-					turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
-					evener: evenerWith({ activeTurnId: "t1" }),
-				}),
-				ALL_TRUE_CAPS,
-				true,
-			);
-			const store = createConversationStore();
-			await store.getState().openProjected(service, "ref-1");
-			store.setState({ olderCursor: "cursor-1" });
-			service.olderItems = {
-				turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-				nextCursor: undefined,
-			};
-			await store.getState().loadOlder(service);
+			const { service, store } = await openRunningTurn([], {}, true);
+			await loadFillerPage(store, service);
 
 			// A live frame brings the paged item into the active turn.
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...({
-								id: "pagey",
-								turnId: "t1",
-								type: "userMessage",
-								text: "paged content",
-							} as ThreadItem),
-							turnId: "t1",
-						},
-					],
+					items: [{ ...userMessageItem("pagey", "paged content"), turnId: "t1" }],
 				}),
 			);
 			expect(rowById(store, "pagey")).toBeDefined();
@@ -13833,36 +13751,11 @@ describe("ConversationStore", () => {
 		});
 
 		it("a full turn completion with no items list withdraws them all", async () => {
-			const service = new FakeConversationService();
-			service.readProjectionResult = makeReadProjectionResult(
-				makeThread({
-					turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
-					evener: evenerWith({ activeTurnId: "t1" }),
-				}),
-				ALL_TRUE_CAPS,
-				true,
-			);
-			const store = createConversationStore();
-			await store.getState().openProjected(service, "ref-1");
-			store.setState({ olderCursor: "cursor-1" });
-			service.olderItems = {
-				turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-				nextCursor: undefined,
-			};
-			await store.getState().loadOlder(service);
+			const { service, store } = await openRunningTurn([], {}, true);
+			await loadFillerPage(store, service);
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...({
-								id: "pagey",
-								turnId: "t1",
-								type: "userMessage",
-								text: "paged content",
-							} as ThreadItem),
-							turnId: "t1",
-						},
-					],
+					items: [{ ...userMessageItem("pagey", "paged content"), turnId: "t1" }],
 				}),
 			);
 			expect(rowById(store, "pagey")).toBeDefined();
@@ -13901,12 +13794,7 @@ describe("ConversationStore", () => {
 			);
 			const store = createConversationStore();
 			await store.getState().openProjected(service, "ref-1");
-			store.setState({ olderCursor: "cursor-1" });
-			service.olderItems = {
-				turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-				nextCursor: undefined,
-			};
-			await store.getState().loadOlder(service);
+			await loadFillerPage(store, service);
 			for (const item of [
 				{ id: "p-1", turnId: "tA", type: "userMessage", text: "paged" } as ThreadItem,
 				{ id: "live-1", turnId: "tA", type: "agentMessage", text: "stale live", status: "inProgress" } as ThreadItem,
@@ -13944,23 +13832,8 @@ describe("ConversationStore", () => {
 		});
 
 		it("a reread that drops a turn's error does not resurrect the failure", async () => {
-			const service = new FakeConversationService();
-			service.readProjectionResult = makeReadProjectionResult(
-				makeThread({
-					turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
-					evener: evenerWith({ activeTurnId: "t1" }),
-				}),
-				ALL_TRUE_CAPS,
-				true,
-			);
-			const store = createConversationStore();
-			await store.getState().openProjected(service, "ref-1");
-			store.setState({ olderCursor: "cursor-1" });
-			service.olderItems = {
-				turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-				nextCursor: undefined,
-			};
-			await store.getState().loadOlder(service);
+			const { service, store } = await openRunningTurn([], {}, true);
+			await loadFillerPage(store, service);
 
 			// The turn fails locally: its error projects a failure row.
 			store.getState().applyNotification(
@@ -14008,17 +13881,7 @@ describe("ConversationStore", () => {
 		});
 
 		it("a paged fragment of a turn does not shield its live-acquired failure from a clean reread", async () => {
-			const service = new FakeConversationService();
-			service.readProjectionResult = makeReadProjectionResult(
-				makeThread({
-					turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
-					evener: evenerWith({ activeTurnId: "t1" }),
-				}),
-				ALL_TRUE_CAPS,
-				true,
-			);
-			const store = createConversationStore();
-			await store.getState().openProjected(service, "ref-1");
+			const { service, store } = await openRunningTurn([], {}, true);
 			store.setState({ olderCursor: "cursor-1" });
 			// The page owns a bare usage FRAGMENT of the live turn — no failure
 			// content among it.
@@ -14099,30 +13962,13 @@ describe("ConversationStore", () => {
 			);
 			const store = createConversationStore();
 			await store.getState().openProjected(service, "ref-1");
-			store.setState({ olderCursor: "cursor-1" });
-			service.olderItems = {
-				turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-				nextCursor: undefined,
-			};
-			await store.getState().loadOlder(service);
+			await loadFillerPage(store, service);
 
 			// The call fails locally: its item settles "failed" and the row
 			// shows it.
 			store.getState().applyNotification(
 				historyUpdated({
-					items: [
-						{
-							...({
-								id: "act",
-								turnId: "t1",
-								type: "commandExecution",
-								toolName: "shell",
-								callId: "c1",
-								status: "failed",
-							} as ThreadItem),
-							turnId: "t1",
-						},
-					],
+					items: [{ ...commandExecItem("act", "shell", "failed"), turnId: "t1", callId: "c1" }],
 				}),
 			);
 			expect((rowById(store, "act") as { state?: string }).state).toBe("failed");
@@ -14438,15 +14284,7 @@ describe("ConversationStore", () => {
 		// the next bounded refresh, whose window omits the item, drops loaded
 		// page history.
 		it("keeps a paged item's page-ness when a refresh lends it a transcript key", async () => {
-			const service = new FakeConversationService();
-			service.readProjectionResult = makeReadProjectionResult(
-				makeThread({
-					turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
-					evener: evenerWith({ activeTurnId: "t1" }),
-				}),
-			);
-			const store = createConversationStore();
-			await store.getState().openProjected(service, "ref-1");
+			const { service, store } = await openRunningTurn([], {});
 			store.setState({ olderCursor: "cursor-1" });
 			// The page's item is keyless (an older producer that predates keys)
 			// and otherwise exactly what the reread will re-serve — no position,
@@ -15562,15 +15400,10 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...({
-								type: "commandExecution",
-								id: "tool-1",
-								transcriptKey: "shared-key",
-								toolName: "shell",
-								status: "inProgress",
-								callId: "call-A",
-								output: "x".repeat(MAX_ITEM_BYTES + 100),
-							} as ThreadItem),
+							...commandExecItem("tool-1", "shell", "inProgress"),
+							transcriptKey: "shared-key",
+							callId: "call-A",
+							output: "x".repeat(MAX_ITEM_BYTES + 100),
 							turnId: "t0",
 						},
 					],
@@ -15583,15 +15416,10 @@ describe("ConversationStore", () => {
 				historyUpdated({
 					items: [
 						{
-							...({
-								type: "commandExecution",
-								id: "tool-1",
-								transcriptKey: "shared-key",
-								toolName: "shell",
-								status: "completed",
-								callId: "call-A",
-								output: "short-result",
-							} as ThreadItem),
+							...commandExecItem("tool-1", "shell", "completed"),
+							transcriptKey: "shared-key",
+							callId: "call-A",
+							output: "short-result",
 							turnId: "t0",
 						},
 					],
