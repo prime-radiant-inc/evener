@@ -2,7 +2,7 @@
 
 import { expect, test } from "vitest";
 import type { ThreadModel } from "./model";
-import { applyNotification, hydrateThread } from "./reducer";
+import { applyNotification } from "./reducer";
 import {
   decideSteerRoute,
   decideSubmitRoute,
@@ -15,6 +15,7 @@ import {
   sessionControls,
 } from "./submitRouting";
 import { wireThread } from "./testing/notifications";
+import { hydrateThread } from "./transcriptHistory";
 import type { AnyNotification } from "./types.gen";
 
 // --- decideSubmitRoute: send vs queue vs no-op --------------------------

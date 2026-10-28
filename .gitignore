@@ -36,6 +36,8 @@ evener-linux-amd64
 # run by hand) drops its output here under the default name.
 /evener-dev.exe
 node_modules/
+# Personal Comic Sans webfonts: local verification only, never distribute.
+/cmd/evener-hub/frontend/public/webassets/comic-local/
 results/
 docs/experiments/runs/
 docs/experiments/dashboard.html

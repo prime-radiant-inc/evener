@@ -989,6 +989,29 @@ test("wires the injected client into connectionStore (connects on mount)", async
   }
 });
 
+test("rerender keeps the injected client's navigation wiring and unmount leaves the client open", async () => {
+  const client = navClient();
+  const view = render(<AppShell client={client} />);
+  await waitFor(() => expect(navigationStore.getState().mode).toBe("v3"));
+  const manifest = navigationStore.getState().manifest;
+  expect(manifest?.error).toBeNull();
+  const manifestReads = () =>
+    client.calls.filter(
+      (call) =>
+        call.method === "evener/navigation/read" && (call.params as NavigationReadParams).resource === "manifest",
+    );
+  expect(manifestReads()).toHaveLength(1);
+
+  view.rerender(<AppShell client={client} />);
+  expect(connectionStore.getState().client).toBe(client);
+  expect(navigationStore.getState().manifest).toBe(manifest);
+  expect(manifestReads()).toHaveLength(1);
+
+  view.unmount();
+  expect(navigationStore.getState().mode).toBe("unknown");
+  expect(client.state).toBe("ready");
+});
+
 test("shows no banner while the injected client is ready", async () => {
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText("No session open");
@@ -8868,74 +8891,108 @@ test("StrictMode retires its first owner and unmount releases every owner resour
   }
 });
 
-test("a held Next demand released after unmount cannot navigate and a fresh shell still acts", async () => {
-  const owners = trackNeedsYouOwners();
-  const held = heldNeedsYouPage("local:after-unmount");
-  const historyBefore = window.history.length;
-  let view: ReturnType<typeof render> | undefined;
-  let freshView: ReturnType<typeof render> | undefined;
-  try {
-    view = render(<AppShell client={held.client} />);
-    await waitFor(() => expect(owners.activeCount()).toBe(1));
-    await held.entered;
-    fireEvent.keyDown(window, { key: "j", metaKey: true });
-    const record = requireNeedsYouOwner(owners);
-    await waitFor(() => expect(record.nextCalls).toBe(1));
-    expect(held.reads).toEqual([{ offset: 0, limit: 50 }]);
-    expect(window.location.pathname).toBe("/");
-    expect(window.history.length).toBe(historyBefore);
+test.each(["retained", "released"] as const)(
+  "a held Next demand released after unmount cannot navigate and a fresh shell still acts with navigation %s",
+  async (navigationLifetime) => {
+    const owners = trackNeedsYouOwners();
+    const held = heldNeedsYouPage("local:after-unmount");
+    const requests = vi.spyOn(held.client, "request");
+    // The first init owns navigation, same-client init in the shell is a no-op.
+    // Retain that real owner only for the case where late data must still land.
+    // Otherwise the shell owns the final release and must fence the response.
+    const releaseNavigation = navigationLifetime === "retained" ? initNavigation(held.client) : () => {};
+    const historyBefore = window.history.length;
+    let view: ReturnType<typeof render> | undefined;
+    let freshView: ReturnType<typeof render> | undefined;
+    try {
+      view = render(<AppShell client={held.client} />);
+      await waitFor(() => expect(owners.activeCount()).toBe(1));
+      await held.entered;
+      fireEvent.keyDown(window, { key: "j", metaKey: true });
+      const record = requireNeedsYouOwner(owners);
+      await waitFor(() => expect(record.nextCalls).toBe(1));
+      const next = vi.mocked(record.controller.next).mock.results[0];
+      if (next?.type !== "return") throw new Error("missing real Next demand promise");
+      expect(next.value).toBeInstanceOf(Promise);
+      const pageRequestIndex = requests.mock.calls.findIndex(
+        ([method, params]) =>
+          method === "evener/navigation/read" && (params as NavigationReadParams).section === "needs_you",
+      );
+      const pageRequest = requests.mock.results[pageRequestIndex];
+      if (pageRequest?.type !== "return") throw new Error("missing held navigation request promise");
+      expect(held.reads).toEqual([{ offset: 0, limit: 50 }]);
+      expect(needsYouPages()).toHaveLength(1);
+      expect(needsYouPages()[0]?.loading).toBe(true);
+      expect(window.location.pathname).toBe("/");
+      expect(window.history.length).toBe(historyBefore);
 
-    view.unmount();
-    view = undefined;
-    expect(owners.activeCount()).toBe(0);
-    expectOwnerReleased(record);
-    expect(record.consumerSubscriptions).toBeGreaterThan(0);
-    expect(record.consumerUnsubscribes).toBe(record.consumerSubscriptions);
+      view.unmount();
+      view = undefined;
+      expect(owners.activeCount()).toBe(0);
+      expectOwnerReleased(record);
+      expect(record.consumerSubscriptions).toBeGreaterThan(0);
+      expect(record.consumerUnsubscribes).toBe(record.consumerSubscriptions);
 
-    await act(async () => {
-      held.release();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(needsYouPages().every((page) => !page.loading)).toBe(true));
-    // The released page really landed, so the "no navigation" assertion is not
-    // vacuous.
-    expect(
-      needsYouPages().some((page) =>
-        ((page.data as { sessions?: Array<{ ref: string }> } | null)?.sessions ?? []).some(
-          (row) => row.ref === "local:after-unmount",
-        ),
-      ),
-    ).toBe(true);
-    expect(window.location.pathname).toBe("/");
-    expect(window.history.length).toBe(historyBefore);
-    expect(workspaceStore.getState().mainPane()?.type).not.toBe("session");
-    expect(owners.records).toHaveLength(1);
+      await act(async () => {
+        held.release();
+        // Await the actual transport response and the real keyboard action's
+        // continuation, not an empty-resource poll or a fixed microtask count.
+        await pageRequest.value;
+        await next.value;
+      });
+      if (navigationLifetime === "retained") {
+        expect(navigationStore.getState().mode).toBe("v3");
+        expect(needsYouPages()).toHaveLength(1);
+        expect(needsYouPages().every((page) => !page.loading)).toBe(true);
+        // The released page really landed, so the "no navigation" assertion is not
+        // vacuous.
+        expect(
+          needsYouPages().some((page) =>
+            ((page.data as { sessions?: Array<{ ref: string }> } | null)?.sessions ?? []).some(
+              (row) => row.ref === "local:after-unmount",
+            ),
+          ),
+        ).toBe(true);
+      } else {
+        // The shell was the final navigation owner. A response that actually
+        // settled after teardown must not revive its resources or selectable rows.
+        expect(needsYouPages()).toEqual([]);
+        expect(navigationStore.getState().resources.size).toBe(0);
+        expect(navigationStore.getState().mode).toBe("unknown");
+        expect(selectNeedsYouRows(navigationStore.getState())).toEqual([]);
+      }
+      expect(window.location.pathname).toBe("/");
+      expect(window.history.length).toBe(historyBefore);
+      expect(workspaceStore.getState().mainPane()?.type).not.toBe("session");
+      expect(owners.records).toHaveLength(1);
 
-    // A later fresh shell must still create one owner and act normally.
-    freshView = render(<AppShell client={navClient()} />);
-    await waitFor(() => expect(owners.activeCount()).toBe(1));
-    await waitFor(() => expect(connectionStore.getState().state).toBe("ready"));
-    await waitFor(() => expect(owners.activeCount()).toBe(1));
-    const fresh = owners.active()[0];
-    if (!fresh) throw new Error("fresh shell created no needs-you owner");
-    expect(fresh.controller).not.toBe(record.controller);
-    await act(async () => {
-      installNeedsYouRows();
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(selectNeedsYouRows(navigationStore.getState())).toHaveLength(2));
-    fireEvent.keyDown(window, { key: "j", metaKey: true });
-    await waitFor(() => expect(fresh.nextCalls).toBe(1));
-    await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:ny1" }));
-    expect(window.location.pathname).toBe("/s/local%3Any1");
-    expect(owners.records).toHaveLength(2);
-  } finally {
-    view?.unmount();
-    freshView?.unmount();
-    owners.restore();
-  }
-});
+      releaseNavigation();
+      // A later fresh shell must still create one owner and act normally.
+      freshView = render(<AppShell client={navClient()} />);
+      await waitFor(() => expect(owners.activeCount()).toBe(1));
+      await waitFor(() => expect(connectionStore.getState().state).toBe("ready"));
+      await waitFor(() => expect(owners.activeCount()).toBe(1));
+      const fresh = owners.active()[0];
+      if (!fresh) throw new Error("fresh shell created no needs-you owner");
+      expect(fresh.controller).not.toBe(record.controller);
+      await act(async () => {
+        installNeedsYouRows();
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(selectNeedsYouRows(navigationStore.getState())).toHaveLength(2));
+      fireEvent.keyDown(window, { key: "j", metaKey: true });
+      await waitFor(() => expect(fresh.nextCalls).toBe(1));
+      await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:ny1" }));
+      expect(window.location.pathname).toBe("/s/local%3Any1");
+      expect(owners.records).toHaveLength(2);
+    } finally {
+      view?.unmount();
+      freshView?.unmount();
+      releaseNavigation();
+      owners.restore();
+    }
+  },
+);
 
 // The real browser guard measured the floating Next-needs-you control at seven
 // widths after a phone/desktop host swap and found it only at 1024 and 1400.

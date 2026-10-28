@@ -13,6 +13,7 @@ import { usePinNavigation } from "./usePinNavigation";
 import { destructiveButton } from "./haptics";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 import { Button } from "./sheet/Grouped";
+import { CATEGORY_NAME_MAX_CODE_POINTS } from "./navigationActionRepository";
 
 const storageError = "Your last saved category name is kept. This edit could not be saved on this device. Try again.";
 export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenProps<Routes, "PinSectionEditor">) {
@@ -55,7 +56,7 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 		!settled || !section || !selected || !!selected.error || !pin.actions || !!pin.action?.storageUnavailable;
 	const name = selected?.draft?.name ?? section?.name ?? title;
 	const length = Array.from(name.trim()).length;
-	const valid = length > 0 && length <= 80;
+	const valid = length > 0 && length <= CATEGORY_NAME_MAX_CODE_POINTS;
 	function refresh() {
 		try {
 			setProposal({ owner: repository, draft: repository.load(), error: null });
@@ -169,7 +170,7 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 									},
 								]}
 							/>
-							{!valid ? <Copy muted>Use 1–80 characters.</Copy> : null}
+							{!valid ? <Copy muted>Use 1–{CATEGORY_NAME_MAX_CODE_POINTS} characters.</Copy> : null}
 						</View>
 						<View style={[styles.row, { flexWrap: "wrap" }]}>
 							<Button primary compact label="Save name" disabled={blocked || !valid} onPress={() => void execute()} />

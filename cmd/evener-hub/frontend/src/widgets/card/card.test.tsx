@@ -1,8 +1,6 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import { requireClass } from "../internal/requireClass";
 import rawStyles from "./card.module.css";
 import { Card, type CardProps } from "./index";
@@ -14,7 +12,7 @@ const styles = {
 };
 
 function cardCss(): string {
-  return stripCssComments(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "card.module.css"), "utf8"));
+  return readModuleCss(import.meta.url, "card.module.css");
 }
 
 // The last rule for this selector: outlined and attention also share a grouped
@@ -22,12 +20,6 @@ function cardCss(): string {
 function ruleBody(css: string, selector: string): string {
   const rules = [...css.matchAll(new RegExp(`\\.${selector}\\s*\\{([^}]*)\\}`, "g"))];
   return rules.at(-1)?.[1] ?? "";
-}
-
-// A stylesheet-grep assertion must not be satisfiable by a comment - this repo
-// has a precedent of exactly that passing while asserting nothing.
-function stripCssComments(css: string): string {
-  return css.replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
 test("renders its children", () => {
@@ -53,8 +45,7 @@ test("wraps children in a single container carrying the card class", () => {
 // border - see docs/superpowers/specs/2026-08-13-webui-beautiful-ui-retheme-
 // design.md §6.
 test("carries its ring via box-shadow rather than a border", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "card.module.css"), "utf8");
-  const rule = /\.card\s*\{([^}]*)\}/.exec(stripCssComments(css))?.[1] ?? "";
+  const rule = /\.card\s*\{([^}]*)\}/.exec(cardCss())?.[1] ?? "";
   expect(rule).toContain("box-shadow: var(--shadow-card)");
   expect(rule).not.toContain("border:");
 });

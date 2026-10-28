@@ -61,7 +61,10 @@ export function reconcileComposerMentions(
   after: string,
   mentions: readonly ComposerMention[],
 ): ComposerMention[] {
-  const prefix = sharedPrefixLength(before, after);
+  // A whole-draft prepend can share its leading slash with the old first label.
+  // Prefer append when both interpretations fit, retaining the original identities.
+  const prepended = !after.startsWith(before) && after.endsWith(before);
+  const prefix = prepended ? 0 : sharedPrefixLength(before, after);
   const suffix = sharedSuffixLength(before, after, prefix);
   const oldEnd = before.length - suffix;
   const delta = after.length - before.length;

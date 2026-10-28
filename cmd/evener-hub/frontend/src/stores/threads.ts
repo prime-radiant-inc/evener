@@ -994,8 +994,14 @@ async function openEntryTranscript(ref: string, recovery = false): Promise<boole
           new Promise<undefined>((resolve) => {
             timer = setTimeout(
               () => {
+                // A held pane keeps a reader through the swap: the repository
+                // reclaims the bodies behind a displayed window the moment it
+                // has none, and the next publication would then replace that
+                // display with the body-suppressed model.
+                if (fixture.reader === reader) {
+                  fixture.reader = heldCountsAtStore(ref) ? repository.attachReader() : undefined;
+                }
                 reader.dispose();
-                if (fixture.reader === reader) fixture.reader = undefined;
                 resolve(undefined);
                 // A recovery attempt outlasts the lookup deadline on purpose:
                 // a read that answers slower than the deadline but successfully
@@ -1488,6 +1494,7 @@ function createEntryTranscriptRepository(
     mayPersist: () =>
       !fixture.cachedUnverified &&
       (!productionRoute || threadsStore.getState().cacheLifetimes.get(ref)?.suppressed !== true),
+    onHistoryReadAccepted: (response, model) => reconcileAcceptedReadRecovery(ref, response, model),
     readHistory: (held, signal) =>
       runEntryHistoryRequest(fixture, signal, () => {
         const client = wiredClient;
@@ -2523,6 +2530,10 @@ function currentDispatchClient(
       // independently of restartBlockingObligations, which a stale thread
       // refresh can clear while the RPC is still in flight.
       state.stoppingRefs.has(targetRef) ||
+      // A reconnect read may allow folding, but explicit resume still owns
+      // the destination identity and its outbox reconciliation until it ends.
+      inFlightResumes.has(targetRef) ||
+      Array.from(inFlightResumes.values()).some((drive) => drive.targetRef === targetRef) ||
       // A graceful shutdown's own cancellation write is in flight: the write is
       // an await and is not itself a fence, so a dispatch already scheduled for
       // the ref could be admitted in that window and put the row the Stop is
@@ -3186,8 +3197,13 @@ export function resumeStopBaseline(): (ref?: string) => void {
 let resumeFailureSeq = 0;
 // Per ref, the ONE in-flight drive. Concurrent callers (a second send, the
 // notice's Resume press) await the same promise, so they ride the same retarget,
-// hydration, and publication instead of starting a second resumeThread.
-const inFlightResumes = new Map<string, Promise<void>>();
+// hydration, and publication instead of starting a second resumeThread. The
+// owner fences both the source and resolved destination until that work ends.
+interface ResumeDrive {
+  promise: Promise<void>;
+  targetRef: string;
+}
+const inFlightResumes = new Map<string, ResumeDrive>();
 
 // Waiters parked on a ref's Stop drain, settled by markStopping when the drain
 // ends. A resolver is not a store subscription: the only write that can end a
@@ -3216,17 +3232,31 @@ function waitForStopDrain(ref: string): Promise<void> {
 
 async function resumeFencedForSend(ref: string): Promise<void> {
   const existing = inFlightResumes.get(ref);
-  if (existing !== undefined) return existing;
-  const drive = runResumeFencedForSend(ref);
+  if (existing !== undefined) return existing.promise;
+  const stopBaseline = resumeStopBaseline();
+  const drive: ResumeDrive = {
+    promise: Promise.resolve().then(() => runResumeFencedForSend(ref, drive, stopBaseline)),
+    targetRef: ref,
+  };
+  // Install the owner before resumeThread can reconnect and publish ready.
   inFlightResumes.set(ref, drive);
   try {
-    await drive;
+    await drive.promise;
   } finally {
-    if (inFlightResumes.get(ref) === drive) inFlightResumes.delete(ref);
+    if (inFlightResumes.get(ref) === drive) {
+      inFlightResumes.delete(ref);
+      // Reconciliation's dispatch attempt ran behind this owner's fence.
+      // Release must wake same-identity sends too, with all other gates intact.
+      notifyReadyForMutationDispatch([ref, drive.targetRef]);
+    }
   }
 }
 
-async function runResumeFencedForSend(ref: string): Promise<void> {
+async function runResumeFencedForSend(
+  ref: string,
+  drive: ResumeDrive,
+  stopBaseline: (ref?: string) => void,
+): Promise<void> {
   // Hoisted for the catch: which identity this drive reached, what its first
   // retarget moved, whether a Stop won the identity fence, and whether this
   // drive registered a swap (it only does when the resume changed the ref).
@@ -3238,20 +3268,19 @@ async function runResumeFencedForSend(ref: string): Promise<void> {
     const client = wiredClient;
     if (client === null || client.state !== "ready")
       throw new Error("Connect to the hub before resuming this session.");
-    // The baseline is taken BEFORE the drain wait: a Stop that lands during the
+    // The baseline was taken when the drive acquired ownership, BEFORE the drain wait: a Stop that lands during the
     // wait is a person canceling the message this drive would send, and a
     // baseline captured after it would treat that Stop as already accounted for
     // and resume anyway.
-    const stopBaseline = resumeStopBaseline();
     // A Stop this page started holds Stopping > 0 and the hub refuses even
     // turn/start for that window, so wait the drain out before resuming. Send
     // stays the single recovery action: the press parks its row and this drive
     // runs once the drain settles, instead of the user meeting a Resume button.
-    // Only a drain in progress defers the RPC; with none, the resume starts in
-    // this same tick so a Send still issues it on the press's own turn.
+    // Only a drain in progress waits for another user action to settle.
     while (threadsStore.getState().stoppingRefs.has(ref)) await waitForStopDrain(ref);
     const { thread } = await client.resumeThread(ref, { beforeRequest: stopBaseline });
     resumedRef = thread.evener.ref;
+    drive.targetRef = resumedRef;
     // The token the daemon's instance fence compares (server/appwire_thread_settings.go's
     // expectedInstanceID vs appThreadID), read the same fused way a fresh send
     // derives it (instanceId ?? threadId). Taken off the resume RESPONSE: the
@@ -5663,6 +5692,23 @@ function publishThreadHydration(
   return backgroundModel;
 }
 
+// Admission comes from a fresh accepted server read, not generic model publication.
+// Clearing an obligation still requires tracked mutation reconciliation below;
+// a repository end/final read cannot prove uncertain outbox rows absent.
+function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse, model: ThreadModel): void {
+  threadsStore.setState((state) => {
+    const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
+    if (response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(ref);
+    else mutationAuthorityRefs.delete(ref);
+    return { mutationAuthorityRefs };
+  });
+  if (model.status.type === "restartRequired" || response.thread.evener.resumeRequired === true) {
+    threadsStore.setState((state) => ({
+      restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+    }));
+  }
+}
+
 async function publishAndReconcileThreadHydration(
   ref: string,
   pending: PendingThreadHydration,
@@ -5677,17 +5723,7 @@ async function publishAndReconcileThreadHydration(
   const adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
   const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
   if (!published) return null;
-  threadsStore.setState((state) => {
-    const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
-    if (hydration.response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(ref);
-    else mutationAuthorityRefs.delete(ref);
-    return { mutationAuthorityRefs };
-  });
-  if (published.status.type === "restartRequired" || hydration.response.thread.evener.resumeRequired === true) {
-    threadsStore.setState((state) => ({
-      restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
-    }));
-  }
+  reconcileAcceptedReadRecovery(ref, hydration.response, published);
   const blockingObligation = threadsStore.getState().restartBlockingObligations.get(ref);
   if (intent === "background" || intent === "final") return published;
   // The authoritative read has succeeded, so the replay gate opens HERE — in

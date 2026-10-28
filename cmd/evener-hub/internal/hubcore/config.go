@@ -21,11 +21,12 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
-// RelayLifecycleHooks are optional test seams the relay idle-retirement loop
-// invokes to observe teardown. They are nil in production and set once via
+// RelayLifecycleHooks are optional test seams for relay reads, publication,
+// subscription and teardown. They are nil in production and set once via
 // WebConfig at construction (never mutated after a relay goroutine starts), so
 // each hub server instance carries its own — no shared global, no data race.
 type RelayLifecycleHooks struct {
+	BeforeReadThread           func()
 	IdleExit                   func(threadID string)
 	AfterIdleDelete            func(threadID string)
 	RetryWait                  func(context.Context, time.Duration) error

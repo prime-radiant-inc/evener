@@ -1721,6 +1721,35 @@ describe("ConversationStore", () => {
 			).toThrow(/mutationHubId is required/);
 		});
 
+		// send and queue are one submission with a kind-specific availability
+		// check: where the check refuses, the store is untouched; where it
+		// allows, the same transition runs and only the kind differs.
+		it.each([
+			{ kind: "send", status: "idle", other: "queue" },
+			{ kind: "queue", status: "active", other: "send" },
+		] as const)(
+			"$kind runs the shared submission transition and refuses where $other's state is wrong",
+			async ({ kind, status }) => {
+				const service = new FakeConversationService();
+				service.openConv = makeConversation({ status: { type: status } });
+				const store = createConversationStore();
+				await store.getState().open(service, "ref-1");
+				const refused = kind === "send" ? "queue" : "send";
+				store.getState().setDraft("keep me");
+				await expect(store.getState()[refused](service, textInput("x"))).rejects.toThrow();
+				expect(store.getState().draft).toBe("keep me");
+				expect(store.getState().pendingSubmission).toBeNull();
+				expect(store.getState().failedSubmission).toBeNull();
+
+				await store.getState()[kind](service, textInput("x"));
+				expect(store.getState().draft).toBe("");
+				expect(store.getState().pendingSubmission).toBeNull();
+				expect(store.getState().lastAcceptedMutation?.kind).toBe(kind);
+				expect(service.sendCallCount).toBe(kind === "send" ? 1 : 0);
+				expect(service.queueCallCount).toBe(kind === "queue" ? 1 : 0);
+			},
+		);
+
 		it("send has an independent capability gate from queue", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();

@@ -617,6 +617,9 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 }
 
 func (s *Session) processInputWithProvenance(ctx context.Context, input string, images []ImageAttachment, p *provenance.Causal) (string, error) {
+	// This internal entry is used for harness nudges and stop-hook input, not
+	// a client's message. Keep that evidence distinct from session placement.
+	ctx = context.WithValue(ctx, internalTranscriptInputKey{}, true)
 	return s.processInputKindWithProvenance(ctx, input, images, EntryUserInput, p)
 }
 
@@ -2242,6 +2245,9 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	if queuedIdentity.ClientMutationID == "" {
 		if !preseededInput {
 			turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
+			if internal, _ := ctx.Value(internalTranscriptInputKey{}).(bool); !internal {
+				turn.Authorship = humanTranscriptAuthorship()
+			}
 			if selected := durableSkillSelectionFromContext(ctx); selected != nil {
 				turn.CommandInput = selected.CommandInput
 				turn.Message = appendSelectedCommands(turn.Message, selected.CommandInput, selected.CommandBodies)
@@ -2258,6 +2264,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		}
 	} else {
 		turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
+		turn.Authorship = humanTranscriptAuthorship()
 		if selected := durableSkillSelectionFromContext(ctx); selected != nil {
 			turn.CommandInput = selected.CommandInput
 			turn.Message = appendSelectedCommands(turn.Message, selected.CommandInput, selected.CommandBodies)

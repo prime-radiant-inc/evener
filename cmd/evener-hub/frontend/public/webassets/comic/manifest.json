@@ -1,0 +1,645 @@
+{
+  "revision": "48a162249484ab8d116c243e8203b0956d350c09",
+  "sprites": [
+    {
+      "face": {
+        "index": 0,
+        "foreground": 2061,
+        "mask": 5363,
+        "aura": 8665,
+        "emotion": 9,
+        "emotion_name": "neutral",
+        "intensity": 0,
+        "cx": 92,
+        "cy": 111,
+        "dx": -4,
+        "dy": 3,
+        "face_x": 106,
+        "face_y": 80
+      },
+      "torso": {
+        "index": 0,
+        "foreground": 112035,
+        "mask": 0,
+        "aura": 122513,
+        "emotion": 9,
+        "emotion_name": "neutral",
+        "intensity": 0,
+        "cx": 93,
+        "cy": 26
+      },
+      "head_offset": [
+        -3,
+        -82
+      ],
+      "canvas_origin": [
+        -3,
+        -82
+      ],
+      "size": [
+        201,
+        454
+      ],
+      "flags": 5,
+      "nimbus": true,
+      "path": "sprites/anna-neutral.png",
+      "avatar": "anna",
+      "pose": "neutral",
+      "source": "v1.0-pre/client/comicart/avatars/anna.avb",
+      "sha256": "8adca28494e27012833e32d591a31875e23b97a8b73b4ee70dc749ccd6c001d6"
+    },
+    {
+      "face": {
+        "index": 1,
+        "foreground": 11967,
+        "mask": 15293,
+        "aura": 18619,
+        "emotion": 1,
+        "emotion_name": "happy",
+        "intensity": 102,
+        "cx": 93,
+        "cy": 110,
+        "dx": -4,
+        "dy": 2,
+        "face_x": 107,
+        "face_y": 81
+      },
+      "torso": {
+        "index": 7,
+        "foreground": 205495,
+        "mask": 0,
+        "aura": 214389,
+        "emotion": 10,
+        "emotion_name": "wave",
+        "intensity": 255,
+        "cx": 77,
+        "cy": 22
+      },
+      "head_offset": [
+        -20,
+        -86
+      ],
+      "canvas_origin": [
+        -20,
+        -86
+      ],
+      "size": [
+        205,
+        454
+      ],
+      "flags": 5,
+      "nimbus": true,
+      "path": "sprites/anna-happy-wave.png",
+      "avatar": "anna",
+      "pose": "happy-wave",
+      "source": "v1.0-pre/client/comicart/avatars/anna.avb",
+      "sha256": "4f77bbb5676c4ac1d41bde614cfa2579cc186f244d59bbe4cf1b2173bbab1cc4"
+    },
+    {
+      "face": {
+        "index": 5,
+        "foreground": 32067,
+        "mask": 35441,
+        "aura": 38815,
+        "emotion": 6,
+        "emotion_name": "angry",
+        "intensity": 153,
+        "cx": 90,
+        "cy": 111,
+        "dx": -6,
+        "dy": 3,
+        "face_x": 108,
+        "face_y": 81
+      },
+      "torso": {
+        "index": 5,
+        "foreground": 190971,
+        "mask": 0,
+        "aura": 198233,
+        "emotion": 6,
+        "emotion_name": "angry",
+        "intensity": 255,
+        "cx": 66,
+        "cy": 6
+      },
+      "head_offset": [
+        -30,
+        -102
+      ],
+      "canvas_origin": [
+        -30,
+        -102
+      ],
+      "size": [
+        191,
+        462
+      ],
+      "flags": 5,
+      "nimbus": true,
+      "path": "sprites/anna-angry.png",
+      "avatar": "anna",
+      "pose": "angry",
+      "source": "v1.0-pre/client/comicart/avatars/anna.avb",
+      "sha256": "153ec5197c2fc7278062cf43e011c827ae4a6e4f8830cbf6315a48475de7698f"
+    },
+    {
+      "face": {
+        "index": 7,
+        "foreground": 53175,
+        "mask": 56501,
+        "aura": 59827,
+        "emotion": 4,
+        "emotion_name": "scared",
+        "intensity": 255,
+        "cx": 86,
+        "cy": 112,
+        "dx": -10,
+        "dy": 2,
+        "face_x": 106,
+        "face_y": 79
+      },
+      "torso": {
+        "index": 10,
+        "foreground": 223283,
+        "mask": 0,
+        "aura": 230645,
+        "emotion": 4,
+        "emotion_name": "scared",
+        "intensity": 255,
+        "cx": 87,
+        "cy": 20
+      },
+      "head_offset": [
+        -9,
+        -90
+      ],
+      "canvas_origin": [
+        -9,
+        -90
+      ],
+      "size": [
+        185,
+        455
+      ],
+      "flags": 5,
+      "nimbus": true,
+      "path": "sprites/anna-scared.png",
+      "avatar": "anna",
+      "pose": "scared",
+      "source": "v1.0-pre/client/comicart/avatars/anna.avb",
+      "sha256": "d4cccd0aab153a24b89532fe1183cd4f45dcfc5dcc09fd9d98435c30b345f32d"
+    },
+    {
+      "face": {
+        "index": 16,
+        "foreground": 92223,
+        "mask": 95549,
+        "aura": 98875,
+        "emotion": 9,
+        "emotion_name": "neutral",
+        "intensity": 0,
+        "cx": 92,
+        "cy": 107,
+        "dx": -6,
+        "dy": -1,
+        "face_x": 110,
+        "face_y": 79
+      },
+      "torso": {
+        "index": 15,
+        "foreground": 278247,
+        "mask": 0,
+        "aura": 287165,
+        "emotion": 11,
+        "emotion_name": "point-other",
+        "intensity": 255,
+        "cx": 62,
+        "cy": 23
+      },
+      "head_offset": [
+        -36,
+        -85
+      ],
+      "canvas_origin": [
+        -36,
+        -85
+      ],
+      "size": [
+        227,
+        454
+      ],
+      "flags": 5,
+      "nimbus": true,
+      "path": "sprites/anna-point.png",
+      "avatar": "anna",
+      "pose": "point",
+      "source": "v1.0-pre/client/comicart/avatars/anna.avb",
+      "sha256": "5700d2724ff7192fad6d6d709af8ef2cc6a6c93cfa4067783bacb6d3bcac87c0"
+    },
+    {
+      "face": {
+        "index": 6,
+        "foreground": 42189,
+        "mask": 45851,
+        "aura": 49513,
+        "emotion": 8,
+        "emotion_name": "laugh",
+        "intensity": 178,
+        "cx": 96,
+        "cy": 116,
+        "dx": -1,
+        "dy": 4,
+        "face_x": 105,
+        "face_y": 80
+      },
+      "torso": {
+        "index": 8,
+        "foreground": 205495,
+        "mask": 0,
+        "aura": 214389,
+        "emotion": 8,
+        "emotion_name": "laugh",
+        "intensity": 255,
+        "cx": 77,
+        "cy": 22
+      },
+      "head_offset": [
+        -20,
+        -90
+      ],
+      "canvas_origin": [
+        -20,
+        -90
+      ],
+      "size": [
+        205,
+        458
+      ],
+      "flags": 5,
+      "nimbus": true,
+      "path": "sprites/anna-celebrate.png",
+      "avatar": "anna",
+      "pose": "celebrate",
+      "source": "v1.0-pre/client/comicart/avatars/anna.avb",
+      "sha256": "353456cdcf1b0e6bd0c22b70309d7843a8c75336ed697a0854dff72f90d58731"
+    },
+    {
+      "face": {
+        "index": 0,
+        "foreground": 1962,
+        "mask": 4520,
+        "aura": 7078,
+        "emotion": 9,
+        "emotion_name": "neutral",
+        "intensity": 0,
+        "cx": 55,
+        "cy": 126,
+        "dx": 0,
+        "dy": 1,
+        "face_x": 62,
+        "face_y": 87
+      },
+      "torso": {
+        "index": 0,
+        "foreground": 83794,
+        "mask": 0,
+        "aura": 90836,
+        "emotion": 9,
+        "emotion_name": "neutral",
+        "intensity": 0,
+        "cx": 86,
+        "cy": 29
+      },
+      "head_offset": [
+        31,
+        -96
+      ],
+      "canvas_origin": [
+        0,
+        -96
+      ],
+      "size": [
+        152,
+        445
+      ],
+      "flags": 5,
+      "nimbus": true,
+      "path": "sprites/xeno-neutral.png",
+      "avatar": "xeno",
+      "pose": "neutral",
+      "source": "v1.0-pre/client/comicart/avatars/xeno.avb",
+      "sha256": "6e4ee70923aa1af389c9ea97d1d39480775f22b3b629f2db497bd1616f1a4bd2"
+    },
+    {
+      "face": {
+        "index": 1,
+        "foreground": 1962,
+        "mask": 4520,
+        "aura": 7078,
+        "emotion": 1,
+        "emotion_name": "happy",
+        "intensity": 51,
+        "cx": 55,
+        "cy": 126,
+        "dx": 0,
+        "dy": 1,
+        "face_x": 62,
+        "face_y": 87
+      },
+      "torso": {
+        "index": 3,
+        "foreground": 114034,
+        "mask": 0,
+        "aura": 120556,
+        "emotion": 11,
+        "emotion_name": "point-other",
+        "intensity": 255,
+        "cx": 72,
+        "cy": 13
+      },
+      "head_offset": [
+        17,
+        -112
+      ],
+      "canvas_origin": [
+        0,
+        -112
+      ],
+      "size": [
+        160,
+        435
+      ],
+      "flags": 5,
+      "nimbus": true,
+      "path": "sprites/xeno-point.png",
+      "avatar": "xeno",
+      "pose": "point",
+      "source": "v1.0-pre/client/comicart/avatars/xeno.avb",
+      "sha256": "ec1b0685547f146a61a22c6dd08d3ab52228d4eabc562577d7e75b3a78897ec3"
+    },
+    {
+      "face": {
+        "index": 0,
+        "foreground": 1723,
+        "mask": 3881,
+        "aura": 6039,
+        "emotion": 9,
+        "emotion_name": "neutral",
+        "intensity": 0,
+        "cx": 47,
+        "cy": 93,
+        "dx": -2,
+        "dy": 10,
+        "face_x": 63,
+        "face_y": 68
+      },
+      "torso": {
+        "index": 0,
+        "foreground": 63733,
+        "mask": 0,
+        "aura": 70235,
+        "emotion": 9,
+        "emotion_name": "neutral",
+        "intensity": 0,
+        "cx": 76,
+        "cy": 15
+      },
+      "head_offset": [
+        27,
+        -68
+      ],
+      "canvas_origin": [
+        0,
+        -68
+      ],
+      "size": [
+        150,
+        390
+      ],
+      "flags": 5,
+      "nimbus": true,
+      "path": "sprites/armando-neutral.png",
+      "avatar": "armando",
+      "pose": "neutral",
+      "source": "v1.0-pre/client/comicart/avatars/armando.avb",
+      "sha256": "3249b8ae2c801a0df0d3cfae3951b26c306a6aab65420e4a9106843c7a7b4ee3"
+    },
+    {
+      "face": {
+        "index": 0,
+        "foreground": 1602,
+        "mask": 5152,
+        "aura": 8958,
+        "emotion": 9,
+        "emotion_name": "neutral",
+        "intensity": 0,
+        "cx": 97,
+        "cy": 128,
+        "dx": 2,
+        "dy": -5,
+        "face_x": 105,
+        "face_y": 97
+      },
+      "torso": {
+        "index": 0,
+        "foreground": 110410,
+        "mask": 124026,
+        "aura": 134252,
+        "emotion": 9,
+        "emotion_name": "neutral",
+        "intensity": 0,
+        "cx": 107,
+        "cy": 27
+      },
+      "head_offset": [
+        12,
+        -106
+      ],
+      "canvas_origin": [
+        0,
+        -106
+      ],
+      "size": [
+        211,
+        469
+      ],
+      "flags": 5,
+      "nimbus": true,
+      "path": "sprites/bolo-neutral.png",
+      "avatar": "bolo",
+      "pose": "neutral",
+      "source": "v1.0-pre/client/comicart/avatars/bolo.avb",
+      "sha256": "451f1fae459f152dbb4a6b14942adb645e45aec81d6cb5ca9e8ed649f8acc934"
+    },
+    {
+      "face": {
+        "index": 3,
+        "foreground": 19302,
+        "mask": 22282,
+        "aura": 25024,
+        "emotion": 9,
+        "emotion_name": "neutral",
+        "intensity": 0,
+        "cx": 84,
+        "cy": 108,
+        "dx": 0,
+        "dy": 4,
+        "face_x": 92,
+        "face_y": 77
+      },
+      "torso": {
+        "index": 4,
+        "foreground": 219636,
+        "mask": 228300,
+        "aura": 237482,
+        "emotion": 9,
+        "emotion_name": "neutral",
+        "intensity": 0,
+        "cx": 95,
+        "cy": 19
+      },
+      "head_offset": [
+        11,
+        -85
+      ],
+      "canvas_origin": [
+        0,
+        -85
+      ],
+      "size": [
+        177,
+        465
+      ],
+      "flags": 5,
+      "nimbus": true,
+      "path": "sprites/denise-neutral.png",
+      "avatar": "denise",
+      "pose": "neutral",
+      "source": "v1.0-pre/client/comicart/avatars/denise.avb",
+      "sha256": "b1cf0f6a6c2e820088754a818480255f4a7e3cbbe60cc77a0089d01da6f2a823"
+    },
+    {
+      "face": {
+        "index": 2,
+        "foreground": 15119,
+        "mask": 19241,
+        "aura": 23363,
+        "emotion": 9,
+        "emotion_name": "neutral",
+        "intensity": 0,
+        "cx": 65,
+        "cy": 155,
+        "dx": 6,
+        "dy": -1,
+        "face_x": 74,
+        "face_y": 97
+      },
+      "torso": {
+        "index": 0,
+        "foreground": 208181,
+        "mask": 0,
+        "aura": 213923,
+        "emotion": 9,
+        "emotion_name": "neutral",
+        "intensity": 0,
+        "cx": 79,
+        "cy": 16
+      },
+      "head_offset": [
+        20,
+        -140
+      ],
+      "canvas_origin": [
+        0,
+        -140
+      ],
+      "size": [
+        174,
+        424
+      ],
+      "flags": 5,
+      "nimbus": true,
+      "path": "sprites/tiki-neutral.png",
+      "avatar": "tiki",
+      "pose": "neutral",
+      "source": "v1.0-pre/client/comicart/avatars/tiki.avb",
+      "sha256": "ad78f86420d4fc38ba9d87c478acbacf9c0f16e9c0626b73764dc5e2a7d293b5"
+    }
+  ],
+  "backgrounds": [
+    {
+      "path": "backgrounds/field.png",
+      "size": [
+        315,
+        315
+      ],
+      "source": "v1.0-pre/client/comicart/backdrop/field.bmp",
+      "sha256": "ed21ae3dca236a064b79591ca6fd277bf06fb30157b7bdde744c0cf8b43f17d3"
+    },
+    {
+      "path": "backgrounds/room8bs.png",
+      "size": [
+        315,
+        315
+      ],
+      "source": "v1.0-pre/client/comicart/backdrop/room8bs.bmp",
+      "sha256": "0aba3cf2ecedb053c1a4fc711564d890122a3bca1cccaadabe6713abcc7f9977"
+    }
+  ],
+  "emotions": [
+    {
+      "path": "emotions/fc_neu_s.png",
+      "size": [
+        13,
+        18
+      ],
+      "source": "v1.0-pre/client/comicart/avatars/fc_neu_s.bmp",
+      "sha256": "37a190e014603319ffe5840bd3b367c6edadffac6f5fa7b1f38b8371fa23754e"
+    },
+    {
+      "path": "emotions/fc_hap_s.png",
+      "size": [
+        13,
+        18
+      ],
+      "source": "v1.0-pre/client/comicart/avatars/fc_hap_s.bmp",
+      "sha256": "51e034abfe2ae73fe7a8743df3af004ddf00000b4b9799dea60df43c1b29a212"
+    },
+    {
+      "path": "emotions/fc_bor_s.png",
+      "size": [
+        13,
+        18
+      ],
+      "source": "v1.0-pre/client/comicart/avatars/fc_bor_s.bmp",
+      "sha256": "20f93984757d8bd99c4a5da0f36b6bfafb91b62f4432891302c48dfa059a0cb8"
+    },
+    {
+      "path": "emotions/fc_sca_s.png",
+      "size": [
+        13,
+        18
+      ],
+      "source": "v1.0-pre/client/comicart/avatars/fc_sca_s.bmp",
+      "sha256": "72ae61cf6cf23970e8f1e11decb843ea3fb6a08de999bd033020d117dd573d05"
+    },
+    {
+      "path": "emotions/fc_ang_s.png",
+      "size": [
+        13,
+        18
+      ],
+      "source": "v1.0-pre/client/comicart/avatars/fc_ang_s.bmp",
+      "sha256": "ee4be773fe3dcc5674cf42ca794b7c8b50c789688b3906abae3ee1fccb8a767a"
+    },
+    {
+      "path": "emotions/fc_laf_s.png",
+      "size": [
+        13,
+        18
+      ],
+      "source": "v1.0-pre/client/comicart/avatars/fc_laf_s.bmp",
+      "sha256": "7cb313d11270aa3070c7216b9d82b3e61859695c33bea0513c4b023166f76bb1"
+    }
+  ]
+}

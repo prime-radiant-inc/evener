@@ -317,6 +317,8 @@ export interface TranscriptRepositoryBinding {
   reconcile?: () => void;
   /** Read-only, deadline-owned transport ports for end disposition and final retirement. */
   readHistory?: (held?: SnapshotIdentity, signal?: AbortSignal) => Promise<ThreadReadResponse>;
+  /** Only accepted readHistory responses, never local/cache publication or caller-owned hydration. */
+  onHistoryReadAccepted?: (response: ThreadReadResponse, model: ThreadModel) => void;
   readHistoryPage?: (request: {
     snapshot: SnapshotIdentity;
     cursor: string;
@@ -740,6 +742,9 @@ export class TranscriptRepository {
               )
             : hydrated;
         })();
+    // Local overlay preservation must not turn a rejected server read into
+    // accepted history or recovery authority.
+    if (candidate === before) return false;
     if (request.preserveEnded && before?.overlay) {
       for (const item of Object.values(before.overlay)) {
         if (item.kind !== "notice" && (!item.roundId || !this.#endClaims.has(item.roundId))) continue;
@@ -757,7 +762,6 @@ export class TranscriptRepository {
         );
       }
     }
-    if (candidate === before) return false;
     this.#model = candidate;
     const previousHistory = before?.history;
     const acceptedHistory = candidate.history;
@@ -1753,6 +1757,7 @@ export class TranscriptRepository {
         })
       )
         throw new Error("final read was discarded");
+      if (current() && this.#model) this.#binding.onHistoryReadAccepted?.(response, this.#model);
       this.#sealed = true;
       await this.settled(false);
       if (!current()) return { kind: "cancelled" };
@@ -1920,6 +1925,7 @@ export class TranscriptRepository {
       !this.acceptRead(response, { lifetime: this.#binding.lifetime, readId: boundary, boundary, preserveEnded: true })
     )
       throw new Error("end disposition read was discarded");
+    if (current() && this.#model) this.#binding.onHistoryReadAccepted?.(response, this.#model);
     cover(this.#readItems(response));
     const minimum = anchors[0];
     let cursor = response.olderCursor;
