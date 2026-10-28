@@ -2,13 +2,14 @@ import { type Thread, type ThreadCapabilities, WireError } from "@evener/appwire
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
 import { createTestComposerSource } from "../testing/composerSource";
+import { readDraft } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { useComposerActions } from "./useComposerActions";
@@ -256,6 +257,64 @@ test("edits during the accepted durable send survive snapshot clearing", async (
   await flushPendingTurnsProjectionForTests();
   expect(source.getSnapshot().text).toBe("newer edit");
   expect(await storage.listOutbox(ref)).toMatchObject([{ payload: { input: [{ type: "text", text: "submitted" }] } }]);
+});
+
+describe.each(["ordinary", "recovery"] as const)("%s built-in durable submission", (origin) => {
+  test.each([
+    ["queue", "unchanged"],
+    ["queue", "edited away and back"],
+    ["queue", "changed text"],
+    ["queue", "changed selection"],
+    ["steer", "unchanged"],
+    ["steer", "edited away and back"],
+    ["steer", "changed text"],
+    ["steer", "changed selection"],
+  ] as const)("/%s with %s during durable enqueue", async (kind, edit) => {
+    const { source, result } = await setup("active");
+    const recovered = origin === "recovery" ? await seedRecovery() : undefined;
+    if (recovered) {
+      await act(async () => {
+        await source.activateRecovery(recovered);
+        await source.flushRecoveryWrites();
+      });
+    }
+    connectionStore.setState({ state: "idle" });
+    const invocation = `/${kind} submitted`;
+    act(() => source.writeDraft(invocation, true));
+    await act(async () => source.flushRecoveryWrites());
+    await flushPendingTurnsProjectionForTests();
+    const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    let submitting!: Promise<void>;
+    try {
+      await act(async () => {
+        submitting = result.current.submit(kind, { text: "submitted", clearDraftText: invocation });
+        await hold.reached;
+      });
+      expect(result.current.busy).toBe(true);
+      act(() => {
+        if (edit === "edited away and back" || edit === "changed text") source.writeDraft("newer edit", true);
+        if (edit === "edited away and back") source.writeDraft(invocation, true);
+        if (edit === "changed selection") source.editSkillNames(["new-skill"]);
+      });
+    } finally {
+      await act(async () => {
+        hold.release();
+        await submitting;
+      });
+    }
+    await flushPendingTurnsProjectionForTests();
+    expect(await storage.listOutbox(ref)).toMatchObject([
+      { method: `turn/${kind}`, payload: { input: [{ type: "text", text: "submitted" }] } },
+    ]);
+    const expected = edit === "unchanged" ? "" : edit === "changed text" ? "newer edit" : invocation;
+    expect(source.getSnapshot().text).toBe(expected);
+    expect(readDraft(ref)).toBe(expected);
+    expect(source.getSnapshot().skillNames).toEqual(edit === "changed selection" ? ["new-skill"] : []);
+    if (recovered) {
+      expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
+      expect(source.getSnapshot().activeRecoveryId).toBeNull();
+    }
+  });
 });
 
 test("a recovery consumed in another tab is not submitted twice", async () => {
