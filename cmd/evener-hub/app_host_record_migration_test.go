@@ -318,9 +318,15 @@ func TestHostsKeepServingAndChangesResumeWhenTheStoreReturns(t *testing.T) {
 		t.Fatalf("hostops.Open: %v", err)
 	}
 	m.attachOps(store)
+	if _, _, imported := store.HostRecords(); !imported {
+		t.Fatal("attaching the store did not move the host records into it")
+	}
 
 	if _, err := m.AddResult(ctx, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}, MutationID: "add-extra"}); err != nil {
 		t.Fatalf("Add after the store returned: %v", err)
+	}
+	if receipts := mustRecords(t, store).MutationReceipts; len(receipts) == 0 {
+		t.Fatal("the add's receipt did not land in the store")
 	}
 	if _, err := m.UpdateResult(ctx, updateRequest(t, m, "keep", appwire.HostEntry{Address: "edited.example"})); err != nil {
 		t.Fatalf("Update after the store returned: %v", err)
@@ -386,6 +392,9 @@ func TestRetryHostRecordsAttachesTheStoreWhenItOpens(t *testing.T) {
 	}
 	if err := m.mutationRefusal(); err != nil {
 		t.Fatalf("host changes are still refused after the store attached: %v", err)
+	}
+	if _, _, imported := m.opsStore().HostRecords(); !imported {
+		t.Fatal("the retry attached the store without moving the host records into it")
 	}
 	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
 		t.Fatalf("Add after the retry attached the store: %v", err)

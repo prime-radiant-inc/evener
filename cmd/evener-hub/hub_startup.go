@@ -470,8 +470,8 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	// the hub. The hosts in hub.toml keep serving with the identities minted at
 	// load, host changes refuse until the store opens, and the open is retried
 	// in the background. A corrupt store file takes the custody-first quarantine
-	// when its custody can be shown whole; a file whose custody cannot is left
-	// where it is, and the same retry covers it.
+	// when its custody can be shown whole; one whose custody cannot is kept
+	// aside whole and a fresh store opens (openHostOpsStore).
 	r.openOpsStore()
 	boot := hostBootDocument(cfg, r.opsStore)
 	r.hostEntries = boot.Hosts
