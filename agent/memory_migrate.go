@@ -219,81 +219,8 @@ func restoreStagedMemoryIndex(env *execenv.LocalExecutionEnvironment, staged, le
 	return env.RemoveConfinedFile(staged)
 }
 
-// memoryYAMLField encodes one frontmatter line, quoting value as YAML needs.
-func memoryYAMLField(key, value string) string {
-	encoded, err := yaml.Marshal(map[string]string{key: value})
-	if err != nil {
-		// a string-to-string map always encodes.
-		panic(err)
-	}
-	return string(encoded)
-}
-
-// setMemoryFrontmatterField makes line (an encoded "key: value\n") the page's
-// only top-level entry for its key, replacing an existing one and the lines of
-// its value, or adding it at the end of the block, or adding a block. Every
-// other byte of the page is kept, except that its line endings become "\n"
-// (frontmatter.Split). Keys are found as YAML reads them (quoted,
-// or with a space before the colon); a block that does not parse gains the
-// line at its end and stays as unreadable as it was (frontmatter.Parse
-// reads only a mapping). Readable frontmatter that would not read the line
-// back as its key, such as a flow mapping or a block
-// with a "..." document end, is returned as it is.
-func setMemoryFrontmatterField(raw []byte, line string) []byte {
-	key, _, _ := strings.Cut(line, ":")
-	text := string(raw)
-	block, body, ok := frontmatter.Split(text)
-	if !ok {
-		return []byte("---\n" + line + "---\n" + body)
-	}
-	keys := memoryFrontmatterKeyLines(block)
-	lines := slices.Collect(strings.Lines(block))
-	var kept []string
-	replaced := false
-	for i := 0; i < len(lines); i++ {
-		if k, isKey := keys[i]; !isKey || k != key {
-			kept = append(kept, lines[i])
-			continue
-		}
-		if !replaced {
-			kept = append(kept, line)
-			replaced = true
-		}
-		// The value runs to the next key; blank and comment lines ending it
-		// belong to what follows and are kept.
-		next := i + 1
-		for ; next < len(lines); next++ {
-			if _, isKey := keys[next]; isKey {
-				break
-			}
-		}
-		spacers := next
-		for spacers > i+1 && (strings.TrimSpace(lines[spacers-1]) == "" || strings.HasPrefix(lines[spacers-1], "#")) {
-			spacers--
-		}
-		kept = append(kept, lines[spacers:next]...)
-		i = next - 1
-	}
-	// frontmatter.Split's block is empty or ends in a newline, so the
-	// line can be appended as it is.
-	if !replaced {
-		kept = append(kept, line)
-	}
-	out := "---\n" + strings.Join(kept, "") + "---\n" + body
-	// Checked by reading the page back as pages are read, rather than
-	// predicted: the line can break a flow mapping, or land after a document
-	// end YAML never reads past.
-	if _, err := frontmatter.Parse(text); err == nil {
-		doc, err := frontmatter.Parse(out)
-		if _, set := doc.Meta[key]; err != nil || !set {
-			return raw
-		}
-	}
-	return []byte(out)
-}
-
 // repairMemoryFrontmatter is raw with each top-level description, when or evidence
-// line quoted (memoryYAMLField) whose value YAML can't read as written, such
+// line quoted (frontmatter.YAMLField) whose value YAML can't read as written, such
 // as an unquoted scalar holding ": " or ending in ":", a mistake easy to make
 // in free text ("like `shop: add Count`"). Only these free-text keys are
 // quoted; quoting tags or updated would change their type. The quoting is
@@ -312,7 +239,7 @@ func repairMemoryFrontmatter(raw []byte) []byte {
 	lines := slices.Collect(strings.Lines(block))
 	quoted := false
 	for i, line := range lines {
-		// Each line's key is read on its own: memoryFrontmatterKeyLines
+		// Each line's key is read on its own: SetField's key scan
 		// reads the whole block, which doesn't parse. A top-level key starts
 		// its line, and YAML may quote it or leave space before its colon.
 		keyText, value, found := strings.Cut(strings.TrimSuffix(line, "\n"), ":")
@@ -323,7 +250,7 @@ func repairMemoryFrontmatter(raw []byte) []byte {
 		if yaml.Unmarshal([]byte(line), new(any)) == nil {
 			continue // the line reads as written, quoted or not
 		}
-		lines[i] = memoryYAMLField(key, strings.TrimSpace(value))
+		lines[i] = frontmatter.YAMLField(key, strings.TrimSpace(value))
 		quoted = true
 	}
 	if !quoted {
@@ -334,25 +261,6 @@ func repairMemoryFrontmatter(raw []byte) []byte {
 		return raw
 	}
 	return []byte(out)
-}
-
-// memoryFrontmatterKeyLines maps the 0-based line of each top-level key in a
-// block-style frontmatter mapping to the key as YAML reads it, or is nil when
-// the block is not one.
-func memoryFrontmatterKeyLines(block string) map[int]string {
-	var doc yaml.Node
-	if yaml.Unmarshal([]byte(block), &doc) != nil || len(doc.Content) == 0 {
-		return nil
-	}
-	mapping := doc.Content[0]
-	if mapping.Kind != yaml.MappingNode || mapping.Style&yaml.FlowStyle != 0 {
-		return nil
-	}
-	keys := make(map[int]string, len(mapping.Content)/2)
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		keys[mapping.Content[i].Line-1] = mapping.Content[i].Value
-	}
-	return keys
 }
 
 var (
@@ -570,7 +478,7 @@ func migrateLegacyMemoryIndexesCtx(ctx context.Context, env *execenv.LocalExecut
 		if parsed := parseMemoryPage(page, body, time.Time{}); parsed.HasDescription || parsed.Unreadable {
 			continue
 		}
-		described := setMemoryFrontmatterField(body, memoryYAMLField("description", descriptions[page]))
+		described := frontmatter.SetField(body, frontmatter.YAMLField("description", descriptions[page]))
 		// Frontmatter the editor can't extend in place (a flow mapping, a block
 		// ended by "...") comes back unchanged, as the editor checks by
 		// reading the page back; such a page is left as it is, like one whose
