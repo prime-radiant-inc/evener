@@ -154,6 +154,8 @@ func FuzzClassify(f *testing.F) {
 	write(filepath.Join(corpus, strings.Repeat("b", 64)), seed("0"))
 	write(filepath.Join(corpus, strings.Repeat("c", 64)), seed("5"))
 	write(filepath.Join(corpus, "0123456789abcdef"), seed("-7"))
+	// A preserved name that is a match-everything regex if used unquoted.
+	write(filepath.Join(corpus, ".*"), seed("-3"))
 	return filepath.Join(root, corpus)
 }
 
@@ -184,7 +186,7 @@ func TestPruneCorpusKeepsOnlyCoverageAddingAndToolchainFiles(t *testing.T) {
 	if _, err := pruneCorpus(dir, false); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{strings.Repeat("b", 64), "0123456789abcdef"}
+	want := []string{strings.Repeat("b", 64), "0123456789abcdef", ".*"}
 	sort.Strings(want)
 	if got := corpusNames(t, dir); !reflect.DeepEqual(got, want) {
 		t.Fatalf("corpus after prune = %v, want %v", got, want)

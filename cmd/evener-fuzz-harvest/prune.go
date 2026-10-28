@@ -139,28 +139,28 @@ func pruneCorpus(corpusDir string, dryRun bool) (string, error) {
 
 	profile := filepath.Join(tmp, "cover.out")
 	// replay runs the subtests matching pattern and returns what they covered.
-	// A corpus file must actually run: a directory left behind by a renamed or
+	// A non-empty wantSubtest must actually run: a directory left behind by a renamed or
 	// removed target would otherwise replay nothing, look redundant, and be
 	// pruned.
-	replay := func(pattern string, mustRun bool) (coverageSet, error) {
+	replay := func(pattern, wantSubtest string) (coverageSet, error) {
 		run := exec.Command(bin, "-test.v", "-test.run", "^"+target+"$/^"+pattern+"$", "-test.coverprofile", profile)
 		run.Dir = pkgDir
 		out, err := run.CombinedOutput()
 		if err != nil {
 			return nil, fmt.Errorf("replay %s: %w\n%s", pattern, err, out)
 		}
-		if mustRun && !strings.Contains(string(out), "--- PASS: "+target+"/"+pattern) {
-			return nil, fmt.Errorf("replay %s: no %s subtest ran; is the corpus directory stale?", pattern, target)
+		if wantSubtest != "" && !strings.Contains(string(out), "--- PASS: "+target+"/"+wantSubtest) {
+			return nil, fmt.Errorf("replay %s: no %s subtest ran; is the corpus directory stale?", wantSubtest, target)
 		}
 		return parseCoverProfile(profile)
 	}
-	coverageOf := func(file string) (coverageSet, error) { return replay(file, true) }
+	coverageOf := func(file string) (coverageSet, error) { return replay(regexp.QuoteMeta(file), file) }
 
 	entries, err := os.ReadDir(corpusDir)
 	if err != nil {
 		return "", err
 	}
-	baseline, err := replay("seed#[0-9]+", false)
+	baseline, err := replay("seed#[0-9]+", "")
 	if err != nil {
 		return "", err
 	}
