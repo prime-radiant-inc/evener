@@ -433,43 +433,6 @@ func hostOperationRetention(cfg Config) hostops.RetentionPolicy {
 	return hostops.RetentionPolicy{RemovedHostHorizon: cfg.HostTombstoneRetention}
 }
 
-// hostRegistryEntries maps the validated [[hosts]] entries onto the host
-// registry's values. runMain hands the result to hostreg.New (the registry
-// sshconn consumes) and to the web config's RemoteHosts (one source per host),
-// so this mapping is the last place a configured field can be lost before
-// either consumer sees it: every field belongs here, including the host's
-// non-default locations (EvenerPath, ConfigPath, Addr) that keep the SSH
-// manager attaching with the host's own hub.toml and probing its own listener.
-//
-// It is also where the file's machine records join the entry: the persisted
-// (generation, incarnation id, presence epoch) triple is restored onto the
-// entry, so the boot load keeps the identity the file recorded instead of
-// minting a new one (registry spec 08 §15: "The boot load restores persisted
-// generations before the store serves any request"). A file that carries no
-// record leaves the zeros hostreg.New fills at load.
-func hostRegistryEntries(cfg Config) []hostreg.Host {
-	entries := make([]hostreg.Host, 0, len(cfg.Hosts))
-	for _, h := range cfg.Hosts {
-		generation, incarnation, epoch := resolveHostIdentity(h.Name, cfg.HostRecords, cfg.Generations)
-		entries = append(entries, hostreg.Host{
-			Name:       h.Name,
-			SSH:        h.SSH,
-			User:       h.User,
-			EvenerPath: h.EvenerPath,
-			ConfigPath: h.ConfigPath,
-			Addr:       h.Addr,
-			Roots:      h.Roots,
-			KeyPath:    h.KeyPath,
-			// Generation, IncarnationID and PresenceEpoch: the persisted
-			// identity, when the file carries one.
-			Generation:    generation,
-			IncarnationID: incarnation,
-			PresenceEpoch: epoch,
-		})
-	}
-	return entries
-}
-
 // hubSSHStateInvalidation adapts an sshconn lifecycle hook to navigation
 // invalidation, calling invalidate only on the transitions that change
 // Manager.Attached: an attach, a detach, or a terminal attach failure.

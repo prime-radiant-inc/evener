@@ -141,31 +141,6 @@ func hostGenerationFor(entry hostreg.Host) HostGeneration {
 	}
 }
 
-// resolveHostIdentity maps the records a hub.toml file carries onto the
-// registry entry for one live host: the generation the file persisted (the boot
-// load restores it; spec §15) and the live record's incarnation id and presence
-// epoch. The [generations] record is a *high-water* mark, not a live identity:
-// it restores the generation and seeds the counters (hostHighWaterMarks), but
-// its incarnation id and epoch describe a removed incarnation and must never be
-// inherited by a live name. A name with no live record is a new incarnation —
-// spec §15: the boot "mints a fresh incarnation id for every hub.toml host name
-// with no persisted incarnation" — minted at load, with its epoch advanced past
-// whatever the mark retained.
-func resolveHostIdentity(name string, records map[string]HostRecord, generations map[string]HostGeneration) (generation uint64, incarnationID string, presenceEpoch uint64) {
-	record := records[name]
-	return generations[name].Generation, record.IncarnationID, record.PresenceEpoch
-}
-
-// hostHighWaterMarks maps the file's [generations] records onto the registry's
-// high-water marks: the counters a boot seeds before anything mints.
-func hostHighWaterMarks(cfg Config) map[string]hostreg.HighWater {
-	marks := make(map[string]hostreg.HighWater, len(cfg.Generations))
-	for name, mark := range cfg.Generations {
-		marks[name] = hostreg.HighWater{Generation: mark.Generation, PresenceEpoch: mark.PresenceEpoch}
-	}
-	return marks
-}
-
 // hostFileRecordSet derives the machine records a hub.toml write carries: every
 // live entry's own triple, plus every retained high-water record whose name has
 // no live entry (a removal's record). It is the one derivation both the writer
