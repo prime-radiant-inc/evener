@@ -1450,13 +1450,7 @@ func (s *Session) redriveChildIfAttentionRemains(driveCtx context.Context, sub *
 	if sub.fatalRunGatedSnapshot() {
 		return
 	}
-	stopGated := s.childStopGated(childSess.id)
-	if hook := s.cfg.testOnly.subagentStopGated; hook != nil {
-		if stopped, handled := hook(s, childSess.id); handled {
-			stopGated = stopped
-		}
-	}
-	if stopGated {
+	if s.childStopGated(childSess.id) {
 		return
 	}
 	if childSess.peekNotifications() > 0 || (childSess.jobManager != nil && childSess.jobManager.hasPendingWatchSends()) {
