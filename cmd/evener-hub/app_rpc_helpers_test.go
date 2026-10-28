@@ -516,16 +516,7 @@ func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.
 	if cfg.Roster == nil && cfg.RunDir != "" {
 		cfg.Roster = rosterOverRunDir(t, cfg.RunDir)
 	}
-	// An unset root falls back to a HOME/XDG-derived default, which under this
-	// package's TestMain is the one throwaway root every test in the binary
-	// shares, so two parallel tests that both leave a root unset read each
-	// other's launch.toml, credentials.toml and plugin store. A test that means
-	// to exercise a seeded XDG environment passes the root explicitly.
-	for _, root := range []*string{&cfg.HubStateRoot, &cfg.LaunchConfigRoot, &cfg.PluginRoot} {
-		if *root == "" {
-			*root = t.TempDir()
-		}
-	}
+	defaultTestRoots(t, &cfg)
 	// credentials.toml gets the same treatment: the auth controller keeps its
 	// OAuth records in the registry's state root, but the store it writes
 	// keys to follows no root, so without a default parallel tests calling
