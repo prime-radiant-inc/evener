@@ -6913,7 +6913,8 @@ async function handleReady(
 // updated by the caller, so a stale firing between the two calls still sees
 // the outgoing client's identity (never a half-swapped one).
 function teardownWiring(): void {
-  residencyIfCreated?.connection(advanceReadyEpoch(), false);
+  const epoch = advanceReadyEpoch();
+  residencyIfCreated?.connection(epoch, false);
   threadsStore.setState({ mutationAuthorityRefs: new Set() });
   // Old leases belong to the outgoing client. The next hydration joins the
   // replacement client's membership without affecting activity owners.
@@ -6935,7 +6936,8 @@ function rewireClient(client: AppwireClientLike): void {
   unwireNotification = client.onNotification(handleNotification);
   unwireReady = client.onReady(
     readyGenerationCallback(client, getWiredClient, () => {
-      residencyIfCreated?.connection(advanceReadyEpoch(), true);
+      const epoch = advanceReadyEpoch();
+      residencyIfCreated?.connection(epoch, true);
       threadsStore.setState({ mutationAuthorityRefs: new Set() });
       // onReady is the SAME client reconnecting: its old connection's
       // subscriptions are server-side gone too, even though the client object
