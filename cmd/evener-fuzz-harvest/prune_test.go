@@ -94,7 +94,7 @@ func TestEmitterCapsFilesPerTargetIncludingExisting(t *testing.T) {
 	}
 }
 
-// pruneFixture writes a tiny module whose FuzzClassify target (tagged
+// pruneFixture writes a tiny module (calling into a dependency module) whose FuzzClassify target (tagged
 // evenerfuzz, as the real targets are) has one f.Add seed covering the positive
 // branch, and a corpus of: a harvested negative (redundant once the
 // toolchain-written negative is counted), a harvested zero (new coverage), and
@@ -111,8 +111,11 @@ func pruneFixture(t *testing.T, targetName string) string {
 			t.Fatal(err)
 		}
 	}
-	write("go.mod", "module example.com/fixture\n\ngo 1.21\n")
-	write("fixture.go", `package fixture
+	// The branching lives in a separate module the fixture depends on, as the
+	// real targets' oracles run inside third-party validators.
+	write("go.mod", "module example.com/fixture\n\ngo 1.21\n\nrequire example.com/dep v0.0.0\n\nreplace example.com/dep => ./dep\n")
+	write("dep/go.mod", "module example.com/dep\n\ngo 1.21\n")
+	write("dep/dep.go", `package dep
 
 func Classify(n int) string {
 	if n < 0 {
@@ -123,6 +126,12 @@ func Classify(n int) string {
 	}
 	return "pos"
 }
+`)
+	write("fixture.go", `package fixture
+
+import "example.com/dep"
+
+func Classify(n int) string { return dep.Classify(n) }
 `)
 	write("fixture_fuzz_test.go", `//go:build evenerfuzz
 

@@ -80,12 +80,24 @@ func parseCoverProfile(path string) (coverageSet, error) {
 	return set, sc.Err()
 }
 
+// instrumentedPackages lists, comma-joined for -coverpkg, every non-standard
+// package the package in pkgDir builds with under -tags evenerfuzz: the module's own code plus third-party dependencies such as the
+// schema validator that a target's oracle runs inside.
+func instrumentedPackages(pkgDir string) (string, error) {
+	out, err := exec.Command("go", "-C", pkgDir, "list", "-tags", "evenerfuzz", "-deps",
+		"-f", "{{if not .Standard}}{{.ImportPath}}{{end}}", ".").Output()
+	if err != nil {
+		return "", fmt.Errorf("go list deps of %s: %w", pkgDir, err)
+	}
+	return strings.Join(strings.Fields(string(out)), ","), nil
+}
+
 // pruneCorpus drops the harvester-written seeds of one target corpus
 // directory (<package>/testdata/fuzz/<FuzzName>) that add no coverage over the
 // seeds in the target's source, the toolchain-written files, and the smaller
 // seeds kept before them, so the covered blocks are the same before and after.
-// Coverage is measured across the target's whole module under -tags
-// evenerfuzz. Under dryRun it deletes nothing. It returns a one-line report.
+// Coverage is measured across the module and its third-party dependencies
+// under -tags evenerfuzz. Under dryRun it deletes nothing. It returns a one-line report.
 func pruneCorpus(corpusDir string, dryRun bool) (string, error) {
 	corpusDir, err := filepath.Abs(corpusDir)
 	if err != nil {
@@ -100,13 +112,13 @@ func pruneCorpus(corpusDir string, dryRun bool) (string, error) {
 	}
 	defer os.RemoveAll(tmp) //nolint:errcheck
 
-	modOut, err := exec.Command("go", "-C", pkgDir, "list", "-f", "{{.Module.Path}}", ".").Output()
+	coverPkgs, err := instrumentedPackages(pkgDir)
 	if err != nil {
-		return "", fmt.Errorf("go list: %w", err)
+		return "", err
 	}
 	bin := filepath.Join(tmp, "target.test")
 	build := exec.Command("go", "-C", pkgDir, "test", "-tags", "evenerfuzz", "-c", "-cover",
-		"-coverpkg", strings.TrimSpace(string(modOut))+"/...", "-o", bin, ".")
+		"-coverpkg", coverPkgs, "-o", bin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("build %s: %w\n%s", pkgDir, err, out)
 	}
