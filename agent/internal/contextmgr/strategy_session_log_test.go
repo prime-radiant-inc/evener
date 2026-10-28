@@ -609,3 +609,24 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 		t.Errorf("expected second callback to be TurnSummary, got %s", callbackTurns[1].Kind)
 	}
 }
+
+// The session-log checkpoint folds the partner's messages out of the history
+// and keeps only the original prompt and the log, so a summary completing the
+// same pass reads the partner's messages from what the checkpoint folded.
+func TestSessionLogStrategy_ManageContext_SummaryKeepsPartnerMessagesTheCheckpointFolded(t *testing.T) {
+	cm := partnerTestManager(emptySummaryReply)
+	cm.ObservationMaskThreshold = 0.0001
+	cm.ThinkingClearThreshold = 0.0001
+	cm.CheckpointThreshold = 0.0001
+	cm.SummarizeThreshold = 0.0001
+	sls := &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "test.log.jsonl"))}
+	history := partnerHoldHistory()
+	// The hold is not the first message, so the checkpoint's original-prompt
+	// line does not carry it.
+	history = append([]schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("start the release notes"))}, history...)
+
+	if err := sls.ManageContext(context.Background(), &history, 0, func(events.EventKind, events.EventData) {}); err != nil {
+		t.Fatalf("ManageContext returned error: %v", err)
+	}
+	requirePartnerHoldInContext(t, history, schema.TurnSummary)
+}
