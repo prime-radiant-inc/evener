@@ -20,7 +20,6 @@ const harness = vi.hoisted(() => {
 	};
 });
 vi.mock("expo-sqlite/kv-store", () => ({ Storage: harness.storage }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "change-1" }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("@react-navigation/native", () => ({ useIsFocused: () => harness.focused }));
 

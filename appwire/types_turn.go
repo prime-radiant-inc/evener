@@ -179,21 +179,22 @@ var AllThreadItemEventKinds = []string{
 }
 
 type ThreadItem struct {
-	Type                 string              `json:"type"`
-	ID                   string              `json:"id"`
-	TranscriptKey        string              `json:"transcriptKey,omitempty"`
-	Position             *ThreadItemPosition `json:"position,omitempty"`
-	TurnID               string              `json:"turnId,omitempty"`
-	TranscriptEntryIndex int                 `json:"transcriptEntryIndex,omitempty"`
-	Text                 string              `json:"text,omitempty"`
-	Delta                string              `json:"delta,omitempty"`
-	Images               []InputItem         `json:"images,omitempty"`
-	ToolName             string              `json:"toolName,omitempty"`
-	CallID               string              `json:"callId,omitempty"`
-	ArgumentsJSON        string              `json:"argumentsJson,omitempty"`
-	Description          string              `json:"description,omitempty"`
-	Output               string              `json:"output,omitempty"`
-	Error                string              `json:"error,omitempty"`
+	Authorship           *TranscriptAuthorship `json:"authorship,omitempty"`
+	Type                 string                `json:"type"`
+	ID                   string                `json:"id"`
+	TranscriptKey        string                `json:"transcriptKey,omitempty"`
+	Position             *ThreadItemPosition   `json:"position,omitempty"`
+	TurnID               string                `json:"turnId,omitempty"`
+	TranscriptEntryIndex int                   `json:"transcriptEntryIndex,omitempty"`
+	Text                 string                `json:"text,omitempty"`
+	Delta                string                `json:"delta,omitempty"`
+	Images               []InputItem           `json:"images,omitempty"`
+	ToolName             string                `json:"toolName,omitempty"`
+	CallID               string                `json:"callId,omitempty"`
+	ArgumentsJSON        string                `json:"argumentsJson,omitempty"`
+	Description          string                `json:"description,omitempty"`
+	Output               string                `json:"output,omitempty"`
+	Error                string                `json:"error,omitempty"`
 	// OutputImages is omitzero; see the nil-vs-empty rule in output_images.go.
 	// Images stays omitempty: nothing removes an item's input images.
 	OutputImages []OutputImage `json:"outputImages,omitzero"`

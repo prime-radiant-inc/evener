@@ -31,14 +31,6 @@ import { projectConversation, type MobileConversation } from "./projectedRows";
 
 const expoSQLite = vi.hoisted(() => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite", () => expoSQLite);
-// A deterministic, unique id per call: IDs must be unique per test without
-// depending on Math.random (which could collide and flake).
-const uuidCounter = vi.hoisted(() => ({ next: 0 }));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => `test-uuid-${++uuidCounter.next}`,
-	getRandomValues: (array: Uint8Array) => array,
-}));
-
 let database: SqliteDoubleDatabase | undefined;
 // Every runtime a test creates, stopped before its database closes so no
 // timer or dispatch chain outlives the test.

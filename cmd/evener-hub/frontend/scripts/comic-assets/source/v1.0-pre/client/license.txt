@@ -1,0 +1,38 @@
+END-USER LICENSE AGREEMENT FOR MICROSOFT COMIC CHAT
+
+IMPORTANT READ CAREFULLY: 
+This Microsoft End-User License Agreement (EULA) is a legal agreement between you (either an individual or a single entity) and Microsoft Corporation for the Microsoft software product identified above, which includes computer software and associated media and printed materials (if any), and may include online or electronic documentation (SOFTWARE PRODUCT or SOFTWARE). By installing, copying, or otherwise using the SOFTWARE PRODUCT,  you agree to be bound by the terms of this EULA. If you do not agree to the terms of this Agreement, you are not authorized to use the SOFTWARE PRODUCT. The SOFTWARE PRODUCT is protected by copyright laws and international copyright treaties, as well as other intellectual property laws and treaties. The SOFTWARE
+PRODUCT is licensed, not sold. 
+
+1. GRANT OF LICENSE. This EULA grants you the following rights: 
+Use and Copy. Microsoft grants to you the right to use copies of the SOFTWARE PRODUCT only in conjunction with a validly licensed copy of Microsoft(r) Windows(r) 95. You may download and make copies of the SOFTWARE PRODUCT for use on all computers for which you have licensed Windows 95.  You may also make copies of the SOFTWARE PRODUCT for backup and archival purposes.
+
+2.  RESTRICTIONS.
+--You must maintain all copyright notices on all copies of the SOFTWARE PRODUCT. 
+--You may not distribute copies of the SOFTWARE PRODUCT to third parties. 
+--You may not reverse engineer, decompile, or disassemble the SOFTWARE PRODUCT, except and only to the extent that such activity is expressly permitted by applicable law notwithstanding this limitation. 
+--You may not rent or lease the SOFTWARE  PRODUCT. 
+--You may permanently transfer all of your rights under this EULA only in conjunction with a permanent transfer of your validly licensed copy or copies of Windows 95.
+
+3.  Termination. Your rights under this EULA terminate upon the termination of your Windows 95 EULA, or without prejudice to any other rights, Microsoft may terminate this EULA if you fail to comply with the terms and conditions of this EULA. In such event,you must destroy all copies of the SOFTWARE PRODUCT. 
+
+4.  COPYRIGHT. All title and copyrights in and to the SOFTWARE PRODUCT and any copies thereof are owned by Microsoft or its suppliers. All title and intellectual property rights in and to the content which may be accessed through use of the SOFTWARE PRODUCT is the property of the respective content owner and may be protected by applicable copyright or other intellectual property laws and treaties.
+This EULA grants you no rights to use such content.
+
+5.  U.S. GOVERNMENT RESTRICTED RIGHTS. The SOFTWARE PRODUCT is provided with RESTRICTED RIGHTS. Use, duplication, or disclosure by the Government is subject to restrictions as set forth in subparagraph (c)(1)(ii) of the Rights in Technical Data and Computer Software clause at DFARS 252.227-7013 or subparagraphs (c)(1) and (2) of the Commercial Computer Software Restricted Rights at 48 CFR 52.227-19, as applicable. Manufacturer is Microsoft Corporation/One Microsoft Way/Redmond, WA 98052-6399. 
+
+6.  NO WARRANTY. ANY USE OF THE SOFTWARE PRODUCT IS AT YOUR OWN RISK.  THE SOFTWARE PRODUCT IS PROVIDED FOR USE ONLY WITH MICROSOFT WINDOWS 95. TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, MICROSOFT AND ITS SUPPLIERS DISCLAIM ALL WARRANTIES AND CONDITIONS, EITHER EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+7.  NO LIABILITY FOR CONSEQUENTIAL DAMAGES. TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLELAW, IN NO EVENT SHALL MICROSOFT OR ITS SUPPLIERS BE LIABLE FOR ANY SPECIAL, INCIDENTAL, INDIRECT,OR CONSEQUENTIAL DAMAGES WHATSOEVER (INCLUDING, WITHOUT LIMITATION, DAMAGES FOR LOSS OF BUSINESS PROFITS, BUSINESS INTERRUPTION, LOSS OF BUSINESS INFORMATION, OR ANY OTHER PECUNIARY LOSS) ARISING OUT OF THE USE OF OR INABILITY TO USE THE SOFTWARE PRODUCT, EVEN IF MICROSOFT HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. BECAUSE SOME STATES AND JURISDICTIONS DO NOT ALLOW THE EXCLUSION OR LIMITATION OF LIABILITY FOR CONSEQUENTIAL OR INCIDENTAL DAMAGES, THE ABOVE LIMITATION MAY NOT APPLY TO YOU. 
+
+8.  LIMITATION OF LIABILITY.  MICROSOFT'S ENTIRE LIABILITY AND YOUR EXCLUSIVE REMEDY UNDER THIS EULA SHALL NOT EXCEED FIVE DOLLARS (US$5.00).
+
+9. MISCELLANEOUS This EULA is governed by the laws of the State of Washington, U.S.A.  Should you have any questions concerning this EULA, or if you desire to contact Microsoft for any reason, please contact the Microsoft subsidiary serving your country, or write: Microsoft Sales Information Center/One Microsoft Way/Redmond, WA 98052-6399.  Si vous avez acquis votre produit Microsoft au CANADA, la garantie limitée suivante vous concerne:
+
+EXCLUSION DE GARANTIES.  Microsoft renonce entièrement à toute garantie pour le LOGICIEL. Le LOGICIEL et toute autre documentation s'y rapportant sont fournis « comme tels » sans aucune garantie quelle qu'elle soit, expresse ou implicite, y compris, mais ne se limitant pas aux garanties implicites de la qualité marchande ou un usage particulier.  Le risque total découlant de  l'utilisation ou de la performance du LOGICIEL est entre vos mains.
+
+RESPONSABILITÉ LIMITÉE.  La seule obligation de Microsoft et votre recours exclusif concernant ce  contrat n'excèderont pas cinq dollare (US$5.00).
+
+ABSENCE DE RESPONSABILITÉ POUR LES
+DOMMAGES INDIRECTS.
+Microsoft ou ses fournisseurs ne pourront être tenus responsables en aucune circonstance de tout dommage quel qu'il soit (y compris mais non de façon limitative les dommages directs ou indirects causés par la perte de bénéfices commerciaux, l'interruption des affaires, la perte d'information commerciale ou toute autre perte pécuniaire) résultant de l'utilisation ou de  l'impossibilité d'utilisation de ce produit, et ce, même si la société Microsoft a été avisée de l' éventualité de tels dommages.  Certains états/juridictions ne permettent pas l'exclusion ou la limitation de responsabilité relative aux dommages indirects ou consécutifs, et la limitation ci-dessus peut ne pas s'appliquer à votre égard.  La présente Convention est régie par les lois de la  province d'Ontario, Canada. Chacune des parties à la présente reconnaît irrévocablement la compétence des tribunaux de la province d'Ontario et consent à  instituer tout litige qui pourrait découler de la  présente auprès des tribunaux situés dans le district judiciaire de York, province d'Ontario.  Au cas où vous auriez des questions concernant cette licence ou que vous désiriez vous mettre en rapport avec Microsoft pour quelque raison que ce soit, veuillez contacter la succursale Microsoft desservant votre pays, dont l'adresse est fournie dans ce produit, ou écrire à: Microsoft Customer Sales and Service, One Microsoft Way, Redmond, Washington 98052 6399. 

@@ -137,3 +137,35 @@ func TestOpenWriterRejectsSymlinkWithoutChangingTarget(t *testing.T) {
 		t.Fatalf("symlink target changed: got %q want %q", got, body)
 	}
 }
+
+func TestTranscriptAuthorshipStrictRoundtrip(t *testing.T) {
+	turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("author-sentinel"))
+	turn.Authorship = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "sess_author", OwnerSessionID: "sess_owner", DelegateID: "dlg_author", DelegateName: "Author"}, Inherited: true}
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	w, err := NewWriter(path, Header{SessionID: "sess_author"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(turn); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lines := readTranscriptLines(t, path)
+	entry, err := DecodeEntry([]byte(lines[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.Turn.Authorship == nil || *entry.Turn.Authorship != *turn.Authorship {
+		t.Fatalf("authorship = %#v", entry.Turn.Authorship)
+	}
+	for _, raw := range []string{
+		`{"kind":"entry","seq":0,"turn":{"kind":"ASSISTANT","authorship":{"author":{"kind":"agent","extra":1},"inherited":false}}}`,
+		`{"kind":"entry","seq":0,"turn":{"kind":"ASSISTANT","authorship":{"author":{"kind":2},"inherited":false}}}`,
+	} {
+		if _, err := DecodeEntry([]byte(raw)); err == nil {
+			t.Fatal("strict reader accepted malformed authorship")
+		}
+	}
+}

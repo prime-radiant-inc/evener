@@ -1054,6 +1054,12 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			} else if json.Unmarshal(msg.Request.Params, &params) != nil {
 				return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionInvalid}
 			}
+			// A durably deleted target has no source left to resolve. Let the
+			// read handler return its terminal fence instead of replacing it
+			// with retryable unresolved admission. No subscription can open.
+			if msg.Request.Method == appwire.MethodThreadRead && deletionFenceError(cfg, params.Ref, params.ThreadID, "") != nil {
+				return notSubscribe
+			}
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
 				if _, parseErr := appwire.ParseRef(strings.TrimSpace(params.Ref)); params.Ref != "" && parseErr != nil {
@@ -1317,6 +1323,12 @@ func registerThreadHandlers(
 				return appwire.ThreadReadResponse{}, appwire.InvalidParams(err.Error())
 			}
 		}
+		// Deletion is authoritative even when unrelated daemon ownership
+		// cannot be discovered. Keep the locked source check below as well:
+		// deletion may begin after this early terminal check.
+		if err := deletionFenceError(cfg, params.Ref, params.ThreadID, ""); err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
 		if cfg.Roster != nil {
 			if _, required, ownershipErr := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); required || ownershipErr != nil {
 				if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
@@ -1345,6 +1357,7 @@ func registerThreadHandlers(
 		}
 		read, err := relays.readThread(ctx, source, params)
 		if err != nil {
+			recovered := false
 			allowPast := allowsPastFallbackAfterLiveReadFailure(source, params, err)
 			if _, local := localPastThreadID(params); local && cfg.Roster != nil && daemonOwnershipMayHaveChanged(err) {
 				refreshErr := hubRosterRefresh(ctx, cfg.Roster)
@@ -1364,9 +1377,40 @@ func registerThreadHandlers(
 					if ownershipErr != nil {
 						return appwire.ThreadReadResponse{}, appwire.Unavailable(ownershipErr.Error())
 					}
+					// Discovery can publish a child that the first read could not
+					// route. Re-resolve under the deletion fence, then use the same
+					// live read and handoff once, without refreshing again on failure.
+					refreshedSource, sourceErr := sourceForThreadWithDeletionFence(ctx, cfg, sources, params.Ref, params.ThreadID)
+					if ctx.Err() != nil {
+						return appwire.ThreadReadResponse{}, ctx.Err()
+					}
+					if isTargetDeletedError(sourceErr) {
+						return appwire.ThreadReadResponse{}, sourceErr
+					}
+					if sourceErr != nil {
+						err = sourceErr
+					} else if daemon, ok := refreshedSource.(*appsource.LocalDaemonSource); ok {
+						source = refreshedSource
+						_, err = daemon.ResolveSubscriptionAdmission(params)
+						if err == nil {
+							read, err = relays.readThread(ctx, source, params)
+							recovered = err == nil
+						}
+						if ctx.Err() != nil {
+							if read != nil {
+								read.finish(false)
+							}
+							return appwire.ThreadReadResponse{}, ctx.Err()
+						}
+						if isTargetDeletedError(err) {
+							return appwire.ThreadReadResponse{}, err
+						}
+					}
 				}
 			}
-			if allowPast {
+			// Keep the first attempt's saved-history eligibility if the
+			// discovered owner disappears before the retry lands.
+			if !recovered && allowPast {
 				saved, ok, pastErr := unavailableThreadReadResponse(ctx, cfg, sources, params)
 				if pastErr != nil {
 					return appwire.ThreadReadResponse{}, pastErr
@@ -1375,7 +1419,9 @@ func registerThreadHandlers(
 					return saved, nil
 				}
 			}
-			return appwire.ThreadReadResponse{}, err
+			if !recovered {
+				return appwire.ThreadReadResponse{}, err
+			}
 		}
 		resp := read.response
 		liveItemCandidatesEmpty := false

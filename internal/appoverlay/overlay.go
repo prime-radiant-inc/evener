@@ -60,8 +60,9 @@ type Overlay struct {
 	runningTurnID string
 	// roundID and attempt name the open model round's current attempt; a
 	// reset ends an attempt and the next output starts attempt+1.
-	roundID string
-	attempt int
+	roundID         string
+	attempt         int
+	roundAuthorship *schema.TranscriptAuthorship
 	// coveredRounds are the rounds whose ASSISTANT entry is recorded: their
 	// text and reasoning are history now, so later deltas are dropped.
 	// Round end forgets a round's entries in all three of coveredRounds,
@@ -216,6 +217,7 @@ func (o *Overlay) Event(ev events.SessionEvent) []Change {
 		}
 	case events.RoundStartedData:
 		o.roundID, o.attempt = data.RoundID, 1
+		o.roundAuthorship = data.Authorship.Clone()
 	case events.RoundEndedData:
 		return o.endRound(data.RoundID)
 	case events.AssistantTextDeltaData:
@@ -228,7 +230,7 @@ func (o *Overlay) Event(ev events.SessionEvent) []Change {
 		}
 		return o.resetStream(o.streamID())
 	case events.CommunicatePreviewStartData:
-		return o.startPreview(data.CallID)
+		return o.startPreview(data.CallID, data.Authorship)
 	case events.CommunicatePreviewDeltaData:
 		return o.appendText(previewKey(data.CallID), data.Delta)
 	case events.CommunicatePreviewResetData:
@@ -367,7 +369,7 @@ func (o *Overlay) streamDelta(kind, text string) []Change {
 		TurnID:   o.runningTurnID,
 		RoundID:  o.roundID,
 		StreamID: streamID,
-		Item:     appwire.ThreadItem{Type: kind, ID: key, TurnID: o.runningTurnID, RoundID: o.roundID, Status: appwire.TurnStatusInProgress},
+		Item:     appwire.ThreadItem{Authorship: apptranscript.ProjectAuthorship(o.roundAuthorship), Type: kind, ID: key, TurnID: o.runningTurnID, RoundID: o.roundID, Status: appwire.TurnStatusInProgress},
 	})
 	s.text = append(s.text, text...)
 	return o.upsert(s)
@@ -392,7 +394,7 @@ func (o *Overlay) resetStream(streamID string) []Change {
 	return []Change{{Method: appwire.NotifyOverlayReset, Params: appwire.OverlayResetParams{StreamID: streamID}}}
 }
 
-func (o *Overlay) startPreview(callID string) []Change {
+func (o *Overlay) startPreview(callID string, authorship *schema.TranscriptAuthorship) []Change {
 	if callID == "" || o.roundID == "" {
 		return nil
 	}
@@ -407,7 +409,7 @@ func (o *Overlay) startPreview(callID string) []Change {
 		RoundID:  o.roundID,
 		StreamID: o.streamID(),
 		CallID:   callID,
-		Item:     appwire.ThreadItem{Type: "agentMessage", ID: key, TurnID: o.runningTurnID, RoundID: o.roundID, CallID: callID, Status: appwire.TurnStatusInProgress},
+		Item:     appwire.ThreadItem{Authorship: apptranscript.ProjectAuthorship(authorship), Type: "agentMessage", ID: key, TurnID: o.runningTurnID, RoundID: o.roundID, CallID: callID, Status: appwire.TurnStatusInProgress},
 	}))
 }
 

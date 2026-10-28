@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ConnectionState, Thread, ThreadReadResponse } from "@evener/appwire-client";
+import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
@@ -17,6 +17,7 @@ import {
   subscribeMutationPersistence,
   threadsStore,
 } from "../../../../stores/threads";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../../threadTestUtils";
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../composerFocus";
 import { AskDock, AskDockAnnouncements } from "./AskDock";
@@ -71,12 +72,6 @@ function expectAnnouncement(kind: "prompt" | "progress"): void {
   expect(region.textContent).not.toBe("");
 }
 
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 function nextMutationPersistence(targetRef: string): Promise<void> {
   return new Promise((resolve) => {
     const unsubscribe = subscribeMutationPersistence((targetRefs) => {
@@ -118,7 +113,7 @@ beforeEach(() => {
 });
 
 test("renders nothing when there is no pending ask for this ref", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
 
@@ -160,7 +155,7 @@ test("the dock sizes to its content as a transcript row, with no internal scroll
 });
 
 test("renders the pending question's header and question text once acked", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
 
   render(<AskDock ref="ref_a" />);
@@ -170,7 +165,7 @@ test("renders the pending question's header and question text once acked", async
 });
 
 test("a question acked after the dock is already mounted appears without remounting the whole dock", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
   render(<AskDock ref="ref_a" />);
@@ -186,7 +181,7 @@ test("a question acked after the dock is already mounted appears without remount
 
 test("shows an N of M answered footer count that updates as questions are answered", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const twoQuestions = [
     { header: "First", question: "q1", options: [{ label: "a", detail: "b" }] },
     { header: "Second", question: "q2", options: [{ label: "c", detail: "d" }] },
@@ -204,7 +199,7 @@ test("shows an N of M answered footer count that updates as questions are answer
 });
 
 test("Send is enabled even with nothing answered - an unresolved question composes as skip", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   render(<AskDock ref="ref_a" />);
 
@@ -213,7 +208,7 @@ test("Send is enabled even with nothing answered - an unresolved question compos
 });
 
 test("clicking Send composes and submits through the plain send() path, then the settled batch disappears", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
@@ -251,7 +246,7 @@ test("clicking Send composes and submits through the plain send() path, then the
 // the one at the end of this file pin the no-op so it stays deliberate.
 test("Escape does not dismiss the dock or clear any in-progress selection", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   render(<AskDock ref="ref_a" />);
 
@@ -263,7 +258,7 @@ test("Escape does not dismiss the dock or clear any in-progress selection", asyn
 });
 
 test("auto-focuses the first answer control when the dock first activates", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
   render(<AskDock ref="ref_a" />);
@@ -278,7 +273,7 @@ test("auto-focuses the first answer control when the dock first activates", asyn
 
 test("does not steal focus from an in-progress answer when a later ask_user call adds more questions", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   render(<AskDock ref="ref_a" />);
   await user.click(screen.getByRole("radio", { name: /something else/i }));
@@ -298,7 +293,7 @@ test("does not steal focus from an in-progress answer when a later ask_user call
 
 test("useAskDockPending reports whether a given ref currently has a pending ask", async () => {
   const { useAskDockPending } = await import("./AskDock");
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
 
@@ -317,7 +312,7 @@ test("useAskDockPending reports whether a given ref currently has a pending ask"
 
 test("has no residual askDockStore state for this ref after the batch settles and the component unmounts", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", (params) => ({
     receipt: appliedReceipt(params.clientMutationId, "thread_a"),
@@ -350,7 +345,7 @@ async function hydrateWithTwoAsk(
 }
 
 test("a multi-question batch shows only the first question behind a tab strip", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithTwoAsk(fake);
   render(<AskDock ref="ref_a" />);
 
@@ -363,7 +358,7 @@ test("a multi-question batch shows only the first question behind a tab strip", 
 });
 
 test("a single-question batch renders no tab strip", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   render(<AskDock ref="ref_a" />);
 
@@ -373,7 +368,7 @@ test("a single-question batch renders no tab strip", async () => {
 
 test("clicking a tab switches the visible question", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithTwoAsk(fake);
   render(<AskDock ref="ref_a" />);
 
@@ -386,7 +381,7 @@ test("clicking a tab switches the visible question", async () => {
 
 test("a one-click answer auto-advances to the next unanswered question and checks its tab", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithTwoAsk(fake);
   render(<AskDock ref="ref_a" />);
 
@@ -405,7 +400,7 @@ test("a one-click answer auto-advances to the next unanswered question and check
 
 test("a multi-select answer does not auto-advance - more boxes may follow", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithTwoAsk(fake, [
     {
       header: "Pick",
@@ -428,7 +423,7 @@ test("a multi-select answer does not auto-advance - more boxes may follow", asyn
 
 test("arrow keys move the active tab within the strip", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithTwoAsk(fake);
   render(<AskDock ref="ref_a" />);
 
@@ -448,7 +443,7 @@ test("arrow keys move the active tab within the strip", async () => {
 
 test("a late-arriving question growing the batch keeps the in-progress answer's focus", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   render(<AskDock ref="ref_a" />);
   await user.click(screen.getByRole("radio", { name: /something else/i }));
@@ -485,7 +480,7 @@ test("a late-arriving question growing the batch keeps the in-progress answer's 
 
 test("the primary button advances to the next unanswered question, not sends, once the current one is answered", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithTwoAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
@@ -506,7 +501,7 @@ test("the primary button advances to the next unanswered question, not sends, on
 
 test("the primary button sends once the last unanswered question is answered - the final advance position", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithTwoAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
@@ -544,7 +539,7 @@ test("the primary button sends once the last unanswered question is answered - t
 
 test("the primary button reads Next question on any question but the last, answered or not", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithTwoAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
@@ -559,7 +554,7 @@ test("the primary button reads Next question on any question but the last, answe
 
 test("on the last question with an earlier one still unanswered, the button wraps back to it", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithTwoAsk(fake);
   render(<AskDock ref="ref_a" />);
 
@@ -573,7 +568,7 @@ test("on the last question with an earlier one still unanswered, the button wrap
 
 test("Send is disabled on the last question while it is the only unanswered one", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithTwoAsk(fake);
   render(<AskDock ref="ref_a" />);
 
@@ -584,7 +579,7 @@ test("Send is disabled on the last question while it is the only unanswered one"
 });
 
 test("a recommended option starts selected and counts as answered", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithTwoAsk(fake, [
     {
       header: "Design",
@@ -606,7 +601,7 @@ test("a recommended option starts selected and counts as answered", async () => 
 // a click on the footer button already does.
 
 test("Mod+Enter on the batch invokes the primary action (send) for a single-question batch", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
@@ -622,7 +617,7 @@ test("Mod+Enter on the batch invokes the primary action (send) for a single-ques
 });
 
 test("Mod+Enter with ctrlKey also invokes the primary action", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
@@ -639,7 +634,7 @@ test("Mod+Enter with ctrlKey also invokes the primary action", async () => {
 
 test("Mod+Enter advances rather than sends when another question is still unanswered", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithTwoAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
@@ -655,7 +650,7 @@ test("Mod+Enter advances rather than sends when another question is still unansw
 
 test("Mod+Enter on the last question with the walk unfinished does not bypass the disabled Send button", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithTwoAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
@@ -678,7 +673,7 @@ test("Mod+Enter on the last question with the walk unfinished does not bypass th
 
 test("Alt+Enter in the free-text answer input does not invoke the primary action", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
@@ -694,7 +689,7 @@ test("Alt+Enter in the free-text answer input does not invoke the primary action
 });
 
 test("modified arrows in the tab strip keep their global meaning - no tab move, no preventDefault", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithTwoAsk(fake);
   render(<AskDock ref="ref_a" />);
 
@@ -712,7 +707,7 @@ test("modified arrows in the tab strip keep their global meaning - no tab move, 
 });
 
 test("Shift+Arrow still moves tabs - no global binding claims it (the round-2 guard's regression)", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithTwoAsk(fake);
   render(<AskDock ref="ref_a" />);
 
@@ -726,7 +721,7 @@ test("Shift+Arrow still moves tabs - no global binding claims it (the round-2 gu
 });
 
 test("a consumed Mod+Enter does not propagate to window-level listeners", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
@@ -746,7 +741,7 @@ test("a consumed Mod+Enter does not propagate to window-level listeners", async 
 });
 
 test("a consumed batch-jump chord does not propagate to window-level listeners", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await renderTwoBatches(fake); // renders the dock itself
 
   const seen: string[] = [];
@@ -762,7 +757,7 @@ test("a consumed batch-jump chord does not propagate to window-level listeners",
 
 test("plain Enter in the free-text answer input invokes the primary action", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
@@ -781,7 +776,7 @@ test("plain Enter in the free-text answer input invokes the primary action", asy
 });
 
 test("plain Enter elsewhere in the batch (not the free-text input) does not invoke the primary action", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
@@ -793,7 +788,7 @@ test("plain Enter elsewhere in the batch (not the free-text input) does not invo
 });
 
 test("Mod+Enter is ignored while an IME composition is in progress", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
@@ -809,7 +804,7 @@ test("an IME commit reported only through keyCode 229 (no isComposing) does not 
   // legacy keyCode 229: without that fallback the commit Enter would submit
   // or advance the batch (roborev PR #884 round 7). The dock shares the
   // dispatcher's isIMECompositionKeydown guard.
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
@@ -828,7 +823,7 @@ test("an IME commit reported only through keyCode 229 (no isComposing) does not 
 // (roborev PR #854). The edge therefore lives in askDockStore, not in a
 // component ref that resets on every mount.
 test("a virtualized remount of an already-pending dock does not steal focus", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
 
   const first = render(<AskDock ref="ref_a" />);
@@ -853,7 +848,7 @@ test("a virtualized remount of an already-pending dock does not steal focus", as
 
 test("a fresh pending set after a fully resolved one re-activates auto-focus", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   const first = render(<AskDock ref="ref_a" />);
@@ -882,7 +877,7 @@ test("a fresh pending set after a fully resolved one re-activates auto-focus", a
 // what this pins is the gate: NO focus call while off-screen, one once
 // visible (the round-5 test pins the same gate from the store side).
 test("activation focus waits for visibility, then lets the browser reveal the control", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
   vi.stubGlobal("IntersectionObserver", ControlledIntersectionObserver);
@@ -936,7 +931,7 @@ class ControlledIntersectionObserver {
 // new-content pill: its jump brings the dock into view, and the
 // intersection is what lands focus in the first control.
 test("activation while off-screen steals no focus; becoming visible focuses the first control", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   vi.stubGlobal("IntersectionObserver", ControlledIntersectionObserver);
   try {
@@ -965,7 +960,7 @@ test("activation while off-screen steals no focus; becoming visible focuses the 
 // ONE seat may claim the shared activation and take focus - the second
 // must not steal keyboard focus from the first.
 test("of two visible docks sharing a ref, only one claims the activation and focuses", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
   vi.stubGlobal("IntersectionObserver", ControlledIntersectionObserver);
@@ -1010,7 +1005,7 @@ test("of two visible docks sharing a ref, only one claims the activation and foc
 // only; the ONE live region is AskDockAnnouncements, mounted outside the
 // virtual list by Session.tsx.
 test("the dock row carries no live regions", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   render(<AskDock ref="ref_a" />);
 
@@ -1022,7 +1017,7 @@ test("the dock row carries no live regions", async () => {
 
 describe("AskDockAnnouncements (the one live region, mounted outside the virtual list)", () => {
   test("announces the prompt when a pending set arrives, and clears when it resolves", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("turn/start", () => new Promise(() => {}));
     await hydrateWithOneAsk(fake);
     render(<AskDockAnnouncements ref="ref_a" />);
@@ -1039,7 +1034,7 @@ describe("AskDockAnnouncements (the one live region, mounted outside the virtual
   });
 
   test("announces answered-count transitions while pending", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrateWithTwoAsk(fake);
     render(<AskDockAnnouncements ref="ref_a" />);
     expectAnnouncement("prompt");
@@ -1071,7 +1066,7 @@ describe("AskDockAnnouncements (the one live region, mounted outside the virtual
   });
 
   test("a dock row remount never re-announces: the announcements component owns the only live region", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrateWithOneAsk(fake);
     render(
       <>
@@ -1093,7 +1088,7 @@ test("a session ref change re-announces the new session's pending prompt", async
   // persistent pane - useTranscriptScroll's refForInitRef comment), so the
   // announcements component must treat a ref change as a fresh activation
   // even when both sessions' pending counts are identical (roborev PR #854).
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake, "ref_a");
   await hydrateWithOneAsk(fake, "ref_b");
 
@@ -1119,7 +1114,7 @@ test("an atomic pending-set replacement with an identical count re-announces the
   // recommended pre-seeded answer) changes neither pending nor count, so
   // without the activation epoch no announcement would fire for the new
   // question (roborev PR #854).
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake); // recommended option pre-seeds an answer
   render(<AskDockAnnouncements ref="ref_a" />);
   const region = screen.getByTestId("ask-dock-announcements");
@@ -1219,7 +1214,7 @@ async function renderTwoBatches(
 
 test("Escape inside the dock sends nothing and preserves both the answer and a typed note", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
@@ -1237,7 +1232,7 @@ test("Escape inside the dock sends nothing and preserves both the answer and a t
 });
 
 test("Alt+PageDown/Alt+PageUp jump focus between batches, wrapping at both ends", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await renderTwoBatches(fake);
 
   // Batch 1 is mid-send, so its editing controls are disabled (roborev PR
@@ -1258,7 +1253,7 @@ test("Alt+PageDown/Alt+PageUp jump focus between batches, wrapping at both ends"
 });
 
 test("batch jump lands on the target batch's selected tab when it has a tab strip", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await renderTwoBatches(fake, [
     { header: "Alpha", question: "q_alpha", options: [{ label: "alpha-opt", detail: "" }] },
     { header: "Beta", question: "q_beta", options: [{ label: "beta-opt", detail: "" }] },
@@ -1274,7 +1269,7 @@ test("batch jump lands on the target batch's selected tab when it has a tab stri
 });
 
 test("a mid-send batch's editing controls are disabled while the open batch stays editable", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await renderTwoBatches(fake);
 
   // The successful send REMOVES the batch, so an edit made mid-flight would
@@ -1303,7 +1298,7 @@ test("a mid-send batch's editing controls are disabled while the open batch stay
 });
 
 test("plain PageUp/PageDown keep their native meaning - no batch jump without Alt", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await renderTwoBatches(fake);
 
   const batch1Radio = screen.getByRole("radio", { name: "Yes" });
@@ -1316,7 +1311,7 @@ test("plain PageUp/PageDown keep their native meaning - no batch jump without Al
 
 test("a send that empties the dock requests composer focus", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", (params) => ({
     receipt: appliedReceipt(params.clientMutationId, "thread_a"),
@@ -1344,7 +1339,7 @@ test("a send that empties the dock requests composer focus", async () => {
 
 test("a send that empties the dock requests focus only at the dock's own seat", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", (params) => ({
     receipt: appliedReceipt(params.clientMutationId, "thread_a"),
@@ -1380,7 +1375,7 @@ test("post-send focus lands on the first NON-sending remaining batch when severa
   // resolving must move focus to batch 3 (editable), not batch 2 (disabled
   // mid-flight controls) (roborev PR #884 round 13). Settlement timing is
   // controlled by stubbing threadsStore.send with parked promises.
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
   render(<AskDock ref="ref_a" />);
   const sendResolvers: Array<() => void> = [];
@@ -1417,7 +1412,7 @@ test("post-send focus lands on the first NON-sending remaining batch when severa
 });
 
 test("a send with another batch still pending moves focus to the remaining batch, not the composer", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   function Probe() {
     return <span>{useComposerFocusRequest("ref_a") ? "requested" : "none"}</span>;
   }

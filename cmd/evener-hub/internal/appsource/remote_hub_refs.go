@@ -406,6 +406,11 @@ func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread, forwarded appw
 	// the shared visitor moves every one of them onto the host-qualified
 	// controller route the browser fetches them from.
 	rewriteThreadImageURLs(s.id, &thread)
+	for i := range thread.Turns {
+		for j := range thread.Turns[i].Items {
+			s.translateItemAuthorship(&thread.Turns[i].Items[j])
+		}
+	}
 	return thread, nil
 }
 
@@ -579,13 +584,26 @@ func (s *RemoteHubSource) translateOutWithCapabilities(out any, forwarded func()
 			return err
 		}
 		response.Thread = thread
+		for i := range response.Overlay {
+			s.translateItemAuthorship(&response.Overlay[i].Item)
+		}
+		if response.Changes != nil {
+			for i := range response.Changes.Items {
+				s.translateItemAuthorship(&response.Changes.Items[i])
+			}
+			for i := range response.Changes.Turns {
+				for j := range response.Changes.Turns[i].Items {
+					s.translateItemAuthorship(&response.Changes.Turns[i].Items[j])
+				}
+			}
+		}
 	case *appwire.ThreadStartResponse:
 		thread, err := s.fromRemoteThread(response.Thread, forwarded())
 		if err != nil {
 			return err
 		}
 		response.Thread = thread
-		rewriteTurnImageURLs(s.id, &response.Turn)
+		s.translateTurnItems(&response.Turn)
 	case *appwire.ThreadResumeResponse:
 		thread, err := s.fromRemoteThread(response.Thread, forwarded())
 		if err != nil {
@@ -611,17 +629,19 @@ func (s *RemoteHubSource) translateOutWithCapabilities(out any, forwarded func()
 		response.Ref = ref
 	case *appwire.ThreadTurnsListResponse:
 		for index := range response.Data {
-			rewriteTurnImageURLs(s.id, &response.Data[index])
+			s.translateTurnItems(&response.Data[index])
 		}
 	case *appwire.ThreadTurnItemsListResponse:
 		for index := range response.Data {
 			rewriteItemImageURLs(s.id, &response.Data[index])
+			s.translateItemAuthorship(&response.Data[index])
 		}
 	case *appwire.TurnStartResponse:
-		rewriteTurnImageURLs(s.id, &response.Turn)
+		s.translateTurnItems(&response.Turn)
 	case *appwire.EvenerSubagentPreviewResponse:
 		for index := range response.Items {
 			rewriteItemImageURLs(s.id, &response.Items[index])
+			s.translateItemAuthorship(&response.Items[index])
 		}
 	case *appwire.SessionActivitySummary:
 		page := appwire.SessionActivityPage{Issues: response.Issues}

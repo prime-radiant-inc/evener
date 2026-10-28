@@ -1,8 +1,6 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import rawStyles from "./emptystate.module.css";
 import { EmptyState } from "./index";
 
@@ -86,10 +84,7 @@ test("size=compact applies the compact layout to the whole block, and only that 
 // jsdom applies no stylesheet, so the declarations are the checkable truth -
 // comments stripped first so a doc comment cannot satisfy the match.
 test("size=compact declares a left-aligned block on the UI type step", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "emptystate.module.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    "",
-  );
+  const css = readModuleCss(import.meta.url, "emptystate.module.css");
   const block = /\.compact\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(block).toContain("align-items: flex-start");
   expect(block).toContain("text-align: start");
@@ -127,10 +122,7 @@ test("several actions passed as a fragment all land in the action slot", () => {
 // Several actions sit in one wrapping row with the system gap, so callers pass
 // a fragment instead of spacing buttons with text nodes.
 test("the action slot lays its children out in a wrapping row with a token gap", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "emptystate.module.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    "",
-  );
+  const css = readModuleCss(import.meta.url, "emptystate.module.css");
   const action = /(?:^|\n)\.action\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(action).toContain("display: flex");
   expect(action).toContain("flex-wrap: wrap");
