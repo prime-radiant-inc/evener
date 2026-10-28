@@ -72,11 +72,10 @@ import { canComposeFor, conversationControls, queueActionRefusal } from "./conve
 import { goalObjective, submitGoalCommand } from "./goalCommand";
 import type { HubRoutes } from "./hub/hubSheetContext";
 import { ImageAttachments } from "./ImageAttachments";
-import { ImageSelection } from "./imageSelection";
 import { projectNativeMutationRecovery, RecoveryFailure, useRecoveryPanel } from "./MutationRecoveryPanel";
 import { useNativePreferences } from "./NativePreferencesProvider";
 import { drafts } from "./nativeDrafts";
-import { nativeImagePicker } from "./nativeImagePicker";
+import { useComposerDraft } from "./session/useComposerDraft";
 import { NATIVE_MUTATION_HOST_UNAVAILABLE } from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
@@ -556,29 +555,12 @@ function ConversationScreenView({
 	const [commandPending, setCommandPending] = useState(false);
 	const commandBusy = useRef(false);
 	const projectLookup = useRef<AbortController | null>(null);
-	const document = useMemo(
-		() => drafts.open({ hubId: route.params.hubId, sessionRef: route.params.ref }),
-		[route.params.hubId, route.params.ref],
-	);
-	const draft = useSyncExternalStore(document.subscribe, document.getSnapshot);
-	// A handoff can fail its storage write while the resume itself already moved
-	// the rows. Retry it as the replacement screen mounts and whenever the draft
-	// becomes writable again; the source composition stays under the old ref
-	// until the destination write commits.
-	useEffect(() => {
-		if (draft.loaded && !draft.error) drafts.retryPendingHandoffs();
-	}, [draft.loaded, draft.error, draft.record]);
-	const imageSelection = useMemo(() => new ImageSelection(document, nativeImagePicker), [document]);
-	const imageState = useSyncExternalStore(imageSelection.subscribe, imageSelection.getSnapshot);
-	// Follows the screen in front rather than focus, so a photo being attached
-	// survives one of the screen's own sheets opening.
-	useEffect(() => {
-		if (!focused) return;
-		return () => {
-			imageSelection.cancel();
-			projectLookup.current?.abort();
-		};
-	}, [focused, imageSelection]);
+	const { document, draft, imageSelection, imageState } = useComposerDraft({
+		hubId: route.params.hubId,
+		sessionRef: route.params.ref,
+		focused,
+		abortOnLeave: projectLookup,
+	});
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	// A draft operation in flight, or one still uncertain, keeps Retry visible
 	// but disabled: the document itself refuses a second submitText.
