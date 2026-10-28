@@ -200,15 +200,15 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			path := stringArg(args, "path")
 			depth := 1
-			if v, ok := args["depth"].(float64); ok && int(v) > 0 {
+			if v, ok := approximateToolNumber(args["depth"]); ok && int(v) > 0 {
 				depth = int(v)
 			}
 			offset := 0
-			if v, ok := args["offset"].(float64); ok && int(v) > 0 {
+			if v, ok := approximateToolNumber(args["offset"]); ok && int(v) > 0 {
 				offset = int(v)
 			}
 			limit := 0
-			if v, ok := args["limit"].(float64); ok && int(v) > 0 {
+			if v, ok := approximateToolNumber(args["limit"]); ok && int(v) > 0 {
 				limit = int(v)
 			}
 			// Resolved before the budget is built: the budgeted walk has to
@@ -485,8 +485,9 @@ func shellBoolArg(args map[string]any, key string) bool {
 
 func shellIntArg(args map[string]any, key string) (int, bool) {
 	switch v := args[key].(type) {
-	case float64:
-		return int(v), true
+	case json.Number, float64:
+		f, _ := approximateToolNumber(v)
+		return int(f), true
 	case int:
 		return v, true
 	default:
@@ -856,13 +857,13 @@ func parseFileGrepArgs(args map[string]any) fileGrepArgs {
 	if v, ok := args["case_insensitive"].(bool); ok {
 		g.caseInsensitive = v
 	}
-	if v, ok := args["max_results"].(float64); ok && int(v) > 0 {
+	if v, ok := approximateToolNumber(args["max_results"]); ok && int(v) > 0 {
 		g.maxResults = int(v)
 	}
 	if v, ok := args["output_mode"].(string); ok {
 		g.outputMode = v
 	}
-	if v, ok := args["context_lines"].(float64); ok && int(v) > 0 {
+	if v, ok := approximateToolNumber(args["context_lines"]); ok && int(v) > 0 {
 		g.contextLines = min(int(v), 10)
 	}
 	return g

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -310,6 +311,13 @@ func optionalWholeIntArg(args map[string]any, key string) (*int, error) {
 	v, ok := args[key]
 	if !ok || v == nil {
 		return nil, nil
+	}
+	if number, ok := v.(json.Number); ok {
+		n, whole := tool.WholeNumberInt(number)
+		if !whole || n < 0 || n >= math.MaxInt {
+			return nil, fmt.Errorf("invalid_request: %s must be a non-negative whole number, got %v", key, number)
+		}
+		return &n, nil
 	}
 	n, ok := v.(float64)
 	if !ok {
