@@ -40,6 +40,7 @@ import {
   productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
   setCacheChannelFactoryForTests,
+  setMutationStorageForTests,
   setProductionEntryCacheForTests,
   setSessionCacheOpenBackstopForTests,
   setSessionCacheStalledOpenForTests,
@@ -3150,6 +3151,240 @@ it("a pane reopened over a pending initial claim settles its held open from the 
     setSessionCacheOpenBackstopForTests(10000);
     setSessionCacheStalledOpenForTests(5000);
     claimWireReadReleased.resolve();
+    localReadReleased.resolve();
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
+it("a replacement registered before the claim's reconciliation finishes still supersedes the certification open", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  // A mutation runtime makes the claim's publication await reconciliation
+  // before its hydration promise resolves, and the outbox storage's
+  // listOutbox is on that path, so parking it parks the claim
+  // mid-publication. The runtime is created lazily against this storage on
+  // the first read of it, so it must be installed before anything hydrates.
+  let holdReconciliation = false;
+  const reconciliationEntered = deferred<void>();
+  const reconciliationReleased = deferred<void>();
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  const realListOutbox = outboxStorage.listOutbox.bind(outboxStorage);
+  (outboxStorage as unknown as { listOutbox: unknown }).listOutbox = async (targetRef?: string) => {
+    if (holdReconciliation && targetRef === ref) {
+      holdReconciliation = false;
+      reconciliationEntered.resolve();
+      await reconciliationReleased.promise;
+    }
+    return realListOutbox(targetRef);
+  };
+  setMutationStorageForTests(outboxStorage);
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  // A replacement hydration registers while the claim is still reconciling
+  // its publication. When the claim finishes, its post-claim certification
+  // open must exclude only the claim's OWN registration from its settlement
+  // wait: the replacement's settlement is foreign, and it must still
+  // supersede the open, or a wedged cache lookup rides the backstop despite
+  // the replacement having restored the display.
+  let withheldWindowReads = 0;
+  let holding = false;
+  const localReadEntered = deferred<void>();
+  const localReadReleased = deferred<void>();
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    if (holding) {
+      holding = false;
+      localReadEntered.resolve();
+      return localReadReleased.promise.then(() =>
+        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+      ) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  let wireReads = 0;
+  const claimWireReadEntered = deferred<void>();
+  const claimWireReadReleased = deferred<void>();
+  const replacementWireReadReleased = deferred<void>();
+  client.on("thread/read", (params) => {
+    wireReads += 1;
+    if (wireReads === 1) {
+      claimWireReadEntered.resolve();
+      // The claim answers with a stale-generation response the repository
+      // rejects, so it resolves for the body-suppressed shell it held and
+      // the certification open still has a window to promote.
+      return claimWireReadReleased.promise.then(() => read);
+    }
+    return replacementWireReadReleased.promise.then(() => ({ ...read, requestGeneration: params.requestGeneration }));
+  });
+  try {
+    withheldWindowReads = 1;
+    setSessionCacheOpenBackstopForTests(40);
+    const openedByPane = threadsStore.getState().ensureThread(ref);
+    await claimWireReadEntered.promise;
+    // The claim's read resolves; its publication parks inside reconciliation.
+    setSessionCacheOpenBackstopForTests(10000);
+    holdReconciliation = true;
+    claimWireReadReleased.resolve();
+    await reconciliationEntered.promise;
+    // The replacement registers while the claim is still mid-publication.
+    client.emitNotification({
+      method: "evener/thread/resync",
+      params: { ref, threadId: "thread-a" },
+    });
+    await vi.waitFor(() => {
+      expect(wireReads).toBe(2);
+    });
+    await drainSettleSteps();
+    // The claim finishes and its certification open parks on the wedged
+    // lookup under the real backstop.
+    holding = true;
+    reconciliationReleased.resolve();
+    await localReadEntered.promise;
+    // The replacement now settles successfully: the certification open must
+    // end from THE REPLACEMENT's settlement, not ride out the backstop.
+    replacementWireReadReleased.resolve();
+    const settled = await Promise.race([
+      openedByPane.then(() => true),
+      new Promise((r) => setTimeout(r, 400)).then(() => false),
+    ]);
+    expect(settled).toBe(true);
+    expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("superseded-by-source");
+    expect(wireReads).toBe(2);
+    localReadReleased.resolve();
+    await openedByPane;
+    await drainSettleSteps();
+    expect(bodies()).toContain("row-26");
+    expect(bodies()).toContain("row-225");
+  } finally {
+    setSessionCacheOpenBackstopForTests(10000);
+    setSessionCacheStalledOpenForTests(5000);
+    claimWireReadReleased.resolve();
+    replacementWireReadReleased.resolve();
+    reconciliationReleased.resolve();
+    localReadReleased.resolve();
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
+it("a failed foreign settlement during a body-suppressed post-claim opening reports the miss", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  // The pane's claim answers with a stale-generation response the repository
+  // rejects, so the claim resolves for the body-suppressed shell it already
+  // held - any non-null model. Its post-claim certification open then parks
+  // on a wedged cache lookup, and a foreign resync's refresh fails outright:
+  // that settlement recovered nothing, so the open must report the miss and
+  // arm the cache recovery chain, not certify the still-missing window.
+  let withheldWindowReads = 0;
+  let holding = false;
+  const localReadEntered = deferred<void>();
+  const localReadReleased = deferred<void>();
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    if (holding) {
+      holding = false;
+      localReadEntered.resolve();
+      return localReadReleased.promise.then(() =>
+        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+      ) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  let wireReads = 0;
+  const claimWireReadEntered = deferred<void>();
+  const claimWireRead = deferred<ThreadReadResponse>();
+  client.on("thread/read", () => {
+    wireReads += 1;
+    if (wireReads === 1) {
+      claimWireReadEntered.resolve();
+      return claimWireRead.promise;
+    }
+    throw new Error("wire read failed");
+  });
+  try {
+    withheldWindowReads = 1;
+    setSessionCacheOpenBackstopForTests(40);
+    const openedByPane = threadsStore.getState().ensureThread(ref);
+    await claimWireReadEntered.promise;
+    // The claim's stale-generation response is rejected by the repository,
+    // so the claim resolves for the body-suppressed shell. Its certification
+    // open parks on the wedged lookup under the real backstop.
+    setSessionCacheOpenBackstopForTests(10000);
+    holding = true;
+    claimWireRead.resolve(read);
+    await localReadEntered.promise;
+    // The foreign settlement: a resync whose refresh fails outright.
+    client.emitNotification({
+      method: "evener/thread/resync",
+      params: { ref, threadId: "thread-a" },
+    });
+    await openedByPane;
+    expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("recovery-needed");
+    // The miss verdict armed the cache recovery chain: with the wedge
+    // released, the recorded window promotes and the display converges.
+    localReadReleased.resolve();
+    await vi.waitFor(() => {
+      expect(bodies()).toContain("row-26");
+    });
+    expect(bodies()).toContain("row-225");
+  } finally {
+    setSessionCacheOpenBackstopForTests(10000);
+    setSessionCacheStalledOpenForTests(5000);
+    claimWireRead.resolve(read);
     localReadReleased.resolve();
     threadsStore.getState().releaseThread(ref);
     await lease.release();

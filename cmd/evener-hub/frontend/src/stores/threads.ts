@@ -872,13 +872,29 @@ export function isEntryTranscriptLocalOpening(ref: string): boolean {
 // that newer opening finished.
 const entryTranscriptLatestOpening = new Map<string, number>();
 
+// A quiet opening's ownership token: present while the open runs, invisible
+// to the consumer gate. The certification open a claim runs over a display
+// its own publication already completed, and whose older frontier is still
+// outstanding, has no pruned publication for the gate to protect, while
+// consumers hold live paging demand the gate would strand exactly between
+// the claim and the open's settle (the Comic restore's next accepted page is
+// the observed strand) — so it does not hold them, while still recording its
+// verdict like any open, including arming the recovery chain on a miss.
+const entryTranscriptQuietOpenings = new Map<string, number>();
+
 // Mark the opening pending BEFORE its first (pruned) publication, and publish
 // the change through the store so subscribed consumers re-render. Returns the
-// token the matching settle must present.
-function beginEntryTranscriptLocalOpening(ref: string): number {
+// token the matching settle must present. A quiet opening registers its token
+// without the store publication: consumers never wait on it, and ownership
+// (the registries' tokens) behaves exactly as for a published one.
+function beginEntryTranscriptLocalOpening(ref: string, quiet = false): number {
   entryTranscriptOpeningSequence += 1;
   const token = entryTranscriptOpeningSequence;
   entryTranscriptLatestOpening.set(ref, token);
+  if (quiet) {
+    entryTranscriptQuietOpenings.set(ref, token);
+    return token;
+  }
   threadsStore.setState((state) => {
     const localOpenings = new Map(state.localOpenings);
     localOpenings.set(ref, token);
@@ -891,6 +907,7 @@ function beginEntryTranscriptLocalOpening(ref: string): number {
 // the ref) is a no-op, so it can never clear the newer hold or, by
 // publishing, strand a port. Called on success, failure and no-model alike.
 function settleEntryTranscriptLocalOpening(ref: string, token: number): void {
+  if (entryTranscriptQuietOpenings.get(ref) === token) entryTranscriptQuietOpenings.delete(ref);
   threadsStore.setState((state) => {
     if (state.localOpenings.get(ref) !== token) return {};
     const localOpenings = new Map(state.localOpenings);
@@ -903,6 +920,7 @@ function settleEntryTranscriptLocalOpening(ref: string, token: number): void {
 // change so a consumer showing the port resumes ordinarily rather than waiting
 // for a frame that will never arrive.
 function clearEntryTranscriptLocalOpening(ref: string): void {
+  entryTranscriptQuietOpenings.delete(ref);
   threadsStore.setState((state) => {
     if (!state.localOpenings.has(ref)) return {};
     const localOpenings = new Map(state.localOpenings);
@@ -963,11 +981,31 @@ function holdsCompleteForegroundWindow(model: ThreadModel | undefined): boolean 
   );
 }
 
-async function openEntryTranscript(ref: string, recovery = false, sourcePublished = false): Promise<boolean> {
+async function openEntryTranscript(
+  ref: string,
+  recovery = false,
+  // The registration of the publication this open certifies, passed by a
+  // caller that just awaited that publication (the claim's post-hydration
+  // certification). The open's settlement wait excludes exactly that
+  // registration — the claim's own hydration settling would otherwise
+  // certify this re-open before its local promotion ran — while every later,
+  // foreign settlement still supersedes. The identity is the awaited
+  // hydration's own registration, never the map's current entry: a
+  // replacement registered mid-publication displaces the claim's
+  // registration there, and its settlement is foreign to this open.
+  exceptRegistration?: Promise<void>,
+  // Run the open without the consumer gate: the caller's own publication
+  // already completed the display AND its older frontier is still outstanding
+  // (the claim's post-hydration certification over a complete window with
+  // live paging demand), so no pruned publication needs the gate's
+  // protection and the consumers holding that demand must not be held while
+  // the local read runs.
+  quiet = false,
+): Promise<boolean> {
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref || !fixture.repository) return true;
   const repository = fixture.repository;
-  const openingToken = beginEntryTranscriptLocalOpening(ref);
+  const openingToken = beginEntryTranscriptLocalOpening(ref, quiet);
   fixture.localOpenDeadlineMissed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let settlement: HydrationSettlementWait | undefined;
@@ -1006,17 +1044,12 @@ async function openEntryTranscript(ref: string, recovery = false, sourcePublishe
     const openingOwned = () =>
       entryTranscriptRoute(ref) === fixture &&
       fixture.repository === repository &&
-      threadsStore.getState().localOpenings.get(ref) === openingToken;
+      (threadsStore.getState().localOpenings.get(ref) === openingToken ||
+        entryTranscriptQuietOpenings.get(ref) === openingToken);
     const established = fixture.lastLocalOpenUsable && repository.holdsEstablishedView();
     let stalled = false;
     const restore = established ? reader.openLocal(200) : undefined;
-    // An open the caller's own machinery just published for (sourcePublished)
-    // excludes that publication's own registration from its settlement wait:
-    // the claim's hydration settling would otherwise certify this re-open
-    // before its local promotion ran, stranding a body-suppressed display no
-    // recovery chain owns. Every later, foreign settlement still supersedes.
-    const selfPublication = sourcePublished ? trackedHydrationCompletions.get(ref) : undefined;
-    settlement = established || recovery ? undefined : nextTrackedHydrationSettlement(ref, selfPublication);
+    settlement = established || recovery ? undefined : nextTrackedHydrationSettlement(ref, exceptRegistration);
     const result = established
       ? await Promise.race([
           restore,
@@ -1081,9 +1114,11 @@ async function openEntryTranscript(ref: string, recovery = false, sourcePublishe
       // restore stay missing — so the expected window must hold real bodies
       // alongside the range.
       // A re-open the caller's own machinery published the model for — the
-      // claim's post-hydration certification — is source-owned the same way:
-      // the display holds what the claim just published, so a settling
-      // confirmation certifies rather than strands.
+      // claim's post-hydration certification — is source-owned only with the
+      // same body-completeness proof every other superseded open shows: the
+      // claim resolves for any non-null model, including a body-suppressed
+      // shell a rejected response left behind, so a settling confirmation
+      // that recovered nothing must not certify the still-missing window.
       // The verdict belongs to an open that still owns the route: a hydration
       // that changed incarnation, thread identity or durable authority has
       // already replaced and disposed this repository, and the replacement's
@@ -1094,7 +1129,7 @@ async function openEntryTranscript(ref: string, recovery = false, sourcePublishe
         fixture.lastLocalOpenStatus = "superseded-by-source";
         return true;
       }
-      if (sourcePublished || (repository.holdsResidentForegroundRange() && repository.holdsBodiedForegroundWindow())) {
+      if (repository.holdsResidentForegroundRange() && repository.holdsBodiedForegroundWindow()) {
         fixture.lastLocalOpenStatus = "superseded-by-source";
         return true;
       }
@@ -1818,6 +1853,14 @@ function newestItemPosition(turns: TurnModel[]): ThreadItemPosition | undefined 
 
 const trackedHydrationCompletions = new Map<string, Promise<void>>();
 
+// The registration each hydration's own settlement created, keyed by the
+// hydration promise itself. A post-claim certification open must exclude
+// exactly the publication it certifies from its settlement wait, and a newer
+// hydration can displace that registration in trackedHydrationCompletions
+// before the open parks — so the excluded identity travels with the awaited
+// hydration, never read from the map's current entry.
+const hydrationRegistrations = new WeakMap<object, Promise<void>>();
+
 // Waiters for "the next tracked hydration for this ref settled" — the open
 // path's primary deterministic bound. A waiter parks until the registration
 // that is still current settles; settlement means settled-either-way: a
@@ -1889,7 +1932,7 @@ function registerHydrationCompletion(ref: string, completion: Promise<void>): vo
 // is the failed refresh's own concern and must not settle the composed
 // completion while the chain's span is still pending, or a waiting
 // consumer resumes before recovery establishes the display and cursor.
-function registerHydrationSettlement(ref: string, hydration: Promise<unknown>): void {
+function registerHydrationSettlement(ref: string, hydration: Promise<unknown>): Promise<void> {
   const outstandingRecovery = openingRecoveryCompletions.get(ref);
   const completion = outstandingRecovery
     ? Promise.allSettled([hydration, outstandingRecovery]).then(() => undefined)
@@ -1897,7 +1940,9 @@ function registerHydrationSettlement(ref: string, hydration: Promise<unknown>): 
         () => undefined,
         () => undefined,
       );
+  hydrationRegistrations.set(hydration, completion);
   registerHydrationCompletion(ref, completion);
+  return completion;
 }
 
 // The map holds only pending registrations: an entry leaves through this
@@ -7506,7 +7551,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // claim's settlement from its own pending open instead of riding the
       // backstop. Replacement ownership is unchanged (the identity check and
       // displacement below), and the claim's own post-hydration re-open
-      // excludes this registration from its wait (see selfPublication), so
+      // excludes this registration from its wait (see exceptRegistration), so
       // the certification still promotes rather than self-certifying.
       registerHydrationSettlement(ref, hydration);
       inflightHydrates.start(ref, hydration, hydrationClient, hydrationEpoch);
@@ -7523,7 +7568,29 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         try {
           const model = await inflight;
           if (model) {
-            if (!(await openEntryTranscript(ref, false, true))) scheduleEntryOpeningRecovery(ref);
+            // A display the claim's publication already completed has no
+            // pruned publication for the certification open's consumer gate
+            // to protect — its local read can only add bodies the pane is
+            // already showing, or miss and arm the recovery chain like any
+            // open. Where that display still has an older frontier, consumers
+            // hold live paging demand for the next accepted page, and the
+            // held gate strands exactly that demand in the window between the
+            // claim and the open's settle (the Comic restore's next accepted
+            // page is the observed strand) — so it certifies quietly: the
+            // open still records its verdict, marker and recovery verdicts,
+            // just without holding consumers. A display with no older
+            // frontier has no demand the gate could strand, and keeps the
+            // established hold-publication contract.
+            if (
+              !(await openEntryTranscript(
+                ref,
+                false,
+                hydrationRegistrations.get(inflight),
+                holdsCompleteForegroundWindow(model) && olderTranscriptPageKey(ref) != null,
+              ))
+            ) {
+              scheduleEntryOpeningRecovery(ref);
+            }
             return;
           }
         } catch (err) {
