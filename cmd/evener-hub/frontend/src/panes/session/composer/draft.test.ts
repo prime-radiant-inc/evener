@@ -473,6 +473,35 @@ test("a same-row background write never demotes or refreshes an explicit pick", 
   expect(readRecoveryPick("background-row")).toMatchObject({ background: false });
 });
 
+test("pick stamps order strictly when the clock ties or steps backward", async () => {
+  localStorage.clear();
+  // Two explicit picks inside one frozen clock tick must not tie: the later
+  // pick is the user's newest choice and must win at resolve time.
+  const frozen = vi.spyOn(Date, "now").mockReturnValue(1_000);
+  try {
+    writeRecoveryPick("first-row");
+    writeRecoveryPick("second-row");
+  } finally {
+    frozen.mockRestore();
+  }
+  const rows = new Map([
+    ["first-row", { targetRef: "local:order" }],
+    ["second-row", { targetRef: "local:order" }],
+  ]);
+  const resolve = () => resolveRecoveryPick("local:order", async (rowId) => rows.get(rowId));
+  expect((await resolve())?.entry.rowId).toBe("second-row");
+  // A backward clock adjustment after reload must not let a stale pick beat
+  // the user's newest one.
+  const backward = vi.spyOn(Date, "now").mockReturnValue(1);
+  try {
+    writeRecoveryPick("third-row");
+  } finally {
+    backward.mockRestore();
+  }
+  rows.set("third-row", { targetRef: "local:order" });
+  expect((await resolve())?.entry.rowId).toBe("third-row");
+});
+
 test("a settle succeeds the displaced row's pick and preserves its rank", () => {
   localStorage.clear();
   writeRecoveryPick("stale-row");

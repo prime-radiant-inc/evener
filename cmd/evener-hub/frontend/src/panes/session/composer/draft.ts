@@ -83,6 +83,34 @@ function recoveryPickKey(rowId: string): string {
   return `${RECOVERY_PICK_PREFIX}${encodeURIComponent(ownClientId())}.${encodeURIComponent(rowId)}`;
 }
 
+// Pick ordering must be strict within this tab. Date.now() ties inside one
+// clock tick and can step backwards across a reload, either of which would
+// leave the newest pick ambiguous at resolve time. The last issued stamp is
+// persisted per tab; every new pick ranks strictly above it. (The stamp key
+// sits inside the registry prefix, but it parses as no pick, so enumeration
+// never mistakes it for an entry.)
+function recoveryPickStampKey(): string {
+  return `${RECOVERY_PICK_PREFIX}${encodeURIComponent(ownClientId())}.stamp`;
+}
+
+function nextPickStamp(): number {
+  try {
+    const key = recoveryPickStampKey();
+    let last = 0;
+    const raw = localStorage.getItem(key);
+    if (raw !== null && raw !== "") {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) last = parsed;
+    }
+    const stamp = Math.max(Date.now(), last + 1);
+    localStorage.setItem(key, String(stamp));
+    return stamp;
+  } catch {
+    // Best-effort, like every other composer persistence.
+    return Date.now();
+  }
+}
+
 function parseRecoveryPick(rowId: string, raw: string): RecoveryPickEntry | undefined {
   try {
     const parsed = JSON.parse(raw) as { pickedAt?: unknown; background?: unknown };
@@ -124,10 +152,10 @@ export function clearRecoveryPick(rowId: string): void {
   }
 }
 
-// An explicit user pick: timestamped now, ranking above every background
-// append.
+// An explicit user pick: stamped strictly newest, ranking above every
+// background append.
 export function writeRecoveryPick(rowId: string): void {
-  storeRecoveryPick({ rowId, pickedAt: Date.now(), background: false });
+  storeRecoveryPick({ rowId, pickedAt: nextPickStamp(), background: false });
 }
 
 // This tab's whole pick registry. Entries whose row is absent are cleaned
@@ -161,20 +189,23 @@ export function writeRecoveryPickAutomatically(rowId: string, focused: boolean):
     if (!stored.background) return;
     if (!focused) return;
   }
-  storeRecoveryPick({ rowId, pickedAt: Date.now(), background: !focused });
+  storeRecoveryPick({ rowId, pickedAt: nextPickStamp(), background: !focused });
 }
 
 // A background settle that displaces a row succeeds the pick: the fresh row
 // inherits the displaced row's pick and its rank - succession preserves rank,
 // so only the user's own later acts outrank it - and the displaced row's
-// entry is released. With no pick naming the displaced row, the settle
-// appends at background rank.
-export function succeedRecoveryPick(displacedRowId: string, rowId: string): void {
+// entry is released. The registry entry is preferred; a concurrent
+// resolution may already have released it as dangling (the row was consumed
+// elsewhere while the write was pending), so the caller's lease-captured
+// rank carries the succession then. With neither naming the displaced row,
+// the settle appends at background rank.
+export function succeedRecoveryPick(displacedRowId: string, rowId: string, captured?: RecoveryPick): void {
   if (displacedRowId === rowId) return;
-  const inherited = readRecoveryPick(displacedRowId);
+  const inherited = readRecoveryPick(displacedRowId) ?? captured;
   if (inherited === undefined) {
     if (readRecoveryPick(rowId) === undefined) {
-      storeRecoveryPick({ rowId, pickedAt: Date.now(), background: true });
+      storeRecoveryPick({ rowId, pickedAt: nextPickStamp(), background: true });
     }
     return;
   }

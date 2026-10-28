@@ -23,7 +23,12 @@ import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB
 import { resetPrefsStoreForTests } from "../../../stores/prefs";
 import { answerActivityRead } from "../../../stores/sessionActivityTestUtils";
 import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
-import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
+import {
+  getMutationRuntime,
+  resetThreadsStoreForTests,
+  setMutationStorageForTests,
+  threadsStore,
+} from "../../../stores/threads";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -332,6 +337,56 @@ test("goal replacement preserves a recovery row whose empty-draft discard is alr
     recovered.clientMutationId,
   ]);
   expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+});
+
+// The mount-restore's pick resolution is asynchronous. A user who types and
+// clears the composer while that IndexedDB read is pending has made a newer
+// (empty) choice; the late restore must not replace it with the old row.
+test("a mount restore must not replace a composition the user edited to empty during the lookup", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  await seedRejectedRecovery(storage, "ref_a", "stale recovery content");
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  await waitFor(() => expect(textarea().textContent).toBe("stale recovery content"));
+  act(() => cleanup());
+
+  // The reopened composer resolves its pick through IndexedDB: hold that
+  // read while the user types and clears.
+  let releaseRead: () => void = () => {};
+  const released = new Promise<void>((resolve) => {
+    releaseRead = resolve;
+  });
+  const runtime = getMutationRuntime();
+  if (!runtime) throw new Error("missing mutation runtime");
+  const original = runtime.storage.getRecovery.bind(runtime.storage);
+  const reached = new Promise<void>((resolve) => {
+    runtime.storage.getRecovery = async (rowId: string) => {
+      const record = await original(rowId);
+      if (record !== undefined && record.composerText === "stale recovery content") {
+        resolve();
+        await released;
+      }
+      return record;
+    };
+  });
+  try {
+    await mountComposer("ref_a", { status: { type: "idle" } });
+    await reached;
+    const editor = textarea();
+    const user = userEvent.setup();
+    await user.type(editor, "user draft");
+    await user.clear(editor);
+    expect(editor.textContent).toBe("");
+    act(() => releaseRead());
+    await flushPendingTurnsProjectionForTests();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    // The user's emptied composition stands; the late restore is fenced.
+    expect(editor.textContent).toBe("");
+  } finally {
+    runtime.storage.getRecovery = original;
+  }
 });
 
 test("goal replacement preserves the consolidated recovery owner while its commit is unobserved", async () => {

@@ -85,6 +85,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     selectionMetaRef,
     recoveryOwnerLeaseRef,
     recoveryOwnsLocalDraftRef,
+    recoveryReplacementEpochRef,
   } = source.continuity;
   const {
     updateText,
@@ -215,6 +216,12 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     const restorable = (entry: MutationRecoveryRecord) =>
       entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt" && !entry.preserveComposer;
     let cancelled = false;
+    // The IndexedDB lookup can outlast a user edit: capture the edit and
+    // replacement generations and fence the restore if either moved, so a
+    // composition the user typed and cleared during the lookup is never
+    // replaced by the old row's content.
+    const editGeneration = draftEditRevisionRef.current;
+    const replacementEpoch = recoveryReplacementEpochRef.current;
     void (async () => {
       // Resolve this tab's pick registry against the rows' current targets
       // (an IndexedDB read), so a pick follows its row across retargets and
@@ -225,6 +232,8 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
         : undefined;
       if (
         cancelled ||
+        draftEditRevisionRef.current !== editGeneration ||
+        recoveryReplacementEpochRef.current !== replacementEpoch ||
         source.getSnapshot().activeRecoveryId !== null ||
         textRef.current.trim() !== "" ||
         attachments.items.length > 0 ||
@@ -265,6 +274,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     markRestore,
     recoveryEntries,
     recoveryOwnsLocalDraftRef,
+    recoveryReplacementEpochRef,
     source.getSnapshot,
     ref,
     setActiveRecoveryId,

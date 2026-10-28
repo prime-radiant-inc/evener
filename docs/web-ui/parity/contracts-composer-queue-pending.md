@@ -99,7 +99,11 @@ except where a line says so itself.
   wherever the durable target moves and nothing is carried at an identity
   rewrite. Restoring resolves the registry at read time: among the picks whose
   row currently targets the pane's conversation, the newest `pickedAt` wins,
-  with explicit user picks outranking automatic background appends.
+  with explicit user picks outranking automatic background appends. Pick
+  stamps are strictly increasing per tab (a persisted last-stamp outranks the
+  raw clock), so clock ties and backward steps cannot reorder picks, and the
+  restore is fenced against edits made while the IndexedDB lookup was
+  pending.
 - Conversation seats remain as pane identity: allocated at placement, stored
   per tab under the pane id (desktop restore) and the conversation ref (mobile
   route reconstruction), reused when a reload restores the same conversation,
@@ -123,7 +127,8 @@ except where a line says so itself.
   automatic activation ranks as the user's own. A background settle that
   displaces a row succeeds the displaced row's pick - the fresh row inherits
   the displaced pick's timestamp and rank, and the displaced row's entry is
-  released. A refused write's preservation records its fresh row under
+  released; the rank travels with the lease, so a concurrent resolution
+  releasing the dangling entry mid-write cannot demote the succession. A refused write's preservation records its fresh row under
   exactly that rule, including when the pane closed before the write settled,
   because the durable row outlives the source. Retiring a lease releases the
   retiring row's own pick entry only; picks this tab holds for other rows

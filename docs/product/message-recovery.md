@@ -82,7 +82,9 @@ stay consistent for a selection to survive. Another tab can never read or
 overwrite this tab's picks. Restoring resolves the registry at read time: among
 the picks whose row currently targets the pane's conversation, the newest
 `pickedAt` wins, with explicit user picks outranking automatic background
-appends regardless of age.
+appends regardless of age. Pick stamps are strictly increasing per tab - a
+persisted last-stamp outranks the raw clock, so a tie inside one clock tick
+or a backward clock adjustment cannot make a stale pick win.
 
 A conversation seat still exists as pane identity: it is allocated at
 placement, stored per tab under both the pane id (desktop layout restore) and
@@ -103,7 +105,11 @@ even when an older rejected peer row exists, and it needs no ancestry: when
 authoritative ancestry later reveals an ancestor column, that column's
 composer simply resolves its own picks - nothing has to migrate before the
 ancestry arrives. Resolution also lazily releases registry entries whose row
-no longer exists, so the registry cannot accumulate picks for dead rows.
+no longer exists, so the registry cannot accumulate picks for dead rows. The
+resolution is an IndexedDB read that can outlast a user edit: the restore is
+fenced if the composer's edit or replacement generation moved during the
+lookup, so a composition the user typed and cleared while it was pending is
+never replaced by the old row's content.
 
 An automatic or background activation appends a pick flagged background:
 it can never outrank an explicit pick at resolve time, and it never demotes or
@@ -113,7 +119,9 @@ succeeds the displaced row's pick - the fresh row inherits the displaced
 pick's timestamp and rank, so only the user's own later acts outrank it, and
 the displaced row's entry is released. A refused write's preservation records
 its fresh row under exactly that rule, even when the pane closed before the
-write settled, because the durable row outlives the source. Retiring a lease
+write settled, because the durable row outlives the source; the rank travels
+with the lease, so a concurrent resolution that releases the displaced row's
+dangling entry mid-write cannot demote the succession. Retiring a lease
 releases the retiring row's own pick entry only; picks this tab holds for
 other rows survive it.
 

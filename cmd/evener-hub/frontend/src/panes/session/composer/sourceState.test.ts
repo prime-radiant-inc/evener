@@ -7,6 +7,7 @@ import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
+import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests } from "../../../stores/threads";
 import { getToasts, pushToast, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { createTestComposerSource } from "../testing/composerSource";
@@ -797,6 +798,61 @@ test("a preservation that commits after disposal still records its selection", a
   } finally {
     source.dispose();
     peer.close();
+    storage.close();
+  }
+});
+
+// Another tab consumes the selected row while its persistence write is
+// pending, and a concurrent resolution releases the row's dangling pick
+// entry before the settle can read it. Succession must still carry the rank
+// the lease captured at pick time, or the preserved work lands at
+// background rank and an older explicit pick wins the reload.
+test("a settle whose displaced entry was cleaned mid-write keeps the leased rank", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "local:cleaned-entry-settle";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "row composition" }] },
+    attachments: [],
+    composerText: "row composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(ref);
+  try {
+    source.setActiveRecoveryId(recovery);
+    expect(readRecoveryPick(original.clientMutationId)).toBeDefined();
+    // Another tab consumes the row outright, so this tab's pick dangles.
+    expect(await storage.discardRecovery(original.clientMutationId)).toBe(true);
+    const hold = holdNextWriteTransaction(["recovery"]);
+
+    source.editText("local preserved work");
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, "local preserved work", [], []);
+    await hold.reached;
+    // A concurrent resolution releases the dangling entry before the
+    // settle reads it.
+    expect(await resolveRecoveryPick(ref, (rowId) => storage.getRecovery(rowId))).toBeUndefined();
+    expect(readRecoveryPick(original.clientMutationId)).toBeUndefined();
+
+    hold.release();
+    await saving;
+
+    const preserved = (await storage.listRecovery(ref))[0];
+    expect(preserved?.clientMutationId).not.toBe(original.clientMutationId);
+    expect(preserved).toMatchObject({ composerText: "local preserved work" });
+    // The preserved row succeeds the pick at the leased rank, not at
+    // background rank.
+    expect(readRecoveryPick(preserved.clientMutationId)?.background).toBe(false);
+    expect((await resolveRecoveryPick(ref, (rowId) => storage.getRecovery(rowId)))?.row.clientMutationId).toBe(
+      preserved?.clientMutationId,
+    );
+    hold.release();
+  } finally {
+    source.dispose();
     storage.close();
   }
 });
