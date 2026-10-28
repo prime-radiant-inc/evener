@@ -147,16 +147,25 @@ func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t 
 
 	// At this point the session's steering queue must hold one entry
 	// whose text contains "drain me" and whose images carry our bytes.
-	preview := sess.SteeringQueueSnapshot()
+	preview := steeringInputs(sess)
 	if len(preview) != 1 {
 		t.Fatalf("steering queue: got %d entries, want 1", len(preview))
 	}
-	entry := preview[0]
-	if !bytes.Contains([]byte(entry.Text), []byte("drain me")) {
-		t.Errorf("steering text=%q, want to contain %q", entry.Text, "drain me")
+	var text string
+	var images []appwire.InputItem
+	for _, item := range preview[0] {
+		switch item.Type {
+		case "text":
+			text += item.Text
+		case "image":
+			images = append(images, item)
+		}
 	}
-	if len(entry.Images) != 1 || entry.Images[0].MediaType != "image/png" || !bytes.Equal(entry.Images[0].Data, pngSig) {
-		t.Errorf("steering image mismatch: %+v", entry.Images)
+	if !bytes.Contains([]byte(text), []byte("drain me")) {
+		t.Errorf("steering text=%q, want to contain %q", text, "drain me")
+	}
+	if len(images) != 1 || images[0].MediaType != "image/png" || !bytes.Equal(images[0].Data, pngSig) {
+		t.Errorf("steering image mismatch: %+v", images)
 	}
 	cancel()
 	select {

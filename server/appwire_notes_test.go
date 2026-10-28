@@ -64,7 +64,7 @@ func TestServerAppWireNotesHumanSetInvokesCallback(t *testing.T) {
 	if out.Receipt.ClientMutationID != "outer-1" || out.Receipt.Disposition != appwire.MutationDispositionApplied || out.Receipt.ProjectionState != appwire.MutationProjectionPending {
 		t.Fatalf("accepted receipt = %+v", out.Receipt)
 	}
-	queue := sess.SteeringQueueSnapshot()
+	queue := steeringInputs(sess)
 	if len(queue) != 1 {
 		t.Fatalf("steering queue length=%d, want 1", len(queue))
 	}
@@ -101,7 +101,7 @@ func TestServerAppWireNotesHumanSetRetryOfOneOuterIDSteersOnce(t *testing.T) {
 	if !ok || out.Receipt.ClientMutationID != "outer-9" || out.Receipt.Disposition != appwire.MutationDispositionReplayed || out.Receipt.ProjectionState != appwire.MutationProjectionPending {
 		t.Fatalf("replayed result = %+v", retry.Response.Result)
 	}
-	if got := sess.SteeringQueueSnapshot(); len(got) != 1 {
+	if got := steeringInputs(sess); len(got) != 1 {
 		t.Fatalf("steering queue length=%d, want exactly 1 after outer retry", len(got))
 	}
 }

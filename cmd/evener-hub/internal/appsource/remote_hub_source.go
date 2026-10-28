@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -352,23 +351,12 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 	if errors.Is(err, sshconn.ErrRestart) {
 		return remoteHubUnavailable(s.id, err.Error())
 	}
-	if errors.Is(err, syscall.ECONNREFUSED) ||
-		errors.Is(err, syscall.ECONNRESET) ||
-		errors.Is(err, syscall.EPIPE) ||
+	if isTransportLoss(err) ||
 		errors.Is(err, io.ErrClosedPipe) ||
 		errors.Is(err, appwire.ErrStreamClosed) ||
 		errors.Is(err, os.ErrClosed) ||
 		errors.Is(err, net.ErrClosed) ||
-		errors.Is(err, io.EOF) ||
-		errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, context.DeadlineExceeded) {
-		return remoteHubUnavailable(s.id, err.Error())
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return remoteHubUnavailable(s.id, err.Error())
-	}
-	if remoteHubTransportText(strings.ToLower(err.Error())) {
+		remoteHubTransportText(strings.ToLower(err.Error())) {
 		return remoteHubUnavailable(s.id, err.Error())
 	}
 	return err
@@ -381,19 +369,16 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 // reclassified as host unavailability.
 func remoteHubTransportText(lower string) bool {
 	switch {
-	case containsWord(lower, "eof"),
+	case isTransportLossText(lower),
+		containsWord(lower, "eof"),
 		strings.Contains(lower, "connection refused"),
-		strings.Contains(lower, "connection reset"),
-		strings.Contains(lower, "broken pipe"),
 		strings.Contains(lower, "closed pipe"),
 		// os.ErrClosed's text: the descriptor this end writes to is gone, the
 		// same class of failure as net.ErrClosed's "use of closed network
 		// connection" below. transportUnavailable checks errors.Is(err,
 		// os.ErrClosed) first, so this text fallback covers only the shapes a
 		// transport library wraps without exposing the sentinel.
-		strings.Contains(lower, "file already closed"),
-		strings.Contains(lower, "use of closed network connection"),
-		strings.Contains(lower, "i/o timeout"):
+		strings.Contains(lower, "file already closed"):
 		return true
 	default:
 		return false

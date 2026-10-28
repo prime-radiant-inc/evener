@@ -1,5 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
+import { readModuleCss } from "../styles/cssBlock";
 import { ThemeFlip } from "./ThemeFlip";
 
 afterEach(() => {
@@ -45,10 +46,7 @@ test("explicitly scopes both panes when the gallery is nested under a light root
 // off-disk technique token-contract.test.ts uses) because jsdom does not
 // resolve CSS Modules classes to computed styles.
 test("each pane resets color to the scoped theme's ink, not the ambient theme's", async () => {
-  const { readFileSync } = await import("node:fs");
-  const { dirname, join } = await import("node:path");
-  const { fileURLToPath } = await import("node:url");
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "theme-flip.module.css"), "utf8");
+  const css = readModuleCss(import.meta.url, "theme-flip.module.css");
   const paneRule = /\.pane\s*\{[^}]*\}/.exec(css)?.[0];
   expect(paneRule).toBeDefined();
   expect(paneRule).toMatch(/color:\s*var\(--ink-hi\)/);

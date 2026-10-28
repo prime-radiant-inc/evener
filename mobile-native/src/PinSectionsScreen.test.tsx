@@ -35,8 +35,6 @@ vi.mock("expo-sqlite/kv-store", () => ({
 		getAllKeysSync: () => [...harness.kv.keys()],
 	},
 }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "uuid" }));
-
 const props = {
 	route: { params: { hubId: "hub-1", sectionId: "s1", title: "Pins" } },
 	navigation: { navigate: () => {}, setParams: () => {} },

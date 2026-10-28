@@ -25,7 +25,6 @@ vi.mock("expo-secure-store", () => ({
 	setItemAsync: async (key: string, value: string) => void harness.secure.set(key, value),
 	deleteItemAsync: async (key: string) => void harness.secure.delete(key),
 }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => `hub-${++harness.ids}` }));
 vi.mock("./hubConnection", () => ({
 	useHubConnection: () => ({ client: harness.client, state: harness.client ? "ready" : "closed", fatal: false }),
 }));
