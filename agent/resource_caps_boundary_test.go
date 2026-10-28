@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"strings"
@@ -38,23 +37,9 @@ func promptResourceCaps(t *testing.T, s *Session) (renderedResourceCaps, bool) {
 	return caps, true
 }
 
-type maskedResourceFixtureEnv struct {
-	*resourceFixtureEnv
-}
-
-func (e *maskedResourceFixtureEnv) ExecCommand(context.Context, string, int, string, map[string]string) (execenv.ExecResult, error) {
-	// This is the model-facing boundary: the enforced wrapper masks /sys, so the
-	// old shell probe exits successfully without returning cgroup facts.
-	return execenv.ExecResult{ExitCode: 0}, nil
-}
-
 func TestRenderedEnvironmentUsesTrustedStructuredResourcesWhenModelShellMasked(t *testing.T) {
 	t.Parallel()
-	env := &maskedResourceFixtureEnv{resourceFixtureEnv: newResourceFixtureEnv(t, resourceFixtureV2("100000 100000", "2147483648"))}
-	info := envInfoFromEnv(env, clock.Real())
-	if info.Resources == nil || info.Resources.CPUs != 1 || info.Resources.MemoryMB != 2048 {
-		t.Fatalf("trusted resource snapshot = %+v, want finite fixture caps", info.Resources)
-	}
+	info := schema.EnvironmentInfo{WorkingDir: t.TempDir(), Platform: "linux", Resources: &schema.ResourceCaps{CPUs: 1, MemoryMB: 2048}}
 
 	sess := newSession(t, withConfig(SessionConfig{
 		testOnly: testConfig{

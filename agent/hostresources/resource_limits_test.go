@@ -1,6 +1,7 @@
-package agent
+package hostresources
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"maps"
@@ -10,7 +11,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // resourceFixtureEnv keeps the environment snapshot on the real production
@@ -92,7 +93,7 @@ func resourceFixtureNoCgroup() map[string]string {
 
 func resourceCapsJSON(t *testing.T, env *resourceFixtureEnv) map[string]any {
 	t.Helper()
-	info := envInfoFromEnv(env, clock.Real())
+	info := schema.EnvironmentInfo{Resources: CapsFromEnv(env)}
 	data, err := json.Marshal(info)
 	if err != nil {
 		t.Fatalf("marshal EnvironmentInfo: %v", err)
@@ -533,5 +534,25 @@ func TestEnvironmentInfoDoesNotTreatUnreadableOwnedV1CPUSetAsAbsent(t *testing.T
 	}
 	if got := resources["memory_mb"]; got != float64(2048) {
 		t.Errorf("resources.memory_mb = %#v, want 2048", got)
+	}
+}
+
+// maskedShellEnv models the enforced wrapper that masks /sys from the model's
+// shell: ExecCommand succeeds with no output, so any shell-based probe would
+// see nothing.
+type maskedShellEnv struct {
+	*resourceFixtureEnv
+}
+
+func (e *maskedShellEnv) ExecCommand(context.Context, string, int, string, map[string]string) (execenv.ExecResult, error) {
+	return execenv.ExecResult{ExitCode: 0}, nil
+}
+
+func TestCapsFromEnvReadsHostFilesWhenModelShellMasked(t *testing.T) {
+	t.Parallel()
+	env := &maskedShellEnv{resourceFixtureEnv: newResourceFixtureEnv(t, resourceFixtureV2("100000 100000", "2147483648"))}
+	caps := CapsFromEnv(env)
+	if caps == nil || caps.CPUs != 1 || caps.MemoryMB != 2048 {
+		t.Fatalf("trusted resource snapshot = %+v, want finite fixture caps", caps)
 	}
 }
