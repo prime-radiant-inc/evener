@@ -1,10 +1,15 @@
 package agent
 
 import (
+	"context"
+	"reflect"
+	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // No-send watch delivery remains live-only by design. The durable registry names
@@ -110,35 +115,93 @@ func TestRestartCancelsNoSendReceiverWatchWithSystemNotification(t *testing.T) {
 
 func TestRestartCancellationRoutesThroughParentSystemNotificationQueue(t *testing.T) {
 	t.Parallel()
-	parent := newTestSession(t)
-	parent.stateDir = t.TempDir()
+	adapter := newMessagingAdapter()
+	parent := newMessagingRoot(t, adapter, nil)
+	if _, err := parent.ProcessInput(context.Background(), "restart-route-init-638a", nil); err != nil {
+		t.Fatal(err)
+	}
 	child := newTestSession(t)
 	child.cfg.spawn.parentSessionID = parent.ID()
 	child.cfg.spawn.parentSystemNotification = parent.routeSystemNotification
 	parent.subagents.track(&subagent{id: child.ID(), sess: child})
 
-	if !child.routeSystemNotification(parent.ID(), callbackWatchesCancelledAtRestartMessage) {
+	const notice, steer, mutationID = "restart-route-notice-8bb5", "restart-route-steer-294f", "restart-route-mutation-71f3"
+	if _, err := parent.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: mutationID, ExpectedInstanceID: parent.ID(),
+		Input: []appwire.InputItem{{Type: "text", Text: steer}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := parent.clientMutations.snapshot()
+	if _, ok := before.PendingExecutions[mutationID]; !ok {
+		t.Fatal("client steer was not durably pending before routing")
+	}
+	woke := make(chan struct{}, 1)
+	parent.SetNotifyFunc(func() {
+		select {
+		case woke <- struct{}{}:
+		default:
+		}
+	})
+	if !child.routeSystemNotification(parent.ID(), notice) {
 		t.Fatal("child-to-parent system notification route was rejected")
 	}
+	waitForTestSignal(t, woke, "canonical restart notification wake")
+	if !reflect.DeepEqual(parent.clientMutations.snapshot().PendingExecutions[mutationID], before.PendingExecutions[mutationID]) {
+		t.Fatal("notification routing changed pending client steering")
+	}
 
-	parent.mu.Lock()
-	if len(parent.steeringQueue) != 1 {
-		parent.mu.Unlock()
-		t.Fatalf("parent steering queue = %+v, want one system notification", parent.steeringQueue)
+	path := transcriptPath(parent.stateDir, parent.ID())
+	var id string
+	for _, entry := range notificationRawEntries(t, path) {
+		if entry.Turn.AttentionID == "" {
+			continue
+		}
+		if id != "" || entry.Turn.Kind != schema.TurnSteering || entry.Turn.Message.Text() != notice || !entry.Turn.Message.Content[0].Machinery || !strings.HasPrefix(entry.Turn.AttentionID, "system:"+parent.ID()+":") {
+			t.Fatalf("canonical restart notification = %+v", entry.Turn)
+		}
+		id = entry.Turn.AttentionID
+		if len(entry.Turn.ObservedNotificationIDs) != 0 {
+			t.Fatal("routing granted observation without a response")
+		}
 	}
-	message := parent.steeringQueue[0]
-	parent.mu.Unlock()
-	if message.Text != callbackWatchesCancelledAtRestartMessage {
-		t.Errorf("system notification text = %q, want %q", message.Text, callbackWatchesCancelledAtRestartMessage)
+	if id == "" {
+		t.Fatal("restart notification has no canonical identity")
 	}
-	if message.Kind != events.SteeringKindNotification {
-		t.Errorf("system notification kind = %q, want %q", message.Kind, events.SteeringKindNotification)
-	}
-	steering, _, err := loadQueues(parent.stateDir, parent.ID())
+	assertNotificationPending(t, parent, []string{id})
+	// No notification is hidden in the retired steering queue, whose client
+	// entries are owned independently by the durable mutation journal.
+	queued, _, err := loadQueues(parent.stateDir, parent.ID())
 	if err != nil {
-		t.Fatalf("load persisted system notification: %v", err)
+		t.Fatal(err)
 	}
-	if len(steering) != 1 || steering[0].Text != callbackWatchesCancelledAtRestartMessage {
-		t.Fatalf("persisted steering queue = %+v, want one system notification", steering)
+	for _, entry := range queued {
+		if entry.Text == notice {
+			t.Fatal("system notice was stored as legacy steering")
+		}
+	}
+	adapter.script("root", func(req llm.Request) llm.Response {
+		observationRequest(t, req, []string{notice, steer}, nil)
+		return finalResponse("restart-route-response-cde0")
+	})
+	if _, err := parent.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	assertNotificationObservedOnce(t, path, id)
+	assertNotificationPending(t, parent, []string{})
+	if len(adapter.requestsFor("root")) != 2 {
+		t.Fatal("restart route did not use exactly one presenting response")
+	}
+	steers := 0
+	for _, entry := range notificationRawEntries(t, path) {
+		if entry.Turn.ClientMutationID == mutationID {
+			steers++
+			if entry.Turn.Kind != schema.TurnSteering || entry.Turn.Message.Text() != steer {
+				t.Fatalf("client steer changed: %+v", entry.Turn)
+			}
+		}
+	}
+	if steers != 1 {
+		t.Fatalf("durable client steer presentations = %d, want 1", steers)
 	}
 }

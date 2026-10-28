@@ -3,14 +3,272 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"reflect"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
+
+// watchCustodyProof keeps the destination's real transcript unavailable until
+// the test has inspected source production. Its fake source clock prevents a
+// paced retry from racing the controlled filesystem recovery.
+type watchCustodyProof struct {
+	root      *Session
+	jm        *jobManager
+	adapter   *messagingAdapter
+	fs        *watchCustodyFaultFS
+	observed  int
+	epoch     int
+	faultBase int
+}
+
+type watchCustodyFaultFS struct {
+	*notificationFaultFS
+	mu       sync.Mutex
+	failures []error
+}
+
+func (fs *watchCustodyFaultFS) OpenFile(name string, flag int, mode os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, mode)
+	if err != nil {
+		return nil, err
+	}
+	return &watchCustodyFaultFile{File: &notificationFaultFile{File: file, fs: fs.notificationFaultFS}, fs: fs}, nil
+}
+
+type watchCustodyFaultFile struct {
+	afero.File
+	fs *watchCustodyFaultFS
+}
+
+func (f *watchCustodyFaultFile) Sync() error {
+	err := f.File.Sync()
+	if err != nil {
+		f.fs.mu.Lock()
+		f.fs.failures = append(f.fs.failures, err)
+		f.fs.mu.Unlock()
+	}
+	return err
+}
+
+func (p *watchCustodyProof) hold(cause error) {
+	p.fs.mu.Lock()
+	p.faultBase = len(p.fs.failures)
+	p.fs.mu.Unlock()
+	p.epoch++
+	p.fs.syncErr = cause
+}
+
+func (p *watchCustodyProof) requireSyncFailure(t *testing.T, seq uint64) {
+	t.Helper()
+	p.fs.mu.Lock()
+	defer p.fs.mu.Unlock()
+	failures := p.fs.failures[p.faultBase:]
+	if p.fs.syncErr == nil || len(failures) == 0 {
+		t.Fatalf("destination Sync failures epoch=%d seq=%d = %d, want actual injected failure before recovery", p.epoch, seq, len(failures))
+	}
+	for _, err := range failures {
+		if !errors.Is(err, p.fs.syncErr) {
+			t.Fatalf("destination Sync returned %T %v, want injected cause %T %v", err, err, p.fs.syncErr, p.fs.syncErr)
+		}
+	}
+	t.Logf("destination_sync_fault epoch=%d seq=%d failures=%d cause_type=%T cause_is_injected=true", p.epoch, seq, len(failures), p.fs.syncErr)
+}
+
+func newWatchCustodyProof(t *testing.T) *watchCustodyProof {
+	t.Helper()
+	adapter := newMessagingAdapter()
+	root := newMessagingRoot(t, adapter, nil)
+	if _, err := root.ProcessInput(context.Background(), "custody-init-71b2", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.closeAttachedTranscript(); err != nil {
+		t.Fatal(err)
+	}
+	fs := &watchCustodyFaultFS{notificationFaultFS: &notificationFaultFS{Fs: afero.NewOsFs()}}
+	writer, _, err := transcript.OpenWriterForSessionWithFS(fs, transcriptPath(root.stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.attachTranscript(writer)
+	c := root.delegateController
+	created := delegateControllerCreatedEvent("dlg_source", "")
+	created.Created.Descriptor.ChildSessionID = testChildSessionID
+	created.Created.Descriptor.TranscriptRef = "local:" + testChildSessionID
+	created.Created.Descriptor.OwnerSessionID = root.ID()
+	c.mu.Lock()
+	_, err = c.appendLocked(created, delegateControllerRunStartedEvent("dlg_source", 1, delegatestore.TriggerInitial, c.now()))
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewSession(root.client, root.profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		StateDir: root.stateDir,
+		clock:    agenttest.NewFakeClock(),
+		spawn: spawnConfig{
+			sessionID: testChildSessionID, delegateController: c,
+			delegateRootSessionID: root.ID(), owningDelegateID: "dlg_source",
+			parentSessionID: root.ID(), depth: 1,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// This source has no run-loop goroutine. Settle its seeded lease through
+		// the controller before root.Close tries to cancel and join that loop.
+		fs.syncErr = nil
+		lease := delegateLease{delegateID: "dlg_source", generation: 1}
+		plans, err := c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeCancelled, reason: "test_cleanup"})
+		if err != nil {
+			t.Error(err)
+		} else if err := root.executeDelegateMutationPlans(plans); err != nil {
+			t.Error(err)
+		}
+		if err := c.ReportFinalizationQuiesced(lease, source); err != nil {
+			t.Error(err)
+		}
+		source.Close()
+	})
+	c.mu.Lock()
+	c.live["dlg_source"] = &delegateLiveState{runtime: source, binding: &delegateRuntimeBinding{
+		runtime: source, lease: delegateLease{delegateID: "dlg_source", generation: 1}, cancel: func() {}, ready: true,
+		evidence: &delegateGenerationEvidence{requirement: delegateCompletionReportRequired},
+	}}
+	c.mu.Unlock()
+	proof := &watchCustodyProof{root: root, jm: source.jobManager, adapter: adapter, fs: fs}
+	proof.hold(errors.New("custody-fault-02ac"))
+	return proof
+}
+
+func (p *watchCustodyProof) install(t *testing.T, args watchArgs) *watchConfig {
+	t.Helper()
+	args.ReceiverSessionID = p.root.ID()
+	args.StableReceiver = true
+	args.SourceDelegateID, args.SourceGeneration = "dlg_source", 1
+	args.Send = nil // Production derives the authorized stable receiver send.
+	if _, err := p.jm.configureWatch(args); err != nil {
+		t.Fatal(err)
+	}
+	return onlyWatchConfigForTest(t, p.jm)
+}
+
+func (p *watchCustodyProof) callbackArgs(args watchArgs) watchArgs {
+	args.ReceiverSessionID = p.root.ID()
+	args.SourceDelegateID, args.SourceGeneration = "dlg_source", 1
+	return args
+}
+
+func (p *watchCustodyProof) pending(t *testing.T, cfg *watchConfig, seq uint64, depth int) jobstore.WatchSendState {
+	t.Helper()
+	produced := producerSourceEvents(t, p.jm, jobstore.EventWatchSendPending)
+	pending := loadWatchSendRecord(t, p.jm).Pending
+	if len(produced) != int(seq) || len(pending) != 1 || len(producerSourceEvents(t, p.jm, jobstore.EventWatchSendDropped)) != 0 || len(producerSourceEvents(t, p.jm, jobstore.EventWatchSendDelivered)) != p.observed {
+		t.Fatalf("source produced=%d pending=%d, want %d/1 without settlement or drop", len(produced), len(pending), seq)
+	}
+	var state jobstore.WatchSendState
+	for _, s := range pending {
+		state = *s
+	}
+	if state.Key.WatchID != cfg.watchID || state.Key.WatchGeneration != cfg.generation || state.UpdateSeq != seq || state.DeliveryID == "" || state.SelfInfluenceDepth != depth || state.ReceiverSessionID != p.root.ID() || state.StableReceiver != cfg.stableReceiver || state.SourceDelegateID != cfg.sourceDelegateID || state.SourceDelegateGeneration != cfg.sourceGeneration || !reflect.DeepEqual(state.Provenance, produced[len(produced)-1].WatchSend.Provenance) {
+		t.Fatalf("source identity/classification = %+v", state)
+	}
+	if producerRecordCount(t, p.root) != p.observed {
+		t.Fatal("failed destination fsync granted canonical custody")
+	}
+	return state
+}
+
+func (p *watchCustodyProof) observe(t *testing.T, state jobstore.WatchSendState) {
+	t.Helper()
+	p.requireSyncFailure(t, state.UpdateSeq)
+	woke := make(chan struct{}, 1)
+	p.root.SetNotifyFunc(func() {
+		select {
+		case woke <- struct{}{}:
+		default:
+		}
+	})
+	p.fs.syncErr = nil
+	p.jm.dispatchProducedWatchSends()
+	waitForTestSignal(t, woke, "recovered canonical watch receiver wake")
+	id := "watch:" + state.DeliveryID + ":" + strconv.FormatUint(state.UpdateSeq, 10)
+	path := transcriptPath(p.root.stateDir, p.root.ID())
+	dropped := producerSourceEvents(t, p.jm, jobstore.EventWatchSendDropped)
+	delivered := producerSourceEvents(t, p.jm, jobstore.EventWatchSendDelivered)
+	if len(loadWatchSendRecord(t, p.jm).Pending) != 0 || len(delivered) != p.observed+1 || len(dropped) != int(state.UpdateSeq)-p.observed-1 {
+		t.Fatal("recovered receiver did not settle exactly one source frame")
+	}
+	ack := delivered[len(delivered)-1].WatchSend
+	if ack.Key != state.Key || ack.DeliveryID != state.DeliveryID || ack.UpdateSeq != state.UpdateSeq {
+		t.Fatalf("source acknowledgement = %+v, want exact produced identity %+v", ack, state)
+	}
+	for i, event := range dropped {
+		produced := producerSourceEvents(t, p.jm, jobstore.EventWatchSendPending)[i].WatchSend
+		if event.WatchSend.DeliveryID != produced.DeliveryID || event.WatchSend.UpdateSeq != produced.UpdateSeq || event.WatchSend.DeliveryID == state.DeliveryID {
+			t.Fatal("only an exact superseded pre-custody frame may be dropped")
+		}
+	}
+	// The wire-only delivery_id field is intentionally absent from the model's
+	// frame. Preserve all other source data, including its trigger provenance.
+	var content []string
+	for _, line := range strings.Split(state.Frame, "\n") {
+		if !strings.HasPrefix(line, "delivery_id:") {
+			content = append(content, line)
+		}
+	}
+	wantContent := strings.Join(content, "\n")
+	accepted := 0
+	for _, entry := range notificationRawEntries(t, path) {
+		if entry.Turn.AttentionID == id {
+			accepted++
+			if entry.Turn.Kind != schema.TurnSteering || entry.Turn.Message.Text() != wantContent || !reflect.DeepEqual(entry.Turn.NotificationProvenance, state.Provenance) {
+				t.Fatalf("canonical custody = %+v", entry.Turn)
+			}
+		}
+		for _, observedID := range entry.Turn.ObservedNotificationIDs {
+			if observedID == id {
+				t.Fatal("custody claimed observation before a response")
+			}
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("canonical records for %s = %d, want 1", id, accepted)
+	}
+	assertNotificationPending(t, p.root, []string{id})
+	before := len(p.adapter.requestsFor("root"))
+	p.adapter.script("root", func(req llm.Request) llm.Response {
+		observationRequest(t, req, []string{wantContent}, nil)
+		return finalResponse("custody-response-930e")
+	})
+	if _, err := p.root.ProcessInput(context.Background(), "custody-observe-a8f0", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.adapter.requestsFor("root")) != before+1 {
+		t.Fatal("observation did not use exactly one successful provider request")
+	}
+	assertNotificationObservedOnce(t, path, id)
+	assertNotificationPending(t, p.root, []string{})
+	p.jm.dispatchProducedWatchSends()
+	if producerRecordCount(t, p.root) != p.observed+1 || len(producerSourceEvents(t, p.jm, jobstore.EventWatchSendDelivered)) != p.observed+1 {
+		t.Fatal("transport replay duplicated canonical custody or source settlement")
+	}
+	p.observed++
+}
 
 // onSessionEventKD drives the jobManager's session-event entry point with a kind
 // and data, wrapping them in a SessionEvent envelope the way Session.emit does.

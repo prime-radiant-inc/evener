@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -152,13 +154,12 @@ func TestJobWatchSelfSourceSelfKindInstalls(t *testing.T) {
 // runaway.
 func TestEventWatchDeliversWatchOriginatedSubagentEventsClassified(t *testing.T) {
 	t.Parallel()
-	jm := newTestJM(t)
-	installWatchBelowValidation(t, jm, watchArgs{
+	proof := newWatchCustodyProof(t)
+	jm := proof.jm
+	cfg := proof.install(t, watchArgs{
 		Target: "caller",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
 	})
-	cfg := onlyWatchConfigForTest(t, jm)
 
 	ownEcho := events.SessionEvent{
 		Kind:       events.EventJobFinished,
@@ -166,9 +167,20 @@ func TestEventWatchDeliversWatchOriginatedSubagentEventsClassified(t *testing.T)
 		Data:       events.JobFinishedData{JobID: "job_obs", JobType: "delegate", Status: "completed"},
 		Provenance: provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_echo", jm.sessionID, "caller"),
 	}
+	jm.mu.Lock()
+	classification := jm.classifySelfInfluenceLocked(cfg, ownEcho.Provenance)
+	jm.mu.Unlock()
+	if !classification.self || classification.gradientDepth != 0 || classification.fuseDepth != 0 {
+		t.Fatalf("undelivered prior classification = %+v", classification)
+	}
 	jm.onSessionEvent(ownEcho)
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("self-echo job event must record one pending send (delivered + classified), got %d: %+v", len(pending), pending)
+	}
+
+	first := proof.pending(t, cfg, 1, 0)
+	if !provenance.ContainsWatch(first.Provenance, cfg.watchID, cfg.generation) {
+		t.Fatal("echo lost the current watch key")
 	}
 
 	// A second fire for the same watch key COALESCES with the pending echo
@@ -181,6 +193,11 @@ func TestEventWatchDeliversWatchOriginatedSubagentEventsClassified(t *testing.T)
 	if cfg.nextUpdateSeq != 2 {
 		t.Fatalf("nextUpdateSeq = %d, want 2 (echo fire + ordinary fire)", cfg.nextUpdateSeq)
 	}
+	latest := proof.pending(t, cfg, 2, 0)
+	if latest.CoalescedCount != 1 || latest.DeliveryID == first.DeliveryID || !provenance.ContainsWatch(latest.Provenance, cfg.watchID, cfg.generation) {
+		t.Fatalf("coalesced source = %+v", latest)
+	}
+	proof.observe(t, latest)
 }
 
 // TestNoSendWatchNotificationCarriesProvenanceForEchoClassification: the
@@ -233,14 +250,19 @@ func TestNoSendWatchNotificationCarriesProvenanceForEchoClassification(t *testin
 // is not a watch-matchable job.notification and never fires.
 func TestWatchOriginDeliversDelegateLifecycleWatchSendsClassified(t *testing.T) {
 	t.Parallel()
-	jm := newTestJM(t)
-	installWatchBelowValidation(t, jm, watchArgs{
+	proof := newWatchCustodyProof(t)
+	jm := proof.jm
+	cfg := proof.install(t, watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
 	})
-	cfg := onlyWatchConfigForTest(t, jm)
 	own := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_obs", jm.sessionID, "*")
+	jm.mu.Lock()
+	classification := jm.classifySelfInfluenceLocked(cfg, own)
+	jm.mu.Unlock()
+	if !classification.self || classification.gradientDepth != 0 || classification.fuseDepth != 0 {
+		t.Fatalf("undelivered lifecycle prior classification = %+v", classification)
+	}
 
 	jm.onSessionEvent(events.SessionEvent{
 		Kind:       events.EventJobStarted,
@@ -248,6 +270,10 @@ func TestWatchOriginDeliversDelegateLifecycleWatchSendsClassified(t *testing.T) 
 		Data:       events.JobStartedData{JobID: "job_obs", JobType: "delegate", Status: "running"},
 		Provenance: own,
 	})
+	if len(producerSourceEvents(t, jm, jobstore.EventWatchSendPending)) != 0 {
+		t.Fatal("JobStarted produced a notification frame")
+	}
+
 	jm.onSessionEvent(events.SessionEvent{
 		Kind:       events.EventJobFinished,
 		SessionID:  jm.sessionID,
@@ -258,6 +284,11 @@ func TestWatchOriginDeliversDelegateLifecycleWatchSendsClassified(t *testing.T) 
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("self-echo JobFinished must record one pending send (delivered + classified), got %d: %+v", len(pending), pending)
 	}
+	state := proof.pending(t, cfg, 1, 0)
+	if !provenance.ContainsWatch(state.Provenance, cfg.watchID, cfg.generation) {
+		t.Fatal("lifecycle echo lost current watch provenance")
+	}
+	proof.observe(t, state)
 }
 
 // TestOutputMatchDeliversSameWatchProvenanceClassifiedSelfInfluenced proves that
@@ -341,24 +372,31 @@ func TestOutputMatchDeliversSameWatchProvenanceAcrossSplitLineClassified(t *test
 }
 
 // TestOutputMatchDeliversSameWatchProvenanceOnTerminalFlushClassified proves the
-// breaker policy on the terminal-flush fire site: a self-echo match completed only
-// by the final flush at finalize is delivered and classified self-influenced,
-// persisting one pending send.
+// breaker policy through terminal expiry. The legacy name predates byte-window
+// matching: a split match now fires before finalize, without a line terminator.
+// Expiry must preserve that exact frame, not refire it or create an end notice.
 func TestOutputMatchDeliversSameWatchProvenanceOnTerminalFlushClassified(t *testing.T) {
 	t.Parallel()
-	jm := newTestJM(t)
+	proof := newWatchCustodyProof(t)
+	jm := proof.jm
 
-	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	installWatchBelowValidation(t, jm, watchArgs{
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+	cfg := proof.install(t, watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
 	})
-	cfg := onlyWatchConfigForTest(t, jm)
 	p := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", jm.sessionID, rec.JobID)
 
 	jm.feedJobOutputWithProvenance(rec.JobID, []byte("re"), 2, p)
+	if len(producerSourceEvents(t, jm, jobstore.EventWatchSendPending)) != 0 {
+		t.Fatal("partial token produced a frame")
+	}
 	jm.feedJobOutputWithProvenance(rec.JobID, []byte("ady"), 5, nil)
+	before := proof.pending(t, cfg, 1, 0)
 	code := 0
 	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
 		t.Fatalf("finalize: %v", err)
@@ -367,6 +405,14 @@ func TestOutputMatchDeliversSameWatchProvenanceOnTerminalFlushClassified(t *test
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("terminal-flush self-echo output_match must persist one pending send (delivered + classified); got %+v", pending)
 	}
+	state := proof.pending(t, cfg, 1, 0)
+	if state.DeliveryID != before.DeliveryID || state.EndNotice || jm.watchCount() != 0 {
+		t.Fatal("terminal expiry replaced the split match or left the watch live")
+	}
+	if !provenance.ContainsWatch(state.Provenance, cfg.watchID, cfg.generation) {
+		t.Fatal("terminal flush lost split-chunk watch provenance")
+	}
+	proof.observe(t, state)
 }
 
 // TestProgressTickDeliversSameWatchProvenanceClassified proves the breaker policy
@@ -700,18 +746,25 @@ func TestJobWatchAllowsDescendantConcreteJobSource(t *testing.T) {
 // because send deliveries are not pre-counted at fire time (they settle on their
 // own path). The runaway fuse, proven elsewhere, bounds a runaway.
 func TestJobWatchDeliversSameWatchProvenanceClassifiedSelfInfluenced(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	installWatchBelowValidation(t, jm, watchArgs{
+	// Not parallel: captureReceiverErrorLogs replaces the default logger.
+	secondHold := errors.New("custody-second-hold-6e81")
+	captureReceiverErrorLogs(t, secondHold)
+	proof := newWatchCustodyProof(t)
+	jm := proof.jm
+	cfg := proof.install(t, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: "dlg_1", Message: "observe"},
 	})
-	cfg := onlyWatchConfigForTest(t, jm)
 
 	ev := events.New(events.CommunicateData{Message: "PYTHON_QUOTE quote=Ni!", EndTurn: false})
 	ev.SessionID = jm.sessionID
 	ev.Provenance = provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", jm.sessionID, "caller")
+	jm.mu.Lock()
+	classification := jm.classifySelfInfluenceLocked(cfg, ev.Provenance)
+	jm.mu.Unlock()
+	if !classification.self || classification.gradientDepth != 0 || classification.fuseDepth != 0 {
+		t.Fatalf("undelivered communicate prior classification = %+v", classification)
+	}
 
 	jm.onSessionEvent(ev)
 
@@ -721,6 +774,47 @@ func TestJobWatchDeliversSameWatchProvenanceClassifiedSelfInfluenced(t *testing.
 	if len(cfg.pending) != 1 {
 		t.Fatalf("pending sends = %d, want 1 for self-echo event", len(cfg.pending))
 	}
+	state := proof.pending(t, cfg, 1, 0)
+	if !provenance.ContainsWatch(state.Provenance, cfg.watchID, cfg.generation) {
+		t.Fatal("communicate echo lost current watch provenance")
+	}
+	proof.observe(t, state)
+
+	// Echo the actual settled delivery. Undelivered synthetic priors above must
+	// not contribute depth, but this successful source acknowledgement must.
+	proof.hold(secondHold)
+	ev.Provenance = state.Provenance
+	jm.mu.Lock()
+	classification = jm.classifySelfInfluenceLocked(cfg, ev.Provenance)
+	jm.mu.Unlock()
+	if !classification.self || classification.gradientDepth != 1 || classification.fuseDepth != 1 {
+		t.Fatalf("delivered communicate prior classification = %+v", classification)
+	}
+	jm.onSessionEvent(ev)
+	echo := proof.pending(t, cfg, 2, 1)
+	if echo.DeliveryID == state.DeliveryID {
+		t.Fatal("new echo reused its delivered prior identity")
+	}
+	proof.observe(t, echo)
+	logged := slog.Default().Handler().(*reclaimLogCapture)
+	logged.mu.Lock()
+	warnings := 0
+	for _, record := range logged.records {
+		if record.Level < slog.LevelWarn {
+			continue
+		}
+		record.Attrs(func(attr slog.Attr) bool {
+			if err, ok := attr.Value.Any().(error); ok && errors.Is(err, secondHold) {
+				warnings++
+			}
+			return true
+		})
+	}
+	logged.mu.Unlock()
+	if warnings == 0 {
+		t.Fatal("receiver emitted no typed warning with the injected second-epoch cause")
+	}
+	t.Logf("receiver_typed_warning epoch=2 count=%d cause_is_injected=true", warnings)
 }
 
 // TestJobWatchDifferentGenerationFiresUnclassified: an old generation's key does
@@ -728,36 +822,44 @@ func TestJobWatchDeliversSameWatchProvenanceClassifiedSelfInfluenced(t *testing.
 // the watch fires normally.
 func TestJobWatchDoesNotSuppressDifferentGeneration(t *testing.T) {
 	t.Parallel()
-	jm := newTestJM(t)
-	installWatchBelowValidation(t, jm, watchArgs{
+	proof := newWatchCustodyProof(t)
+	jm := proof.jm
+	cfg := proof.install(t, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: "dlg_1", Message: "observe"},
 	})
-	cfg := onlyWatchConfigForTest(t, jm)
-	oldGeneration := cfg.generation
-	cfg.generation = "wg_recreated"
+	oldGeneration := "wg_previous"
 
 	ev := events.New(events.CommunicateData{Message: "actually alpha marker", EndTurn: false})
 	ev.SessionID = jm.sessionID
 	ev.Provenance = provenance.WithWatch(nil, cfg.watchID, oldGeneration, "wd_old", jm.sessionID, "caller")
+	jm.mu.Lock()
+	classification := jm.classifySelfInfluenceLocked(cfg, ev.Provenance)
+	jm.mu.Unlock()
+	if classification.self || classification.gradientDepth != 0 || classification.fuseDepth != 0 {
+		t.Fatalf("old-generation trigger classification = %+v", classification)
+	}
 
 	jm.onSessionEvent(ev)
 
 	if cfg.deliveries == 0 && len(cfg.pending) == 0 {
 		t.Fatal("old generation provenance must not suppress new generation")
 	}
+	state := proof.pending(t, cfg, 1, 0)
+	if !provenance.ContainsWatch(state.Provenance, cfg.watchID, oldGeneration) || !provenance.ContainsWatch(state.Provenance, cfg.watchID, cfg.generation) {
+		t.Fatalf("old and current generation must both survive: %+v", state.Provenance)
+	}
+	proof.observe(t, state)
 }
 
 func TestWatchSendFrameRendersTriggerProvenanceNotDeliveryProvenance(t *testing.T) {
 	t.Parallel()
-	jm := newTestJM(t)
-	installWatchBelowValidation(t, jm, watchArgs{
+	proof := newWatchCustodyProof(t)
+	jm := proof.jm
+	cfg := proof.install(t, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: "dlg_1", Message: "observe"},
 	})
-	cfg := onlyWatchConfigForTest(t, jm)
 
 	ev := events.New(events.CommunicateData{Message: "actually alpha marker", EndTurn: false})
 	ev.SessionID = jm.sessionID
@@ -771,10 +873,20 @@ func TestWatchSendFrameRendersTriggerProvenanceNotDeliveryProvenance(t *testing.
 	for _, pendingState := range pending {
 		state = pendingState
 	}
-	if !strings.Contains(state.Frame, "provenance: external") {
-		t.Fatalf("frame provenance =\n%s\nwant external trigger provenance", state.Frame)
+	// Parse the frame's machine field, not its human-readable copy. The
+	// external trigger must not be relabeled with the delivery's watch key.
+	fields := map[string]string{}
+	for line := range strings.SplitSeq(state.Frame, "\n") {
+		if key, value, ok := strings.Cut(line, ": "); ok && !strings.HasPrefix(key, " ") {
+			fields[key] = value
+		}
+	}
+	if fields["provenance"] != "external" || fields["watch_id"] != cfg.watchID || fields["delivery_id"] != state.DeliveryID {
+		t.Fatalf("frame machine fields = %v", fields)
 	}
 	if !provenance.ContainsWatch(state.Provenance, cfg.watchID, cfg.generation) {
 		t.Fatalf("delivery provenance = %+v, want persisted watch key %s/%s", state.Provenance, cfg.watchID, cfg.generation)
 	}
+	proof.pending(t, cfg, 1, 0)
+	proof.observe(t, *state)
 }
