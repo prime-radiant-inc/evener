@@ -6,9 +6,35 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	clockpkg "primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/llm"
 )
+
+// progressSnapshotClock observes the real progress goroutine at the clock
+// boundary. Its deferred Stop joins the last callback, unlike aggregate fake
+// clock counts, which also include independent Session timers.
+type progressSnapshotClock struct {
+	*agenttest.FakeClock
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func (c *progressSnapshotClock) NewTicker(d time.Duration) clockpkg.Ticker {
+	ticker := &progressSnapshotTicker{Ticker: c.FakeClock.NewTicker(d), stopped: c.stopped}
+	close(c.started)
+	return ticker
+}
+
+type progressSnapshotTicker struct {
+	clockpkg.Ticker
+	stopped chan struct{}
+}
+
+func (t *progressSnapshotTicker) Stop() {
+	t.Ticker.Stop()
+	close(t.stopped)
+}
 
 // TestW2Conc_FireProgressTickClosingBails pins the closing guard: a progress
 // tick that fires while the manager is closing does nothing and reports false.
@@ -120,7 +146,7 @@ func TestW2Conc_FireProgressTickSendPathSnapshots(t *testing.T) {
 			return finalResponse("progress-observed-84f0")
 		},
 	}
-	clock := agenttest.NewFakeClock()
+	clock := &progressSnapshotClock{FakeClock: agenttest.NewFakeClock(), started: make(chan struct{}), stopped: make(chan struct{})}
 	s := newSession(t, withAdapter(adapter), withConfig(SessionConfig{StateDir: t.TempDir(), clock: clock}), withoutGitSnapshot())
 	jm := s.jobManager
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
@@ -149,10 +175,8 @@ func TestW2Conc_FireProgressTickSendPathSnapshots(t *testing.T) {
 		if _, err := jm.clearWatchByID(res.WatchID); err != nil {
 			t.Error(err)
 		}
-		// Positive completion handshake: Stop runs at the timer goroutine's
-		// exit, after its last callback has returned. No virtual tick was sent.
-		// The Session's independent AfterFunc callbacks may remain armed.
-		waitForCondition(t, 30*time.Second, "progress ticker to stop", func() bool { return clock.BlockedCount() == clock.PendingCallbacks() })
+		// The real progress goroutine defers Stop until its last callback returns.
+		waitForTestSignal(t, clock.stopped, "progress ticker to stop")
 	}
 	defer stopWatch()
 	jm.mu.Lock()
@@ -161,7 +185,9 @@ func TestW2Conc_FireProgressTickSendPathSnapshots(t *testing.T) {
 	if !ok {
 		t.Fatal("progress registration missing")
 	}
-	clock.BlockUntil(clock.PendingCallbacks() + 1)
+	waitForTestSignal(t, clock.started, "progress ticker registration")
+	// This call returns after the real owned receiver has accepted custody.
+	// Keep acceptance distinct from the later successful provider response.
 	if !jm.fireProgressTick(key, cfg) {
 		t.Fatal("fireProgressTick returned false for a live send watch, want true")
 	}
