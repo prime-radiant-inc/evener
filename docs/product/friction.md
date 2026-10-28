@@ -782,7 +782,7 @@ history, local navigation and unrelated provider instances unavailable. Provider
 configuration has a separate degraded path, so failure scope is inconsistent.
 
 **Evidence.** [Credential loading](../../internal/credentials/store.go#L58) rejects
-the file; [hub startup](../../cmd/evener-hub/main.go#L385) returns the error.
+the file; [hub startup](../../cmd/evener-hub/hub_startup.go#L374) returns the error.
 `TestStore_PermissionsEnforced` specifies the store's permission refusal.
 Separately, `TestAuth_UnreadableCredentialsStoreRefusesInsteadOfPanicking` tests
 an auth controller that keeps reads working while refusing writes; it does not
@@ -855,8 +855,8 @@ complete quarantine custody aborts hub startup. Remote host administration can
 therefore block unrelated local sessions and history. Complete quarantine and
 some other IO failures already have degraded recovery paths.
 
-**Evidence.** [openHostOpsStore](../../cmd/evener-hub/main.go#L952) and its
-[startup handling](../../cmd/evener-hub/main.go#L606);
+**Evidence.** [openHostOpsStore](../../cmd/evener-hub/main.go#L394) and its
+[startup handling](../../cmd/evener-hub/hub_startup.go#L461);
 `TestOpenHostOpsStoreRefusesStartupOnIncompleteCustody` pins the global
 refusal. This does not justify discarding the journal or following untrusted
 stash paths.
