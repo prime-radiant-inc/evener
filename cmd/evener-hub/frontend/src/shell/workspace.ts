@@ -16,7 +16,7 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import {
   composerSelectionScope,
-  readPaneComposerSeat,
+  readPaneComposerSeatEntry,
   readRecoverySelection,
   readRefComposerSeat,
   transferRecoverySelection,
@@ -336,6 +336,14 @@ function liveComposerSeats(panes: readonly OpenPaneRecord[]): Set<string> {
     if (liveIds.has(paneId)) seats.add(seat);
   }
   return seats;
+}
+
+// Whether a living pane (or a living pane's retained seat) holds this seat.
+// A persisted ref mapping names an owner only while that owner lives: a
+// closed pane's leftover mapping must not veto the live seat that now owns a
+// recovery selection on that conversation.
+export function isLiveComposerSeat(seat: string): boolean {
+  return liveComposerSeats(workspaceStore.getState().panes).has(seat);
 }
 
 // Give a placed pane this tab's stored seat for the conversation. An explicit
@@ -1096,7 +1104,16 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       const reserved = new Set<OpenPaneRecord>();
       for (const { pane, ref } of conversations) {
         if (ref === null) continue;
-        const saved = readPaneComposerSeat(pane.id, ref);
+        const entry = readPaneComposerSeatEntry(pane.id);
+        // A cascade pane keeps its seat when the shared layout restored it
+        // showing a deeper leaf than the one this tab saved: every
+        // conversation on its source path is still this pane's own. Exact-ref
+        // validation still governs ordinary session panes, so a shared id
+        // reused for another conversation never lends its seat.
+        const saved =
+          entry !== undefined && (entry.ref === ref || retainsConversationRef(pane, entry.ref))
+            ? entry.seat
+            : undefined;
         if (saved === undefined || usedSeats.has(saved)) continue;
         pane.composerSeatId = saved;
         usedSeats.add(saved);

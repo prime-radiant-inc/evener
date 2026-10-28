@@ -402,6 +402,47 @@ test("a sessionZoom restore keeps this tab's seat when another tab saved another
     setMutationClientIdentityForTests(undefined);
   }
 });
+// Layouts are shared across tabs. Another tab can drill the same cascade one
+// level deeper and save, so this tab restores its saved pane id showing a leaf
+// it never saved. The saved seat is still this cascade's: continuity runs
+// through the source path, not the exact leaf, so the unchanged ancestor
+// columns keep their saved selections instead of falling back to a fresh
+// seat and older rejected rows.
+test("a cascade restore keeps this tab's seat when the layout drilled deeper", () => {
+  installLocalStorage(new MemoryStorage());
+  try {
+    setMutationClientIdentityForTests("tab-a");
+    writeComposerSeat("p1", "ref_child", "tab-a-seat");
+    writeRecoverySelection("ref_owner", composerSelectionScope("tab-a-seat"), "owner-row");
+    writeRecoverySelection("ref_child", composerSelectionScope("tab-a-seat"), "child-row");
+
+    restorePanels({
+      p1: {
+        id: "p1",
+        contentComponent: "default",
+        params: {
+          paneType: "sessionZoom",
+          paneParams: {
+            ref: "ref_grandchild",
+            source: { type: "session", params: { ref: "ref_owner" } },
+            edges: [
+              { ownerRef: "ref_owner", childRef: "ref_child", delegateId: "delegate-1" },
+              { ownerRef: "ref_child", childRef: "ref_grandchild", delegateId: "delegate-2" },
+            ],
+          },
+        },
+      },
+    });
+
+    const pane = workspaceStore.getState().panes.find((record) => record.id === "p1");
+    expect(pane?.type).toBe("sessionZoom");
+    expect(pane?.composerSeatId).toBe("tab-a-seat");
+    expect(readRecoverySelection("ref_owner", composerSelectionScope("tab-a-seat"))).toBe("owner-row");
+    expect(readRecoverySelection("ref_child", composerSelectionScope("tab-a-seat"))).toBe("child-row");
+  } finally {
+    setMutationClientIdentityForTests(undefined);
+  }
+});
 
 test("restoring two panes for one conversation allocates distinct seats", () => {
   installLocalStorage(new MemoryStorage());

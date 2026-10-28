@@ -1746,6 +1746,49 @@ test("a retained column keeps an independently open owner's seat mapping", () =>
     "independent-owner-selected-row",
   );
 });
+// A closed pane's leftover mapping survives for its own reopen, but it names
+// no live owner: a cascade column that later preserves newer local work under
+// its own seat must establish the mapping, or a reopen restores the closed
+// pane's older selection instead of the preserved work.
+test("a retained column replaces a closed pane's leftover seat mapping", () => {
+  installLocalStorage(new MemoryStorage());
+  const ref = "local:closed-seat-owner";
+  const childRef = "local:closed-seat-child";
+  const closedId = workspaceStore.getState().openPane("session", { ref });
+  const closed = workspaceStore.getState().panes.find((pane) => pane.id === closedId);
+  if (!closed?.composerSeatId) throw new Error("closed pane lacks its seat");
+  expect(readRefComposerSeat(ref)).toBe(closed.composerSeatId);
+  workspaceStore.getState().closePane(closedId);
+  // No owner shows the conversation, so the unowned mapping stays behind.
+  expect(readRefComposerSeat(ref)).toBe(closed.composerSeatId);
+
+  const cascadeId = workspaceStore.getState().openPane("sessionZoom", {
+    ref: childRef,
+    source: { type: "session", params: { ref } },
+    edges: [{ ownerRef: ref, childRef, delegateId: "delegate-closed-seat" }],
+  });
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
+  const column = retainedConversationComposer(conversationPaneLifetime(cascade), ref);
+  if (!column) throw new Error("column lacks a composer");
+  const selected: MutationRecoveryRecord = {
+    version: 1,
+    clientMutationId: "closed-seat-newer-row",
+    targetRef: ref,
+    intentSequence: 1,
+    createdAt: 0,
+    method: "turn/start",
+    payload: { ref, input: [] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [] },
+    composerText: "",
+    state: "submitting",
+    recoveryKind: "rejected",
+  };
+  column.setActiveRecoveryId(selected);
+  expect(readRefComposerSeat(ref)).toBe(cascade.composerSeatId);
+  expect(readRecoverySelection(ref, column.recoverySelectionOwnerId)).toBe("closed-seat-newer-row");
+});
 
 // A pane retyped to a read-only transcript keeps its lifetime's seat in
 // reserve. Another pane opening the same conversation must receive a distinct

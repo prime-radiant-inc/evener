@@ -1,5 +1,6 @@
 import type { ComposerMention } from "@evener/appwire-client";
 import { createStore } from "zustand/vanilla";
+import { isLiveComposerSeat } from "../../../shell/workspace";
 import { ownClientId } from "../../../stores/mutationClientIdentity";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { createSecureUUID } from "../../../stores/secureUUID";
@@ -360,7 +361,9 @@ export function createComposerSourceState(
   }
 
   // A peer retarget moves the row this seat owns. Record the destination's
-  // ref-to-seat mapping so a reload can find the seat there.
+  // ref-to-seat mapping so a reload can find the seat there. Another seat's
+  // mapping is preserved only while a live owner holds it: a closed pane's
+  // leftover mapping must not veto the seat that now owns the selection.
   function reconcileRecoverySeat(targetRef: string): void {
     if (selectionOwnerId === undefined) return;
     const selected = currentRecoveryId();
@@ -378,7 +381,7 @@ export function createComposerSourceState(
       writeRecoverySelection(targetRef, recoverySelectionOwnerId, selected);
     }
     const establishedSeat = readRefComposerSeat(targetRef);
-    if (establishedSeat === undefined || establishedSeat === selectionOwnerId) {
+    if (establishedSeat === undefined || establishedSeat === selectionOwnerId || !isLiveComposerSeat(establishedSeat)) {
       writeRefComposerSeat(targetRef, selectionOwnerId);
     }
   }
@@ -524,6 +527,18 @@ export function createComposerSourceState(
             // bytes, so preserve the complete local composition under a fresh
             // recovery owner before retiring the lease.
             const preserved = await preserveStaleRecovery(clientMutationId, localDraftRevisionId);
+            if (preserved) {
+              // The preservation committed, so the fresh row is this seat's
+              // selected work even when the pane closed while it settled: a
+              // reopen must restore the local work, not the stale row it
+              // displaced. Replace only the stale choice, never a newer
+              // selection someone else recorded; the live activation below
+              // re-reads the same rule.
+              const currentSelection = readRecoverySelection(preserved.targetRef, recoverySelectionOwnerId);
+              if (currentSelection === undefined || currentSelection === clientMutationId) {
+                writeRecoverySelection(preserved.targetRef, recoverySelectionOwnerId, preserved.clientMutationId);
+              }
+            }
             if (
               !disposed &&
               currentRecoveryId() === clientMutationId &&

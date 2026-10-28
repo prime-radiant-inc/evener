@@ -42,6 +42,20 @@ function image(name = "source.png") {
   return new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function recoveryCompositionRevision(record: object): number {
+  return (record as { compositionRevision?: number }).compositionRevision ?? 0;
+}
+
 test("source restoration retains mixed atom identity and inert prose", () => {
   const text = "🙂 /same /same /same";
   const commandOffset = text.indexOf("/same");
@@ -696,6 +710,76 @@ test("retiring a lease clears only its own stored selection", async () => {
     expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe("preserved-row");
   } finally {
     source.dispose();
+    storage.close();
+  }
+});
+
+// The pane closes while a refused write's preservation transaction is still
+// open. The row still commits, so it is the seat's selected work; the stored
+// selection must name it even though no source was alive to activate it, or a
+// reopen of this seat restores the stale peer composition instead.
+test("a preservation that commits after disposal still records its selection", async () => {
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  setMutationStorageForTests(storage);
+  const ref = "local:disposed-preservation-selection";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "stale composition" }] },
+    attachments: [],
+    composerText: "stale composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "stale composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+    );
+
+    source.editText("local preserved work");
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, "local preserved work", [], []);
+    await storage.reached.promise;
+    // The pane closes while the preservation transaction is still open.
+    source.dispose();
+    storage.release.resolve();
+    await saving;
+
+    const preserved = (await storage.listRecovery(ref)).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    expect(preserved).toMatchObject({ targetRef: ref, composerText: "local preserved work" });
+    expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe(preserved?.clientMutationId);
+  } finally {
+    source.dispose();
+    peer.close();
     storage.close();
   }
 });

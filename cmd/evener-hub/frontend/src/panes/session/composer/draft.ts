@@ -141,19 +141,29 @@ function storedSeat(key: string): string | undefined {
   }
 }
 
-// A pane-id seat is only meaningful for the conversation it was saved with.
-// Shared desktop layouts can reuse an id for another conversation (another tab
-// saved it), so the stored record carries the ref and must match.
-export function readPaneComposerSeat(paneId: string, ref: string): string | undefined {
+// The stored pane mapping without validating its conversation. A desktop
+// cascade restore checks continuity through the cascade path instead of the
+// exact leaf: another tab may have drilled the shared layout deeper since
+// this tab saved its seat.
+export function readPaneComposerSeatEntry(paneId: string): { seat: string; ref: string } | undefined {
   const raw = storedSeat(paneSeatKey(paneId));
   if (raw === undefined) return undefined;
   try {
     const parsed = JSON.parse(raw) as { seat?: unknown; ref?: unknown };
-    return typeof parsed.seat === "string" && parsed.ref === ref ? parsed.seat : undefined;
+    if (typeof parsed.seat !== "string" || typeof parsed.ref !== "string") return undefined;
+    return { seat: parsed.seat, ref: parsed.ref };
   } catch {
     // A pre-identity mapping cannot prove which conversation it belongs to.
     return undefined;
   }
+}
+
+// A pane-id seat is only meaningful for the conversation it was saved with.
+// Shared desktop layouts can reuse an id for another conversation (another tab
+// saved it), so the stored record carries the ref and must match.
+export function readPaneComposerSeat(paneId: string, ref: string): string | undefined {
+  const entry = readPaneComposerSeatEntry(paneId);
+  return entry !== undefined && entry.ref === ref ? entry.seat : undefined;
 }
 
 export function readRefComposerSeat(ref: string): string | undefined {
