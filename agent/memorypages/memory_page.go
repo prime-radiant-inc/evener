@@ -1,4 +1,4 @@
-package agent
+package memorypages
 
 import (
 	"context"
@@ -17,8 +17,8 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 )
 
-// memoryPage is one page of a memory scope, as its generated index line needs it.
-type memoryPage struct {
+// Page is one page of a memory scope, as its generated index line needs it.
+type Page struct {
 	Path           string // slash-separated, relative to the scope root
 	Description    string // one line; the fallback when HasDescription is false
 	HasDescription bool
@@ -32,21 +32,21 @@ type memoryPage struct {
 }
 
 const (
-	memoryNoDescription         = "(no description)"
-	memoryFrontmatterUnreadable = "(frontmatter unreadable)"
+	NoDescription         = "(no description)"
+	FrontmatterUnreadable = "(frontmatter unreadable)"
 	// memoryFallbackRunes bounds a fallback description, in characters.
 	memoryFallbackRunes = 120
 	// memoryPageWalkDepth bounds how deep a scope's pages are listed.
 	memoryPageWalkDepth = 64
 )
 
-// isMemoryPagePath reports whether rel, a slash path relative to the scope
+// IsPagePath reports whether rel, a slash path relative to the scope
 // root, is a page: no segment starts with "." (memory_search's rule) and it
 // is not the root MEMORY.md, which is generated. The root name is matched
 // without regard to case: on a case-insensitive filesystem memory.md is the
 // same file.
-func isMemoryPagePath(rel string) bool {
-	return !isMemoryIndexPath(rel) && !execenv.IsDotPath(rel)
+func IsPagePath(rel string) bool {
+	return !IsIndexPath(rel) && !execenv.IsDotPath(rel)
 }
 
 // matchMemoryNameCase is the name in names equal to name, else the only one
@@ -71,14 +71,14 @@ func matchMemoryNameCase(name string, names iter.Seq[string]) (string, bool) {
 	return match, true
 }
 
-// listedMemoryPagePath is rel with each segment in the case its directory
+// ListedPagePath is rel with each segment in the case its directory
 // lists it (matchMemoryNameCase, which ignores case on any filesystem). For a
 // file rel names, that is the path the scope lists it under, which on a
 // case-insensitive filesystem can differ from rel's case; on a case-sensitive
 // one the exact name is listed and wins. From the first directory that can't
 // be listed, such as one a write is about to create, the rest of rel stays as
 // it is.
-func listedMemoryPagePath(env *execenv.LocalExecutionEnvironment, rel string) string {
+func ListedPagePath(env *execenv.LocalExecutionEnvironment, rel string) string {
 	listed := ""
 	segments := strings.Split(rel, "/")
 	for i, segment := range segments {
@@ -103,13 +103,13 @@ func listedMemoryPagePath(env *execenv.LocalExecutionEnvironment, rel string) st
 
 // filenameMemoryPage is the entry for a file whose content says nothing: a
 // non-Markdown file, or a page that could not be read.
-func filenameMemoryPage(rel string, modTime time.Time) memoryPage {
+func filenameMemoryPage(rel string, modTime time.Time) Page {
 	base := path.Base(rel)
-	return memoryPage{Path: rel, Description: base, ModTime: modTime}
+	return Page{Path: rel, Description: base, ModTime: modTime}
 }
 
-// parseMemoryPage builds the index entry for the page at rel from its bytes.
-func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
+// ParsePage builds the index entry for the page at rel from its bytes.
+func ParsePage(rel string, raw []byte, modTime time.Time) Page {
 	p := filenameMemoryPage(rel, modTime)
 	if path.Ext(rel) != ".md" {
 		return p
@@ -209,9 +209,9 @@ func memoryFallbackDescription(heading, body string, hasWhen bool) string {
 	case hasWhen:
 		return text
 	case text == "":
-		return memoryNoDescription
+		return NoDescription
 	}
-	return text + " " + memoryNoDescription
+	return text + " " + NoDescription
 }
 
 // collapseWhitespace trims text and turns each inner run of whitespace into
@@ -265,13 +265,13 @@ func memoryStampDate(v any) string {
 	return ""
 }
 
-// listMemoryPagesCtx reads every page of env's scope, with the caller's context
+// ListPagesCtx reads every page of env's scope, with the caller's context
 // threaded to each page read, so a cancelled memory read ends a read parked on
 // a stream. Only regular files on page paths are listed; a page removed since
 // the listing is skipped, and one that cannot be read is listed by its
 // filename. The walk never enters a dot directory, which holds no pages, so a
 // .git in the scope does not slow the listing.
-func listMemoryPagesCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment) ([]memoryPage, error) {
+func ListPagesCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment) ([]Page, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -280,13 +280,13 @@ func listMemoryPagesCtx(ctx context.Context, env *execenv.LocalExecutionEnvironm
 	if err != nil {
 		return nil, err
 	}
-	var pages []memoryPage
+	var pages []Page
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		rel := filepath.ToSlash(entry.Name)
-		if !entry.IsRegular || !isMemoryPagePath(rel) {
+		if !entry.IsRegular || !IsPagePath(rel) {
 			continue
 		}
 		if path.Ext(rel) != ".md" {
@@ -300,26 +300,39 @@ func listMemoryPagesCtx(ctx context.Context, env *execenv.LocalExecutionEnvironm
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, cerr
 		}
-		if page, ok := memoryPageFromRead(rel, raw, err, entry.ModTime); ok {
+		if page, ok := PageFromRead(rel, raw, err, entry.ModTime); ok {
 			pages = append(pages, page)
 		}
 	}
 	return pages, nil
 }
 
-// memoryPageFromRead is the index entry for a read of the page at rel that
+// PageFromRead is the index entry for a read of the page at rel that
 // returned raw and err, reporting false when the page does not exist. A page
 // that cannot be read is its filename entry.
-func memoryPageFromRead(rel string, raw []byte, err error, modTime time.Time) (memoryPage, bool) {
+func PageFromRead(rel string, raw []byte, err error, modTime time.Time) (Page, bool) {
 	switch {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		// A context error is not an unreadable page: report no entry rather than
 		// fabricate a filename-only one. The caller propagates the context error.
-		return memoryPage{}, false
+		return Page{}, false
 	case errors.Is(err, fs.ErrNotExist):
-		return memoryPage{}, false
+		return Page{}, false
 	case err != nil:
 		return filenameMemoryPage(rel, modTime), true
 	}
-	return parseMemoryPage(rel, raw, modTime), true
+	return ParsePage(rel, raw, modTime), true
+}
+
+// indexFile is the scope's generated index, rendered from page
+// frontmatter; once a writing session migrates a scope, no file by this name
+// remains. memory_read renders the index for this name, the write tools
+// refuse it, and memory_search never searches a file by this name.
+const indexFile = "MEMORY.md"
+
+// IsIndexPath reports whether file, cleaned and relative to the scope,
+// names the generated index. Case is ignored: on a case-insensitive
+// filesystem memory.md is the same file.
+func IsIndexPath(file string) bool {
+	return strings.EqualFold(file, indexFile)
 }

@@ -1,4 +1,4 @@
-package agent
+package memorypages
 
 import (
 	"context"
@@ -7,27 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 )
-
-// cancelAtCheck is a context that reports no error for its first n Err calls and
-// cancellation after, so a test can land a cancellation at a chosen point in a
-// call it cannot otherwise reach into: call 1 is the check before the index is
-// renamed, call 2 the read that follows the rename.
-type cancelAtCheck struct {
-	context.Context
-	remaining int
-}
-
-func (c *cancelAtCheck) Err() error {
-	if c.remaining <= 0 {
-		return context.Canceled
-	}
-	c.remaining--
-	return nil
-}
-
-// Done is nil: this context cancels through Err only, never through the channel.
-func (c *cancelAtCheck) Done() <-chan struct{} { return nil }
 
 // memoryRootNames lists a scope's entries for a failure message.
 func memoryRootNames(t *testing.T, root string) []string {
@@ -62,7 +44,7 @@ func TestRemoveMigratedMemoryIndexRecoversFromCancellation(t *testing.T) {
 		if err := os.WriteFile(legacy, raw, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		ctx := &cancelAtCheck{Context: context.Background(), remaining: cancelAt}
+		ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: int32(cancelAt)}
 		err := removeMigratedMemoryIndexCtx(ctx, env, scope, legacy, raw)
 		names := memoryRootNames(t, scope)
 		staged := false

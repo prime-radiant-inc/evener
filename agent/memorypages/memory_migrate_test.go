@@ -1,4 +1,4 @@
-package agent
+package memorypages
 
 import (
 	"errors"
@@ -33,7 +33,7 @@ func TestMemoryYAMLFieldRoundTrips(t *testing.T) {
 	t.Parallel()
 	for _, value := range []string{"Money is: cents", "- dash", "#hash", "2026-10-08", strings.Repeat("word ", 40) + "end"} {
 		raw := frontmatter.SetField([]byte("body\n"), frontmatter.YAMLField("description", value))
-		if got := parseMemoryPage("a.md", raw, time.Time{}); !got.HasDescription || got.Description != value {
+		if got := ParsePage("a.md", raw, time.Time{}); !got.HasDescription || got.Description != value {
 			t.Fatalf("value %q read back as %+v from %q", value, got, raw)
 		}
 	}
@@ -135,7 +135,7 @@ func TestMigrateMemoryScope(t *testing.T) {
 				t.Fatalf("%s: %s should not exist: %v", run, rel, err)
 			}
 		}
-		backup, err := os.ReadFile(filepath.Join(scope, memoryLegacyIndexBackup))
+		backup, err := os.ReadFile(filepath.Join(scope, LegacyIndexBackup))
 		if err != nil || !strings.HasPrefix(string(backup), "- [plain]") {
 			t.Fatalf("%s: backup=%q, %v", run, backup, err)
 		}
@@ -157,7 +157,7 @@ func memoryBackups(t *testing.T, scope string) map[string]string {
 	}
 	backups := make(map[string]string)
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), memoryLegacyIndexBackup) {
+		if strings.HasPrefix(entry.Name(), LegacyIndexBackup) {
 			raw, err := os.ReadFile(filepath.Join(scope, entry.Name()))
 			if err != nil {
 				t.Fatal(err)
@@ -176,7 +176,7 @@ func TestMigrateMemoryScopeKeepsEarlierBackups(t *testing.T) {
 	t.Parallel()
 	env, scope := newMemoryMigrateScope(t)
 	indexes := []string{"- [a](a.md) — first index\n", "- [b](b.md) — recreated index\n", "- [c](c.md) — third index\n"}
-	backups := []string{memoryLegacyIndexBackup, memoryLegacyIndexBackup + ".2", memoryLegacyIndexBackup + ".3"}
+	backups := []string{LegacyIndexBackup, LegacyIndexBackup + ".2", LegacyIndexBackup + ".3"}
 	// The fourth and fifth runs repeat earlier indexes and add no backup.
 	for i, index := range append(slices.Clone(indexes), indexes[0], indexes[1]) {
 		if err := os.WriteFile(filepath.Join(scope, "MEMORY.md"), []byte(index), 0o600); err != nil {
@@ -246,7 +246,7 @@ func TestMigrateMemoryScopeResolvesFragmentsAgainstListedPages(t *testing.T) {
 }
 
 // The root index is excluded from the pages whatever its case (see
-// isMemoryPagePath), so migration finds it whatever its case too. On a
+// IsPagePath), so migration finds it whatever its case too. On a
 // case-sensitive filesystem a scope can hold several; each is migrated, the
 // one named exactly MEMORY.md first, so its descriptions win.
 func TestMigrateMemoryScopeFindsTheRootIndexInAnyCase(t *testing.T) {
@@ -289,7 +289,7 @@ func TestMigrateMemoryScopeFindsTheRootIndexInAnyCase(t *testing.T) {
 		if got := read(t, filepath.Join(scope, "a.md")); got != "---\ndescription: from the index\n---\nbody\n" {
 			t.Fatalf("a.md=%q", got)
 		}
-		if got, want := names(t, scope), []string{memoryLegacyIndexBackup, "a.md"}; !slices.Equal(got, want) {
+		if got, want := names(t, scope), []string{LegacyIndexBackup, "a.md"}; !slices.Equal(got, want) {
 			t.Fatalf("scope holds %q, want %q", got, want)
 		}
 	})
@@ -308,10 +308,10 @@ func TestMigrateMemoryScopeFindsTheRootIndexInAnyCase(t *testing.T) {
 			t.Fatal(err)
 		}
 		for rel, want := range map[string]string{
-			"a.md":                         "---\ndescription: exact index\n---\na\n",
-			"b.md":                         "---\ndescription: only in the other\n---\nb\n",
-			memoryLegacyIndexBackup:        "- [a](a.md) — exact index\n",
-			memoryLegacyIndexBackup + ".2": "- [a](a.md) — other index\n- [b](b.md) — only in the other\n",
+			"a.md":                   "---\ndescription: exact index\n---\na\n",
+			"b.md":                   "---\ndescription: only in the other\n---\nb\n",
+			LegacyIndexBackup:        "- [a](a.md) — exact index\n",
+			LegacyIndexBackup + ".2": "- [a](a.md) — other index\n- [b](b.md) — only in the other\n",
 		} {
 			if got := read(t, filepath.Join(scope, rel)); got != want {
 				t.Fatalf("%s=%q, want %q", rel, got, want)
@@ -379,7 +379,7 @@ func TestMigrateMemoryScopeLeavesFrontmatterItCannotExtend(t *testing.T) {
 		"ended.md": "---\ntags: [a]\n...\n---\nbody\n",
 	}
 	for rel, body := range pages {
-		if parsed := parseMemoryPage(rel, []byte(body), time.Time{}); parsed.Unreadable || parsed.HasDescription {
+		if parsed := ParsePage(rel, []byte(body), time.Time{}); parsed.Unreadable || parsed.HasDescription {
 			t.Fatalf("%s should read, with no description: %+v", rel, parsed)
 		}
 		if err := os.WriteFile(filepath.Join(scope, rel), []byte(body), 0o600); err != nil {
@@ -425,7 +425,7 @@ func TestMigrateLegacyMemoryIndexesSkipsAnIndexRenamedMeanwhile(t *testing.T) {
 func TestMigrateMemoryScopeTreatsACaseVariantBackupAsTaken(t *testing.T) {
 	t.Parallel()
 	env, scope := newMemoryMigrateScope(t)
-	variant := filepath.Join(scope, strings.ToLower(memoryLegacyIndexBackup))
+	variant := filepath.Join(scope, strings.ToLower(LegacyIndexBackup))
 	if err := os.WriteFile(variant, []byte("the original index\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -438,8 +438,8 @@ func TestMigrateMemoryScopeTreatsACaseVariantBackupAsTaken(t *testing.T) {
 	if raw, err := os.ReadFile(variant); err != nil || string(raw) != "the original index\n" {
 		t.Fatalf("the earlier backup was replaced: %q, %v", raw, err)
 	}
-	if raw, err := os.ReadFile(filepath.Join(scope, memoryLegacyIndexBackup+".2")); err != nil || string(raw) != "- [a](a.md) — index\n" {
-		t.Fatalf("%s.2=%q, %v", memoryLegacyIndexBackup, raw, err)
+	if raw, err := os.ReadFile(filepath.Join(scope, LegacyIndexBackup+".2")); err != nil || string(raw) != "- [a](a.md) — index\n" {
+		t.Fatalf("%s.2=%q, %v", LegacyIndexBackup, raw, err)
 	}
 }
 
@@ -448,7 +448,7 @@ func TestMigrateMemoryScopeTreatsACaseVariantBackupAsTaken(t *testing.T) {
 func TestParseLegacyMemoryIndexSkipsOnlyUnlinkedLines(t *testing.T) {
 	t.Parallel()
 	for _, rel := range []string{"bad\n name.md", "bad\n\xff name.md"} {
-		described := "quoting " + memoryIndexLine(filenameMemoryPage(rel, time.Time{}))
+		described := "quoting " + IndexLine(filenameMemoryPage(rel, time.Time{}))
 		got := parseLegacyMemoryIndex("- [plain](plain.md) — " + described + "\n")
 		if len(got) != 1 || got[0].Links[0] != "plain.md" || got[0].Description != described {
 			t.Fatalf("%q: got %+v", rel, got)
@@ -480,7 +480,7 @@ func TestMigrateMemoryScopeLeavesAControlCharacterPath(t *testing.T) {
 	t.Parallel()
 	env, scope := newMemoryMigrateScope(t)
 	bad := "bad\n name.md"
-	index := memoryIndexLine(filenameMemoryPage(bad, time.Time{})) + "\n- [plain](plain.md) — plain page gets this\n"
+	index := IndexLine(filenameMemoryPage(bad, time.Time{})) + "\n- [plain](plain.md) — plain page gets this\n"
 	for rel, body := range map[string]string{"MEMORY.md": index, bad: "# Bad\n", "name.md": "# Name\n", "plain.md": "# Plain\n"} {
 		if err := os.WriteFile(filepath.Join(scope, rel), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
@@ -489,7 +489,7 @@ func TestMigrateMemoryScopeLeavesAControlCharacterPath(t *testing.T) {
 	if err := migrateMemoryScope(env); err != nil {
 		t.Fatal(err)
 	}
-	for rel, want := range map[string]string{bad: "# Bad\n", "name.md": "# Name\n", "plain.md": "---\ndescription: plain page gets this\n---\n# Plain\n", memoryLegacyIndexBackup: index} {
+	for rel, want := range map[string]string{bad: "# Bad\n", "name.md": "# Name\n", "plain.md": "---\ndescription: plain page gets this\n---\n# Plain\n", LegacyIndexBackup: index} {
 		if raw, err := os.ReadFile(filepath.Join(scope, rel)); err != nil || string(raw) != want {
 			t.Fatalf("%q: got %q, %v", rel, raw, err)
 		}

@@ -1,4 +1,4 @@
-package agent
+package memorypages
 
 import (
 	"errors"
@@ -12,15 +12,14 @@ var (
 	errMemoryBodyFrontmatter = errors.New("body starts with a frontmatter block; put the when line in its own field and pass only the page's Markdown as body")
 )
 
-// memoryPageFromFields assembles a page from memory_write's arguments: a
+// PageFromFields assembles a page from memory_write's arguments: a
 // frontmatter block holding when, a blank line, then body. It refuses a missing when and a body that
 // opens with its own complete frontmatter block.
-func memoryPageFromFields(args map[string]any) (string, error) {
-	when := strings.TrimSpace(stringArg(args, "when"))
+func PageFromFields(when, body string) (string, error) {
+	when = strings.TrimSpace(when)
 	if when == "" {
 		return "", errMemoryWriteNeedsWhen
 	}
-	body := stringArg(args, "body")
 	if _, _, hasBlock := frontmatter.Split(strings.TrimLeft(body, " \t\r\n")); hasBlock {
 		return "", errMemoryBodyFrontmatter
 	}

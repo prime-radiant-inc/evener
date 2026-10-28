@@ -25,6 +25,7 @@ import (
 	"primeradiant.com/evener/agent/internal/artifactstore"
 	"primeradiant.com/evener/agent/internal/frontmatter"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/memorypages"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -1356,20 +1357,20 @@ func memorySeedPage(t *testing.T, root, dir, name, description string, opts ...m
 // from disk.
 func memoryExpectedIndex(t *testing.T, root, dir string) string {
 	t.Helper()
-	content, _, _ := projectMemoryIndex(memoryListedPages(t, root, dir), memoryProjectionCap)
+	content, _, _ := memorypages.ProjectIndex(memoryListedPages(t, root, dir), memorypages.ProjectionCap)
 	return content
 }
 
 // memoryListedPages lists the pages of the scope directory dir, relative to
 // the state root, straight from disk.
-func memoryListedPages(t *testing.T, root, dir string) []memoryPage {
+func memoryListedPages(t *testing.T, root, dir string) []memorypages.Page {
 	t.Helper()
 	env, err := execenv.NewConfinedFileEnvironment(root, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer env.Cleanup()
-	pages, err := listMemoryPages(env)
+	pages, err := memorypages.ListPagesCtx(context.Background(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2260,7 +2261,7 @@ func TestMemoryScopesLiveInTheirStateDirectories(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pages, err := listMemoryPages(env)
+		pages, err := memorypages.ListPagesCtx(context.Background(), env)
 		release()
 		if err != nil {
 			t.Fatal(err)

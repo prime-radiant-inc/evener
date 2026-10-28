@@ -1,4 +1,4 @@
-package agent
+package memorypages
 
 import (
 	"bytes"
@@ -21,14 +21,14 @@ import (
 	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
-// memoryLegacyIndexBackup is where migration keeps a scope's hand-written
+// LegacyIndexBackup is where migration keeps a scope's hand-written
 // index. Its dot name keeps it out of the pages and out of memory_search.
-const memoryLegacyIndexBackup = ".MEMORY.md.pre-generated"
+const LegacyIndexBackup = ".MEMORY.md.pre-generated"
 
 // freeMemoryBackupPath is the first backup name that no entry in root has (a
 // symlink, even a dangling one, counts), compared ignoring case since on a
 // case-insensitive filesystem names differing in case are one file:
-// memoryLegacyIndexBackup, then the same name with ".2", ".3" and so on. An
+// LegacyIndexBackup, then the same name with ".2", ".3" and so on. An
 // older Evener build can write MEMORY.md again after migration; numbering
 // keeps the first backup, the one holding the original index, from being
 // overwritten when that file is migrated too. The name can be taken by the
@@ -42,9 +42,9 @@ func freeMemoryBackupPath(env *execenv.LocalExecutionEnvironment, root string) (
 	for _, entry := range entries {
 		taken[strings.ToLower(entry.Name)] = true
 	}
-	backup := memoryLegacyIndexBackup
+	backup := LegacyIndexBackup
 	for n := 2; taken[strings.ToLower(backup)]; n++ {
-		backup = memoryLegacyIndexBackup + "." + strconv.Itoa(n)
+		backup = LegacyIndexBackup + "." + strconv.Itoa(n)
 	}
 	return filepath.Join(root, backup), nil
 }
@@ -55,7 +55,7 @@ var errLegacyMemoryIndexChanged = errors.New("hand-written memory index changed 
 
 // memoryIndexStagingPrefix starts the private name a migration moves
 // MEMORY.md to while it checks the bytes. It is a dot name, so never a page,
-// and differs from memoryLegacyIndexBackup, so never taken for a backup. A
+// and differs from LegacyIndexBackup, so never taken for a backup. A
 // file left under it by a crash is found and migrated like MEMORY.md (see
 // legacyMemoryIndexes).
 const memoryIndexStagingPrefix = ".MEMORY.md.migrating-"
@@ -164,14 +164,14 @@ func removeMigratedMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecuti
 }
 
 // memoryBackupHolds reports whether a regular file in root named like a
-// backup (memoryLegacyIndexBackup, numbered or not, in any case) holds
+// backup (LegacyIndexBackup, numbered or not, in any case) holds
 // exactly raw. ctx is threaded to each backup read.
 func memoryBackupHolds(ctx context.Context, env *execenv.LocalExecutionEnvironment, root string, raw []byte) (bool, error) {
 	entries, err := env.ListDirectory(root, 1)
 	if err != nil {
 		return false, err
 	}
-	prefix := strings.ToLower(memoryLegacyIndexBackup)
+	prefix := strings.ToLower(LegacyIndexBackup)
 	for _, entry := range entries {
 		if !entry.IsRegular || entry.Size != int64(len(raw)) || !strings.HasPrefix(strings.ToLower(entry.Name), prefix) {
 			continue
@@ -219,7 +219,7 @@ func restoreStagedMemoryIndex(env *execenv.LocalExecutionEnvironment, staged, le
 	return env.RemoveConfinedFile(staged)
 }
 
-// repairMemoryFrontmatter is raw with each top-level description, when or evidence
+// RepairFrontmatter is raw with each top-level description, when or evidence
 // line quoted (frontmatter.YAMLField) whose value YAML can't read as written, such
 // as an unquoted scalar holding ": " or ending in ":", a mistake easy to make
 // in free text ("like `shop: add Count`"). Only these free-text keys are
@@ -227,7 +227,7 @@ func restoreStagedMemoryIndex(env *execenv.LocalExecutionEnvironment, staged, le
 // kept only when it makes the frontmatter parse, and the page then has "\n"
 // line endings (frontmatter.Split); any other page, readable or not, is returned
 // as it is.
-func repairMemoryFrontmatter(raw []byte) []byte {
+func RepairFrontmatter(raw []byte) []byte {
 	text := string(raw)
 	block, body, ok := frontmatter.Split(text)
 	if !ok {
@@ -267,7 +267,7 @@ var (
 	// A link's destination is bare, holding parentheses only in balanced
 	// pairs one deep ("a(b).md"), or in angle brackets (memoryLinkTarget's
 	// form for a path with spaces or parentheses) with backslash escapes.
-	// The link text may hold backslash escapes, such as the "\]" memoryIndexLine
+	// The link text may hold backslash escapes, such as the "\]" IndexLine
 	// writes for a "]" in a path.
 	legacyIndexLink     = regexp.MustCompile(`\[((?:[^\]\\]|\\.)*)\]\((?:<((?:[^<>\\\n]|\\.)*)>|((?:[^()\s]|\([^()\s]*\))+))\)`)
 	legacyIndexEscape   = regexp.MustCompile(`\\([[:punct:]])`)
@@ -319,7 +319,7 @@ func legacyIndexPages(target string) []string {
 			continue
 		}
 		page := path.Clean(candidate)
-		if filepath.IsLocal(page) && path.Ext(page) == ".md" && isMemoryPagePath(page) && !slices.Contains(pages, page) {
+		if filepath.IsLocal(page) && path.Ext(page) == ".md" && IsPagePath(page) && !slices.Contains(pages, page) {
 			pages = append(pages, page)
 		}
 	}
@@ -388,7 +388,7 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 	return out
 }
 
-// migrateMemoryScopeCtx moves a scope's hand-written index (see
+// MigrateScopeCtx moves a scope's hand-written index (see
 // legacyMemoryIndexes) into its pages: each linked page with no description
 // gets the one its index line gave, then the index is moved to a backup
 // (see moveLegacyMemoryIndexCtx). It is idempotent and takes no lock (the write
@@ -399,7 +399,7 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 // the others; any failed write, or failing to read or move the index,
 // returns an error and leaves the index in place, so the next run finishes
 // the job.
-func migrateMemoryScopeCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment) error {
+func MigrateScopeCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment) error {
 	legacies, err := legacyMemoryIndexes(env)
 	if err != nil || len(legacies) == 0 {
 		return err
@@ -407,13 +407,13 @@ func migrateMemoryScopeCtx(ctx context.Context, env *execenv.LocalExecutionEnvir
 	return migrateLegacyMemoryIndexesCtx(ctx, env, legacies)
 }
 
-// migrateLegacyMemoryIndexesCtx is migrateMemoryScopeCtx's work for the root
+// migrateLegacyMemoryIndexesCtx is MigrateScopeCtx's work for the root
 // indexes legacyMemoryIndexes found, in that order.
 func migrateLegacyMemoryIndexesCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment, legacies []string) error {
 	root := env.WorkingDirectory()
 	// Only regular page files are read or written; a FIFO, directory or
 	// symlink named like a page is not listed and so is skipped.
-	listed, err := listMemoryPagesCtx(ctx, env)
+	listed, err := ListPagesCtx(ctx, env)
 	if err != nil {
 		return err
 	}
@@ -475,7 +475,7 @@ func migrateLegacyMemoryIndexesCtx(ctx context.Context, env *execenv.LocalExecut
 		}
 		// A page that has a description keeps it; one whose frontmatter does not
 		// parse is left as it is.
-		if parsed := parseMemoryPage(page, body, time.Time{}); parsed.HasDescription || parsed.Unreadable {
+		if parsed := ParsePage(page, body, time.Time{}); parsed.HasDescription || parsed.Unreadable {
 			continue
 		}
 		described := frontmatter.SetField(body, frontmatter.YAMLField("description", descriptions[page]))
@@ -511,7 +511,7 @@ func migrateLegacyMemoryIndexesCtx(ctx context.Context, env *execenv.LocalExecut
 }
 
 // legacyMemoryIndexes is the scope's hand-written root indexes: every regular
-// root file whose name is MEMORY.md ignoring case, as isMemoryPagePath
+// root file whose name is MEMORY.md ignoring case, as IsPagePath
 // excludes them all from the pages. Like a page, an index that is not a
 // regular file (a symlink, FIFO or directory) is skipped. The one named exactly
 // MEMORY.md comes first. A case-insensitive filesystem holds at most one,
@@ -533,11 +533,11 @@ func legacyMemoryIndexes(env *execenv.LocalExecutionEnvironment) ([]string, erro
 	var out, stagedOut []string
 	for _, entry := range entries {
 		staged := strings.HasPrefix(entry.Name, memoryIndexStagingPrefix) || strings.HasPrefix(entry.Name, memoryBackupCopyPrefix)
-		if !entry.IsRegular || !isMemoryIndexPath(entry.Name) && !staged {
+		if !entry.IsRegular || !IsIndexPath(entry.Name) && !staged {
 			continue
 		}
 		legacy := filepath.Join(root, entry.Name)
-		if entry.Name == memoryIndexFile {
+		if entry.Name == indexFile {
 			out = slices.Insert(out, 0, legacy)
 		} else if staged {
 			stagedOut = append(stagedOut, legacy)
