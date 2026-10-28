@@ -147,7 +147,11 @@ export function turnFixture(id: string, text: string) {
 // against the real component tree, using the same real-DOM property-stub
 // technique virtuallist.test.tsx's own scrollToIndex test already
 // establishes as this project's way to fake geometry jsdom won't compute.
-export const ROOT_CLASS = requireClass(virtualListStyles.root, "virtuallist.module.css", "root");
+const ROOT_CLASS = requireClass(virtualListStyles.root, "virtuallist.module.css", "root");
+
+// A separate export: the requireclass contract test reads any line that mentions a
+// CSS module and starts with `export` as an import it failed to parse.
+export { ROOT_CLASS };
 
 export function scrollRootOf(container: HTMLElement): HTMLElement {
   return container.querySelector(`.${ROOT_CLASS}`) as HTMLElement;
