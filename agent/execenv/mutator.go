@@ -63,66 +63,6 @@ func errDeadWorkingDir(path, anchor string) error {
 		path, anchor, ErrWorkingDirectoryUnavailable)
 }
 
-// fileTargetMode says which of fileTarget's plain-arm checks an operation
-// takes. The sandboxed and granted-scratch arms are the same for every mode
-// except that targetWrite also refuses a relative path under a dead sandbox
-// root. The modes exist because the arms differ on purpose; file_op_arm_parity_test.go
-// pins each operation's outcome on each arm.
-type fileTargetMode int
-
-const (
-	// targetRead resolves the path as given. A read never checks that its
-	// anchor is live, so a vanished root surfaces as the missing file.
-	targetRead fileTargetMode = iota
-	// targetReadRaw reads through the write path on the plain arm, so an empty
-	// path is refused there.
-	targetReadRaw
-	// targetWrite requires a live anchor (the sandbox root, or the working
-	// directory on the plain arm) and resolves through the write path.
-	targetWrite
-)
-
-// fileTarget is the layer chosen for one path and the absolute path to act on.
-// sfs is the sandboxed layer, the granted session-scratch layer, or nil for the
-// plain filesystem. The caller must release it.
-type fileTarget struct {
-	sfs *sandboxFS
-	abs string
-}
-
-func (t fileTarget) release() { t.sfs.release() }
-
-// fileTarget picks the arm for path: the sandboxed layer when the file tools
-// are confined, else the granted scratch layer when path lies in it, else the
-// plain filesystem.
-func (e *LocalExecutionEnvironment) fileTarget(tool, path string, mode fileTargetMode) (fileTarget, error) {
-	if sfs := e.sandbox(); sfs != nil {
-		if mode == targetWrite {
-			if err := e.requireLiveSandboxRootForRelative(sfs, tool, path); err != nil {
-				sfs.release()
-				return fileTarget{}, err
-			}
-		}
-		return fileTarget{sfs: sfs, abs: e.resolve(path)}, nil
-	}
-	abs := e.resolve(path)
-	if sfs := e.scratchSandboxFor(abs); sfs != nil {
-		return fileTarget{sfs: sfs, abs: abs}, nil
-	}
-	switch mode {
-	case targetReadRaw:
-		abs, err := e.resolveWrite(path)
-		return fileTarget{abs: abs}, err
-	case targetWrite:
-		if err := e.requireLiveWorkingDirForRelative(path); err != nil {
-			return fileTarget{}, err
-		}
-		abs, err := e.resolveWrite(path)
-		return fileTarget{abs: abs}, err
-	}
-	return fileTarget{abs: abs}, nil
-}
-
 // requireLiveSandboxRootForRelative refuses a relative-path mutation whose
 // sandbox root's directory is gone — deleted out from under a running
 // file-tool-confined session (issue #4680). The plain arm's path-based check
