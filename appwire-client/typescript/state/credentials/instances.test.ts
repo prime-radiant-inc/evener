@@ -7,10 +7,10 @@ import type { AuthStatusResponse, InstanceEntry, InstanceListResponse, MethodNam
 import {
   type CredentialInstancesState,
   createCredentialInstancesStore,
-  foreignListingChange,
   isStaleListingRefusal,
   staleListingHeld,
 } from "./instances";
+import { foreignListingChange } from "./listing";
 
 const WORK: InstanceEntry = {
   name: "work",
