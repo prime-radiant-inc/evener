@@ -1,6 +1,7 @@
 import { HistoryPaging } from "@evener/appwire-client";
 import { workspaceStore } from "../../../shell/workspace";
-import { olderTranscriptPageKey, threadsStore } from "../../../stores/threads";
+import { olderTranscriptPageKey } from "../../../stores/entryTranscriptRoutes";
+import { threadsStore } from "../../../stores/threads";
 import type { TranscriptReadView } from "./transcriptReadView";
 
 export interface TranscriptReader {

@@ -17,13 +17,13 @@ import {
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
-  setProductionEntryCacheForTests,
   threadsStore,
 } from "./threads";
 

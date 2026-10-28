@@ -12,11 +12,47 @@ import (
 )
 
 // newTestWebServer builds a WebServer the same way the rest of this package's
-// tests do: a zero/minimal hubcore.WebConfig (no AuthToken, so the auth guard
-// is disabled — see hubedge.AuthGuard).
+// tests do: a minimal hubcore.WebConfig (no AuthToken, so the auth guard is
+// disabled — see hubedge.AuthGuard) whose state roots are private to the test.
 func newTestWebServer(t *testing.T) *WebServer {
 	t.Helper()
-	return NewWebServer(hubcore.WebConfig{})
+	cfg := hubcore.WebConfig{}
+	defaultTestRoots(t, &cfg)
+	return NewWebServer(cfg)
+}
+
+// defaultTestRoots gives every state root the config leaves unset its own
+// t.TempDir(). An unset root falls back to a HOME/XDG-derived default, which
+// under this package's TestMain is the one throwaway root every test in the
+// binary shares, so two parallel tests that both leave a root unset read each
+// other's launch.toml, credentials.toml and plugin store. A test that means to
+// exercise a seeded XDG environment passes the root explicitly.
+func defaultTestRoots(t *testing.T, cfg *hubcore.WebConfig) {
+	t.Helper()
+	for _, root := range []*string{&cfg.HubStateRoot, &cfg.LaunchConfigRoot, &cfg.PluginRoot} {
+		if *root == "" {
+			*root = t.TempDir()
+		}
+	}
+}
+
+// Two servers a test builds must not read each other's launch.toml, plugin
+// store or machine state: an unset root falls back to one HOME-derived default
+// that every test in the binary shares.
+func TestTestWebServersDoNotShareStateRoots(t *testing.T) {
+	first, second := newTestWebServer(t), newTestWebServer(t)
+	for name, roots := range map[string][2]string{
+		"hub state root":     {first.cfg.HubStateRoot, second.cfg.HubStateRoot},
+		"launch config root": {first.cfg.LaunchConfigRoot, second.cfg.LaunchConfigRoot},
+		"plugin root":        {first.cfg.PluginRoot, second.cfg.PluginRoot},
+	} {
+		if roots[0] == "" || roots[1] == "" {
+			t.Errorf("%s is unset, so it resolves to the process-wide default", name)
+		}
+		if roots[0] == roots[1] {
+			t.Errorf("%s is shared between two servers: %q", name, roots[0])
+		}
+	}
 }
 
 // newTestWebServerWithDist builds a WebServer with the distFS() seam

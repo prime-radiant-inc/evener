@@ -20,13 +20,9 @@ import { type ComicSubchatState, useComicSubchats } from "../comic/useComicSubch
 import { resetTranscriptPagingForTests } from "../panes/session/transcript/useTranscript";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
-import {
-  installHydrationRetrySchedulerForTests,
-  resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
-  threadsStore,
-} from "./threads";
+import { installHydrationRetrySchedulerForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
 import { useThreadModel } from "./useThreadModel";
 
 let cache: SessionEntryCache;

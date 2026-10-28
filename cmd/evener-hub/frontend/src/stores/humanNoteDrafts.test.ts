@@ -6,6 +6,7 @@ import { useEffect } from "react";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import {
   acknowledgeHumanNote,
   blurHumanNote,
@@ -20,7 +21,6 @@ import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import {
   resetThreadsStoreForTests,
   setMutationStorageForTests,
-  setProductionEntryCacheForTests,
   settleEntryTranscriptForTests,
   threadsStore,
 } from "./threads";

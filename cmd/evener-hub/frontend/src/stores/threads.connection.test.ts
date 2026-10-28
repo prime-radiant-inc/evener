@@ -5,8 +5,9 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { type TestThreadOverrides, testThread } from "../threadTestUtils";
 import { connectionStore, useConnectionStore } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
-import { resetThreadsStoreForTests, setProductionEntryCacheForTests } from "./threads";
+import { resetThreadsStoreForTests } from "./threads";
 
 let cache: SessionEntryCache;
 beforeEach(() => {

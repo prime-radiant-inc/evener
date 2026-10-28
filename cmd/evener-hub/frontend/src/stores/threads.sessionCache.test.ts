@@ -23,6 +23,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
 import { setCacheChannelFactoryForTests } from "./cacheLifetime";
 import { connectionStore } from "./connection";
+import {
+  isEntryTranscriptLocalOpening,
+  productionEntryTranscriptForTests,
+  setProductionEntryCacheForTests,
+} from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "./projectionWork";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
@@ -34,13 +39,10 @@ import {
   backgroundTranscriptSnapshotForTests,
   clearCachedSessions,
   installHydrationRetrySchedulerForTests,
-  isEntryTranscriptLocalOpening,
   markCacheSessionsDeleted,
   pendingThreadHydrationBaseModelsForTests,
   pendingThreadHydrationUpdatesForTests,
-  productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
   settleBackgroundTranscriptsForTests,
   threadsStore,
 } from "./threads";

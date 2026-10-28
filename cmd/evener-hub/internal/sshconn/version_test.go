@@ -108,9 +108,9 @@ func TestEnsureVersionMatchesAttachesWithoutDeploy(t *testing.T) {
 	// A stamped controller and host carry a comparable identity; the identity-less
 	// "dev" case is covered by TestEnsureDevBuildDeploysOncePerManager.
 	fr := &fakeRunner{
-		runFn: cannedRun(map[string][]byte{
-			"launch-check": []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`),
-			"api/health":   []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
+		runFn: cannedRun(map[remoteOp][]byte{
+			opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`),
+			opHealth:      []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
 		}),
 		startFn: goodStartFn(t),
 	}
@@ -264,7 +264,7 @@ func TestEnsureProtocolUpgradeDeploysRestartsThenAttaches(t *testing.T) {
 // build and no bridge for a target with no shipped build.
 func TestEnsureUnsupportedTargetDoesNotDeploy(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
-	override := map[string][]byte{"uname -s": []byte("Darwin\n"), "uname -m": []byte("x86_64\n")}
+	override := map[remoteOp][]byte{opUnameKernel: []byte("Darwin\n"), opUnameArch: []byte("x86_64\n")}
 	fr := &fakeRunner{runFn: cannedRun(override), startFn: goodStartFn(t)}
 	buildCalled := false
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
@@ -897,8 +897,8 @@ func TestEnsurePreservesRunningHubWhenBuildDiffers(t *testing.T) {
 // would bootstrap it (TestFirstAttachBootstrapsStoppedHost).
 func TestReconnectNeverStartsAStoppedHub(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
-	fr := &fakeRunner{runFn: cannedRun(map[string][]byte{
-		"api/health": []byte(`not a health body`),
+	fr := &fakeRunner{runFn: cannedRun(map[remoteOp][]byte{
+		opHealth: []byte(`not a health body`),
 	}), startFn: goodStartFn(t)}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "dev", // cannedRun reports the on-disk version "dev"
@@ -2002,8 +2002,8 @@ func TestEnsureSupervisorRestartRecoveryRetriesRestart(t *testing.T) {
 // running hub reported, so the channel must report what the probe actually saw.
 func TestRefreshAfterRestartReportsTheReprobedVersion(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	fr := &fakeRunner{runFn: cannedRun(map[string][]byte{
-		"launch-check": []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"probedsha","launch_flags":["api-log"]}`),
+	fr := &fakeRunner{runFn: cannedRun(map[remoteOp][]byte{
+		opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"probedsha","launch_flags":["api-log"]}`),
 	})}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "expectedsha"})
 
@@ -2380,8 +2380,8 @@ func TestRestartHubRestartsAdHocOnSupervisorlessHost(t *testing.T) {
 func TestEnsureAttachesToAnotherBuildWhenProtocolMatches(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{
-		runFn: cannedRun(map[string][]byte{
-			"launch-check": []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`),
+		runFn: cannedRun(map[remoteOp][]byte{
+			opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`),
 		}),
 		startFn: goodStartFn(t),
 	}

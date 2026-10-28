@@ -66,7 +66,7 @@ func TestEnsureCompatibleBuildDifferenceDoesNotDeploy(t *testing.T) {
 		for _, source := range []string{"configured", "unavailable", "disabled", "cross-platform"} {
 			t.Run(version+"/"+source, func(t *testing.T) {
 				opts := Options{controllerVersionOverride: version, BuildBinary: writeStageBinary}
-				overrides := map[string][]byte{"launch-check": []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"remote-build","launch_flags":["api-log"]}`)}
+				overrides := map[remoteOp][]byte{opLaunchCheck: []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"remote-build","launch_flags":["api-log"]}`)}
 				switch source {
 				case "unavailable":
 					opts.BuildBinary = nil
@@ -74,7 +74,7 @@ func TestEnsureCompatibleBuildDifferenceDoesNotDeploy(t *testing.T) {
 					opts.DeployDisabled = true
 				case "cross-platform":
 					opts.OwnExecutable = true
-					overrides["uname -s"], overrides["uname -m"] = []byte("Darwin"), []byte("arm64")
+					overrides[opUnameKernel], overrides[opUnameArch] = []byte("Darwin"), []byte("arm64")
 				}
 				fr := &fakeRunner{runFn: cannedRun(overrides), startFn: goodStartFn(t)}
 				m, effects := compatibleConnectManager(t, fr, opts)
@@ -91,7 +91,7 @@ func TestEnsureCompatibleLiveHubWinsOverDiskFacts(t *testing.T) {
 		`malformed-contract`,
 	} {
 		t.Run(launch, func(t *testing.T) {
-			fr := &fakeRunner{runFn: cannedRun(map[string][]byte{"launch-check": []byte(launch)}), startFn: goodStartFn(t)}
+			fr := &fakeRunner{runFn: cannedRun(map[remoteOp][]byte{opLaunchCheck: []byte(launch)}), startFn: goodStartFn(t)}
 			m, effects := compatibleConnectManager(t, fr, Options{DeployDisabled: true})
 			requireReadOnlyConnect(t, m, effects)
 		})
