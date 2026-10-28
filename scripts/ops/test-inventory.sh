@@ -12,17 +12,19 @@
 #
 # go     runs `go test -list` in PKGDIR and prints one Test/Fuzz/Example/
 #        Benchmark name per line, sorted.
-# vitest runs `npx vitest list --json` from the frontend directory on the
-#        FILEs (paths relative to the repo root) and prints
-#        one test name per line, sorted, with file names left out so a move
-#        between files does not show up as a change.
+# vitest runs `npx vitest list --json` on the FILEs (paths relative to the
+#        repo root) from the frontend directory, or from mobile-native for
+#        files under it, and prints one test name per line, sorted, with file
+#        names left out so a move between files does not show up as a
+#        change. It fails when a FILE contributes no tests (for example a file
+#        its vitest config excludes), so a lost file cannot read as equality.
 # diff   prints names only in the first file as "-" and only in the second as
 #        "+". Exit 0 when identical, 1 when they differ. Duplicate names count
 #        (the lists are compared as multisets).
 # Exit 2: usage error or the listing failed (the message says why).
 set -euo pipefail
 
-usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 die() { echo "test-inventory: $*" >&2; exit 2; }
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -46,23 +48,42 @@ $out"
   vitest)
     [ $# -ge 1 ] || usage
     command -v jq >/dev/null || die "jq is required"
-    files=()
-    for f in "$@"; do
-      [ -f "$root/$f" ] || die "no such file (relative to the repo root): $f"
-      files+=("$root/$f")
+    tmp="$(mktemp)"; names="$(mktemp)"
+    trap 'rm -f "$tmp" "$names"' EXIT
+    for f in "$@"; do [ -f "$root/$f" ] || die "no such file (relative to the repo root): $f"; done
+    # Each test tree has its own vitest config, and a config silently skips
+    # files outside its include globs, so list per tree and require that every
+    # requested file shows up in its tree's listing.
+    for tree in mobile-native cmd/evener-hub/frontend; do
+      files=()
+      for f in "$@"; do
+        case "$f" in
+          mobile-native/*) [ "$tree" = mobile-native ] && files+=("$root/$f") ;;
+          *) [ "$tree" = cmd/evener-hub/frontend ] && files+=("$root/$f") ;;
+        esac
+      done
+      [ ${#files[@]} -gt 0 ] || continue
+      # `--json` takes an output path, not a flag: without `=FILE` vitest would
+      # treat the first test file as the path and overwrite it.
+      (cd "$root/$tree" && npx vitest list --json="$tmp" "${files[@]}" >/dev/null) || die "vitest list failed in $tree"
+      for f in "${files[@]}"; do
+        jq -e --arg f "$f" 'any(.[]; .file == $f)' "$tmp" >/dev/null || die "vitest listed no tests from $f (excluded by $tree's vitest config, or it has no tests)"
+      done
+      jq -r '.[].name' "$tmp" >> "$names"
     done
-    # `--json` takes an output path, not a flag: without `=FILE` vitest would
-    # treat the first test file as the path and overwrite it.
-    tmp="$(mktemp)"
-    trap 'rm -f "$tmp"' EXIT
-    (cd "$root/cmd/evener-hub/frontend" && npx vitest list --json="$tmp" "${files[@]}" >/dev/null) || die "vitest list failed"
-    jq -r '.[].name' "$tmp" | LC_ALL=C sort
+    LC_ALL=C sort "$names"
     ;;
   diff)
     [ $# -eq 2 ] || usage
     [ -f "$1" ] && [ -f "$2" ] || die "both arguments must be files"
-    d="$(LC_ALL=C diff <(LC_ALL=C sort "$1") <(LC_ALL=C sort "$2") | sed -n -e 's/^< /- /p' -e 's/^> /+ /p' || true)"
-    if [ -n "$d" ]; then printf '%s\n' "$d"; exit 1; fi
+    tmp1="$(mktemp)"; tmp2="$(mktemp)"
+    trap 'rm -f "$tmp1" "$tmp2"' EXIT
+    LC_ALL=C sort "$1" > "$tmp1" || die "cannot read $1"
+    LC_ALL=C sort "$2" > "$tmp2" || die "cannot read $2"
+    status=0
+    d="$(LC_ALL=C diff "$tmp1" "$tmp2")" || status=$?
+    [ "$status" -le 1 ] || die "diff failed"
+    if [ "$status" -eq 1 ]; then printf '%s\n' "$d" | sed -n -e 's/^< /- /p' -e 's/^> /+ /p'; exit 1; fi
     ;;
   *) echo "unknown command: $cmd" >&2; usage ;;
 esac
