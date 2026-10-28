@@ -137,8 +137,8 @@ func (r *forceStopRun) onCleanup(fn func(stopErr error)) {
 }
 
 func (r *forceStopRun) cleanup(stopErr error) {
-	for i := len(r.cleanups) - 1; i >= 0; i-- {
-		r.cleanups[i](stopErr)
+	for _, fn := range slices.Backward(r.cleanups) {
+		fn(stopErr)
 	}
 }
 
