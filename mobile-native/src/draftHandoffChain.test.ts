@@ -1367,7 +1367,9 @@ describe("handoff chain obligations", () => {
 		// The continuation waits for the running command: it cannot settle out
 		// from under it, and the terminal's screen keeps the row excluded.
 		expect(storageLedger.readGraph().edges.find((edge) => edge.edgeId === bc.edgeId)?.state).toBe("pending");
-		expect([...library.openObligationRecoveryIds(endpoint("c"))]).toContain(captured.clientMutationId);
+		expect([...(library.openObligationRecoveryIds(endpoint("c")) ?? new Set<string>())]).toContain(
+			captured.clientMutationId,
+		);
 
 		finish();
 		await submitted;
@@ -1419,6 +1421,129 @@ describe("handoff chain obligations", () => {
 		library.retryPendingHandoffs();
 		library.retryPendingHandoffs();
 		expect(reads).toBe(afterFirst);
+	});
+
+	test("unavailable ownership defers recovery restoration", () => {
+		const { storageLedger, repository } = setup();
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => storageLedger,
+		);
+		// A running command's recovery row must stay excluded from restoration.
+		storageLedger.beginSubmission("token-run", endpoint("a"), ["recovered-run"]);
+		let failReads = true;
+		const failing = new Proxy(storageLedger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if ((property === "readGraph" || property === "readOutstandingGraph") && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (failReads) throw new Error("ledger down");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftHandoffLedger;
+		const broken = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => failing,
+		);
+		// An unreadable ledger means ownership is unknown, not empty: the
+		// restoration must defer instead of clearing a running command.
+		expect(broken.openObligationRecoveryIds(endpoint("a"))).toBeUndefined();
+		failReads = false;
+		// With the ledger readable again the exclusion names the row.
+		expect([...(library.openObligationRecoveryIds(endpoint("a")) ?? new Set<string>())]).toContain("recovered-run");
+		// A record that cannot be read is unknown ownership too.
+		let failRecord = true;
+		const unreadable = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "read" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (failRecord) throw new Error("draft store down");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		const blind = new DraftLibrary(
+			() => unreadable,
+			undefined,
+			() => storageLedger,
+		);
+		expect(blind.openObligationRecoveryIds(endpoint("a"))).toBeUndefined();
+		failRecord = false;
+		expect(blind.openObligationRecoveryIds(endpoint("a"))).toBeDefined();
+	});
+
+	test("a failed resolution write retries itself after storage recovers", async () => {
+		const { storageLedger, repository } = setup();
+		const failing = flaky(storageLedger, "resolveSubmission", 1);
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => failing,
+		);
+		repository.write(endpoint("a"), { draft: "current", unconfirmed: null });
+		const document = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = document.submit(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		vi.useFakeTimers();
+		try {
+			finish();
+			await submitted;
+			// The resolution write failed: the obligation stays open.
+			expect(storageLedger.readGraph().obligations[0]?.state).toBe("open");
+			// No user action and no explicit retry: the document retries the
+			// owed write itself once the transient failure clears.
+			await vi.advanceTimersByTimeAsync(1500);
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(storageLedger.readGraph().obligations[0]?.state).toBe("completed");
+	});
+
+	test("routine reconciliation reads outstanding work, not history", () => {
+		const { storageLedger, repository } = setup();
+		let fullReads = 0;
+		const counting = new Proxy(storageLedger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "readGraph" && typeof value === "function")
+					return (...args: unknown[]) => {
+						fullReads++;
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftHandoffLedger;
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => counting,
+		);
+		// Settled history: an applied and acknowledged completion.
+		storageLedger.beginSubmission("token-old", endpoint("a"), []);
+		repository.write(endpoint("a"), {
+			draft: "work",
+			unconfirmed: "work",
+			unconfirmedCaptureToken: "token-old",
+		});
+		storageLedger.resolveSubmission("token-old", "completed", []);
+		library.retryPendingHandoffs();
+		expect(repository.read(endpoint("a")).unconfirmedCaptureToken).toBeUndefined();
+		// A keystroke's pass and exclusion read must not load the whole graph.
+		const before = fullReads;
+		library.retryPendingHandoffs();
+		expect(library.openObligationRecoveryIds(endpoint("a"))?.size ?? 0).toBe(0);
+		expect(fullReads).toBe(before);
 	});
 
 	test("a recovery pass applies a resolved completion with no pending edge", () => {

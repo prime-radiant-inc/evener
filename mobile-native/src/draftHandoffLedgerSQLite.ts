@@ -333,6 +333,68 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 		return [...owners.values()];
 	}
 
+	/** The graph's outstanding work, bounded: open and unacknowledged
+	 * obligations, the edges pending or still awaiting cleanup, and the edges
+	 * reachable from every outstanding obligation's origin. Capture routing
+	 * walks the whole path a composition took - including settled and cleaned
+	 * edges - while history with nothing outstanding never loads, so routine
+	 * composer reconciliation costs what is unresolved, not the device's whole
+	 * submission history. Settled history's deliveries are not included:
+	 * nothing in the routine pass reads them. */
+	readOutstandingGraph(): DraftHandoffGraph {
+		const obligations = this.db
+			.getAllSync<ObligationRow>(
+				`SELECT * FROM draft_submission_obligations
+				 WHERE state = 'open' OR applied_at IS NULL ORDER BY created_at, rowid`,
+			)
+			.map((row) => this.mapObligation(row));
+		const edges = new Map<string, EdgeRow>();
+		for (const row of this.db.getAllSync<EdgeRow>(
+			`SELECT * FROM draft_handoff_edges WHERE state != 'cleaned' ORDER BY created_at, rowid`,
+		))
+			edges.set(row.edge_id, row);
+		// Every identity an outstanding obligation reached, through edges of
+		// any state: a capture can sit behind an edge that settled and cleaned
+		// long before its obligation's completion applied.
+		const visited = new Set<string>();
+		let frontier = [
+			...new Map(
+				obligations.map((obligation) => [
+					`${obligation.origin.hubId}\u0000${obligation.origin.sessionRef}`,
+					obligation.origin,
+				]),
+			).values(),
+		];
+		for (const endpoint of frontier) visited.add(`${endpoint.hubId}\u0000${endpoint.sessionRef}`);
+		while (frontier.length !== 0) {
+			const where: string[] = [];
+			const params: string[] = [];
+			for (const endpoint of frontier) {
+				where.push("(from_hub_id = ? AND from_ref = ?)");
+				params.push(endpoint.hubId, endpoint.sessionRef);
+			}
+			const next: DraftHandoffEndpoint[] = [];
+			for (const row of this.db.getAllSync<EdgeRow>(
+				`SELECT * FROM draft_handoff_edges WHERE ${where.join(" OR ")} ORDER BY created_at, rowid`,
+				...params,
+			)) {
+				if (!edges.has(row.edge_id)) edges.set(row.edge_id, row);
+				const to: DraftHandoffEndpoint = { hubId: row.to_hub_id, sessionRef: row.to_ref };
+				const key = `${to.hubId}\u0000${to.sessionRef}`;
+				if (!visited.has(key)) {
+					visited.add(key);
+					next.push(to);
+				}
+			}
+			frontier = next;
+		}
+		return {
+			edges: [...edges.values()].map((row) => this.mapEdge(row)),
+			obligations,
+			deliveries: [],
+		};
+	}
+
 	claimDestination(edgeId: string): boolean {
 		return withSavepoint(this.db, "draft_handoff_claim", () => {
 			const edge = this.requirePending(edgeId);

@@ -1,4 +1,9 @@
-import type { DraftHandoffEdge, DraftHandoffEndpoint, DraftHandoffGraph } from "./draftHandoffLedger";
+import type {
+	DraftHandoffEdge,
+	DraftHandoffEndpoint,
+	DraftHandoffGraph,
+	DraftHandoffLedger,
+} from "./draftHandoffLedger";
 import type { DraftRecord } from "./draftRepository";
 
 /** One read of the ledger. A failing read is an incomplete graph, never a
@@ -25,6 +30,16 @@ export type HandoffOrdering =
 export function readHandoffGraph(ledger: { readGraph(): DraftHandoffGraph }): HandoffGraphLoad {
 	try {
 		return { state: "ready", graph: ledger.readGraph() };
+	} catch {
+		return { state: "incomplete" };
+	}
+}
+
+/** One bounded read of the graph's outstanding work. A ledger without the
+ * bounded read falls back to the whole graph. */
+export function readOutstandingHandoffGraph(ledger: DraftHandoffLedger): HandoffGraphLoad {
+	try {
+		return { state: "ready", graph: ledger.readOutstandingGraph?.() ?? ledger.readGraph() };
 	} catch {
 		return { state: "incomplete" };
 	}

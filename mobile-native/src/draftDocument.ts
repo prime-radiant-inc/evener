@@ -193,6 +193,9 @@ interface DraftSnapshot {
 	error: string | null;
 }
 
+/** How long a document waits before retrying a ledger write it still owes. */
+const OBLIGATION_RETRY_MS = 1000;
+
 /** Why the composer can't take a recovered message back right now. */
 export type RecoveredRestoreBlock = "unavailable" | "loading" | "sending" | "unsaved" | "image" | "occupied";
 
@@ -230,6 +233,9 @@ export class DraftDocument {
 	 * The send still went out; the begin is retried so a recovered ledger adopts
 	 * the pending capture instead of losing the obligation entirely. */
 	private unrecordedCaptures = new Map<string, readonly string[]>();
+	/** A pending self-retry of the owed ledger writes above, so a transient
+	 * store failure recovers without user action. */
+	private obligationRetryTimer: ReturnType<typeof setTimeout> | null = null;
 	imagePreviews(images: DraftImage[] = this.snapshot.record.images ?? []): InputAttachment[] {
 		return images.map((image) => {
 			const pending = this.unsavedImages.get(image.id);
@@ -352,6 +358,10 @@ export class DraftDocument {
 		this.forgotten = true;
 		this.retired = true;
 		this.unsavedImages.clear();
+		if (this.obligationRetryTimer !== null) {
+			clearTimeout(this.obligationRetryTimer);
+			this.obligationRetryTimer = null;
+		}
 		this.update({
 			record: { draft: "", unconfirmed: null },
 			loaded: false,
@@ -737,6 +747,7 @@ export class DraftDocument {
 				// this submission, because the ledger that would carry the
 				// obligation is what is failing.
 				this.unrecordedCaptures.set(draftCaptureToken, [...(metadata?.recoveryIds ?? [])]);
+				this.scheduleObligationRetry();
 			}
 			const context: ConversationMutationContext = {
 				composer: {
@@ -874,6 +885,7 @@ export class DraftDocument {
 				completedCommandIds: [...completedCommandIds],
 				releasedRecoveryIds: [...releasedRecoveryIds],
 			});
+			this.scheduleObligationRetry();
 			return false;
 		}
 	}
@@ -891,6 +903,7 @@ export class DraftDocument {
 				inFlightCaptures.add(captureToken);
 			} catch {
 				// Still failing; the capture stays unrecorded and its resolution queued.
+				this.scheduleObligationRetry();
 			}
 		}
 		for (const [captureToken, resolution] of [...this.unresolvedResolutions]) {
@@ -914,8 +927,21 @@ export class DraftDocument {
 					);
 			} catch {
 				// Still failing; keep it queued and leave the obligation open.
+				this.scheduleObligationRetry();
 			}
 		}
+	}
+
+	/** Retry owed ledger writes after a transient failure, so an obligation
+	 * blocks its chain only until storage recovers - including on a retired
+	 * document nobody is typing into, whose unmounted screen would otherwise
+	 * wait for user action to flush it. */
+	private scheduleObligationRetry(): void {
+		if (this.forgotten || this.obligationRetryTimer !== null) return;
+		this.obligationRetryTimer = setTimeout(() => {
+			this.obligationRetryTimer = null;
+			this.flushObligationResolutions();
+		}, OBLIGATION_RETRY_MS);
 	}
 
 	/** Clear this submission's capture at the identity that owns the record now.

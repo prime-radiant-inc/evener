@@ -538,7 +538,9 @@ describe("durable handoff library", () => {
 		expect(repository.read(destination("a")).draft).toBe("current");
 		expect(unavailable.handoff(destination("a"), destination("b"))).toBe(false);
 		expect(unavailable.hasPendingHandoff(destination("b"))).toBe(false);
-		expect(unavailable.openObligationRecoveryIds(destination("a"))).toEqual(new Set());
+		// An unreachable ledger is unknown ownership, not empty: restoration
+		// defers instead of reading the outage as "nothing is running".
+		expect(unavailable.openObligationRecoveryIds(destination("a"))).toBeUndefined();
 		expect(() => unavailable.retryPendingHandoffs()).not.toThrow();
 	});
 

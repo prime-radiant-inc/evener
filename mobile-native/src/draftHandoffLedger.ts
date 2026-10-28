@@ -137,6 +137,15 @@ export interface DraftHandoffLedger extends DraftSubmissionLedger {
 	 * applied, so routine reconciliation stops revisiting it. Optional:
 	 * without the method the pass keeps re-checking every time. */
 	acknowledgeAppliedCompletion?(obligationId: string): void;
+	/** The graph's outstanding work, bounded: open and unacknowledged
+	 * obligations, edges pending or awaiting cleanup, and the edges reachable
+	 * from every outstanding obligation's origin - capture routing needs the
+	 * path a composition took even after its edges settled and cleaned. History
+	 * with nothing outstanding never loads, so routine composer reconciliation
+	 * stays bounded by unresolved work. Settled history's deliveries are not
+	 * included. Optional: without the method the caller falls back to
+	 * readGraph. */
+	readOutstandingGraph?(): DraftHandoffGraph;
 }
 
 /** The target key is the composite `[hubId, sessionRef]` encoding used by every

@@ -2890,6 +2890,11 @@ function ConversationScreenView({
 				hubId: route.params.hubId,
 				sessionRef: route.params.ref,
 			});
+			// Unknown ownership is not empty: a ledger or record that cannot be
+			// read must defer restoration, or a still-running command's sources
+			// could be restored and its capture cleared before its completion
+			// attaches.
+			if (pendingObligations === undefined) return;
 			await reconcileEditedResends(runtime, targetKey, document, pendingObligations);
 			const retained = await runtime.read(targetKey);
 			const handoffPending = drafts.hasPendingHandoff({

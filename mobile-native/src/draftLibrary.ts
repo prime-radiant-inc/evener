@@ -20,6 +20,7 @@ import {
 	compareEdges,
 	type HandoffOrdering,
 	orderHandoffGraph,
+	readOutstandingHandoffGraph,
 	readHandoffGraph,
 	terminalDestination,
 } from "./draftHandoffGraph";
@@ -162,7 +163,7 @@ export class DraftLibrary {
 			for (const document of sessions.values()) document.flushObligationResolutions();
 		// A retired document can still hold a resolution its ledger write missed.
 		for (const entry of this.retired.values()) entry.document.retry();
-		const load = readHandoffGraph(ledger);
+		const load = readOutstandingHandoffGraph(ledger);
 		if (load.state !== "ready") return;
 		// Resolved obligations still owe routine work until their dispositions
 		// reach the identities owning their recovery rows and their completion
@@ -176,7 +177,7 @@ export class DraftLibrary {
 		// A reconciled obligation unblocks the edges waiting on it, so the
 		// ordering must read the graph that exists after the reconciliation.
 		if (this.reconcileAbandonedObligations(ledger, load.graph)) {
-			const fresh = readHandoffGraph(ledger);
+			const fresh = readOutstandingHandoffGraph(ledger);
 			if (fresh.state !== "ready") return;
 			this.cleanFinished(ledger, fresh.graph);
 			this.attemptOrderedHandoffs(ledger, fresh.graph, orderHandoffGraph(fresh));
@@ -206,7 +207,7 @@ export class DraftLibrary {
 			try {
 				// Transfers only: the fresh graph reflects the composition the
 				// previous attempt in this pass just committed.
-				const load = readHandoffGraph(ledger);
+				const load = readOutstandingHandoffGraph(ledger);
 				if (load.state !== "ready") continue;
 				const fresh = load.graph.edges.find((e) => e.edgeId === edge.edgeId);
 				if (fresh !== undefined) this.deliver(ledger, fresh, load.graph, false);
@@ -247,7 +248,7 @@ export class DraftLibrary {
 	hasPendingHandoff(to: DraftDestination): boolean {
 		const ledger = this.availableHandoffLedger();
 		if (ledger === undefined) return false;
-		const load = readHandoffGraph(ledger);
+		const load = readOutstandingHandoffGraph(ledger);
 		if (load.state !== "ready") return false;
 		return load.graph.edges.some((edge) => edge.state === "pending" && sameDestination(edge.to, to));
 	}
@@ -486,7 +487,7 @@ export class DraftLibrary {
 	private transferProven(ledger: DraftHandoffLedger, edge: DraftHandoffEdge, source: DraftRecord): boolean {
 		let graph: DraftHandoffGraph;
 		try {
-			graph = ledger.readGraph();
+			graph = ledger.readOutstandingGraph?.() ?? ledger.readGraph();
 		} catch {
 			return false;
 		}
@@ -631,7 +632,7 @@ export class DraftLibrary {
 		if (owners !== undefined) {
 			for (const owner of owners) if (!sameDestination(owner, skip)) rowOwners.push(owner);
 		} else {
-			const load = readHandoffGraph(ledger);
+			const load = readOutstandingHandoffGraph(ledger);
 			if (load.state !== "ready") return false;
 			const traced = terminalDestination(load.graph.edges, skip, chainId);
 			if (!sameDestination(traced, skip)) rowOwners.push(traced);
@@ -714,17 +715,22 @@ export class DraftLibrary {
 	}
 
 	/** Recovery sources of submissions still running on this destination's chain.
-	 * The screen must not restore those rows while their obligation is open. */
-	openObligationRecoveryIds(destination: DraftDestination): Set<string> {
+	 * The screen must not restore those rows while their obligation is open.
+	 * Undefined means ownership could not be read - the ledger or a record was
+	 * unavailable - which is unknown, not empty: the caller must defer
+	 * restoration until ownership reads successfully, or a running command's
+	 * sources could be restored and its capture cleared. */
+	openObligationRecoveryIds(destination: DraftDestination): Set<string> | undefined {
 		const ledger = this.availableHandoffLedger();
-		if (ledger === undefined) return new Set();
+		if (ledger === undefined) return undefined;
 		let graph;
 		try {
-			graph = ledger.readGraph();
+			graph = ledger.readOutstandingGraph?.() ?? ledger.readGraph();
 		} catch {
-			return new Set();
+			return undefined;
 		}
 		const ids = new Set<string>();
+		let readsFailed = false;
 		for (const obligation of graph.obligations) {
 			if (obligation.state !== "open") continue;
 			// Exclusions follow durable capture ownership, not the graph's routing:
@@ -736,12 +742,14 @@ export class DraftLibrary {
 				try {
 					return this.repository().read(endpoint);
 				} catch {
+					readsFailed = true;
 					return undefined;
 				}
 			});
 			if (!sameDestination(owner, destination)) continue;
 			for (const id of obligation.recoveryIds) ids.add(id);
 		}
+		if (readsFailed) return undefined;
 		return ids;
 	}
 
@@ -752,7 +760,7 @@ export class DraftLibrary {
 		if (ledger === undefined) return;
 		let graph;
 		try {
-			graph = ledger.readGraph();
+			graph = ledger.readOutstandingGraph?.() ?? ledger.readGraph();
 		} catch {
 			return;
 		}
