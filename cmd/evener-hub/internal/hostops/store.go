@@ -166,6 +166,12 @@ type snapshot struct {
 	// never moves backward, and the zero Time means no pass has observed a clock
 	// yet. It is optional on read for the same reason as Tokens.
 	WallClockHighWaterMark time.Time `json:"wallClockHighWaterMark"`
+	// HostRecords is the hub's machine-record family and the instant it was
+	// imported (hostrecords.go). Nil is a store whose records still live
+	// elsewhere: the key arrived after the store shipped, so a file without it
+	// is a store that has imported nothing, and every write emits it once it
+	// exists.
+	HostRecords *hostRecordsState `json:"hostRecords,omitempty"`
 }
 
 // storeCell is the lock-and-state cell one store file's handlers share.
@@ -671,6 +677,9 @@ type storeFile struct {
 	// WallClockHighWaterMark is optional on read: absent, null and the zero
 	// instant all mean no pass has observed a clock yet.
 	WallClockHighWaterMark time.Time `json:"wallClockHighWaterMark"`
+	// HostRecords is optional on read (see snapshot.HostRecords); a present
+	// family must carry every field.
+	HostRecords *hostRecordsFile `json:"hostRecords"`
 }
 
 // compensationFile is the decode shape of one pendingCompensation record. Every
@@ -958,6 +967,13 @@ func readStoreFS(fs afero.Fs, path string) (snapshot, error) {
 		// year-one string a zero mark marshals to — reads as "no mark yet"
 		// (wallClockMark).
 		WallClockHighWaterMark: wallClockMark(file.WallClockHighWaterMark),
+	}
+	if file.HostRecords != nil {
+		family, err := file.HostRecords.state()
+		if err != nil {
+			return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
+		}
+		state.HostRecords = family
 	}
 	if file.Tombstones != nil {
 		state.Tombstones = make([]Tombstone, len(*file.Tombstones))
@@ -1279,7 +1295,7 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records", "boundaries",
 		"tokens", "probeEpochs", "probeEpochSeq", "guardEpoch", "wallClockHighWaterMark",
 		"compactSeq", "tombstones", "compactionMarks", "compactionFloor", "removedHosts",
-		"pendingCompensation", "fencingQuarantines"),
+		"pendingCompensation", "fencingQuarantines", "hostRecords"),
 	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
 		"incarnationId", "fencingEpoch", "orphanBoundary", "orphanResolved", "attestation",
 		"progress", "result", "pendingSpawns", "createdAt", "updatedAt", "hostRemoved", "sequence"),
@@ -1308,6 +1324,8 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 	// The armed compensation records are objects this store decodes, and their
 	// preimage rows carry the whole token schema, so both key sets are
 	// canonical too.
+	"hostRecords": keysOf("importedAt", "hosts", "generations", "receipts", "tombstones",
+		"prunedReceipts", "stagedReceipts", "remnants", "attempts"),
 	"pendingCompensation[]":        keysOf("host", "phase", "rows", "stashReference", "generation"),
 	"pendingCompensation[].rows[]": keysOf(tokenKeys...),
 }
@@ -1761,6 +1779,16 @@ func validateSnapshot(state snapshot) error {
 			return err
 		}
 	}
+	if family := state.HostRecords; family != nil {
+		// The import instant dates the marker; a zero one is the absence default,
+		// not an import.
+		if family.ImportedAt.IsZero() {
+			return fmt.Errorf("%w: the host-record family carries no import instant", ErrInvalidHostRecords)
+		}
+		if err := family.validate(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1784,6 +1812,7 @@ func cloneSnapshot(state snapshot) snapshot {
 	out.ProbeEpochs = slices.Clone(state.ProbeEpochs)
 	out.ProbeEpochSeq = maps.Clone(state.ProbeEpochSeq)
 	out.GuardEpoch = cloneGuardEpoch(state.GuardEpoch)
+	out.HostRecords = cloneHostRecordsState(state.HostRecords)
 	return out
 }
 
