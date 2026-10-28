@@ -286,9 +286,9 @@ func classifyRemote(argv []string) remoteOp {
 		return opProcessArgv
 	case strings.Contains(joined, "/cmdline"):
 		return opProcessCmdline
-	case strings.Contains(joined, "systemctl restart"):
+	case strings.Contains(joined, "systemctl restart"), strings.Contains(joined, "systemctl --user restart"):
 		return opSystemdRestart
-	case strings.Contains(joined, "systemctl start"):
+	case strings.Contains(joined, "systemctl start"), strings.Contains(joined, "systemctl --user start"):
 		return opSystemdStart
 	case strings.Contains(joined, "list-units"):
 		return opSystemdUnits
