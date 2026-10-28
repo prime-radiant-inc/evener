@@ -1058,11 +1058,17 @@ async function openEntryTranscript(ref: string, recovery = false, sourcePublishe
       // reclaimed behind a reconciliation boundary — can serve neither the
       // display nor a late publish, and the settling read itself recovered
       // nothing, so no hydration or failure retry owns what is missing.
+      // The resident range alone is not enough: a live update can publish a
+      // tail item over reclaimed identities and establish a resident range
+      // that certifies only that tail, while the bodies the pane came to
+      // restore stay missing — so the expected window must hold real bodies
+      // alongside the range.
+      // A re-open the caller's own machinery published the model for — the
       // A re-open the caller's own machinery published the model for — the
       // claim's post-hydration certification — is source-owned the same way:
       // the display holds what the claim just published, so a settling
       // confirmation certifies rather than strands.
-      if (sourcePublished || repository.holdsResidentForegroundRange()) {
+      if (sourcePublished || (repository.holdsResidentForegroundRange() && repository.holdsBodiedForegroundWindow())) {
         fixture.lastLocalOpenStatus = "superseded-by-source";
         return true;
       }

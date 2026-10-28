@@ -1345,6 +1345,31 @@ export class TranscriptRepository {
     });
   }
 
+  /**
+   * The most recent window of expected items holds real bodies: every
+   * expected item in the window has a displayed counterpart that is not
+   * identity-only. A model that expects identities it holds only
+   * identity-only — reclaimed rows a pane came to restore — does not, even
+   * when a live update has published a resident tail above them. A model
+   * with no expected items expects nothing, so it is missing nothing.
+   */
+  holdsBodiedForegroundWindow(): boolean {
+    const model = this.#model;
+    if (!model) return false;
+    const historyTurns = model.history?.turns;
+    const expected = (historyTurns !== undefined && historyTurns.length > 0 ? historyTurns : model.turns)
+      .flatMap((turn) => turn.items)
+      .slice(-200);
+    if (expected.length === 0) return true;
+    const displayed = new Map(
+      model.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
+    );
+    return expected.every((item) => {
+      const restored = displayed.get(item.transcriptKey ?? item.id);
+      return restored !== undefined && !encodeTranscriptItem(restored).identityOnly;
+    });
+  }
+
   attachReader(): TranscriptReader {
     let active = true;
     this.#readerCount++;
