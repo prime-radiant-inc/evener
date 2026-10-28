@@ -5,9 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
-	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -310,9 +307,9 @@ func (s *RemoteHubSource) MapAttachError(err error) error {
 // stays raw; every transport-shaped failure names the host so the fleet view
 // and the auto-resume gate can attribute it.
 //
-// A write-side connection failure counts as transport loss, which is what makes
-// io.ErrClosedPipe, os.ErrClosed, net.ErrClosed, and appwire.ErrStreamClosed
-// listed here (round eight). The send path reports them when the stream's write
+// A write-side connection failure counts as transport loss, which is why
+// isTransportLoss lists io.ErrClosedPipe, os.ErrClosed, net.ErrClosed, and
+// appwire.ErrStreamClosed. The send path reports them when the stream's write
 // side is already gone — a partial write onto a connection the peer has torn
 // down, or the first write after this end closed it — and they are deliberately
 // not distinguishable from the read-side failures around it: like io.EOF or
@@ -352,10 +349,6 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 		return remoteHubUnavailable(s.id, err.Error())
 	}
 	if isTransportLoss(err) ||
-		errors.Is(err, io.ErrClosedPipe) ||
-		errors.Is(err, appwire.ErrStreamClosed) ||
-		errors.Is(err, os.ErrClosed) ||
-		errors.Is(err, net.ErrClosed) ||
 		remoteHubTransportText(strings.ToLower(err.Error())) {
 		return remoteHubUnavailable(s.id, err.Error())
 	}
