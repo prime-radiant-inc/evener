@@ -417,7 +417,7 @@ export function errorKind(error: unknown): ErrorKind {
 // config failures ("provider credentials missing for ..."), resume advice
 // (resumeFailureError's kill-the-old-daemon instructions), and crucially
 // the daemon's own redacted stderr ("evener launch-check failed: <stderr>",
-// which cmd/evener-hub/app_rpc_test.go's stderr-propagation test exists to
+// which cmd/evener-hub/app_rpc_thread_start_test.go's stderr-propagation test exists to
 // keep intact end to end). Masking those with generic guidance sends the
 // user to fix the wrong thing, so the DEFAULT is pass-through, and only
 // the messages that genuinely contain no diagnosis — the daemon never got

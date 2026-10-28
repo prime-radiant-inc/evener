@@ -8,6 +8,7 @@ import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore } from "./connection";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore } from "./threads";
+import { getReadyEpoch } from "./wiredClient";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
@@ -172,5 +173,26 @@ describe("client swap (manual retry) rewiring", () => {
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
     });
     expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "idle" });
+  });
+});
+
+describe("ready generation without a transcript residency", () => {
+  test("a client swap starts a new ready generation", () => {
+    connectFakeClient();
+    const before = getReadyEpoch();
+
+    connectionStore.getState().connect(new FakeClient("ready"));
+
+    expect(getReadyEpoch()).toBeGreaterThan(before);
+  });
+
+  test("the same client reconnecting starts a new ready generation", () => {
+    const client = connectFakeClient();
+    const before = getReadyEpoch();
+
+    client.emitStateChange("reconnecting");
+    client.emitStateChange("ready");
+
+    expect(getReadyEpoch()).toBeGreaterThan(before);
   });
 });
