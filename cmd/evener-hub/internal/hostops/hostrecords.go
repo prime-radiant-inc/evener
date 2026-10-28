@@ -79,6 +79,10 @@ type hostRecordsState struct {
 	HostRecords
 }
 
+// hostRecordsKeys is the canonical field set of the family object.
+var hostRecordsKeys = keysOf("importedAt", "hosts", "generations", "receipts", "tombstones",
+	"prunedReceipts", "stagedReceipts", "remnants", "attempts")
+
 // hostRecordsFile is the decode shape of hostRecordsState. Every field is a
 // pointer so a file that omits one — or carries null — is refused instead of
 // read as an empty map, which the next write would turn into lost records.
@@ -97,7 +101,7 @@ type hostRecordsFile struct {
 // state maps the decode shape to a validated state, refusing every omitted
 // field.
 func (f hostRecordsFile) state() (*hostRecordsState, error) {
-	if f.ImportedAt == nil {
+	if f.ImportedAt == nil || f.ImportedAt.IsZero() {
 		return nil, fmt.Errorf("%w: the family carries no import instant", ErrInvalidHostRecords)
 	}
 	fields := []struct {
@@ -127,6 +131,12 @@ func (f hostRecordsFile) state() (*hostRecordsState, error) {
 // a custody file holds — with the strictness the store load applies: no unknown
 // key, every field present, every bound held.
 func decodeHostRecordsRegion(raw json.RawMessage) (*hostRecordsState, error) {
+	// The decoder matches field names case-insensitively, so a region naming
+	// "hosts" and "Hosts" would decode as one field with the later value winning.
+	// The canonical key set is checked first, exactly as the store load checks it.
+	if err := validateKeys(raw, map[string]map[string]struct{}{"": hostRecordsKeys}); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidHostRecords, err)
+	}
 	var file hostRecordsFile
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()

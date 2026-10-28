@@ -1324,8 +1324,7 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 	// The armed compensation records are objects this store decodes, and their
 	// preimage rows carry the whole token schema, so both key sets are
 	// canonical too.
-	"hostRecords": keysOf("importedAt", "hosts", "generations", "receipts", "tombstones",
-		"prunedReceipts", "stagedReceipts", "remnants", "attempts"),
+	"hostRecords":                  hostRecordsKeys,
 	"pendingCompensation[]":        keysOf("host", "phase", "rows", "stashReference", "generation"),
 	"pendingCompensation[].rows[]": keysOf(tokenKeys...),
 }
