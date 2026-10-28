@@ -115,7 +115,7 @@ export interface ComposerSourceState {
   updateSelectionMeta(value: SkillEditorValue): void;
   setActiveRecoveryId(
     record: MutationRecoveryRecord | null,
-    options?: { automatic?: boolean; replaces?: string },
+    options?: { automatic?: boolean; focused?: boolean; replaces?: string },
   ): void;
   markRestore(): void;
   persistDraft(text: string): void;
@@ -327,7 +327,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   }
   function setActiveRecoveryId(
     record: MutationRecoveryRecord | null,
-    options?: { automatic?: boolean; replaces?: string },
+    options?: { automatic?: boolean; focused?: boolean; replaces?: string },
   ): void {
     if (disposed) return;
     const activeRecoveryId = record?.clientMutationId ?? null;
@@ -354,9 +354,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       // own stored pick; a fresh pick another pane recorded survives it.
       writeRecoverySelectionReplacing(targetRef, options.replaces, record.clientMutationId);
     } else if (options?.automatic === true) {
-      // A background activation must not overwrite a fresh user pick. The
-      // live pane's own composition keeps priority while it lives.
-      writeRecoverySelectionAutomatically(targetRef, record.clientMutationId, !disposed);
+      // A background activation must not overwrite a fresh user pick; only
+      // the focused pane's activation may do that.
+      writeRecoverySelectionAutomatically(targetRef, record.clientMutationId, options?.focused === true);
     } else {
       // A user pick is the newest choice by definition: it always wins.
       writeRecoverySelection(targetRef, record.clientMutationId);

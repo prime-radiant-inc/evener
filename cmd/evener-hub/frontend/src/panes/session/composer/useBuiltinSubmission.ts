@@ -8,10 +8,10 @@ import type { ComposerSourceState } from "./sourceState";
 import { useComposerActions } from "./useComposerActions";
 
 /** Both presentations execute the same session commands and retain the same draft ownership. */
-export function useBuiltinSubmission(source: ComposerSourceState, paneId?: string) {
+export function useBuiltinSubmission(source: ComposerSourceState, paneId?: string, focused = false) {
   const ref = source.ref;
   const toasts = useToasts();
-  const actions = useComposerActions(source);
+  const actions = useComposerActions(source, false, focused);
   const sessionBuiltins = sessionBuiltinCommands({ sessionRef: ref, onPage: "session", sessionPaneId: paneId ?? null });
 
   async function run(match: BuiltinMatch<ScopedCommand>): Promise<void> {

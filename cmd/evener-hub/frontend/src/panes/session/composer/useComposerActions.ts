@@ -43,7 +43,7 @@ import { pushRecoveryRefusal, pushSelectionRefusal, selectionRefusal, submitDraf
 type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 
 /** Shared actions retain source ownership and the thread store's mutation policy. */
-export function useComposerActions(source: ComposerSourceState, externalBusy = false) {
+export function useComposerActions(source: ComposerSourceState, externalBusy = false, focused = false) {
   const ref = source.ref;
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
@@ -224,8 +224,8 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     Object.assign(recovered, visible);
     recoveryOwnsLocalDraftRef.current = false;
     // A mount-restore is a background activation: it must not overwrite a
-    // fresh user pick with its fallback row.
-    setActiveRecoveryId(record, { automatic: true });
+    // fresh user pick with its fallback row, unless this pane is focused.
+    setActiveRecoveryId(record, { automatic: true, focused });
     // Restoration replaces this mount's local owner without editing the
     // shared recovery draft that an earlier mount may still be submitting.
     draftEditRevisionRef.current += 1;
@@ -252,6 +252,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     updateSkillNames,
     updateSelectionMeta,
     attachments.items.length,
+    focused,
   ]);
   // QueueStrip captures this mount's payload and edit revision through
   // getComposerText before it starts the drain's durable write.

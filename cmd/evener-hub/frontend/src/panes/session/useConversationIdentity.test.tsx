@@ -2,7 +2,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
-import { readComposerDraft, writeComposerDraft } from "./composer/draft";
+import { readComposerDraft, readRecoverySelection, writeComposerDraft, writeRecoverySelection } from "./composer/draft";
 import { createComposerSourceState } from "./composer/sourceState";
 import { useConversationIdentity } from "./useConversationIdentity";
 
@@ -97,4 +97,15 @@ test("retired A cannot acknowledge or replace B when resume arrives late", () =>
   expect(replace).not.toHaveBeenCalled();
   expect(readComposerDraft("B").text).toBe("B untouched");
   expect(threadsStore.getState().resumedIdentities.get("A")).toBe("A-resumed");
+});
+
+test("a resume carries the conversation's stored pick to the new identity", () => {
+  writeRecoverySelection("A", "picked-row");
+  const replace = vi.fn(() => true);
+  renderHook(() => useConversationIdentity("A", { replace, hasOtherReaders: () => false }));
+  publish("A", "resumed");
+  expect(readRecoverySelection("resumed")?.clientMutationId).toBe("picked-row");
+  // The carry copies: the superseded identity keeps its pick for readers
+  // that still hold it.
+  expect(readRecoverySelection("A")?.clientMutationId).toBe("picked-row");
 });

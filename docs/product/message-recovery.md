@@ -102,15 +102,18 @@ nothing has to migrate before the ancestry arrives.
 
 An automatic or background activation must not overwrite a fresh user pick:
 it is refused while the stored pick is newer than a few seconds, unless the
-write comes from the focused pane (a live pane that owns the composition
-counts as focused-priority). A background settle that displaces a row
+write comes from the focused pane (the mount-restore passes its pane's real
+focus). A background settle that displaces a row
 replaces only a stored pick that still names the displaced row, so a fresh
 pick another pane recorded survives it. A refused write's preservation records
 its fresh row under exactly that rule, and retiring a lease clears the
 stored pick only when it still names the retiring row. A resume or retarget
-carries the stored pick to the resumed ref, and a successful recovery write
-carries it to the row's durable ref - even when the pane closed before that
-write settled, because the durable row outlives the source.
+carries the stored pick to the resumed ref through the shared identity-follow
+path - the reader-level hook and the cascade resume action both carry, and
+every carry is a copy that leaves an established destination pick alone - and
+a successful recovery write carries it to the row's durable ref, even when
+the pane closed before that write settled, because the durable row outlives
+the source.
 
 Sending recovery consumes its durable source and creates one fresh outbox
 identity atomically. It never falls back to an ordinary enqueue when the source

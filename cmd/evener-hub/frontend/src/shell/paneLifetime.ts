@@ -75,6 +75,8 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
       if (retired) {
         // The pick is keyed by conversation, so the resume carries it to the
         // new identity unless the destination already has a newer choice.
+        // The shared reader path and the cascade resume action carry it too;
+        // every carry is a copy-if-empty, so they compose.
         carryRecoverySelection(sourceRef, resumedRef);
         // A route reconstruction resolves the conversation mapping, so a
         // resumed seat must be recoverable by its new ref. An owner already

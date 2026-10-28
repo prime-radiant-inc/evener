@@ -845,3 +845,32 @@ test("a retargeted write that settles after disposal still carries the selection
     storage.close();
   }
 });
+
+test("a background activation preserves a fresh user pick", () => {
+  const source = createTestComposerSource("local:guard-fresh");
+  const row = (clientMutationId: string): MutationRecoveryRecord => ({
+    version: 1,
+    clientMutationId,
+    targetRef: "local:guard-fresh",
+    intentSequence: 1,
+    createdAt: 0,
+    method: "turn/start",
+    payload: { ref: "local:guard-fresh", input: [] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [] },
+    composerText: "",
+    state: "submitting",
+    recoveryKind: "rejected",
+  });
+  try {
+    writeRecoverySelection("local:guard-fresh", "user-pick");
+    // An unfocused background activation must not overwrite the fresh pick.
+    source.setActiveRecoveryId(row("background-row"), { automatic: true });
+    expect(readRecoverySelection("local:guard-fresh")?.clientMutationId).toBe("user-pick");
+    // The focused pane's activation may overwrite even a fresh pick.
+    source.setActiveRecoveryId(row("focused-row"), { automatic: true, focused: true });
+    expect(readRecoverySelection("local:guard-fresh")?.clientMutationId).toBe("focused-row");
+  } finally {
+    source.dispose();
+  }
+});

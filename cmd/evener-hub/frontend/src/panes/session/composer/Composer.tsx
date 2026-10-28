@@ -226,7 +226,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     persistDraft,
     writeDraft,
   } = source;
-  const { actions, sessionBuiltins, submitBuiltin } = useBuiltinSubmission(source, paneId);
+  const { actions, sessionBuiltins, submitBuiltin } = useBuiltinSubmission(source, paneId, focused);
   const { availability, busy: actionPending, showStop, submit: submitAction, stop: handleInterruptClick } = actions;
   const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);

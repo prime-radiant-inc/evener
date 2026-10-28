@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { carryComposerDraft } from "./composer/draft";
+import { carryComposerDraft, carryRecoverySelection } from "./composer/draft";
 
 /** The source owns draft precedence; each reader owns replacement and retention. */
 export function useConversationIdentity(
@@ -11,6 +11,10 @@ export function useConversationIdentity(
   useEffect(() => {
     if (resumedIdentity === undefined) return;
     carryComposerDraft(ref, resumedIdentity);
+    // The pick is keyed by conversation: it follows the identity rewrite
+    // here, before any reader is replaced, so the replacement composer
+    // restores the conversation's preserved work.
+    carryRecoverySelection(ref, resumedIdentity);
     if (policy.replace(resumedIdentity) && !policy.hasOtherReaders(ref)) {
       threadsStore.getState().clearResumedIdentity(ref);
     }
