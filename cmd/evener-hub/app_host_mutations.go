@@ -36,6 +36,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
@@ -124,6 +125,128 @@ func (m *hubHostManager) collisionArm(receipt HostMutationReceipt) appwire.HostM
 	return appwire.HostMutationResult{HostMutationCollisionDropped: &arm}
 }
 
+// replayArm returns the arm a retained receipt of this mutation replays, or nil
+// when the request is not a replay: "a replay carrying a known key returns the
+// recorded receipt without re-applying". It takes no lock (spec §5 orders dedup
+// before both the mutation lock and the host gate).
+func (m *hubHostManager) replayArm(kind hostMutationKind, name, mutationID string) (*appwire.HostMutationResult, error) {
+	current, currentKnown := m.currentHostIdentity(name)
+	hit, err := m.lookupHostMutationReceipt(hostReceiptQuery{
+		MutationID:   mutationID,
+		Name:         name,
+		Kind:         kind,
+		Current:      current,
+		CurrentKnown: currentKnown,
+	})
+	if err != nil || hit == nil {
+		return nil, err
+	}
+	arm := m.receiptArm(hit, kind)
+	return &arm, nil
+}
+
+// settleOrphanMarker finalizes a leftover staged-receipt marker for name and
+// then looks the request up again (spec §5's foreign-marker rule): "Any
+// mutation-path write that finds a marker it did not stage for its own host
+// finalizes that marker first". The finalization runs before this mutation
+// stages anything. The pair is read AFTER it, because the phase-aware recovery
+// re-applies the staged runtime set and can advance the name's identity, so the
+// lookup sees the receipt the finalizer just wrote: a marker whose key is this
+// request's own key is exactly the lost-response replay that must return the
+// finalized receipt instead of re-applying.
+func (m *hubHostManager) settleOrphanMarker(ctx context.Context, kind hostMutationKind, name, mutationID string) (*appwire.HostMutationResult, error) {
+	if _, err := m.finalizeOrphanMarkerIfAny(ctx, name, false); err != nil {
+		return nil, err
+	}
+	return m.replayArm(kind, name, mutationID)
+}
+
+// admitMutation is the guarded mutations' admission: the dedup lookup, the
+// orphan-marker settlement, then the per-host gate. It returns the replay arm
+// when the request is a replay (the gate is then not taken), and otherwise the
+// release of the gate it holds.
+func (m *hubHostManager) admitMutation(ctx context.Context, kind hostMutationKind, name, mutationID string, holder hostops.Holder) (release func(), replay *appwire.HostMutationResult, err error) {
+	if replay, err = m.replayArm(kind, name, mutationID); err != nil || replay != nil {
+		return nil, replay, err
+	}
+	if replay, err = m.settleOrphanMarker(ctx, kind, name, mutationID); err != nil || replay != nil {
+		return nil, replay, err
+	}
+	release, err = m.acquireHostGate(name, holder)
+	return release, nil, err
+}
+
+// lockMutations takes the mutation mutex and returns its release. The release
+// may be called any number of times, so a function can unlock early for the
+// lock-free tail of a mutation and still defer the release for its early
+// returns.
+func (m *hubHostManager) lockMutations() (unlock func()) {
+	m.cfg.mu.Lock()
+	var once sync.Once
+	return func() { once.Do(m.cfg.mu.Unlock) }
+}
+
+// lockName takes the mutation mutex for a mutation of name and refuses, with
+// the lock already released, a name that has a mutation in flight or an open
+// remnant fencing it.
+func (m *hubHostManager) lockName(name string) (unlock func(), err error) {
+	unlock = m.lockMutations()
+	if m.isMutating(name) {
+		unlock()
+		return nil, hostMutationConflict(name)
+	}
+	if err := m.remnantRefusal(name); err != nil {
+		unlock()
+		return nil, err
+	}
+	return unlock, nil
+}
+
+// finalizeOrCollide writes the mutation's finalizing receipt. It returns the
+// collision-dropped arm when a hand edit won the race for hub.toml, and nil when
+// the mutation's own write stands.
+func (m *hubHostManager) finalizeOrCollide(plan *hostCommitPlan, receipt HostMutationReceipt, remnantID string, remnant *HostTeardownRemnant) (*appwire.HostMutationResult, error) {
+	finalized, err := m.finalizeReceipt(plan, receipt, remnantID, remnant)
+	if err != nil {
+		return nil, err
+	}
+	if finalized.Outcome == hostReceiptOutcomeCollisionDropped {
+		arm := m.collisionArm(finalized)
+		return &arm, nil
+	}
+	return nil, nil
+}
+
+// finishMutation finalizes a mutation whose live phase succeeded. A clean
+// finalize leaves no remnant record, so the receipt carries no remnantId (§6:
+// the field is present exactly when a remnant exists). It returns the
+// collision-dropped arm when one applies and nil otherwise.
+func (m *hubHostManager) finishMutation(plan *hostCommitPlan, receipt HostMutationReceipt) (*appwire.HostMutationResult, error) {
+	receipt.RemnantID = ""
+	return m.finalizeOrCollide(plan, receipt, "", nil)
+}
+
+// teardownFailureArm finalizes a mutation committed with a failed teardown and
+// renders its response. The receipt keeps the pair its scoped key pins, and the
+// row names the open remnant it is waiting on exactly as every replayed failure
+// arm does: §11's `openRemnantId`/`escalationAgeSec` are "present exactly on
+// rows whose name holds an open remnant", and the immediate response must
+// render what its replay renders.
+func (m *hubHostManager) teardownFailureArm(plan *hostCommitPlan, kind hostMutationKind, seam string, receipt HostMutationReceipt, remnantID string, remnant HostTeardownRemnant) (appwire.HostMutationResult, error) {
+	receipt.Outcome = hostReceiptOutcomeTeardownFailure
+	collision, err := m.finalizeOrCollide(plan, receipt, remnantID, &remnant)
+	if err != nil {
+		return appwire.HostMutationResult{}, err
+	}
+	if collision != nil {
+		return *collision, nil
+	}
+	row := hostReceiptRow(receipt, kind)
+	row.OpenRemnantID = remnantID
+	row.EscalationAgeSec = m.escalationAgeSec(remnant)
+	return teardownCommittedArm(kind, seam, remnantID, row), nil
+}
+
 // hostRowForReceiptRow renders a stored receipt row as the wire's row shape.
 func hostRowForReceiptRow(row HostMutationReceiptRow) appwire.HostRow {
 	return appwire.HostRow{
@@ -170,19 +293,12 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 		}
 	}
 	if params.MutationID != "" {
-		current, currentKnown := m.currentHostIdentity(name)
-		hit, err := m.lookupHostMutationReceipt(hostReceiptQuery{
-			MutationID:   params.MutationID,
-			Name:         name,
-			Kind:         hostMutationAdd,
-			Current:      current,
-			CurrentKnown: currentKnown,
-		})
+		replay, err := m.replayArm(hostMutationAdd, name, params.MutationID)
 		if err != nil {
 			return appwire.HostMutationResult{}, err
 		}
-		if hit != nil {
-			return m.receiptArm(hit, hostMutationAdd), nil
+		if replay != nil {
+			return *replay, nil
 		}
 	}
 	auditKey := params.MutationID
@@ -193,51 +309,31 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 	if err := validateHostEntry(entry); err != nil {
 		return appwire.HostMutationResult{}, hostValidationRefusal(entry.Name, err)
 	}
-	// A leftover staged-receipt marker for this host is finalized first (spec
-	// §5's foreign-marker rule): "Any mutation-path write that finds a marker it
-	// did not stage for its own host finalizes that marker first". The
-	// finalization runs before this mutation stages anything, and its result is
-	// re-checked by the dedup lookup below — a marker whose key is this
-	// request's own key is exactly the lost-response replay that must return the
-	// finalized receipt instead of re-applying.
-	if _, err := m.finalizeOrphanMarkerIfAny(ctx, name, false); err != nil {
+	replay, err := m.settleOrphanMarker(ctx, hostMutationAdd, name, params.MutationID)
+	if err != nil {
 		return appwire.HostMutationResult{}, err
 	}
-	addCurrent, addCurrentKnown := m.currentHostIdentity(name)
-	if hit, err := m.lookupHostMutationReceipt(hostReceiptQuery{
-		MutationID:   params.MutationID,
-		Name:         name,
-		Kind:         hostMutationAdd,
-		Current:      addCurrent,
-		CurrentKnown: addCurrentKnown,
-	}); err != nil {
-		return appwire.HostMutationResult{}, err
-	} else if hit != nil && params.MutationID != "" {
-		return m.receiptArm(hit, hostMutationAdd), nil
+	if replay != nil && params.MutationID != "" {
+		return *replay, nil
 	}
-	m.cfg.mu.Lock()
-	if m.isMutating(entry.Name) {
-		m.cfg.mu.Unlock()
-		return appwire.HostMutationResult{}, hostMutationConflict(entry.Name)
-	}
-	// The remnant fence, past the dedup check and under the mutation lock:
-	// "re-add ... is refused with the typed `remnant-open` conflict refusal
-	// carrying the blocking `remnantId`". The fence outranks the keyless
-	// read-after-unknown path below — a keyless route is a non-replay mutation
-	// too, and a new incarnation must never start while the old lifecycle still
-	// owns supervisors, channels, or fan-outs (spec §6: "The remnant fence takes
-	// precedence over the tombstone not-found rule").
-	if err := m.remnantRefusal(entry.Name); err != nil {
-		m.cfg.mu.Unlock()
+	// The in-flight conflict and the remnant fence, past the dedup check and under
+	// the mutation lock: "re-add ... is refused with the typed `remnant-open`
+	// conflict refusal carrying the blocking `remnantId`". The fence outranks the
+	// keyless read-after-unknown path below — a keyless route is a non-replay
+	// mutation too, and a new incarnation must never start while the old
+	// lifecycle still owns supervisors, channels, or fan-outs (spec §6: "The
+	// remnant fence takes precedence over the tombstone not-found rule").
+	unlock, err := m.lockName(entry.Name)
+	if err != nil {
 		return appwire.HostMutationResult{}, err
 	}
+	defer unlock()
 	// The keyless read-after-unknown path: "a keyless `add` retry that observes
 	// a matching listed row (the listed entry hash equals the intended entry)
 	// returns the explicit ambiguous outcome ... instead of claiming the
 	// mutation committed".
 	if params.MutationID == "" {
 		if observed, ok := m.keylessAddObservedRowLocked(entry); ok {
-			m.cfg.mu.Unlock()
 			return appwire.HostMutationResult{HostMutationAmbiguous: &appwire.HostMutationAmbiguous{
 				Outcome:     appwire.HostMutationOutcomeAmbiguous,
 				ObservedRow: observed,
@@ -245,7 +341,6 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 		}
 	}
 	if _, ok := m.cfg.hosts.Get(entry.Name); ok {
-		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, appwire.InvalidParams(fmt.Sprintf("host %q: %v", entry.Name, hostreg.ErrDuplicateHost))
 	}
 	priorState := m.cfg.state.detach(entry.Name)
@@ -260,7 +355,6 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 	identity, err := m.cfg.hosts.Stamp(entry)
 	if err != nil {
 		m.cfg.state.restore(entry.Name, priorState)
-		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
 	entry = stampedEntry(entry, identity)
@@ -290,7 +384,6 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 	if err := m.stageCommit(plan, m.nowTime()); err != nil {
 		err = m.compensateStagedWrite(plan, prev, err)
 		m.cfg.state.restore(entry.Name, priorState)
-		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
 	// The add's runtime transition is the registry insert below, and it has no
@@ -303,7 +396,6 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 	if err := m.addHostToRegistry(entry); err != nil {
 		m.cfg.state.restore(entry.Name, priorState)
 		err = m.rollbackHubTOML(prev, unionHosts(prev, append([]hostreg.Host(nil), entry)), err, compensationChange(plan))
-		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
 	if stored, ok := m.cfg.hosts.Get(entry.Name); ok {
@@ -328,16 +420,13 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 	plan.Marker.SwapStarted = true
 	plan.Marker.TeardownStarted = true
 	plan.Marker.Phase = hostStagedPhaseRuntimeSwapped
-	finalizeReceipt := receipt
-	finalizeReceipt.RemnantID = ""
-	finalized, err := m.finalizeReceipt(plan, finalizeReceipt, "", nil)
+	collision, err := m.finishMutation(plan, receipt)
 	if err != nil {
-		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
-	m.cfg.mu.Unlock()
-	if finalized.Outcome == hostReceiptOutcomeCollisionDropped {
-		return m.collisionArm(finalized), nil
+	unlock()
+	if collision != nil {
+		return *collision, nil
 	}
 	return committedArm(hostMutationAdd, m.hostRow(ctx, entry)), nil
 }
@@ -366,7 +455,6 @@ func (m *hubHostManager) compensateStagedCommit(plan *hostCommitPlan, previous [
 	adopted := m.adoptedPreimage(plan, previous)
 	err := m.rollbackHubTOML(adopted, unionHosts(adopted, plan.Entries), cause, compensationChange(plan))
 	m.cfg.state.restore(plan.Name, priorState)
-	m.cfg.mu.Unlock()
 	return appwire.HostMutationResult{}, err
 }
 
@@ -380,10 +468,8 @@ func (m *hubHostManager) compensateStagedCommit(plan *hostCommitPlan, previous [
 // The clear happens only after every step of the arm succeeded: a failed step
 // returns early leaving the record and its stash for the next boot, never a
 // cleared compensation beside a half-restored state.
-// The mutation lock is held on entry and released before return.
+// The caller holds the mutation lock throughout.
 func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previous []hostreg.Host, cause error, stash string) (appwire.HostMutationResult, error) {
-	// The mutation lock is held on entry; every path releases it here.
-	defer m.cfg.mu.Unlock()
 	adopted := m.adoptedPreimage(plan, previous)
 	err := m.rollbackHubTOML(adopted, unionHosts(adopted, plan.Entries), cause, compensationChange(plan))
 	rollbackConverged := !errors.Is(err, errHubTOMLRollbackFailed)
@@ -561,42 +647,6 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	if err := hostGuardedMutationRefusal(name, params.MutationID, params.ExpectedGeneration, params.ExpectedIncarnationID); err != nil {
 		return appwire.HostMutationResult{}, err
 	}
-	current, currentKnown := m.currentHostIdentity(name)
-	hit, err := m.lookupHostMutationReceipt(hostReceiptQuery{
-		MutationID:   params.MutationID,
-		Name:         name,
-		Kind:         hostMutationUpdate,
-		Current:      current,
-		CurrentKnown: currentKnown,
-	})
-	if err != nil {
-		return appwire.HostMutationResult{}, err
-	}
-	if hit != nil {
-		return m.receiptArm(hit, hostMutationUpdate), nil
-	}
-	// The foreign-marker rule (spec §5): a leftover marker for this host is
-	// finalized before this edit stages, and a finalized receipt under this
-	// request's own key is the lost-response replay. The pair is read AFTER that
-	// finalization — it can advance the name's identity, because the phase-aware
-	// recovery re-applies the staged runtime set — so the lookup below sees the
-	// pair the finalizer just wrote, exactly as AddResult and RemoveResult read
-	// it after their own finalization.
-	if _, err := m.finalizeOrphanMarkerIfAny(ctx, name, false); err != nil {
-		return appwire.HostMutationResult{}, err
-	}
-	afterFinalize, afterFinalizeKnown := m.currentHostIdentity(name)
-	if hit, err := m.lookupHostMutationReceipt(hostReceiptQuery{
-		MutationID:   params.MutationID,
-		Name:         name,
-		Kind:         hostMutationUpdate,
-		Current:      afterFinalize,
-		CurrentKnown: afterFinalizeKnown,
-	}); err != nil {
-		return appwire.HostMutationResult{}, err
-	} else if hit != nil {
-		return m.receiptArm(hit, hostMutationUpdate), nil
-	}
 	// Spec 08 §4's "gate released last" (deploy pipeline 08b §5's mutation
 	// rebind ordering): the reservation is held through the staged commit AND
 	// the post-commit rebind/teardown, and released last — the defer below fires
@@ -604,43 +654,39 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	// gate-inheriting UpdateHostUnderGate, which runs the rebind under this very
 	// hold, so no gate waiter can acquire a half-rebound host.
 	gateHolder := hostops.Holder{Kind: hostops.HolderManager, Activity: "update"}
-	releaseGate, err := m.acquireHostGate(name, gateHolder)
+	releaseGate, replay, err := m.admitMutation(ctx, hostMutationUpdate, name, params.MutationID, gateHolder)
 	if err != nil {
 		return appwire.HostMutationResult{}, err
 	}
+	if replay != nil {
+		return *replay, nil
+	}
 	defer releaseGate()
 	entry := hostreg.Normalize(hostEntryToHost(name, params.Entry))
-	m.cfg.mu.Lock()
-	if m.isMutating(name) {
-		m.cfg.mu.Unlock()
-		return appwire.HostMutationResult{}, hostMutationConflict(name)
-	}
-	// The remnant fence, past the dedup check and under the mutation lock:
-	// "`update` of the remnant's name ... is refused with the typed
-	// `remnant-open` conflict refusal carrying the blocking `remnantId`".
-	if err := m.remnantRefusal(name); err != nil {
-		m.cfg.mu.Unlock()
+	// The in-flight conflict and the remnant fence, past the dedup check and
+	// under the mutation lock: "`update` of the remnant's name ... is refused
+	// with the typed `remnant-open` conflict refusal carrying the blocking
+	// `remnantId`".
+	unlock, err := m.lockName(name)
+	if err != nil {
 		return appwire.HostMutationResult{}, err
 	}
+	defer unlock()
 	before, ok := m.cfg.hosts.Get(name)
 	if !ok {
-		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
 	if before.Generation != params.ExpectedGeneration || before.IncarnationID != params.ExpectedIncarnationID {
-		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, hostStaleEntryRefusal(name, hostMutationIdentity{
 			Generation:    params.ExpectedGeneration,
 			IncarnationID: params.ExpectedIncarnationID,
 		}, hostMutationIdentity{Generation: before.Generation, IncarnationID: before.IncarnationID})
 	}
 	if err := validateHostEntry(entry); err != nil {
-		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, hostValidationRefusal(name, err)
 	}
 	identity, err := m.cfg.hosts.Stamp(entry)
 	if err != nil {
-		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
 	entry = stampedEntry(entry, identity)
@@ -677,7 +723,6 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	plan.reconcileFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
 	if err := m.stageCommit(plan, m.nowTime()); err != nil {
 		err = m.compensateStagedWrite(plan, prev, err)
-		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
 	// The intent flip lands as the post-swap form: for an edit and a removal the
@@ -695,7 +740,7 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	m.cfg.store.replace(entry)
 	m.cfg.store.addReceipt(receiptKey, receipt)
 	m.markMutating(name)
-	m.cfg.mu.Unlock()
+	unlock()
 	// The reservation is deliberately NOT released here: the post-commit live
 	// phase below (the manager's rebind/teardown, through the gate-inheriting
 	// entry) runs under it, and the deferred release fires last. The mutation
@@ -728,7 +773,8 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 		}
 	}
 
-	m.cfg.mu.Lock()
+	unlockFinish := m.lockMutations()
+	defer unlockFinish()
 	m.unmarkMutating(name)
 	stored, ok := m.cfg.hosts.Get(name)
 	if !ok && liveErr == nil {
@@ -750,25 +796,7 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 		// pair its scoped key pins (the post-bump identity the commit landed),
 		// because the record and its key must agree (§6).
 		remnant := newTeardownRemnant(hostRemnantKindUpdate, "update-host", before, receiptKey, m.nowTime())
-		receipt.Outcome = hostReceiptOutcomeTeardownFailure
-		finalized, err := m.finalizeReceipt(plan, receipt, remnantID, &remnant)
-		if err != nil {
-			m.cfg.mu.Unlock()
-			return appwire.HostMutationResult{}, err
-		}
-		row := hostReceiptRow(receipt, hostMutationUpdate)
-		// The row names the open remnant it is waiting on, exactly as the
-		// removal's failure arm and every replayed failure arm do: §11's
-		// `openRemnantId`/`escalationAgeSec` are "present exactly on rows whose
-		// name holds an open remnant", and the immediate response must render what
-		// its replay renders.
-		row.OpenRemnantID = remnantID
-		row.EscalationAgeSec = m.escalationAgeSec(remnant)
-		m.cfg.mu.Unlock()
-		if finalized.Outcome == hostReceiptOutcomeCollisionDropped {
-			return m.collisionArm(finalized), nil
-		}
-		return teardownCommittedArm(hostMutationUpdate, "update-host", remnantID, row), nil
+		return m.teardownFailureArm(plan, hostMutationUpdate, "update-host", receipt, remnantID, remnant)
 	}
 	if !slicesEqualStrs(before.Roots, stored.Roots) {
 		if m.cfg.remoteCache != nil {
@@ -782,18 +810,13 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 		}
 		m.registerSource(stored)
 	}
-	clean := receipt
-	// A clean finalize leaves no remnant record, so the receipt carries no
-	// remnantId (§6: the field is present exactly when a remnant exists).
-	clean.RemnantID = ""
-	finalized, err := m.finalizeReceipt(plan, clean, "", nil)
+	collision, err := m.finishMutation(plan, receipt)
 	if err != nil {
-		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
-	m.cfg.mu.Unlock()
-	if finalized.Outcome == hostReceiptOutcomeCollisionDropped {
-		return m.collisionArm(finalized), nil
+	unlockFinish()
+	if collision != nil {
+		return *collision, nil
 	}
 	// The row's retained-state fold is fenced on the entry's generation, so the
 	// reread above is what makes the returned row the identity this call
@@ -830,39 +853,6 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	if err := hostGuardedMutationRefusal(name, params.MutationID, params.ExpectedGeneration, params.ExpectedIncarnationID); err != nil {
 		return appwire.HostMutationResult{}, err
 	}
-	current, currentKnown := m.currentHostIdentity(name)
-	hit, err := m.lookupHostMutationReceipt(hostReceiptQuery{
-		MutationID:   params.MutationID,
-		Name:         name,
-		Kind:         hostMutationRemove,
-		Current:      current,
-		CurrentKnown: currentKnown,
-	})
-	if err != nil {
-		return appwire.HostMutationResult{}, err
-	}
-	if hit != nil {
-		return m.receiptArm(hit, hostMutationRemove), nil
-	}
-	// The foreign-marker rule (spec §5), the removal half. The pair is re-read
-	// after the finalization: it can advance the name's identity (a boot/foreign
-	// marker's recovery re-applies the staged runtime set), and a dedup lookup
-	// against the stale pair would miss the receipt the finalization just wrote.
-	if _, err := m.finalizeOrphanMarkerIfAny(ctx, name, false); err != nil {
-		return appwire.HostMutationResult{}, err
-	}
-	removeCurrent, removeCurrentKnown := m.currentHostIdentity(name)
-	if hit, err := m.lookupHostMutationReceipt(hostReceiptQuery{
-		MutationID:   params.MutationID,
-		Name:         name,
-		Kind:         hostMutationRemove,
-		Current:      removeCurrent,
-		CurrentKnown: removeCurrentKnown,
-	}); err != nil {
-		return appwire.HostMutationResult{}, err
-	} else if hit != nil {
-		return m.receiptArm(hit, hostMutationRemove), nil
-	}
 	// Spec 08 §4's "gate released last" (deploy pipeline 08b §5's mutation
 	// rebind ordering): the reservation is held through the staged commit AND
 	// the post-commit teardown, and released last — the defer below fires at
@@ -870,31 +860,28 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	// gate-inheriting RemoveHostUnderGate, which runs the teardown under this
 	// very hold, so no gate waiter can acquire a half-rebound host.
 	gateHolder := hostops.Holder{Kind: hostops.HolderManager, Activity: "remove"}
-	releaseGate, err := m.acquireHostGate(name, gateHolder)
+	releaseGate, replay, err := m.admitMutation(ctx, hostMutationRemove, name, params.MutationID, gateHolder)
 	if err != nil {
 		return appwire.HostMutationResult{}, err
 	}
-	defer releaseGate()
-	m.cfg.mu.Lock()
-	if m.isMutating(name) {
-		m.cfg.mu.Unlock()
-		return appwire.HostMutationResult{}, hostMutationConflict(name)
+	if replay != nil {
+		return *replay, nil
 	}
-	// The remnant fence, past the dedup check and under the mutation lock: a
-	// tombstone-only name WITH an open remnant refuses `remnant-open`, never
-	// not-found (spec §6: "The remnant fence takes precedence over the
-	// tombstone not-found rule").
-	if err := m.remnantRefusal(name); err != nil {
-		m.cfg.mu.Unlock()
+	defer releaseGate()
+	// The in-flight conflict and the remnant fence, past the dedup check and
+	// under the mutation lock: a tombstone-only name WITH an open remnant
+	// refuses `remnant-open`, never not-found (spec §6: "The remnant fence takes
+	// precedence over the tombstone not-found rule").
+	unlock, err := m.lockName(name)
+	if err != nil {
 		return appwire.HostMutationResult{}, err
 	}
+	defer unlock()
 	host, ok := m.cfg.hosts.Get(name)
 	if !ok {
-		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
 	if host.Generation != params.ExpectedGeneration || host.IncarnationID != params.ExpectedIncarnationID {
-		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, hostStaleEntryRefusal(name, hostMutationIdentity{
 			Generation:    params.ExpectedGeneration,
 			IncarnationID: params.ExpectedIncarnationID,
@@ -902,7 +889,6 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	}
 	advanced, err := m.cfg.hosts.NextPresenceEpoch(host.Name)
 	if err != nil {
-		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, fmt.Errorf("remove host %q: %w", name, err)
 	}
 	var retainedRows []appwire.Thread
@@ -940,7 +926,6 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	if len(purgeValues) > 0 {
 		stash, err = m.writeHubTOMLStash(receiptKey)
 		if err != nil {
-			m.cfg.mu.Unlock()
 			return appwire.HostMutationResult{}, err
 		}
 	}
@@ -972,7 +957,6 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 		// drops the intent with the staged records, and the stash has no record
 		// left to serve.
 		m.pruneHubTOMLStash(stash)
-		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
 	// The intent flip lands as the post-swap form: for an edit and a removal the
@@ -986,6 +970,7 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	// idempotent ("an already-applied swap lands on the same values").
 	if err := m.flipRuntimeSwapped(plan); err != nil {
 		result, cerr := m.compensateStagedCommit(plan, prev, nil, err)
+		unlock()
 		m.pruneHubTOMLStash(stash)
 		return result, cerr
 	}
@@ -1034,7 +1019,7 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 			m.logf("remove %q: outstanding confirmation tokens not dropped: %v", host.Name, err)
 		}
 	}
-	m.cfg.mu.Unlock()
+	unlock()
 	// The reservation is deliberately NOT released here: the post-commit
 	// teardown below (the manager's, through the gate-inheriting entry) runs
 	// under it, and the deferred release fires last. The mutation mark still
@@ -1061,8 +1046,8 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 		}
 	}
 
-	m.cfg.mu.Lock()
-	defer m.cfg.mu.Unlock()
+	unlockFinish := m.lockMutations()
+	defer unlockFinish()
 	m.unmarkMutating(host.Name)
 	if crossFile {
 		// Past the commit point the purge stands: the armed record clears in its
@@ -1080,28 +1065,15 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 		// The commit point: the tombstone and the receipt are durable and the
 		// planned teardown has run, so the failure is forward-repair only.
 		remnant := newTeardownRemnant(hostRemnantKindRemove, "remove-host", host, receiptKey, m.nowTime())
-		receipt.Outcome = hostReceiptOutcomeTeardownFailure
 		receipt.Row = hostReceiptRowFor(host)
-		finalized, err := m.finalizeReceipt(plan, receipt, remnantID, &remnant)
-		if err != nil {
-			return appwire.HostMutationResult{}, err
-		}
-		if finalized.Outcome == hostReceiptOutcomeCollisionDropped {
-			return m.collisionArm(finalized), nil
-		}
-		row := hostReceiptRow(receipt, hostMutationRemove)
-		row.OpenRemnantID = remnantID
-		row.EscalationAgeSec = m.escalationAgeSec(remnant)
-		return teardownCommittedArm(hostMutationRemove, "remove-host", remnantID, row), nil
+		return m.teardownFailureArm(plan, hostMutationRemove, "remove-host", receipt, remnantID, remnant)
 	}
-	clean := receipt
-	clean.RemnantID = ""
-	finalized, err := m.finalizeReceipt(plan, clean, "", nil)
+	collision, err := m.finishMutation(plan, receipt)
 	if err != nil {
 		return appwire.HostMutationResult{}, err
 	}
-	if finalized.Outcome == hostReceiptOutcomeCollisionDropped {
-		return m.collisionArm(finalized), nil
+	if collision != nil {
+		return *collision, nil
 	}
 	m.dropHostDerivedState(host.Name)
 	return committedArm(hostMutationRemove, removedRow), nil

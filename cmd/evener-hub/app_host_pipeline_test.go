@@ -1586,6 +1586,7 @@ func TestCompensationWithAFailedRollbackConvergesTheModelToTheFile(t *testing.T)
 	if _, err := m.compensateStagedCrossFile(plan, []hostreg.Host{entry}, cause, stash); err == nil {
 		t.Fatal("the compensation reported success")
 	}
+	m.cfg.mu.Unlock()
 	if err := os.Chmod(fixture.dir, 0o700); err != nil {
 		t.Fatalf("chmod back: %v", err)
 	}
@@ -1633,6 +1634,7 @@ func TestCompensateStagedCrossFileLeavesAStaleRecordUntouched(t *testing.T) {
 	if _, err := m.compensateStagedCrossFile(plan, []hostreg.Host{entry}, cause, stash); err == nil {
 		t.Fatal("the compensation reported success")
 	}
+	m.cfg.mu.Unlock()
 	m.cfg.mu.Lock()
 	marked := m.isMutating("keep")
 	m.cfg.mu.Unlock()
@@ -1698,6 +1700,7 @@ func TestCompensateStagedCrossFileLeavesTheRecordWhenAStepFails(t *testing.T) {
 			if _, err := m.compensateStagedCrossFile(plan, []hostreg.Host{entry}, cause, stash); err == nil {
 				t.Fatal("the compensation reported success")
 			}
+			m.cfg.mu.Unlock()
 			m.cfg.mu.Lock()
 			marked := m.isMutating("keep")
 			m.cfg.mu.Unlock()
@@ -1728,6 +1731,7 @@ func TestCompensateStagedCrossFileLeavesTheRecordWhenAStepFails(t *testing.T) {
 			if _, err := m.compensateStagedCrossFile(plan, []hostreg.Host{entry}, cause, stash); err == nil {
 				t.Fatal("the retried compensation reported success without the cause")
 			}
+			m.cfg.mu.Unlock()
 			if _, open := m.cfg.ops.Compensation("keep"); open {
 				t.Fatal("the retried compensation did not clear")
 			}

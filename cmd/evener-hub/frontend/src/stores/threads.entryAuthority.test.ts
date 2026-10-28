@@ -9,7 +9,11 @@ import { SESSION_CACHE_DATABASE_NAME } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 
 const ref = "local:identity-regression";
-const tabs: Array<{ threads: typeof import("./threads"); connection: typeof import("./connection") }> = [];
+const tabs: Array<{
+  threads: typeof import("./threads");
+  routes: typeof import("./entryTranscriptRoutes");
+  connection: typeof import("./connection");
+}> = [];
 const caches: SessionEntryCache[] = [];
 let factory: IDBFactory;
 
@@ -74,6 +78,7 @@ async function openTab(hydrate = true) {
   // fixture route. Both ordinary stores use the same IndexedDB factory/name.
   vi.resetModules();
   const threads = await import("./threads");
+  const routes = await import("./entryTranscriptRoutes");
   const connection = await import("./connection");
   const { setCacheChannelFactoryForTests } = await import("./cacheLifetime");
   threads.resetThreadsStoreForTests();
@@ -85,12 +90,12 @@ async function openTab(hydrate = true) {
   });
   caches.push(cache);
   const commits = vi.spyOn(cache, "commitBatch");
-  threads.setProductionEntryCacheForTests(cache);
+  routes.setProductionEntryCacheForTests(cache);
   const client = new FakeClient("ready");
   client.on("thread/read", (params) => ({ ...read(), requestGeneration: params.requestGeneration }));
   client.on("thread/unsubscribe", () => ({}));
   connection.connectionStore.getState().connect(client);
-  const tab = { threads, connection, client, cache, commits };
+  const tab = { threads, routes, connection, client, cache, commits };
   tabs.push(tab);
   if (hydrate) {
     await threads.threadsStore.getState().ensureThread(ref);
@@ -116,7 +121,7 @@ it("replaces history invalidated by a newer epoch after the response cut", async
   const opening = tab.threads.threadsStore.getState().ensureThread(ref);
   await entered.promise;
   try {
-    expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
+    expect(tab.routes.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
     const update = suffix(2);
     if (update.method !== "history/updated") throw new Error("expected recorded update");
     update.params.epoch = 2;
@@ -125,7 +130,7 @@ it("replaces history invalidated by a newer epoch after the response cut", async
     await opening;
     await vi.waitFor(() => expect(reads).toBe(2));
     await tab.threads.settleEntryTranscriptForTests(ref);
-    const repository = tab.threads.productionEntryTranscriptForTests(ref).repository!;
+    const repository = tab.routes.productionEntryTranscriptForTests(ref).repository!;
     expect(repository.getSnapshot()?.history?.invalidatedAtGeneration).toBeUndefined();
     expect(repository.getSnapshot()?.history?.epoch).toBe(2);
     const subsequent = suffix(3);
@@ -165,7 +170,7 @@ it("recovers an overlay notice after content Clear without a recorded update", a
   }));
   await tab.threads.threadsStore.getState().clearThread(ref);
   await (await import("./projectionWork")).settleProjectionWorkForTests();
-  expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
+  expect(tab.routes.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
   expect(tab.threads.threadsStore.getState().threads.get(ref)?.history).toBeUndefined();
   const reads = tab.client.calls.filter((call) => call.method === "thread/read").length;
   tab.client.on("thread/read", (params) => ({ ...fresh, requestGeneration: params.requestGeneration }));
@@ -182,7 +187,7 @@ it("recovers an overlay notice after content Clear without a recorded update", a
     expect(tab.client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1),
   );
   await tab.threads.settleEntryTranscriptForTests(ref);
-  const repository = tab.threads.productionEntryTranscriptForTests(ref).repository!;
+  const repository = tab.routes.productionEntryTranscriptForTests(ref).repository!;
   expect(repository.getSnapshot()?.overlay?.[notice.key]?.item.text).toBe(notice.item.text);
   expect(tab.threads.threadsStore.getState().threads.get(ref)?.overlay?.[notice.key]?.item.text).toBe(notice.item.text);
 });
@@ -215,7 +220,7 @@ it("keeps replayed overlay deltas exactly once when live history preserves the r
     params: { ref, threadId: response.thread.id, key: slot.key, field: "text", delta: " tail" },
   });
   tab.client.emitNotification(suffix(2));
-  const repository = tab.threads.productionEntryTranscriptForTests(ref).repository!;
+  const repository = tab.routes.productionEntryTranscriptForTests(ref).repository!;
   expect(repository.getSnapshot()?.overlay?.[slot.key]?.item.text).toBe("start tail");
   // Live recorded input merges bodies but does not advance the read cursor's
   // snapshot length. This is an invariant, not a rejected-read regression.
@@ -229,7 +234,7 @@ it("keeps replayed overlay deltas exactly once when live history preserves the r
   const frames = tab.threads.threadsStore.getState().frameTimes.get(ref)?.length;
   authority.resolve(0);
   await vi.waitFor(() => expect(tab.threads.threadsStore.getState().hydrations.get(ref)).toBe(hydrations + 1));
-  expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBe(repository);
+  expect(tab.routes.productionEntryTranscriptForTests(ref).repository).toBe(repository);
   expect(repository.getSnapshot()?.overlay?.[slot.key]?.item.text).toBe("start tail");
   expect(tab.threads.threadsStore.getState().threads.get(ref)?.overlay?.[slot.key]?.item.text).toBe("start tail");
   expect(tab.threads.threadsStore.getState().frameTimes.get(ref)?.length).toBe(frames);
@@ -268,7 +273,7 @@ it("does not replay an accepted delta after an end read advances history during 
     response.overlay = reads === 1 ? [slot, ending] : [{ ...slot, item: { ...slot.item, text: "start tail" } }];
     return { ...response, requestGeneration: params.requestGeneration };
   });
-  const repository = tab.threads.productionEntryTranscriptForTests(ref).repository!;
+  const repository = tab.routes.productionEntryTranscriptForTests(ref).repository!;
   const accepts = vi.spyOn(repository, "acceptRead");
   const hydrations = tab.threads.threadsStore.getState().hydrations.get(ref)!;
   tab.client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: read().thread.id } });
@@ -290,7 +295,7 @@ it("does not replay an accepted delta after an end read advances history during 
     authority.resolve(0);
     await vi.waitFor(() => expect(tab.threads.threadsStore.getState().hydrations.get(ref)).toBe(hydrations + 1));
     expect(accepts.mock.results.map((result) => result.value)).toEqual([true, false]);
-    expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBe(repository);
+    expect(tab.routes.productionEntryTranscriptForTests(ref).repository).toBe(repository);
     expect(repository.getSnapshot()?.overlay?.[slot.key]?.item.text).toBe("start tail");
     expect(tab.threads.threadsStore.getState().threads.get(ref)?.overlay?.[slot.key]?.item.text).toBe("start tail");
     expect(tab.threads.threadsStore.getState().frameTimes.get(ref)?.length).toBe(frames);
@@ -313,7 +318,7 @@ it("unsubscribes after background release and pane close before initial hydratio
   await entered.promise;
   const background = tab.threads.acquireBackgroundThread(ref);
   try {
-    expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
+    expect(tab.routes.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
     await background.release();
     expect(tab.client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
     tab.threads.threadsStore.getState().releaseThread(ref);
@@ -327,7 +332,7 @@ it("unsubscribes after background release and pane close before initial hydratio
 
 it("reacquisition cancels real-route retirement without leaving a phantom owner or clearing a newer release", async () => {
   const tab = await openTab();
-  const repository = tab.threads.productionEntryTranscriptForTests(ref).repository!;
+  const repository = tab.routes.productionEntryTranscriptForTests(ref).repository!;
   const cancel = vi.spyOn(repository, "cancelRetirement");
   const held = [deferred<ThreadReadResponse>(), deferred<ThreadReadResponse>()];
   const entered = [deferred<void>(), deferred<void>()];
@@ -343,7 +348,7 @@ it("reacquisition cancels real-route retirement without leaving a phantom owner 
     const replacement = tab.threads.acquireBackgroundThread(ref);
     await replacement.ready;
     expect(cancel).toHaveBeenCalledTimes(1);
-    expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBe(repository);
+    expect(tab.routes.productionEntryTranscriptForTests(ref).repository).toBe(repository);
     const secondRelease = replacement.release();
     held[0]!.resolve(read());
     expect(await firstRelease).toEqual({ kind: "cancelled" });
@@ -352,7 +357,7 @@ it("reacquisition cancels real-route retirement without leaving a phantom owner 
     held[1]!.resolve(read());
     await secondRelease;
     expect(tab.client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(1);
-    expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
+    expect(tab.routes.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
   } finally {
     for (const gate of held) gate.resolve(read());
   }
@@ -380,7 +385,7 @@ it("replaces an overflowed background hydration when its retry fires before the 
   const background = tab.threads.acquireBackgroundThread(ref);
   try {
     await vi.waitFor(() => expect(reads).toBe(1));
-    expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
+    expect(tab.routes.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
     for (let entry = 1; entry <= 5; entry += 1) {
       const update = suffix(entry);
       if (update.method === "history/updated") update.params.items![0]!.text = "x".repeat(1024 * 1024);
@@ -397,7 +402,7 @@ it("replaces an overflowed background hydration when its retry fires before the 
     await vi.waitFor(() => expect(reads).toBe(2));
     await tab.threads.settleEntryTranscriptForTests(ref);
     expect(tab.threads.threadsStore.getState().threads.has(ref)).toBe(true);
-    const historyKey = tab.threads.productionEntryTranscriptForTests(ref).historyKey!;
+    const historyKey = tab.routes.productionEntryTranscriptForTests(ref).historyKey!;
     expect((await tab.cache.getLatest<{ text?: string }>(historyKey, 10)).map((row) => row.item.text)).toEqual([
       "body-6",
     ]);
@@ -469,7 +474,7 @@ it("same-client reconnect replaces hydrations held at cache authorities and reti
     expect(maximum).toBeLessThanOrEqual(DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS.networkHydrations);
     for (const target of refs) {
       await tab.threads.settleEntryTranscriptForTests(target);
-      const historyKey = tab.threads.productionEntryTranscriptForTests(target).historyKey!;
+      const historyKey = tab.routes.productionEntryTranscriptForTests(target).historyKey!;
       expect((await tab.cache.getLatest<{ text?: string }>(historyKey, 10)).map((row) => row.item.text)).toEqual([
         "body-6",
       ]);
@@ -484,7 +489,7 @@ it.each([false, true])(
   "namespaces read and suffix identities across production lifetimes, overlap=%s",
   async (overlap) => {
     const first = await openTab();
-    const firstRoute = first.threads.productionEntryTranscriptForTests(ref);
+    const firstRoute = first.routes.productionEntryTranscriptForTests(ref);
     const historyKey = firstRoute.historyKey!;
     first.client.emitNotification(suffix(2));
     await first.threads.settleEntryTranscriptForTests(ref);
@@ -497,7 +502,7 @@ it.each([false, true])(
     }
 
     const second = await openTab();
-    expect(second.threads.productionEntryTranscriptForTests(ref).historyKey).toBe(historyKey);
+    expect(second.routes.productionEntryTranscriptForTests(ref).historyKey).toBe(historyKey);
     second.client.emitNotification(suffix(3));
     await second.threads.settleEntryTranscriptForTests(ref);
     const secondRead = second.commits.mock.calls.map(([batch]) => batch.coverage).find((row) => row?.kind === "read")!;
@@ -518,7 +523,7 @@ it.each([false, true])(
 
 it("rejects a pre-deletion hydration and repopulates only from a subsequent source read", async () => {
   const tab = await openTab();
-  const historyKey = tab.threads.productionEntryTranscriptForTests(ref).historyKey!;
+  const historyKey = tab.routes.productionEntryTranscriptForTests(ref).historyKey!;
   expect((await tab.cache.getLatest(historyKey, 10)).map((row) => row.transcriptKey)).toEqual(["row-1"]);
   const reply = deferred<ThreadReadResponse>();
   const entered = deferred<void>();

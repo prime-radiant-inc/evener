@@ -12,8 +12,9 @@ import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
-import { resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore } from "./threads";
+import { resetThreadsStoreForTests, threadsStore } from "./threads";
 import { ConflictError } from "./threadsErrors";
 
 // These direct read-only RPCs exercise the real store client/readiness path,

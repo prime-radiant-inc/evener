@@ -62,6 +62,7 @@ window.history.replaceState(null, "", displayDocument ? `/?${query}` : "/");
 try {
   await import("../main");
   const threads = await import("../stores/threads");
+  const routes = await import("../stores/entryTranscriptRoutes");
   const connection = await import("../stores/connection");
   const workspace = await import("../shell/workspace");
   if (displayDocument) {
@@ -137,7 +138,7 @@ try {
       // repository writing through the real cache, so its retained bytes are
       // the bounded shared budget the sustained workload is charged against.
       entryAdmission: (ref: string) => {
-        const route = threads.productionEntryTranscriptForTests(ref);
+        const route = routes.productionEntryTranscriptForTests(ref);
         const repository = route.repository;
         if (!repository) return null;
         const admission = repository.getAdmissionSnapshotForTesting();
@@ -149,14 +150,14 @@ try {
         };
       },
       entryRoute: (ref: string) => {
-        const route = threads.productionEntryTranscriptForTests(ref);
+        const route = routes.productionEntryTranscriptForTests(ref);
         const store = threads.threadsStore.getState().threads.get(ref);
         const items = (store?.turns ?? []).flatMap((turn) => turn.items ?? []);
         return {
           present: route.repository !== undefined,
           historyKey: route.historyKey ?? null,
           storeModelPresent: store !== undefined,
-          localOpening: threads.isEntryTranscriptLocalOpening(ref),
+          localOpening: routes.isEntryTranscriptLocalOpening(ref),
           storeItemCount: items.length,
           storeNonEmptyItems: items.filter((item) => (item.text ?? "") !== "" || (item.output ?? "") !== "").length,
           lastLocalOpenStatus: route.lastLocalOpenStatus ?? null,
@@ -165,7 +166,7 @@ try {
       // Read-only recovery state: why a local open does or does not report
       // "current" for the entry route, measured rather than inferred.
       entryRecovery: (ref: string) => {
-        const route = threads.productionEntryTranscriptForTests(ref);
+        const route = routes.productionEntryTranscriptForTests(ref);
         const repository = route.repository;
         if (!repository) return { repositoryPresent: false };
         return { repositoryPresent: true, ...repository.getRecoveryStateForTesting() };

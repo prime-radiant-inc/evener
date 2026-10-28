@@ -32,6 +32,7 @@ import { recoveryComposerDraft } from "../panes/session/composer/recovery/recove
 import { resetSubagentModuleStoreForTests } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { IDBUpgradeError } from "./idbConnection";
 import type { MutationOutboxRecord } from "./mutationOutbox";
@@ -62,7 +63,6 @@ import {
   retryBlockedMutation,
   sendResumesModel,
   setMutationStorageForTests,
-  setProductionEntryCacheForTests,
   subscribeMutationPersistence,
   threadsStore,
 } from "./threads";
@@ -1279,18 +1279,23 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
   });
 
-  // One representative Conflict-mapping test standing in for every
-  // thread-level action above - each wraps its client.request in the exact
-  // same mapConflict try/catch as send/steer/queue/interrupt (proven
-  // exhaustively above); repeating it per method would test the identical
-  // wrapper code path over and over rather than add real coverage.
-  test("session actions also map a Conflict rejection to ConflictError (setModel as the representative case)", async () => {
+  // Every direct-request session action reports a wire Conflict as ConflictError.
+  const conflictingActions: Array<[string, (state: ReturnType<typeof threadsStore.getState>) => Promise<unknown>]> = [
+    ["thread/model/set", (s) => s.setModel("ref_a", "openai", "gpt-5.5")],
+    ["thread/reasoning-effort/set", (s) => s.setReasoningEffort("ref_a", "high")],
+    ["thread/vision-model/set", (s) => s.setVisionModel("ref_a", "off")],
+    ["evener/thread/name/set", (s) => s.rename("ref_a", "New title")],
+    ["thread/compact/start", (s) => s.compact("ref_a")],
+    ["thread/fork", (s) => s.forkFromTurn("ref_a", { aside: true })],
+    ["thread/shutdown", (s) => s.shutdown("ref_a")],
+  ];
+  test.each(conflictingActions)("%s maps a Conflict rejection to ConflictError", async (method, run) => {
     const fake = connectFakeClient();
-    fake.on("thread/model/set", () => {
-      throw new WireError("model unavailable", -32013, { evenerErrorInfo: "conflict" });
+    fake.on(method as never, () => {
+      throw new WireError("unavailable", -32013, { evenerErrorInfo: "conflict" });
     });
 
-    await expect(threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5")).rejects.toBeInstanceOf(ConflictError);
+    await expect(run(threadsStore.getState())).rejects.toBeInstanceOf(ConflictError);
   });
 
   // Issue #195's RCA / PR #211's rejected transport-queuing design: a
