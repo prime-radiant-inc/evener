@@ -27,6 +27,7 @@ import {
 } from "@evener/appwire-client";
 import type { ImageGalleryProps } from "../panes/session/transcript/flow/ImageGallery";
 import { type ComicPersona, comicAuthorPersona, comicDelegatePersona } from "./cast";
+import { comicTranscriptRef } from "./comicSessionIdentity";
 
 type ComicEntryFields = {
   id: string;
@@ -161,7 +162,12 @@ export function projectComicConversation(
         if (item.toolName === "delegate_send" || item.toolName === "job_send_message") {
           const target = delegateSendTarget(item);
           const raw = isDelegateSendResult(item.raw) ? item.raw : undefined;
-          const persona = delegatePersona(context.ownerRef ?? model.ref, target, context.entities, raw?.transcript_ref);
+          const persona = delegatePersona(
+            context.ownerRef ?? model.ref,
+            target,
+            context.entities,
+            comicTranscriptRef(model, raw?.transcript_ref),
+          );
           const historical = delegateSendEarlierResponses(item);
           const response = delegateSendResponse(item);
           const sourceLabel = persona
@@ -255,7 +261,7 @@ export function projectComicConversation(
                       context.ownerRef ?? model.ref,
                       notification.delegateId,
                       context.entities,
-                      notification.transcriptRef,
+                      comicTranscriptRef(model, notification.transcriptRef),
                     )
                   : undefined;
               entries.push({

@@ -2,15 +2,15 @@ import {
   type DelegateEntityView,
   type EntityView,
   findEntityView,
+  parseJSONObject,
   parseSteeringNotifications,
   pendingTextJoined,
   projectThread,
   type SessionActivityContext,
   type ThreadModel,
 } from "@evener/appwire-client";
-import { delegateStableState } from "../panes/session/transcript/tools/subagentModuleStore";
 import { type ComicPersona, comicDelegateKey, comicDelegatePersona } from "./cast";
-import { comicSessionRef } from "./comicSessionIdentity";
+import { comicSessionRef, comicTranscriptRef } from "./comicSessionIdentity";
 import { COMIC_TRANSCRIPT_CONFIG, type ComicProjectionContext } from "./projection";
 
 export type ComicDelegateStrip = {
@@ -45,7 +45,7 @@ export function projectComicDelegates(
   }
   const place = (id: string | undefined, childRef: string | undefined, itemId: string, sourceIndex: number) => {
     const strip = id ? strips.get(id) : undefined;
-    if (!strip || (childRef && childRef !== strip.childRef)) return;
+    if (!strip || (childRef && comicTranscriptRef(model, childRef) !== strip.childRef)) return;
     if (!strip.source || strip.source.sourceIndex > sourceIndex) strip.source = { itemId, sourceIndex };
   };
   for (const turn of projectThread(model, COMIC_TRANSCRIPT_CONFIG).turns) {
@@ -53,8 +53,8 @@ export function projectComicDelegates(
       if (entry.kind !== "item" && entry.kind !== "critical") continue;
       const item = entry.item;
       if (item.type === "commandExecution" && item.toolName === "delegate") {
-        const { parsed, stable } = delegateStableState(item, false, ownerRef, model, entities);
-        if (stable && typeof parsed?.delegate_id === "string")
+        const parsed = parseJSONObject(item.output);
+        if (typeof parsed?.delegate_id === "string")
           place(
             parsed.delegate_id,
             typeof parsed.transcript_ref === "string" ? parsed.transcript_ref : undefined,
