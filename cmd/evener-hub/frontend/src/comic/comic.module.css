@@ -45,7 +45,7 @@
 
 .row {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, min(var(--comic-panel-max-width), calc((100% - 15px) / 2))));
   gap: 15px;
   align-items: stretch;
   margin-bottom: 15px;
@@ -59,6 +59,9 @@
   flex-direction: column;
   position: relative;
   min-width: 0;
+  width: 100%;
+  max-width: var(--comic-panel-max-width);
+  justify-self: start;
   border: 3px solid var(--comic-ink);
   background: var(--comic-paper);
   font-size: var(--font-size-prose);

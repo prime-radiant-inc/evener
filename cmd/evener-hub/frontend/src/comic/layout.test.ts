@@ -86,6 +86,13 @@ test("pairs only adjacent single-slice dialogue within a strip", () => {
   expect(composeComicRows(entries, 760, () => true).every((row) => row.panels.length === 1)).toBe(true);
 });
 
+test("keeps short dialogue paired above the one-column boundary without stretching a lone panel", () => {
+  const entries = [entry("a", "dialogue", "Hello."), entry("b", "dialogue", "Hi.")];
+  expect(composeComicRows(entries, 761, () => true).map((row) => row.panels.length)).toEqual([2]);
+  expect(composeComicRows(entries.slice(0, 1), 1360, () => true).map((row) => row.panels.length)).toEqual([1]);
+  expect(composeComicRows(entries, 390, () => true).map((row) => row.panels.length)).toEqual([1, 1]);
+});
+
 test("a continuation is wide and a spotlight is settled short dialogue only", () => {
   const entries = [
     entry("first", "dialogue", "x".repeat(85)),

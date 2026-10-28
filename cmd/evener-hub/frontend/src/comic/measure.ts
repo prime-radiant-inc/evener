@@ -19,7 +19,9 @@ export function createComicMeasurer(container: HTMLElement): {
   fits(text: string, composition: ComicComposition, kind: ComicEntry["kind"]): boolean;
   dispose(): void;
 } {
-  const panel = document.createElement("article");
+  const ownerDocument = container.ownerDocument;
+  const ownerWindow = ownerDocument.defaultView;
+  const panel = ownerDocument.createElement("article");
   panel.className = styles.panel as string;
   panel.setAttribute("data-comic-probe", "");
   panel.setAttribute("aria-hidden", "true");
@@ -27,9 +29,9 @@ export function createComicMeasurer(container: HTMLElement): {
   panel.style.visibility = "hidden";
   panel.style.pointerEvents = "none";
   panel.style.zIndex = "-1";
-  const balloon = document.createElement("div");
+  const balloon = ownerDocument.createElement("div");
   balloon.className = styles.balloon as string;
-  const copy = document.createElement("p");
+  const copy = ownerDocument.createElement("p");
   copy.className = styles.balloonText as string;
   balloon.append(copy);
   panel.append(balloon);
@@ -37,15 +39,15 @@ export function createComicMeasurer(container: HTMLElement): {
 
   return {
     fits(text, composition, kind) {
-      const width = container.getBoundingClientRect().width || container.clientWidth || window.innerWidth;
+      const width = container.getBoundingClientRect().width || container.clientWidth || ownerWindow?.innerWidth || 0;
       panel.style.width = `${composition === "paired" && width > 760 ? (width - 15) / 2 : width}px`;
       panel.classList.toggle(styles.spotlight as string, composition === "spotlight");
       balloon.classList.toggle(styles.thought as string, kind === "thought");
       panel.setAttribute("data-comic-kind", kind);
       copy.textContent = text;
-      const computed = getComputedStyle(copy);
+      const computed = ownerWindow?.getComputedStyle(copy);
       const lineHeight =
-        Number.parseFloat(computed.lineHeight) ||
+        Number.parseFloat(computed?.lineHeight ?? "") ||
         (composition === "spotlight" ? (width <= 760 ? 24 : 30) * 1.3 : (width <= 760 ? 17 : 18) * 1.45);
       return (
         Math.max(copy.getBoundingClientRect().height, copy.scrollHeight) <=
