@@ -21,6 +21,8 @@ import type {
   GoalSetResponse,
   JobActivityJob,
   JobOutputPage,
+  MethodName,
+  MethodTypes,
   ModelListResponse,
   SnapshotIdentity,
   TaskListResponse,
@@ -793,16 +795,7 @@ function createEntryTranscriptRepository(
       const client = getWiredClient();
       if (client?.state !== "ready" || fixture.clearInert || !canonicalThreadOwnerActive(ref)) return;
       fixture.repository?.beginFreshBaseline();
-      void refreshTrackedThread(
-        client,
-        getReadyEpoch(),
-        ref,
-        true,
-        false,
-        undefined,
-        undefined,
-        hydrationIntentFor(ref),
-      ).catch(() => {
+      void refreshTrackedThread(client, getReadyEpoch(), ref, true, { intent: hydrationIntentFor(ref) }).catch(() => {
         // The owned hydration lifecycle schedules transport recovery.
       });
     },
@@ -3044,7 +3037,7 @@ export async function resendRecoveryMutation(
 ): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames, commandNames, mentions);
+  const intent = composerMutationIntent(targetRef, route, { text, attachments, skillNames, commandNames, mentions });
   const barrier = await barrierRead;
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
@@ -3544,14 +3537,18 @@ function markInputSubmission(ref: string): () => void {
   return () => endSharedSubmission(ref);
 }
 
+interface ComposerSubmission {
+  text: string;
+  attachments?: InputAttachment[];
+  skillNames?: readonly string[];
+  commandNames?: readonly string[];
+  mentions?: readonly ComposerMention[];
+}
+
 function composerMutationIntent(
   ref: string,
   route: ComposerMutationRoute,
-  text: string,
-  attachments?: InputAttachment[],
-  skillNames?: readonly string[],
-  commandNames?: readonly string[],
-  mentions?: readonly ComposerMention[],
+  { text, attachments, skillNames, commandNames, mentions }: ComposerSubmission,
 ): MutationIntent {
   const model = trackedThreadModel(ref);
   // The store-side half of the skillInput gate (Task 12 gates the hub's
@@ -4892,16 +4889,9 @@ function publishThreadHydration(
     // Live recovery was gated by this pending read. Retire it before handing
     // the invalidated owner a replacement, and do not settle stale authority.
     putThreadModel(ref, backgroundModel);
-    void refreshTrackedThread(
-      pending.client,
-      pending.epoch,
-      ref,
-      true,
-      false,
-      undefined,
-      undefined,
-      hydrationIntentFor(ref),
-    ).catch(() => {});
+    void refreshTrackedThread(pending.client, pending.epoch, ref, true, { intent: hydrationIntentFor(ref) }).catch(
+      () => {},
+    );
     return null;
   }
   currentAdmissions.set(ref, {
@@ -5354,16 +5344,9 @@ function replayPendingClearReplay(): void {
       owner.repository.beginFreshBaseline();
       publishEntryTranscriptModel(ref);
       if (owner.client?.state === "ready") {
-        void refreshTrackedThread(
-          owner.client,
-          owner.epoch,
-          ref,
-          true,
-          false,
-          undefined,
-          undefined,
-          hydrationIntentFor(ref),
-        ).catch(() => {});
+        void refreshTrackedThread(owner.client, owner.epoch, ref, true, { intent: hydrationIntentFor(ref) }).catch(
+          () => {},
+        );
       }
       continue;
     }
@@ -5404,16 +5387,7 @@ function acceptEntryNotification(
   ) {
     // The repository already published this transition. The later legacy
     // fold sees no diff, so the entry owner must wake its own recovery.
-    void refreshTrackedThread(
-      client,
-      getReadyEpoch(),
-      ref,
-      true,
-      false,
-      undefined,
-      undefined,
-      hydrationIntentFor(ref),
-    ).catch(() => {});
+    void refreshTrackedThread(client, getReadyEpoch(), ref, true, { intent: hydrationIntentFor(ref) }).catch(() => {});
   }
   return accepted;
 }
@@ -5492,16 +5466,9 @@ function handleNotification(n: AnyNotification): void {
         // binding. Recorded and overlay signals both need a replacement owner.
         // Pending hydration below retains the signal for repository replay,
         // rather than creating a second store-owned ingestion path.
-        void refreshTrackedThread(
-          wiredClient,
-          getReadyEpoch(),
-          ref,
-          true,
-          false,
-          undefined,
-          undefined,
-          hydrationIntentFor(ref),
-        ).catch(() => {});
+        void refreshTrackedThread(wiredClient, getReadyEpoch(), ref, true, { intent: hydrationIntentFor(ref) }).catch(
+          () => {},
+        );
       }
     }
   }
@@ -5671,7 +5638,7 @@ function handleNotification(n: AnyNotification): void {
       // checks (client/epoch/refCount), so a race with a release or a
       // reconnect that lands before this read resolves is already handled.
       for (const ref of invalidatedThreadRefs)
-        void refreshTrackedThread(client, epoch, ref, true, false, undefined, undefined, hydrationIntentFor(ref));
+        void refreshTrackedThread(client, epoch, ref, true, { intent: hydrationIntentFor(ref) });
       for (const ref of invalidatedWatchedRefs) void refreshWatchedThread(client, epoch, ref, true);
     }
   }
@@ -5839,7 +5806,7 @@ function scheduleOwnedHydrationRetry(kind: HydrationOwnerKind, ref: string, pend
 // replay stays closed until an authoritative read actually succeeds.
 async function retryTrackedHydration(client: AppwireClientLike, epoch: number, ref: string): Promise<void> {
   dispatchableMutationRefs.delete(ref);
-  await refreshTrackedThread(client, epoch, ref, true, false, undefined, undefined, hydrationIntentFor(ref));
+  await refreshTrackedThread(client, epoch, ref, true, { intent: hydrationIntentFor(ref) });
   const runtime = getMutationRuntime();
   if (!runtime || getWiredClient() !== client || getReadyEpoch() !== epoch || client.state !== "ready") return;
   if (dispatchableMutationRefs.has(ref)) scheduleMutationDispatch(runtime, [ref]);
@@ -5878,34 +5845,29 @@ function unwindStopCanceledRefresh(ref: string, attempt?: number): void {
 // model wholesale from the fresh snapshot (hydrateThread) — snapshot recovery
 // for notifications the old relay missed. A rejection keeps the last published
 // model and leaves the next read to this ref's owned retry lifecycle.
+interface TrackedRefreshOptions {
+  /** Rethrow a failed read instead of leaving recovery to the owned retry. */
+  reportFailure?: boolean;
+  beforePublish?: () => void;
+  reopenOnlyClientMutationId?: string;
+  intent?: HydrationIntent;
+  /** False when the caller already holds a wider completion registration. */
+  registerCompletion?: boolean;
+}
+
 async function refreshTrackedThread(
   client: AppwireClientLike,
   epoch: number,
   ref: string,
   targetedResync: boolean,
-  reportFailure = false,
-  beforePublish?: () => void,
-  reopenOnlyClientMutationId?: string,
-  intent: HydrationIntent = "foreground",
-  registerCompletion = true,
+  options: TrackedRefreshOptions = {},
 ): Promise<number | undefined> {
   // The scheduler can join an existing repository end read. Apply the same
   // owner fence as refreshTrackedThreadNow before joining, so a released ref
   // cannot carry that retired read's rejection into the reconnect callback.
   if (!canonicalThreadOwnerActive(ref)) return undefined;
-  if (intent !== "background")
-    return refreshTrackedThreadNow(
-      client,
-      epoch,
-      ref,
-      targetedResync,
-      reportFailure,
-      beforePublish,
-      reopenOnlyClientMutationId,
-      intent,
-      undefined,
-      registerCompletion,
-    );
+  const intent = options.intent ?? "foreground";
+  if (intent !== "background") return refreshTrackedThreadNow(client, epoch, ref, targetedResync, options);
   let attempt: number | undefined;
   const residency = transcriptResidency();
   residency.connection(getReadyEpoch(), getWiredClient()?.state === "ready");
@@ -5913,18 +5875,7 @@ async function refreshTrackedThread(
     ref,
     intent,
     async (signal) => {
-      attempt = await refreshTrackedThreadNow(
-        client,
-        epoch,
-        ref,
-        targetedResync,
-        reportFailure,
-        beforePublish,
-        reopenOnlyClientMutationId,
-        intent,
-        signal,
-        registerCompletion,
-      );
+      attempt = await refreshTrackedThreadNow(client, epoch, ref, targetedResync, options, signal);
     },
     // Recovery needs a fresh read, even when its pending publication claim was
     // retired before the scheduler's issued predecessor has settled.
@@ -5938,13 +5889,11 @@ async function refreshTrackedThreadNow(
   epoch: number,
   ref: string,
   targetedResync: boolean,
-  reportFailure = false,
-  beforePublish?: () => void,
-  reopenOnlyClientMutationId?: string,
-  intent: HydrationIntent = "foreground",
+  options: TrackedRefreshOptions = {},
   signal?: AbortSignal,
-  registerCompletion = true,
 ): Promise<number | undefined> {
+  const { reportFailure = false, beforePublish, reopenOnlyClientMutationId, intent = "foreground" } = options;
+  const registerCompletion = options.registerCompletion ?? true;
   // Returns the tracked-hydration attempt this refresh began, or undefined
   // when it never began one (an unowned ref, or an in-flight non-targeted
   // predecessor): refreshThread's tail recheck passes that attempt to
@@ -6128,16 +6077,10 @@ async function handleReady(
     : new Set([...threadsStore.getState().watchedThreads.keys(), ...pendingWatchedHydrations.keys()]);
   await Promise.all([
     ...Array.from(refs, (ref) =>
-      refreshTrackedThread(
-        client,
-        epoch,
-        ref,
-        targetedResync,
-        false,
-        undefined,
-        options?.reopenOnlyClientMutationId,
-        hydrationIntentFor(ref),
-      ),
+      refreshTrackedThread(client, epoch, ref, targetedResync, {
+        reopenOnlyClientMutationId: options?.reopenOnlyClientMutationId,
+        intent: hydrationIntentFor(ref),
+      }),
     ),
     ...Array.from(watchRefs, (ref) => refreshWatchedThread(client, epoch, ref, targetedResync)),
   ]);
@@ -6336,6 +6279,19 @@ function requireClient(): AppwireClientLike {
   const client = resolveCurrentClient();
   rewireClient(client);
   return client;
+}
+
+// One request on the wired client, with a wire Conflict reported as ConflictError.
+async function requestMappingConflict<M extends MethodName>(
+  method: M,
+  params: MethodTypes[M]["params"],
+): Promise<MethodTypes[M]["result"]> {
+  const client = requireClient();
+  try {
+    return await client.request(method, params);
+  } catch (err) {
+    throw mapConflict(err);
+  }
 }
 
 // waitForReadyOrRewire resolves once EITHER `client` itself fires its own
@@ -6856,7 +6812,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       await requireReadyClient(remaining);
       client = requireClient();
     } while (client.state !== "ready");
-    const attempt = await refreshTrackedThread(client, getReadyEpoch(), ref, true, true, beforePublish);
+    const attempt = await refreshTrackedThread(client, getReadyEpoch(), ref, true, {
+      reportFailure: true,
+      beforePublish,
+    });
     // beforePublish was evaluated before publication, but reconciliation above
     // runs asynchronously after it. A Stop acknowledged in that window must
     // cancel the dispatch this refresh earned too, exactly as handleReady's
@@ -7067,7 +7026,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async send(ref, text, attachments, skillNames, commandNames, mentions) {
     await sendMutationIntent(
-      composerMutationIntent(ref, "send", text, attachments, skillNames, commandNames, mentions),
+      composerMutationIntent(ref, "send", { text, attachments, skillNames, commandNames, mentions }),
     );
   },
 
@@ -7105,7 +7064,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     if (!beginSharedSubmission(ref)) return;
     try {
       await sendMutationIntent({
-        ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
+        ...composerMutationIntent(ref, "send", { text: TURN_CONTINUATION_TEXT }),
         preserveComposer: true,
       });
     } finally {
@@ -7115,7 +7074,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async steer(ref, text, attachments, skillNames, commandNames, mentions) {
     await enqueueMutationIntent(
-      composerMutationIntent(ref, "steer", text, attachments, skillNames, commandNames, mentions),
+      composerMutationIntent(ref, "steer", { text, attachments, skillNames, commandNames, mentions }),
     );
   },
 
@@ -7126,7 +7085,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const release = markInputSubmission(ref);
     try {
       await enqueueMutationIntent(
-        composerMutationIntent(ref, "queue", text, attachments, skillNames, commandNames, mentions),
+        composerMutationIntent(ref, "queue", { text, attachments, skillNames, commandNames, mentions }),
       );
     } finally {
       release();
@@ -7160,7 +7119,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async drainAsSteer(ref, text, attachments, skillNames, commandNames, mentions) {
     await enqueueMutationIntent(
-      composerMutationIntent(ref, "drain", text, attachments, skillNames, commandNames, mentions),
+      composerMutationIntent(ref, "drain", { text, attachments, skillNames, commandNames, mentions }),
     );
   },
 
@@ -7193,30 +7152,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async setModel(ref, modelProvider, model) {
-    const client = requireClient();
-    try {
-      await client.request("thread/model/set", { ref, modelProvider, model });
-    } catch (err) {
-      throw mapConflict(err);
-    }
+    await requestMappingConflict("thread/model/set", { ref, modelProvider, model });
   },
 
   async setReasoningEffort(ref, level) {
-    const client = requireClient();
-    try {
-      await client.request("thread/reasoning-effort/set", { ref, reasoningEffort: level });
-    } catch (err) {
-      throw mapConflict(err);
-    }
+    await requestMappingConflict("thread/reasoning-effort/set", { ref, reasoningEffort: level });
   },
 
   async setVisionModel(ref, visionModel) {
-    const client = requireClient();
-    try {
-      await client.request("thread/vision-model/set", { ref, visionModel });
-    } catch (err) {
-      throw mapConflict(err);
-    }
+    await requestMappingConflict("thread/vision-model/set", { ref, visionModel });
   },
 
   async setGoal(ref, objective) {
@@ -7268,37 +7212,21 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async removeURL(ref, id) {
     const model = trackedThreadModel(ref);
     if (!canWriteSharedNotes(model)) throw new Error("Session cannot accept notes");
-    const client = requireClient();
-    try {
-      const response = await client.request("urls/remove", {
-        ref,
-        clientMutationId: createSecureUUID(),
-        expectedInstanceId: threadInstanceID(model) ?? "",
-        id,
-      });
-      // The response carries no state; evener/urls/updated is authoritative.
-      return response;
-    } catch (err) {
-      throw mapConflict(err);
-    }
+    // The response carries no state; evener/urls/updated is authoritative.
+    return requestMappingConflict("urls/remove", {
+      ref,
+      clientMutationId: createSecureUUID(),
+      expectedInstanceId: threadInstanceID(model) ?? "",
+      id,
+    });
   },
 
   async rename(ref, name) {
-    const client = requireClient();
-    try {
-      await client.request("evener/thread/name/set", { ref, name });
-    } catch (err) {
-      throw mapConflict(err);
-    }
+    await requestMappingConflict("evener/thread/name/set", { ref, name });
   },
 
   async compact(ref) {
-    const client = requireClient();
-    try {
-      await client.request("thread/compact/start", { ref });
-    } catch (err) {
-      throw mapConflict(err);
-    }
+    await requestMappingConflict("thread/compact/start", { ref });
   },
 
   async clearThread(ref) {
@@ -7397,12 +7325,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           releaseSwapTarget?.();
         }
       }
-      const client = requireClient();
-      try {
-        await client.request("thread/shutdown", { ref });
-      } catch (err) {
-        throw mapConflict(err);
-      }
+      await requestMappingConflict("thread/shutdown", { ref });
     } finally {
       releaseSwapTarget?.();
       releaseRef();
@@ -7410,12 +7333,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async forkFromTurn(ref, opts) {
-    const client = requireClient();
-    try {
-      return await client.request("thread/fork", { ...opts, ref });
-    } catch (err) {
-      throw mapConflict(err);
-    }
+    return requestMappingConflict("thread/fork", { ...opts, ref });
   },
 
   async listModels(refresh) {
@@ -7563,17 +7481,7 @@ installEntryRouteHost({
   syncThreadSubscription,
   requireReadyClient,
   refreshForeground: (client, epoch, ref, { reportFailure, registerCompletion }) =>
-    refreshTrackedThread(
-      client,
-      epoch,
-      ref,
-      false,
-      reportFailure,
-      undefined,
-      undefined,
-      "foreground",
-      registerCompletion,
-    ),
+    refreshTrackedThread(client, epoch, ref, false, { reportFailure, registerCompletion }),
   onCacheEpochObserved,
   ensureGeneration: (ref) => ensureGenerations.get(ref),
   createRepository: createEntryTranscriptRepository,
@@ -7805,7 +7713,7 @@ function transcriptResidency(): TranscriptResidency {
         const client = await requireReadyClient();
         if (signal.aborted || !canonicalThreadOwnerActive(ref)) return;
         const epoch = getReadyEpoch();
-        await refreshTrackedThreadNow(client, epoch, ref, false, false, undefined, undefined, intent, signal);
+        await refreshTrackedThreadNow(client, epoch, ref, false, { intent }, signal);
       },
     },
     backgroundTranscriptOptions(),
@@ -7897,7 +7805,7 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
         await inflight.catch(() => null);
         return;
       }
-      await refreshTrackedThread(client, epoch, ref, false, false, undefined, undefined, "background");
+      await refreshTrackedThread(client, epoch, ref, false, { intent: "background" });
     } catch {
       // `ready` settles after its first bounded attempt, not as a currentness
       // certificate. The existing owner-scoped retry scheduler owns recovery.

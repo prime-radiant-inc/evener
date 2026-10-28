@@ -1581,11 +1581,11 @@ func TestDeployPrefersTheOperatorArtifactOverTheBuildSource(t *testing.T) {
 func TestDevControllerWithoutADeployPathAttaches(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{
-		runFn: cannedRun(map[string][]byte{
-			"launch-check": []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`),
+		runFn: cannedRun(map[remoteOp][]byte{
+			opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`),
 			// A running hub matching the on-disk build, so nothing is deployed,
 			// restarted, or bootstrapped: this is the attach path.
-			"api/health": []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
+			opHealth: []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
 		}),
 		startFn: goodStartFn(t),
 	}
