@@ -76,7 +76,7 @@ $out"
       for f in "${files[@]}"; do
         jq -e --arg f "$f" 'any(.[]; .file == $f)' "$tmp" >/dev/null || die "vitest listed no tests from $f (excluded by $tree's vitest config, or it has no tests)"
       done
-      jq -r '.[].name' "$tmp" >> "$names"
+      jq -r '.[] | select(.file as $f | $ARGS.positional | index($f)) | .name' "$tmp" --args "${files[@]}" >> "$names"
     done
     LC_ALL=C sort "$names"
     ;;
