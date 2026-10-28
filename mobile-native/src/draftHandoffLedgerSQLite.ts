@@ -154,6 +154,18 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 		this.db.execSync(`CREATE INDEX IF NOT EXISTS draft_submission_obligations_outstanding
 			 ON draft_submission_obligations (created_at)
 			 WHERE state = 'open' OR (applied_at IS NULL AND state != 'failed')`);
+		// The edge side of the same contract: the outstanding scan rides a
+		// partial index in order, the reachability walk reaches edges by their
+		// from-endpoint, and a dependency's dependents are named by an index
+		// the dependency table's primary key does not lead with. The
+		// destination index above already carries the to-endpoint lookups.
+		this.db.execSync(`CREATE INDEX IF NOT EXISTS draft_handoff_edges_outstanding
+			 ON draft_handoff_edges (created_at)
+			 WHERE state != 'cleaned'`);
+		this.db.execSync(`CREATE INDEX IF NOT EXISTS draft_handoff_edges_from
+			 ON draft_handoff_edges (from_hub_id, from_ref)`);
+		this.db.execSync(`CREATE INDEX IF NOT EXISTS draft_handoff_dependencies_dependent
+			 ON draft_handoff_dependencies (depends_on_edge_id)`);
 	}
 
 	private addColumnIfMissing(table: string, column: string, definition: string): void {

@@ -81,6 +81,55 @@ describe("draft handoff ledger", () => {
 		expect(details).not.toContain("USE TEMP B-TREE");
 	});
 
+	test("every routine edge and dependency read prices in outstanding work by index", () => {
+		const { database, ledger } = setup();
+		// Substantial cleaned history: handoffs long finished, which typing
+		// must never price in.
+		for (let i = 0; i < 30; i += 1) {
+			const edge = ledger.createEdge({
+				chainId: "chain",
+				from: { hubId: "hub", sessionRef: `s${i}` },
+				to: { hubId: "hub", sessionRef: `t${i}` },
+			});
+			ledger.settleEdge(edge.edgeId, [], "hash");
+			ledger.cleanEdge(edge.edgeId);
+		}
+		const plan = (sql: string, ...params: (string | number | null)[]) =>
+			(database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as { detail: string }[])
+				.map((row) => row.detail)
+				.join(" | ");
+		// The outstanding-edge scan rides the partial index, in order.
+		expect(plan("SELECT * FROM draft_handoff_edges WHERE state != 'cleaned' ORDER BY created_at, rowid")).toContain(
+			"USING INDEX draft_handoff_edges_outstanding",
+		);
+		// The reachability walk finds edges by their from-endpoint.
+		expect(
+			plan(
+				"SELECT * FROM draft_handoff_edges WHERE (from_hub_id = ? AND from_ref = ?) ORDER BY created_at, rowid",
+				"hub",
+				"s1",
+			),
+		).toContain("USING INDEX draft_handoff_edges_from");
+		// The claim check finds competing edges by their to-endpoint through
+		// the destination index the schema already carries.
+		expect(
+			plan(
+				"SELECT edge_id FROM draft_handoff_edges WHERE edge_id != ? AND to_hub_id = ? AND to_ref = ? AND state != 'cleaned' AND (claim_at IS NOT NULL OR state = 'settled') LIMIT 1",
+				"id-x",
+				"hub",
+				"t1",
+			),
+		).toContain("USING INDEX draft_handoff_edges_destination");
+		// The pending-dependent check names a dependency's dependents, which
+		// the dependency table's primary key does not lead with.
+		expect(
+			plan(
+				"SELECT d.edge_id FROM draft_handoff_dependencies d JOIN draft_handoff_edges e ON e.edge_id = d.edge_id WHERE d.depends_on_edge_id = ? AND e.state = 'pending' LIMIT 1",
+				"id-x",
+			),
+		).toContain("USING INDEX draft_handoff_dependencies_dependent");
+	});
+
 	test("round-trips edges, dependencies, obligations, and deliveries", () => {
 		const { ledger } = setup();
 		ledger.beginSubmission("obligation-1", a);
