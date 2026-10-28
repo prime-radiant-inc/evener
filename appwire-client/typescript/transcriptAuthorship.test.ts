@@ -6,9 +6,9 @@ import {
   decodeTranscriptItem,
   encodeTranscriptItem,
   hydrateThread,
-  mergeTranscriptItemVersioned,
   threadModelFromCache,
 } from "./reducer";
+import { mergeTranscriptItemVersioned } from "./transcriptHistory";
 import { mergeTurnHistory } from "./turnHistoryMerge";
 
 const author = {

@@ -8,17 +8,16 @@
 import { describe, expect, test } from "vitest";
 import { displayTurnStatus } from "./itemFailure";
 import type { ThreadModel } from "./model";
+import { applyNotification, hydrateThread } from "./reducer";
 import {
   applyHistoryReadFailure,
-  applyNotification,
   applyReadModel,
   applyReadResponse,
-  hydrateThread,
   invalidateHistory,
   issueLatestWindowRead,
   mergeOlderItemPage,
   pruneBackgroundHistoryBodies,
-} from "./reducer";
+} from "./transcriptHistory";
 import { itemTextPresence } from "./transcriptItems";
 import type {
   AnyNotification,

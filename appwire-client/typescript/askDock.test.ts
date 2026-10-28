@@ -4,7 +4,7 @@ import { type AskAnswerSender, type AskDockThreadsSnapshot, createAskDockStore, 
 import type { AskQuestionRef } from "./deriveAskQuestions";
 import { createFrameworkFreeStore } from "./frameworkFreeStore";
 import type { ItemModel, ThreadModel } from "./model";
-import { pruneBackgroundHistoryBodies } from "./reducer";
+import { pruneBackgroundHistoryBodies } from "./transcriptHistory";
 
 // --- fixtures -------------------------------------------------------------
 

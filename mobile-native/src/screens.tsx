@@ -175,9 +175,10 @@ import { ComposerFocus } from "./session/composerFocus";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
 import { FindBar } from "./session/FindBar";
+import { useFindInSession } from "./session/useFindInSession";
 import { historyForSession } from "./session/historyMemory";
 import { useOlderHistory } from "./session/useOlderHistory";
-import { type FindState, newFind, findMatches, matchLabel, matchPosition, stepMatch } from "./session/findInSession";
+import { type FindState, newFind, matchLabel, matchPosition } from "./session/findInSession";
 import { currentLevel, displayForLevel, levelToast } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
 import { type OfflineTarget, offlineRequest } from "./outbox/offlineSend";
@@ -186,12 +187,8 @@ import { NotesBar } from "./session/NotesBar";
 import { type NotesHost, notesHosts } from "./session/NotesSheet";
 import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
 import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
-import {
-	confirmShutDown,
-	type SessionInfoAction,
-	type SessionInfoHost,
-	sessionInfoHosts,
-} from "./session/SessionInfoSheet";
+import { type SessionInfoAction, type SessionInfoHost, sessionInfoHosts } from "./session/SessionInfoSheet";
+import { confirmShutDown } from "./session/confirmShutDown";
 import { SessionNotice } from "./session/SessionNotice";
 import { useSessionRestart } from "./session/sessionRestart";
 import {
@@ -1613,111 +1610,29 @@ function ConversationScreenView({
 		setFind,
 		binding: bindingInstance,
 	});
-	const findQuery = find?.query ?? "";
-	const findHits = useMemo(
-		() => findMatches(timelineRows, findQuery, conversation?.delegates),
-		[timelineRows, findQuery, conversation?.delegates],
-	);
-	const findKey = find?.key ?? null;
-	const findIndex = findKey === null ? -1 : timelineRows.findIndex((row) => readerKey(row) === findKey);
-	const findCurrent = findIndex < 0 ? null : findIndex;
-	function stepFind(direction: 1 | -1) {
-		if (!find) return;
-		const next = stepMatch(findHits, findCurrent, direction);
-		if (next !== null)
-			setFind({
-				...find,
-				key: readerKey(timelineRows[next]),
-				seeking: false,
-				exhausted: false,
-			});
-		// Nothing older is loaded: look in older history.
-		else if (direction === -1) setFind({ ...find, seeking: true, exhausted: false });
-	}
-	// While seeking, find the newest match older than the current one (or
-	// the newest of all), loading one older page at a time until a match
-	// appears or history ends.
-	useEffect(() => {
-		if (!isCurrentReader() || !find?.seeking || !focused || snapshot.status !== "open" || !conversation) return;
-		// A resumed search first reloads its saved boundary; newer matches
-		// in the fresh window have already been searched.
-		const next = find.key !== null && findCurrent === null ? null : stepMatch(findHits, findCurrent, -1);
-		if (next !== null) {
-			setFind({ ...find, key: readerKey(timelineRows[next]), seeking: false });
-			return;
-		}
-		if (snapshot.loadingOlder) return;
-		const pageKey = olderPage;
-		if (!pageKey) {
-			// Stepped past the oldest match: say so. With none at all, the
-			// label already reads "No matches".
-			setFind({ ...find, seeking: false, exhausted: findHits.length > 0 });
-			return;
-		}
-		// Failure or disconnection leaves the search incomplete. Demand resumes
-		// when this reader is active, without another Find step.
-		if (!service || !connected || olderHistory.permanent) return;
-		// Paging older history reads away from the live end, so new rows stop
-		// pulling the list down while find looks.
-		if (follow.state.current.following) {
-			findLeftTheEnd.current = true;
-			follow.dispatch({ type: "unfollow" });
-		}
-		findOlder();
-	});
-	// A search that ends with no match, or find closing, gives the end back to
-	// a list find unfollowed, when the list is still there. A jump to a match
-	// is reading, and keeps it.
-	const findLeftTheEnd = useRef(false);
-	useEffect(() => {
-		if (!findLeftTheEnd.current || (find !== null && (find.seeking || find.key !== null))) return;
-		findLeftTheEnd.current = false;
-		const stillAtEnd = atEnd({
-			contentOffset: { y: listOffset.current },
-			contentSize: { height: readerContentHeight.current },
-			layoutMeasurement: { height: readerViewportHeight.current },
-			contentInset: listUnderBar.contentInset,
+	const { findHits, findKey, findCurrent, stepFind, findJumping, findAttempts, findRetryFrame, retryFindMatch } =
+		useFindInSession({
+			find,
+			setFind,
+			timelineRows,
+			conversation,
+			focused,
+			status: snapshot.status,
+			loadingOlder: snapshot.loadingOlder,
+			olderPage,
+			service,
+			connected,
+			olderHistory,
+			isCurrentReader,
+			findOlder,
+			follow,
+			timeline,
+			listOffset,
+			readerContentHeight,
+			readerViewportHeight,
+			listUnderBar,
+			captureSuppressed,
 		});
-		if (stillAtEnd) follow.dispatch({ type: "follow" });
-	});
-	// The current match comes into view, 30% down the list. A row the list
-	// hasn't measured fails the jump (onScrollToIndexFailed, while
-	// findJumping holds); the list then moves near it and tries again, for as
-	// long as each try measures rows closer to it, as the reader's restore
-	// does (ReaderRestoreAttempts.retryUnmeasured). A retry belongs to the
-	// match it started for: a new match or closing find cancels it, and it
-	// finds its row again when it runs, since older pages may have prepended.
-	const findJumping = useRef(false);
-	const findAttempts = useRef(new ReaderRestoreAttempts());
-	const findRetryFrame = useRef<number | null>(null);
-	const findCurrentNow = useRef(findCurrent);
-	useEffect(() => {
-		findCurrentNow.current = findCurrent;
-	});
-	function cancelFindRetry() {
-		if (findRetryFrame.current !== null) cancelAnimationFrame(findRetryFrame.current);
-		findRetryFrame.current = null;
-	}
-	function retryFindMatch() {
-		findRetryFrame.current = null;
-		if (findCurrentNow.current !== null) scrollToFindMatch(findCurrentNow.current);
-	}
-	function scrollToFindMatch(index: number) {
-		findLeftTheEnd.current = false;
-		follow.dispatch({ type: "unfollow" });
-		// The reading position follows the jump, so nothing pulls the list back.
-		captureSuppressed.current = false;
-		findJumping.current = true;
-		timeline.current?.scrollToIndex({ index, viewPosition: 0.3, animated: true });
-		findJumping.current = false;
-	}
-	// biome-ignore lint/correctness/useExhaustiveDependencies: only a new current match scrolls; rows prepending above it keep it in view.
-	useEffect(() => {
-		cancelFindRetry();
-		findAttempts.current.reset();
-		if (findCurrent !== null) scrollToFindMatch(findCurrent);
-		return cancelFindRetry;
-	}, [findKey]);
 	// Moves the list to the reading position once what it needs has laid out.
 	// It runs when what it reads changes: the effect below for the screen's
 	// state, and after the cells' layouts and the list's content size, which it

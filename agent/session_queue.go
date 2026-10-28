@@ -1304,35 +1304,6 @@ func (s *Session) prependSteering(entries []steeringMessage) {
 	s.persistQueuesSnapshot()
 }
 
-// SteeringEntry is a read-only snapshot of one entry on the steering
-// queue. It exists so callers outside the agent package (notably the
-// server's wire tests for kata t5j6) can observe pending steering
-// messages without reaching into private state. Text + Images are copies;
-// mutating them is safe and has no effect on the queue.
-type SteeringEntry struct {
-	Text         string            // the steering message text
-	Images       []ImageAttachment // any images attached to the steering message
-	SkillNames   []string          // canonical skill identities selected with the steering
-	CommandNames []string          // canonical command identities selected with the steering
-}
-
-// SteeringQueueSnapshot returns a copy of the session's current steering
-// queue. Used by integration tests; production callers should treat the
-// steering queue as opaque and trigger flushes via Steer / DrainAsSteer.
-func (s *Session) SteeringQueueSnapshot() []SteeringEntry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.steeringQueue) == 0 {
-		return nil
-	}
-	out := make([]SteeringEntry, len(s.steeringQueue))
-	for i, entry := range s.steeringQueue {
-		copyImages := append([]ImageAttachment(nil), entry.Images...)
-		out[i] = SteeringEntry{Text: entry.Text, Images: copyImages, SkillNames: append([]string(nil), entry.SkillNames...), CommandNames: append([]string(nil), entry.CommandNames...)}
-	}
-	return out
-}
-
 // steeringMessageToLLM converts a steeringMessage to an llm.Message
 // (User-role) suitable for appendTurn(TurnSteering, ...). Text-only
 // entries become llm.User(text); image-bearing entries become a

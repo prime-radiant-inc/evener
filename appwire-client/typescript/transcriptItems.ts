@@ -3,7 +3,7 @@
 // model types, identity validation and generated wire types.
 
 import { pendingTextJoined } from "./chunkview";
-import type { ItemImage, ItemModel, TurnModel } from "./model";
+import type { ItemImage, ItemModel, ThreadModel, TurnModel } from "./model";
 import { joinDelegateState, revisionOf } from "./stableDelegate";
 import { isValidTranscriptRef } from "./steeringNotifications";
 import { isRecord } from "./transcriptValidators";
@@ -13,6 +13,7 @@ import type {
   OutputImage,
   Thread,
   ThreadItem,
+  ThreadReadResponse,
   TranscriptAuthorship,
   Turn,
 } from "./types.gen";
@@ -477,4 +478,102 @@ export const isToolCallItemId: (id: string) => boolean = isToolCallId;
 export function imageSessionRouteForSession(sessionId: string): string | undefined {
   if (sessionId === "" || sessionId.includes("/")) return undefined;
   return encodeURIComponent(sessionId);
+}
+
+export function wireImageSessionId(thread: Thread): string {
+  return thread.sessionId.trim() || thread.id.trim();
+}
+
+// Every field a read sets except the transcript itself (turns, history,
+// overlay and the running turn).
+export function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<ThreadModel, "turns"> {
+  const thread = resp.thread;
+  // The snapshot's own stamped urls already win per-image (url-first
+  // precedence); the route only matters for sha-bearing images that arrived
+  // WITHOUT a stamp — replayed input images from a read path that didn't
+  // re-stamp, or older-producer frames.
+  const imageSessionId = wireImageSessionId(thread);
+  const fields: Omit<ThreadModel, "turns"> = {
+    ref,
+    threadId: thread.id,
+    ...(thread.evener.parentRef === undefined ? {} : { parentRef: thread.evener.parentRef }),
+    imageSessionId,
+    ...(thread.evener.instanceId === undefined ? {} : { instanceId: thread.evener.instanceId }),
+    name: thread.name ?? "",
+    status: thread.status,
+    resumeRequired: thread.evener.resumeRequired ?? false,
+    resumeOnlyFoldable: thread.evener.resumeOnlyFoldable ?? false,
+    // A read's fields are merged over the existing model, so omitting the key
+    // when the snapshot has no root would keep a previous value and leave link
+    // actions pointing at a directory this snapshot no longer advertises.
+    // Present-and-undefined clears it; the key is then dropped so a model
+    // without a root keeps the shape it had before this field existed.
+    artifactsDir: thread.evener.artifactsDir || undefined,
+    modelProvider: thread.modelProvider,
+    // Thread has no separate "model id" field on the wire snapshot — only
+    // ModelProvider, which appwire/types_thread.go documents as overloaded to
+    // "stay[ing] the model field" for this exact reason. thread/model/changed
+    // (below) is what later splits provider and model id apart properly.
+    model: thread.modelProvider,
+    reasoningEffort: thread.evener.reasoningEffort,
+    visionModel: thread.evener.visionModel ?? "",
+    askPending: thread.evener.askPending ?? false,
+    // Go wire-nullable-array rule: omitempty absent means empty, not missing.
+    pendingEscalations: thread.evener.pendingEscalations ?? [],
+    activeTurnId: activeTurnIdFromThread(thread),
+    queue: thread.evener.queue,
+    pendingMutations: thread.evener.pendingMutations ?? [],
+    // An absent aggregate means the daemon could not authoritatively read
+    // tasks; preserve a present zero so an empty task list stays distinct.
+    tasks: thread.evener.tasks ?? null,
+    ...(thread.evener.diagnostics
+      ? {
+          diagnostics: {
+            commands: thread.evener.diagnostics.commands?.map((command) => ({ ...command })),
+            plugins: thread.evener.diagnostics.plugins?.map((plugin) => ({ name: plugin.name })),
+          },
+        }
+      : {}),
+    delegates: (thread.evener.diagnostics?.delegates ?? []).map(cloneStableDelegate),
+    skills: (thread.evener.diagnostics?.skills ?? []).map((skill) => ({ ...skill })),
+    turnSlots: thread.evener.diagnostics?.turnSlots ? { ...thread.evener.diagnostics.turnSlots } : null,
+    jobsUpdatedAt: null,
+    jobsTreeRevision: null,
+    olderCursor: resp.olderCursor,
+    lastFrameAt: now,
+    capabilities: thread.evener.capabilities,
+    capabilitySource: "read",
+    goal: thread.evener.goal ?? null,
+    humanNote: thread.evener.humanNote ?? "",
+    agentNote: thread.evener.agentNote ?? "",
+    // Go wire-nullable-array rule: omitempty absent means empty, not missing.
+    sessionUrls: thread.evener.sessionUrls ?? [],
+    contextUsed: thread.evener.contextUsed ?? 0,
+    contextWindow: thread.evener.contextWindow ?? 0,
+    contextPressure: thread.evener.contextPressure ?? 0,
+    contextAssumed: thread.evener.contextAssumed ?? false,
+    usage: thread.evener.usage ?? null,
+    cost: thread.evener.cost ?? null,
+    // Passed straight through, undefined and all: absent is "nobody counted"
+    // and must not become a 0 that reads as "nothing failed".
+    failedToolCalls: thread.evener.failedToolCalls,
+    ...(thread.evener.access ? { access: { ...thread.evener.access } } : {}),
+    workMillis: thread.evener.workMillis ?? 0,
+    activeTurnStartedAt: epochMsToISO(thread.evener.activeTurnStartedAt),
+    lastTurnEndedAt: epochMsToISO(thread.evener.lastTurnEndedAt),
+    reasoningEffortLevels: thread.evener.reasoningEffortLevels ?? [],
+    supportsReasoning: thread.evener.supportsReasoning ?? false,
+    cwd: thread.cwd,
+    gitBranch: thread.gitInfo?.branch,
+    projectPath: thread.projectPath,
+    createdAt: epochSecondsToISO(thread.createdAt),
+    updatedAt: epochSecondsToISO(thread.updatedAt),
+  };
+  // A read's fields are merged over the existing model, so omitting the key
+  // when the snapshot has no root would keep a previous value and leave link
+  // actions pointing at a directory this snapshot no longer advertises.
+  // Present-and-undefined clears it; the key is then dropped so a model
+  // without a root keeps the shape it had before this field existed.
+  if (fields.artifactsDir === undefined) delete fields.artifactsDir;
+  return fields;
 }
