@@ -274,6 +274,10 @@ type watchConfig struct {
 	// budgetTripped latches the breaker to one teardown per config, so a send
 	// watch settling several frames at or past the budget reports it just once.
 	budgetTripped bool
+	// callbackBudgetOwner is the live final firing's delivery ID. Its producer
+	// owns budget teardown through source recording of the distinct notice.
+	// It is transient, never reconstructed from pending callback frames.
+	callbackBudgetOwner string
 	// createdAt is the install time of this live watch config, stamped from
 	// jm.now() in newWatchConfig and surfaced by job_list (spec §4 F2). A
 	// replacement config is a new watch, so it gets a fresh timestamp. Configs
@@ -296,6 +300,12 @@ type watchConfig struct {
 	// fired yet. Restored and detached configs never schedule, so they leave it
 	// zero exactly as they leave createdAt zero.
 	lastClockFire time.Time
+	// testOnlyAfterCallbackPending observes callback source publication with no
+	// manager lock or persistence admission held. It changes no delivery decision.
+	testOnlyAfterCallbackPending func(jobstore.WatchSendState)
+	// These observations run outside manager locks and never change a decision.
+	testOnlyAfterSendPending   func(jobstore.WatchSendState)
+	testOnlyAfterDeliveryClaim func(jobstore.WatchSendState, bool)
 }
 
 type watchArgs struct {
@@ -459,6 +469,58 @@ type watchSendDelivery struct {
 	gradientDepth int
 	fuseDepth     int
 	truncated     bool
+	production    *watchDeliveryProduction
+}
+
+// watchDeliveryProduction owns only newly committed completion members until
+// this synchronous producer attempts custody. It is neither replay inventory nor
+// an acceptance cache. Its members are guarded by jm.mu, like the claims.
+type watchDeliveryProduction struct {
+	ownerSessionID  string
+	ownerDelegateID string
+	members         []pendingWatchSendDelivery
+}
+
+// Caller holds jm.mu. Match the shell's actual owner, not the watch target.
+func (jm *jobManager) newWatchDeliveryProductionLocked() *watchDeliveryProduction {
+	owner := jm.stableOwner
+	if owner == nil {
+		owner = jm.retirementOwner
+	}
+	if owner == nil {
+		return nil
+	}
+	return &watchDeliveryProduction{ownerSessionID: owner.ID(), ownerDelegateID: jm.parentDelegateID}
+}
+
+// drainWatchDeliveryProduction transfers each claim exactly once to the normal
+// claimed delivery body. Detach before calling out, so reentrancy or a later
+// lexical cleanup cannot release a successor's newly acquired claim.
+func (jm *jobManager) drainWatchDeliveryProduction(production *watchDeliveryProduction) {
+	if production == nil {
+		return
+	}
+	failed := false
+	for {
+		jm.mu.Lock()
+		if len(production.members) == 0 {
+			jm.mu.Unlock()
+			break
+		}
+		member := production.members[0]
+		production.members[0] = pendingWatchSendDelivery{}
+		production.members = production.members[1:]
+		jm.mu.Unlock()
+		if _, err := jm.deliverClaimedPendingWatchSend(member.cfg, member.state, false); err != nil {
+			failed = true
+		}
+	}
+	if failed {
+		// The delivery helper has released every claim before existing recovery
+		// can run. A retry must not spend its only opportunity on our own claim.
+		jm.scheduleWatchTransportRetry()
+		jm.kick()
+	}
 }
 
 // withSelfInfluence stamps the breaker's classification onto a built delivery.
@@ -566,11 +628,15 @@ func (jm *jobManager) watchSendDelivered(deliveryID string) bool {
 // second caller stands down instead of racing acceptance or source settlement.
 // The settlement retry batch also takes this per-ID claim. Guarded by jm.mu.
 func (jm *jobManager) claimWatchSendDelivery(deliveryID string) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.claimWatchSendDeliveryLocked(deliveryID)
+}
+
+func (jm *jobManager) claimWatchSendDeliveryLocked(deliveryID string) bool {
 	if deliveryID == "" {
 		return true
 	}
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
 	if _, held := jm.deliveringWatchSends[deliveryID]; held {
 		return false
 	}
@@ -1978,8 +2044,16 @@ func watchKeyForConfigLocked(jm *jobManager, cfg *watchConfig) (watchKey, bool) 
 // cfg is detached, a later in-flight settle that increments past the budget
 // finds no live key and returns without re-notifying.
 func (jm *jobManager) autoClearWatchOverBudgetNotification(cfg *watchConfig) (jobNotification, bool) {
+	return jm.autoClearWatchOverBudgetNotificationForOwner(cfg, "")
+}
+
+func (jm *jobManager) autoClearWatchOverBudgetNotificationForOwner(cfg *watchConfig, owner string) (jobNotification, bool) {
 	defer jm.publishWatchActivity()
 	jm.mu.Lock()
+	if cfg.callbackBudgetOwner != "" && cfg.callbackBudgetOwner != owner {
+		jm.mu.Unlock()
+		return jobNotification{}, false
+	}
 	key, ok := watchKeyForConfigLocked(jm, cfg)
 	if !ok {
 		jm.mu.Unlock()
@@ -3306,6 +3380,14 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 	var budgetRetries []*watchConfig
 
 	jm.mu.Lock()
+	var production *watchDeliveryProduction
+	if kind == events.EventJobFinished && ev.SessionID == jm.sessionID {
+		if data, ok := jobFinishedEventData(ev.Data); ok {
+			if run := jm.running[data.JobID]; run != nil && run.terminal != nil {
+				production = run.terminal.emittingProduction
+			}
+		}
+	}
 	for _, cfg := range jm.watches {
 		dec := evaluateWatchEvent(cfg.eventSnapshot(isActiveWatchTargetLocked(jm, cfg.target)), ev)
 		cfg.eventCount = dec.eventCount
@@ -3324,7 +3406,9 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 			continue
 		}
 		if dec.send {
-			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance)))
+			d := jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance))
+			d.production = production
+			deliveries = append(deliveries, d)
 		} else {
 			n := jm.watchNotificationFromWatch(cfg, dec.notifyJobID, fmt.Sprintf("event: %s", kind), ev.Provenance)
 			// A self/parent-target job.notification watch must deliver the
@@ -3336,6 +3420,7 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 			if data, ok := jobFinishedEventData(ev.Data); ok && data.JobID != "" {
 				n = jobFinishedEventIdentity(n, data)
 			}
+			n.production = production
 			notifications = append(notifications, n)
 		}
 	}
@@ -4515,10 +4600,25 @@ func (jm *jobManager) recordWatchSendForBatch(d watchSendDelivery) (state jobsto
 	}
 	state = persistedState
 	jm.mu.Lock()
+	afterPending := d.cfg.testOnlyAfterCallbackPending
+	afterSendPending := d.cfg.testOnlyAfterSendPending
+	jm.mu.Unlock()
+	if d.callback && afterPending != nil {
+		afterPending(state)
+	}
+	if afterSendPending != nil {
+		afterSendPending(state)
+	}
+	jm.mu.Lock()
 	budget := d.cfg.budgetTripped
 	jm.mu.Unlock()
 	if budget {
-		if n, ended := jm.autoClearWatchOverBudgetNotification(d.cfg); ended {
+		owner := ""
+		if d.callback {
+			owner = d.deliveryID
+		}
+		if n, ended := jm.autoClearWatchOverBudgetNotificationForOwner(d.cfg, owner); ended {
+			n.production = d.production
 			notice = &n
 		}
 	}
@@ -4631,9 +4731,22 @@ func jobFinishedEventData(data events.EventData) (events.JobFinishedData, bool) 
 }
 
 func (jm *jobManager) deliverPendingWatchSend(cfg *watchConfig, state jobstore.WatchSendState, ensurePending bool) (bool, error) {
-	if !jm.claimWatchSendDelivery(state.DeliveryID) {
+	claimed := jm.claimWatchSendDelivery(state.DeliveryID)
+	jm.mu.Lock()
+	afterClaim := cfg.testOnlyAfterDeliveryClaim
+	jm.mu.Unlock()
+	if afterClaim != nil {
+		afterClaim(state, claimed)
+	}
+	if !claimed {
 		return false, nil
 	}
+	return jm.deliverClaimedPendingWatchSend(cfg, state, ensurePending)
+}
+
+// The caller transfers its existing exact-ID claim. This is the sole release
+// for ordinary pumps and lexical completion reservations alike.
+func (jm *jobManager) deliverClaimedPendingWatchSend(cfg *watchConfig, state jobstore.WatchSendState, ensurePending bool) (bool, error) {
 	defer jm.releaseWatchSendDeliveryClaim(state.DeliveryID)
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
 		return false, nil
@@ -5120,6 +5233,10 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	if len(record.pendingEvents) == 0 {
 		return state, false, nil
 	}
+	// Only this live producer can own its budget tail, not replay or the pure
+	// runtime-state helper, even when their source frame is a callback.
+	record.callbackProduction = d.callback
+	record.production = d.production
 	enqueueReceipt, err := jm.beginStableWatchEnqueue(record.persisted)
 	if err != nil {
 		return state, false, err
@@ -5475,11 +5592,13 @@ func (jm *jobManager) retryClaimedStableWatchSettlement(retry pendingWatchSendDe
 }
 
 type watchSendPendingRecord struct {
-	pendingEvents []jobstore.Event
-	evictions     []watchSendEviction
-	cfg           *watchConfig
-	key           jobstore.WatchSendKey
-	previous      *jobstore.WatchSendState
+	pendingEvents      []jobstore.Event
+	evictions          []watchSendEviction
+	cfg                *watchConfig
+	key                jobstore.WatchSendKey
+	previous           *jobstore.WatchSendState
+	callbackProduction bool
+	production         *watchDeliveryProduction
 	// persisted is the exact state written to the pending map and event log
 	// (post-coalescing: unioned provenance, recomputed self-influence depth).
 	persisted jobstore.WatchSendState
@@ -5627,8 +5746,17 @@ func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord,
 		}
 	}
 	persisted := record.persisted
+	if jm.noteProducedWatchFiringLocked(cfg, persisted) && record.callbackProduction && cfg.callbackBudgetOwner == "" {
+		cfg.callbackBudgetOwner = persisted.DeliveryID
+	}
+	if p := record.production; p != nil && persisted.DeliveryID != "" &&
+		persisted.ReceiverSessionID == p.ownerSessionID &&
+		(persisted.ReceiverDelegateID == "" || persisted.ReceiverDelegateID == p.ownerDelegateID) &&
+		(current == nil || current.DeliveryID != persisted.DeliveryID) &&
+		jm.claimWatchSendDeliveryLocked(persisted.DeliveryID) {
+		p.members = append(p.members, pendingWatchSendDelivery{cfg: cfg, state: persisted})
+	}
 	cfg.pending[record.key] = &persisted
-	jm.noteProducedWatchFiringLocked(cfg, persisted)
 	if detached || cfg.rejectingDelivery || jm.closing {
 		jm.rememberDetachedPendingLocked(cfg)
 	}
@@ -6640,12 +6768,16 @@ func (jm *jobManager) produceCallbackNotifications(notifications []jobNotificati
 		}
 		d := jm.watchSendSnapshot(cfg, identity, trigger, events.SessionEvent{SessionID: jm.sessionID, Provenance: n.Provenance}).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, n.Provenance))
 		d.callback = true
+		d.production = n.production
 		// Terminal notices and callbacks that entered before a clear retain their
 		// source home independently of the declarative registration.
 		jm.rememberDetachedPendingLocked(cfg)
 		d.allowAfterTerminalExpiry = true
 		jm.mu.Unlock()
 		d.frame = (&Session{}).formatJobNotificationReminder([]deliverableJobNotification{{notification: n}})
+		// This call retains ownership through recursive notice source production,
+		// including every failure return. Nested or older producers cannot release it.
+		defer jm.releaseCallbackBudgetOwner(cfg, d.deliveryID)
 		_, _, ok, notice, err := jm.recordWatchSendForBatch(d)
 		if ok {
 			produced = append(produced, n)
@@ -6668,18 +6800,26 @@ func (jm *jobManager) produceCallbackNotifications(notifications []jobNotificati
 	return produced, errors.Join(errs...)
 }
 
+func (jm *jobManager) releaseCallbackBudgetOwner(cfg *watchConfig, owner string) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if cfg.callbackBudgetOwner == owner {
+		cfg.callbackBudgetOwner = ""
+	}
+}
+
 // noteProducedWatchFiringLocked spends a firing only after its source append.
 // The per-key sequence fence prevents a partial-write retry charging it twice.
-func (jm *jobManager) noteProducedWatchFiringLocked(cfg *watchConfig, state jobstore.WatchSendState) {
+func (jm *jobManager) noteProducedWatchFiringLocked(cfg *watchConfig, state jobstore.WatchSendState) (crossedBudget bool) {
 	if cfg.producedUpdateSeq[state.Key] >= state.UpdateSeq {
-		return
+		return false
 	}
 	if cfg.producedUpdateSeq == nil {
 		cfg.producedUpdateSeq = make(map[jobstore.WatchSendKey]uint64)
 	}
 	cfg.producedUpdateSeq[state.Key] = state.UpdateSeq
 	if strings.HasPrefix(state.TriggerReason, "event: ") || strings.HasPrefix(state.TriggerReason, "output_match: ") {
-		noteConditionFireLocked(cfg)
+		_, crossedBudget = noteConditionFireLocked(cfg)
 	}
 	if state.CallbackFrame && callbackFiringReason(state.TriggerReason) {
 		jm.countWatchDeliveryLocked(cfg)
@@ -6687,6 +6827,7 @@ func (jm *jobManager) noteProducedWatchFiringLocked(cfg *watchConfig, state jobs
 	if cfg.oneShot {
 		cfg.firedPendingEnd = true
 	}
+	return crossedBudget
 }
 
 func (jm *jobManager) finishProducedWatchFiring(cfg *watchConfig) {

@@ -965,6 +965,18 @@ Transport retries do not make additional one-shot teardown attempts.
   A callback's co-produced budget notice stays in that call's batch, after the
   final firing. The retained local and supplied-receiver legacy callback rails
   route that batch under their existing wake holds, without a standalone kick.
+  The live final firing's delivery ID owns budget teardown from source commit
+  through source recording of its notice. Competing source pumps cannot take
+  that teardown or publish its notice separately.
+  This transient owner is released on failure and is not restored from source
+  history, leaving existing standalone and restart recovery responsible for debt.
+  Separately, a notifying completion reserves its exact newly committed,
+  owner-addressed watch IDs through that synchronous producer's custody attempt,
+  including terminal callback and explicit end-notice sends. Competing pumps
+  promptly skip those IDs while unreserved older work and foreign receivers
+  remain independent. Reservations release on return, including partial failure,
+  and are not restored or retained across attempts. Existing recovery owns any
+  remaining debt; no wake hold is extended to wait for it.
   Canonical custody remains per ID, not a global one-handoff promise for arbitrary
   watch events outside the notifying-completion hold described above.
 - Healthy automatic terminal notification ordering follows the bounded owner

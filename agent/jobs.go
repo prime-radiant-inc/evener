@@ -423,8 +423,9 @@ func (r *treeReservation) release() {
 }
 
 type finalizeAttempt struct {
-	done chan struct{}
-	err  error
+	done       chan struct{}
+	err        error
+	production *watchDeliveryProduction
 }
 
 type runningJobCompletion uint32
@@ -536,17 +537,19 @@ func (jm *jobManager) liveShellHandles() []liveWorkHandle {
 }
 
 type terminalJob struct {
-	status                       jobstore.Status
-	reason                       string
-	exhaustionBudget             string
-	exhaustionLimit              int
-	exitCode                     *int
-	endedAt                      time.Time
-	outputBytes                  int64
-	generation                   string
-	finished                     jobstore.Event
-	finishedForwarded            bool
-	finishedEmitted              bool
+	status            jobstore.Status
+	reason            string
+	exhaustionBudget  string
+	exhaustionLimit   int
+	exitCode          *int
+	endedAt           time.Time
+	outputBytes       int64
+	generation        string
+	finished          jobstore.Event
+	finishedForwarded bool
+	finishedEmitted   bool
+	// Non-nil only across this exact terminal's synchronous JOB_FINISHED emit.
+	emittingProduction           *watchDeliveryProduction
 	notificationPending          jobstore.Event
 	notificationPendingAppended  bool
 	notificationPendingForwarded bool
@@ -621,6 +624,7 @@ type jobNotification struct {
 	receiverHoldWake  func() func()
 	callbackConfig    *watchConfig
 	callbackTrigger   string
+	production        *watchDeliveryProduction
 }
 
 func (n jobNotification) isWatch() bool {
@@ -1813,6 +1817,9 @@ func (jm *jobManager) finalizeWithRunMode(jobID string, prepare func(*runningJob
 		return attempt.err
 	}
 	attempt := &finalizeAttempt{done: make(chan struct{})}
+	if armNotification {
+		attempt.production = jm.newWatchDeliveryProductionLocked()
+	}
 	run.finalize = attempt
 	terminal := run.terminal
 	jm.mu.Unlock()
@@ -1956,6 +1963,21 @@ func (jm *jobManager) emitFinishedJob(run *runningJob, terminal *terminalJob) {
 	if terminal == nil || terminal.finishedEmitted {
 		return
 	}
+	jm.mu.Lock()
+	var production *watchDeliveryProduction
+	if jm.running[run.rec.JobID] == run && run.terminal == terminal && run.finalize != nil {
+		production = run.finalize.production
+		terminal.emittingProduction = production
+	}
+	jm.mu.Unlock()
+	defer func() {
+		jm.mu.Lock()
+		if terminal.emittingProduction == production {
+			terminal.emittingProduction = nil
+		}
+		jm.mu.Unlock()
+		jm.drainWatchDeliveryProduction(production)
+	}()
 	jm.emitJobFinished(terminal.finished, run)
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] == run && run.terminal == terminal {
@@ -2080,6 +2102,8 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		jm.mu.Unlock()
 		return nil
 	}
+	production := jm.newWatchDeliveryProductionLocked()
+	defer jm.drainWatchDeliveryProduction(production)
 	pendingAppended := terminal.notificationPendingAppended
 	var watchNotifications []jobNotification
 	var watchDeliveries []watchSendDelivery
@@ -2112,9 +2136,16 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 			return err
 		}
 		watchNotifications, watchDeliveries = jm.completeExpiredJobWatchesLocked(run.rec.JobID, expiredWatches, watchRootProvenance)
+		for i := range watchNotifications {
+			watchNotifications[i].production = production
+		}
+		for i := range watchDeliveries {
+			watchDeliveries[i].production = production
+		}
 		jm.mu.Unlock()
 		ownNotices = jm.routeWatchNotifications(watchNotifications)
 		watchSendRecorded = jm.recordWatchSends(watchDeliveries)
+		jm.drainWatchDeliveryProduction(production)
 	} else {
 		jm.mu.Unlock()
 	}
