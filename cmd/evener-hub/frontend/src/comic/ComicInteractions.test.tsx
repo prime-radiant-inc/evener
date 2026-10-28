@@ -210,6 +210,43 @@ test("actual batches alone make ordinary input inert and preserve structured dra
   await waitFor(() => expect(document.activeElement).toBe(editor()));
 });
 
+test.each([0, 1])("answering the last question focuses only its same-ref pane %s", async (answering) => {
+  const fake = await setup();
+  const panes = ["answer-left", "answer-right"];
+  const view = render(
+    <ClientProvider client={fake}>
+      {panes.map((paneId) => (
+        <div key={paneId} data-testid={paneId}>
+          <CommittedSession paneId={paneId} params={{ ref: firstRef }} focused={false} />
+        </div>
+      ))}
+    </ClientProvider>,
+  );
+  const editors = await screen.findAllByRole("textbox", { name: "Message" });
+  replaceEditorText(editors[0]!, "LEFT_DRAFT");
+  replaceEditorText(editors[1]!, "RIGHT_DRAFT");
+  await flushPendingTurnsProjectionForTests();
+  const other = 1 - answering;
+  const otherSource = conversationPaneLifetime(
+    workspaceStore.getState().panes.find((pane) => pane.id === panes[other])!,
+  ).composer!;
+  const before = otherSource.getSnapshot();
+  act(() => ackAskUserCall(fake, firstRef, "turn_1", "final-question", "final-call"));
+  const dock = within(screen.getByTestId(panes[answering]!));
+  fireEvent.click(dock.getByRole("radio", { name: "Yes" }));
+  const otherFocused = vi.fn();
+  editors[other]!.addEventListener("focus", otherFocused);
+  act(() => connectionStore.setState({ state: "idle" }));
+  fireEvent.click(dock.getByRole("button", { name: /send answers/i }));
+  await waitFor(async () => expect(await storage.listOutbox(firstRef)).toHaveLength(1));
+  await waitFor(() => expect(editors[answering]!.closest("[inert]")).toBeNull());
+  expect(document.activeElement).toBe(editors[answering]);
+  expect(otherFocused).not.toHaveBeenCalled();
+  expect(otherSource.getSnapshot()).toEqual(before);
+  expect(editors[other]!.textContent).toBe(other === 0 ? "LEFT_DRAFT" : "RIGHT_DRAFT");
+  view.unmount();
+});
+
 test.each([true, false])("explicit approval choice %s recovers after failure without replay", async (approve) => {
   const fake = await setup();
   let reject!: (error: Error) => void;
