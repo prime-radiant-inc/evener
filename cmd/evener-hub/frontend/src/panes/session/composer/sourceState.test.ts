@@ -1099,6 +1099,15 @@ test("the originating source drops a preserved row a peer consumed during the po
     // a reload restores nothing, and the next Send starts from an empty
     // composer instead of re-delivering content the peer already has.
     expect(readComposerDraft(ref).text).toBe("");
+    // The mounted composer keeps nothing of the consumed composition: its
+    // next Send has nothing to submit through the ordinary enqueue path.
+    expect(source.getSnapshot().text).toBe("");
+    expect(source.getSnapshot().skillNames).toEqual([]);
+    expect(source.attachments.getState().items).toEqual([]);
+    await flushPendingTurnsProjectionForTests();
+    expect(
+      (await storage.listRecovery(ref)).filter((row) => row.clientMutationId !== original.clientMutationId),
+    ).toEqual([]);
     source.dispose();
     const remounted = createTestComposerSource(ref, undefined, "pane-a");
     try {
@@ -1409,6 +1418,219 @@ test("a peer consuming the reconciled row before revalidation does not resurrect
   } finally {
     storage.releasePreservation.resolve();
     storage.releaseReconcile.resolve();
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+// Preservation publishes its row as the selection before the destination's
+// adoption awaits its durable read. A destination that types, saves its
+// active row, and closes during that read still owns the newer saved work;
+// dropping the adoption at the disposed check alone would leave the
+// published selection naming the older preserved row, and a reopen would
+// restore that instead of the newer work.
+test("a destination that types, saves, and closes during the adoption read keeps its newer work selected", async () => {
+  installLocalStorage(new MemoryStorage());
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "local:dispose-during-adoption";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "row composition" }] },
+    attachments: [],
+    composerText: "row composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const preservedIntent = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "preserved composition" }] },
+    attachments: [],
+    composerText: "preserved composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "preserved composition" }] },
+  });
+  await storage.transferToRecovery(preservedIntent.clientMutationId, "rejected");
+  const preserved = await storage.getRecovery(preservedIntent.clientMutationId);
+  if (!preserved) throw new Error("missing preserved fixture");
+  const originalRead = threads.readMutationPersistence;
+  const adoptionReadReached = deferred<void>();
+  const releaseAdoptionRead = deferred<void>();
+  const readSpy = vi.spyOn(threads, "readMutationPersistence").mockImplementation(async (targetRef?: string) => {
+    const snapshot = await originalRead(targetRef);
+    if (
+      targetRef === undefined &&
+      snapshot.recovery.some((row) => row.clientMutationId === preserved.clientMutationId)
+    ) {
+      adoptionReadReached.resolve();
+      await releaseAdoptionRead.promise;
+    }
+    return snapshot;
+  });
+  const replacement = createTestComposerSource(ref, undefined, "pane-a");
+  const scope = composerSelectionScope("pane-a");
+  try {
+    replacement.setActiveRecoveryId(recovery);
+    // What the delayed preservation published while the adoption waited.
+    writeRecoverySelection(ref, scope, preserved.clientMutationId);
+    const adoption = replacement.adoptPreservedSelection(ref, original.clientMutationId, preserved);
+    await adoptionReadReached.promise;
+
+    // The destination types, saves its active row, and closes while the
+    // adoption's durable read is held.
+    replacement.editText("newer destination work");
+    await replacement.queueRecoveryPersistence(original.clientMutationId, "newer destination work", [], []);
+    replacement.dispose();
+    releaseAdoptionRead.resolve();
+    await adoption;
+    await flushPendingTurnsProjectionForTests();
+
+    // The published selection was reclaimed for the row carrying the newer
+    // saved work, so a reopen restores that work, not the older preserved
+    // composition.
+    expect(readRecoverySelection(ref, scope)).toBe(original.clientMutationId);
+    const savedRow = await storage.getRecovery(original.clientMutationId);
+    expect(savedRow?.composerText).toBe("newer destination work");
+    const remounted = createTestComposerSource(ref, undefined, "pane-a");
+    try {
+      if (!savedRow) throw new Error("missing saved row");
+      await remounted.activateRecovery(savedRow);
+      expect(remounted.getSnapshot().text).toBe("newer destination work");
+    } finally {
+      remounted.dispose();
+    }
+  } finally {
+    releaseAdoptionRead.resolve();
+    readSpy.mockRestore();
+    replacement.dispose();
+    storage.close();
+  }
+});
+
+// A failed durable read proves nothing about the preserved row. Treating it
+// as consumption retired a live lease and cleared its selection for a row
+// that still existed; the resolver now retries and only a completed read
+// may confirm consumption, while a persistent failure keeps the lease, the
+// committed recovery identity, and the stored selection untouched.
+test("a transient revalidation read failure is retried before the row is treated as consumed", async () => {
+  installLocalStorage(new MemoryStorage());
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "local:unreadable-transient";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "row composition" }] },
+    attachments: [],
+    composerText: "row composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const originalRead = threads.readMutationPersistence;
+  let unfilteredReads = 0;
+  const readSpy = vi.spyOn(threads, "readMutationPersistence").mockImplementation(async (targetRef?: string) => {
+    if (targetRef === undefined) {
+      unfilteredReads += 1;
+      if (unfilteredReads <= 2) throw new Error("transient storage failure");
+    }
+    return originalRead(targetRef);
+  });
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    const peerRow = await peer.getRecovery(original.clientMutationId);
+    if (!peerRow) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRow) },
+    );
+
+    expect(await source.queueRecoveryPersistence(original.clientMutationId, "row composition", [], [])).toBe(false);
+    await flushPendingTurnsProjectionForTests();
+    // Both transient failures were retried; the preserved row was installed.
+    expect(unfilteredReads).toBeGreaterThanOrEqual(3);
+    const preserved = (await storage.listRecovery(ref)).find(
+      (row) => row.clientMutationId !== original.clientMutationId,
+    );
+    expect(source.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId);
+  } finally {
+    readSpy.mockRestore();
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+test("a persistently unreadable revalidation keeps the lease and the selection", async () => {
+  installLocalStorage(new MemoryStorage());
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "local:unreadable-persistent";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "row composition" }] },
+    attachments: [],
+    composerText: "row composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const originalRead = threads.readMutationPersistence;
+  const readSpy = vi.spyOn(threads, "readMutationPersistence").mockImplementation(async (targetRef?: string) => {
+    if (targetRef === undefined) throw new Error("persistent storage failure");
+    return originalRead(targetRef);
+  });
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  const scope = composerSelectionScope("pane-a");
+  try {
+    await source.activateRecovery(recovery);
+    const peerRow = await peer.getRecovery(original.clientMutationId);
+    if (!peerRow) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRow) },
+    );
+
+    expect(await source.queueRecoveryPersistence(original.clientMutationId, "row composition", [], [])).toBe(false);
+    await flushPendingTurnsProjectionForTests();
+    // Nothing was proven about the row: the lease, its selection, and the
+    // draft all stay as they were, and no consumption retirement ran.
+    expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+    expect(readRecoverySelection(ref, scope)).toBe(original.clientMutationId);
+    expect(readComposerDraft(ref).text).toBe("");
+    // The durable row still exists - nothing was proven about it - but it
+    // was neither installed nor adopted.
+    const preserved = (await storage.listRecovery(ref)).find(
+      (row) => row.clientMutationId !== original.clientMutationId,
+    );
+    expect(preserved?.composerText).toBe("row composition");
+    expect(readRecoverySelection(ref, scope)).not.toBe(preserved?.clientMutationId);
+  } finally {
+    readSpy.mockRestore();
     source.dispose();
     peer.close();
     storage.close();

@@ -619,8 +619,9 @@ export function createComposerSourceState(
   ): Promise<void> {
     if (!adoptionGuardsSettled(targetRef, staleId, preserved.clientMutationId)) return;
     if (deferAdoptionIfBusy(targetRef, staleId, preserved)) return;
-    const current = await revalidatePreservedRecord(preserved);
-    if (current === undefined) return;
+    const outcome = await resolvePreservedOutcome(preserved);
+    if (outcome.kind !== "valid") return;
+    const current = outcome.record;
     // The durable read waited, so the destination may have changed under it:
     // re-run every guard. A newer deferral that claimed the slot while the
     // read was in flight wins and this adoption drops.
@@ -648,12 +649,8 @@ export function createComposerSourceState(
   }
 
   function adoptionGuardsSettled(targetRef: string, staleId: string, pendingPreservedId: string): boolean {
-    if (disposed || ref !== targetRef) return false;
+    if (ref !== targetRef) return false;
     if (currentRecoveryId() !== staleId) return false;
-    // An explicit activation is already building the next composition from
-    // this composer's visible work. Adoption must not replace that work before
-    // activation's await returns and merges it.
-    if (state.getState().recoveryActivating) return false;
     if (userEditEpoch !== selectionUserEditEpoch || operations.hasPending) {
       // Newer local work - typed text, or an attachment whose encoding is
       // still pending - invalidated this adoption. The preservation already
@@ -663,12 +660,20 @@ export function createComposerSourceState(
       // older preserved composition instead. Reclaim the selection for the
       // active row, but only when the stored choice still names this
       // adoption's preserved row, never a newer selection someone else
-      // published meanwhile.
+      // published meanwhile. This runs after disposal too: a pane that
+      // typed, saved its active row, and closed during the adoption's read
+      // still owns that newer saved work, and its ref's selection must name
+      // it or a reopen restores the older preserved composition instead.
       if (readRecoverySelection(targetRef, recoverySelectionOwnerId) === pendingPreservedId) {
         writeRecoverySelection(targetRef, recoverySelectionOwnerId, staleId);
       }
       return false;
     }
+    if (disposed) return false;
+    // An explicit activation is already building the next composition from
+    // this composer's visible work. Adoption must not replace that work before
+    // activation's await returns and merges it.
+    if (state.getState().recoveryActivating) return false;
     if (activationIncorporatedWork) return false;
     return true;
   }
@@ -695,43 +700,55 @@ export function createComposerSourceState(
     return true;
   }
 
+  // The preserved-row lifecycle every path settles through this one
+  // resolver: a preserved snapshot exists; validation of it may be in flight;
+  // a completed read confirms the row either still matches (valid) or was
+  // consumed (sent, removed, or superseded by another pane); a read that
+  // never completed is unreadable and proves nothing; disposal folds the
+  // pane's newest work into the snapshot before publication; newer local
+  // work on a destination invalidates adoption instead. Revalidation,
+  // selection publication, lease clearing, and draft fallback all read
+  // these outcomes - never a bare undefined - so the same rules apply to the
+  // originating source and every destination adoption.
+  type PreservedRowOutcome =
+    | { kind: "valid"; record: MutationRecoveryRecord }
+    | { kind: "consumed" }
+    | { kind: "unreadable" };
+
   // The preservation that captured this record awaited projection refreshes
   // after committing, so another pane could edit, remove, or send the row
-  // before any adoption - deferred or immediate - runs. Re-read the durable
-  // row before installing anything: the captured record would re-write that
-  // outcome as a fresh recovery. Drop the adoption when the row was consumed
-  // (removed or sent) or its composition no longer matches what was
-  // captured; a revision bump that kept the composition - the queue's own
-  // metadata consolidation - still adopts. A read that fails proves nothing
-  // about the row, so the adoption is dropped then too.
-  async function revalidatePreservedRecord(
-    preserved: MutationRecoveryRecord,
-  ): Promise<MutationRecoveryRecord | undefined> {
-    try {
-      // Resolve the mutation by ID across retargets: a resume that landed
-      // while preservation awaited its projection refreshes can have moved
-      // the committed row to a ref the captured record never knew. A read
-      // filtered to the captured target ref would treat the surviving row as
-      // consumed and drop it, and its selection would never be published or
-      // adopted under the new ref.
-      const { recovery } = await readMutationPersistence();
-      const current = recovery.find((row) => row.clientMutationId === preserved.clientMutationId);
-      if (current === undefined) return undefined;
-      if (
-        !sameRecoveryComposition(
-          current,
-          (preserved.payload.input ?? []) as InputItem[],
-          preserved.composerText ?? "",
-          preserved.composerMentions,
-          preserved.attachments,
-        )
-      ) {
-        return undefined;
+  // before any adoption - deferred or immediate - runs. One durable read
+  // decides: resolved by ID across retargets (a resume that landed while
+  // preservation awaited can have moved the row to a ref the captured record
+  // never knew), composition-checked so a revision bump that kept the
+  // composition - the queue's own metadata consolidation - still reads as
+  // valid. Only a read that completed may confirm consumption; a read that
+  // fails is retried, and a persistent failure stays unreadable rather than
+  // retiring a live lease for a row that may still exist.
+  async function resolvePreservedOutcome(preserved: MutationRecoveryRecord): Promise<PreservedRowOutcome> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const { recovery } = await readMutationPersistence();
+        const current = recovery.find((row) => row.clientMutationId === preserved.clientMutationId);
+        if (current === undefined) return { kind: "consumed" };
+        if (
+          !sameRecoveryComposition(
+            current,
+            (preserved.payload.input ?? []) as InputItem[],
+            preserved.composerText ?? "",
+            preserved.composerMentions,
+            preserved.attachments,
+          )
+        ) {
+          return { kind: "consumed" };
+        }
+        return { kind: "valid", record: current };
+      } catch {
+        // Unreadable: nothing is proven about the row. Retry before
+        // deciding anything.
       }
-      return current;
-    } catch {
-      return undefined;
     }
+    return { kind: "unreadable" };
   }
 
   async function flushDeferredAdoption(): Promise<void> {
@@ -911,6 +928,7 @@ export function createComposerSourceState(
             let destinationOwnsNewer = false;
             let preservedBeforeRevalidation: MutationRecoveryRecord | undefined;
             let consumedAfterPreservation = false;
+            let validationUnreadable = false;
             beginPendingPreservation(recoverySelectionOwnerId, clientMutationId);
             try {
               preserved =
@@ -940,34 +958,49 @@ export function createComposerSourceState(
               // send, or edit the preserved row before this source installs
               // it. Installing the captured snapshot would let a later
               // autosave resurrect removed content or restore a superseded
-              // composition, so re-read the durable row with the same
-              // validation every adoption uses and drop what no longer
-              // matches.
+              // composition, so the same resolver every adoption uses
+              // settles this row first.
               preservedBeforeRevalidation = preserved;
-              preserved = preserved === undefined ? undefined : await revalidatePreservedRecord(preserved);
-              // A row that existed before the read and is gone or changed
-              // after it was consumed by a peer - sent or discarded - not a
-              // preservation failure.
-              consumedAfterPreservation = preserved === undefined && preservedBeforeRevalidation !== undefined;
-              if (!disposalIncorporated) {
-                // A disposal that lands during that read leaves the pane's
-                // newest work - typing and settled attachments gained while
-                // the read was in flight - only in the disposal snapshot:
-                // queued saves abort on the disposed source. Reconcile the
-                // latest snapshot before the selection is published, exactly
-                // like a disposal caught before the read.
-                preserved = await reconcileDisposalComposition(
-                  clientMutationId,
-                  localDraftRevisionId,
-                  refusalComposition,
-                  preserved,
-                );
-              }
-              destinationOwnsNewer =
-                preserved !== undefined &&
-                destinationHasNewerEdits(recoverySelectionOwnerId, preserved.targetRef, clientMutationId, source);
-              if (preserved && rememberPreservedSelection(preserved, clientMutationId)) {
-                notifyPreservedSelection(preserved.targetRef, clientMutationId, preserved);
+              const outcome = preserved === undefined ? undefined : await resolvePreservedOutcome(preserved);
+              if (outcome === undefined) {
+                // Preservation never produced a durable row.
+              } else if (outcome.kind === "valid") {
+                preserved = outcome.record;
+                if (!disposalIncorporated) {
+                  // A disposal that lands during the resolver's read leaves
+                  // the pane's newest work - typing and settled attachments
+                  // gained while the read was in flight - only in the
+                  // disposal snapshot: queued saves abort on the disposed
+                  // source. Reconcile the latest snapshot before the
+                  // selection is published, exactly like a disposal caught
+                  // before the read.
+                  preserved = await reconcileDisposalComposition(
+                    clientMutationId,
+                    localDraftRevisionId,
+                    refusalComposition,
+                    preserved,
+                  );
+                }
+                destinationOwnsNewer =
+                  preserved !== undefined &&
+                  destinationHasNewerEdits(recoverySelectionOwnerId, preserved.targetRef, clientMutationId, source);
+                if (preserved && rememberPreservedSelection(preserved, clientMutationId)) {
+                  notifyPreservedSelection(preserved.targetRef, clientMutationId, preserved);
+                }
+              } else if (outcome.kind === "consumed") {
+                // Only a read that completed may confirm consumption. A row
+                // that existed before the read and is gone or changed after
+                // it was sent, removed, or superseded by a peer - not a
+                // preservation failure.
+                consumedAfterPreservation = true;
+                preserved = undefined;
+              } else {
+                // A read that never completed proves nothing about the row.
+                // Keep the lease, the committed recovery identity, and the
+                // stored selection exactly as they are; the next save
+                // revalidates against the durable row again.
+                validationUnreadable = true;
+                preserved = undefined;
               }
             } finally {
               endPendingPreservation(recoverySelectionOwnerId, clientMutationId);
@@ -975,7 +1008,8 @@ export function createComposerSourceState(
             if (
               !disposed &&
               currentRecoveryId() === clientMutationId &&
-              recoveryReplacementEpochRef.current === replacementEpoch
+              recoveryReplacementEpochRef.current === replacementEpoch &&
+              !validationUnreadable
             ) {
               if (preserved) {
                 // Own the returned row, including the identical-composition
@@ -998,8 +1032,12 @@ export function createComposerSourceState(
                 // the lease must not rewrite the consumed composition as an
                 // ordinary draft: a reload would restore it, and the next
                 // Send would deliver content the peer already has a second
-                // time. Newer local edits still fall back to the draft
-                // below.
+                // time. The mounted composer must not keep showing it
+                // either - its next Send takes the ordinary enqueue path and
+                // would submit the same work again - so the unchanged
+                // consumed composition is cleared with the lease. Newer
+                // local edits still fall back to the draft below.
+                clearConsumedComposition();
                 setActiveRecoveryId(null);
               } else {
                 // Preservation failed, so nothing durable carries the images.
@@ -1160,6 +1198,22 @@ export function createComposerSourceState(
     // Preserve the disposal snapshot under a fresh recovery owner so the
     // advanced row does not silently swallow it.
     return (await preserveStaleRecovery(clientMutationId, localDraftRevisionId, disposalComposition)) ?? preserved;
+  }
+
+  // A retirement that drops a consumed row must leave the mounted composer
+  // with nothing to submit: the visible text, selections, and attachments
+  // came from that row, and keeping them would let the next Send take the
+  // ordinary enqueue path and deliver the same work again. This mirrors the
+  // user clearing the composer - no edit epoch changes - so ownership
+  // bookkeeping still reads the same epochs afterwards.
+  function clearConsumedComposition(): void {
+    markRestore();
+    updateText("");
+    updateSkillNames([]);
+    updateSelectionMeta({ text: "", skillNames: [], commandNames: [], mentions: undefined });
+    operations.replaceWithSettled([]);
+    recoveryOwnsLocalDraftRef.current = false;
+    draftEditRevisionRef.current += 1;
   }
 
   function activateRecovery(record: MutationRecoveryRecord): Promise<boolean> {
