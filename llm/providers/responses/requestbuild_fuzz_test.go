@@ -1,7 +1,6 @@
 package responses
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -227,6 +226,16 @@ func FuzzResponsesBuildBody(f *testing.F) {
 	// error; an unknown mode with a name rides the backward-compatible map.
 	f.Add("named", "s", "u", []byte(`{}`), []byte(`{}`), byte(4), byte(0), byte(0))
 	f.Add("fuzz-mode", "s", "u", []byte(`{}`), []byte(`{}`), byte(64), byte(0), byte(0))
+	// The mode=model arm with a populated name: the recognized mode names
+	// emit their normalized wire strings, not the backward-compatible map.
+	f.Add("", "s", "u", []byte(`{}`), []byte(`{}`), byte(64), byte(0), byte(0))
+	f.Add("auto", "s", "u", []byte(`{}`), []byte(`{}`), byte(64), byte(0), byte(0))
+	f.Add("none", "s", "u", []byte(`{}`), []byte(`{}`), byte(64), byte(0), byte(0))
+	f.Add("required", "s", "u", []byte(`{}`), []byte(`{}`), byte(64), byte(0), byte(0))
+	f.Add("Named", "s", "u", []byte(`{}`), []byte(`{}`), byte(64), byte(0), byte(0))
+	// The unknown-role drop must not trip over user text that legitimately
+	// contains the sentinel word.
+	f.Add("m", "s", "martian", []byte(`{}`), []byte(`{}`), byte(0), byte(0), byte(10))
 	// A reasoning summary cap of "none" and the request-level control fields
 	// buildBody emits only when the request carries them.
 	f.Add("m", "s", "u", []byte(`{}`), []byte(`{}`), byte(2), byte(19), byte(0))
@@ -358,9 +367,24 @@ func FuzzResponsesBuildBody(f *testing.F) {
 			}
 		}
 		if sel%5 == 4 && sel&64 == 64 {
-			tc, _ := body["tool_choice"].(map[string]any)
-			if tc == nil || tc["type"] != "function" || tc["name"] != "t" {
-				t.Fatalf("tool_choice = %#v, want the backward-compatible forced-function map", body["tool_choice"])
+			// The mode is the fuzzed model string, so the expectation must be
+			// derived from the mode toResponsesToolChoice normalizes: the
+			// recognized names emit their wire strings (empty maps to "auto"),
+			// while "named" and every unrecognized mode ride the name-keyed map.
+			mode := strings.ToLower(strings.TrimSpace(model))
+			if mode == "" {
+				mode = "auto"
+			}
+			switch mode {
+			case "auto", "none", "required":
+				if body["tool_choice"] != mode {
+					t.Fatalf("tool_choice = %#v, want the normalized mode %q", body["tool_choice"], mode)
+				}
+			default:
+				tc, _ := body["tool_choice"].(map[string]any)
+				if tc == nil || tc["type"] != "function" || tc["name"] != "t" {
+					t.Fatalf("tool_choice = %#v, want the name-keyed function map", body["tool_choice"])
+				}
 			}
 		}
 		if sel&128 == 128 && capSel&2 == 2 {
@@ -499,8 +523,16 @@ func FuzzResponsesBuildBody(f *testing.F) {
 				}
 			}
 		case 10:
-			if bytes.Contains(inputJSON, []byte("martian")) {
-				t.Fatalf("an unknown role must leave no wire trace: %s", inputJSON)
+			// An unknown role must leave the input byte-identical to the same
+			// request built without it: the fuzzed strings can legitimately
+			// contain the sentinel word, so a substring scan is not an oracle.
+			plain := buildFuzzResponsesRequest(model, system, user, toolArgs, toolParams, sel, capSel, shapeSel-shapeSel%12)
+			plainBody, plainErr := buildBody(plain, res, sel&8 == 8)
+			if plainErr != nil {
+				t.Fatalf("the no-unknown-role variant must build wherever the unknown-role one does: %v", plainErr)
+			}
+			if got, want := jsonOf(t, body["input"]), jsonOf(t, plainBody["input"]); got != want {
+				t.Fatalf("an unknown role must leave no wire trace:\nwith: %s\nwithout: %s", got, want)
 			}
 		case 11:
 			if got := jsonOf(t, body["include"]); got != `["`+encryptedReasoning+`"]` {

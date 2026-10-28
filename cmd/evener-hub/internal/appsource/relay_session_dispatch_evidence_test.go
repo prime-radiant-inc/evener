@@ -220,13 +220,22 @@ func TestRelaySessionFlushWaitReturnsSessionClosure(t *testing.T) {
 	t.Parallel()
 	fx := flushWaitFixture(t)
 
-	// The parked read has already committed to the closed-session case the
-	// moment the session context closes (the flush acknowledgement cannot
-	// complete while the hook holds the publisher). Release the publisher
-	// right away: the session's epoch revocation needs the publication
-	// boundary the entry hook holds, so parking it past the cancellation
-	// would wedge the disconnect chain.
+	// Close the session the way production's closure paths do (maybeIdle sets
+	// closed under the lock it cancels from). A bare context cancellation
+	// leaves closed false — a state production never produces — so once the
+	// released publication lets the dying listener drop the pre-cut delivery,
+	// the flush barrier can close before the parked read resumes, and a read
+	// that selects the flushed arm would pass the rejoin validity check and
+	// report success. With the closed flag established first, either select
+	// arm refuses the read.
+	//
+	// The publisher is released right after: the session's epoch revocation
+	// needs the publication boundary the entry hook holds, so parking it
+	// past the cancellation would wedge the disconnect chain.
+	fx.session.mu.Lock()
+	fx.session.closed = true
 	fx.session.cancel()
+	fx.session.mu.Unlock()
 	fx.barrier.releasePublisher()
 
 	got := <-fx.outcome
