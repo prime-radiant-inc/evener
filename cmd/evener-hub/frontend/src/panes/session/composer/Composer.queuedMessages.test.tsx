@@ -835,6 +835,10 @@ test("two offline edits consolidate one durable owner and preserve typing during
 });
 
 test("reload restores the selected preserved row over an older rejected peer row", async () => {
+  // The mount-restore resolves its pick through IndexedDB, so its publication
+  // can land between assertions under load; expect only React's act warnings
+  // for those updates.
+  const actWarnings = vi.spyOn(console, "error").mockImplementation(() => {});
   const storage = new MutationOutboxIndexedDB();
   const { fake } = await setup(false, storage);
   const peerInput = [{ type: "text" as const, text: "older peer work" }];
@@ -882,6 +886,8 @@ test("reload restores the selected preserved row over an older rejected peer row
     expect((await resolveRecoveryPick("root", (rowId) => storage.getRecovery(rowId)))?.row.clientMutationId).toBe(
       preserved.clientMutationId,
     );
+    expect(actWarnings.mock.calls.every(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
+    actWarnings.mockRestore();
   } finally {
     act(() => cleanup());
     await act(async () => {
