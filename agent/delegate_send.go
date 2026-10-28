@@ -424,17 +424,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if waiter == nil {
 		return stableDelegateSendOutcome{result: result}
 	}
-	waitCtx := ctx
-	if maxWaitMS > 0 {
-		var cancel context.CancelFunc
-		waitDuration := time.Duration(maxWaitMS) * time.Millisecond
-		waitCtx, cancel = context.WithTimeout(ctx, waitDuration)
-		defer cancel()
-		if observe := s.cfg.testOnly.delegateInlineWaitReady; observe != nil {
-			observe(waitCtx, waitDuration)
-		}
-	}
-	resolution := s.delegateController.waitForDelegateInline(waitCtx, waiter)
+	resolution := runtime.waitInline(ctx, waiter, maxWaitMS)
 	if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
 		result.TimedOut = true
 		return stableDelegateSendOutcome{result: result}
@@ -529,6 +519,23 @@ func descriptorProvenance(descriptor delegatestore.Descriptor) *provenance.Causa
 	return provenance.Clone(descriptor.Provenance)
 }
 
+// waitInline waits for the inline waiter to resolve, bounded by maxWaitMS when
+// positive.
+func (runtime delegateRuntime) waitInline(ctx context.Context, waiter *delegateInlineWaiter, maxWaitMS int) delegateInlineResolution {
+	s := runtime.owner
+	waitCtx := ctx
+	if maxWaitMS > 0 {
+		var cancel context.CancelFunc
+		waitDuration := time.Duration(maxWaitMS) * time.Millisecond
+		waitCtx, cancel = context.WithTimeout(ctx, waitDuration)
+		defer cancel()
+		if observe := s.cfg.testOnly.delegateInlineWaitReady; observe != nil {
+			observe(waitCtx, waitDuration)
+		}
+	}
+	return s.delegateController.waitForDelegateInline(waitCtx, waiter)
+}
+
 func (runtime delegateRuntime) failStableSendStart(ctx context.Context, started delegateStartCommit, delegateID string, waiter *delegateInlineWaiter, maxWaitMS int, cause error) stableDelegateSendOutcome {
 	return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, nil)
 }
@@ -558,17 +565,7 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 		// max_wait (#3502).
 		return stableDelegateSendOutcome{result: result}
 	}
-	waitCtx := ctx
-	if maxWaitMS > 0 {
-		var cancel context.CancelFunc
-		waitDuration := time.Duration(maxWaitMS) * time.Millisecond
-		waitCtx, cancel = context.WithTimeout(ctx, waitDuration)
-		defer cancel()
-		if observe := runtime.owner.cfg.testOnly.delegateInlineWaitReady; observe != nil {
-			observe(waitCtx, waitDuration)
-		}
-	}
-	resolution := runtime.owner.delegateController.waitForDelegateInline(waitCtx, waiter)
+	resolution := runtime.waitInline(ctx, waiter, maxWaitMS)
 	if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
 		result.TimedOut = true
 		return stableDelegateSendOutcome{result: result}
