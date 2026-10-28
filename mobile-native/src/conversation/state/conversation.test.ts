@@ -13,8 +13,11 @@ import type {
 	ThreadCapabilities,
 	ThreadItem,
 	ThreadItemPosition,
+	ThreadStatus,
+	ThreadStatusChangedParams,
 	ThreadTurnsListResponse,
 	Turn,
+	WarningParams,
 } from "@evener/appwire-client";
 import {
 	hydrateThread,
@@ -239,6 +242,31 @@ function historyUpdated(params: Partial<HistoryUpdatedParams>): AnyNotification 
 			snapshot: { incarnation: "inc-1", length: 1 },
 			...params,
 		},
+	} as AnyNotification;
+}
+
+// A thread status frame for this thread: a test names the status the frame
+// lands, and any field beyond the routing shell (askPending, capabilities)
+// arrives through `over`, spread after the defaults.
+function statusChanged(status: ThreadStatus, over: Partial<ThreadStatusChangedParams> = {}): AnyNotification {
+	return {
+		method: "thread/status/changed",
+		params: { threadId: "thread-1", ref: "ref-1", status, ...over },
+	} as AnyNotification;
+}
+
+// A hub-pushed resync for this thread: the frame carries nothing but its
+// routing identity, so a test names only the ids it is about.
+function resyncFrame(threadId = "thread-1", ref = "ref-1"): AnyNotification {
+	return { method: "evener/thread/resync", params: { threadId, ref } } as AnyNotification;
+}
+
+// A daemon warning for this thread: the diagnostic fields a test wants
+// delivered (message, title, hint) arrive as the params, after the defaults.
+function warningFrame(params: Partial<WarningParams>): AnyNotification {
+	return {
+		method: "warning",
+		params: { threadId: "thread-1", ref: "ref-1", ...params },
 	} as AnyNotification;
 }
 
@@ -1674,10 +1702,7 @@ describe("ConversationStore", () => {
 			await store.getState().open(service, "ref-1");
 			await expect(store.getState().send(service, textInput("x"))).rejects.toThrow(SEND_UNAVAILABLE);
 			// queue should work since queue capability is true, once a turn runs
-			store.getState().applyNotification({
-				method: "thread/status/changed",
-				params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" } },
-			} as AnyNotification);
+			store.getState().applyNotification(statusChanged({ type: "active" }));
 			await store.getState().queue(service, textInput("x"));
 			expect(store.getState().error).toBeNull();
 		});
@@ -1693,10 +1718,7 @@ describe("ConversationStore", () => {
 			await store.getState().open(service, "ref-1");
 			await expect(store.getState().queue(service, textInput("x"))).rejects.toThrow(QUEUE_UNAVAILABLE);
 			// send should work since send capability is true, once the turn ends
-			store.getState().applyNotification({
-				method: "thread/status/changed",
-				params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" } },
-			} as AnyNotification);
+			store.getState().applyNotification(statusChanged({ type: "idle" }));
 			await store.getState().send(service, textInput("x"));
 			expect(store.getState().error).toBeNull();
 		});
@@ -2604,14 +2626,9 @@ describe("ConversationStore", () => {
 			const store = createConversationStore();
 			await store.getState().open(service, "ref-1");
 			const originalConv = store.getState().conversation;
-			store.getState().applyNotification({
-				method: "thread/status/changed",
-				params: {
-					threadId: "thread-other",
-					ref: "ref-other",
-					status: { type: "running" },
-				},
-			} as AnyNotification);
+			store
+				.getState()
+				.applyNotification(statusChanged({ type: "running" }, { threadId: "thread-other", ref: "ref-other" }));
 			expect(store.getState().conversation).toBe(originalConv);
 		});
 
@@ -2619,14 +2636,7 @@ describe("ConversationStore", () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
 			await store.getState().open(service, "ref-1");
-			store.getState().applyNotification({
-				method: "thread/status/changed",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					status: { type: "running" },
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(statusChanged({ type: "running" }));
 			expect(store.getState().conversation?.status.type).toBe("running");
 		});
 
@@ -2784,10 +2794,7 @@ describe("ConversationStore", () => {
 			// The failed completion ends the turn; its status frame has not arrived.
 			expect(store.getState().conversation?.status.type).toBe("active");
 			expect(store.getState().conversation?.activeTurnId).toBeUndefined();
-			store.getState().applyNotification({
-				method: "thread/status/changed",
-				params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" } },
-			} as AnyNotification);
+			store.getState().applyNotification(statusChanged({ type: "idle" }));
 			expect(store.getState().conversation?.status.type).toBe("idle");
 		});
 
@@ -2835,10 +2842,7 @@ describe("ConversationStore", () => {
 			// The failure exit's own status frame is the authority. With work still
 			// queued it announces active, so the session stays active and Send stays
 			// closed with the entry still waiting to run.
-			store.getState().applyNotification({
-				method: "thread/status/changed",
-				params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" } },
-			} as AnyNotification);
+			store.getState().applyNotification(statusChanged({ type: "active" }));
 			const announced = store.getState().conversation;
 			if (announced === null) throw new Error("conversation gone");
 			expect(announced.status.type).toBe("active");
@@ -2887,10 +2891,7 @@ describe("ConversationStore", () => {
 				}),
 			);
 			expect(store.getState().conversation?.status.type).toBe("active");
-			store.getState().applyNotification({
-				method: "thread/status/changed",
-				params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" } },
-			} as AnyNotification);
+			store.getState().applyNotification(statusChanged({ type: "idle" }));
 			expect(store.getState().conversation?.status.type).toBe("idle");
 
 			const other = new FakeConversationService();
@@ -2919,10 +2920,7 @@ describe("ConversationStore", () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
 			await store.getState().open(service, "ref-1");
-			store.getState().applyNotification({
-				method: "thread/status/changed",
-				params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" } },
-			} as AnyNotification);
+			store.getState().applyNotification(statusChanged({ type: "idle" }));
 			await expect(store.getState().interrupt(service)).rejects.toThrow(/no active turn/);
 			expect(service.interruptCallCount).toBe(0);
 		});
@@ -3022,14 +3020,7 @@ describe("ConversationStore", () => {
 			expect(store.getState().conversation?.threadId).toBe("thread-2");
 			// A stale notification for ref-1 should be dropped: ref-2 keeps the
 			// status it opened with rather than taking ref-1's idle.
-			store.getState().applyNotification({
-				method: "thread/status/changed",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					status: { type: "idle" },
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(statusChanged({ type: "idle" }));
 			expect(store.getState().conversation?.threadId).toBe("thread-2");
 			expect(store.getState().conversation?.status.type).toBe("active");
 		});
@@ -3046,10 +3037,7 @@ describe("ConversationStore", () => {
 			const ctrl = makeControlledRead(service);
 			const opening = store.getState().openProjected(service, "ref-1");
 			await ctrl.started(1);
-			service.notificationHandler?.({
-				method: "thread/status/changed",
-				params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" } },
-			} as AnyNotification);
+			service.notificationHandler?.(statusChanged({ type: "active" }));
 			await ctrl.ready(1);
 			ctrl.release();
 			await ctrl.completed(1);
@@ -5166,18 +5154,9 @@ describe("ConversationStore", () => {
 
 			// Emit multiple resync notifications — they should coalesce to one
 			// rehydrate (one additional readProjection call).
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
+			store.getState().applyNotification(resyncFrame());
+			store.getState().applyNotification(resyncFrame());
 
 			// The internal coalescer schedules rehydrate via microtask.
 			// Wait for microtasks to flush.
@@ -5438,18 +5417,9 @@ describe("ConversationStore", () => {
 
 			// Emit multiple resync notifications.
 			service.readProjectionCalls = []; // reset count
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
+			store.getState().applyNotification(resyncFrame());
+			store.getState().applyNotification(resyncFrame());
 
 			// M1: deterministic barrier — await started, yield so orig resolves and
 			// the release gate is pushed, then set up completed and release.
@@ -5520,10 +5490,7 @@ describe("ConversationStore", () => {
 			// The item alone is not the whole signal (#1731 round 4): the status
 			// frame that lands on the same boundary carries askPending, and that
 			// is what liveAskQuestions gates the question row on.
-			store.getState().applyNotification({
-				method: "thread/status/changed",
-				params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" }, askPending: true },
-			} as AnyNotification);
+			store.getState().applyNotification(statusChanged({ type: "active" }, { askPending: true }));
 			await Promise.resolve();
 			await Promise.resolve();
 			await Promise.resolve();
@@ -5571,10 +5538,7 @@ describe("ConversationStore", () => {
 					],
 				}),
 			);
-			store.getState().applyNotification({
-				method: "thread/status/changed",
-				params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" }, askPending: true },
-			} as AnyNotification);
+			store.getState().applyNotification(statusChanged({ type: "active" }, { askPending: true }));
 			await Promise.resolve();
 			await Promise.resolve();
 			await Promise.resolve();
@@ -5691,10 +5655,7 @@ describe("ConversationStore", () => {
 			expect(store.getState().conversation?.activeTurnId).toBeUndefined();
 			const initialReads = service.readProjectionCalls.length;
 
-			store.getState().applyNotification({
-				method: "warning",
-				params: { threadId: "thread-1", ref: "ref-1", message: "careful" },
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ message: "careful" }));
 			await Promise.resolve();
 			await Promise.resolve();
 			await Promise.resolve();
@@ -5718,10 +5679,7 @@ describe("ConversationStore", () => {
 			);
 			const store = createConversationStore();
 			await store.getState().openProjected(service, "ref-1");
-			store.getState().applyNotification({
-				method: "warning",
-				params: { threadId: "thread-1", ref: "ref-1", message: "careful" },
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ message: "careful" }));
 			expect(store.getState().conversation?.items.filter((row) => row.kind === "failure")).toHaveLength(1);
 			const initialReads = service.readProjectionCalls.length;
 
@@ -5769,10 +5727,7 @@ describe("ConversationStore", () => {
 			await store.getState().loadOlder(service);
 			expect(store.getState().conversation?.turns.map((turn) => turn.id)).toEqual(["t0", "t1"]);
 
-			store.getState().applyNotification({
-				method: "warning",
-				params: { threadId: "thread-1", ref: "ref-1", message: "careful" },
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ message: "careful" }));
 			expect(store.getState().conversation?.items.filter((row) => row.kind === "failure")).toHaveLength(1);
 
 			service.readProjectionResult = makeReadProjectionResult(
@@ -5835,10 +5790,7 @@ describe("ConversationStore", () => {
 					],
 				}),
 			);
-			store.getState().applyNotification({
-				method: "warning",
-				params: { threadId: "thread-1", ref: "ref-1", message: "careful" },
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ message: "careful" }));
 
 			// The settle's reread serves the turn's transcript content under a
 			// NEW bare id, carrying the real message the transcript persisted:
@@ -6001,10 +5953,7 @@ describe("ConversationStore", () => {
 			for (let i = 0; i < 500; i++) older.push(userMessageItem(`u${i}`, ""));
 			const { store } = await openProjectedThreadPair(older);
 			expect(rows(store)).toHaveLength(500);
-			store.getState().applyNotification({
-				method: "warning",
-				params: { threadId: "thread-1", ref: "ref-1", message: "test warning" },
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ message: "test warning" }));
 			const items = rows(store);
 			expect(items.length).toBeLessThanOrEqual(500);
 			// The newest rows are retained: the warning is the last one. Main's
@@ -6065,10 +6014,7 @@ describe("ConversationStore", () => {
 		// transition clears, the lifetime main's live-owned rows gave it.
 		it("shows a warning that arrives with no active turn, and keeps it through rebuilds and transitions", async () => {
 			const store = await openProjectedThread(makeThread());
-			store.getState().applyNotification({
-				method: "warning",
-				params: { threadId: "thread-1", ref: "ref-1", title: "Provider", message: "careful" },
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "careful" }));
 			// Displayed at once: title as its own field, the message as detail.
 			expect(rows(store)).toEqual([
 				expect.objectContaining({
@@ -6088,10 +6034,7 @@ describe("ConversationStore", () => {
 			// A resync reread publishes a snapshot that does not carry the
 			// warning (warnings are never persisted) — the notice survives that
 			// rebuild too, from the transient surface, not the transcript.
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await Promise.resolve();
 			await Promise.resolve();
 			await Promise.resolve();
@@ -6123,10 +6066,7 @@ describe("ConversationStore", () => {
 				true,
 			);
 			expect(rows(store).map((row) => row.id)).toEqual(["u1", "a1"]);
-			store.getState().applyNotification({
-				method: "warning",
-				params: { threadId: "thread-1", ref: "ref-1", title: "Provider", message: "careful" },
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "careful" }));
 			// Newer messages arrive after the notice did.
 			store.getState().applyNotification(
 				historyUpdated({
@@ -6176,24 +6116,8 @@ describe("ConversationStore", () => {
 			);
 			expect(rows(store).map((row) => row.id)).toEqual(["u1", "a1"]);
 			// Two notices land back-to-back, with no model row between them.
-			store.getState().applyNotification({
-				method: "warning",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					title: "Provider",
-					message: "first warning",
-				},
-			} as AnyNotification);
-			store.getState().applyNotification({
-				method: "warning",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					title: "Provider",
-					message: "second warning",
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "first warning" }));
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "second warning" }));
 			// Both notices hold the arrival position — after a1, in the order
 			// they arrived.
 			expect(rows(store).map((row) => row.id)).toEqual(["u1", "a1", "warning:1", "warning:2"]);
@@ -6251,15 +6175,7 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(service, "ref-1");
 			expect(store.getState().conversation?.activeTurnId).toBe("t-outside");
 			const readsBefore = service.readProjectionCalls.length;
-			store.getState().applyNotification({
-				method: "warning",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					title: "Provider",
-					message: "careful",
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "careful" }));
 			// Displayed at once, though the reducer could not place it: the
 			// notice seats after the last model row, from the transient surface.
 			expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
@@ -6315,15 +6231,7 @@ describe("ConversationStore", () => {
 			const store = createConversationStore();
 			await store.getState().openProjected(service, "ref-1");
 			expect(rows(store).map((row) => [row.kind, row.id])).toEqual([["activity", "a-tool"]]);
-			store.getState().applyNotification({
-				method: "warning",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					title: "Provider",
-					message: "careful",
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "careful" }));
 			expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
 				["activity", "a-tool"],
 				["failure", "warning:1"],
@@ -6401,15 +6309,7 @@ describe("ConversationStore", () => {
 			const store = createConversationStore();
 			await store.getState().openProjected(service, "ref-1");
 			expect(rows(store).map((row) => [row.kind, row.id])).toEqual([["activity", "a-tool"]]);
-			store.getState().applyNotification({
-				method: "warning",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					title: "Provider",
-					message: "careful",
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "careful" }));
 			expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
 				["activity", "a-tool"],
 				["failure", "warning:1"],
@@ -6480,15 +6380,7 @@ describe("ConversationStore", () => {
 				summaryOnly: true,
 				detail: { description: "first audit" },
 			});
-			store.getState().applyNotification({
-				method: "warning",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					title: "Provider",
-					message: "careful",
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "careful" }));
 			// A newer same-family activity arrives AFTER the notice, on a new
 			// turn: the run splits at the anchored member, and BOTH sub-runs
 			// re-project.
@@ -6550,15 +6442,7 @@ describe("ConversationStore", () => {
 				"a-tool",
 				"b-tool",
 			]);
-			store.getState().applyNotification({
-				method: "warning",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					title: "Provider",
-					message: "careful",
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "careful" }));
 			// A newer same-family activity arrives AFTER the notice, on a new turn:
 			// the run splits at the anchored member (b-tool), leaving the tail as a
 			// sub-run of the single new member.
@@ -6613,15 +6497,7 @@ describe("ConversationStore", () => {
 				"a-tool",
 				"b-tool",
 			]);
-			store.getState().applyNotification({
-				method: "warning",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					title: "Provider",
-					message: "careful",
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "careful" }));
 			expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
 				["activity", "a-tool"],
 				["failure", "warning:1"],
@@ -6684,15 +6560,7 @@ describe("ConversationStore", () => {
 			]);
 			// An idle warning lands while the attachments row is the nearest
 			// model row: the notice is displayed at once.
-			store.getState().applyNotification({
-				method: "warning",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					title: "Provider",
-					message: "careful",
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "careful" }));
 			expect(rows(store).some((row) => row.kind === "failure" && row.title === "Provider")).toBe(true);
 			// The source is reissued under a new wire id with the same transcript
 			// key and says nothing about images: the reducer folds it by identity,
@@ -6776,15 +6644,7 @@ describe("ConversationStore", () => {
 			expect(rows(store).map((row) => row.kind)).toEqual(["user", "attachments"]);
 			// An idle warning lands while the attachments row is the nearest
 			// model row.
-			store.getState().applyNotification({
-				method: "warning",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					title: "Provider",
-					message: "careful",
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "careful" }));
 			expect(rows(store)).toHaveLength(3);
 			// Grow the transcript past the retained cap so the cut lands right
 			// after the source row: [user, notice, attachments, a1..a498] is
@@ -6855,15 +6715,7 @@ describe("ConversationStore", () => {
 			// An idle warning lands while B's attachments row is the nearest
 			// model row: it anchors through B's stable source identity and
 			// seats after the whole run, at the position it arrived at.
-			store.getState().applyNotification({
-				method: "warning",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					title: "Provider",
-					message: "careful",
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "careful" }));
 			expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
 				["activity", "call-a"],
 				["attachments", "call-a:attachments"],
@@ -10704,10 +10556,7 @@ describe("ConversationStore", () => {
 				conversation: disjoint,
 				olderCursor: "cursor-9",
 			};
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			const awaitRehydrateRead = async (count: number): Promise<void> => {
 				for (let i = 0; i < 40 && service.readProjectionCalls.length < count; i++) {
 					await Promise.resolve();
@@ -11400,10 +11249,7 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(serviceA, "ref-A");
 			// Queue a rehydrate for A via resync — the scheduler captures the
 			// binding (serviceA+refA+epoch) but defers to a microtask.
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-A", ref: "ref-A" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame("thread-A", "ref-A"));
 			// Now set up serviceB and switch to B before the scheduler fires.
 			const serviceB = new FakeConversationService();
 			serviceB.readProjectionResult = {
@@ -11429,10 +11275,7 @@ describe("ConversationStore", () => {
 			const store = createConversationStore();
 			await store.getState().openProjected(serviceA, "ref-A");
 			// Trigger a rehydrate then immediately close.
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-A", ref: "ref-A" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame("thread-A", "ref-A"));
 			store.getState().close();
 			const readsA = serviceA.readProjectionCalls.length;
 			await yieldMicrotask();
@@ -11448,10 +11291,7 @@ describe("ConversationStore", () => {
 			};
 			const store = createConversationStore();
 			await store.getState().openProjected(serviceA, "ref-A");
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-A", ref: "ref-A" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame("thread-A", "ref-A"));
 			store.getState().reset();
 			const readsA = serviceA.readProjectionCalls.length;
 			await yieldMicrotask();
@@ -11467,10 +11307,7 @@ describe("ConversationStore", () => {
 			const store = createConversationStore();
 			await store.getState().openProjected(serviceA, "ref-A");
 			// Queue a rehydrate via resync.
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-A", ref: "ref-A" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame("thread-A", "ref-A"));
 			// Plain open clears projected bindings.
 			const serviceB = new FakeConversationService();
 			serviceB.openConv = makeConversation({ threadId: "thread-B" });
@@ -11491,10 +11328,7 @@ describe("ConversationStore", () => {
 			const store = createConversationStore();
 			await store.getState().openProjected(serviceA, "ref-1");
 			// Queue a rehydrate for ref-1.
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			// Before the scheduler fires, openProjected with a different service+ref.
 			const serviceB = new FakeConversationService();
 			serviceB.readProjectionResult = {
@@ -11520,10 +11354,7 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(service, "ref-1");
 			const readsBefore = service.readProjectionCalls.length;
 			const ctrl = makeControlledRead(service);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await ctrl.started(1);
 			service.sendShouldReject = refusal();
 			await store.getState().send(service, textInput("x"));
@@ -11578,18 +11409,9 @@ describe("ConversationStore", () => {
 			const ctrl = makeControlledRead(service);
 			const initialReads = service.readProjectionCalls.length;
 			// Synchronous burst — 3 resync notifications coalesce to one rehydrate.
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
+			store.getState().applyNotification(resyncFrame());
+			store.getState().applyNotification(resyncFrame());
 			// M1: deterministic — await started, yield so orig resolves and the
 			// release gate is pushed, set up completed, release.
 			await ctrl.started();
@@ -11612,18 +11434,12 @@ describe("ConversationStore", () => {
 			const ctrl = makeControlledRead(service);
 			const readsAfterOpen = service.readProjectionCalls.length;
 			// Trigger a rehydrate (hangs on first readProjection).
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			// M1: deterministic — await started so we know the rehydrate is in-flight.
 			await ctrl.started();
 			await yieldMicrotask(); // let orig resolve and push to releaseQueue
 			// While in-flight, trigger another resync (trailing).
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			// Release the first — the trailing must drain.
 			const started2P = ctrl.started(2);
 			const completed1P = ctrl.completed();
@@ -11647,20 +11463,14 @@ describe("ConversationStore", () => {
 			};
 			await store.getState().openProjected(service, "ref-1");
 			const ctrl = makeControlledRead(service);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			// M1: deterministic — await started so we know the rehydrate is in-flight.
 			await ctrl.started();
 			await yieldMicrotask(); // let orig resolve and push to releaseQueue
 			// The rehydrate is hanging. Queue a trailing request while in-flight.
 			// The trailing is retained and must drain after the first completes.
 			const readsBeforeTrailing = service.readProjectionCalls.length;
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			// Release the first — the trailing must drain recursively.
 			const started2P = ctrl.started(2);
 			const completed1P = ctrl.completed();
@@ -11692,10 +11502,7 @@ describe("ConversationStore", () => {
 				}
 				return origRead(ref);
 			};
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			// M1: let the erroring effect run and bail. The error is caught by the
 			// scheduler — yield so the microtask fires and the effect errors out.
 			await yieldMicrotask();
@@ -11703,10 +11510,7 @@ describe("ConversationStore", () => {
 			await yieldMicrotask();
 			// The scheduler must remain usable — retrigger.
 			const readsBefore = service.readProjectionCalls.length;
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			// The second rehydrate's readProjection passes through (throwOnce=false).
 			// Use controlled read to deterministically await completion.
 			const ctrl = makeControlledRead(service);
@@ -11809,10 +11613,7 @@ describe("ConversationStore", () => {
 
 			// Queue a rehydrate for A via resync — scheduler captures binding
 			// (serviceA+epoch).
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 
 			// Call rehydrate with a DIFFERENT service object (same ref+gen).
 			// This increments bindingEpoch before assignment, so the queued A
@@ -11900,26 +11701,14 @@ describe("ConversationStore", () => {
 			// blocker is in flight. They must coalesce to exactly one trailing
 			// read — not N reads.
 			// First, start the initial rehydrate (held).
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await readCtrl.started(1); // 1st controlled read (openProjected was before)
 			await yieldMicrotask(); // let the wrapper reach the release gate
 
 			// While the first is held, emit 3 more same-key resync notifications.
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
+			store.getState().applyNotification(resyncFrame());
+			store.getState().applyNotification(resyncFrame());
 
 			// Release the first — the trailing coalesced read drains.
 			readCtrl.release();
@@ -12303,10 +12092,7 @@ describe("ConversationStore", () => {
 			// replace items.
 			service.readProjectionResult = makeReadProjectionResult(makeThread());
 			service.readProjectionResult.olderCursor = null;
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await yieldMicrotask();
 			await ctrl.started(1);
 			await yieldMicrotask();
@@ -12341,10 +12127,7 @@ describe("ConversationStore", () => {
 			store.setState({ olderCursor: "cursor-1" });
 			// Start R (hanging).
 			const ctrl = makeControlledRead(service);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await yieldMicrotask();
 			await ctrl.started(1);
 			await yieldMicrotask();
@@ -12380,10 +12163,7 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(service, "ref-1");
 			// Start R (hanging).
 			const ctrl = makeControlledRead(service);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await ctrl.started(1);
 			await yieldMicrotask();
 			// While R is in-flight, a send fails — sets mutation error.
@@ -12675,10 +12455,7 @@ describe("ConversationStore", () => {
 			// ask_user call ends its turn on the same boundary a status change
 			// announces (session_lifecycle.go's askedThisRound), so the two frames
 			// land together in production. Folding this one is still no reread.
-			store.getState().applyNotification({
-				method: "thread/status/changed",
-				params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" }, askPending: true },
-			} as AnyNotification);
+			store.getState().applyNotification(statusChanged({ type: "active" }, { askPending: true }));
 			await yieldMicrotask();
 			expect(store.getState().conversation?.askPending).toBe(true);
 			const conv = store.getState().conversation;
@@ -12755,15 +12532,7 @@ describe("ConversationStore", () => {
 					items: [{ ...userMessageItem("answer-1", "I choose A"), turnId: "t1" }],
 				}),
 			);
-			store.getState().applyNotification({
-				method: "thread/status/changed",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					status: { type: "active" },
-					askPending: false,
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(statusChanged({ type: "active" }, { askPending: false }));
 
 			expect(store.getState().conversation?.askPending).toBe(false);
 			expect(rows(store).some((row) => row.kind === "question")).toBe(false);
@@ -12788,10 +12557,7 @@ describe("ConversationStore", () => {
 			// The status frame that follows (the same boundary that ends the round
 			// which posted the ask, in production) carries the flag — no reread,
 			// and the item the model already holds becomes its question row.
-			store.getState().applyNotification({
-				method: "thread/status/changed",
-				params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" }, askPending: true },
-			} as AnyNotification);
+			store.getState().applyNotification(statusChanged({ type: "active" }, { askPending: true }));
 			expect(rowById(store, "ask-live")).toMatchObject({ kind: "question" });
 			expect(store.getState().conversation?.askPending).toBe(true);
 		});
@@ -12863,10 +12629,7 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(service, "ref-1");
 			// Start a rehydrate (R) that hangs.
 			const ctrl = makeControlledRead(service);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await ctrl.started(1);
 			await yieldMicrotask();
 			// While R is in-flight, mutation1 fails — sets error "boom".
@@ -12910,10 +12673,7 @@ describe("ConversationStore", () => {
 			// Start a rehydrate (R) that hangs — it captured the initial mutation
 			// owner revision (no mutation pending → revision 0).
 			const ctrl = makeControlledRead(service);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await ctrl.started(1);
 			await yieldMicrotask();
 			// While R is in-flight, start a send (opens the click-to-commit
@@ -12959,10 +12719,7 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(service, "ref-1");
 			// Start a rehydrate (R) that hangs — the read will reject.
 			const ctrl = makeControlledErrorRead(service);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await ctrl.started(1);
 			await yieldMicrotask();
 			// While R is in-flight, a mutation fails — sets a mutation error.
@@ -12994,10 +12751,7 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(service, "ref-1");
 			// Start a rehydrate (R) that hangs.
 			const ctrl = makeControlledRead(service);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await ctrl.started(1);
 			await yieldMicrotask();
 			const readsBeforeMutation = service.readProjectionCalls.length;
@@ -13071,10 +12825,7 @@ describe("ConversationStore", () => {
 			service.readProjectionResult = makeReadProjectionResult(askThread);
 			// Trigger R via a resync — the authoritative refresh path — and hang it.
 			const ctrl = makeControlledRead(service);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await ctrl.started(1);
 			await yieldMicrotask();
 			// While R is in-flight, L succeeds — prepends page items, advances cursor.
@@ -13121,10 +12872,7 @@ describe("ConversationStore", () => {
 					],
 				}),
 			);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await ctrl.started(1);
 			await yieldMicrotask();
 
@@ -13171,10 +12919,7 @@ describe("ConversationStore", () => {
 					],
 				}),
 			);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await ctrl.started(1);
 			service.olderItems = {
 				items: [
@@ -13352,10 +13097,7 @@ describe("ConversationStore", () => {
 			service.readProjectionResult = makeReadProjectionResult(activityThread);
 			// Trigger R via resync — it hangs.
 			const ctrl = makeControlledRead(service);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await ctrl.started(1);
 			await yieldMicrotask();
 			// While R is in-flight, L fails — sets a page error.
@@ -13403,10 +13145,7 @@ describe("ConversationStore", () => {
 			service.readProjectionResult = makeReadProjectionResult(malformedThread);
 			const initialReads = service.readProjectionCalls.length;
 			// The snapshot is what settles an ask: drive one through a resync.
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			const ctrl = makeControlledRead(service);
 			await ctrl.started(1);
 			await yieldMicrotask();
@@ -13449,10 +13188,7 @@ describe("ConversationStore", () => {
 			});
 			service.readProjectionResult = makeReadProjectionResult(incompleteThread);
 			const initialReads = service.readProjectionCalls.length;
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			const ctrl = makeControlledRead(service);
 			await ctrl.started(1);
 			await yieldMicrotask();
@@ -13493,10 +13229,7 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(serviceA, "ref-A");
 			// Start a rehydrate (R) on serviceA that hangs.
 			const ctrl = makeControlledRead(serviceA);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-A", ref: "ref-A" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame("thread-A", "ref-A"));
 			await ctrl.started(1);
 			await yieldMicrotask();
 			// While R is in-flight, start a send that succeeds — mutation owner
@@ -13541,10 +13274,7 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(service, "ref-1");
 			// Start a rehydrate (R) that hangs.
 			const ctrl = makeControlledRead(service);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await ctrl.started(1);
 			await yieldMicrotask();
 			// While R is in-flight, start a send that HANGS (mutation still pending).
@@ -13588,10 +13318,7 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(service, "ref-1");
 			// Start a rehydrate (R) that hangs.
 			const ctrl = makeControlledRead(service);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await ctrl.started(1);
 			await yieldMicrotask();
 			// While R is in-flight, start a send that HANGS, then will fail.
@@ -13632,10 +13359,7 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(serviceA, "ref-A");
 			// Start a rehydrate (R) on serviceA that hangs.
 			const ctrlA = makeControlledRead(serviceA);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-A", ref: "ref-A" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame("thread-A", "ref-A"));
 			await ctrlA.started(1);
 			await yieldMicrotask();
 			// While R is in-flight, start a send that hangs (mutation pending).
@@ -13688,10 +13412,7 @@ describe("ConversationStore", () => {
 		await store.getState().openProjected(service, "ref-1");
 		service.readProjectionResult = makeReadProjectionResult(snapshot);
 		const ctrl = makeControlledRead(service);
-		store.getState().applyNotification({
-			method: "evener/thread/resync",
-			params: { threadId: "thread-1", ref: "ref-1" },
-		} as AnyNotification);
+		store.getState().applyNotification(resyncFrame());
 		await ctrl.started(1);
 		await yieldMicrotask();
 		liveWrite(store);
@@ -14494,10 +14215,7 @@ describe("ConversationStore", () => {
 					],
 				}),
 			);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await Promise.resolve();
 			await Promise.resolve();
 			await Promise.resolve();
@@ -14668,10 +14386,7 @@ describe("ConversationStore", () => {
 					turns: [makeTurn({ id: "t9", status: "completed", items: [userMessageItem("later", "fresh")] })],
 				}),
 			);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await Promise.resolve();
 			await Promise.resolve();
 			await Promise.resolve();
@@ -14735,10 +14450,7 @@ describe("ConversationStore", () => {
 					],
 				}),
 			);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await Promise.resolve();
 			await Promise.resolve();
 			await Promise.resolve();
@@ -14806,10 +14518,7 @@ describe("ConversationStore", () => {
 					],
 				}),
 			);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await Promise.resolve();
 			await Promise.resolve();
 			await Promise.resolve();
@@ -14903,10 +14612,7 @@ describe("ConversationStore", () => {
 					],
 				}),
 			);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await Promise.resolve();
 			await Promise.resolve();
 			await Promise.resolve();
@@ -15124,15 +14830,7 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(service, "ref-1");
 			// The warning arrives on an empty window: it seats before
 			// everything, as the oldest row the window can evict.
-			store.getState().applyNotification({
-				method: "warning",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					title: "Provider",
-					message: "careful",
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "careful" }));
 			expect(rows(store)).toHaveLength(1);
 			// A resync reread fills the window: 499 model rows plus the
 			// seated notice is exactly the retained cap.
@@ -15154,10 +14852,7 @@ describe("ConversationStore", () => {
 					],
 				}),
 			);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			const awaitRehydrateRead = async (count: number): Promise<void> => {
 				for (let i = 0; i < 40 && service.readProjectionCalls.length < count; i++) {
 					await Promise.resolve();
@@ -15280,10 +14975,7 @@ describe("ConversationStore", () => {
 					evener: evenerWith({ activeTurnId: "t1" }),
 				}),
 			);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await awaitRehydrateRead(2);
 			expect(rows(store).some((row) => row.id === "u")).toBe(true);
 
@@ -15295,10 +14987,7 @@ describe("ConversationStore", () => {
 					evener: evenerWith({ activeTurnId: "t1" }),
 				}),
 			);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await awaitRehydrateRead(3);
 			expect(rows(store).some((row) => row.id === "u")).toBe(true);
 		});
@@ -15757,15 +15446,7 @@ describe("ConversationStore", () => {
 			expect(rows(store).map((row) => row.id)).toEqual(["page-row", "live-1"]);
 			// The warning arrives while the live row is the newest row the window
 			// holds, so it anchors there and seats directly after it.
-			store.getState().applyNotification({
-				method: "warning",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					title: "Provider",
-					message: "careful",
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "careful" }));
 			expect(rows(store)).toHaveLength(3);
 			expect(rows(store)[2]?.kind).toBe("failure");
 			// A resync reread fills the window: the page row, the live row, and
@@ -15800,10 +15481,7 @@ describe("ConversationStore", () => {
 					],
 				}),
 			);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			const awaitRehydrateRead = async (count: number): Promise<void> => {
 				for (let i = 0; i < 40 && service.readProjectionCalls.length < count; i += 1) {
 					await Promise.resolve();
@@ -15863,15 +15541,7 @@ describe("ConversationStore", () => {
 			expect(rows(store).map((row) => row.id)).toEqual(["page-row"]);
 			// The warning arrives on a window whose only row is the page row, so
 			// it anchors there and seats directly after it.
-			store.getState().applyNotification({
-				method: "warning",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					title: "Provider",
-					message: "careful",
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "careful" }));
 			expect(rows(store)).toHaveLength(2);
 			expect(rows(store)[1]?.kind).toBe("failure");
 			// A resync reread fills the window: the page row plus 499 fresh rows
@@ -15896,10 +15566,7 @@ describe("ConversationStore", () => {
 					],
 				}),
 			);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			const awaitRehydrateRead = async (count: number): Promise<void> => {
 				for (let i = 0; i < 40 && service.readProjectionCalls.length < count; i += 1) {
 					await Promise.resolve();
@@ -15998,10 +15665,7 @@ describe("ConversationStore", () => {
 					evener: evenerWith({ activeTurnId: "t0" }),
 				}),
 			);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await ctrl.started(1);
 			await yieldMicrotask();
 			if (options.pageItems !== undefined) {
@@ -16088,10 +15752,7 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(service, "ref-1");
 			// Start a rehydrate (R) that hangs.
 			const ctrl = makeControlledRead(service);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await ctrl.started(1);
 			await yieldMicrotask();
 			// While R is in-flight, start M1 that hangs (mutation pending).
@@ -16155,10 +15816,7 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(serviceA, "ref-A");
 			// Start a rehydrate (R) on serviceA that hangs.
 			const ctrlA = makeControlledRead(serviceA);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-A", ref: "ref-A" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame("thread-A", "ref-A"));
 			await ctrlA.started(1);
 			await yieldMicrotask();
 			// While R is in-flight, start M1 that hangs (mutation pending).
@@ -17325,10 +16983,7 @@ describe("ConversationStore", () => {
 			const before = store.getState().conversation;
 			expect(before?.items.length).toBeGreaterThan(0);
 
-			store.getState().applyNotification({
-				method: "thread/status/changed",
-				params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" } },
-			} as AnyNotification);
+			store.getState().applyNotification(statusChanged({ type: "idle" }));
 
 			const after = store.getState().conversation;
 			// The model advanced: the frame is the authority on the thread's status.
@@ -17478,15 +17133,7 @@ describe("ConversationStore", () => {
 			// new turn and its item now arrive together in one history/updated
 			// frame, which only merges against a v6 model.
 			const store = await openProjectedThread(thread, true);
-			store.getState().applyNotification({
-				method: "warning",
-				params: {
-					threadId: "thread-1",
-					ref: "ref-1",
-					title: "Provider",
-					message: "careful",
-				},
-			} as AnyNotification);
+			store.getState().applyNotification(warningFrame({ title: "Provider", message: "careful" }));
 			// A later reply arrives on a new turn, so the anchored thought
 			// sits mid-timeline.
 			store.getState().applyNotification(
@@ -17755,10 +17402,7 @@ describe("ConversationStore", () => {
 				// Within the conversation the cache holds: a frame republishes the
 				// rows and the unchanged text is taken from it, not re-cut.
 				truncate.mockClear();
-				store.getState().applyNotification({
-					method: "thread/status/changed",
-					params: { threadId: "thread-1", ref: "ref-1", status: { type: "running" } },
-				} as AnyNotification);
+				store.getState().applyNotification(statusChanged({ type: "running" }));
 				expect(encodesOfSettledText(truncate)).toBe(0);
 
 				drop(store);
@@ -18485,10 +18129,7 @@ describe("ConversationStore", () => {
 			// the read began; ready(1) confirms orig(ref) resolved and the read is
 			// parked at the release gate, so R's entry errorOwnerRev is captured.
 			const ctrl = makeControlledRead(service);
-			store.getState().applyNotification({
-				method: "evener/thread/resync",
-				params: { threadId: "thread-1", ref: "ref-1" },
-			} as AnyNotification);
+			store.getState().applyNotification(resyncFrame());
 			await ctrl.started(1);
 			await ctrl.ready(1);
 			expect(ctrl.getStartedCount()).toBe(1);
@@ -18840,10 +18481,7 @@ describe("store-owned canonical read validity and pending readiness", () => {
 
 		const read = deferred<ConversationReadProjection>();
 		service.readProjectionBlock = read.promise;
-		store.getState().applyNotification({
-			method: "evener/thread/resync",
-			params: { threadId: "thread-1", ref: "ref-1" },
-		} as AnyNotification);
+		store.getState().applyNotification(resyncFrame());
 		expect(store.getState().latestReadState).toBe("reading");
 		expect(store.getState().canonicalSession()).toBeNull();
 
