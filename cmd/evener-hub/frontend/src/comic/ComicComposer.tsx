@@ -20,7 +20,7 @@ import { consumeQuoteInsert, useQuoteInsertRequest } from "../panes/session/comp
 import { SkillEditor, type SkillEditorHandle } from "../panes/session/composer/SkillEditor";
 import type { SkillEditorValue } from "../panes/session/composer/skillDocument";
 import type { ComposerSourceState } from "../panes/session/composer/sourceState";
-import { useComposerActions } from "../panes/session/composer/useComposerActions";
+import { useBuiltinSubmission } from "../panes/session/composer/useBuiltinSubmission";
 import { useInlineStopReady } from "../panes/session/composer/useInlineStopReady";
 import { prefsStore } from "../stores/prefs";
 import { Button, PromptCard, SendIcon } from "../widgets";
@@ -40,7 +40,7 @@ export function ComicComposer({
 }): React.ReactElement {
   const snapshot = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   const { text, skillNames, commandNames, mentions, restoreEpoch, activeRecoveryId } = snapshot;
-  const actions = useComposerActions(source);
+  const { actions, submitBuiltin } = useBuiltinSubmission(source, paneId);
   const askPending = useAskDockPending(source.ref);
   const focusRequest = useComposerFocusRequest(source.ref, paneId);
   const quoteInsertRequest = useQuoteInsertRequest(source.ref, paneId);
@@ -131,6 +131,7 @@ export function ComicComposer({
   }
   function submit() {
     if ((askDockStore.getState().byRef.get(source.ref)?.batches.length ?? 0) > 0) return;
+    if (submitBuiltin()) return;
     void actions.submitFromLiveState();
   }
   return (

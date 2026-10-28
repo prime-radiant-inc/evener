@@ -19,16 +19,13 @@
 // ever touching the surrounding structure - see each slot's own comment.
 
 import {
-  type BuiltinMatch,
   decideSteerRoute,
-  matchBuiltinInvocation,
   mergeDraftText,
   mergeSlashCommands,
   NO_ACTIVE_TURN,
   parseSlashToken,
   SHUT_DOWN_STATUSES,
   slashCommandInvocation,
-  type ThreadModel,
 } from "@evener/appwire-client";
 import {
   type FormEvent,
@@ -43,8 +40,6 @@ import {
   useSyncExternalStore,
 } from "react";
 import { activitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
-import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
-import { sessionBuiltinCommands } from "../../../shell/palette/commands";
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
@@ -78,7 +73,6 @@ import { useAskDockPending } from "./askDockPending";
 import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type TextEditor, useAttachments } from "./attachments/useAttachments";
-import { runBuiltinCommand } from "./builtinCommand";
 import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
@@ -93,7 +87,7 @@ import { SlashCompletionMenu } from "./SlashCompletionMenu";
 import { maskSkillAtoms, type SkillEditorValue } from "./skillDocument";
 import type { ComposerSourceState } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
-import { useComposerActions } from "./useComposerActions";
+import { useBuiltinSubmission } from "./useBuiltinSubmission";
 import { useInlineStopReady } from "./useInlineStopReady";
 import { useSlashCompletion } from "./useSlashCompletion";
 
@@ -214,7 +208,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
   const {
     lastDrainSnapshotRef,
-    draftEditRevisionRef,
     ownedDraftRevisionRef,
     textRef,
     skillNamesRef,
@@ -232,10 +225,8 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     setActiveRecoveryId,
     persistDraft,
     writeDraft,
-    clearIfUnchanged,
   } = source;
-  const [builtinBusy, setBuiltinBusy] = useState(false);
-  const actions = useComposerActions(source, builtinBusy);
+  const { actions, sessionBuiltins, submitBuiltin } = useBuiltinSubmission(source, paneId);
   const { availability, busy: actionPending, showStop, submit: submitAction, stop: handleInterruptClick } = actions;
   const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
@@ -302,7 +293,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // row's provenance is a built-in, plugin, project or user command. The model
   // is keyed by ref, so loading a different target never borrows old/global rows.
   const visibleSlashCatalog = model?.diagnostics?.commands ?? [];
-  const sessionBuiltins = sessionBuiltinCommands({ sessionRef: ref, onPage: "session", sessionPaneId: paneId ?? null });
   const slashMenuCatalog = mergeSlashCommands(sessionBuiltins, visibleSlashCatalog, model?.skills ?? []);
 
   // Attachment marker edits update controlled text, selected references and
@@ -541,7 +531,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // case - Session.tsx never mounts this component before its own model is
   // hydrated), so every handler below reads these already-narrowed values
   // instead of `model.<field>` directly.
-  const renderedModel: ThreadModel = model;
   const activeTurnId = model.activeTurnId;
   const ended = SHUT_DOWN_STATUSES.has(model.status.type);
   // The recovery fence as ONE reading (stores/liveControls.ts's recoveryFence),
@@ -631,79 +620,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     return info.description ?? name;
   }
 
-  // handleBuiltinSubmit is the Slack-model half of Enter/submit
-  // interception (2026-08-14 decision: "a literal message starting with a
-  // known /command executes instead of sending, matching Slack/Discord
-  // muscle memory"): runs the matched built-in's RPC instead of routing
-  // through send/queue, via builtinCommand.ts's runBuiltinCommand - which
-  // ALSO carries the toast/friendlyErrorMessage feedback and the
-  // no-double-toast guard, so this handler's only job is the composer-local
-  // half: busy-gating, and clearing vs. preserving the draft.
-  //
-  // submittedText is snapshotted the same way submitAction's own
-  // clearIfUnchanged is, so a clear on success never clobbers an edit made
-  // while the RPC was still in flight.
-  async function handleBuiltinSubmit(match: BuiltinMatch<ScopedCommand>): Promise<void> {
-    // The recovery fence, re-read live at the press (the same render-vs-press
-    // rule as handleSteerClick): a fenced command's run mints a durable
-    // mutation the hub's recovery admission refuses for the obligation's
-    // whole window, so running it here could only mint intent that parks
-    // until the explicit Resume action clears the fence - the same harm the
-    // Send/Steer/queue-strip fences exist to prevent, reached by typing
-    // instead of clicking. Which commands carry the fence is declared on the
-    // command itself (commands.ts's recoveryFenced); the refusal names the
-    // Resume path and preserves the draft, ahead of the busy churn so a
-    // refusal never reports busy state.
-    if (match.command.recoveryFenced && pressLocalRecoveryFenced(ref)) {
-      toasts.push("error", `/${match.command.id} isn't available until this session is resumed`);
-      return;
-    }
-    // Message-producing built-ins share submission and recovery ownership.
-    // Submit the parsed body, but clear only the unchanged literal invocation.
-    if ((match.command.id === "queue" || match.command.id === "steer") && match.argsText.trim()) {
-      if (match.command.unavailableReason) {
-        toasts.push("error", `/${match.command.id} is ${match.command.unavailableReason}`);
-        return;
-      }
-      const unavailable = match.command.available?.(liveThreadModel(ref) ?? renderedModel);
-      if (unavailable !== undefined) {
-        toasts.push("error", unavailable);
-        return;
-      }
-      const literal = textRef.current;
-      await submitAction(match.command.id, { text: match.argsText, clearDraftText: literal });
-      return;
-    }
-    const submittedText = textRef.current;
-    const submittedSkillNames = [...skillNamesRef.current];
-    const submittedCommandNames = [...selectionMetaRef.current.commandNames];
-    const submittedRevision = draftEditRevisionRef.current;
-    const submittedDraftRevision = readDraftRevision(ref);
-    setBuiltinBusy(true);
-    const ctx: PaletteRunContext = {
-      sessionRef: ref,
-      sessionPaneId: paneId ?? null,
-      onPage: "session",
-      toasts,
-      // Neither method is reachable here: both belong to app-global palette
-      // commands (/search, /help), never to a session-scoped built-in - see
-      // commandSurface's own doc comment on why the two never overlap.
-      ui: { clearToSearch: () => {}, showHelp: () => {} },
-    };
-    const outcome = await runBuiltinCommand(match, ctx);
-    setBuiltinBusy(false);
-    if (outcome.ok)
-      clearIfUnchanged(
-        submittedText,
-        submittedRevision,
-        submittedDraftRevision,
-        submittedSkillNames,
-        submittedCommandNames,
-      );
-    // On failure: the draft is left exactly as typed (clearIfUnchanged is
-    // simply never called) - runBuiltinCommand has already toasted why.
-  }
-
   function handleFormSubmit(event: FormEvent): void {
     event.preventDefault();
     if (actionPending) return;
@@ -712,24 +628,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       toasts.push("error", "Image attachment is still processing");
       return;
     }
-    // The Slack-model interception: a draft with no attachments or skill
-    // selections that parses as a known BUILT-IN session command
-    // (sessionBuiltins, above) runs that command instead of sending the text
-    // as a message. A message carrying an attachment is never read as a
-    // command, regardless of its text; neither is one carrying a staged skill
-    // selection - that draft falls through to the ordinary routing below so
-    // the selection survives as part of the request. Everything that does NOT
-    // match - an unknown "/foo", or a plugin catalog command
-    // (matchBuiltinInvocation only ever matches sessionBuiltins, never the
-    // catalog - see that function's own doc comment) - falls straight through
-    // to the ordinary routing below, unchanged: that's the escape hatch.
-    if (!hasAttachments && skillNames.length === 0 && selectionMeta.commandNames.length === 0) {
-      const match = matchBuiltinInvocation(text, sessionBuiltins);
-      if (match) {
-        void handleBuiltinSubmit(match);
-        return;
-      }
-    }
+    if (submitBuiltin()) return;
     // Hand off before Send becomes disabled. Never refocus on completion:
     // the user may have moved to another control or session while submitting.
     const initiator = submitButtonRef.current;
