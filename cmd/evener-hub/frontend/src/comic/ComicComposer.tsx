@@ -116,6 +116,18 @@ export function ComicComposer({
     text.trim() !== "" || skillNames.length > 0 || commandNames.length > 0 || attachments.items.length > 0;
   const inlineStop = actions.showStop && !hasContent;
   const stopReady = useInlineStopReady(source.ref, inlineStop ? "stop" : "send");
+  const stopButton = actions.showStop && (
+    <Button
+      key="stop"
+      type="button"
+      variant="dangerQuiet"
+      data-testid="composer-stop"
+      disabled={actions.busy || (inlineStop && !stopReady)}
+      onClick={() => void actions.stop()}
+    >
+      Stop
+    </Button>
+  );
   function change(value: SkillEditorValue) {
     source.editSkillNames(value.skillNames);
     source.updateSelectionMeta(value);
@@ -169,6 +181,7 @@ export function ComicComposer({
           ))}
         </div>
       )}
+      {askPending && stopButton}
       <form
         hidden={askPending}
         inert={askPending}
@@ -197,18 +210,7 @@ export function ComicComposer({
           }
           actions={
             <>
-              {actions.showStop && (
-                <Button
-                  key="stop"
-                  type="button"
-                  variant="dangerQuiet"
-                  data-testid="composer-stop"
-                  disabled={actions.busy || (inlineStop && !stopReady)}
-                  onClick={() => void actions.stop()}
-                >
-                  Stop
-                </Button>
-              )}
+              {!askPending && stopButton}
               {!inlineStop && (
                 <Button
                   key="send"
