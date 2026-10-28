@@ -252,6 +252,59 @@ func TestHostRecordsBoundsAreEnforcedBeforeAnythingIsWritten(t *testing.T) {
 	}
 }
 
+// TestHostRecordsBoundsApplyToTheSizeAWriteEmits pins that a record is bounded
+// by its written form: the encoder spells each <, > and & as six bytes, so a
+// record near the bound in the file's spelling must be refused on write and
+// treated as corrupt on load, never accepted and then written past the bound.
+func TestHostRecordsBoundsApplyToTheSizeAWriteEmits(t *testing.T) {
+	escapes := func(n int) json.RawMessage {
+		return json.RawMessage(`{"pad":"` + strings.Repeat("<", n) + `"}`)
+	}
+	t.Run("a write that would expand past the bound is refused", func(t *testing.T) {
+		store, path := openTestStore(t)
+		family := familyOf("ok")
+		family.Tombstones["big"] = escapes(MaxHostRecordBytes / 2)
+		if err := store.ImportHostRecords(family, HostMirror{}); !errors.Is(err, ErrInvalidHostRecords) {
+			t.Fatalf("ImportHostRecords = %v, want ErrInvalidHostRecords", err)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("a refused family reached the store file")
+		}
+	})
+	t.Run("a file whose record would expand past the bound is corrupt", func(t *testing.T) {
+		store, path := openTestStore(t)
+		if err := store.ImportHostRecords(familyOf("ok"), HostMirror{}); err != nil {
+			t.Fatalf("ImportHostRecords: %v", err)
+		}
+		raw := string(mustReadFile(t, path))
+		big := string(escapes(MaxHostRecordBytes / 2))
+		grown := strings.Replace(raw, `{"kind":"tombstones","tag":"ok"}`, big, 1)
+		if grown == raw {
+			t.Fatalf("the fixture did not carry the expected tombstone:\n%s", raw)
+		}
+		writeRawStore(t, path, 0o600, grown)
+		if _, err := loadFS(afero.NewOsFs(), path); !errors.Is(err, ErrStoreCorrupt) {
+			t.Fatalf("loadFS = %v, want ErrStoreCorrupt", err)
+		}
+	})
+	t.Run("a file that is within the bound once written loads in its written form", func(t *testing.T) {
+		store, path := openTestStore(t)
+		if err := store.ImportHostRecords(familyOf("ok"), HostMirror{}); err != nil {
+			t.Fatalf("ImportHostRecords: %v", err)
+		}
+		raw := string(mustReadFile(t, path))
+		spelled := strings.Replace(raw, `{"kind":"tombstones","tag":"ok"}`, `{"kind":"<tombstones>","tag":"ok"}`, 1)
+		writeRawStore(t, path, 0o600, spelled)
+		loaded, err := loadFS(afero.NewOsFs(), path)
+		if err != nil {
+			t.Fatalf("loadFS: %v", err)
+		}
+		if got := string(loaded.HostRecords.Tombstones["tombstones-key"]); strings.Contains(got, "<") {
+			t.Fatalf("a loaded record keeps the file's spelling %s, want the written form", got)
+		}
+	})
+}
+
 // TestHostRecordsAFamilyMissingAMapIsCorrupt pins the file-level rule: a file
 // that omits one of the eight maps is not one this store wrote, and reading it
 // as an empty map would let the next write drop the records the map held.
