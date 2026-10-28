@@ -1069,7 +1069,31 @@ function registerHydrationSettlement(ref: string, hydration: Promise<unknown>): 
       );
   hydrationRegistrations.set(hydration, completion);
   registerHydrationCompletion(ref, completion);
+  if (outstandingRecovery) {
+    // An opening parked on the next settlement needs only the CURRENT
+    // hydration's own outcome to re-run its verdict - a foreign heal supersedes
+    // its open now, not once the recovery span composed behind it finishes -
+    // while every recovery consumer keeps awaiting the composed completion in
+    // trackedHydrationCompletions. The verdict itself re-checks body
+    // completeness and ownership, and a wake that cannot certify re-arms for
+    // the next settlement, so an early notification never strands the open.
+    // A hydration displaced before it settles notifies nothing: the newer
+    // attempt owns the ref's convergence and its own notification counts.
+    void hydration.then(
+      () => notifyHydrationSettlementWaiters(ref, completion),
+      () => notifyHydrationSettlementWaiters(ref, completion),
+    );
+  }
   return completion;
+}
+
+// The early arm of a composed registration: the hydration itself settled
+// while the recovery span composed behind it is still pending. Wake the
+// parked opening waiters without settling or displacing the map's composed
+// entry - recovery consumers must keep spanning the chain behind it.
+function notifyHydrationSettlementWaiters(ref: string, completion: Promise<void>): void {
+  if (trackedHydrationCompletions.get(ref) !== completion) return;
+  wakeHydrationSettlementWaiters(ref, completion);
 }
 
 // The map holds only pending registrations: an entry leaves through this
@@ -1082,6 +1106,10 @@ function registerHydrationSettlement(ref: string, hydration: Promise<unknown>): 
 function settleHydrationRegistration(ref: string, completion: Promise<void>): void {
   if (trackedHydrationCompletions.get(ref) !== completion) return;
   trackedHydrationCompletions.delete(ref);
+  wakeHydrationSettlementWaiters(ref, completion);
+}
+
+function wakeHydrationSettlementWaiters(ref: string, completion: Promise<void>): void {
   const waiters = hydrationSettlementWaiters.get(ref);
   if (!waiters) return;
   const remaining = new Set<HydrationSettlementWaiter>();

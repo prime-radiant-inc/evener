@@ -1636,6 +1636,7 @@ it("a stalled restore whose release reclaimed the pane's bodies recovers from th
 }, 15000);
 
 it("a superseded opening cannot overwrite the established marker of a newer open", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const storage = cache();
   setProductionEntryCacheForTests(storage);
   const client = connect(response("local:a", [turn("older-item", 1), turn("recorded", 2)]));
@@ -1660,6 +1661,9 @@ it("a superseded opening cannot overwrite the established marker of a newer open
     if (cacheReads === 1) await cacheReleased.promise;
     return original(...args);
   });
+  // Pin the open's storage backstop so the obsolete opening can actually time
+  // out on the fake clock; the newer opening establishes well inside it.
+  setSessionCacheOpenBackstopForTests(250);
   const opened = threadsStore.getState().ensureThread("local:a");
   await settleEntryTranscriptForTests("local:a");
   const background = acquireBackgroundThread("local:a");
@@ -1669,8 +1673,15 @@ it("a superseded opening cannot overwrite the established marker of a newer open
   await reopenedB;
   expect(productionEntryTranscriptForTests("local:a").lastLocalOpenUsable).toBe(true);
   // The first opening is still waiting here, after the newer open established.
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  // Advance the fake clock past its pinned backstop: the obsolete opening's
+  // give-up branch runs to completion while the newer open owns the route, so
+  // its timeout verdict must not clobber the newer marker.
+  await vi.advanceTimersByTimeAsync(251);
   expect(productionEntryTranscriptForTests("local:a").lastLocalOpenUsable).toBe(true);
+  // The obsolete opening really did time out: its give-up branch marked the
+  // deadline miss (every open's begin clears the marker, so only the timeout
+  // sets it back), not merely stayed parked behind the held read.
+  expect(productionEntryTranscriptForTests("local:a").localOpenDeadlineMissed).toBe(true);
   expect(
     threadsStore
       .getState()
@@ -1684,6 +1695,7 @@ it("a superseded opening cannot overwrite the established marker of a newer open
   await Promise.all(lookup.mock.results.map((result) => result.value));
   threadsStore.getState().releaseThread("local:a");
   await background.release();
+  setSessionCacheOpenBackstopForTests(10000);
 }, 15000);
 
 it("a stalled restore's late partial window cannot demote a resident range", async () => {
@@ -4107,6 +4119,96 @@ it("a reconnect heal racing a pending recovery read still converges the display"
     });
     await vi.waitFor(() => expect(texts()).toContain("row-26"));
     expect(texts()).toContain("row-225");
+  } finally {
+    setSessionCacheOpenBackstopForTests(10000);
+    setSessionCacheStalledOpenForTests(5000);
+    chainReadReleased.resolve();
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
+it("a foreign hydration settling during a held recovery supersedes the reopened pane's open", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items ?? [])
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+  // The pane's own claim (the override's first read) answers without the
+  // request generation, so the repository rejects it and the claim resolves for
+  // the body-suppressed shell it held: the resync's later refresh is the only
+  // successful foreign hydration.
+  let wireReads = 0;
+  client.on("thread/read", (params) => {
+    wireReads += 1;
+    return wireReads === 1 ? read : { ...read, requestGeneration: params.requestGeneration };
+  });
+
+  // The pane's own open (withheld read) and its claim's certification open
+  // (held read) both miss the pinned backstop, so the recovery chain arms and
+  // its own attempt parks on a held read - the chain's span registration
+  // stays pending. Every storage read stays held, so the reopened pane's
+  // open can only park on the settlement wait.
+  let withheldWindowReads = 1;
+  const chainReadReleased = deferred<void>();
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return chainReadReleased.promise.then(() =>
+      realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+    ) as ReturnType<typeof realGetLatestWindow>;
+  };
+  // The chain's parked attempt stalls out at this window; keep it far beyond
+  // the supersede bound so nothing but the foreign hydration's own
+  // settlement can end the reopened pane's open inside the race.
+  setSessionCacheStalledOpenForTests(2000);
+  setSessionCacheOpenBackstopForTests(40);
+  try {
+    await threadsStore.getState().ensureThread(ref);
+    // The chain's recovery attempt is the pending opening now; wait for its
+    // published token before releasing.
+    await vi.waitFor(() => expect(threadsStore.getState().localOpenings.has(ref)).toBe(true));
+    const chainToken = threadsStore.getState().localOpenings.get(ref);
+    // The pane that armed the chain releases; a pane reopens over the shell
+    // the background lease preserves. Its plain open parks on the held
+    // storage read and the next tracked settlement.
+    threadsStore.getState().releaseThread(ref);
+    setSessionCacheOpenBackstopForTests(10000);
+    const reopened = threadsStore.getState().ensureThread(ref);
+    await vi.waitFor(() => expect(threadsStore.getState().localOpenings.get(ref)).not.toBe(chainToken));
+    await drainSettleSteps();
+    // A successful foreign hydration settles while the recovery's read is
+    // still held. Its own settlement must supersede the reopened pane's open
+    // without waiting out the recovery span composed behind it.
+    client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: "thread-a" } });
+    const superseded = await Promise.race([
+      reopened.then(() => true),
+      new Promise((resolve) => setTimeout(resolve, 400)).then(() => false),
+    ]);
+    expect(superseded).toBe(true);
+    expect(productionEntryTranscriptForTests(ref).lastLocalOpenStatus).toBe("superseded-by-source");
+    expect(bodies()).toContain("row-26");
+    expect(bodies()).toContain("row-225");
   } finally {
     setSessionCacheOpenBackstopForTests(10000);
     setSessionCacheStalledOpenForTests(5000);

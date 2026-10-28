@@ -483,10 +483,40 @@ export async function openEntryTranscript(
         entryTranscriptQuietOpenings.get(ref) === openingToken);
     const established = fixture.lastLocalOpenUsable && repository.holdsEstablishedView();
     let stalled = false;
-    const restore = established ? reader.openLocal(200) : undefined;
+    const localRead = reader.openLocal(200);
+    const restore = established ? localRead : undefined;
+    // Only the ordinary open arms the storage backstop: an established
+    // restore races the stalled-open window alone, and one clearable timer
+    // handle must not leak a second, un-cleared clock behind it.
+    const openBound = established
+      ? undefined
+      : new Promise<undefined>((resolve) => {
+          timer = setTimeout(
+            () => {
+              // A held pane keeps a reader through the swap: the repository
+              // reclaims the bodies behind a displayed window the moment it
+              // has none, and the next publication would then replace that
+              // display with the body-suppressed model.
+              if (fixture.reader === reader) {
+                fixture.reader = heldCountsAtStore(ref) ? repository.attachReader() : undefined;
+              }
+              reader.dispose();
+              resolve(undefined);
+              // The backstop is the clock of last resort: the primary bound
+              // is the source-settlement competitor above, and this timer
+              // exists for the wedge where nothing else can fire — storage
+              // that never answers and no hydration in flight. A recovery
+              // attempt keeps the longer stalled-open window on purpose: a
+              // read that answers slower than the window but successfully
+              // must be allowed to finish, or a consistently slow cache
+              // strands the pane behind a race it can only keep losing.
+            },
+            recovery ? sessionCacheStalledOpenMs : sessionCacheOpenBackstopMs,
+          );
+        });
     settlement =
       established || recovery ? undefined : routeHost().nextTrackedHydrationSettlement(ref, exceptRegistration);
-    const result = established
+    let result = established
       ? await Promise.race([
           restore,
           new Promise<undefined>((resolve) => {
@@ -497,7 +527,7 @@ export async function openEntryTranscript(
           }),
         ])
       : await Promise.race([
-          reader.openLocal(200),
+          localRead,
           // The open's primary deterministic bound, ordinary opens only: a
           // recovery attempt is the source machinery itself and must not
           // supersede its own re-open, and a foreign heal settling while a
@@ -507,32 +537,9 @@ export async function openEntryTranscript(
           // or failed, owned by the hydration lifecycle either way — the
           // local wait is over: the source owns the display from there.
           ...(settlement ? [settlement.settled.then(() => OPEN_SUPERSEDED_BY_SOURCE)] : []),
-          new Promise<undefined>((resolve) => {
-            timer = setTimeout(
-              () => {
-                // A held pane keeps a reader through the swap: the repository
-                // reclaims the bodies behind a displayed window the moment it
-                // has none, and the next publication would then replace that
-                // display with the body-suppressed model.
-                if (fixture.reader === reader) {
-                  fixture.reader = heldCountsAtStore(ref) ? repository.attachReader() : undefined;
-                }
-                reader.dispose();
-                resolve(undefined);
-                // The backstop is the clock of last resort: the primary bound
-                // is the source-settlement competitor above, and this timer
-                // exists for the wedge where nothing else can fire — storage
-                // that never answers and no hydration in flight. A recovery
-                // attempt keeps the longer stalled-open window on purpose: a
-                // read that answers slower than the window but successfully
-                // must be allowed to finish, or a consistently slow cache
-                // strands the pane behind a race it can only keep losing.
-              },
-              recovery ? sessionCacheStalledOpenMs : sessionCacheOpenBackstopMs,
-            );
-          }),
+          openBound,
         ]);
-    if (result && "supersededBySource" in result) {
+    while (result && "supersededBySource" in result) {
       // A tracked hydration settled while this open's local read was still
       // pending. When the repository still holds the foreground range, the
       // source lifecycle owns the display's convergence: nothing is
@@ -568,6 +575,21 @@ export async function openEntryTranscript(
       if (repository.holdsResidentForegroundRange() && repository.holdsBodiedForegroundWindow()) {
         fixture.lastLocalOpenStatus = "superseded-by-source";
         return true;
+      }
+      // The settling registration may itself be composed with a recovery span
+      // that is still pending: the hydration settled, the chain composed
+      // behind it has not, and this wake is early - a verdict here would judge
+      // an unfinished recovery's display. An open that still owns the route
+      // re-arms the wait for the next settlement and keeps racing the
+      // still-pending local read under the same backstop instead of falling
+      // through: the recovery-needed strand belongs to the chain still
+      // running, and the next wake (or the recovery's own span settling)
+      // re-runs this verdict with the display as it actually stands.
+      if (openingRecoveryCompletion(ref) !== undefined && openingOwned()) {
+        settlement?.cancel();
+        settlement = routeHost().nextTrackedHydrationSettlement(ref, exceptRegistration);
+        result = await Promise.race([localRead, settlement.settled.then(() => OPEN_SUPERSEDED_BY_SOURCE), openBound]);
+        continue;
       }
       // A settlement that recovered nothing — a failed read, or a successful
       // response the repository rejected behind a newer recorded update —
