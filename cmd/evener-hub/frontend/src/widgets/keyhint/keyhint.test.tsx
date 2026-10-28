@@ -1,8 +1,6 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import { chordLabel, KeyHint } from "./index";
 
 function setPlatform(platform: string) {
@@ -119,7 +117,7 @@ test("compact's spoken words match the non-compact form's own accessible name", 
 // stays subordinate by size and face, never by a thinner color that would go
 // illegible on that background.
 test("compact inherits the host control's own text color rather than thinning it", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "keyhint.module.css"), "utf8");
+  const css = readModuleCss(import.meta.url, "keyhint.module.css");
   const rule = /\.glyphs\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(rule).toContain("color: inherit");
   expect(rule).toContain("font-size: var(--font-size-caption)");

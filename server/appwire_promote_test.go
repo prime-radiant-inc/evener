@@ -257,7 +257,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 	if preview := queuePreview(sess); len(preview) != 2 {
 		t.Fatalf("QueuePreview after mismatch: got %#v, want both entries intact", preview)
 	}
-	if steering := sess.SteeringQueueSnapshot(); len(steering) != 0 {
+	if steering := steeringInputs(sess); len(steering) != 0 {
 		t.Fatalf("steering queue after mismatch: got %+v, want empty", steering)
 	}
 
@@ -268,8 +268,8 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 	if preview := queuePreview(sess); len(preview) != 1 || preview[0] != "bravo" {
 		t.Fatalf("QueuePreview after promote: got %#v, want [bravo]", preview)
 	}
-	steering := sess.SteeringQueueSnapshot()
-	if len(steering) != 1 || steering[0].Text != "alpha" {
+	steering := steeringInputs(sess)
+	if len(steering) != 1 || len(steering[0]) != 1 || steering[0][0].Text != "alpha" {
 		t.Fatalf("steering queue after promote: got %+v, want [alpha]", steering)
 	}
 	cancel()

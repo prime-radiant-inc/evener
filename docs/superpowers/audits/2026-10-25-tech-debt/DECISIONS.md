@@ -184,6 +184,22 @@ Keep afero in the hub stores (`hubcore` `writeStateFileAtomic` and its stores, `
 ### W1-37. Thought duration
 `formatThoughtDuration` switches to the shared `formatDurationMs`. Visible changes: 0 ms shows `1ms` instead of `0ms`, and 9,999 ms shows `10s` instead of `10.0s`.
 
+## Wave 2 follow-ups (2026-10-28)
+
+### Jesse
+- W2-18 Q3: the two mobile `confirmShutDown` prompts become one. The title is optional and the body is the info-sheet body.
+
+### Bot rulings under Wave 2 autonomy
+- W2-07 step 12: only `prepareModelRequestWithError` and `stageCompactionEffects` are in scope.
+- W2-06: do the `stableDelegate` rename. Keep the lenient shell and `model_list` clamps. Remove the mirror DTOs only if no consumer remains.
+- W2-04 Q1: no shared journal rollback helper.
+- W2-04 Q3: a session-log strategy that is missing its checkpointed carry is a bug and gets a bug fix.
+- W2-02 Q5: verify the behavior first and fix only if it is broken.
+- W2-12 Q1: the local resolver returns Invalid for an undecodable `thread/read` body, like the hub.
+- W2-12 Q2: `urls/remove` becomes retry-safe if and only if the server dedupes by mutation id.
+- W1-20: keep `Server.SetBeforeSubscriptionGate` as a legitimate test seam.
+- W2-14 Q1 and Q2, and W2-08 Q1 and Q4: take the design records' recommendations.
+
 ## Still open
 
 Nothing.
