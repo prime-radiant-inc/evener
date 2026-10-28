@@ -86,16 +86,14 @@ export function epochSecondsToISO(seconds: number | undefined): string | undefin
 
 // ItemModel.images/outputImages carry a resolved src alongside the wire's own
 // name/path/(source) fields (ItemImage, model.ts) rather than collapsing to
-// just src. src keeps preferring url — the field the legacy web client
-// (cmd/evener-hub/assets/renderer.js: imagesForUserItem, renderToolOutputImages)
-// treats as the <img src> — then the inline data-URI bytes, then a
+// just src. src prefers url — the field an <img> takes as its src — then the inline data-URI bytes, then a
 // sha-addressed /s/{route}/images/{sha} route rebuilt from metadata["sha"]
 // when the serving session is known (the wire Thread.sessionId, mirroring
 // stampThreadImageURLs' sessionID-over-ID preference in output_images.go;
 // imageSessionRoute undefined keeps that branch dark), then path or name,
 // exactly as before; name/path/source ride alongside src unresolved so a
 // renderer can caption the image instead of losing everything but whichever
-// field happened to win that fallback (kata byq2). Bytes beat the
+// field happened to win that fallback. Bytes beat the
 // synthesized route because they render unconditionally while the route 404s
 // whenever the session is absent from the hub's Past index
 // (handleSessionImage, image_serve.go) — so the route only ever fires for
@@ -123,7 +121,7 @@ export function imagesToItemImagesForSession(
   // data, no url/path — appwire_projection.go's projectUserInputImages), so
   // when no server route is named, the bytes themselves are the src. Falling
   // through to the bare name gave the browser a relative URL that 404s, and
-  // ImageGallery drops an unloadable src — no thumbnail at all (kata w53n).
+  // ImageGallery drops an unloadable src — no thumbnail at all.
   return images.map((img) => ({
     src: img.url ?? inlineImageSrc(img) ?? metadataShaImageSrc(img, imageSessionRoute) ?? img.path ?? img.name ?? "",
     name: img.name,
@@ -196,7 +194,7 @@ function setItemTextPresence(item: ItemModel, presence: ItemTextPresence): ItemM
 // clone sites spread items to patch fields, and the presence marker below is
 // non-enumerable, so every clone must re-apply it or a stripped sparse item
 // reads as an authoritative empty settle and blocks the page that later
-// brings its real text (RoboRev round 9).
+// brings its real text.
 export function copyItemTextPresence(source: ItemModel, target: ItemModel): ItemModel {
   const presence = (source as InternalItemModel)[ITEM_TEXT_PRESENCE];
   return presence === undefined ? target : setItemTextPresence(target, presence);
@@ -288,8 +286,7 @@ export const freshSuppliedNullishFallbackFields = new Set([
 // the marker exists precisely because shape alone cannot prove intent. An
 // unmarked item is identity-only only when it says so structurally: its
 // text is omitted (never a textSource winner) and every field it carries
-// is one the merge would NOT keep from it — each by its own rule (review
-// rounds 16 and 23): the nullish-fallback fields fall through on undefined
+// is one the merge would NOT keep from it — each by its own rule: the nullish-fallback fields fall through on undefined
 // AND null, the rank-merged status on undefined, and the spread-merged
 // fields by property presence, where an own undefined is an explicit CLEAR
 // the merge keeps — content, not absence. Hydration never creates those

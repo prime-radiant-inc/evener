@@ -34,8 +34,7 @@ import type { AskUserOption } from "./askShared";
 import { parseAskUserQuestions } from "./askShared";
 import type { ItemModel, ThreadModel } from "./model";
 
-// AskQuestionRef is one flattened, individually-addressable question -
-// mirrors legacy's pendingAsk item shape (renderer.js:5832-5844). `key` is
+// AskQuestionRef is one flattened, individually-addressable question. `key` is
 // stable and re-derivable (callId:idx within that call's own questions
 // array), never a locally-minted id - the same call posted twice (e.g.
 // after a reconnect replay) always re-derives the same keys.

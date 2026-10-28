@@ -90,7 +90,7 @@ export interface CredentialInstancesState {
   availableProviders: ProviderDescriptor[];
   // diagnostics/userLayer/writesRefused mirror InstanceListResponse's own
   // optional fields (appwire/types_auth_commands.go), normalized here to always-present
-  // values (spec §11.3) so components never need an `?? []`/`?? false`
+  // values so components never need an `?? []`/`?? false`
   // fallback of their own.
   diagnostics: string[];
   userLayer: string;
