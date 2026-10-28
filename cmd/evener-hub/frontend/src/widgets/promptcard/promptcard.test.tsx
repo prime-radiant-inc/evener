@@ -1,16 +1,14 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import { Textarea } from "../textarea";
 import { PromptCard } from "./index";
 import promptCardStyles from "./promptcard.module.css";
 
 function moduleCss(): string {
-  return readFileSync(join(dirname(fileURLToPath(import.meta.url)), "promptcard.module.css"), "utf8");
+  return readModuleCss(import.meta.url, "promptcard.module.css");
 }
 
 /** A live card wrapping a controlled seamless field, the shape both real
