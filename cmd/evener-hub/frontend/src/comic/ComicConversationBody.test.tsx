@@ -124,6 +124,17 @@ function setup(messageCount = 30, olderCursor?: string) {
     child,
     client,
     mount,
+    holdRootReads: () => {
+      let release: () => void = () => {};
+      const ready = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      client.on("thread/read", async (p) => {
+        if (p.ref === root) await ready;
+        return { thread: thread(p.ref ?? root), olderCursor };
+      });
+      return release;
+    },
     restart: async () => {
       instanceId = "restarted";
       await act(async () =>
@@ -177,16 +188,17 @@ test.each(
     vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
       return this.hasAttribute("data-index") ? 40 : 4000;
     });
-    const { root, child, client, mount, restart, clear } = setup(2);
+    const { root, child, client, mount, holdRootReads, restart, clear } = setup(2);
     const actual = comicReader.useComicReader;
     const readers = new Map<string, ReturnType<typeof actual>>();
-    const allocations: { id: string; position: ComicReadingPosition | undefined }[] = [];
+    const allocations: { id: string; sessionRef: string | undefined; position: ComicReadingPosition | undefined }[] =
+      [];
     const childAllocations = new Set<string>();
     vi.spyOn(comicReader, "useComicReader").mockImplementation((...args) => {
       const result = actual(...args);
       if (args[0] === child) childAllocations.add(result.reader.id);
       if (args[0] === root && !allocations.some((row) => row.id === result.reader.id)) {
-        allocations.push({ id: result.reader.id, position: result.position });
+        allocations.push({ id: result.reader.id, sessionRef: args[2], position: result.position });
       }
       readers.set(args[0], result);
       return result;
@@ -287,11 +299,51 @@ test.each(
     expect(childAllocations.size).toBe(childAllocationCount);
     expect(pagingByRef.get(child)?.paneConsumers.size ?? 0).toBe(0);
     mounted.unmount();
-    mount("clear-pane");
-    await waitFor(() => expect(readers.get(root)?.reader.alive).toBe(true));
-    expect(readers.get(root)?.position).toEqual({ mode: "end", sessionRef: root, path: [] });
+    await waitFor(() => expect(threadsStore.getState().threads.has(root)).toBe(false));
+    const releaseRootReads = holdRootReads();
+    onTestFinished(releaseRootReads);
+    const rootReads = () =>
+      client.calls.filter((call) => call.method === "thread/read" && (call.params as { ref: string }).ref === root);
+    const readsBeforeRemount = rootReads().length;
+    const allocationsBeforeRemount = allocations.length;
+    mounted = mount("clear-pane");
+    // Alive is only the reader's committed lifetime. Before hydration it may
+    // still carry this seat's old stamp, but no transcript may consume it.
+    const loadingReader = readers.get(root)?.reader;
+    expect(loadingReader?.alive).toBe(true);
+    expect(threadsStore.getState().threads.has(root)).toBe(false);
+    expect(mounted.container.querySelectorAll("[data-comic-entry]")).toHaveLength(0);
+    expect(mounted.container.querySelector("[data-comic-scroll]")).toBeNull();
     expect(childReads()).toHaveLength(readsAfterClear);
     expect(childAllocations.size).toBe(childAllocationCount);
+    expect(pagingByRef.get(child)?.paneConsumers.size ?? 0).toBe(0);
+    expect(readComicPosition(root)).toEqual({ mode: "end", sessionRef: root, path: [] });
+    await waitFor(() => expect(rootReads().length).toBeGreaterThan(readsBeforeRemount));
+    await act(async () => releaseRootReads());
+    await waitFor(() => {
+      expect(threadsStore.getState().threads.get(root)?.imageSessionId).toBe("replacement");
+      expect(mounted.container.querySelectorAll("[data-comic-entry]").length).toBeGreaterThan(0);
+    });
+    const renderedText = [...mounted.container.querySelectorAll("[data-comic-text]")]
+      .map((node) => node.textContent)
+      .join("");
+    expect(renderedText).toContain("MESSAGE_replacement_0");
+    expect(renderedText).not.toContain(`MESSAGE_${root.slice(root.indexOf(":") + 1)}_`);
+    const hydratedAllocations = allocations
+      .slice(allocationsBeforeRemount)
+      .filter((row) => row.sessionRef !== undefined);
+    expect(hydratedAllocations.length).toBeGreaterThan(0);
+    for (const allocation of hydratedAllocations) {
+      expect(allocation.sessionRef).toBe("local:replacement");
+      expect(allocation.position).toEqual({ mode: "end", sessionRef: root, path: [] });
+    }
+    expect(loadingReader?.alive).toBe(false);
+    expect(readers.get(root)?.reader.alive).toBe(true);
+    expect(readers.get(root)?.position).toEqual({ mode: "end", sessionRef: root, path: [] });
+    expect(readComicPosition(root)).toEqual({ mode: "end", sessionRef: root, path: [] });
+    expect(childReads()).toHaveLength(readsAfterClear);
+    expect(childAllocations.size).toBe(childAllocationCount);
+    expect(pagingByRef.get(child)?.paneConsumers.size ?? 0).toBe(0);
   },
 );
 
