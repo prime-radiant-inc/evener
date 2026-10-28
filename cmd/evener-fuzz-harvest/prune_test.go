@@ -111,8 +111,8 @@ func pruneFixture(t *testing.T, targetName string) string {
 			t.Fatal(err)
 		}
 	}
-	// The branching lives in a separate module the fixture depends on, as the
-	// real targets' oracles run inside third-party validators.
+	// The branching lives in a separate module that only the fuzz test imports,
+	// as the real targets' oracles run inside third-party validators.
 	write("go.mod", "module example.com/fixture\n\ngo 1.21\n\nrequire example.com/dep v0.0.0\n\nreplace example.com/dep => ./dep\n")
 	write("dep/go.mod", "module example.com/dep\n\ngo 1.21\n")
 	write("dep/dep.go", `package dep
@@ -127,21 +127,20 @@ func Classify(n int) string {
 	return "pos"
 }
 `)
-	write("fixture.go", `package fixture
-
-import "example.com/dep"
-
-func Classify(n int) string { return dep.Classify(n) }
-`)
+	write("fixture.go", "package fixture\n")
 	write("fixture_fuzz_test.go", `//go:build evenerfuzz
 
 package fixture
 
-import "testing"
+import (
+	"testing"
+
+	"example.com/dep"
+)
 
 func FuzzClassify(f *testing.F) {
 	f.Add(1)
-	f.Fuzz(func(t *testing.T, n int) { Classify(n) })
+	f.Fuzz(func(t *testing.T, n int) { dep.Classify(n) })
 }
 `)
 	corpus := filepath.Join("testdata", "fuzz", targetName)

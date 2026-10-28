@@ -81,15 +81,29 @@ func parseCoverProfile(path string) (coverageSet, error) {
 }
 
 // instrumentedPackages lists, comma-joined for -coverpkg, every non-standard
-// package the package in pkgDir builds with under -tags evenerfuzz: the module's own code plus third-party dependencies such as the
-// schema validator that a target's oracle runs inside.
+// package that the package in pkgDir builds with under -tags evenerfuzz,
+// including those only its tests import: the module's own code plus
+// third-party dependencies such as the schema validator a target's oracle runs
+// inside.
 func instrumentedPackages(pkgDir string) (string, error) {
-	out, err := exec.Command("go", "-C", pkgDir, "list", "-tags", "evenerfuzz", "-deps",
+	out, err := exec.Command("go", "-C", pkgDir, "list", "-tags", "evenerfuzz", "-deps", "-test",
 		"-f", "{{if not .Standard}}{{.ImportPath}}{{end}}", ".").Output()
 	if err != nil {
 		return "", fmt.Errorf("go list deps of %s: %w", pkgDir, err)
 	}
-	return strings.Join(strings.Fields(string(out)), ","), nil
+	// -test adds synthetic entries ("p [p.test]", "p.test", "p_test [p.test]");
+	// only the real import path of each is a coverage target.
+	seen := map[string]bool{}
+	var pkgs []string
+	for _, line := range strings.Split(string(out), "\n") {
+		path, _, _ := strings.Cut(line, " ")
+		if path == "" || strings.HasSuffix(path, ".test") || strings.HasSuffix(path, "_test") || seen[path] {
+			continue
+		}
+		seen[path] = true
+		pkgs = append(pkgs, path)
+	}
+	return strings.Join(pkgs, ","), nil
 }
 
 // pruneCorpus drops the harvester-written seeds of one target corpus
