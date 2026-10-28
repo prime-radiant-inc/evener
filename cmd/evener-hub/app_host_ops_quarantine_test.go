@@ -64,13 +64,15 @@ func TestOpenHostOpsStoreQuarantinesAndSignals(t *testing.T) {
 	}
 }
 
-// TestOpenHostOpsStoreKeepsTheNonCorruptOpenDispositions pins the narrowed boot
-// abort: only a corrupt store whose custody cannot be proven aborts the boot.
-// Every other open failure keeps the pre-quarantine disposition — logged, and
-// the hub serves with host operations unwired.
-func TestOpenHostOpsStoreKeepsTheNonCorruptOpenDispositions(t *testing.T) {
+// TestOpenHostOpsStoreReportsEveryOpenFailureWithoutAHandle pins the open's
+// contract: a store that cannot be opened — a transient permission or kind
+// problem, or a corrupt file whose custody cannot be shown whole — is reported
+// with no handle, and the caller decides what to serve. Startup keeps serving
+// the hosts and retries (TestHubKeepsServingHostsWhenTheStoreCannotOpen).
+func TestOpenHostOpsStoreReportsEveryOpenFailureWithoutAHandle(t *testing.T) {
 	cases := map[string]struct {
 		prepare func(t *testing.T, path string)
+		want    error
 	}{
 		"a store readable beyond its owner": {
 			prepare: func(t *testing.T, path string) {
@@ -81,6 +83,7 @@ func TestOpenHostOpsStoreKeepsTheNonCorruptOpenDispositions(t *testing.T) {
 					t.Fatalf("Chmod: %v", err)
 				}
 			},
+			want: hostops.ErrStoreReadableBeyondOwner,
 		},
 		"a non-regular store path": {
 			prepare: func(t *testing.T, path string) {
@@ -101,23 +104,23 @@ func TestOpenHostOpsStoreKeepsTheNonCorruptOpenDispositions(t *testing.T) {
 
 			var logged strings.Builder
 			store, err := openHostOpsStore(stateRoot, &logged, hostops.RetentionPolicy{})
-			if err != nil {
-				t.Fatalf("openHostOpsStore aborted the boot on %s: %v", name, err)
+			if err == nil {
+				t.Fatalf("openHostOpsStore opened %s", name)
 			}
 			if store != nil {
 				t.Fatalf("openHostOpsStore returned a handle for %s", name)
 			}
-			if !strings.Contains(logged.String(), path) {
-				t.Fatalf("the refusal to open %s is not logged:\n%s", path, logged.String())
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("openHostOpsStore = %v, want %v", err, tc.want)
 			}
 		})
 	}
 }
 
-// TestOpenHostOpsStoreRefusesStartupOnIncompleteCustody pins the fail-closed
-// half: a corrupt file whose custody cannot be shown complete aborts the boot
+// TestOpenHostOpsStoreReportsAnIncompleteCustody pins the open's other
+// refusal: a corrupt file whose custody cannot be shown complete is reported
 // with the store-corrupt class, and nothing is renamed or rewritten.
-func TestOpenHostOpsStoreRefusesStartupOnIncompleteCustody(t *testing.T) {
+func TestOpenHostOpsStoreReportsAnIncompleteCustody(t *testing.T) {
 	stateRoot := t.TempDir()
 	path := hostops.StorePath(stateRoot)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

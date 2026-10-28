@@ -448,9 +448,9 @@ func TestRemoveResultLeavesTheLockStateBalancedOnEveryExit(t *testing.T) {
 	runBalanceExits(t, exits)
 }
 
-// crossFileRemoval builds a hub whose host "m4" holds an outstanding
-// confirmation token, so its removal takes §9's cross-file commit.
-func crossFileRemoval(t *testing.T) *hubHostManager {
+// tokenHolderRemoval builds a hub whose host "m4" holds an outstanding
+// confirmation token, so its removal also purges the token row.
+func tokenHolderRemoval(t *testing.T) *hubHostManager {
 	t.Helper()
 	entry := pipelineEntry("m4", 2)
 	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
@@ -459,11 +459,11 @@ func crossFileRemoval(t *testing.T) *hubHostManager {
 	return fixture.manager(t)
 }
 
-func TestRemoveResultCrossFileCommitLeavesTheLockStateBalancedOnEveryExit(t *testing.T) {
+func TestRemoveResultWithATokenRowLeavesTheLockStateBalancedOnEveryExit(t *testing.T) {
 	ctx := context.Background()
 	exits := []balanceExit{
 		{name: "committed", run: func(t *testing.T) (*hubHostManager, string) {
-			m := crossFileRemoval(t)
+			m := tokenHolderRemoval(t)
 			result, err := m.RemoveResult(ctx, removeRequest(t, m, "m4"))
 			if err != nil || result.HostMutationCommittedRemoved == nil {
 				t.Fatalf("Remove = (%+v, %v), want the committed arm", result, err)
@@ -473,44 +473,8 @@ func TestRemoveResultCrossFileCommitLeavesTheLockStateBalancedOnEveryExit(t *tes
 			}
 			return m, "m4"
 		}},
-		{name: "stash cannot be written", run: func(t *testing.T) (*hubHostManager, string) {
-			m := crossFileRemoval(t)
-			req := removeRequest(t, m, "m4")
-			key := hostMutationReceiptKey(req.MutationID, "m4", hostMutationRemove, hostMutationIdentity{
-				Generation: req.ExpectedGeneration, IncarnationID: req.ExpectedIncarnationID,
-			})
-			if err := os.Mkdir(hubTOMLStashPath(m.cfg.configPath, key), 0o700); err != nil {
-				t.Fatalf("block the stash path: %v", err)
-			}
-			_, err := m.RemoveResult(ctx, req)
-			requireRefusal(t, err)
-			return m, "m4"
-		}},
-		{name: "compensation cannot be armed", run: func(t *testing.T) (*hubHostManager, string) {
-			m := crossFileRemoval(t)
-			token, ok := m.opsStore().OutstandingToken("m4")
-			if !ok {
-				t.Fatal("fixture lost the token row")
-			}
-			if err := m.opsStore().ArmCompensation(hostops.Compensation{
-				Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
-				Stash: hubTOMLStashPath(m.cfg.configPath, "earlier"), Generation: 2,
-			}); err != nil {
-				t.Fatalf("pre-arm: %v", err)
-			}
-			_, err := m.RemoveResult(ctx, removeRequest(t, m, "m4"))
-			requireRefusal(t, err)
-			return m, "m4"
-		}},
-		{name: "intent clearing write fails", run: func(t *testing.T) (*hubHostManager, string) {
-			m := crossFileRemoval(t)
-			flakyHubTOMLDirSync(t, func(call int) bool { return call == 3 })
-			_, err := m.RemoveResult(ctx, removeRequest(t, m, "m4"))
-			requireRefusal(t, err)
-			return m, "m4"
-		}},
 		{name: "teardown failure", run: func(t *testing.T) (*hubHostManager, string) {
-			m := crossFileRemoval(t)
+			m := tokenHolderRemoval(t)
 			failTeardown(m)
 			result, err := m.RemoveResult(ctx, removeRequest(t, m, "m4"))
 			if err != nil || result.HostMutationTeardownFailureRemoved == nil {
@@ -621,15 +585,17 @@ func TestMutationLockWindows(t *testing.T) {
 		wantHeldWrites(t, *held, 3)
 		wantWindow(t, window)
 	})
-	t.Run("cross-file remove", func(t *testing.T) {
-		m := crossFileRemoval(t)
+	t.Run("remove with a token row", func(t *testing.T) {
+		m := tokenHolderRemoval(t)
 		held := lockProbe(t, m)
 		var window []string
 		m.testOnlyParkPostCommit = postCommitProbe(t, m, &window)
 		if _, err := m.RemoveResult(ctx, removeRequest(t, m, "m4")); err != nil {
 			t.Fatalf("Remove: %v", err)
 		}
-		wantHeldWrites(t, *held, 4)
+		// The records live in the operation store, so a removal writes hub.toml once:
+		// the host change. Every other step is a store write.
+		wantHeldWrites(t, *held, 1)
 		wantWindow(t, window)
 	})
 	t.Run("refused runtime flip releases before the compensation returns", func(t *testing.T) {

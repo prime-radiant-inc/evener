@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -79,7 +80,39 @@ func (f *pipelineFixture) manager(t *testing.T) *hubHostManager {
 		RemoteHostOpsStore:   f.store,
 		RemoteHostConfigPath: f.configPath,
 	}
-	return newHubHostManager(nil, nil, cfg, f.configPath, f.registry, nil)
+	return newHubHostManager(nil, nil, cfg, f.configPath, f.registry, t.Logf)
+}
+
+// restart is a process start over the fixture's pair: the registry is rebuilt
+// from the files the way startup builds it, then the real manager boots.
+func (f *pipelineFixture) restart(t *testing.T) *hubHostManager {
+	t.Helper()
+	cfg, err := LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	doc := hostBootDocument(cfg, f.store)
+	registry, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	f.registry = registry
+	return f.manager(t)
+}
+
+// legacyManager is a manager whose records are still in hub.toml's reserved
+// sections: it boots without the operation store, which is attached afterward,
+// so it never moves the records. A test stages the half-done state an old build
+// left in the file and the store with it, then boots the real manager over the
+// pair to watch the recovery passes settle that state and the move follow.
+func (f *pipelineFixture) legacyManager(t *testing.T) *hubHostManager {
+	t.Helper()
+	cfg := hubcore.WebConfig{RemoteHostRegistry: f.registry, RemoteHostConfigPath: f.configPath}
+	m := newHubHostManager(nil, nil, cfg, f.configPath, f.registry, t.Logf)
+	m.cfg.ops.Store(f.store)
+	// The orphan-stash prune a boot with the store runs.
+	m.pruneOrphanHubTOMLStash()
+	return m
 }
 
 // pipelineEntry is one host entry with a complete persisted identity.
@@ -160,14 +193,42 @@ func (f *pipelineFixture) carriesIntent(t *testing.T, name string) bool {
 	return carried
 }
 
-// readPipelineConfig decodes the fixture's hub.toml.
+// readPipelineConfig decodes the fixture's hub.toml and, once the operation
+// store holds the machine records, overlays them: the file carries only the
+// [[hosts]] from then on, and the records a boot left are the store's.
 func readPipelineConfig(t *testing.T, path string) (Config, bool) {
 	t.Helper()
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		t.Fatalf("LoadConfig(%s): %v", path, err)
 	}
+	store, err := hostops.Open(hostops.StorePath(filepath.Dir(path)))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	if _, _, imported := store.HostRecords(); imported {
+		records, err := hostOpsRecordStore{ops: store}.records()
+		if err != nil {
+			t.Fatalf("read the store's records: %v", err)
+		}
+		cfg.HostRecords, cfg.Generations = records.HostRecords, records.Generations
+		cfg.MutationReceipts, cfg.Tombstones = records.MutationReceipts, records.Tombstones
+		cfg.PrunedReceipts, cfg.StagedReceipts = records.PrunedReceipts, records.StagedReceipts
+		cfg.TeardownRemnants, cfg.TeardownAttempts = records.TeardownRemnants, records.TeardownAttempts
+		cfg.PendingStoreSync, cfg.MirrorCommits = records.PendingStoreSync, records.MirrorCommits
+	}
 	return cfg, true
+}
+
+// loadHubTOMLRecords decodes hub.toml alone: the reserved record sections a
+// legacy-mode manager writes, with no overlay from the operation store.
+func loadHubTOMLRecords(t *testing.T, path string) Config {
+	t.Helper()
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig(%s): %v", path, err)
+	}
+	return cfg
 }
 
 // TestBootStoreSyncReappliesAPurgeTheStoreMissed pins §9's swap-landed/
@@ -211,9 +272,8 @@ func TestBootStoreSyncReappliesAPurgeTheStoreMissed(t *testing.T) {
 func TestBootStoreSyncClearsAnIntentWhosePurgeLanded(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
 	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
-		// The mirror is already converged: this test is about the intent, and a
-		// fresh store would make the boot's mirror pass write (correctly) and
-		// muddy the "no store write" assertion below.
+		// The mirror is already converged, so the only thing the boot moves into
+		// the store is the records.
 		if err := store.MirrorBoundaries(map[string]hostops.Boundary{
 			"m4": {Generation: 2, IncarnationID: "inc-m4", PresenceEpoch: 3},
 		}, nil); err != nil {
@@ -221,10 +281,7 @@ func TestBootStoreSyncClearsAnIntentWhosePurgeLanded(t *testing.T) {
 		}
 	})
 	fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\"token-that-was-purged\"]\n")
-	before, err := os.ReadFile(hostops.StorePath(fixture.dir))
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatalf("read store: %v", err)
-	}
+	sequence, records := fixture.store.Sequence(), len(fixture.store.Records())
 	m := fixture.manager(t)
 	if fixture.carriesIntent(t, "m4") {
 		t.Fatal("boot did not clear the converged intent")
@@ -232,12 +289,8 @@ func TestBootStoreSyncClearsAnIntentWhosePurgeLanded(t *testing.T) {
 	if _, ok := m.opsStore().OutstandingToken("m4"); ok {
 		t.Fatal("boot resurrected a row the intent's clear must not")
 	}
-	after, err := os.ReadFile(hostops.StorePath(fixture.dir))
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatalf("read store: %v", err)
-	}
-	if !bytes.Equal(before, after) {
-		t.Fatal("a converged intent's clear rewrote the store")
+	if fixture.store.Sequence() != sequence || len(fixture.store.Records()) != records {
+		t.Fatal("a converged intent's clear changed the store's operation records")
 	}
 }
 
@@ -334,7 +387,7 @@ func hostRowNamed(rows []appwire.HostRow, name string) (appwire.HostRow, bool) {
 func TestBootCompensationResumesTheOwedRowsAfterAFailedAdvance(t *testing.T) {
 	entry := pipelineEntry("keep", 2)
 	fixture, token, preRemove := newPipelineRemovalFixture(t, entry, true)
-	m := fixture.manager(t)
+	m := fixture.legacyManager(t)
 	// The crash state: the purge landed (the record advanced to hubtoml), the
 	// file still carries the intent, and the stash holds the pre-mutation bytes.
 	fixture.appendTOML(t, "[pending_store_sync.keep]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
@@ -587,7 +640,7 @@ func TestBootHostRemovedPassMarksTheRemovedIncarnationsRecords(t *testing.T) {
 	second := newHubHostManager(nil, nil, hubcore.WebConfig{
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, nil, nil)
+	}, fixture.configPath, nil, t.Logf)
 	records := second.opsStore().Records()
 	var removedMarked, readdMarked bool
 	for _, record := range records {
@@ -737,7 +790,7 @@ func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredFileIsMissing(t *t
 func TestBootIntentSectionRoundTripsThroughTheWriter(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
 	fixture := newPipelineFixture(t, []hostreg.Host{entry}, nil)
-	m := fixture.manager(t)
+	m := fixture.legacyManager(t)
 	entries := m.cfg.store.snapshot()
 	if err := m.persistHosts(entries, entries, hostPersistChange{storeSync: &pendingHostStoreSync{
 		Name:   "m4",
@@ -745,7 +798,7 @@ func TestBootIntentSectionRoundTripsThroughTheWriter(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("persistHosts: %v", err)
 	}
-	cfg, _ := readPipelineConfig(t, fixture.configPath)
+	cfg := loadHubTOMLRecords(t, fixture.configPath)
 	intent, carried := cfg.PendingStoreSync["m4"]
 	if !carried || intent.Generation != 2 || len(intent.TokenValues) != 1 || intent.TokenValues[0] != "row-value" {
 		t.Fatalf("intent after the carrying write = %+v/%v", intent, carried)
@@ -753,7 +806,7 @@ func TestBootIntentSectionRoundTripsThroughTheWriter(t *testing.T) {
 	if err := m.persistHosts(entries, entries, hostPersistChange{dropStoreSync: "m4"}); err != nil {
 		t.Fatalf("persistHosts(clear): %v", err)
 	}
-	cfg, _ = readPipelineConfig(t, fixture.configPath)
+	cfg = loadHubTOMLRecords(t, fixture.configPath)
 	if _, carried := cfg.PendingStoreSync["m4"]; carried {
 		t.Fatal("the clearing write left the intent in hub.toml")
 	}
@@ -772,8 +825,8 @@ func TestBootMirrorCommitMarkersRoundTripThroughTheWriter(t *testing.T) {
 			t.Fatalf("MirrorBoundaries: %v", err)
 		}
 	})
-	fixture.manager(t)
-	cfg, _ := readPipelineConfig(t, fixture.configPath)
+	fixture.legacyManager(t)
+	cfg := loadHubTOMLRecords(t, fixture.configPath)
 	commit, carried := cfg.MirrorCommits["m4"]
 	if !carried || commit.HubTOMLGeneration != 2 || commit.StoreGeneration != 2 {
 		t.Fatalf("mirror commit marker = %+v/%v, want (2, 2)", commit, carried)
@@ -896,7 +949,7 @@ func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredHostIsNotRegistere
 		RemoteHostRegistry:   registry,
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, registry, nil)
+	}, fixture.configPath, registry, t.Logf)
 	if _, open := second.opsStore().Compensation("m4"); open {
 		t.Fatal("the next boot did not converge the left-open compensation")
 	}
@@ -990,7 +1043,7 @@ func TestRemovePrunesTheStashWhenTheStagedWriteFails(t *testing.T) {
 func TestMirrorHighWaterRaiseRaisesATombstonedNamesTwin(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
 	fixture := newPipelineFixture(t, []hostreg.Host{entry}, nil)
-	m := fixture.manager(t)
+	m := fixture.legacyManager(t)
 	if _, err := m.Remove(context.Background(), removeRequest(t, m, "m4")); err != nil {
 		t.Fatalf("Remove(m4): %v", err)
 	}
@@ -1002,8 +1055,9 @@ func TestMirrorHighWaterRaiseRaisesATombstonedNamesTwin(t *testing.T) {
 		t.Fatalf("MirrorBoundaries: %v", err)
 	}
 	// The boot rolls the mirror back and must raise the tombstoned name's
-	// [generations] twin together with the tombstone (S11 ties the pair).
-	fixture.manager(t)
+	// [generations] twin together with the tombstone (S11 ties the pair), then
+	// carries the pair into the store.
+	fixture.restart(t)
 	cfg, _ := readPipelineConfig(t, fixture.configPath)
 	mark, carried := cfg.Generations["m4"]
 	if !carried || mark.Generation != 9 {
@@ -1017,14 +1071,14 @@ func TestMirrorHighWaterRaiseRaisesATombstonedNamesTwin(t *testing.T) {
 		t.Fatalf("the tombstone/twin pair disagrees: %+v vs %+v", tombstone, mark)
 	}
 	// A follow-up boot finds the pair converged and writes nothing.
-	before, err := os.ReadFile(fixture.configPath)
+	before, err := os.ReadFile(hostops.StorePath(fixture.dir))
 	if err != nil {
-		t.Fatalf("read hub.toml: %v", err)
+		t.Fatalf("read the store: %v", err)
 	}
-	fixture.manager(t)
-	after, err := os.ReadFile(fixture.configPath)
+	fixture.restart(t)
+	after, err := os.ReadFile(hostops.StorePath(fixture.dir))
 	if err != nil {
-		t.Fatalf("read hub.toml: %v", err)
+		t.Fatalf("read the store: %v", err)
 	}
 	if !bytes.Equal(before, after) {
 		t.Fatal("a converged raise was rewritten by the next boot")
@@ -1066,27 +1120,39 @@ func TestBootRestoreInstallsTheMachineRecords(t *testing.T) {
 	if _, err := fixture.store.PurgeCompensated("keep", []string{token.Value}); err != nil {
 		t.Fatalf("PurgeCompensated: %v", err)
 	}
-	m := fixture.manager(t)
-	if _, ok := m.opsStore().OutstandingToken("keep"); !ok {
+	// The first boot restores hub.toml and the row, but its registry was built
+	// from the committed, host-less file and cannot serve the restored host: the
+	// compensation stays open for the next start, and host changes pause, typed
+	// as retryable, rather than writing records over an unsettled removal.
+	first := fixture.manager(t)
+	if _, ok := first.opsStore().OutstandingToken("keep"); !ok {
 		t.Fatal("boot did not re-insert the restored row")
 	}
-	// The next hub.toml write derives from the restored records: no intent.
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
+	_, err := first.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}})
+	requireWireError(t, err, appwire.CodeUnavailable)
+	// The next start loads the restored file's live set: the compensation
+	// converges, the records move into the store, and the hub takes host changes.
+	second := fixture.restart(t)
+	if _, open := second.opsStore().Compensation("keep"); open {
+		t.Fatal("the compensation did not converge on the next start")
+	}
+	if _, ok := second.opsStore().OutstandingToken("keep"); !ok {
+		t.Fatal("the next start purged the restored row")
+	}
+	// The next write derives from the restored records: no intent.
+	if _, err := second.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
 		t.Fatalf("Add(extra): %v", err)
 	}
 	cfg, _ := readPipelineConfig(t, fixture.configPath)
 	if _, carried := cfg.PendingStoreSync["keep"]; carried {
-		t.Fatal("the next hub.toml write re-emitted the compensated clear intent")
+		t.Fatal("the next write re-emitted the compensated clear intent")
 	}
-	if _, ok := m.opsStore().OutstandingToken("keep"); !ok {
+	if _, ok := second.opsStore().OutstandingToken("keep"); !ok {
 		t.Fatal("the write path purged the restored row")
 	}
 	// A follow-up boot must not purge the restored row either.
-	second := newHubHostManager(nil, nil, hubcore.WebConfig{
-		RemoteHostOpsStore:   fixture.store,
-		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, nil, nil)
-	if _, ok := second.opsStore().OutstandingToken("keep"); !ok {
+	third := fixture.restart(t)
+	if _, ok := third.opsStore().OutstandingToken("keep"); !ok {
 		t.Fatal("the follow-up boot purged the restored row")
 	}
 }
@@ -1105,7 +1171,7 @@ func TestBootRestoreReversesTheHostRemovedMarks(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	m := fixture.manager(t)
+	m := fixture.legacyManager(t)
 	// Capture the commit's staged marker as the staged write leaves it, then run
 	// the removal: the crash window below re-installs it, so this boot must deal
 	// with an open compensation AND a staged marker for the same name.
@@ -1152,7 +1218,7 @@ func TestBootRestoreReversesTheHostRemovedMarks(t *testing.T) {
 	crashed := newHubHostManager(nil, nil, hubcore.WebConfig{
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, nil, nil)
+	}, fixture.configPath, nil, t.Logf)
 	_ = crashed
 	if _, staged := crashed.cfg.store.stagedSnapshot()["keep"]; staged {
 		t.Fatal("the crash boot left the marker staged in the model")
@@ -1170,7 +1236,7 @@ func TestBootRestoreReversesTheHostRemovedMarks(t *testing.T) {
 		RemoteHostRegistry:   registry,
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, registry, nil)
+	}, fixture.configPath, registry, t.Logf)
 	_ = second
 	if _, open := fixture.store.Compensation("keep"); open {
 		t.Fatal("the compensation did not converge")
@@ -1218,7 +1284,7 @@ func TestPerCommitStashIsNotClobberedByALaterRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read hub.toml: %v", err)
 	}
-	m := fixture.manager(t)
+	m := fixture.legacyManager(t)
 	// Alpha's stash goes down after the boot prune: no record names it yet, and
 	// the prune would remove an orphan.
 	stashAlpha := hubTOMLStashPath(fixture.configPath, "mutation-a/alpha/remove/2/inc-alpha")
@@ -1252,14 +1318,21 @@ func TestPerCommitStashIsNotClobberedByALaterRemoval(t *testing.T) {
 		RemoteHostRegistry:   registry,
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, registry, nil)
+	}, fixture.configPath, registry, t.Logf)
 	_ = second
-	restored, err := os.ReadFile(fixture.configPath)
+	// The restore put the record's own bytes back, so beta is declared again
+	// although the later commit removed it; the move that follows rewrites the
+	// file without the record sections.
+	restored, err := LoadConfig(fixture.configPath)
 	if err != nil {
-		t.Fatalf("read hub.toml after the boot: %v", err)
+		t.Fatalf("LoadConfig after the boot: %v", err)
 	}
-	if !bytes.Equal(restored, preAlpha) {
-		t.Fatalf("the boot restored bytes that are not the record's own:\n%s", restored)
+	var declared []string
+	for _, host := range restored.Hosts {
+		declared = append(declared, host.Name)
+	}
+	if !slices.Equal(declared, []string{"alpha", "beta"}) {
+		t.Fatalf("hub.toml declares %v after the boot, want the record's own alpha and beta", declared)
 	}
 }
 
@@ -1271,7 +1344,7 @@ func TestPerCommitStashIsNotClobberedByALaterRemoval(t *testing.T) {
 func TestBootFinalizesTheMarkerWhenTheCompensationClearsWithoutRestoring(t *testing.T) {
 	entry := pipelineEntry("keep", 2)
 	fixture, _, _ := newPipelineRemovalFixture(t, entry, true)
-	m := fixture.manager(t)
+	m := fixture.legacyManager(t)
 	var staged HostStagedReceipt
 	m.testOnlyAfterStage = func(name string) {
 		if marker, ok := m.cfg.store.stagedSnapshot()[name]; ok {
@@ -1315,7 +1388,7 @@ func TestBootFinalizesTheMarkerWhenTheCompensationClearsWithoutRestoring(t *test
 		RemoteHostRegistry:   registry,
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, registry, nil)
+	}, fixture.configPath, registry, t.Logf)
 	_ = second
 	if _, open := fixture.store.Compensation("keep"); open {
 		t.Fatal("the compensation did not clear")
@@ -1459,7 +1532,7 @@ func TestRemoveWithAConfiguredPathAndNoFilePurgesTokensLive(t *testing.T) {
 		RemoteHostRegistry:   registry,
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, registry, nil)
+	}, fixture.configPath, registry, t.Logf)
 	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
 		t.Fatalf("Remove(keep) with a configured path and no file: %v", err)
 	}
@@ -1556,7 +1629,7 @@ func TestValidateHostOpsStashReferencesRefusesAForeignPath(t *testing.T) {
 func TestCompensationWithAFailedRollbackConvergesTheModelToTheFile(t *testing.T) {
 	entry := pipelineEntry("keep", 2)
 	fixture, _, preRemove := newPipelineRemovalFixture(t, entry, true)
-	m := fixture.manager(t)
+	m := fixture.legacyManager(t)
 	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
 		t.Fatalf("Remove(keep): %v", err)
 	}
