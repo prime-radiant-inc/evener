@@ -75,7 +75,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	if len(pruneDirs) > 0 {
 		for _, dir := range pruneDirs {
-			report, err := pruneCorpus(filepath.Join(*outRoot, dir))
+			report, err := pruneCorpus(filepath.Join(*outRoot, dir), *dryRun)
 			if err != nil {
 				fmt.Fprintf(stderr, "prune %s: %v\n", dir, err) //nolint:errcheck
 				return 1

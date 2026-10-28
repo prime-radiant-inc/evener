@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -89,5 +91,101 @@ func TestEmitterCapsFilesPerTargetIncludingExisting(t *testing.T) {
 	}
 	if got := countFiles(t, dir); got != 3 {
 		t.Fatalf("directory holds %d files, want 3", got)
+	}
+}
+
+// pruneFixture writes a tiny module whose FuzzClassify target (tagged
+// evenerfuzz, as the real targets are) has one f.Add seed covering the positive
+// branch, and a corpus of: a harvested negative (redundant once the
+// toolchain-written negative is counted), a harvested zero (new coverage), and
+// a harvested positive (redundant with the f.Add seed). It returns the corpus dir.
+func pruneFixture(t *testing.T, targetName string) string {
+	t.Helper()
+	root := t.TempDir()
+	write := func(rel, content string) {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.com/fixture\n\ngo 1.21\n")
+	write("fixture.go", `package fixture
+
+func Classify(n int) string {
+	if n < 0 {
+		return "neg"
+	}
+	if n == 0 {
+		return "zero"
+	}
+	return "pos"
+}
+`)
+	write("fixture_fuzz_test.go", `//go:build evenerfuzz
+
+package fixture
+
+import "testing"
+
+func FuzzClassify(f *testing.F) {
+	f.Add(1)
+	f.Fuzz(func(t *testing.T, n int) { Classify(n) })
+}
+`)
+	corpus := filepath.Join("testdata", "fuzz", targetName)
+	seed := func(n string) string { return "go test fuzz v1\nint(" + n + ")\n" }
+	write(filepath.Join(corpus, strings.Repeat("a", 64)), seed("-1"))
+	write(filepath.Join(corpus, strings.Repeat("b", 64)), seed("0"))
+	write(filepath.Join(corpus, strings.Repeat("c", 64)), seed("5"))
+	write(filepath.Join(corpus, "0123456789abcdef"), seed("-7"))
+	return filepath.Join(root, corpus)
+}
+
+func corpusNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+func TestPruneCorpusKeepsOnlyCoverageAddingAndToolchainFiles(t *testing.T) {
+	dir := pruneFixture(t, "FuzzClassify")
+	before := corpusNames(t, dir)
+
+	if _, err := pruneCorpus(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := corpusNames(t, dir); !reflect.DeepEqual(got, before) {
+		t.Fatalf("dry run changed the corpus: %v, want %v", got, before)
+	}
+
+	if _, err := pruneCorpus(dir, false); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{strings.Repeat("b", 64), "0123456789abcdef"}
+	sort.Strings(want)
+	if got := corpusNames(t, dir); !reflect.DeepEqual(got, want) {
+		t.Fatalf("corpus after prune = %v, want %v", got, want)
+	}
+}
+
+func TestPruneCorpusAbortsWhenTargetNoLongerExists(t *testing.T) {
+	dir := pruneFixture(t, "FuzzRenamedAway")
+	before := corpusNames(t, dir)
+
+	if _, err := pruneCorpus(dir, false); err == nil {
+		t.Fatal("prune of a corpus whose target does not exist must fail")
+	}
+	if got := corpusNames(t, dir); !reflect.DeepEqual(got, before) {
+		t.Fatalf("failed prune changed the corpus: %v, want %v", got, before)
 	}
 }

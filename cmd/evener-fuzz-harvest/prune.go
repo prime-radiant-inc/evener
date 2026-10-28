@@ -85,8 +85,8 @@ func parseCoverProfile(path string) (coverageSet, error) {
 // seeds in the target's source, the toolchain-written files, and the smaller
 // seeds kept before them, so the covered blocks are the same before and after.
 // Coverage is measured across the target's whole module under -tags
-// evenerfuzz. It returns a one-line report.
-func pruneCorpus(corpusDir string) (string, error) {
+// evenerfuzz. Under dryRun it deletes nothing. It returns a one-line report.
+func pruneCorpus(corpusDir string, dryRun bool) (string, error) {
 	corpusDir, err := filepath.Abs(corpusDir)
 	if err != nil {
 		return "", err
@@ -112,20 +112,29 @@ func pruneCorpus(corpusDir string) (string, error) {
 	}
 
 	profile := filepath.Join(tmp, "cover.out")
-	coverageOf := func(subtest string) (coverageSet, error) {
-		run := exec.Command(bin, "-test.run", "^"+target+"$/^"+subtest+"$", "-test.coverprofile", profile)
+	// replay runs the subtests matching pattern and returns what they covered.
+	// A corpus file must actually run: a directory left behind by a renamed or
+	// removed target would otherwise replay nothing, look redundant, and be
+	// pruned.
+	replay := func(pattern string, mustRun bool) (coverageSet, error) {
+		run := exec.Command(bin, "-test.v", "-test.run", "^"+target+"$/^"+pattern+"$", "-test.coverprofile", profile)
 		run.Dir = pkgDir
-		if out, err := run.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("replay %s: %w\n%s", subtest, err, out)
+		out, err := run.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("replay %s: %w\n%s", pattern, err, out)
+		}
+		if mustRun && !strings.Contains(string(out), "--- PASS: "+target+"/"+pattern) {
+			return nil, fmt.Errorf("replay %s: no %s subtest ran; is the corpus directory stale?", pattern, target)
 		}
 		return parseCoverProfile(profile)
 	}
+	coverageOf := func(file string) (coverageSet, error) { return replay(file, true) }
 
 	entries, err := os.ReadDir(corpusDir)
 	if err != nil {
 		return "", err
 	}
-	baseline, err := coverageOf("seed#[0-9]+")
+	baseline, err := replay("seed#[0-9]+", false)
 	if err != nil {
 		return "", err
 	}
@@ -166,12 +175,21 @@ func pruneCorpus(corpusDir string) (string, error) {
 	for _, k := range kept {
 		keep[k] = true
 	}
+	removed := 0
 	for _, name := range prunable {
-		if !keep[name] {
+		if keep[name] {
+			continue
+		}
+		removed++
+		if !dryRun {
 			if err := os.Remove(filepath.Join(corpusDir, name)); err != nil {
 				return "", err
 			}
 		}
 	}
-	return fmt.Sprintf("kept %d of %d harvested seeds; %d blocks covered before and after", len(kept), len(prunable), len(all)), nil
+	verb := "removed"
+	if dryRun {
+		verb = "would remove"
+	}
+	return fmt.Sprintf("%s %d of %d harvested seeds, kept %d; %d blocks covered before and after", verb, removed, len(prunable), len(kept), len(all)), nil
 }
