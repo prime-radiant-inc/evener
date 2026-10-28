@@ -294,6 +294,31 @@ describe("durable handoff library", () => {
 		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
 	});
 
+	test("a claimed transfer survives a competing refusal's disposition markers", () => {
+		const { ledger, repository, draftDatabase, library } = setup();
+		// A→B claims B, but its transfer fails.
+		repository.write(destination("a"), { draft: "a's work", unconfirmed: null });
+		draftDatabase.exec(
+			"CREATE TRIGGER reject_b BEFORE INSERT ON drafts WHEN NEW.session_ref = 'b' BEGIN SELECT RAISE(ABORT, 'full'); END",
+		);
+		const draftLibrary = library();
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		draftDatabase.exec("DROP TRIGGER reject_b");
+
+		// A recovered X→B handoff loses the claim and refuses: its release
+		// markers land in B, which still holds no composition.
+		repository.write(destination("x"), { draft: "", unconfirmed: null, releasedRecoveryIds: ["rel-1"] });
+		expect(draftLibrary.handoff(destination("x"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "x", "b")?.state).toBe("refused");
+		expect(repository.read(destination("b"))).toMatchObject({ draft: "", releasedRecoveryIds: ["rel-1"] });
+
+		// A→B's retry must not read those disposition-only markers as
+		// existing work: the claimed transfer lands, preserving the markers.
+		draftLibrary.retryPendingHandoffs();
+		expect(repository.read(destination("b"))).toMatchObject({ draft: "a's work", releasedRecoveryIds: ["rel-1"] });
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "settled" });
+	});
+
 	test("an uncomposed edge whose transfer landed settles from durable capture proof", () => {
 		const { ledger, repository, library } = setup();
 		repository.write(destination("a"), {

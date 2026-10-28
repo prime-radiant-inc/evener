@@ -139,13 +139,11 @@ export class DraftLibrary {
 		// would hand a new identity an empty snapshot; a reopened source with
 		// fresh work hands that work over instead.
 		if (this.sourceRetiredIdle(from)) return false;
-		const load = readHandoffGraph(ledger);
-		if (load.state === "ready") {
-			if (load.graph.edges.some((entry) => samePair(entry, from, to) && entry.state === "settled")) return true;
+		const history = this.pairHistory(ledger, from, to);
+		if (history !== undefined) {
+			if (history.some((entry) => samePair(entry, from, to) && entry.state === "settled")) return true;
 			if (
-				load.graph.edges.some(
-					(entry) => samePair(entry, from, to) && (entry.state === "refused" || entry.state === "cleaned"),
-				)
+				history.some((entry) => samePair(entry, from, to) && (entry.state === "refused" || entry.state === "cleaned"))
 			)
 				return false;
 		}
@@ -264,9 +262,9 @@ export class DraftLibrary {
 		from: DraftDestination,
 		to: DraftDestination,
 	): DraftHandoffEdge | undefined {
-		const load = readHandoffGraph(ledger);
-		if (load.state !== "ready") return undefined;
-		return load.graph.edges
+		const history = this.pairHistory(ledger, from, to);
+		if (history === undefined) return undefined;
+		return history
 			.filter((edge) => edge.state === "pending" && samePair(edge, from, to))
 			.sort((a, b) =>
 				a.createdAt === b.createdAt
@@ -277,6 +275,21 @@ export class DraftLibrary {
 							: 0
 					: a.createdAt - b.createdAt,
 			)[0];
+	}
+
+	/** The edges one identity pair ever carried: the identity-change action
+	 * is pair-scoped, so it reads the pair's own history - never the device's
+	 * whole handoff graph - and ledgers without the pair read fall back to
+	 * the whole graph. */
+	private pairHistory(
+		ledger: DraftHandoffLedger,
+		from: DraftDestination,
+		to: DraftDestination,
+	): DraftHandoffEdge[] | undefined {
+		const between = ledger.edgesBetween?.(from, to);
+		if (between !== undefined) return between;
+		const load = readHandoffGraph(ledger);
+		return load.state === "ready" ? load.graph.edges : undefined;
 	}
 
 	/** A handoff without a recorded retarget (tests, or a resume path that did
@@ -457,7 +470,30 @@ export class DraftLibrary {
 			// fall-through re-records the current fingerprint and moves the
 			// current record instead.
 		}
-		if (isOccupied(current.record)) return mayDecide ? this.refuse(ledger, edge, source) : false;
+		// A destination holding nothing but disposition markers still accepts
+		// its claimed transfer: the markers are a competing refusal's
+		// bookkeeping, not work, and refusing here would strand the claimed
+		// transfer forever. The transfer merges them so the refusal's
+		// dispositions survive the composition landing.
+		let deliveredRecord = snapshot.record;
+		if (isOccupied(current.record)) {
+			if (!dispositionOnly(current.record)) return mayDecide ? this.refuse(ledger, edge, source) : false;
+			deliveredRecord = {
+				...snapshot.record,
+				completedCommandRecoveryIds: [
+					...new Set([
+						...(current.record.completedCommandRecoveryIds ?? []),
+						...(snapshot.record.completedCommandRecoveryIds ?? []),
+					]),
+				],
+				releasedRecoveryIds: [
+					...new Set([...(current.record.releasedRecoveryIds ?? []), ...(snapshot.record.releasedRecoveryIds ?? [])]),
+				],
+				recoveryResendAcks: [
+					...new Set([...(current.record.recoveryResendAcks ?? []), ...(snapshot.record.recoveryResendAcks ?? [])]),
+				],
+			};
+		}
 
 		try {
 			ledger.recordDelivered(edge.edgeId, intended);
@@ -475,7 +511,7 @@ export class DraftLibrary {
 				if (!data) throw new Error("Saved image is unavailable.");
 				return { ...image, data };
 			});
-			this.repository().transfer(edge.from, edge.to, snapshot.record, additions, {
+			this.repository().transfer(edge.from, edge.to, deliveredRecord, additions, {
 				edgeId: edge.edgeId,
 				deliveredHash: intended,
 			});
@@ -1029,6 +1065,21 @@ function isOccupied(record: DraftRecord): boolean {
 			record.recoveryResendAcks?.length ||
 			record.completedCommandRecoveryIds?.length ||
 			record.releasedRecoveryIds?.length,
+	);
+}
+
+/** A record holding nothing but disposition markers: no composition, no
+ * capture, no images - only the bookkeeping a refusal's dispositions leave
+ * behind. A claimed transfer may land over it, preserving the markers. */
+function dispositionOnly(record: DraftRecord): boolean {
+	return (
+		record.draft === "" &&
+		(record.images?.length ?? 0) === 0 &&
+		(record.unconfirmedImages?.length ?? 0) === 0 &&
+		record.unconfirmed === null &&
+		!record.composer &&
+		!record.unconfirmedComposer &&
+		(record.parkedCompositions?.length ?? 0) === 0
 	);
 }
 

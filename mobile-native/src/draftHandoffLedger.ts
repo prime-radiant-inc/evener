@@ -146,6 +146,12 @@ export interface DraftHandoffLedger extends DraftSubmissionLedger {
 	 * included. Optional: without the method the caller falls back to
 	 * readGraph. */
 	readOutstandingGraph?(): DraftHandoffGraph;
+
+	/** The edges one identity pair ever carried, in creation order. The
+	 * identity-change action is pair-scoped: this reads one pair's own
+	 * history instead of the whole graph. Optional: without the method the
+	 * caller falls back to readGraph. */
+	edgesBetween?(from: DraftHandoffEndpoint, to: DraftHandoffEndpoint): DraftHandoffEdge[];
 }
 
 /** The target key is the composite `[hubId, sessionRef]` encoding used by every

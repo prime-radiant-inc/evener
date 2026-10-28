@@ -166,6 +166,15 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			 ON draft_handoff_edges (from_hub_id, from_ref)`);
 		this.db.execSync(`CREATE INDEX IF NOT EXISTS draft_handoff_dependencies_dependent
 			 ON draft_handoff_dependencies (depends_on_edge_id)`);
+		// The send path prices in unresolved work too: a submission names its
+		// obligation's links without scanning the link history cleaned
+		// handoffs retain, and the identity-change action reads the pair's own
+		// history rather than the graph's. Its pending-edge attach rides the
+		// pair index's from-endpoint columns.
+		this.db.execSync(`CREATE INDEX IF NOT EXISTS draft_handoff_edge_obligations_obligation
+			 ON draft_handoff_edge_obligations (obligation_id)`);
+		this.db.execSync(`CREATE INDEX IF NOT EXISTS draft_handoff_edges_pair
+			 ON draft_handoff_edges (from_hub_id, from_ref, to_hub_id, to_ref)`);
 	}
 
 	private addColumnIfMissing(table: string, column: string, definition: string): void {
@@ -452,6 +461,23 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 				}
 		}
 		return { edges: outstandingEdges, obligations, deliveries: [] };
+	}
+
+	/** The edges one identity pair ever carried, in creation order. The
+	 * identity-change action is pair-scoped: it must not load the device's
+	 * whole handoff history to decide one pair. */
+	edgesBetween(from: DraftHandoffEndpoint, to: DraftHandoffEndpoint): DraftHandoffEdge[] {
+		return this.db
+			.getAllSync<EdgeRow>(
+				`SELECT * FROM draft_handoff_edges
+				 WHERE from_hub_id = ? AND from_ref = ? AND to_hub_id = ? AND to_ref = ?
+				 ORDER BY created_at, rowid`,
+				from.hubId,
+				from.sessionRef,
+				to.hubId,
+				to.sessionRef,
+			)
+			.map((row) => this.mapEdge(row));
 	}
 
 	claimDestination(edgeId: string): boolean {

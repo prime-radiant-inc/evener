@@ -130,6 +130,62 @@ describe("draft handoff ledger", () => {
 		).toContain("USING INDEX draft_handoff_dependencies_dependent");
 	});
 
+	test("submission and identity-change reads price in outstanding work by index", () => {
+		const { database, ledger } = setup();
+		// Cleaned handoffs whose obligation links linger on.
+		for (let i = 0; i < 30; i += 1) {
+			const edge = ledger.createEdge({
+				chainId: "chain",
+				from: { hubId: "hub", sessionRef: `s${i}` },
+				to: { hubId: "hub", sessionRef: `t${i}` },
+			});
+			ledger.settleEdge(edge.edgeId, [], "hash");
+			ledger.cleanEdge(edge.edgeId);
+		}
+		const plan = (sql: string, ...params: (string | number | null)[]) =>
+			(database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as { detail: string }[])
+				.map((row) => row.detail)
+				.join(" | ");
+		// beginSubmission names an obligation's links without scanning the
+		// whole edge-obligation history.
+		expect(
+			plan(
+				"SELECT edge.chain_id FROM draft_handoff_edges edge JOIN draft_handoff_edge_obligations link ON link.edge_id = edge.edge_id WHERE link.obligation_id = ? LIMIT 1",
+				"id-x",
+			),
+		).toContain("USING INDEX draft_handoff_edge_obligations_obligation");
+		// beginSubmission attaches the open obligation to its origin's pending
+		// edges only.
+		expect(
+			plan(
+				"SELECT edge_id FROM draft_handoff_edges WHERE from_hub_id = ? AND from_ref = ? AND state = 'pending'",
+				"hub",
+				"s1",
+			),
+		).not.toContain("SCAN draft_handoff_edges");
+		// recordIdentityChange finds the pair's pending edge through the pair
+		// index, not the identity index it cannot lead with.
+		expect(
+			plan(
+				"SELECT * FROM draft_handoff_edges WHERE from_hub_id = ? AND from_ref = ? AND to_hub_id = ? AND to_ref = ? AND state = 'pending' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+				"hub",
+				"s1",
+				"hub",
+				"t1",
+			),
+		).toContain("USING INDEX draft_handoff_edges_pair");
+		// The pair-scoped history the identity-change action reads.
+		expect(
+			plan(
+				"SELECT * FROM draft_handoff_edges WHERE from_hub_id = ? AND from_ref = ? AND to_hub_id = ? AND to_ref = ? ORDER BY created_at, rowid",
+				"hub",
+				"s1",
+				"hub",
+				"t1",
+			),
+		).toContain("USING INDEX draft_handoff_edges_pair");
+	});
+
 	test("round-trips edges, dependencies, obligations, and deliveries", () => {
 		const { ledger } = setup();
 		ledger.beginSubmission("obligation-1", a);
