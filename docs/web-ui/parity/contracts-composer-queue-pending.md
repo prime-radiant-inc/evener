@@ -91,44 +91,38 @@ except where a line says so itself.
 
 ### Recovery selection ownership
 
-- A conversation composer's recovery selection belongs to a seat: a per-tab,
-  per-conversation identity stored with the composer drafts. The seat survives
-  a mobile route reconstruction and a desktop layout restore. A reconstructed
-  mobile route uses the conversation mapping first, never a pane-id mapping
-  left by another conversation under the same restarted id. The seat is never
-  part of shared layout geometry, so another tab cannot adopt or overwrite it.
-  A route placement does not write a pane-id mapping; those are written only
-  when a layout is saved or restored, so startup ordering cannot overwrite a
-  saved pane's seat before its layout returns. A retarget that retains a seat
-  rewrites the destination ref's mapping, so a mobile reconstruction recovers
-  that seat and its selection. Pane-id mappings store the conversation they
-  belong to; a shared layout that reuses the id for another conversation
-  falls back to this tab's mapping for the restored ref. Validated pane seats
-  are reserved across the layout before any ref fallback or fresh seat.
-- Independent panes on one conversation hold distinct seats and therefore
-  independent recovery selections. A `sessionZoom` cascade uses one tab-scoped
-  seat for its columns, with a separate selection entry per column ref.
-- Restoring a composer selects the recovery row its seat last chose, else the
-  oldest restorable rejected row. A preserved local row therefore wins over an
-  older rejected peer row after reload.
-- A refused write's preservation records the fresh row as the seat's selection;
-  retiring a lease clears the stored choice only when it still names the
-  retiring row. A resume or retarget carries the seat's selection to the
-  resumed ref, a successful recovery write reconciles the seat with the row's
-  durable ref - including when the pane closed before the write settled - and
-  a retained cascade column that owns a recovery selection maps its ref to the
-  pane's seat.
-- A pane transition that un-assigns conversations - closing a pane, retyping
-  it away, returning a cascade to its source - reconciles every departed
-  conversation against the surviving panes, so a surviving retainer's own
-  selected row wins the ref mapping. Which conversations a cascade's columns
-  cover comes from the one authoritative cascade-ancestry derivation that
-  renders its track - including an ancestor supplied only by the
-  authoritative chain with no recorded edge naming it - and reconciliation,
-  surviving-owner identification, and seat migration all enumerate through
-  that derivation. Whenever a collision forces seat allocation to hand out a
-  replacement seat, every affected column's stored selection migrates to it,
-  preserving any choice already established there.
+- A conversation composer's recovery selection is keyed by conversation: the
+  tab's client identity plus the conversation ref, stored with the composer
+  drafts and never part of shared layout geometry, so another tab can never
+  read or overwrite this tab's pick. One conversation holds one
+  preserved-work row per tab, and the newest pick wins - last writer by the
+  pick's timestamp.
+- Conversation seats remain as pane identity: allocated at placement, stored
+  per tab under the pane id (desktop restore) and the conversation ref (mobile
+  route reconstruction), reused when a reload restores the same conversation,
+  and never part of shared layout geometry. A reconstructed mobile route uses
+  the conversation mapping first, never a pane-id mapping left by another
+  conversation under the same restarted id. A route placement does not write a
+  pane-id mapping; those are written only when a layout is saved or restored.
+  Validated pane seats are reserved across the layout before any ref fallback
+  or fresh seat. Seats no longer scope selections, so no selection ever
+  migrates between seats.
+- Restoring a composer selects the recovery row its conversation last picked,
+  else the oldest restorable rejected row. A preserved local row therefore
+  wins over an older rejected peer row after reload, with no ancestry needed:
+  a column revealed later by authoritative ancestry reads its own pick.
+- An automatic or background activation must not overwrite a fresh user pick:
+  it is refused while the stored pick is newer than a few seconds, unless the
+  write comes from the focused pane (a live pane that owns the composition
+  counts as focused-priority). A background settle that displaces a row
+  replaces only a stored pick that still names the displaced row, so a fresh
+  pick another pane recorded survives it. A refused write's preservation
+  records its fresh row under exactly that rule; retiring a lease clears the
+  stored pick only when it still names the retiring row.
+- A resume or retarget carries the stored pick to the resumed ref, and a
+  successful recovery write carries it to the row's durable ref - including
+  when the pane closed before the write settled, because the durable row
+  outlives the source.
 
 ### Atomic skill and command selections
 

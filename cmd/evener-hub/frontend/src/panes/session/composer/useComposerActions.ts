@@ -14,7 +14,7 @@ import {
 import { useToasts } from "../../../widgets";
 import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
 import { STEER_RECOVERY_FENCED_REASON } from "./controlTooltips";
-import { clearDraft, clearPersistedDraft, readDraftRevision } from "./draft";
+import { clearDraft, clearPersistedDraft, readDraftRevision, readRecoverySelection } from "./draft";
 import { pendingTurnEntries, type QueueStripProps, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
   resendRecoveryPendingTurn,
@@ -209,15 +209,23 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     // loads an empty composer and then resends the user's next keystrokes as a
     // turn/start -- a Stop becoming a message. QueueStrip renders it as a
     // failure with its reason instead.
-    const record = recoveryEntries.find(
-      (entry) => entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt" && !entry.preserveComposer,
-    );
+    // This tab's stored pick names the conversation's newest choice; prefer
+    // it so a reopen restores the user's row, not just the first restorable
+    // one.
+    const pick = readRecoverySelection(ref)?.clientMutationId ?? null;
+    const restorable = (entry: MutationRecoveryRecord) =>
+      entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt" && !entry.preserveComposer;
+    const record =
+      recoveryEntries.find((entry) => entry.clientMutationId === pick && restorable(entry)) ??
+      recoveryEntries.find(restorable);
     if (!record) return;
     const recovered = recoveryComposerDraft(record);
     const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
     Object.assign(recovered, visible);
     recoveryOwnsLocalDraftRef.current = false;
-    setActiveRecoveryId(record);
+    // A mount-restore is a background activation: it must not overwrite a
+    // fresh user pick with its fallback row.
+    setActiveRecoveryId(record, { automatic: true });
     // Restoration replaces this mount's local owner without editing the
     // shared recovery draft that an earlier mount may still be submitting.
     draftEditRevisionRef.current += 1;

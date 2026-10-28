@@ -62,63 +62,95 @@ export function composerDraftStorageKey(ref: string): string {
   return `${STRUCTURED_STORAGE_PREFIX}${ref}`;
 }
 
-// A conversation seat's recovery-selection scope. The tab identity makes the
-// scope unique across tabs that share localStorage; the seat makes it unique
-// across independent panes on one conversation in this tab.
-export function composerSelectionScope(seat: string): string {
-  return `${ownClientId()}:${seat}`;
+// This tab's pick of the recovery row for a conversation, remembered across
+// reload. Keyed by conversation identity - the tab id plus the ref - with no
+// seat or pane dimension: one preserved-work row per conversation per tab, so
+// the newest pick can always win without any pane-to-seat mapping to keep
+// consistent.
+export interface RecoverySelection {
+  readonly clientMutationId: string;
+  readonly pickedAt: number;
 }
 
-// The recovery row a composer last selected, remembered across reload. The
-// recovery transaction owns the composition; this names only its owner, so
-// restoring can prefer the pane's local work over an older rejected peer row.
-function recoverySelectionKey(ref: string, selectionOwnerId: string): string {
-  return `${RECOVERY_SELECTION_PREFIX}${encodeURIComponent(selectionOwnerId)}.${encodeURIComponent(ref)}`;
+function recoverySelectionKey(ref: string): string {
+  return `${RECOVERY_SELECTION_PREFIX}${encodeURIComponent(ownClientId())}.${encodeURIComponent(ref)}`;
 }
 
-export function readRecoverySelection(ref: string, selectionOwnerId: string): string | undefined {
+export function readRecoverySelection(ref: string): RecoverySelection | undefined {
   try {
-    const value = localStorage.getItem(recoverySelectionKey(ref, selectionOwnerId));
-    return value === null || value === "" ? undefined : value;
+    const value = localStorage.getItem(recoverySelectionKey(ref));
+    if (value === null || value === "") return undefined;
+    const parsed = JSON.parse(value) as { clientMutationId?: unknown; pickedAt?: unknown };
+    if (typeof parsed.clientMutationId !== "string" || typeof parsed.pickedAt !== "number") return undefined;
+    return { clientMutationId: parsed.clientMutationId, pickedAt: parsed.pickedAt };
   } catch {
     return undefined;
   }
 }
 
-export function writeRecoverySelection(ref: string, selectionOwnerId: string, clientMutationId: string | null): void {
+export function clearRecoverySelection(ref: string): void {
   try {
-    const key = recoverySelectionKey(ref, selectionOwnerId);
-    if (clientMutationId === null) localStorage.removeItem(key);
-    else localStorage.setItem(key, clientMutationId);
+    localStorage.removeItem(recoverySelectionKey(ref));
   } catch {
     // Best-effort, like every other composer persistence.
   }
 }
 
-// A successful resume changes the ref and the recovery rows move with it.
-// Carry this seat's selected owner so the replacement composer reads it under
-// the new ref. A choice already established for the destination is newer and
-// wins.
-export function carryRecoverySelection(fromRef: string, toRef: string, selectionOwnerId: string): void {
-  if (fromRef === toRef) return;
-  const selected = readRecoverySelection(fromRef, selectionOwnerId);
-  if (selected === undefined) return;
-  if (readRecoverySelection(toRef, selectionOwnerId) !== undefined) return;
-  writeRecoverySelection(toRef, selectionOwnerId, selected);
+// A user pick is the newest choice by definition: it always wins.
+export function writeRecoverySelection(ref: string, clientMutationId: string): void {
+  const selection: RecoverySelection = { clientMutationId, pickedAt: Date.now() };
+  try {
+    localStorage.setItem(recoverySelectionKey(ref), JSON.stringify(selection));
+  } catch {
+    // Best-effort, like every other composer persistence.
+  }
 }
 
-// A route placement opens a new pane id, so the destination composer reads a
-// different scope. Move the selection with the pane, leaving an established
-// destination choice alone. Both arguments are RAW seats; this is the one
-// place that scopes them.
-export function transferRecoverySelection(ref: string, fromSeat: string, toSeat: string): void {
-  if (fromSeat === toSeat) return;
-  const fromScope = composerSelectionScope(fromSeat);
-  const toScope = composerSelectionScope(toSeat);
-  const selected = readRecoverySelection(ref, fromScope);
-  if (selected === undefined) return;
-  if (readRecoverySelection(ref, toScope) !== undefined) return;
-  writeRecoverySelection(ref, toScope, selected);
+/** A pick younger than this is fresh: a background write must respect it. */
+export const RECENT_PICK_MS = 5_000;
+
+// An automatic activation must not overwrite a fresh user pick: a background
+// write that names a different row is refused while the stored pick is
+// younger than RECENT_PICK_MS, unless it comes from the focused pane (or an
+// equivalent focused-priority rule - the live pane that owns the composition
+// counts).
+export function writeRecoverySelectionAutomatically(ref: string, clientMutationId: string, focused: boolean): void {
+  const stored = readRecoverySelection(ref);
+  if (stored !== undefined) {
+    if (stored.clientMutationId === clientMutationId) return;
+    if (!focused && Date.now() - stored.pickedAt < RECENT_PICK_MS) return;
+  }
+  writeRecoverySelection(ref, clientMutationId);
+}
+
+// A background settle replaces the stored pick only when it names the row
+// that settle displaced (or nothing is stored yet): a fresh pick another pane
+// recorded for a different row is newer than the settle and must survive it.
+export function writeRecoverySelectionReplacing(
+  ref: string,
+  previousClientMutationId: string,
+  clientMutationId: string,
+): void {
+  const stored = readRecoverySelection(ref);
+  if (stored === undefined || stored.clientMutationId === previousClientMutationId) {
+    writeRecoverySelection(ref, clientMutationId);
+  }
+}
+
+// A resume moves the conversation to a new ref and the recovery rows move
+// with it. Carry this tab's stored pick so the replacement composer reads it
+// under the new ref. A choice already established for the destination is
+// newer and wins.
+export function carryRecoverySelection(fromRef: string, toRef: string): void {
+  if (fromRef === toRef) return;
+  const stored = readRecoverySelection(fromRef);
+  if (stored === undefined) return;
+  if (readRecoverySelection(toRef) !== undefined) return;
+  try {
+    localStorage.setItem(recoverySelectionKey(toRef), JSON.stringify(stored));
+  } catch {
+    // Best-effort, like every other composer persistence.
+  }
 }
 
 // A conversation seat outlives the pane id a mobile reload reallocates. It is

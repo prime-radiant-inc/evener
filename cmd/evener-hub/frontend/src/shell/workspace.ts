@@ -15,11 +15,8 @@ import { useEffect } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import {
-  composerSelectionScope,
   readPaneComposerSeatEntry,
-  readRecoverySelection,
   readRefComposerSeat,
-  transferRecoverySelection,
   writePaneComposerSeat,
   writeRefComposerSeat,
 } from "../panes/session/composer/draft";
@@ -183,11 +180,7 @@ export interface WorkspaceStoreState {
   // a subagent). Omitted, placement follows the default rule above. It only
   // affects a pane being CREATED: reopening an already-open pane resolves to
   // that pane wherever it currently sits. Only promotePane changes its slot.
-  openPane(
-    type: PaneTypeId,
-    params?: unknown,
-    opts?: { keepExistingFocus?: boolean; slot?: PaneSlot; recoverySelectionFrom?: string },
-  ): string;
+  openPane(type: PaneTypeId, params?: unknown, opts?: { keepExistingFocus?: boolean; slot?: PaneSlot }): string;
   togglePane(type: PaneTypeId, params?: unknown): { paneId: string; opened: boolean };
   // Makes (type, params) the one pane in the main slot, keeping that pane (and
   // its id, and everything mounted under it) only when it is already the same
@@ -339,118 +332,34 @@ function liveComposerSeats(panes: readonly OpenPaneRecord[]): Set<string> {
   return seats;
 }
 
-// Whether a living pane (or a living pane's retained seat) holds this seat.
-// A persisted ref mapping names an owner only while that owner lives: a
-// closed pane's leftover mapping must not veto the live seat that now owns a
-// recovery selection on that conversation.
-export function isLiveComposerSeat(seat: string): boolean {
-  return liveComposerSeats(workspaceStore.getState().panes).has(seat);
-}
-
-// Give a placed pane this tab's stored seat for the conversation. An explicit
-// outgoing seat is reusable only once its own pane is leaving; a retained pane
-// keeps its scope and the new pane receives a copy of the selection. A choice
-// already established for the destination seat always wins.
+// Give a placed pane this tab's stored seat for the conversation, allocated
+// fresh when the stored seat is still held by a living pane. Recovery
+// selections are keyed by conversation, not by seat, so placement moves no
+// selection: every pane restoring a conversation reads the same newest pick.
 //
 // This is the route/open path, not layout restoration. Pane ids restart on a
 // reload, so a reconstructed route's id may equal a different conversation's
 // former id; its pane-id mapping is stale and must not win. Restoration reads
 // the pane mapping itself (see restoreLayout).
-function placeComposerSeat(
-  type: PaneTypeId,
-  params: unknown,
-  panes: readonly OpenPaneRecord[],
-  outgoingSeat?: string,
-): string {
+function placeComposerSeat(params: unknown, panes: readonly OpenPaneRecord[]): string {
   const ref = refParam(params);
   const live = liveComposerSeats(panes);
   const stored = ref === null ? undefined : readRefComposerSeat(ref);
-  let seat = outgoingSeat !== undefined && !live.has(outgoingSeat) ? outgoingSeat : undefined;
-  if (seat === undefined && stored !== undefined && !live.has(stored)) seat = stored;
-  if (seat === undefined) seat = createSecureUUID();
+  const seat = stored !== undefined && !live.has(stored) ? stored : createSecureUUID();
   // Route/open placement writes only the conversation mapping. A pane-id
   // mapping belongs to saved desktop geometry and is written when that layout
   // is saved or restored, so a restarted id cannot clobber another
   // conversation's saved seat before restoration.
   if (ref !== null) writeRefComposerSeat(ref, seat);
-  // Seat-allocation rule: every seat that holds a stored selection one of
-  // this pane's canonically derived columns can read but cannot be reused -
-  // live in another pane, or claimed earlier in the same transition -
-  // migrates that selection to the seat handed out, preserving any choice
-  // already established there. A cascade carries every column's selection,
-  // not only its leaf's.
-  const heldSeats = new Set<string>();
-  if (outgoingSeat !== undefined && outgoingSeat !== seat) heldSeats.add(outgoingSeat);
-  if (stored !== undefined && stored !== seat) heldSeats.add(stored);
-  const columnRefs = conversationPaneRefs({ type, params });
-  for (const columnRef of columnRefs) {
-    const columnSeat = readRefComposerSeat(columnRef);
-    if (columnSeat !== undefined && columnSeat !== seat) heldSeats.add(columnSeat);
-  }
-  for (const columnRef of columnRefs) {
-    for (const held of heldSeats) transferRecoverySelection(columnRef, held, seat);
-  }
   return seat;
 }
 
-// The outgoing seat that already owns this ref's selection, if any. Read
-// before a placement that is about to remove its pane.
-export function selectionSeatForRef(
-  ref: string,
-  panes: readonly OpenPaneRecord[],
-  preferred?: OpenPaneRecord | null,
-): string | undefined {
-  for (const pane of preferred ? [preferred, ...panes] : panes) {
-    if (!isConversationPaneType(pane.type)) continue;
-    const seat = pane.composerSeatId ?? pane.id;
-    if (readRecoverySelection(ref, composerSelectionScope(seat)) !== undefined) return seat;
-  }
-  return undefined;
-}
-
-// A route reconstruction resolves one seat per conversation. When the pane
-// that most recently wrote that mapping closes or loses the route, point the
-// mapping at a surviving pane instead of leaving the closed pane's seat there.
-// No pane may show the conversation while a cascade still retains it as a
-// column - drilled onto a deeper leaf, that cascade is the surviving owner,
-// its columns sharing the pane's own seat. With no owner at all the stored
-// mapping is left as it is: a close or retype never erases the conversation,
-// and a later reopen must restore the seat's recovery row.
-function writeSurvivingRefSeat(ref: string, panes: readonly OpenPaneRecord[], preferredId?: string | null): void {
-  const seated = (pane: OpenPaneRecord) => isConversationPaneType(pane.type) && pane.composerSeatId !== undefined;
-  const candidates = panes.filter((pane) => seated(pane) && refParam(pane.params) === ref);
-  const retaining = panes.filter((pane) => seated(pane) && retainsConversationRef(pane, ref));
-  const chosen =
-    candidates.find((pane) => pane.id === preferredId) ??
-    candidates.find((pane) => pane.slot === "main") ??
-    candidates[0] ??
-    retaining.find((pane) => pane.id === preferredId) ??
-    retaining.find((pane) => pane.slot === "main") ??
-    retaining[0];
-  if (chosen?.composerSeatId !== undefined) writeRefComposerSeat(ref, chosen.composerSeatId);
-}
-
-// Every pane transition derives the conversation refs whose pane assignment
-// it removes - the before:after diff of the pane's own path - and runs this
-// one reconciliation pass over the whole set: each departed ref is pointed at
-// the surviving pane that shows or retains it, or left alone when no owner
-// remains (a transition never closes a conversation, and a later reopen must
-// restore the seat's recovery row). No call site hand-lists refs.
-function reconcileDepartedRefs(
-  refs: readonly string[],
-  panes: readonly OpenPaneRecord[],
-  preferredId?: string | null,
-): void {
-  for (const ref of refs) writeSurvivingRefSeat(ref, panes, preferredId);
-}
-
-// Every conversation whose seat mapping a conversation pane can own: a
-// session pane owns exactly its ref, and a cascade pane owns every column
-// the canonical cascade-ancestry derivation renders for it - including an
-// ancestor supplied only by the authoritative chain and absent from the
-// recorded edge segment. Reconciliation, surviving-owner identification, and
-// seat migration all enumerate through this one derivation; this layer keeps
-// no parallel column list of its own.
+// Every conversation a conversation pane covers: a session pane covers
+// exactly its ref, and a cascade pane covers every column the canonical
+// cascade-ancestry derivation renders for it - including an ancestor supplied
+// only by the authoritative chain and absent from the recorded edge segment.
+// Seat-continuity validation enumerates through this one derivation; this
+// layer keeps no parallel column list of its own.
 function conversationPaneRefs(pane: Pick<OpenPaneRecord, "type" | "params">): string[] {
   const ref = refParam(pane.params);
   if (pane.type === "sessionZoom") {
@@ -768,7 +677,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         const seatAdded = ref !== null && existing.composerSeatId === undefined;
         if (seatAdded) {
           // Attach in place: object-keyed edges bind to this record.
-          existing.composerSeatId = placeComposerSeat(type, params, state.panes, opts?.recoverySelectionFrom);
+          existing.composerSeatId = placeComposerSeat(params, state.panes);
         }
         const focused = paramsChanged ? { ...existing, params } : existing;
         if (paramsChanged || focusChanged || seatAdded) {
@@ -792,13 +701,8 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         if (ref !== null) {
           if (existing.composerSeatId === undefined) {
             // Attach in place: object-keyed edges bind to this record.
-            existing.composerSeatId = placeComposerSeat(type, params, state.panes, opts?.recoverySelectionFrom);
+            existing.composerSeatId = placeComposerSeat(params, state.panes);
             panes = [...state.panes];
-          } else if (
-            opts?.recoverySelectionFrom !== undefined &&
-            opts.recoverySelectionFrom !== existing.composerSeatId
-          ) {
-            transferRecoverySelection(ref, opts.recoverySelectionFrom, existing.composerSeatId);
           }
         }
         const focusChanged = !keepFocus && state.focusedPaneId !== existing.id;
@@ -831,8 +735,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     // nothing: it never wanted the slot welcome is holding.
     const id = nextPaneId(type);
     const ref = isConversationPaneType(type) ? refParam(params) : null;
-    const composerSeatId =
-      ref === null ? undefined : placeComposerSeat(type, params, state.panes, opts?.recoverySelectionFrom);
+    const composerSeatId = ref === null ? undefined : placeComposerSeat(params, state.panes);
     const main = state.panes.find((p) => p.slot === "main");
     const refusesMain = opts?.slot === "secondary";
     const displaced = !refusesMain && type !== "welcome" && main?.type === "welcome" ? main : undefined;
@@ -870,7 +773,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       const ref = isConversationPaneType(type) ? refParam(params) : null;
       const seat =
         ref !== null && main.composerSeatId === undefined
-          ? placeComposerSeat(type, params, state.panes)
+          ? placeComposerSeat(params, state.panes)
           : main.composerSeatId;
       const seatChanged = seat !== main.composerSeatId;
       // Attach in place so object-keyed edges keep their pane identity.
@@ -886,10 +789,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
 
     const id = nextPaneId(type);
     const ref = isConversationPaneType(type) ? refParam(params) : null;
-    // This arm removes every existing pane, so a promoted secondary's seat is
-    // free to move to the replacement.
-    const outgoingSeat = ref === null ? undefined : selectionSeatForRef(ref, state.panes, main);
-    const composerSeatId = ref === null ? undefined : placeComposerSeat(type, params, [], outgoingSeat);
+    const composerSeatId = ref === null ? undefined : placeComposerSeat(params, []);
     set({
       panes: [{ id, type, params, slot: "main", ...(composerSeatId === undefined ? {} : { composerSeatId }) }],
       focusedPaneId: id,
@@ -926,7 +826,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         if (replacement.composerSeatId === undefined) {
           const retained = retainedComposerSeats.get(replacement.id);
           if (retained === undefined) {
-            replacement.composerSeatId = placeComposerSeat(type, params, state.panes);
+            replacement.composerSeatId = placeComposerSeat(params, state.panes);
           } else {
             retainedComposerSeats.delete(replacement.id);
             replacement.composerSeatId = retained;
@@ -941,22 +841,6 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       }
     }
     const nextPanes = state.panes.map((pane) => (pane === expected ? replacement : pane));
-    // The transition's before:after pane-to-ref assignments decide what to
-    // reconcile: every conversation on the previous path that the
-    // replacement no longer shows or retains - a Return to the source drops
-    // the whole departed tail, not only the previous leaf - is pointed at a
-    // surviving pane when one still shows it, else at the cascade that
-    // retains it as a column. With no owner at all the stored mapping stays
-    // put - a retype never closes a conversation, and a later reopen must
-    // restore the seat's recovery row (closePane leaves an unowned mapping
-    // behind the same way).
-    const previousRefs = isConversationPaneType(expected.type) ? conversationPaneRefs(expected) : [];
-    const nextRefs = isConversationPaneType(type) ? conversationPaneRefs(replacement) : [];
-    reconcileDepartedRefs(
-      previousRefs.filter((ref) => !nextRefs.includes(ref)),
-      nextPanes,
-      state.focusedPaneId === expected.id ? null : state.focusedPaneId,
-    );
     for (const listener of paneRetypeListeners) listener(expected, replacement);
     const origins = [...transcriptOpenOrigins];
     transcriptOpenOrigins.clear();
@@ -992,12 +876,6 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       panes: remaining,
       focusedPaneId: state.focusedPaneId === paneId ? null : state.focusedPaneId,
     });
-    if (isConversationPaneType(closed.type)) {
-      // Two cascades can retain the same ancestor while its mapping names
-      // the closing pane's seat; the survivor's own selected row must win
-      // the mapping or a reload restores the closed pane's choice instead.
-      reconcileDepartedRefs(conversationPaneRefs(closed), remaining, state.focusedPaneId);
-    }
   },
 
   focusPane(paneId) {
@@ -1159,10 +1037,6 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       // first. Otherwise an unfamiliar pane listed earlier can consume the ref
       // fallback that belongs to a known pane later in the same conversation.
       const reserved = new Set<OpenPaneRecord>();
-      // A validated seat another restored pane claimed first still holds this
-      // pane's saved selection; remember it so allocation migrates that
-      // selection to the replacement seat.
-      const collidedSeats = new Map<OpenPaneRecord, string>();
       for (const { pane, ref } of conversations) {
         if (ref === null) continue;
         const entry = readPaneComposerSeatEntry(pane.id);
@@ -1176,10 +1050,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
             ? entry.seat
             : undefined;
         if (saved === undefined) continue;
-        if (usedSeats.has(saved)) {
-          collidedSeats.set(pane, saved);
-          continue;
-        }
+        if (usedSeats.has(saved)) continue;
         pane.composerSeatId = saved;
         usedSeats.add(saved);
         reserved.add(pane);
@@ -1191,25 +1062,6 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         pane.composerSeatId =
           candidates.find((candidate) => candidate !== undefined && !usedSeats.has(candidate)) ?? createSecureUUID();
         usedSeats.add(pane.composerSeatId);
-        if (ref === null) continue;
-        // Seat-allocation rule: every seat that holds a stored selection one
-        // of this pane's canonically derived columns can read but cannot be
-        // reused - claimed by another restored pane, or a column mapping's
-        // seat another pane took - migrates that selection to the replacement
-        // seat, preserving any choice already established there. A cascade
-        // carries every column's selection, not only its leaf's.
-        const heldSeats = new Set<string>();
-        const collided = collidedSeats.get(pane);
-        if (collided !== undefined && collided !== pane.composerSeatId) heldSeats.add(collided);
-        if (refSeat !== undefined && refSeat !== pane.composerSeatId) heldSeats.add(refSeat);
-        const columnRefs = conversationPaneRefs(pane);
-        for (const columnRef of columnRefs) {
-          const columnSeat = readRefComposerSeat(columnRef);
-          if (columnSeat !== undefined && columnSeat !== pane.composerSeatId) heldSeats.add(columnSeat);
-        }
-        for (const columnRef of columnRefs) {
-          for (const held of heldSeats) transferRecoverySelection(columnRef, held, pane.composerSeatId);
-        }
       }
       // Persist each pane mapping separately: a pane-id mapping belongs to
       // saved desktop geometry and never contests another pane's conversation
@@ -1292,7 +1144,7 @@ export function substituteAttentionPane(
   pane.slot = slot === "main" && main !== null && main !== pane && !displacesWelcome ? "secondary" : slot;
   const paneRef = isConversationPaneType(pane.type) ? refParam(pane.params) : null;
   if (paneRef !== null && pane.composerSeatId === undefined) {
-    pane.composerSeatId = placeComposerSeat(pane.type, pane.params, state.panes);
+    pane.composerSeatId = placeComposerSeat(pane.params, state.panes);
   }
   // The committed substitution is focused, so it owns its conversation's
   // mapping even when it restores a seat the pane already held: while this

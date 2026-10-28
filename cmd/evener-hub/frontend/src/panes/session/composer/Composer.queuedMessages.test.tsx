@@ -27,7 +27,6 @@ import { HeldSteerStack } from "../transcript/messages/HeldSteerStack";
 import { createAttachmentOperations } from "./attachments/useAttachments";
 import { Composer } from "./Composer";
 import {
-  composerSelectionScope,
   readComposerDraftRevisionId,
   readDraft,
   readRecoverySelection,
@@ -870,9 +869,9 @@ test("reload restores the selected preserved row over an older rejected peer row
     optimisticDisplay: { method: "turn/start", input: localInput },
   });
   await storage.transferToRecovery(preserved.clientMutationId, "rejected");
-  writeRecoverySelection("root", composerSelectionScope("pane-a"), preserved.clientMutationId);
+  writeRecoverySelection("root", preserved.clientMutationId);
 
-  const source = createTestComposerSource("root", undefined, "pane-a");
+  const source = createTestComposerSource("root");
   try {
     mount(fake, source);
     await waitFor(() =>
@@ -880,7 +879,7 @@ test("reload restores the selected preserved row over an older rejected peer row
     );
     expect(screen.getByRole("button", { name: "View local.png" })).toBeTruthy();
     expect(source.getSnapshot().activeRecoveryId).toBe(preserved.clientMutationId);
-    expect(readRecoverySelection("root", source.recoverySelectionOwnerId)).toBe(preserved.clientMutationId);
+    expect(readRecoverySelection("root")?.clientMutationId).toBe(preserved.clientMutationId);
   } finally {
     act(() => cleanup());
     await act(async () => {
@@ -918,7 +917,7 @@ test("a same-ref conflict preserves the local work across reload", async () => {
     optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
   });
   await storage.transferToRecovery(original.clientMutationId, "rejected");
-  const source = createTestComposerSource("root", undefined, "pane-a");
+  const source = createTestComposerSource("root");
   const peer = new MutationOutboxIndexedDB();
   let reloaded: ReturnType<typeof createTestComposerSource> | undefined;
   try {
@@ -961,16 +960,14 @@ test("a same-ref conflict preserves the local work across reload", async () => {
     const preserved = (await storage.listRecovery("root")).find(
       (record) => record.clientMutationId !== original.clientMutationId,
     );
-    await waitFor(() =>
-      expect(readRecoverySelection("root", source.recoverySelectionOwnerId)).toBe(preserved?.clientMutationId),
-    );
+    await waitFor(() => expect(readRecoverySelection("root")?.clientMutationId).toBe(preserved?.clientMutationId));
     await waitFor(() =>
       expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe(localText),
     );
 
     act(() => cleanup());
     source.dispose();
-    reloaded = createTestComposerSource("root", undefined, "pane-a");
+    reloaded = createTestComposerSource("root");
     await act(async () => {
       mount(fake, reloaded);
     });

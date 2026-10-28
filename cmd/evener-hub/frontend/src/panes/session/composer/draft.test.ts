@@ -5,14 +5,20 @@ import {
   carryComposerDraft,
   clearDraft,
   clearPersistedDraftIfRevisionMatches,
+  clearRecoverySelection,
   composerDraftStorageKey,
   draftStorageKey,
+  RECENT_PICK_MS,
   readComposerDraft,
   readComposerDraftRevisionId,
   readDraft,
   readDraftRevision,
+  readRecoverySelection,
   writeComposerDraft,
   writeDraft,
+  writeRecoverySelection,
+  writeRecoverySelectionAutomatically,
+  writeRecoverySelectionReplacing,
 } from "./draft";
 import { parseSkillDocument, serializeSkillDocument } from "./skillDocument";
 
@@ -428,4 +434,65 @@ test("writeComposerDraft never throws when localStorage throws", () => {
     throw new Error("quota exceeded");
   });
   expect(() => writeComposerDraft("local:01AAA", { text: "some text", skillNames: ["pkg:probe"] })).not.toThrow();
+});
+
+test("a background activation refuses to overwrite a fresh user pick", () => {
+  localStorage.clear();
+  writeRecoverySelection("local:guard", "user-pick");
+  // A background activation naming a different row must not clobber the
+  // fresh user pick.
+  writeRecoverySelectionAutomatically("local:guard", "background-row", false);
+  expect(readRecoverySelection("local:guard")?.clientMutationId).toBe("user-pick");
+  // The focused pane may overwrite even a fresh pick.
+  writeRecoverySelectionAutomatically("local:guard", "focused-row", true);
+  expect(readRecoverySelection("local:guard")?.clientMutationId).toBe("focused-row");
+});
+
+test("a background activation overwrites only a stale foreign pick", () => {
+  localStorage.clear();
+  writeRecoverySelection("local:guard-stale", "user-pick");
+  vi.useFakeTimers();
+  try {
+    vi.advanceTimersByTime(RECENT_PICK_MS + 1);
+    // The stored pick is older than the freshness window, so the background
+    // write wins as the newest choice.
+    writeRecoverySelectionAutomatically("local:guard-stale", "background-row", false);
+    expect(readRecoverySelection("local:guard-stale")?.clientMutationId).toBe("background-row");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a background activation may re-write the same row but never refreshes it", () => {
+  localStorage.clear();
+  writeRecoverySelection("local:guard-same", "user-pick");
+  const before = readRecoverySelection("local:guard-same")?.pickedAt;
+  vi.useFakeTimers();
+  try {
+    vi.advanceTimersByTime(RECENT_PICK_MS + 1);
+    writeRecoverySelectionAutomatically("local:guard-same", "user-pick", false);
+    // A same-row background write changes nothing: the pick keeps its
+    // original timestamp, so it ages honestly.
+    const after = readRecoverySelection("local:guard-same");
+    expect(after?.clientMutationId).toBe("user-pick");
+    expect(after?.pickedAt).toBe(before);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a displaced-row settle replaces only the pick that names that row", () => {
+  localStorage.clear();
+  writeRecoverySelection("local:guard-displace", "stale-row");
+  // The settle displaces stale-row, so the pick moves to the fresh row.
+  writeRecoverySelectionReplacing("local:guard-displace", "stale-row", "preserved-row");
+  expect(readRecoverySelection("local:guard-displace")?.clientMutationId).toBe("preserved-row");
+  // A foreign fresh pick survives the settle.
+  writeRecoverySelection("local:guard-displace", "user-pick");
+  writeRecoverySelectionReplacing("local:guard-displace", "stale-row", "preserved-row");
+  expect(readRecoverySelection("local:guard-displace")?.clientMutationId).toBe("user-pick");
+  // An unset conversation accepts the settle's row.
+  clearRecoverySelection("local:guard-displace");
+  writeRecoverySelectionReplacing("local:guard-displace", "stale-row", "preserved-row");
+  expect(readRecoverySelection("local:guard-displace")?.clientMutationId).toBe("preserved-row");
 });

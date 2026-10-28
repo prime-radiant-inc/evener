@@ -19,7 +19,6 @@ import {
   readComposerDraftRevisionId,
   readDraftRevision,
   readRecoverySelection,
-  readRefComposerSeat,
   writeComposerDraft,
   writeRecoverySelection,
 } from "./draft";
@@ -621,18 +620,18 @@ test("successful recovery writes follow a peer retarget", async () => {
   await storage.transferToRecovery(original.clientMutationId, "rejected");
   const recovery = await storage.getRecovery(original.clientMutationId);
   if (!recovery) throw new Error("missing recovery fixture");
-  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const source = createTestComposerSource(ref);
   const peer = new MutationOutboxIndexedDB();
   try {
     await source.activateRecovery(recovery);
     await peer.retargetOutbox(ref, resumed, { threadId: "thread-mid", instanceId: "instance-mid" });
     expect(await source.queueRecoveryPersistence(original.clientMutationId, "first newer", [], [])).toBe(true);
-    expect(readRefComposerSeat(resumed)).toBe("pane-a");
+    expect(readRecoverySelection(resumed)?.clientMutationId).toBe(original.clientMutationId);
 
     // Another tab retargets the row again; the next successful write follows.
     await peer.retargetOutbox(resumed, resumedAgain, { threadId: "thread-new", instanceId: "instance-new" });
     expect(await source.queueRecoveryPersistence(original.clientMutationId, "second newer", [], [])).toBe(true);
-    expect(readRefComposerSeat(resumedAgain)).toBe("pane-a");
+    expect(readRecoverySelection(resumedAgain)?.clientMutationId).toBe(original.clientMutationId);
   } finally {
     source.dispose();
     peer.close();
@@ -660,7 +659,7 @@ test("a retargeted autosave carries the selected row past an older peer row", as
   const selected = await queue("selected local work");
   const recovery = await storage.getRecovery(selected.clientMutationId);
   if (!recovery) throw new Error("missing selected recovery fixture");
-  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const source = createTestComposerSource(ref);
   const peer = new MutationOutboxIndexedDB();
   let reloaded: ReturnType<typeof createTestComposerSource> | undefined;
   try {
@@ -668,10 +667,10 @@ test("a retargeted autosave carries the selected row past an older peer row", as
     await peer.retargetOutbox(ref, resumed, { threadId: "thread-new", instanceId: "instance-new" });
     expect(await source.queueRecoveryPersistence(selected.clientMutationId, "selected local work", [], [])).toBe(true);
 
-    expect(readRecoverySelection(resumed, source.recoverySelectionOwnerId)).toBe(selected.clientMutationId);
-    expect(readRecoverySelection(resumed, source.recoverySelectionOwnerId)).not.toBe(olderPeer.clientMutationId);
-    reloaded = createTestComposerSource(resumed, undefined, "pane-a");
-    expect(readRecoverySelection(resumed, reloaded.recoverySelectionOwnerId)).toBe(selected.clientMutationId);
+    expect(readRecoverySelection(resumed)?.clientMutationId).toBe(selected.clientMutationId);
+    expect(readRecoverySelection(resumed)?.clientMutationId).not.toBe(olderPeer.clientMutationId);
+    reloaded = createTestComposerSource(resumed);
+    expect(readRecoverySelection(resumed)?.clientMutationId).toBe(selected.clientMutationId);
   } finally {
     source.dispose();
     reloaded?.dispose();
@@ -698,16 +697,16 @@ test("retiring a lease clears only its own stored selection", async () => {
   await storage.transferToRecovery(original.clientMutationId, "rejected");
   const recovery = await storage.getRecovery(original.clientMutationId);
   if (!recovery) throw new Error("missing recovery fixture");
-  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const source = createTestComposerSource(ref);
   try {
     source.setActiveRecoveryId(recovery);
-    expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+    expect(readRecoverySelection(ref)?.clientMutationId).toBe(original.clientMutationId);
     // A preservation commits while this composer still holds the stale
     // lease, selecting a fresh row for the seat.
-    writeRecoverySelection(ref, source.recoverySelectionOwnerId, "preserved-row");
+    writeRecoverySelection(ref, "preserved-row");
     source.setActiveRecoveryId(null);
     expect(source.getSnapshot().activeRecoveryId).toBeNull();
-    expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe("preserved-row");
+    expect(readRecoverySelection(ref)?.clientMutationId).toBe("preserved-row");
   } finally {
     source.dispose();
     storage.close();
@@ -745,11 +744,11 @@ test("a preservation that commits after disposal still records its selection", a
   await storage.transferToRecovery(original.clientMutationId, "rejected");
   const recovery = await storage.getRecovery(original.clientMutationId);
   if (!recovery) throw new Error("missing recovery fixture");
-  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const source = createTestComposerSource(ref);
   const peer = new MutationOutboxIndexedDB();
   try {
     await source.activateRecovery(recovery);
-    expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+    expect(readRecoverySelection(ref)?.clientMutationId).toBe(original.clientMutationId);
     const peerRecovery = await peer.getRecovery(original.clientMutationId);
     if (!peerRecovery) throw new Error("missing peer recovery fixture");
     await peer.updateRecoveryInput(
@@ -776,7 +775,7 @@ test("a preservation that commits after disposal still records its selection", a
       (record) => record.clientMutationId !== original.clientMutationId,
     );
     expect(preserved).toMatchObject({ targetRef: ref, composerText: "local preserved work" });
-    expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe(preserved?.clientMutationId);
+    expect(readRecoverySelection(ref)?.clientMutationId).toBe(preserved?.clientMutationId);
   } finally {
     source.dispose();
     peer.close();
@@ -823,11 +822,11 @@ test("a retargeted write that settles after disposal still carries the selection
   await storage.transferToRecovery(original.clientMutationId, "rejected");
   const recovery = await storage.getRecovery(original.clientMutationId);
   if (!recovery) throw new Error("missing recovery fixture");
-  const source = createTestComposerSource(ref, undefined, "pane-a");
+  const source = createTestComposerSource(ref);
   const peer = new MutationOutboxIndexedDB();
   try {
     await source.activateRecovery(recovery);
-    expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe(original.clientMutationId);
+    expect(readRecoverySelection(ref)?.clientMutationId).toBe(original.clientMutationId);
     await peer.retargetOutbox(ref, resumed, { threadId: "thread-new", instanceId: "instance-new" });
 
     storage.holdNextWrite = true;
@@ -839,8 +838,7 @@ test("a retargeted write that settles after disposal still carries the selection
     storage.release.resolve();
     expect(await saving).toBe(true);
 
-    expect(readRecoverySelection(resumed, source.recoverySelectionOwnerId)).toBe(original.clientMutationId);
-    expect(readRefComposerSeat(resumed)).toBe("pane-a");
+    expect(readRecoverySelection(resumed)?.clientMutationId).toBe(original.clientMutationId);
   } finally {
     source.dispose();
     peer.close();

@@ -10,7 +10,7 @@ export function retainedConversationComposer(lifetime: PaneLifetime, ref: string
   const existing = lifetime.composers.get(ref);
   if (existing?.alive) return existing;
   if (!lifetime.alive) return undefined;
-  const composer = createComposerSourceState(ref, lifetime.compositionOwnerId, lifetime.composerSeatId);
+  const composer = createComposerSourceState(ref, lifetime.compositionOwnerId);
   lifetime.composers.set(ref, composer);
   return composer;
 }

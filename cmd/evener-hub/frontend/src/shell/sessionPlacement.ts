@@ -1,13 +1,6 @@
-import { readRefComposerSeat } from "../panes/session/composer/draft";
 import { parseZoomParams } from "../panes/zoom/intent";
 import { navigate, paneToURL, refParam } from "./routing";
-import {
-  type OpenPaneRecord,
-  presentedPanes,
-  recordConversationOpenParent,
-  selectionSeatForRef,
-  workspaceStore,
-} from "./workspace";
+import { type OpenPaneRecord, presentedPanes, recordConversationOpenParent, workspaceStore } from "./workspace";
 
 // A session pane's identity is the ref in its own params, derived here rather
 // than spelled by the caller so the type and the ref cannot diverge.
@@ -75,17 +68,8 @@ export function openTopLevelSession(ref: string): void {
 // Keeps a nested session out of main by replacing the owner into main and then
 // opening the contextual child in secondary.
 export function openNestedSessionWithOwner(ref: string, ownerRef: string): void {
-  // Capture the outgoing selection seat before replacing the owner: promoting
-  // the owner can remove the pane that carried this conversation's choice. A
-  // cold route reconstruction has no live pane to ask, so fall back to the
-  // persisted conversation mapping: the parent placed first can claim the
-  // seat it names, and the child's distinct seat must then receive a copy
-  // of that seat's saved selection.
-  const outgoingSeat = selectionSeatForRef(ref, workspaceStore.getState().panes) ?? readRefComposerSeat(ref);
   openTopLevelSession(ownerRef);
-  const openedId = workspaceStore
-    .getState()
-    .openPane("session", { ref }, { slot: "secondary", recoverySelectionFrom: outgoingSeat });
+  const openedId = workspaceStore.getState().openPane("session", { ref }, { slot: "secondary" });
   const opened = workspaceStore.getState().panes.find((pane) => pane.id === openedId);
   if (opened) recordConversationOpenParent(opened, ownerRef);
 }

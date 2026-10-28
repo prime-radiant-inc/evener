@@ -2,12 +2,7 @@ import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { createAttachmentOperations } from "../panes/session/composer/attachments/useAttachments";
-import {
-  composerSelectionScope,
-  readRecoverySelection,
-  readRefComposerSeat,
-  writeRecoverySelection,
-} from "../panes/session/composer/draft";
+import { readRecoverySelection, readRefComposerSeat, writeRecoverySelection } from "../panes/session/composer/draft";
 import { retainedTranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import type { MutationRecoveryRecord } from "../stores/mutationOutbox";
@@ -244,15 +239,13 @@ test("a resumed identity carries the pane's selected recovery owner", () => {
   const peer = recoveryRow("peer-row", "older peer work");
   const preserved = recoveryRow("preserved-row", "local [image 1]");
   composer.setActiveRecoveryId(preserved);
-  const scope = composer.recoverySelectionOwnerId;
-  expect(readRecoverySelection("root", scope)).toBe(preserved.clientMutationId);
+  expect(readRecoverySelection("root")?.clientMutationId).toBe(preserved.clientMutationId);
 
   lifetime.adoptResumedSource("resumed");
   const resumed = lifetime.composer;
   if (!resumed) throw new Error("resumed lifetime lacks its source");
-  expect(resumed.recoverySelectionOwnerId).toBe(scope);
-  expect(readRecoverySelection("resumed", scope)).toBe(preserved.clientMutationId);
-  expect(readRecoverySelection("resumed", scope)).not.toBe(peer.clientMutationId);
+  expect(readRecoverySelection("resumed")?.clientMutationId).toBe(preserved.clientMutationId);
+  expect(readRecoverySelection("resumed")?.clientMutationId).not.toBe(peer.clientMutationId);
   lifetime.dispose();
 });
 
@@ -261,12 +254,11 @@ test("a resumed identity keeps a newer destination selection", () => {
   const lifetime = conversationPaneLifetime(pane);
   const composer = lifetime.composer;
   if (!composer) throw new Error("session lifetime lacks its source");
-  const scope = composer.recoverySelectionOwnerId;
-  writeRecoverySelection("resumed", scope, "destination-row");
+  writeRecoverySelection("resumed", "destination-row");
   composer.setActiveRecoveryId(recoveryRow("preserved-row", "local [image 1]"));
 
   lifetime.adoptResumedSource("resumed");
-  expect(readRecoverySelection("resumed", scope)).toBe("destination-row");
+  expect(readRecoverySelection("resumed")?.clientMutationId).toBe("destination-row");
   lifetime.dispose();
 });
 
@@ -290,5 +282,5 @@ test("a resumed source seat survives a later mobile route reconstruction", () =>
   const reloaded = workspaceStore.getState().panes.find((record) => record.id === reloadedId);
   if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
   expect(reloaded.composerSeatId).toBe(seat);
-  expect(readRecoverySelection("local:mobile-resumed", composerSelectionScope(seat))).toBe(preserved.clientMutationId);
+  expect(readRecoverySelection("local:mobile-resumed")?.clientMutationId).toBe(preserved.clientMutationId);
 });

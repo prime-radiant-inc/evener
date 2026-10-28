@@ -11,12 +11,8 @@ afterEach(() => {
 });
 
 /** An explicit source lifetime for Composer mounts outside the workspace. */
-export function createTestComposerSource(
-  ref: string,
-  ownerId?: string,
-  selectionOwnerId?: string,
-): ComposerSourceState {
-  const source = createComposerSourceState(ref, ownerId, selectionOwnerId);
+export function createTestComposerSource(ref: string, ownerId?: string): ComposerSourceState {
+  const source = createComposerSourceState(ref, ownerId);
   sources.add(source);
   return source;
 }

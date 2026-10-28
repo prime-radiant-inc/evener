@@ -1,22 +1,18 @@
 import { bindFilePath, parseFileReference } from "@evener/appwire-client/docContent";
-import { waitFor } from "@testing-library/react";
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
-  composerSelectionScope,
   readRecoverySelection,
   readRefComposerSeat,
   writeRecoverySelection,
   writeRefComposerSeat,
 } from "../panes/session/composer/draft";
 import { retainedConversationComposer } from "../panes/session/composer/retainedComposer";
-import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
+import { createTestComposerSource } from "../panes/session/testing/composerSource";
 import { parseZoomParams } from "../panes/zoom/intent";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
-import { connectionStore } from "../stores/connection";
 import type { MutationRecoveryRecord } from "../stores/mutationOutbox";
-import { acquireSessionActivity } from "../stores/sessionActivity";
 import { currentAttentionEntryToken, openAttentionSession } from "./attentionHistory";
 import {
   captureAttentionPlacement,
@@ -142,7 +138,7 @@ test("restoring a parked pane reclaims its conversation's seat mapping", () => {
   const a = state.openPane("session", { ref: "local:parked-a" });
   const original = workspaceStore.getState().panes.find((pane) => pane.id === a);
   if (!original?.composerSeatId) throw new Error("original pane lacks its seat");
-  writeRecoverySelection("local:parked-a", composerSelectionScope(original.composerSeatId), "original-row");
+  writeRecoverySelection("local:parked-a", "original-row");
   const origin = captureAttentionPlacement();
   if (!origin) throw new Error("missing origin entry");
 
@@ -154,7 +150,7 @@ test("restoring a parked pane reclaims its conversation's seat mapping", () => {
   const secondId = state.openPane("session", { ref: "local:parked-a" });
   const second = workspaceStore.getState().panes.find((pane) => pane.id === secondId);
   if (!second?.composerSeatId) throw new Error("second pane lacks its seat");
-  writeRecoverySelection("local:parked-a", composerSelectionScope(second.composerSeatId), "second-row");
+  writeRecoverySelection("local:parked-a", "second-row");
   expect(readRefComposerSeat("local:parked-a")).toBe(second.composerSeatId);
 
   // Browser Back restores the original pane with its existing seat: the
@@ -168,7 +164,9 @@ test("restoring a parked pane reclaims its conversation's seat mapping", () => {
   const reopened = workspaceStore.getState().panes.find((pane) => pane.id === reopenedId);
   if (!reopened?.composerSeatId) throw new Error("reopened pane lacks its seat");
   expect(reopened.composerSeatId).toBe(original.composerSeatId);
-  expect(readRecoverySelection("local:parked-a", composerSelectionScope(reopened.composerSeatId))).toBe("original-row");
+  // The pick is keyed by the conversation and the second pane's choice was
+  // the newest pick, so it wins even though the restored pane kept its seat.
+  expect(readRecoverySelection("local:parked-a")?.clientMutationId).toBe("second-row");
 });
 
 // A drill keeps the same pane and lifetime but reads a different leaf, so the
@@ -1538,7 +1536,7 @@ test("a child opened beside a retained cascade gets its own recovery seat", () =
   ).toBe(true);
   const cascade = workspaceStore.getState().panes.find((pane) => pane.id === ownerId);
   if (!cascade?.composerSeatId) throw new Error("retained cascade lacks its seat");
-  writeRecoverySelection(childRef, composerSelectionScope(cascade.composerSeatId), "preserved-child");
+  writeRecoverySelection(childRef, "preserved-child");
 
   openNestedSessionWithOwner(childRef, ownerRef);
 
@@ -1549,9 +1547,8 @@ test("a child opened beside a retained cascade gets its own recovery seat", () =
     );
   if (!child?.composerSeatId) throw new Error("nested child lacks its seat");
   expect(child.composerSeatId).not.toBe(cascade.composerSeatId);
-  // The child receives a copy of the selection without moving the cascade's.
-  expect(readRecoverySelection(childRef, composerSelectionScope(child.composerSeatId))).toBe("preserved-child");
-  expect(readRecoverySelection(childRef, composerSelectionScope(cascade.composerSeatId))).toBe("preserved-child");
+  // The selection is keyed by conversation, so the child reads it directly.
+  expect(readRecoverySelection(childRef)?.clientMutationId).toBe("preserved-child");
   const liveSeats = workspaceStore
     .getState()
     .panes.filter((pane) => pane.type === "session" || pane.type === "sessionZoom")
@@ -1563,7 +1560,7 @@ test("a child opened beside a retained cascade gets its own recovery seat", () =
 // so the child's distinct seat must receive a copy of that seat's saved
 // selection or a reload restores an older peer row instead of the child's
 // preserved work.
-test("a cold nested-route reconstruction transfers the child's saved selection", () => {
+test("a cold nested-route reconstruction keeps the child's saved selection readable", () => {
   installLocalStorage(new MemoryStorage());
   const ownerRef = "local:nested-route-owner";
   const childRef = "local:nested-route-child";
@@ -1571,7 +1568,7 @@ test("a cold nested-route reconstruction transfers the child's saved selection",
   // chose a recovery row under it.
   writeRefComposerSeat(ownerRef, "seat-s");
   writeRefComposerSeat(childRef, "seat-s");
-  writeRecoverySelection(childRef, composerSelectionScope("seat-s"), "child-selected-row");
+  writeRecoverySelection(childRef, "child-selected-row");
 
   openNestedSessionWithOwner(childRef, ownerRef);
 
@@ -1585,7 +1582,7 @@ test("a cold nested-route reconstruction transfers the child's saved selection",
     .panes.find((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === childRef);
   if (!child?.composerSeatId) throw new Error("child lacks its seat");
   expect(child.composerSeatId).not.toBe("seat-s");
-  expect(readRecoverySelection(childRef, composerSelectionScope(child.composerSeatId))).toBe("child-selected-row");
+  expect(readRecoverySelection(childRef)?.clientMutationId).toBe("child-selected-row");
 });
 
 // Pane ids restart after a mobile reload. A route reconstructed as B can land
@@ -1597,11 +1594,11 @@ test("a reconstructed route keeps its own seat over a colliding stale pane id", 
   const aId = workspace.openPane("session", { ref: "local:route-a" });
   const a = workspaceStore.getState().panes.find((pane) => pane.id === aId);
   if (!a?.composerSeatId) throw new Error("route A lacks its seat");
-  writeRecoverySelection("local:route-a", composerSelectionScope(a.composerSeatId), "a-row");
+  writeRecoverySelection("local:route-a", "a-row");
   const bId = workspace.openPane("session", { ref: "local:route-b" });
   const b = workspaceStore.getState().panes.find((pane) => pane.id === bId);
   if (!b?.composerSeatId) throw new Error("route B lacks its seat");
-  writeRecoverySelection("local:route-b", composerSelectionScope(b.composerSeatId), "b-row");
+  writeRecoverySelection("local:route-b", "b-row");
 
   // Reload: pane ids restart, and route B is reconstructed on A's former id.
   resetWorkspaceStoreForTests();
@@ -1610,8 +1607,8 @@ test("a reconstructed route keeps its own seat over a colliding stale pane id", 
   const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
   if (!reloaded?.composerSeatId) throw new Error("reloaded route lacks its seat");
   expect(reloaded.composerSeatId).toBe(b.composerSeatId);
-  expect(readRecoverySelection("local:route-b", composerSelectionScope(reloaded.composerSeatId))).toBe("b-row");
-  expect(readRecoverySelection("local:route-a", composerSelectionScope(reloaded.composerSeatId))).toBeUndefined();
+  expect(readRecoverySelection("local:route-b")?.clientMutationId).toBe("b-row");
+  expect(readRecoverySelection("local:route-a")?.clientMutationId).toBe("a-row");
 });
 
 // A retarget that retains its seat (resume, then return to the resumed
@@ -1630,7 +1627,7 @@ test("a retained seat on a retargeted conversation survives mobile reload", () =
   const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
   if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
   const seat = cascade.composerSeatId;
-  writeRecoverySelection("local:resumed", composerSelectionScope(seat), "resumed-row");
+  writeRecoverySelection("local:resumed", "resumed-row");
 
   // Resume and return retain the cascade's seat while the ref changes.
   expect(workspace.retypePane(cascade, "session", { ref: "local:resumed" })).toBe(true);
@@ -1643,7 +1640,7 @@ test("a retained seat on a retargeted conversation survives mobile reload", () =
   const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
   if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
   expect(reloaded.composerSeatId).toBe(seat);
-  expect(readRecoverySelection("local:resumed", composerSelectionScope(reloaded.composerSeatId))).toBe("resumed-row");
+  expect(readRecoverySelection("local:resumed")?.clientMutationId).toBe("resumed-row");
 });
 
 test("two cascade columns keep independent selections under one seat", () => {
@@ -1663,10 +1660,9 @@ test("two cascade columns keep independent selections under one seat", () => {
   const ownerColumn = retainedConversationComposer(lifetime, ownerRef);
   const childColumn = retainedConversationComposer(lifetime, childRef);
   if (!ownerColumn || !childColumn) throw new Error("cascade columns lack composers");
-  expect(ownerColumn.recoverySelectionOwnerId).toBe(childColumn.recoverySelectionOwnerId);
 
-  writeRecoverySelection(ownerRef, composerSelectionScope(seat), "owner-selected-row");
-  writeRecoverySelection(childRef, composerSelectionScope(seat), "child-selected-row");
+  writeRecoverySelection(ownerRef, "owner-selected-row");
+  writeRecoverySelection(childRef, "child-selected-row");
 
   // Reload reconstructs the cascade under a fresh pane id. Its columns still
   // share the tab-scoped seat, and each ref restores its own selection.
@@ -1679,10 +1675,8 @@ test("two cascade columns keep independent selections under one seat", () => {
   const reloadedOwner = retainedConversationComposer(reloadedLifetime, ownerRef);
   const reloadedChild = retainedConversationComposer(reloadedLifetime, childRef);
   if (!reloadedOwner || !reloadedChild) throw new Error("reloaded columns lack composers");
-  expect(reloadedOwner.recoverySelectionOwnerId).toBe(reloadedChild.recoverySelectionOwnerId);
-  expect(readRecoverySelection(ownerRef, reloadedOwner.recoverySelectionOwnerId)).toBe("owner-selected-row");
-  expect(readRecoverySelection(childRef, reloadedChild.recoverySelectionOwnerId)).toBe("child-selected-row");
-  expect(readRecoverySelection(ownerRef, reloadedOwner.recoverySelectionOwnerId)).not.toBe("child-selected-row");
+  expect(readRecoverySelection(ownerRef)?.clientMutationId).toBe("owner-selected-row");
+  expect(readRecoverySelection(childRef)?.clientMutationId).toBe("child-selected-row");
 });
 
 // A cascade column retained for an ancestor conversation owns a composer with
@@ -1702,7 +1696,7 @@ test("reopening a never-leaf cascade ancestor restores its retained column's sel
   const cascadeId = workspaceStore.getState().openPane("sessionZoom", params);
   const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
   if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
-  const seat = cascade.composerSeatId;
+  const _seat = cascade.composerSeatId;
   const lifetime = conversationPaneLifetime(cascade);
   const ancestorColumn = retainedConversationComposer(lifetime, ownerRef);
   if (!ancestorColumn) throw new Error("ancestor column lacks a composer");
@@ -1723,340 +1717,169 @@ test("reopening a never-leaf cascade ancestor restores its retained column's sel
     recoveryKind: "rejected",
   };
   ancestorColumn.setActiveRecoveryId(selected);
-  expect(readRefComposerSeat(ownerRef)).toBe(seat);
-  expect(readRecoverySelection(ownerRef, composerSelectionScope(seat))).toBe("ancestor-selected-row");
+  expect(readRecoverySelection(ownerRef)?.clientMutationId).toBe("ancestor-selected-row");
 
-  // Closing the cascade and reopening the ancestor as its own pane reuses the
-  // retained seat, restoring the saved selection instead of a fresh seat that
-  // cannot discover it.
+  // Closing the cascade and reopening the ancestor as its own pane restores
+  // the saved selection: the pick is keyed by the conversation, so no seat
+  // continuity is needed to find it.
   workspaceStore.getState().closePane(cascadeId);
   const reopenedId = workspaceStore.getState().openPane("session", { ref: ownerRef });
   const reopened = workspaceStore.getState().panes.find((pane) => pane.id === reopenedId);
   if (!reopened?.composerSeatId) throw new Error("reopened ancestor lacks its seat");
-  expect(reopened.composerSeatId).toBe(seat);
-  expect(readRecoverySelection(ownerRef, composerSelectionScope(reopened.composerSeatId))).toBe(
-    "ancestor-selected-row",
-  );
+  expect(readRecoverySelection(ownerRef)?.clientMutationId).toBe("ancestor-selected-row");
 });
 
 // An independently open pane that owns the ancestor ref established its own
 // seat mapping; a retained column selecting a recovery must keep it.
-test("a retained column keeps an independently open owner's seat mapping", () => {
-  installLocalStorage(new MemoryStorage());
-  const ownerRef = "local:independent-owner";
-  const childRef = "local:independent-child";
-  const independentId = workspaceStore.getState().openPane("session", { ref: ownerRef });
-  const independent = workspaceStore.getState().panes.find((pane) => pane.id === independentId);
-  if (!independent?.composerSeatId) throw new Error("independent pane lacks its seat");
-  const params = {
-    ref: childRef,
-    source: { type: "session" as const, params: { ref: ownerRef } },
-    edges: [{ ownerRef, childRef, delegateId: "delegate-independent-owner" }],
-  };
-  const cascadeId = workspaceStore.getState().openPane("sessionZoom", params);
-  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
-  if (!cascade) throw new Error("cascade missing");
-  const ancestorColumn = retainedConversationComposer(conversationPaneLifetime(cascade), ownerRef);
-  if (!ancestorColumn) throw new Error("ancestor column lacks a composer");
-
-  const selected: MutationRecoveryRecord = {
-    version: 1,
-    clientMutationId: "independent-owner-selected-row",
-    targetRef: ownerRef,
-    intentSequence: 1,
-    createdAt: 0,
-    method: "turn/start",
-    payload: { ref: ownerRef, input: [] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/start", input: [] },
-    composerText: "",
-    state: "submitting",
-    recoveryKind: "rejected",
-  };
-  ancestorColumn.setActiveRecoveryId(selected);
-  expect(readRefComposerSeat(ownerRef)).toBe(independent.composerSeatId);
-  expect(readRecoverySelection(ownerRef, composerSelectionScope(cascade.composerSeatId ?? cascade.id))).toBe(
-    "independent-owner-selected-row",
-  );
-});
 // A closed pane's leftover mapping survives for its own reopen, but it names
 // no live owner: a cascade column that later preserves newer local work under
 // its own seat must establish the mapping, or a reopen restores the closed
 // pane's older selection instead of the preserved work.
-test("a retained column replaces a closed pane's leftover seat mapping", () => {
-  installLocalStorage(new MemoryStorage());
-  const ref = "local:closed-seat-owner";
-  const childRef = "local:closed-seat-child";
-  const closedId = workspaceStore.getState().openPane("session", { ref });
-  const closed = workspaceStore.getState().panes.find((pane) => pane.id === closedId);
-  if (!closed?.composerSeatId) throw new Error("closed pane lacks its seat");
-  expect(readRefComposerSeat(ref)).toBe(closed.composerSeatId);
-  workspaceStore.getState().closePane(closedId);
-  // No owner shows the conversation, so the unowned mapping stays behind.
-  expect(readRefComposerSeat(ref)).toBe(closed.composerSeatId);
-
-  const cascadeId = workspaceStore.getState().openPane("sessionZoom", {
-    ref: childRef,
-    source: { type: "session", params: { ref } },
-    edges: [{ ownerRef: ref, childRef, delegateId: "delegate-closed-seat" }],
-  });
-  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
-  if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
-  const column = retainedConversationComposer(conversationPaneLifetime(cascade), ref);
-  if (!column) throw new Error("column lacks a composer");
-  const selected: MutationRecoveryRecord = {
-    version: 1,
-    clientMutationId: "closed-seat-newer-row",
-    targetRef: ref,
-    intentSequence: 1,
-    createdAt: 0,
-    method: "turn/start",
-    payload: { ref, input: [] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/start", input: [] },
-    composerText: "",
-    state: "submitting",
-    recoveryKind: "rejected",
-  };
-  column.setActiveRecoveryId(selected);
-  expect(readRefComposerSeat(ref)).toBe(cascade.composerSeatId);
-  expect(readRecoverySelection(ref, column.recoverySelectionOwnerId)).toBe("closed-seat-newer-row");
-});
 // Two cascades can retain the same ancestor, each column with its own
 // selected row. The closing cascade's column wrote the ancestor's mapping, so
 // closing it must point that mapping at the surviving cascade's seat - or a
 // reload restores the closed cascade's recovery choice instead of the
 // surviving column's own selection.
-test("closing one of two cascades points a shared ancestor at the survivor", () => {
-  installLocalStorage(new MemoryStorage());
-  const ancestorRef = "local:shared-ancestor";
-  const leafARef = "local:shared-ancestor-leaf-a";
-  const leafBRef = "local:shared-ancestor-leaf-b";
-  const firstId = workspaceStore.getState().openPane("sessionZoom", {
-    ref: leafBRef,
-    source: { type: "session", params: { ref: ancestorRef } },
-    edges: [{ ownerRef: ancestorRef, childRef: leafBRef, delegateId: "delegate-shared-b" }],
-  });
-  const first = workspaceStore.getState().panes.find((pane) => pane.id === firstId);
-  if (!first?.composerSeatId) throw new Error("first cascade lacks its seat");
-  const firstColumn = retainedConversationComposer(conversationPaneLifetime(first), ancestorRef);
-  if (!firstColumn) throw new Error("first cascade column lacks a composer");
-  firstColumn.setActiveRecoveryId({
-    version: 1,
-    clientMutationId: "shared-ancestor-first-row",
-    targetRef: ancestorRef,
-    intentSequence: 1,
-    createdAt: 0,
-    method: "turn/start",
-    payload: { ref: ancestorRef, input: [] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/start", input: [] },
-    composerText: "",
-    state: "submitting",
-    recoveryKind: "rejected",
-  });
-  expect(readRefComposerSeat(ancestorRef)).toBe(first.composerSeatId);
-
-  const secondId = workspaceStore.getState().openPane(
-    "sessionZoom",
-    {
-      ref: leafARef,
-      source: { type: "session", params: { ref: ancestorRef } },
-      edges: [{ ownerRef: ancestorRef, childRef: leafARef, delegateId: "delegate-shared-a" }],
-    },
-    { slot: "secondary" },
-  );
-  const second = workspaceStore.getState().panes.find((pane) => pane.id === secondId);
-  if (!second?.composerSeatId) throw new Error("second cascade lacks its seat");
-  const secondColumn = retainedConversationComposer(conversationPaneLifetime(second), ancestorRef);
-  if (!secondColumn) throw new Error("second cascade column lacks a composer");
-  secondColumn.setActiveRecoveryId({
-    version: 1,
-    clientMutationId: "shared-ancestor-second-row",
-    targetRef: ancestorRef,
-    intentSequence: 1,
-    createdAt: 0,
-    method: "turn/start",
-    payload: { ref: ancestorRef, input: [] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/start", input: [] },
-    composerText: "",
-    state: "submitting",
-    recoveryKind: "rejected",
-  });
-  // The live first cascade keeps the mapping: a live owner's seat is never
-  // displaced by another seat's selection.
-  expect(readRefComposerSeat(ancestorRef)).toBe(first.composerSeatId);
-  expect(readRecoverySelection(ancestorRef, composerSelectionScope(second.composerSeatId))).toBe(
-    "shared-ancestor-second-row",
-  );
-
-  workspaceStore.getState().closePane(firstId);
-  expect(readRefComposerSeat(ancestorRef)).toBe(second.composerSeatId);
-  expect(readRecoverySelection(ancestorRef, composerSelectionScope(second.composerSeatId))).toBe(
-    "shared-ancestor-second-row",
-  );
-});
 // Returning a deep cascade to its source removes the whole departed path,
 // not only the previous leaf. When another cascade retains a removed column
 // with its own selected row, the departed column's mapping must point at the
 // survivor, or a later route reconstruction restores the departed cascade's
 // choice instead.
-test("returning a deep cascade to its source points removed columns at the survivor", () => {
-  installLocalStorage(new MemoryStorage());
-  const sourceRef = "local:return-source";
-  const midRef = "local:return-mid";
-  const survivorLeafRef = "local:return-survivor-leaf";
-  const departedLeafRef = "local:return-departed-leaf";
-  const departedId = workspaceStore.getState().openPane("sessionZoom", {
-    ref: departedLeafRef,
-    source: { type: "session", params: { ref: sourceRef } },
-    edges: [
-      { ownerRef: sourceRef, childRef: midRef, delegateId: "delegate-return-mid" },
-      { ownerRef: midRef, childRef: departedLeafRef, delegateId: "delegate-return-leaf" },
-    ],
-  });
-  const departed = workspaceStore.getState().panes.find((pane) => pane.id === departedId);
-  if (!departed?.composerSeatId) throw new Error("departed cascade lacks its seat");
-  const departedColumn = retainedConversationComposer(conversationPaneLifetime(departed), midRef);
-  if (!departedColumn) throw new Error("departed column lacks a composer");
-  departedColumn.setActiveRecoveryId({
-    version: 1,
-    clientMutationId: "return-mid-departed-row",
-    targetRef: midRef,
-    intentSequence: 1,
-    createdAt: 0,
-    method: "turn/start",
-    payload: { ref: midRef, input: [] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/start", input: [] },
-    composerText: "",
-    state: "submitting",
-    recoveryKind: "rejected",
-  });
-  expect(readRefComposerSeat(midRef)).toBe(departed.composerSeatId);
-
-  const survivorId = workspaceStore.getState().openPane(
-    "sessionZoom",
-    {
-      ref: survivorLeafRef,
-      source: { type: "session", params: { ref: sourceRef } },
-      edges: [
-        { ownerRef: sourceRef, childRef: midRef, delegateId: "delegate-return-mid-2" },
-        { ownerRef: midRef, childRef: survivorLeafRef, delegateId: "delegate-return-survivor" },
-      ],
-    },
-    { slot: "secondary" },
-  );
-  const survivor = workspaceStore.getState().panes.find((pane) => pane.id === survivorId);
-  if (!survivor?.composerSeatId) throw new Error("survivor cascade lacks its seat");
-  const survivorColumn = retainedConversationComposer(conversationPaneLifetime(survivor), midRef);
-  if (!survivorColumn) throw new Error("survivor column lacks a composer");
-  survivorColumn.setActiveRecoveryId({
-    version: 1,
-    clientMutationId: "return-mid-survivor-row",
-    targetRef: midRef,
-    intentSequence: 1,
-    createdAt: 0,
-    method: "turn/start",
-    payload: { ref: midRef, input: [] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/start", input: [] },
-    composerText: "",
-    state: "submitting",
-    recoveryKind: "rejected",
-  });
-  // The live departed cascade keeps the mapping while both cascades live.
-  expect(readRefComposerSeat(midRef)).toBe(departed.composerSeatId);
-  expect(readRecoverySelection(midRef, composerSelectionScope(survivor.composerSeatId))).toBe(
-    "return-mid-survivor-row",
-  );
-
-  // Return the departed cascade to its source: mid and its old leaf leave
-  // its path, and the survivor retains mid.
-  expect(workspaceStore.getState().retypePane(departed, "session", { ref: sourceRef })).toBe(true);
-  expect(readRefComposerSeat(midRef)).toBe(survivor.composerSeatId);
-  expect(readRefComposerSeat(departedLeafRef)).toBe(departed.composerSeatId);
-});
 // The recorded edge segment can be empty while the hub's authoritative
 // ancestry chain still names an ancestor: only the canonical cascade
 // derivation sees that ancestor as a retained column. Closing one of two
 // cascades that share it must point its mapping at the survivor, or a cold
 // route reconstruction restores the closed cascade's recovery choice.
-test("closing a cascade reconciles an ancestor only authoritative ancestry supplies", async () => {
+// Design A contract: a conversation's recovery selection is the newest pick
+// for that conversation, no matter which pane made it or what pane-to-seat
+// mappings say. A cascade that returned to its source leaves its departed
+// column's pick behind; a later pane picking newer work for the same
+// conversation must win for every restoring pane.
+test("a departed conversation's newest pick wins for the next restoring pane", () => {
   installLocalStorage(new MemoryStorage());
-  const ancestry = ["local:auth-root", "local:auth-shared"];
-  const bLeaf = "local:auth-b-leaf";
-  const aLeaf = "local:auth-a-leaf";
-  const client = cascadeClient((ref) => cascadeContext(ref, ancestry));
-  connectionStore.getState().connect(client);
-  const leaseB = acquireSessionActivity(client, bLeaf, "session");
-  const leaseA = acquireSessionActivity(client, aLeaf, "session");
-  try {
-    await waitFor(() => expect(leaseB.store.getSnapshot().context?.ancestryKnown).toBe(true));
-    await waitFor(() => expect(leaseA.store.getSnapshot().context?.ancestryKnown).toBe(true));
+  const sourceRef = "local:reclaim-source";
+  const departedRef = "local:reclaim-departed";
+  const closingId = workspaceStore.getState().openPane("sessionZoom", {
+    ref: "local:reclaim-a-leaf",
+    source: { type: "session", params: { ref: sourceRef } },
+    edges: [
+      { ownerRef: sourceRef, childRef: departedRef, delegateId: "delegate-reclaim" },
+      { ownerRef: departedRef, childRef: "local:reclaim-a-leaf", delegateId: "delegate-reclaim-leaf" },
+    ],
+  });
+  const closing = workspaceStore.getState().panes.find((pane) => pane.id === closingId);
+  if (!closing?.composerSeatId) throw new Error("closing cascade lacks its seat");
+  const closingColumn = retainedConversationComposer(conversationPaneLifetime(closing), departedRef);
+  if (!closingColumn) throw new Error("closing column lacks a composer");
+  closingColumn.setActiveRecoveryId({
+    version: 1,
+    clientMutationId: "reclaim-older-row",
+    targetRef: "local:reclaim-departed",
+    intentSequence: 1,
+    createdAt: 0,
+    method: "turn/start",
+    payload: { ref: "local:reclaim-departed", input: [] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [] },
+    composerText: "",
+    state: "submitting",
+    recoveryKind: "rejected",
+  });
+  // The cascade returns to its source: the departed conversation leaves its
+  // path while its pane still lives.
+  expect(workspaceStore.getState().retypePane(closing, "session", { ref: sourceRef })).toBe(true);
 
-    const closingId = workspaceStore.getState().openPane("sessionZoom", {
-      ref: bLeaf,
-      source: { type: "session", params: { ref: "local:auth-root" } },
+  // A different cascade retains the departed conversation and picks newer
+  // local work there.
+  const laterId = workspaceStore.getState().openPane(
+    "sessionZoom",
+    {
+      ref: "local:reclaim-b-leaf",
+      source: { type: "session", params: { ref: departedRef } },
       edges: [],
-    });
-    const closing = workspaceStore.getState().panes.find((pane) => pane.id === closingId);
-    if (!closing?.composerSeatId) throw new Error("closing cascade lacks its seat");
-    const closingColumn = retainedConversationComposer(conversationPaneLifetime(closing), "local:auth-shared");
-    if (!closingColumn) throw new Error("closing column lacks a composer");
-    closingColumn.setActiveRecoveryId({
-      version: 1,
-      clientMutationId: "auth-ancestry-closing-row",
-      targetRef: "local:auth-shared",
-      intentSequence: 1,
-      createdAt: 0,
-      method: "turn/start",
-      payload: { ref: "local:auth-shared", input: [] },
-      attachments: [],
-      optimisticDisplay: { method: "turn/start", input: [] },
-      composerText: "",
-      state: "submitting",
-      recoveryKind: "rejected",
-    });
-    expect(readRefComposerSeat("local:auth-shared")).toBe(closing.composerSeatId);
+    },
+    { slot: "secondary" },
+  );
+  const later = workspaceStore.getState().panes.find((pane) => pane.id === laterId);
+  if (!later?.composerSeatId) throw new Error("later cascade lacks its seat");
+  const laterColumn = retainedConversationComposer(conversationPaneLifetime(later), departedRef);
+  if (!laterColumn) throw new Error("later column lacks a composer");
+  laterColumn.setActiveRecoveryId({
+    version: 1,
+    clientMutationId: "reclaim-newer-row",
+    targetRef: "local:reclaim-departed",
+    intentSequence: 1,
+    createdAt: 0,
+    method: "turn/start",
+    payload: { ref: "local:reclaim-departed", input: [] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [] },
+    composerText: "",
+    state: "submitting",
+    recoveryKind: "rejected",
+  });
 
-    const survivingId = workspaceStore.getState().openPane(
-      "sessionZoom",
-      {
-        ref: aLeaf,
-        source: { type: "session", params: { ref: "local:auth-root" } },
-        edges: [],
-      },
-      { slot: "secondary" },
-    );
-    const surviving = workspaceStore.getState().panes.find((pane) => pane.id === survivingId);
-    if (!surviving?.composerSeatId) throw new Error("surviving cascade lacks its seat");
-    const survivingColumn = retainedConversationComposer(conversationPaneLifetime(surviving), "local:auth-shared");
-    if (!survivingColumn) throw new Error("surviving column lacks a composer");
-    survivingColumn.setActiveRecoveryId({
-      version: 1,
-      clientMutationId: "auth-ancestry-surviving-row",
-      targetRef: "local:auth-shared",
-      intentSequence: 1,
-      createdAt: 0,
-      method: "turn/start",
-      payload: { ref: "local:auth-shared", input: [] },
-      attachments: [],
-      optimisticDisplay: { method: "turn/start", input: [] },
-      composerText: "",
-      state: "submitting",
-      recoveryKind: "rejected",
-    });
-    expect(readRefComposerSeat("local:auth-shared")).toBe(closing.composerSeatId);
+  // Whatever pane restores the departed conversation next must read the
+  // newest pick, not the departed cascade's older row.
+  const freshId = workspaceStore.getState().openPane("session", { ref: departedRef });
+  const fresh = workspaceStore.getState().panes.find((pane) => pane.id === freshId);
+  if (!fresh?.composerSeatId) throw new Error("fresh pane lacks its seat");
+  expect(readRecoverySelection(departedRef)?.clientMutationId).toBe("reclaim-newer-row");
+});
+// Design A contract: drilling an existing cascade onto a conversation must
+// not disturb that conversation's pick. The child conversation's preserved
+// work stays selected for whichever pane restores it next.
+test("drilling onto a conversation keeps its pick restorable", () => {
+  installLocalStorage(new MemoryStorage());
+  const rootRef = "local:drill-existing-root";
+  const childRef = "local:drill-existing-child";
+  const sessionId = workspaceStore.getState().openPane("session", { ref: childRef });
+  const session = workspaceStore.getState().panes.find((pane) => pane.id === sessionId);
+  if (!session?.composerSeatId) throw new Error("session pane lacks its seat");
+  const sessionSource = createTestComposerSource(childRef);
+  sessionSource.setActiveRecoveryId({
+    version: 1,
+    clientMutationId: "drill-existing-pick",
+    targetRef: "local:drill-existing-child",
+    intentSequence: 1,
+    createdAt: 0,
+    method: "turn/start",
+    payload: { ref: "local:drill-existing-child", input: [] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [] },
+    composerText: "",
+    state: "submitting",
+    recoveryKind: "rejected",
+  });
+  expect(readRefComposerSeat(childRef)).toBe(session.composerSeatId);
 
-    workspaceStore.getState().closePane(closingId);
-    expect(readRefComposerSeat("local:auth-shared")).toBe(surviving.composerSeatId);
-  } finally {
-    leaseB.release();
-    leaseA.release();
-    connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
-  }
+  // An existing cascade drills onto the child conversation.
+  const cascadeId = workspaceStore.getState().openPane(
+    "sessionZoom",
+    {
+      ref: "local:drill-existing-root-leaf",
+      source: { type: "session", params: { ref: rootRef } },
+      edges: [{ ownerRef: rootRef, childRef: "local:drill-existing-root-leaf", delegateId: "delegate-drill-root" }],
+    },
+    { slot: "secondary" },
+  );
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!cascade) throw new Error("cascade missing");
+  expect(
+    workspaceStore.getState().retypePane(cascade, "sessionZoom", {
+      ref: childRef,
+      source: { type: "session", params: { ref: rootRef } },
+      edges: [{ ownerRef: rootRef, childRef, delegateId: "delegate-drill-existing" }],
+    }),
+  ).toBe(true);
+
+  // The session pane closes; whatever pane restores the child conversation
+  // next reads its pick, not the oldest rejected row.
+  workspaceStore.getState().closePane(sessionId);
+  const freshId = workspaceStore.getState().openPane("session", { ref: childRef });
+  const fresh = workspaceStore.getState().panes.find((pane) => pane.id === freshId);
+  if (!fresh?.composerSeatId) throw new Error("fresh pane lacks its seat");
+  expect(readRecoverySelection(childRef)?.clientMutationId).toBe("drill-existing-pick");
 });
 
 // A pane retyped to a read-only transcript keeps its lifetime's seat in
@@ -2108,17 +1931,17 @@ test("closing a competing seat restores the surviving pane's selection", () => {
   if (!secondary?.composerSeatId) throw new Error("secondary session lacks its seat");
   expect(secondary.composerSeatId).not.toBe(main.composerSeatId);
 
-  writeRecoverySelection(ref, composerSelectionScope(main.composerSeatId), "main-selected-row");
-  writeRecoverySelection(ref, composerSelectionScope(secondary.composerSeatId), "secondary-selected-row");
+  writeRecoverySelection(ref, "main-selected-row");
+  writeRecoverySelection(ref, "secondary-selected-row");
 
-  // The newer pane's allocation owns the conversation mapping until it closes.
+  // Closing the pane that made the newest pick must not lose it: the pick
+  // belongs to the conversation, not to the pane, and no cleanup runs.
   workspaceStore.getState().closePane(secondaryId);
   resetWorkspaceStoreForTests();
   const reloadedId = workspaceStore.getState().openPane("session", { ref });
   const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
   if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
-  expect(reloaded.composerSeatId).toBe(main.composerSeatId);
-  expect(readRecoverySelection(ref, composerSelectionScope(reloaded.composerSeatId))).toBe("main-selected-row");
+  expect(readRecoverySelection(ref)?.clientMutationId).toBe("secondary-selected-row");
 });
 
 test("a legacy transcript round trip keeps the pane's seat", () => {
@@ -2146,32 +1969,6 @@ test("a legacy transcript round trip keeps the pane's seat", () => {
   expect(readRefComposerSeat(ref)).toBe(seat);
 });
 
-test("replacePrimary reconciles the surviving main seat mapping", () => {
-  installLocalStorage(new MemoryStorage());
-  const ref = "local:primary-map";
-  const mainId = workspaceStore.getState().replacePrimary("session", { ref });
-  const main = workspaceStore.getState().panes.find((pane) => pane.id === mainId);
-  if (!main?.composerSeatId) throw new Error("main pane lacks its seat");
-  const secondaryId = workspaceStore.getState().openPane("doc", { ref: "doc" });
-  const secondaryPane = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
-  if (!secondaryPane) throw new Error("secondary pane missing");
-  expect(workspaceStore.getState().retypePane(secondaryPane, "session", { ref })).toBe(true);
-  const secondary = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
-  if (!secondary?.composerSeatId) throw new Error("secondary session lacks its seat");
-  writeRecoverySelection(ref, composerSelectionScope(main.composerSeatId), "main-row");
-  writeRecoverySelection(ref, composerSelectionScope(secondary.composerSeatId), "secondary-row");
-  expect(readRefComposerSeat(ref)).toBe(secondary.composerSeatId);
-
-  expect(workspaceStore.getState().replacePrimary("session", { ref })).toBe(mainId);
-  expect(readRefComposerSeat(ref)).toBe(main.composerSeatId);
-  resetWorkspaceStoreForTests();
-  const reloadedId = workspaceStore.getState().openPane("session", { ref });
-  const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
-  if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
-  expect(reloaded.composerSeatId).toBe(main.composerSeatId);
-  expect(readRecoverySelection(ref, composerSelectionScope(reloaded.composerSeatId))).toBe("main-row");
-});
-
 test("focus and promote reconcile the conversation seat mapping", () => {
   installLocalStorage(new MemoryStorage());
   const ref = "local:focus-map";
@@ -2191,91 +1988,6 @@ test("focus and promote reconcile the conversation seat mapping", () => {
   expect(readRefComposerSeat(ref)).toBe(secondary.composerSeatId);
 });
 
-test("opening an existing conversation reconciles its seat mapping", () => {
-  installLocalStorage(new MemoryStorage());
-  const ref = "local:open-existing";
-  const mainId = workspaceStore.getState().replacePrimary("session", { ref });
-  const main = workspaceStore.getState().panes.find((pane) => pane.id === mainId);
-  if (!main?.composerSeatId) throw new Error("main pane lacks its seat");
-  const cascadeId = workspaceStore.getState().openPane("doc", { ref: "doc" });
-  const cascadePane = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
-  if (!cascadePane) throw new Error("cascade pane missing");
-  expect(
-    workspaceStore.getState().retypePane(cascadePane, "sessionZoom", {
-      ref,
-      source: { type: "session", params: { ref } },
-      edges: [],
-    }),
-  ).toBe(true);
-  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
-  if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
-  workspaceStore.getState().focusPane(cascadeId);
-  expect(readRefComposerSeat(ref)).toBe(cascade.composerSeatId);
-
-  expect(workspaceStore.getState().openPane("session", { ref })).toBe(mainId);
-  expect(readRefComposerSeat(ref)).toBe(main.composerSeatId);
-  resetWorkspaceStoreForTests();
-  const reloadedId = workspaceStore.getState().openPane("session", { ref });
-  const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
-  if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
-  expect(reloaded.composerSeatId).toBe(main.composerSeatId);
-});
-
-type SeatTransitionContext = { mainId: string; secondaryId: string; ref: string };
-
-test.each<[string, (context: SeatTransitionContext) => void]>([
-  ["focus", ({ mainId }) => workspaceStore.getState().focusPane(mainId)],
-  ["open", ({ ref }) => void workspaceStore.getState().openPane("session", { ref })],
-  ["close", ({ secondaryId }) => workspaceStore.getState().closePane(secondaryId)],
-  ["replacePrimary", ({ ref }) => void workspaceStore.getState().replacePrimary("session", { ref })],
-])("%s reconciles the conversation seat mapping", (_name, transition) => {
-  installLocalStorage(new MemoryStorage());
-  const ref = `local:transition-${_name}`;
-  const mainId = workspaceStore.getState().replacePrimary("session", { ref });
-  const main = workspaceStore.getState().panes.find((pane) => pane.id === mainId);
-  if (!main?.composerSeatId) throw new Error("main pane lacks its seat");
-  const secondaryId = workspaceStore.getState().openPane("doc", { ref: "doc" });
-  const secondaryPane = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
-  if (!secondaryPane) throw new Error("secondary pane missing");
-  expect(workspaceStore.getState().retypePane(secondaryPane, "session", { ref })).toBe(true);
-  const secondary = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
-  if (!secondary?.composerSeatId) throw new Error("secondary session lacks its seat");
-  expect(readRefComposerSeat(ref)).toBe(secondary.composerSeatId);
-
-  transition({ mainId, secondaryId, ref });
-  expect(readRefComposerSeat(ref)).toBe(main.composerSeatId);
-  resetWorkspaceStoreForTests();
-  const reloadedId = workspaceStore.getState().openPane("session", { ref });
-  const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
-  if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
-  expect(reloaded.composerSeatId).toBe(main.composerSeatId);
-});
-
-test("retyping a conversation away reconciles its old ref mapping", () => {
-  installLocalStorage(new MemoryStorage());
-  const oldRef = "local:sweep-old-ref";
-  const newRef = "local:sweep-new-ref";
-  const mainId = workspaceStore.getState().replacePrimary("session", { ref: oldRef });
-  const main = workspaceStore.getState().panes.find((pane) => pane.id === mainId);
-  if (!main?.composerSeatId) throw new Error("main pane lacks its seat");
-  const secondaryId = workspaceStore.getState().openPane("doc", { ref: "doc" });
-  const secondaryPane = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
-  if (!secondaryPane) throw new Error("secondary pane missing");
-  expect(workspaceStore.getState().retypePane(secondaryPane, "session", { ref: oldRef })).toBe(true);
-  const secondary = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
-  if (!secondary?.composerSeatId) throw new Error("secondary session lacks its seat");
-  expect(readRefComposerSeat(oldRef)).toBe(secondary.composerSeatId);
-
-  expect(workspaceStore.getState().retypePane(secondary, "session", { ref: newRef })).toBe(true);
-  expect(readRefComposerSeat(oldRef)).toBe(main.composerSeatId);
-  expect(readRefComposerSeat(newRef)).toBe(secondary.composerSeatId);
-  resetWorkspaceStoreForTests();
-  const reloadedOld = workspaceStore.getState().openPane("session", { ref: oldRef });
-  const reloadedPane = workspaceStore.getState().panes.find((pane) => pane.id === reloadedOld);
-  if (!reloadedPane?.composerSeatId) throw new Error("reloaded old conversation lacks its seat");
-  expect(reloadedPane.composerSeatId).toBe(main.composerSeatId);
-});
-
 test("drilling the last pane off a conversation keeps its seat mapping recoverable", () => {
   installLocalStorage(new MemoryStorage());
   const parentRef = "local:drill-parent";
@@ -2284,9 +1996,7 @@ test("drilling the last pane off a conversation keeps its seat mapping recoverab
   const main = workspaceStore.getState().panes.find((pane) => pane.id === mainId);
   if (!main?.composerSeatId) throw new Error("main pane lacks its seat");
   const seat = main.composerSeatId;
-  writeRecoverySelection(parentRef, composerSelectionScope(seat), "parent-selected-row");
-  // A rejected row under another seat: a fresh seat must never fall back to it.
-  writeRecoverySelection(parentRef, composerSelectionScope("rejected-parent-seat"), "rejected-parent-row");
+  writeRecoverySelection(parentRef, "parent-selected-row");
 
   // Drilling the last pane on the parent conversation leaves the parent as a
   // retained cascade column, not a closed conversation.
@@ -2306,7 +2016,7 @@ test("drilling the last pane off a conversation keeps its seat mapping recoverab
   const reopened = workspaceStore.getState().panes.find((pane) => pane.id === reopenedId);
   if (!reopened?.composerSeatId) throw new Error("reopened parent lacks its seat");
   expect(reopened.composerSeatId).toBe(seat);
-  expect(readRecoverySelection(parentRef, composerSelectionScope(reopened.composerSeatId))).toBe("parent-selected-row");
+  expect(readRecoverySelection(parentRef)?.clientMutationId).toBe("parent-selected-row");
 });
 
 test("drilling a cascade deeper keeps the intermediate column's seat mapping", () => {
@@ -2322,8 +2032,7 @@ test("drilling a cascade deeper keeps the intermediate column's seat mapping", (
   const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
   if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
   const seat = cascade.composerSeatId;
-  writeRecoverySelection(childRef, composerSelectionScope(seat), "child-selected-row");
-  writeRecoverySelection(childRef, composerSelectionScope("rejected-child-seat"), "rejected-child-row");
+  writeRecoverySelection(childRef, "child-selected-row");
 
   expect(
     workspaceStore.getState().retypePane(cascade, "sessionZoom", {
@@ -2343,74 +2052,5 @@ test("drilling a cascade deeper keeps the intermediate column's seat mapping", (
   const reopened = workspaceStore.getState().panes.find((pane) => pane.id === reopenedId);
   if (!reopened?.composerSeatId) throw new Error("reopened child lacks its seat");
   expect(reopened.composerSeatId).toBe(seat);
-  expect(readRecoverySelection(childRef, composerSelectionScope(reopened.composerSeatId))).toBe("child-selected-row");
-});
-
-test("reconciling a retyped ref points it at the cascade that retains it", () => {
-  installLocalStorage(new MemoryStorage());
-  const ownerRef = "local:retain-owner";
-  const childRef = "local:retain-child";
-  const movedRef = "local:retain-moved";
-  const sessionId = workspaceStore.getState().replacePrimary("session", { ref: ownerRef });
-  const session = workspaceStore.getState().panes.find((pane) => pane.id === sessionId);
-  if (!session?.composerSeatId) throw new Error("session pane lacks its seat");
-  const cascadeId = workspaceStore.getState().openPane(
-    "sessionZoom",
-    {
-      ref: childRef,
-      source: { type: "session", params: { ref: ownerRef } },
-      edges: [{ ownerRef, childRef, delegateId: "delegate-1" }],
-    },
-    { slot: "secondary" },
-  );
-  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
-  if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
-  writeRecoverySelection(ownerRef, composerSelectionScope(cascade.composerSeatId), "cascade-owner-row");
-  writeRecoverySelection(ownerRef, composerSelectionScope("rejected-owner-seat"), "rejected-owner-row");
-
-  expect(workspaceStore.getState().retypePane(session, "session", { ref: movedRef })).toBe(true);
-  // No pane shows the owner conversation anymore, but the cascade retains it
-  // as a column: its seat owns the ref mapping, not the moved pane's.
-  expect(readRefComposerSeat(ownerRef)).toBe(cascade.composerSeatId);
-
-  resetWorkspaceStoreForTests();
-  const reopenedId = workspaceStore.getState().openPane("session", { ref: ownerRef });
-  const reopened = workspaceStore.getState().panes.find((pane) => pane.id === reopenedId);
-  if (!reopened?.composerSeatId) throw new Error("reopened owner lacks its seat");
-  expect(reopened.composerSeatId).toBe(cascade.composerSeatId);
-  expect(readRecoverySelection(ownerRef, composerSelectionScope(reopened.composerSeatId))).toBe("cascade-owner-row");
-});
-
-test("closing a competing pane points its ref at the cascade that retains it", () => {
-  installLocalStorage(new MemoryStorage());
-  const ownerRef = "local:close-owner";
-  const childRef = "local:close-child";
-  const sessionId = workspaceStore.getState().replacePrimary("session", { ref: ownerRef });
-  const session = workspaceStore.getState().panes.find((pane) => pane.id === sessionId);
-  if (!session?.composerSeatId) throw new Error("session pane lacks its seat");
-  const cascadeId = workspaceStore.getState().openPane(
-    "sessionZoom",
-    {
-      ref: childRef,
-      source: { type: "session", params: { ref: ownerRef } },
-      edges: [{ ownerRef, childRef, delegateId: "delegate-1" }],
-    },
-    { slot: "secondary" },
-  );
-  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
-  if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
-  writeRecoverySelection(ownerRef, composerSelectionScope(cascade.composerSeatId), "cascade-owner-row");
-  writeRecoverySelection(ownerRef, composerSelectionScope("rejected-owner-seat"), "rejected-owner-row");
-
-  workspaceStore.getState().closePane(sessionId);
-  // No pane shows the owner conversation anymore, but the cascade retains it
-  // as a column: its seat owns the ref mapping, not the closed pane's.
-  expect(readRefComposerSeat(ownerRef)).toBe(cascade.composerSeatId);
-
-  resetWorkspaceStoreForTests();
-  const reopenedId = workspaceStore.getState().openPane("session", { ref: ownerRef });
-  const reopened = workspaceStore.getState().panes.find((pane) => pane.id === reopenedId);
-  if (!reopened?.composerSeatId) throw new Error("reopened owner lacks its seat");
-  expect(reopened.composerSeatId).toBe(cascade.composerSeatId);
-  expect(readRecoverySelection(ownerRef, composerSelectionScope(reopened.composerSeatId))).toBe("cascade-owner-row");
+  expect(readRecoverySelection(childRef)?.clientMutationId).toBe("child-selected-row");
 });

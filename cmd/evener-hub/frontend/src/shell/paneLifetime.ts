@@ -58,7 +58,7 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
       if (!alive || sourceType !== "session") return null;
       let state = lifetime.composers.get(sourceRef);
       if (state === undefined) {
-        state = createComposerSourceState(sourceRef, lifetime.compositionOwnerId, lifetime.composerSeatId);
+        state = createComposerSourceState(sourceRef, lifetime.compositionOwnerId);
         lifetime.composers.set(sourceRef, state);
       }
       return state;
@@ -73,7 +73,9 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
       // keeps its newer work.
       const retired = lifetime.composers.get(sourceRef);
       if (retired) {
-        carryRecoverySelection(sourceRef, resumedRef, retired.recoverySelectionOwnerId);
+        // The pick is keyed by conversation, so the resume carries it to the
+        // new identity unless the destination already has a newer choice.
+        carryRecoverySelection(sourceRef, resumedRef);
         // A route reconstruction resolves the conversation mapping, so a
         // resumed seat must be recoverable by its new ref. An owner already
         // established for that ref is newer and keeps it.

@@ -1,7 +1,5 @@
 import type { ComposerMention } from "@evener/appwire-client";
 import { createStore } from "zustand/vanilla";
-import { isLiveComposerSeat } from "../../../shell/workspace";
-import { ownClientId } from "../../../stores/mutationClientIdentity";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { createSecureUUID } from "../../../stores/secureUUID";
 import type { InputAttachment } from "../../../stores/threads";
@@ -15,19 +13,20 @@ import {
   type TextEditSource,
 } from "./attachments/useAttachments";
 import {
+  carryRecoverySelection,
   clearDraft,
   clearPersistedDraftIfRevisionMatches,
-  composerSelectionScope,
+  clearRecoverySelection,
   markDraftEdited,
   readComposerDraft,
   readComposerDraftRevisionId,
   readComposerDraftSnapshot,
   readDraftRevision,
   readRecoverySelection,
-  readRefComposerSeat,
   writeComposerDraft,
   writeRecoverySelection,
-  writeRefComposerSeat,
+  writeRecoverySelectionAutomatically,
+  writeRecoverySelectionReplacing,
 } from "./draft";
 import {
   discardRecoveryPendingTurn,
@@ -92,8 +91,6 @@ export interface ComposerSourceSnapshot {
 export interface ComposerSourceState {
   readonly ref: string;
   readonly alive: boolean;
-  /** Reload-stable tab/pane scope for the selected recovery owner. */
-  readonly recoverySelectionOwnerId: string;
   readonly attachments: AttachmentStore;
   readonly editor: TextEditor;
   readonly continuity: {
@@ -116,7 +113,10 @@ export interface ComposerSourceState {
   updateSkillNames(names: string[]): void;
   editSkillNames(names: string[]): void;
   updateSelectionMeta(value: SkillEditorValue): void;
-  setActiveRecoveryId(record: MutationRecoveryRecord | null, options?: { replaceSelection?: string }): void;
+  setActiveRecoveryId(
+    record: MutationRecoveryRecord | null,
+    options?: { automatic?: boolean; replaces?: string },
+  ): void;
   markRestore(): void;
   persistDraft(text: string): void;
   writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void;
@@ -182,14 +182,8 @@ export function recoverySubmissionInFlight(clientMutationId: string): boolean {
 
 /** A pane passes its lifetime token; standalone mounts fall back to one token
  * per ref so a remount outside the pane shell still reuses ownership. */
-export function createComposerSourceState(
-  ref: string,
-  ownerId?: string,
-  selectionOwnerId?: string,
-): ComposerSourceState {
+export function createComposerSourceState(ref: string, ownerId?: string): ComposerSourceState {
   const compositionOwnerId = ownerId ?? defaultCompositionOwners.get(ref) ?? createSecureUUID();
-  const recoverySelectionOwnerId =
-    selectionOwnerId === undefined ? ownClientId() : composerSelectionScope(selectionOwnerId);
   if (ownerId === undefined && !defaultCompositionOwners.has(ref))
     defaultCompositionOwners.set(ref, compositionOwnerId);
   const initial = readComposerDraftSnapshot(ref);
@@ -331,62 +325,43 @@ export function createComposerSourceState(
     markEdited();
     updateSkillNames(names);
   }
-  function setActiveRecoveryId(record: MutationRecoveryRecord | null, options?: { replaceSelection?: string }): void {
+  function setActiveRecoveryId(
+    record: MutationRecoveryRecord | null,
+    options?: { automatic?: boolean; replaces?: string },
+  ): void {
     if (disposed) return;
     const activeRecoveryId = record?.clientMutationId ?? null;
     const previousRecoveryId = currentRecoveryId();
-    if (currentRecoveryId() !== activeRecoveryId) {
+    if (previousRecoveryId !== activeRecoveryId) {
       cancelCleanupRetry();
       committedRecoveryComposition = null;
     }
+    // The retiring lease's own target names the conversation its pick lives
+    // under, even after a retarget moved the row there.
+    const targetRef = record?.targetRef ?? recoveryBaseRecord?.targetRef ?? ref;
     recoveryOwnerLeaseRef.current = record
       ? { clientMutationId: record.clientMutationId, compositionRevision: recoveryCompositionRevision(record) }
       : null;
     recoveryBaseRecord = record;
-    reconcileRecoverySeat(record?.targetRef ?? ref);
-    const targetRef = record?.targetRef ?? ref;
-    // Record the seat's chosen recovery row for the next reload. Retirement
-    // clears the stored choice only when it still names the retiring lease:
-    // a preservation that committed meanwhile selected a fresh row for this
-    // seat, and that selection is a reopen's only path back to the preserved
-    // local work. An activation replaces only the lease's own stale choice,
-    // never a newer selection someone else recorded.
-    const currentSelection = readRecoverySelection(targetRef, recoverySelectionOwnerId);
-    const mayWriteSelection =
-      record === null
-        ? currentSelection === previousRecoveryId
-        : options?.replaceSelection === undefined ||
-          currentSelection === undefined ||
-          currentSelection === options.replaceSelection ||
-          currentSelection === activeRecoveryId;
-    if (mayWriteSelection) writeRecoverySelection(targetRef, recoverySelectionOwnerId, activeRecoveryId);
+    if (record === null) {
+      // Retirement clears the stored pick only when it still names the
+      // retiring lease: a newer pick another pane recorded is a reopen's only
+      // path back to its preserved work.
+      const stored = readRecoverySelection(targetRef);
+      if (stored !== undefined && stored.clientMutationId === previousRecoveryId) clearRecoverySelection(targetRef);
+    } else if (options?.automatic === true && options.replaces !== undefined) {
+      // A background settle that displaces a row replaces only that row's
+      // own stored pick; a fresh pick another pane recorded survives it.
+      writeRecoverySelectionReplacing(targetRef, options.replaces, record.clientMutationId);
+    } else if (options?.automatic === true) {
+      // A background activation must not overwrite a fresh user pick. The
+      // live pane's own composition keeps priority while it lives.
+      writeRecoverySelectionAutomatically(targetRef, record.clientMutationId, !disposed);
+    } else {
+      // A user pick is the newest choice by definition: it always wins.
+      writeRecoverySelection(targetRef, record.clientMutationId);
+    }
     state.setState({ activeRecoveryId });
-  }
-
-  // A peer retarget moves the row this seat owns. Record the destination's
-  // ref-to-seat mapping so a reload can find the seat there. Another seat's
-  // mapping is preserved only while a live owner holds it: a closed pane's
-  // leftover mapping must not veto the seat that now owns the selection.
-  function reconcileRecoverySeat(targetRef: string): void {
-    if (selectionOwnerId === undefined) return;
-    const selected = currentRecoveryId();
-    if (targetRef === ref) {
-      // A retained cascade column owns a composer for a ref no open pane ever
-      // held, so the workspace never established that ref's seat mapping. When
-      // the column's composer owns a recovery selection, the ref must map to
-      // this seat or a reopen of that conversation cannot discover the saved
-      // selection and restores an older row instead. A seat independently
-      // established for the ref keeps its own mapping.
-      if (selected === null) return;
-    } else if (selected !== null && readRecoverySelection(targetRef, recoverySelectionOwnerId) === undefined) {
-      // The selected row moved with the retarget. Carry this pane's choice to
-      // the destination unless it already has one of its own.
-      writeRecoverySelection(targetRef, recoverySelectionOwnerId, selected);
-    }
-    const establishedSeat = readRefComposerSeat(targetRef);
-    if (establishedSeat === undefined || establishedSeat === selectionOwnerId || !isLiveComposerSeat(establishedSeat)) {
-      writeRefComposerSeat(targetRef, selectionOwnerId);
-    }
   }
   function persistDraft(text: string): void {
     if (disposed) return;
@@ -531,16 +506,13 @@ export function createComposerSourceState(
             // recovery owner before retiring the lease.
             const preserved = await preserveStaleRecovery(clientMutationId, localDraftRevisionId);
             if (preserved) {
-              // The preservation committed, so the fresh row is this seat's
-              // selected work even when the pane closed while it settled: a
-              // reopen must restore the local work, not the stale row it
-              // displaced. Replace only the stale choice, never a newer
-              // selection someone else recorded; the live activation below
-              // re-reads the same rule.
-              const currentSelection = readRecoverySelection(preserved.targetRef, recoverySelectionOwnerId);
-              if (currentSelection === undefined || currentSelection === clientMutationId) {
-                writeRecoverySelection(preserved.targetRef, recoverySelectionOwnerId, preserved.clientMutationId);
-              }
+              // The preservation committed, so the fresh row is this
+              // conversation's selected work even when the pane closed while
+              // it settled: a reopen must restore the local work, not the
+              // stale row it displaced. The pick moves only when it still
+              // names the displaced row, so a fresh pick another pane
+              // recorded survives the settle.
+              writeRecoverySelectionReplacing(preserved.targetRef, clientMutationId, preserved.clientMutationId);
             }
             if (
               !disposed &&
@@ -552,7 +524,7 @@ export function createComposerSourceState(
                 // fast path and its current revision: later edits update it,
                 // Send consumes it, and a reload restores its attachment
                 // bytes.
-                setActiveRecoveryId(preserved, { replaceSelection: clientMutationId });
+                setActiveRecoveryId(preserved, { automatic: true, replaces: clientMutationId });
               } else {
                 // Preservation failed, so nothing durable carries the images.
                 // Fall back to the ordinary draft and retire the lease.
@@ -567,13 +539,18 @@ export function createComposerSourceState(
           return false;
         }
         // A peer retarget can move the row while this write was in flight;
-        // the commit names the row's durable target. Carry the seat's
-        // selection and its ref mapping there even when the pane closed
-        // before the commit settled: the durable row outlives the source,
-        // and a reopen of that ref must find the seat and its selected row
-        // rather than a fresh seat and an older peer row. Local lease state
-        // updates stay inside the lifetime guard below.
-        reconcileRecoverySeat(updated.targetRef);
+        // the commit names the row's durable target. Carry this tab's stored
+        // pick to the destination conversation when it names the moved row
+        // and the destination has no pick of its own, so a reopen there
+        // restores it. The carry runs even when the pane closed before the
+        // commit settled: the durable row outlives the source. Local lease
+        // state updates stay inside the lifetime guard below.
+        if (updated.targetRef !== ref) {
+          const stored = readRecoverySelection(ref);
+          if (stored !== undefined && stored.clientMutationId === clientMutationId) {
+            carryRecoverySelection(ref, updated.targetRef);
+          }
+        }
         // A goal replacement (or another owner) retires this lease while the
         // write is in flight; do not resurrect it in the local mirror.
         if (
@@ -908,7 +885,6 @@ export function createComposerSourceState(
     get alive() {
       return !disposed;
     },
-    recoverySelectionOwnerId,
     attachments,
     editor,
     continuity,
