@@ -2,7 +2,7 @@ import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { createAttachmentOperations } from "../panes/session/composer/attachments/useAttachments";
-import { readRecoverySelection, readRefComposerSeat, writeRecoverySelection } from "../panes/session/composer/draft";
+import { readRecoveryPick, readRefComposerSeat, resolveRecoveryPick } from "../panes/session/composer/draft";
 import { retainedTranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import type { MutationRecoveryRecord } from "../stores/mutationOutbox";
@@ -231,38 +231,62 @@ test.each([false, true])("layout restore success %s disposes only committed repl
   }
 });
 
-test("a resumed identity carries the pane's selected recovery owner", () => {
+test("a resumed identity carries the pane's selected recovery owner", async () => {
   const pane = rootPane();
   const lifetime = conversationPaneLifetime(pane);
   const composer = lifetime.composer;
   if (!composer) throw new Error("session lifetime lacks its source");
-  const peer = recoveryRow("peer-row", "older peer work");
   const preserved = recoveryRow("preserved-row", "local [image 1]");
   composer.setActiveRecoveryId(preserved);
-  expect(readRecoverySelection("root")?.clientMutationId).toBe(preserved.clientMutationId);
+  expect(readRecoveryPick(preserved.clientMutationId)).toBeDefined();
 
   lifetime.adoptResumedSource("resumed");
   const resumed = lifetime.composer;
   if (!resumed) throw new Error("resumed lifetime lacks its source");
-  expect(readRecoverySelection("resumed")?.clientMutationId).toBe(preserved.clientMutationId);
-  expect(readRecoverySelection("resumed")?.clientMutationId).not.toBe(peer.clientMutationId);
+  // The pick is keyed by row id, so it survives the resume with nothing
+  // carried: resolution finds it under the resumed identity wherever the
+  // row's durable target moved, and an unpicked peer row has no registry
+  // entry at all.
+  const resolved = await resolveRecoveryPick("resumed", async (rowId) =>
+    rowId === preserved.clientMutationId ? { targetRef: "resumed" } : undefined,
+  );
+  expect(resolved?.entry.rowId).toBe(preserved.clientMutationId);
   lifetime.dispose();
 });
 
-test("a resumed identity keeps a newer destination selection", () => {
+test("a resume keeps only the newest explicit pick restorable", async () => {
+  // Row-keyed picks need no destination protection: the user's two rows
+  // both resolve under the resumed identity, and the newest explicit pick
+  // wins by timestamp.
+  const first = recoveryRow("first-row", "older local work");
+  const second = recoveryRow("second-row", "newer local work");
   const pane = rootPane();
   const lifetime = conversationPaneLifetime(pane);
   const composer = lifetime.composer;
   if (!composer) throw new Error("session lifetime lacks its source");
-  writeRecoverySelection("resumed", "destination-row");
-  composer.setActiveRecoveryId(recoveryRow("preserved-row", "local [image 1]"));
-
+  // Two explicit picks written inside one millisecond would tie, so give
+  // each activation its own strictly increasing timestamp.
+  let clock = 0;
+  const pickAt = <T>(activate: () => T): T => {
+    clock += 1;
+    const now = vi.spyOn(Date, "now").mockReturnValue(clock);
+    try {
+      return activate();
+    } finally {
+      now.mockRestore();
+    }
+  };
+  pickAt(() => composer.setActiveRecoveryId(first));
+  pickAt(() => composer.setActiveRecoveryId(second));
   lifetime.adoptResumedSource("resumed");
-  expect(readRecoverySelection("resumed")?.clientMutationId).toBe("destination-row");
+  const resolved = await resolveRecoveryPick("resumed", async (rowId) =>
+    rowId === "first-row" || rowId === "second-row" ? { targetRef: "resumed" } : undefined,
+  );
+  expect(resolved?.entry.rowId).toBe("second-row");
   lifetime.dispose();
 });
 
-test("a resumed source seat survives a later mobile route reconstruction", () => {
+test("a resumed source seat survives a later mobile route reconstruction", async () => {
   const pane = rootPane();
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
   const lifetime = conversationPaneLifetime(pane);
@@ -282,5 +306,10 @@ test("a resumed source seat survives a later mobile route reconstruction", () =>
   const reloaded = workspaceStore.getState().panes.find((record) => record.id === reloadedId);
   if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
   expect(reloaded.composerSeatId).toBe(seat);
-  expect(readRecoverySelection("local:mobile-resumed")?.clientMutationId).toBe(preserved.clientMutationId);
+  expect(readRecoveryPick(preserved.clientMutationId)).toBeDefined();
+  // The pick resolves under the resumed identity the route reconstructed.
+  const resolved = await resolveRecoveryPick("local:mobile-resumed", async (rowId) =>
+    rowId === preserved.clientMutationId ? { targetRef: "local:mobile-resumed" } : undefined,
+  );
+  expect(resolved?.entry.rowId).toBe(preserved.clientMutationId);
 });

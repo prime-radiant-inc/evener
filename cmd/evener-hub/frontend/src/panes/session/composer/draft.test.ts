@@ -5,20 +5,20 @@ import {
   carryComposerDraft,
   clearDraft,
   clearPersistedDraftIfRevisionMatches,
-  clearRecoverySelection,
   composerDraftStorageKey,
   draftStorageKey,
-  RECENT_PICK_MS,
   readComposerDraft,
   readComposerDraftRevisionId,
   readDraft,
   readDraftRevision,
-  readRecoverySelection,
+  readRecoveryPick,
+  recoveryPickEntries,
+  resolveRecoveryPick,
+  succeedRecoveryPick,
   writeComposerDraft,
   writeDraft,
-  writeRecoverySelection,
-  writeRecoverySelectionAutomatically,
-  writeRecoverySelectionReplacing,
+  writeRecoveryPick,
+  writeRecoveryPickAutomatically,
 } from "./draft";
 import { parseSkillDocument, serializeSkillDocument } from "./skillDocument";
 
@@ -436,63 +436,66 @@ test("writeComposerDraft never throws when localStorage throws", () => {
   expect(() => writeComposerDraft("local:01AAA", { text: "some text", skillNames: ["pkg:probe"] })).not.toThrow();
 });
 
-test("a background activation refuses to overwrite a fresh user pick", () => {
+test("a background append cannot outrank an explicit pick", async () => {
   localStorage.clear();
-  writeRecoverySelection("local:guard", "user-pick");
-  // A background activation naming a different row must not clobber the
-  // fresh user pick.
-  writeRecoverySelectionAutomatically("local:guard", "background-row", false);
-  expect(readRecoverySelection("local:guard")?.clientMutationId).toBe("user-pick");
-  // The focused pane may overwrite even a fresh pick.
-  writeRecoverySelectionAutomatically("local:guard", "focused-row", true);
-  expect(readRecoverySelection("local:guard")?.clientMutationId).toBe("focused-row");
+  writeRecoveryPick("user-row");
+  writeRecoveryPickAutomatically("background-row", false);
+  const rows = new Map([
+    ["user-row", { targetRef: "local:guard" }],
+    ["background-row", { targetRef: "local:guard" }],
+  ]);
+  const resolved = await resolveRecoveryPick("local:guard", async (rowId) => rows.get(rowId));
+  expect(resolved?.entry.rowId).toBe("user-row");
 });
 
-test("a background activation overwrites only a stale foreign pick", () => {
+test("a background pick wins only when no explicit pick passes membership", async () => {
   localStorage.clear();
-  writeRecoverySelection("local:guard-stale", "user-pick");
-  vi.useFakeTimers();
-  try {
-    vi.advanceTimersByTime(RECENT_PICK_MS + 1);
-    // The stored pick is older than the freshness window, so the background
-    // write wins as the newest choice.
-    writeRecoverySelectionAutomatically("local:guard-stale", "background-row", false);
-    expect(readRecoverySelection("local:guard-stale")?.clientMutationId).toBe("background-row");
-  } finally {
-    vi.useRealTimers();
-  }
+  writeRecoveryPick("user-row");
+  writeRecoveryPickAutomatically("background-row", false);
+  const rows = new Map([
+    ["user-row", { targetRef: "local:elsewhere" }],
+    ["background-row", { targetRef: "local:guard" }],
+  ]);
+  const resolved = await resolveRecoveryPick("local:guard", async (rowId) => rows.get(rowId));
+  expect(resolved?.entry.rowId).toBe("background-row");
 });
 
-test("a background activation may re-write the same row but never refreshes it", () => {
+test("a same-row background write never demotes or refreshes an explicit pick", () => {
   localStorage.clear();
-  writeRecoverySelection("local:guard-same", "user-pick");
-  const before = readRecoverySelection("local:guard-same")?.pickedAt;
-  vi.useFakeTimers();
-  try {
-    vi.advanceTimersByTime(RECENT_PICK_MS + 1);
-    writeRecoverySelectionAutomatically("local:guard-same", "user-pick", false);
-    // A same-row background write changes nothing: the pick keeps its
-    // original timestamp, so it ages honestly.
-    const after = readRecoverySelection("local:guard-same");
-    expect(after?.clientMutationId).toBe("user-pick");
-    expect(after?.pickedAt).toBe(before);
-  } finally {
-    vi.useRealTimers();
-  }
+  writeRecoveryPick("user-row");
+  const before = readRecoveryPick("user-row");
+  writeRecoveryPickAutomatically("user-row", false);
+  const after = readRecoveryPick("user-row");
+  expect(after?.background).toBe(false);
+  expect(after?.pickedAt).toBe(before?.pickedAt);
+  // The focused pane's activation ranks as the user's own.
+  writeRecoveryPickAutomatically("background-row", true);
+  expect(readRecoveryPick("background-row")).toMatchObject({ background: false });
 });
 
-test("a displaced-row settle replaces only the pick that names that row", () => {
+test("a settle succeeds the displaced row's pick and preserves its rank", () => {
   localStorage.clear();
-  writeRecoverySelection("local:guard-displace", "stale-row");
-  // The settle displaces stale-row, so the pick moves to the fresh row.
-  writeRecoverySelectionReplacing("local:guard-displace", "stale-row", "preserved-row");
-  expect(readRecoverySelection("local:guard-displace")?.clientMutationId).toBe("preserved-row");
-  // A foreign fresh pick survives the settle.
-  writeRecoverySelection("local:guard-displace", "user-pick");
-  writeRecoverySelectionReplacing("local:guard-displace", "stale-row", "preserved-row");
-  expect(readRecoverySelection("local:guard-displace")?.clientMutationId).toBe("user-pick");
-  // An unset conversation accepts the settle's row.
-  clearRecoverySelection("local:guard-displace");
-  writeRecoverySelectionReplacing("local:guard-displace", "stale-row", "preserved-row");
-  expect(readRecoverySelection("local:guard-displace")?.clientMutationId).toBe("preserved-row");
+  writeRecoveryPick("stale-row");
+  const inheritedAt = readRecoveryPick("stale-row")?.pickedAt;
+  succeedRecoveryPick("stale-row", "preserved-row");
+  expect(readRecoveryPick("preserved-row")).toMatchObject({ background: false, pickedAt: inheritedAt });
+  expect(readRecoveryPick("stale-row")).toBeUndefined();
+  // Succession is idempotent: repeating it must not demote the inherited
+  // pick to background rank.
+  succeedRecoveryPick("stale-row", "preserved-row");
+  expect(readRecoveryPick("preserved-row")?.background).toBe(false);
+  // A settle displacing an unpicked row appends at background rank only.
+  succeedRecoveryPick("never-picked", "unranked-settle");
+  expect(readRecoveryPick("unranked-settle")).toMatchObject({ background: true });
+});
+
+test("resolution cleans dangling registry entries lazily", async () => {
+  localStorage.clear();
+  writeRecoveryPick("gone-row");
+  writeRecoveryPick("live-row");
+  const rows = new Map([["live-row", { targetRef: "local:guard" }]]);
+  const resolved = await resolveRecoveryPick("local:guard", async (rowId) => rows.get(rowId));
+  expect(resolved?.entry.rowId).toBe("live-row");
+  expect(readRecoveryPick("gone-row")).toBeUndefined();
+  expect(recoveryPickEntries()).toHaveLength(1);
 });

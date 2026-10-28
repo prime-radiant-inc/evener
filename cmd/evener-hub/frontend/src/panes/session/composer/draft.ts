@@ -25,7 +25,6 @@ import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
 
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
 const STRUCTURED_STORAGE_PREFIX = "evener.composer.draft.v2.";
-const RECOVERY_SELECTION_PREFIX = "evener.composer.recovery.v1.";
 const COMPOSER_SEAT_PREFIX = "evener.composer.seat.v1.";
 const draftRevisions = new Map<string, number>();
 
@@ -62,95 +61,159 @@ export function composerDraftStorageKey(ref: string): string {
   return `${STRUCTURED_STORAGE_PREFIX}${ref}`;
 }
 
-// This tab's pick of the recovery row for a conversation, remembered across
-// reload. Keyed by conversation identity - the tab id plus the ref - with no
-// seat or pane dimension: one preserved-work row per conversation per tab, so
-// the newest pick can always win without any pane-to-seat mapping to keep
-// consistent.
-export interface RecoverySelection {
-  readonly clientMutationId: string;
+// This tab's pick of a recovery row, remembered across reload. Keyed by the
+// row's own clientMutationId - the one identity that survives retargets,
+// resumes and pane transitions - so a pick follows its row wherever the
+// durable target moves: no per-ref alias keys, and nothing to carry. The
+// restore path resolves this tab's pick registry against the rows' current
+// targets (see resolveRecoveryPick).
+export interface RecoveryPick {
   readonly pickedAt: number;
+  /** Background appends rank below every explicit pick at resolve time. */
+  readonly background: boolean;
 }
 
-function recoverySelectionKey(ref: string): string {
-  return `${RECOVERY_SELECTION_PREFIX}${encodeURIComponent(ownClientId())}.${encodeURIComponent(ref)}`;
+export interface RecoveryPickEntry extends RecoveryPick {
+  readonly rowId: string;
 }
 
-export function readRecoverySelection(ref: string): RecoverySelection | undefined {
+const RECOVERY_PICK_PREFIX = "evener.composer.recovery.v2.";
+
+function recoveryPickKey(rowId: string): string {
+  return `${RECOVERY_PICK_PREFIX}${encodeURIComponent(ownClientId())}.${encodeURIComponent(rowId)}`;
+}
+
+function parseRecoveryPick(rowId: string, raw: string): RecoveryPickEntry | undefined {
   try {
-    const value = localStorage.getItem(recoverySelectionKey(ref));
-    if (value === null || value === "") return undefined;
-    const parsed = JSON.parse(value) as { clientMutationId?: unknown; pickedAt?: unknown };
-    if (typeof parsed.clientMutationId !== "string" || typeof parsed.pickedAt !== "number") return undefined;
-    return { clientMutationId: parsed.clientMutationId, pickedAt: parsed.pickedAt };
+    const parsed = JSON.parse(raw) as { pickedAt?: unknown; background?: unknown };
+    if (typeof parsed.pickedAt !== "number" || typeof parsed.background !== "boolean") return undefined;
+    return { rowId, pickedAt: parsed.pickedAt, background: parsed.background };
   } catch {
     return undefined;
   }
 }
 
-export function clearRecoverySelection(ref: string): void {
+function storeRecoveryPick(entry: RecoveryPickEntry): void {
   try {
-    localStorage.removeItem(recoverySelectionKey(ref));
+    localStorage.setItem(
+      recoveryPickKey(entry.rowId),
+      JSON.stringify({ pickedAt: entry.pickedAt, background: entry.background }),
+    );
   } catch {
     // Best-effort, like every other composer persistence.
   }
 }
 
-// A user pick is the newest choice by definition: it always wins.
-export function writeRecoverySelection(ref: string, clientMutationId: string): void {
-  const selection: RecoverySelection = { clientMutationId, pickedAt: Date.now() };
+export function readRecoveryPick(rowId: string): RecoveryPick | undefined {
   try {
-    localStorage.setItem(recoverySelectionKey(ref), JSON.stringify(selection));
+    const raw = localStorage.getItem(recoveryPickKey(rowId));
+    if (raw === null || raw === "") return undefined;
+    const parsed = parseRecoveryPick(rowId, raw);
+    if (parsed === undefined) return undefined;
+    return { pickedAt: parsed.pickedAt, background: parsed.background };
+  } catch {
+    return undefined;
+  }
+}
+
+export function clearRecoveryPick(rowId: string): void {
+  try {
+    localStorage.removeItem(recoveryPickKey(rowId));
   } catch {
     // Best-effort, like every other composer persistence.
   }
 }
 
-/** A pick younger than this is fresh: a background write must respect it. */
-export const RECENT_PICK_MS = 5_000;
+// An explicit user pick: timestamped now, ranking above every background
+// append.
+export function writeRecoveryPick(rowId: string): void {
+  storeRecoveryPick({ rowId, pickedAt: Date.now(), background: false });
+}
 
-// An automatic activation must not overwrite a fresh user pick: a background
-// write that names a different row is refused while the stored pick is
-// younger than RECENT_PICK_MS, unless it comes from the focused pane (or an
-// equivalent focused-priority rule - the live pane that owns the composition
-// counts).
-export function writeRecoverySelectionAutomatically(ref: string, clientMutationId: string, focused: boolean): void {
-  const stored = readRecoverySelection(ref);
+// This tab's whole pick registry. Entries whose row is absent are cleaned
+// lazily by resolution (see resolveRecoveryPick).
+export function recoveryPickEntries(): RecoveryPickEntry[] {
+  const prefix = `${RECOVERY_PICK_PREFIX}${encodeURIComponent(ownClientId())}.`;
+  const entries: RecoveryPickEntry[] = [];
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key === null || !key.startsWith(prefix)) continue;
+      const rowId = decodeURIComponent(key.slice(prefix.length));
+      const raw = localStorage.getItem(key);
+      if (raw === null) continue;
+      const parsed = parseRecoveryPick(rowId, raw);
+      if (parsed !== undefined) entries.push(parsed);
+    }
+  } catch {
+    // Best-effort, like every other composer persistence.
+  }
+  return entries;
+}
+
+// An automatic or background activation appends a pick that cannot outrank
+// an explicit pick: the background flag demotes it at resolve time, and an
+// explicit pick of the same row is never demoted or refreshed by it. The
+// focused pane's activation ranks as the user's own.
+export function writeRecoveryPickAutomatically(rowId: string, focused: boolean): void {
+  const stored = readRecoveryPick(rowId);
   if (stored !== undefined) {
-    if (stored.clientMutationId === clientMutationId) return;
-    if (!focused && Date.now() - stored.pickedAt < RECENT_PICK_MS) return;
+    if (!stored.background) return;
+    if (!focused) return;
   }
-  writeRecoverySelection(ref, clientMutationId);
+  storeRecoveryPick({ rowId, pickedAt: Date.now(), background: !focused });
 }
 
-// A background settle replaces the stored pick only when it names the row
-// that settle displaced (or nothing is stored yet): a fresh pick another pane
-// recorded for a different row is newer than the settle and must survive it.
-export function writeRecoverySelectionReplacing(
+// A background settle that displaces a row succeeds the pick: the fresh row
+// inherits the displaced row's pick and its rank - succession preserves rank,
+// so only the user's own later acts outrank it - and the displaced row's
+// entry is released. With no pick naming the displaced row, the settle
+// appends at background rank.
+export function succeedRecoveryPick(displacedRowId: string, rowId: string): void {
+  if (displacedRowId === rowId) return;
+  const inherited = readRecoveryPick(displacedRowId);
+  if (inherited === undefined) {
+    if (readRecoveryPick(rowId) === undefined) {
+      storeRecoveryPick({ rowId, pickedAt: Date.now(), background: true });
+    }
+    return;
+  }
+  storeRecoveryPick({ rowId, pickedAt: inherited.pickedAt, background: inherited.background });
+  clearRecoveryPick(displacedRowId);
+}
+
+const outranks = (candidate: RecoveryPickEntry, incumbent: RecoveryPickEntry): boolean => {
+  if (candidate.background !== incumbent.background) return !candidate.background;
+  return candidate.pickedAt > incumbent.pickedAt;
+};
+
+// Resolve this tab's picks for one conversation: the newest pick whose row
+// currently targets the ref wins, with explicit picks outranking background
+// appends regardless of age. Dangling entries - their row absent - are
+// removed lazily along the way, so the registry cannot accumulate picks for
+// rows that no longer exist.
+export async function resolveRecoveryPick<Row extends { targetRef: string }>(
   ref: string,
-  previousClientMutationId: string,
-  clientMutationId: string,
-): void {
-  const stored = readRecoverySelection(ref);
-  if (stored === undefined || stored.clientMutationId === previousClientMutationId) {
-    writeRecoverySelection(ref, clientMutationId);
+  getRow: (rowId: string) => Promise<Row | undefined>,
+): Promise<{ entry: RecoveryPickEntry; row: Row } | undefined> {
+  const entries = recoveryPickEntries();
+  if (entries.length === 0) return undefined;
+  const rows = await Promise.all(entries.map((entry) => getRow(entry.rowId)));
+  let winner: { entry: RecoveryPickEntry; row: Row } | undefined;
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    const row = rows[index];
+    if (row === undefined) {
+      if (entry !== undefined) clearRecoveryPick(entry.rowId);
+      continue;
+    }
+    if (entry === undefined) continue;
+    if (row.targetRef !== ref) continue;
+    if (winner === undefined || outranks(entry, winner.entry)) {
+      winner = { entry, row };
+    }
   }
-}
-
-// A resume moves the conversation to a new ref and the recovery rows move
-// with it. Carry this tab's stored pick so the replacement composer reads it
-// under the new ref. A choice already established for the destination is
-// newer and wins.
-export function carryRecoverySelection(fromRef: string, toRef: string): void {
-  if (fromRef === toRef) return;
-  const stored = readRecoverySelection(fromRef);
-  if (stored === undefined) return;
-  if (readRecoverySelection(toRef) !== undefined) return;
-  try {
-    localStorage.setItem(recoverySelectionKey(toRef), JSON.stringify(stored));
-  } catch {
-    // Best-effort, like every other composer persistence.
-  }
+  return winner;
 }
 
 // A conversation seat outlives the pane id a mobile reload reallocates. It is

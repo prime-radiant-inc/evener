@@ -5,6 +5,7 @@ import { controlsFor, liveThreadModel, pressLocalRecoveryFenced, pressRefusal } 
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import {
   captureRecoveryStopBarrier,
+  getMutationRuntime,
   hasBlockedUnknown,
   hasQueuedNonSend,
   type InputAttachment,
@@ -14,7 +15,7 @@ import {
 import { useToasts } from "../../../widgets";
 import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
 import { STEER_RECOVERY_FENCED_REASON } from "./controlTooltips";
-import { clearDraft, clearPersistedDraft, readDraftRevision, readRecoverySelection } from "./draft";
+import { clearDraft, clearPersistedDraft, readDraftRevision, resolveRecoveryPick } from "./draft";
 import { pendingTurnEntries, type QueueStripProps, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
   resendRecoveryPendingTurn,
@@ -208,33 +209,54 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     // An interrupt is not a draft. It carries no input, so activating one
     // loads an empty composer and then resends the user's next keystrokes as a
     // turn/start -- a Stop becoming a message. QueueStrip renders it as a
-    // failure with its reason instead.
-    // This tab's stored pick names the conversation's newest choice; prefer
-    // it so a reopen restores the user's row, not just the first restorable
-    // one.
-    const pick = readRecoverySelection(ref)?.clientMutationId ?? null;
+    // failure with its reason instead. That rejected-only rule is the
+    // FALLBACK predicate: an explicit pick restores by row id, whatever its
+    // kind.
     const restorable = (entry: MutationRecoveryRecord) =>
       entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt" && !entry.preserveComposer;
-    const record =
-      recoveryEntries.find((entry) => entry.clientMutationId === pick && restorable(entry)) ??
-      recoveryEntries.find(restorable);
-    if (!record) return;
-    const recovered = recoveryComposerDraft(record);
-    const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
-    Object.assign(recovered, visible);
-    recoveryOwnsLocalDraftRef.current = false;
-    // A mount-restore is a background activation: it must not overwrite a
-    // fresh user pick with its fallback row, unless this pane is focused.
-    setActiveRecoveryId(record, { automatic: true, focused });
-    // Restoration replaces this mount's local owner without editing the
-    // shared recovery draft that an earlier mount may still be submitting.
-    draftEditRevisionRef.current += 1;
-    markRestore();
-    updateText(recovered.text);
-    updateSkillNames(restoredSkillNames(recovered));
-    updateSelectionMeta(recovered);
-    attachments.replaceWithSettled(recovered.attachments);
-    clearPersistedDraft(ref);
+    let cancelled = false;
+    void (async () => {
+      // Resolve this tab's pick registry against the rows' current targets
+      // (an IndexedDB read), so a pick follows its row across retargets and
+      // resumes with nothing to carry.
+      const runtime = getMutationRuntime();
+      const resolved = runtime
+        ? await resolveRecoveryPick(ref, (rowId) => runtime.storage.getRecovery(rowId))
+        : undefined;
+      if (
+        cancelled ||
+        source.getSnapshot().activeRecoveryId !== null ||
+        textRef.current.trim() !== "" ||
+        attachments.items.length > 0 ||
+        skillNamesRef.current.length > 0 ||
+        selectionMetaRef.current.commandNames.length > 0
+      ) {
+        return;
+      }
+      // With no pick passing membership, the fallback restores the NEWEST
+      // restorable rejected row.
+      const record = resolved?.row ?? [...recoveryEntries].reverse().find(restorable);
+      if (!record) return;
+      const recovered = recoveryComposerDraft(record);
+      const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
+      Object.assign(recovered, visible);
+      recoveryOwnsLocalDraftRef.current = false;
+      // A mount-restore is a background activation: it appends a pick that
+      // cannot outrank an explicit one, unless this pane is focused.
+      setActiveRecoveryId(record, { automatic: true, focused });
+      // Restoration replaces this mount's local owner without editing the
+      // shared recovery draft that an earlier mount may still be submitting.
+      draftEditRevisionRef.current += 1;
+      markRestore();
+      updateText(recovered.text);
+      updateSkillNames(restoredSkillNames(recovered));
+      updateSelectionMeta(recovered);
+      attachments.replaceWithSettled(recovered.attachments);
+      clearPersistedDraft(ref);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [
     activeRecoveryId,
     attachments.replaceWithSettled,
@@ -243,6 +265,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     markRestore,
     recoveryEntries,
     recoveryOwnsLocalDraftRef,
+    source.getSnapshot,
     ref,
     setActiveRecoveryId,
     skillNamesRef,

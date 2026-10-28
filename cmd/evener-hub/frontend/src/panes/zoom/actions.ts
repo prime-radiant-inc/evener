@@ -10,7 +10,6 @@ import {
 } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
-import { carryRecoverySelection } from "../session/composer/draft";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { associatedCascade, cascadeOrigin, cascadeOriginRef, recordCascadeOrigin } from "./inspectionOrigin";
 import {
@@ -271,11 +270,6 @@ export function resumeCascadeScope(lifetime: PaneLifetime, ref: string, resumedR
     ? after.scopes[after.scopes.length - 1]?.requestedRef === resumedRef
     : after.scopes[index]?.requestedRef === resumedRef;
   if (!followed) return false;
-  // The pick is keyed by conversation: it follows the rewritten ref here,
-  // even when the column's reader is unmounted, so the replacement composer
-  // restores the conversation's preserved work. The carry copies only when
-  // the destination has no pick of its own.
-  carryRecoverySelection(ref, resumedRef);
   updateIntent(current, next);
   if (sourceResumed) lifetime.adoptResumedSource(resumedRef);
   return true;

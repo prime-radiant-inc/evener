@@ -728,12 +728,14 @@ test("goal replacement preserves the consolidated recovery owner while its commi
     evener: currentWorkEvener({ goal: true }),
   });
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().textContent).toBe("first recovery");
-  const sourceRow = screen.getByText("second recovery").closest("li");
-  if (!sourceRow) throw new Error("missing second recovery row");
+  // The no-pick fallback restores the newest restorable row, so the second
+  // seeded row is the consolidated recovery owner this test presses from.
+  expect(textarea().textContent).toBe("second recovery");
+  const ownerRow = screen.getByText("first recovery").closest("li");
+  if (!ownerRow) throw new Error("missing first recovery row");
   const hold = holdNextWriteTransaction(["recovery"]);
   try {
-    await user.click(within(sourceRow).getByRole("button", { name: "Edit message" }));
+    await user.click(within(ownerRow).getByRole("button", { name: "Edit message" }));
     await hold.reached;
     await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
     await user.click(screen.getByRole("button", { name: "Replace draft" }));
@@ -743,10 +745,10 @@ test("goal replacement preserves the consolidated recovery owner while its commi
     const reopened = new MutationOutboxIndexedDB();
     try {
       const records = await reopened.listRecovery("ref_a");
-      expect(records.map((row) => row.clientMutationId)).toEqual([owner.clientMutationId]);
-      expect(records[0]?.composerText).toBe("first recovery\n\nsecond recovery");
-      expect(records[0]?.payload.input).toEqual([{ type: "text", text: "first recovery\n\nsecond recovery" }]);
-      expect(await reopened.getRecovery(source.clientMutationId)).toBeUndefined();
+      expect(records.map((row) => row.clientMutationId)).toEqual([source.clientMutationId]);
+      expect(records[0]?.composerText).toBe("second recovery\n\nfirst recovery");
+      expect(records[0]?.payload.input).toEqual([{ type: "text", text: "second recovery\n\nfirst recovery" }]);
+      expect(await reopened.getRecovery(owner.clientMutationId)).toBeUndefined();
       expect(textarea().textContent).toBe("/goal Keep the session focused");
       expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
     } finally {

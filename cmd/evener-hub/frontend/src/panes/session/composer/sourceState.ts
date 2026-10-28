@@ -13,20 +13,18 @@ import {
   type TextEditSource,
 } from "./attachments/useAttachments";
 import {
-  carryRecoverySelection,
   clearDraft,
   clearPersistedDraftIfRevisionMatches,
-  clearRecoverySelection,
+  clearRecoveryPick,
   markDraftEdited,
   readComposerDraft,
   readComposerDraftRevisionId,
   readComposerDraftSnapshot,
   readDraftRevision,
-  readRecoverySelection,
+  succeedRecoveryPick,
   writeComposerDraft,
-  writeRecoverySelection,
-  writeRecoverySelectionAutomatically,
-  writeRecoverySelectionReplacing,
+  writeRecoveryPick,
+  writeRecoveryPickAutomatically,
 } from "./draft";
 import {
   discardRecoveryPendingTurn,
@@ -336,30 +334,27 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       cancelCleanupRetry();
       committedRecoveryComposition = null;
     }
-    // The retiring lease's own target names the conversation its pick lives
-    // under, even after a retarget moved the row there.
-    const targetRef = record?.targetRef ?? recoveryBaseRecord?.targetRef ?? ref;
     recoveryOwnerLeaseRef.current = record
       ? { clientMutationId: record.clientMutationId, compositionRevision: recoveryCompositionRevision(record) }
       : null;
     recoveryBaseRecord = record;
     if (record === null) {
-      // Retirement clears the stored pick only when it still names the
-      // retiring lease: a newer pick another pane recorded is a reopen's only
-      // path back to its preserved work.
-      const stored = readRecoverySelection(targetRef);
-      if (stored !== undefined && stored.clientMutationId === previousRecoveryId) clearRecoverySelection(targetRef);
+      // Retirement releases the retiring row's own pick entry: the pick is
+      // keyed by that row, and the send consumed it. Picks this tab holds
+      // for other rows are separate entries and survive untouched.
+      if (previousRecoveryId !== null) clearRecoveryPick(previousRecoveryId);
     } else if (options?.automatic === true && options.replaces !== undefined) {
-      // A background settle that displaces a row replaces only that row's
-      // own stored pick; a fresh pick another pane recorded survives it.
-      writeRecoverySelectionReplacing(targetRef, options.replaces, record.clientMutationId);
+      // A background settle that displaces a row succeeds the pick: the
+      // fresh row inherits the displaced row's rank, so only the user's own
+      // later acts outrank it.
+      succeedRecoveryPick(options.replaces, record.clientMutationId);
     } else if (options?.automatic === true) {
-      // A background activation must not overwrite a fresh user pick; only
-      // the focused pane's activation may do that.
-      writeRecoverySelectionAutomatically(targetRef, record.clientMutationId, options?.focused === true);
+      // A background activation appends a pick that cannot outrank an
+      // explicit one; only the focused pane's activation ranks as its own.
+      writeRecoveryPickAutomatically(record.clientMutationId, options?.focused === true);
     } else {
       // A user pick is the newest choice by definition: it always wins.
-      writeRecoverySelection(targetRef, record.clientMutationId);
+      writeRecoveryPick(record.clientMutationId);
     }
     state.setState({ activeRecoveryId });
   }
@@ -506,13 +501,11 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             // recovery owner before retiring the lease.
             const preserved = await preserveStaleRecovery(clientMutationId, localDraftRevisionId);
             if (preserved) {
-              // The preservation committed, so the fresh row is this
-              // conversation's selected work even when the pane closed while
-              // it settled: a reopen must restore the local work, not the
-              // stale row it displaced. The pick moves only when it still
-              // names the displaced row, so a fresh pick another pane
-              // recorded survives the settle.
-              writeRecoverySelectionReplacing(preserved.targetRef, clientMutationId, preserved.clientMutationId);
+              // The preservation committed, so the fresh row succeeds the displaced
+              // row's pick even when the pane closed while it settled: a reopen
+              // restores the local work by row id wherever the durable target now
+              // lives, and the user's later picks still outrank it.
+              succeedRecoveryPick(clientMutationId, preserved.clientMutationId);
             }
             if (
               !disposed &&
@@ -537,19 +530,6 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             pushRecoveryRefusal("changed");
           }
           return false;
-        }
-        // A peer retarget can move the row while this write was in flight;
-        // the commit names the row's durable target. Carry this tab's stored
-        // pick to the destination conversation when it names the moved row
-        // and the destination has no pick of its own, so a reopen there
-        // restores it. The carry runs even when the pane closed before the
-        // commit settled: the durable row outlives the source. Local lease
-        // state updates stay inside the lifetime guard below.
-        if (updated.targetRef !== ref) {
-          const stored = readRecoverySelection(ref);
-          if (stored !== undefined && stored.clientMutationId === clientMutationId) {
-            carryRecoverySelection(ref, updated.targetRef);
-          }
         }
         // A goal replacement (or another owner) retires this lease while the
         // write is in flight; do not resurrect it in the local mirror.

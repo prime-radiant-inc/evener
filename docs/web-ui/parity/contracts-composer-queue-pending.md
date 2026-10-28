@@ -91,12 +91,15 @@ except where a line says so itself.
 
 ### Recovery selection ownership
 
-- A conversation composer's recovery selection is keyed by conversation: the
-  tab's client identity plus the conversation ref, stored with the composer
+- A conversation composer's recovery picks are keyed by row: the tab's client
+  identity plus the recovery row's clientMutationId, stored with the composer
   drafts and never part of shared layout geometry, so another tab can never
-  read or overwrite this tab's pick. One conversation holds one
-  preserved-work row per tab, and the newest pick wins - last writer by the
-  pick's timestamp.
+  read or overwrite this tab's picks. The row id is the one identity that
+  survives retargets, resumes and pane transitions, so a pick follows its row
+  wherever the durable target moves and nothing is carried at an identity
+  rewrite. Restoring resolves the registry at read time: among the picks whose
+  row currently targets the pane's conversation, the newest `pickedAt` wins,
+  with explicit user picks outranking automatic background appends.
 - Conversation seats remain as pane identity: allocated at placement, stored
   per tab under the pane id (desktop restore) and the conversation ref (mobile
   route reconstruction), reused when a reload restores the same conversation,
@@ -107,24 +110,24 @@ except where a line says so itself.
   Validated pane seats are reserved across the layout before any ref fallback
   or fresh seat. Seats no longer scope selections, so no selection ever
   migrates between seats.
-- Restoring a composer selects the recovery row its conversation last picked,
-  else the oldest restorable rejected row. A preserved local row therefore
-  wins over an older rejected peer row after reload, with no ancestry needed:
-  a column revealed later by authoritative ancestry reads its own pick.
-- An automatic or background activation must not overwrite a fresh user pick:
-  it is refused while the stored pick is newer than a few seconds, unless the
-  write comes from the focused pane (the mount-restore passes its pane's real
-  focus). A background settle that displaces a row
-  replaces only a stored pick that still names the displaced row, so a fresh
-  pick another pane recorded survives it. A refused write's preservation
-  records its fresh row under exactly that rule; retiring a lease clears the
-  stored pick only when it still names the retiring row.
-- A resume or retarget carries the stored pick to the resumed ref through
-  the shared identity-follow path - the reader-level hook and the cascade
-  resume action both carry, and every carry is a copy that leaves an
-  established destination pick alone - and a successful recovery write
-  carries it to the row's durable ref, including when the pane closed before
-  the write settled, because the durable row outlives the source.
+- Restoring a composer selects the recovery row this tab explicitly picked,
+  restoring it by row id without any kind filter; the rejected-only discovery
+  predicate survives only as the no-pick fallback, which prefers the newest
+  restorable rejected row. A preserved local row therefore wins over an older
+  rejected peer row after reload, with no ancestry needed: a column revealed
+  later by authoritative ancestry resolves its own picks. Resolution lazily
+  releases registry entries whose row no longer exists.
+- An automatic or background activation appends a pick flagged background:
+  it can never outrank an explicit pick at resolve time, and it never demotes
+  or refreshes an explicit pick of the same row; only the focused pane's
+  automatic activation ranks as the user's own. A background settle that
+  displaces a row succeeds the displaced row's pick - the fresh row inherits
+  the displaced pick's timestamp and rank, and the displaced row's entry is
+  released. A refused write's preservation records its fresh row under
+  exactly that rule, including when the pane closed before the write settled,
+  because the durable row outlives the source. Retiring a lease releases the
+  retiring row's own pick entry only; picks this tab holds for other rows
+  survive it.
 
 ### Atomic skill and command selections
 

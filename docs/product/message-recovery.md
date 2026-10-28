@@ -72,15 +72,17 @@ including its images.
 
 ### Browser seat and selection ownership
 
-A browser conversation's recovery selection is keyed by conversation: the
-tab's existing client identity plus the conversation ref, stored beside the
-composer drafts under per-tab keys rather than in shared layout geometry. One
-conversation holds one preserved-work row per tab, and the newest pick wins -
-last writer by the pick's timestamp - so no pane-to-seat mapping needs to stay
-consistent across pane transitions. Another tab can therefore never read or
-overwrite this tab's pick, and a pane closing, a cascade returning to its
-source, or a layout collision never strands one: the pick belongs to the
-conversation, not to any pane.
+A browser tab's recovery picks are keyed by row: the tab's existing client
+identity plus the recovery row's clientMutationId, stored beside the composer
+drafts under per-tab keys rather than in shared layout geometry. The row id is
+the one identity that survives retargets, resumes and pane transitions, so a
+pick follows its row wherever the durable target moves - nothing is ever
+carried at an identity rewrite, and no pane-to-seat or ref mapping needs to
+stay consistent for a selection to survive. Another tab can never read or
+overwrite this tab's picks. Restoring resolves the registry at read time: among
+the picks whose row currently targets the pane's conversation, the newest
+`pickedAt` wins, with explicit user picks outranking automatic background
+appends regardless of age.
 
 A conversation seat still exists as pane identity: it is allocated at
 placement, stored per tab under both the pane id (desktop layout restore) and
@@ -93,27 +95,27 @@ across the whole restored layout before any pane falls back to the ref
 mapping or a fresh seat. Seats no longer scope selections; they only keep
 pane identity stable across reloads.
 
-Restoring a composer prefers the recovery row its conversation last picked,
-falling back to the oldest restorable rejected row. This keeps preserved local
-work selected after reload even when an older rejected peer row exists, and
-it needs no ancestry: when authoritative ancestry later reveals an ancestor
-column, that column's composer simply reads its own conversation's pick -
-nothing has to migrate before the ancestry arrives.
+Restoring a composer prefers the recovery row this tab explicitly picked,
+restoring it by row id without any kind filter; the rejected-only discovery
+predicate survives only as the no-pick fallback, which prefers the newest
+restorable rejected row. This keeps preserved local work selected after reload
+even when an older rejected peer row exists, and it needs no ancestry: when
+authoritative ancestry later reveals an ancestor column, that column's
+composer simply resolves its own picks - nothing has to migrate before the
+ancestry arrives. Resolution also lazily releases registry entries whose row
+no longer exists, so the registry cannot accumulate picks for dead rows.
 
-An automatic or background activation must not overwrite a fresh user pick:
-it is refused while the stored pick is newer than a few seconds, unless the
-write comes from the focused pane (the mount-restore passes its pane's real
-focus). A background settle that displaces a row
-replaces only a stored pick that still names the displaced row, so a fresh
-pick another pane recorded survives it. A refused write's preservation records
-its fresh row under exactly that rule, and retiring a lease clears the
-stored pick only when it still names the retiring row. A resume or retarget
-carries the stored pick to the resumed ref through the shared identity-follow
-path - the reader-level hook and the cascade resume action both carry, and
-every carry is a copy that leaves an established destination pick alone - and
-a successful recovery write carries it to the row's durable ref, even when
-the pane closed before that write settled, because the durable row outlives
-the source.
+An automatic or background activation appends a pick flagged background:
+it can never outrank an explicit pick at resolve time, and it never demotes or
+refreshes an explicit pick of the same row; only the focused pane's automatic
+activation ranks as the user's own. A background settle that displaces a row
+succeeds the displaced row's pick - the fresh row inherits the displaced
+pick's timestamp and rank, so only the user's own later acts outrank it, and
+the displaced row's entry is released. A refused write's preservation records
+its fresh row under exactly that rule, even when the pane closed before the
+write settled, because the durable row outlives the source. Retiring a lease
+releases the retiring row's own pick entry only; picks this tab holds for
+other rows survive it.
 
 Sending recovery consumes its durable source and creates one fresh outbox
 identity atomically. It never falls back to an ordinary enqueue when the source

@@ -607,6 +607,13 @@ test.each([
     expect(replacement.serial).not.toBe(lifetime.serial);
     render(<Composer ref="root" source={replacementSource} focused={false} />);
     await waitFor(() => expect(replacementSource.getSnapshot().freshRecoveryRef).toBe("root"));
+    // Mount-restore is asynchronous: the pick resolves through IndexedDB, so
+    // the replacement adopts the held row only after that read lands. Wait
+    // for the adoption before typing, or the restore is fenced as a late
+    // write against the user's newer composition.
+    if (pending === "recovery edit") {
+      await waitFor(() => expect(replacementSource.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+    }
     await selectSkill(userEvent.setup(), "skill-2");
     selectEditorText(screen.getByRole("textbox", { name: "Message" }), "Run /skill-2 ".length);
     const encoding = installControlledImageEncoding();

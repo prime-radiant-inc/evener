@@ -18,9 +18,11 @@ import {
   readComposerDraft,
   readComposerDraftRevisionId,
   readDraftRevision,
-  readRecoverySelection,
+  readRecoveryPick,
+  resolveRecoveryPick,
+  succeedRecoveryPick,
   writeComposerDraft,
-  writeRecoverySelection,
+  writeRecoveryPick,
 } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 
@@ -626,12 +628,18 @@ test("successful recovery writes follow a peer retarget", async () => {
     await source.activateRecovery(recovery);
     await peer.retargetOutbox(ref, resumed, { threadId: "thread-mid", instanceId: "instance-mid" });
     expect(await source.queueRecoveryPersistence(original.clientMutationId, "first newer", [], [])).toBe(true);
-    expect(readRecoverySelection(resumed)?.clientMutationId).toBe(original.clientMutationId);
+    const pickUnder = (conversationRef: string) =>
+      resolveRecoveryPick(conversationRef, (rowId) => storage.getRecovery(rowId)).then(
+        (resolved) => resolved?.row.clientMutationId,
+      );
+    // The pick is keyed by the row, and the retarget preserved its id while
+    // moving its durable target: resolving under the resumed ref finds it.
+    expect(await pickUnder(resumed)).toBe(original.clientMutationId);
 
     // Another tab retargets the row again; the next successful write follows.
     await peer.retargetOutbox(resumed, resumedAgain, { threadId: "thread-new", instanceId: "instance-new" });
     expect(await source.queueRecoveryPersistence(original.clientMutationId, "second newer", [], [])).toBe(true);
-    expect(readRecoverySelection(resumedAgain)?.clientMutationId).toBe(original.clientMutationId);
+    expect(await pickUnder(resumedAgain)).toBe(original.clientMutationId);
   } finally {
     source.dispose();
     peer.close();
@@ -667,10 +675,14 @@ test("a retargeted autosave carries the selected row past an older peer row", as
     await peer.retargetOutbox(ref, resumed, { threadId: "thread-new", instanceId: "instance-new" });
     expect(await source.queueRecoveryPersistence(selected.clientMutationId, "selected local work", [], [])).toBe(true);
 
-    expect(readRecoverySelection(resumed)?.clientMutationId).toBe(selected.clientMutationId);
-    expect(readRecoverySelection(resumed)?.clientMutationId).not.toBe(olderPeer.clientMutationId);
+    const pickUnderResumed = () =>
+      resolveRecoveryPick(resumed, (rowId) => storage.getRecovery(rowId)).then(
+        (resolved) => resolved?.row.clientMutationId,
+      );
+    expect(await pickUnderResumed()).toBe(selected.clientMutationId);
+    expect(await pickUnderResumed()).not.toBe(olderPeer.clientMutationId);
     reloaded = createTestComposerSource(resumed);
-    expect(readRecoverySelection(resumed)?.clientMutationId).toBe(selected.clientMutationId);
+    expect(await pickUnderResumed()).toBe(selected.clientMutationId);
   } finally {
     source.dispose();
     reloaded?.dispose();
@@ -679,9 +691,9 @@ test("a retargeted autosave carries the selected row past an older peer row", as
   }
 });
 // A preservation that commits while this composer still holds its stale lease
-// selects a fresh preserved row for the seat. Retiring the stale lease
-// afterwards must clear only its own stored choice, never that newer
-// selection: it is a reopen's only path back to the preserved local work.
+// succeeds the pick to the fresh preserved row. Retiring the stale lease
+// afterwards must release only its own row's pick entry, never that newer
+// pick: it is a reopen's only path back to the preserved local work.
 test("retiring a lease clears only its own stored selection", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
@@ -700,13 +712,17 @@ test("retiring a lease clears only its own stored selection", async () => {
   const source = createTestComposerSource(ref);
   try {
     source.setActiveRecoveryId(recovery);
-    expect(readRecoverySelection(ref)?.clientMutationId).toBe(original.clientMutationId);
+    expect(readRecoveryPick(original.clientMutationId)).toBeDefined();
     // A preservation commits while this composer still holds the stale
-    // lease, selecting a fresh row for the seat.
-    writeRecoverySelection(ref, "preserved-row");
+    // lease: the settle succeeds the pick to the fresh row, inheriting its
+    // rank.
+    succeedRecoveryPick(original.clientMutationId, "preserved-row");
     source.setActiveRecoveryId(null);
     expect(source.getSnapshot().activeRecoveryId).toBeNull();
-    expect(readRecoverySelection(ref)?.clientMutationId).toBe("preserved-row");
+    // Retirement released only the retiring row's own entry - already
+    // consumed by succession - never the newer preserved row's pick.
+    expect(readRecoveryPick(original.clientMutationId)).toBeUndefined();
+    expect(readRecoveryPick("preserved-row")).toBeDefined();
   } finally {
     source.dispose();
     storage.close();
@@ -714,9 +730,9 @@ test("retiring a lease clears only its own stored selection", async () => {
 });
 
 // The pane closes while a refused write's preservation transaction is still
-// open. The row still commits, so it is the seat's selected work; the stored
-// selection must name it even though no source was alive to activate it, or a
-// reopen of this seat restores the stale peer composition instead.
+// open. The row still commits, so it succeeds this tab's pick: the registry
+// must name it even though no source was alive to activate it, or a reopen
+// of the conversation restores the stale peer composition instead.
 test("a preservation that commits after disposal still records its selection", async () => {
   class HeldPreservationStorage extends MutationOutboxIndexedDB {
     readonly reached = deferred<void>();
@@ -748,7 +764,7 @@ test("a preservation that commits after disposal still records its selection", a
   const peer = new MutationOutboxIndexedDB();
   try {
     await source.activateRecovery(recovery);
-    expect(readRecoverySelection(ref)?.clientMutationId).toBe(original.clientMutationId);
+    expect(readRecoveryPick(original.clientMutationId)).toBeDefined();
     const peerRecovery = await peer.getRecovery(original.clientMutationId);
     if (!peerRecovery) throw new Error("missing peer recovery fixture");
     await peer.updateRecoveryInput(
@@ -775,7 +791,9 @@ test("a preservation that commits after disposal still records its selection", a
       (record) => record.clientMutationId !== original.clientMutationId,
     );
     expect(preserved).toMatchObject({ targetRef: ref, composerText: "local preserved work" });
-    expect(readRecoverySelection(ref)?.clientMutationId).toBe(preserved?.clientMutationId);
+    expect((await resolveRecoveryPick(ref, (rowId) => storage.getRecovery(rowId)))?.row.clientMutationId).toBe(
+      preserved?.clientMutationId,
+    );
   } finally {
     source.dispose();
     peer.close();
@@ -784,11 +802,10 @@ test("a preservation that commits after disposal still records its selection", a
 });
 
 // A peer retarget moves the selected row while its autosave is in flight,
-// then the pane closes before the committed write returns. The write's
-// durable target still names the resumed ref: the seat's selection and the
-// ref-to-seat mapping must be recorded there even though the source is gone,
-// or a reopen of that ref allocates a fresh seat and restores an older peer
-// row instead of this seat's row.
+// then the pane closes before the committed write returns. The row's durable
+// target now names the resumed ref: resolving this tab's pick under that ref
+// must find the row even though the source is gone, or a reopen of that ref
+// restores an older peer row instead of this row.
 test("a retargeted write that settles after disposal still carries the selection", async () => {
   class HeldWriteStorage extends MutationOutboxIndexedDB {
     holdNextWrite = false;
@@ -826,7 +843,7 @@ test("a retargeted write that settles after disposal still carries the selection
   const peer = new MutationOutboxIndexedDB();
   try {
     await source.activateRecovery(recovery);
-    expect(readRecoverySelection(ref)?.clientMutationId).toBe(original.clientMutationId);
+    expect(readRecoveryPick(original.clientMutationId)).toBeDefined();
     await peer.retargetOutbox(ref, resumed, { threadId: "thread-new", instanceId: "instance-new" });
 
     storage.holdNextWrite = true;
@@ -838,7 +855,9 @@ test("a retargeted write that settles after disposal still carries the selection
     storage.release.resolve();
     expect(await saving).toBe(true);
 
-    expect(readRecoverySelection(resumed)?.clientMutationId).toBe(original.clientMutationId);
+    expect((await resolveRecoveryPick(resumed, (rowId) => storage.getRecovery(rowId)))?.row.clientMutationId).toBe(
+      original.clientMutationId,
+    );
   } finally {
     source.dispose();
     peer.close();
@@ -846,7 +865,7 @@ test("a retargeted write that settles after disposal still carries the selection
   }
 });
 
-test("a background activation preserves a fresh user pick", () => {
+test("a background activation preserves a fresh user pick", async () => {
   const source = createTestComposerSource("local:guard-fresh");
   const row = (clientMutationId: string): MutationRecoveryRecord => ({
     version: 1,
@@ -863,13 +882,21 @@ test("a background activation preserves a fresh user pick", () => {
     recoveryKind: "rejected",
   });
   try {
-    writeRecoverySelection("local:guard-fresh", "user-pick");
-    // An unfocused background activation must not overwrite the fresh pick.
+    writeRecoveryPick("user-pick");
+    // An unfocused background activation appends at background rank and must
+    // not outrank the fresh user pick at resolve time.
     source.setActiveRecoveryId(row("background-row"), { automatic: true });
-    expect(readRecoverySelection("local:guard-fresh")?.clientMutationId).toBe("user-pick");
-    // The focused pane's activation may overwrite even a fresh pick.
+    expect(readRecoveryPick("user-pick")).toMatchObject({ background: false });
+    const rows = new Map<string, MutationRecoveryRecord>([
+      ["user-pick", row("user-pick")],
+      ["background-row", row("background-row")],
+    ]);
+    expect((await resolveRecoveryPick("local:guard-fresh", async (rowId) => rows.get(rowId)))?.entry.rowId).toBe(
+      "user-pick",
+    );
+    // The focused pane's activation ranks as the user's own.
     source.setActiveRecoveryId(row("focused-row"), { automatic: true, focused: true });
-    expect(readRecoverySelection("local:guard-fresh")?.clientMutationId).toBe("focused-row");
+    expect(readRecoveryPick("focused-row")).toMatchObject({ background: false });
   } finally {
     source.dispose();
   }
