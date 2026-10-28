@@ -11,7 +11,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 )
 
-type stableDelegateCreateResult struct {
+type delegateCreateResult struct {
 	DelegateID     string                      `json:"delegate_id"`
 	ChildSessionID string                      `json:"child_session_id"`
 	Type           string                      `json:"type"`
@@ -33,14 +33,14 @@ type stableDelegateCreateResult struct {
 	ArtifactsDir string `json:"artifacts_dir,omitempty"`
 }
 
-func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
+func registerDelegateTool(reg *tool.Registry, s *Session) error {
 	reg.Remove("delegate")
 	if err := reg.Register(tool.RegisteredTool{
 		Definition: s.delegateToolDefinition(),
 		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
-			return stableDelegateCreateTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate"))
+			return delegateCreateTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate"))
 		},
 	}); err != nil {
 		return err
@@ -51,12 +51,12 @@ func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 		Limit:      schema.ToolOutputLimit{MaxChars: delegateReportWholeMaxChars, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
-			return stableDelegateSendTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate_send"))
+			return delegateSendTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate_send"))
 		},
 	})
 }
 
-func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
+func delegateSendTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
 	target := strings.TrimSpace(stringArg(args, "to"))
 	if target == runtimeMessageAliasCaller {
 		return nil, errors.New("invalid_request: delegate_send reaches only your own delegates; to message your parent, call communicate with end_turn=false")
@@ -94,7 +94,7 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 	return marshalDelegateSendResult(outcome.result, maxChars)
 }
 
-func stableDelegateCreateTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
+func delegateCreateTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
 	if _, exists := args["max_wait_ms"]; exists {
 		return "", errors.New("invalid_request: delegate creation does not accept max_wait_ms")
 	}
@@ -106,7 +106,7 @@ func stableDelegateCreateTool(ctx context.Context, s *Session, args map[string]a
 	if result.Err != nil && result.DelegateID == "" {
 		return "", result.Err
 	}
-	out := stableDelegateCreateResult{
+	out := delegateCreateResult{
 		DelegateID:     result.DelegateID,
 		ChildSessionID: result.ChildSessionID,
 		Type:           result.Type,
@@ -126,10 +126,10 @@ func stableDelegateCreateTool(ctx context.Context, s *Session, args map[string]a
 	if result.Err != nil {
 		out.StartError = result.Err.Error()
 	}
-	return marshalStableDelegateCreateResult(out, maxChars)
+	return marshalDelegateCreateResult(out, maxChars)
 }
 
-func marshalStableDelegateCreateResult(out stableDelegateCreateResult, maxChars int) (string, error) {
+func marshalDelegateCreateResult(out delegateCreateResult, maxChars int) (string, error) {
 	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
 		return fit, err
 	}

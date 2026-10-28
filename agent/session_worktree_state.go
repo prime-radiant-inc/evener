@@ -710,7 +710,7 @@ func (s *Session) liveWorkUnderExceptIdleDelegate(path, ignoredDelegateID string
 		}
 	}
 
-	stableByChild := make(map[string]stableDelegateWorktreeSnapshot)
+	stableByChild := make(map[string]delegateWorktreeSnapshot)
 	stableDescriptorUnderTarget := make(map[string]bool)
 	if s.delegateController != nil {
 		for _, row := range s.delegateController.stableWorktreeSnapshots() {

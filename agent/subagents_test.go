@@ -315,12 +315,12 @@ func (a *cancelBlockAdapter) Stream(ctx context.Context, req llm.Request) (llm.S
 	return nil, llm.ErrStreamUnsupported
 }
 
-// TestStableDelegate_StopRunningChildThenResume stops a delegate whose run is
+// TestDelegate_StopRunningChildThenResume stops a delegate whose run is
 // blocked inside an in-flight LLM call, asserts the run finalizes as cancelled
 // and the delegate goes idle and resumable, then sends it a message and asserts
 // a fresh round runs to completion. Timing is controlled by the adapter's
 // `blocked` channel and the context cancel — no sleeps.
-func TestStableDelegate_StopRunningChildThenResume(t *testing.T) {
+func TestDelegate_StopRunningChildThenResume(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -366,7 +366,7 @@ func TestStableDelegate_StopRunningChildThenResume(t *testing.T) {
 
 	// A following send runs a fresh round to completion.
 	outcome := (delegateRuntime{owner: sess}).send(context.Background(), created.DelegateID, "continue", 60_000)
-	abortUnpersistedStableDelegateOutcome(t, outcome)
+	abortUnpersistedDelegateOutcome(t, outcome)
 	if outcome.result.Err != nil {
 		t.Fatalf("send after stop: %v", outcome.result.Err)
 	}

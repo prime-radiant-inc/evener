@@ -1750,7 +1750,7 @@ func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
 
 // A stable delegate's persisted tool ceiling never names a save tool, so its
 // descriptor and job status report only what the delegate can call.
-func TestStableDelegateToolNameCeilingOmitsSaveTools(t *testing.T) {
+func TestDelegateToolNameCeilingOmitsSaveTools(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
 	for _, policy := range []struct {
@@ -1758,7 +1758,7 @@ func TestStableDelegateToolNameCeilingOmitsSaveTools(t *testing.T) {
 		allTools bool
 		allowed  []string
 	}{{"all-tools", true, nil}, {"listed", false, nativeMemoryToolNames}} {
-		ceiling := stableDelegateToolNameCeiling(s.reg, s.resultToolName(), policy.allTools, policy.allowed, nil, false, "")
+		ceiling := delegateToolNameCeiling(s.reg, s.resultToolName(), policy.allTools, policy.allowed, nil, false, "")
 		for _, name := range memorySaveToolNames {
 			if slices.Contains(ceiling, name) {
 				t.Errorf("%s ceiling names %s: %v", policy.name, name, ceiling)

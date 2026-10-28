@@ -104,7 +104,7 @@ func holdDelegateTail(t *testing.T, at tailHoldPoint) finalizingDelegate {
 	t.Cleanup(s.Close)
 	t.Cleanup(release)
 	create := executeDelegateTool(context.Background(), s, "call_create", "delegate", map[string]any{"prompt": "Find the race.", "name": "settle-race"})
-	var receipt stableDelegateCreateResult
+	var receipt delegateCreateResult
 	if err := json.Unmarshal([]byte(create.Output), &receipt); err != nil || receipt.DelegateID == "" {
 		t.Fatalf("delegate receipt %q names no delegate: %v", create.Output, err)
 	}
@@ -760,7 +760,7 @@ func TestDelegateSendReleasesAResidentReplacedAfterItsCommit(t *testing.T) {
 // not sit out its whole max_wait waiting for an inline delivery the covering
 // stop will never hand it (#3502).
 func TestDelegateSendStartAStopEndedIsReportedStopped(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 	}

@@ -19,7 +19,7 @@ import (
 // and leaves an uncommittable reservation blocking all future owner work.
 func TestDelegateAttentionDriveStaleSelectionPreservesNextOwnerRun(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	var root *Session
 	bare := func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("bare without communicate")}
@@ -65,14 +65,14 @@ func TestDelegateAttentionDriveStaleSelectionPreservesNextOwnerRun(t *testing.T)
 	delayedDone := make(chan struct{})
 	go func() {
 		defer close(delayedDone)
-		root.driveStableDelegateAttention(sub)
+		root.driveDelegateAttention(sub)
 	}()
 	select {
 	case <-selected:
 	case <-time.After(30 * time.Second): // TRIPWIRE: await the selection boundary.
 		t.Fatal("attention drive did not select the pending ID")
 	}
-	if !root.driveStableDelegateAttention(sub) {
+	if !root.driveDelegateAttention(sub) {
 		t.Fatal("second drive did not accept the pending attention")
 	}
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -94,7 +94,7 @@ func TestDelegateAttentionDriveStaleSelectionPreservesNextOwnerRun(t *testing.T)
 		t.Fatalf("provider requests = %d, want warm, attention, four follow-up attempts, and recovery report", got)
 	}
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "next owner work", 60_000)
-	abortUnpersistedStableDelegateOutcome(t, outcome)
+	abortUnpersistedDelegateOutcome(t, outcome)
 	if outcome.result.Err != nil {
 		t.Fatalf("next owner run after consumed attention: %v", outcome.result.Err)
 	}
@@ -113,7 +113,7 @@ func TestDelegateAttentionDriveStaleSelectionPreservesNextOwnerRun(t *testing.T)
 // existing reservation just because the transcript ID is already consumed.
 func TestDelegateAttentionDriveRetriesAcceptedMarkerGeneration(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("nothing to do")} },
@@ -134,7 +134,7 @@ func TestDelegateAttentionDriveRetriesAcceptedMarkerGeneration(t *testing.T) {
 	if err := controller.store.Close(); err != nil {
 		t.Fatalf("close delegate journal: %v", err)
 	}
-	if !root.driveStableDelegateAttention(sub) {
+	if !root.driveDelegateAttention(sub) {
 		t.Fatal("attention drive did not attempt the closed journal")
 	}
 	if got := controller.reservedAttentionID(sub.sess); got != attentionID {
@@ -157,7 +157,7 @@ func TestDelegateAttentionDriveRetriesAcceptedMarkerGeneration(t *testing.T) {
 	controller.mu.Lock()
 	controller.store = reopened
 	controller.mu.Unlock()
-	if !root.driveStableDelegateAttention(sub) {
+	if !root.driveDelegateAttention(sub) {
 		t.Fatal("attention drive did not retry its accepted generation")
 	}
 	waitForStableSupervisionRun(t, root, fixture.childID)

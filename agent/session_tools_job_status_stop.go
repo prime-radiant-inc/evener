@@ -20,7 +20,7 @@ func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
 		return "", errors.New("invalid_request: target is required")
 	}
 	if strings.HasPrefix(target, "dlg_") {
-		return stableDelegateStatusTool(s, target, maxChars)
+		return delegateStatusTool(s, target, maxChars)
 	}
 	jm, rec, err := s.nestedOrLocalJobManager(target)
 	if err != nil {
@@ -40,12 +40,12 @@ func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	return tool.StateResult{Output: rendered, State: out}, nil
 }
 
-func stableDelegateStatusTool(s *Session, delegateID string, maxChars int) (any, error) {
+func delegateStatusTool(s *Session, delegateID string, maxChars int) (any, error) {
 	if s == nil || s.delegateController == nil {
 		return "", errors.New("delegate controller is unavailable")
 	}
-	rows := stableDelegateRowsForSession(s, true)
-	var row *stableDelegateVisibleRow
+	rows := delegateRowsForSession(s, true)
+	var row *delegateVisibleRow
 	for i := range rows {
 		if rows[i].snapshot.id == delegateID {
 			row = &rows[i]
@@ -56,7 +56,7 @@ func stableDelegateStatusTool(s *Session, delegateID string, maxChars int) (any,
 		return "", fmt.Errorf("not_controllable: stable delegate %s is not visible to this session", delegateID)
 	}
 	now := s.sclock().Now()
-	out := projectStableDelegateStatus(now, row.snapshot)
+	out := projectDelegateStatus(now, row.snapshot)
 	rendered, err := marshalBoundedJSON(out, maxChars)
 	if err != nil {
 		return "", err
@@ -130,7 +130,7 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 		maxWaitMS = n
 	}
 	if strings.HasPrefix(target, "dlg_") {
-		return stopStableDelegate(ctx, s, target, maxWaitMS)
+		return stopDelegate(ctx, s, target, maxWaitMS)
 	}
 	jm, err := sessionJobManager(s)
 	if err != nil {
@@ -183,7 +183,7 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 	return tool.StateResult{Output: formatJobStop(stop), State: stop}, nil
 }
 
-func stopStableDelegate(ctx context.Context, s *Session, delegateID string, maxWaitMS int) (any, error) {
+func stopDelegate(ctx context.Context, s *Session, delegateID string, maxWaitMS int) (any, error) {
 	if s == nil || s.delegateController == nil {
 		return "", errors.New("delegate controller is unavailable")
 	}
@@ -210,7 +210,7 @@ func stopStableDelegate(ctx context.Context, s *Session, delegateID string, maxW
 		completed = waitForDelegateStopDone(ctx, s, result.done, clampJobBlockTimeout(maxWaitMS))
 	}
 	live := s.liveWatchesDeliveringToDelegate(delegateID)
-	stop := stableDelegateStopResult(result, completed, actor.describe())
+	stop := delegateStopJobResult(result, completed, actor.describe())
 	stop.LiveWatches = live
 	if completed {
 		populateDelegateStopEvidence(&stop, s, delegateID)
@@ -225,7 +225,7 @@ func stopStableDelegate(ctx context.Context, s *Session, delegateID string, maxW
 // PhaseStopping branch, see delegate_tree_finish.go). Reuses the same snapshot
 // row job_status and job_list already project — no new read path.
 func populateDelegateStopEvidence(stop *jobStopResult, s *Session, delegateID string) {
-	for _, row := range stableDelegateRowsForSession(s, true) {
+	for _, row := range delegateRowsForSession(s, true) {
 		if row.snapshot.id != delegateID {
 			continue
 		}
@@ -265,7 +265,7 @@ func waitForDelegateStopDone(ctx context.Context, s *Session, done <-chan struct
 	}
 }
 
-func stableDelegateStopResult(result delegateStopResult, completed bool, requestedBy string) jobStopResult {
+func delegateStopJobResult(result delegateStopResult, completed bool, requestedBy string) jobStopResult {
 	reason := "stop_pending"
 	status := string(jobstore.StatusRunning)
 	outcome := "stop_requested"
@@ -310,7 +310,7 @@ type jobStatusResult struct {
 	ExitCode         *int    `json:"exit_code,omitempty"`
 }
 
-type stableDelegateStatusResult struct {
+type delegateStatusResult struct {
 	ID                 string                 `json:"id"`
 	Type               string                 `json:"type"`
 	Status             string                 `json:"status"`
@@ -337,9 +337,9 @@ type stableDelegateStatusResult struct {
 	LastOutcome        *delegatestore.Outcome `json:"last_outcome,omitempty"`
 }
 
-func projectStableDelegateStatus(now time.Time, snapshot delegateSnapshot) stableDelegateStatusResult {
+func projectDelegateStatus(now time.Time, snapshot delegateSnapshot) delegateStatusResult {
 	descriptor := snapshot.descriptor
-	out := stableDelegateStatusResult{
+	out := delegateStatusResult{
 		ID:                 snapshot.id,
 		Type:               "delegate",
 		Status:             string(snapshot.lifecycle),

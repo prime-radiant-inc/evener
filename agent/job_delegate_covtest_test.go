@@ -105,35 +105,35 @@ func TestDelegateWorktreeReport_EmptyWorkDir(t *testing.T) {
 	}
 }
 
-// TestStableDelegateDisposalHint_NilSession covers the nil-session path
+// TestDelegateDisposalHint_NilSession covers the nil-session path
 // (line 241).
-func TestStableDelegateDisposalHint_NilSession(t *testing.T) {
+func TestDelegateDisposalHint_NilSession(t *testing.T) {
 	t.Parallel()
 	var s *Session
 	desc := delegatestore.Descriptor{}
-	if got := s.stableDelegateDisposalHint(desc, "dlg_123"); got != "" {
+	if got := s.delegateDisposalHint(desc, "dlg_123"); got != "" {
 		t.Fatalf("expected empty for nil session, got %q", got)
 	}
 }
 
-// TestStableDelegateDisposalHint_OwnerMismatch covers the owner mismatch
+// TestDelegateDisposalHint_OwnerMismatch covers the owner mismatch
 // path (line 241).
-func TestStableDelegateDisposalHint_OwnerMismatch(t *testing.T) {
+func TestDelegateDisposalHint_OwnerMismatch(t *testing.T) {
 	t.Parallel()
 	s := &Session{id: "sess123"}
 	desc := delegatestore.Descriptor{OwnerSessionID: "other"}
-	if got := s.stableDelegateDisposalHint(desc, "dlg_123"); got != "" {
+	if got := s.delegateDisposalHint(desc, "dlg_123"); got != "" {
 		t.Fatalf("expected empty for owner mismatch, got %q", got)
 	}
 }
 
-// TestStableDelegateDisposalHint_NonDelegateID covers the non-delegate-ID
+// TestDelegateDisposalHint_NonDelegateID covers the non-delegate-ID
 // path (line 241).
-func TestStableDelegateDisposalHint_NonDelegateID(t *testing.T) {
+func TestDelegateDisposalHint_NonDelegateID(t *testing.T) {
 	t.Parallel()
 	s := &Session{id: "sess123"}
 	desc := delegatestore.Descriptor{OwnerSessionID: "sess123"}
-	if got := s.stableDelegateDisposalHint(desc, "not-a-delegate-id"); got != "" {
+	if got := s.delegateDisposalHint(desc, "not-a-delegate-id"); got != "" {
 		t.Fatalf("expected empty for non-delegate ID, got %q", got)
 	}
 }

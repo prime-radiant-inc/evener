@@ -296,7 +296,7 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 	if s.hasPendingDelegateAttentionArmRetry() {
 		return true, nil
 	}
-	if s.hasPendingStableDelegateAttention() {
+	if s.hasPendingDelegateAttention() {
 		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
@@ -592,7 +592,7 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	if s.hasPendingDelegateAttentionArmRetry() {
 		return true, nil
 	}
-	if s.hasPendingStableDelegateAttention() {
+	if s.hasPendingDelegateAttention() {
 		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
@@ -695,7 +695,7 @@ func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
 		return
 	}
 	rows := make(map[string]delegateSnapshot)
-	for _, visible := range stableDelegateRowsForSession(s, false) {
+	for _, visible := range delegateRowsForSession(s, false) {
 		if childID := visible.snapshot.descriptor.ChildSessionID; childID != "" {
 			rows[childID] = visible.snapshot
 		}
@@ -770,7 +770,7 @@ func (s *Session) childDrainGracePending(childSessionID string) bool {
 	if s == nil || childSessionID == "" {
 		return false
 	}
-	row, ok := s.directStableDelegateForChildSession(childSessionID)
+	row, ok := s.directDelegateForChildSession(childSessionID)
 	if !ok || !row.currentRunOpen {
 		return false
 	}
@@ -871,7 +871,7 @@ func (s *Session) childDrainAbandoned(childSessionID string) bool {
 	if s == nil || childSessionID == "" {
 		return false
 	}
-	row, ok := s.directStableDelegateForChildSession(childSessionID)
+	row, ok := s.directDelegateForChildSession(childSessionID)
 	if !ok {
 		return false
 	}
@@ -1678,7 +1678,7 @@ func (s *Session) kickDriveTreeWith(ctx context.Context, drain func(*Session, co
 // true: DrainJobTree only ever starts once the caller's own turn has already
 // ended (PRI-2441's premise), so the top-level session is never mid-turn here.
 func (s *Session) kickDriveTreeWithFlush(ctx context.Context, drain func(*Session, context.Context) error, flushDeliveries bool) error {
-	s.drivePendingStableDelegateAttention()
+	s.drivePendingDelegateAttention()
 	if flushDeliveries {
 		if err := s.flushPendingDelegateDeliveries(); err != nil {
 			return err

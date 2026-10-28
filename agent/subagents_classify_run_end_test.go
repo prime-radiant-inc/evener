@@ -18,7 +18,7 @@ import (
 //     empty-response}. Budget exhaustion is tested BEFORE the
 //     bare-text/empty-response sentinels, so Join(bareText, exhaustion)
 //     settles terminally.
-//   - stableDelegateFatalRun: fatal iff err non-nil AND NOT (canceled,
+//   - delegateFatalRun: fatal iff err non-nil AND NOT (canceled,
 //     bare-text, empty-response, budget-exhausted). cancelRequested is not an
 //     input — a cancellation without ctx.Canceled is NOT fatal.
 //   - (*subagent).run final-status switch: Cancelled iff cancelRequested AND
@@ -153,7 +153,7 @@ func TestClassifyRunEndProjectionsMatchLegacySites(t *testing.T) {
 					t.Errorf("err=%v cancel=%t: mode=%v, want %v", joined, cancelRequested, cls.mode, wantMode)
 				}
 
-				// Site 2: stableDelegateFatalRun (subagents.go).
+				// Site 2: delegateFatalRun (subagents.go).
 				if cls.fatal != wantFatal {
 					t.Errorf("err=%v cancel=%t: fatal=%v, want %v", joined, cancelRequested, cls.fatal, wantFatal)
 				}

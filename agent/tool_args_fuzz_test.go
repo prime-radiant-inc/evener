@@ -95,7 +95,7 @@ func FuzzToolArgsValidate(f *testing.F) {
 		`{"operation":123}`,     // wrong type for operation
 		`{"operation":"create","name":123,"base_ref":true,"force":"nope","delete_branch":[1,2,3]}`,
 		`{"operation":"create","name":null}`,
-		`{}`, // missing required "operation"
+		`{}`,                                            // missing required "operation"
 		`{"operation":"create","unexpected_field":"x"}`, // additionalProperties:false
 	}
 	for _, s := range mwSeeds {

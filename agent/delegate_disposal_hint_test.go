@@ -14,7 +14,7 @@ func TestDisposalHint_StableOwnedDelegateCarriesSentence(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
 	desc := delegatestore.Descriptor{OwnerSessionID: s.id}
-	if got := s.stableDelegateDisposalHint(desc, "dlg_01ISODISPOSALHINT0000001"); got != wantDisposalSentence {
+	if got := s.delegateDisposalHint(desc, "dlg_01ISODISPOSALHINT0000001"); got != wantDisposalSentence {
 		t.Fatalf("stable disposal hint = %q, want %q", got, wantDisposalSentence)
 	}
 }
@@ -53,19 +53,19 @@ func TestDisposalHint_StableOwnershipAndToolGate(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
 	id := "dlg_01ISODISPOSALHINT0000001"
-	if got := s.stableDelegateDisposalHint(delegatestore.Descriptor{OwnerSessionID: "another-session"}, id); got != "" {
+	if got := s.delegateDisposalHint(delegatestore.Descriptor{OwnerSessionID: "another-session"}, id); got != "" {
 		t.Fatalf("foreign descriptor hint = %q", got)
 	}
 	s.reg.Remove("manage_worktree")
-	if got := s.stableDelegateDisposalHint(delegatestore.Descriptor{OwnerSessionID: s.id}, id); got != "" {
+	if got := s.delegateDisposalHint(delegatestore.Descriptor{OwnerSessionID: s.id}, id); got != "" {
 		t.Fatalf("session without dispose tool hint = %q", got)
 	}
 }
 
-func TestDisposalHint_NonIsolatedStableDelegateHasNoReport(t *testing.T) {
+func TestDisposalHint_NonIsolatedDelegateHasNoReport(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
-	if report := s.stableDelegateWorktreeReport(delegatestore.Descriptor{OwnerSessionID: s.id}); report != nil {
+	if report := s.descriptorWorktreeReport(delegatestore.Descriptor{OwnerSessionID: s.id}); report != nil {
 		t.Fatalf("non-isolated delegate report = %+v", report)
 	}
 }

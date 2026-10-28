@@ -19,7 +19,7 @@ func TestSessionActivityDelegateNameSurvivesRetainedRead(t *testing.T) {
 			descriptor.Name = name
 			descriptor.Task = "Inspect the complete cache ownership and repair plan"
 			at := time.Unix(100, 0).UTC()
-			seedStableReadonlyFinish(t, s, "dlg_named", descriptor, at, stableDelegateFinishFromRun(delegateTerminalRunInputs{descriptor: descriptor, result: "Report remains available", communicated: true, startedAt: at, endedAt: at.Add(time.Second)}), true)
+			seedStableReadonlyFinish(t, s, "dlg_named", descriptor, at, delegateFinishFromRun(delegateTerminalRunInputs{descriptor: descriptor, result: "Report remains available", communicated: true, startedAt: at, endedAt: at.Add(time.Second)}), true)
 			params := appwire.SessionActivityListParams{Ref: encodeRef("", s.ID())}
 			live, err := s.ListActivityDelegates(t.Context(), params)
 			if err != nil {

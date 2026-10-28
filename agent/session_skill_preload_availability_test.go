@@ -161,7 +161,7 @@ func TestRestoredDelegateDropsUnfollowablePreloadRecord(t *testing.T) {
 	t.Parallel()
 	gardenMetadata := preloadMetadataFixture(gardeningMemorySkillName)
 	followableMetadata := preloadMetadataFixture(followablePreloadName)
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.FrozenSkillNames = []string{gardeningMemorySkillName, followablePreloadName}
 		descriptor.FrozenSkillBodies = []string{
 			renderedPreloadFixture(gardeningMemorySkillName, gardeningPreloadSentinel),

@@ -64,7 +64,7 @@ func seed100ToolsRangeC(t *testing.T) {
 		_ = formatJobWatchInspect(out)
 	}
 
-	_, _ = marshalStableDelegateCreateResult(stableDelegateCreateResult{
+	_, _ = marshalDelegateCreateResult(delegateCreateResult{
 		DelegateID: "dlg_seed", ChildSessionID: "child-dlg_seed", Type: delegateResourceType,
 		Status: string(jobstore.StatusRunning), TranscriptRef: "local:child-dlg_seed",
 		Sandbox: delegateSandboxToolResultFrom(sb),

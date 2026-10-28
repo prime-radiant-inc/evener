@@ -13,7 +13,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
-func TestDoctorStableDelegateReportsLegacyStateAndWatchFailures(t *testing.T) {
+func TestDoctorDelegateReportsLegacyStateAndWatchFailures(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)
 	writeSession(t, bucket, sidA)
@@ -53,7 +53,7 @@ func TestDoctorStableDelegateReportsLegacyStateAndWatchFailures(t *testing.T) {
 	}
 }
 
-func TestDoctorStableDelegatePreservesShellAndWatchDiagnostics(t *testing.T) {
+func TestDoctorDelegatePreservesShellAndWatchDiagnostics(t *testing.T) {
 	base, sid, _, _ := stableDoctorFixture(t)
 	jobs, err := Jobs(base, sid, JobOpts{})
 	if err != nil {

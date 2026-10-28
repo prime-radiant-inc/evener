@@ -1259,15 +1259,15 @@ func TestCovConsumeTerminalJobNotification(t *testing.T) {
 	}
 }
 
-// TestCovProjectStableDelegateListItem is a helper test covering the projection
+// TestCovProjectDelegateListItem is a helper test covering the projection
 // of a stable delegate into a job list entry (used by job_list).
-func TestCovProjectStableDelegateListItem(t *testing.T) {
+func TestCovProjectDelegateListItem(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	startedAt := now.Add(-10 * time.Second)
 	endedAt := now.Add(-2 * time.Second)
 	latestActivityAt := now.Add(-3 * time.Second)
-	entry := projectStableDelegateListItem(now, stableDelegateVisibleRow{
+	entry := projectDelegateListItem(now, delegateVisibleRow{
 		depth: 2,
 		snapshot: delegateSnapshot{
 			id: "dlg_1", parentID: "dlg_parent", lifecycle: delegateLifecycleIdle,

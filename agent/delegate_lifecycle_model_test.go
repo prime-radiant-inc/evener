@@ -209,7 +209,7 @@ func (m *delegateLifecycleModel) setExhaustionFromRunError() {
 }
 
 // finishOutcomeFromRun is the model's independent copy of the finish-path
-// outcome selection (stableDelegateFinishFromRun's branch order): a nil run
+// outcome selection (delegateFinishFromRun's branch order): a nil run
 // error with a communicated report completes; otherwise a budget-exhaustion
 // component wins (BEFORE the canceled test, so a joined budget+Canceled error
 // finishes exhausted); otherwise context.Canceled cancels; otherwise the run

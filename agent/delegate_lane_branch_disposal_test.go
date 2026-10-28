@@ -338,7 +338,7 @@ func TestDelegateLaneBranchCanary_HalfRemovedUnresolvedBranchRefuses(t *testing.
 
 	// lanePresent=false selects the half-removed arm; that arm never touches
 	// the worktree, so the lane's physical presence does not matter to it.
-	_, err := r.s.disposeStableExecute(context.Background(), run, stableDelegateWorktreeSnapshot{delegateID: id}, lanePath, metaDir, "", nil, false, worktree.Unlocked, false, false)
+	_, err := r.s.disposeStableExecute(context.Background(), run, delegateWorktreeSnapshot{delegateID: id}, lanePath, metaDir, "", nil, false, worktree.Unlocked, false, false)
 	if err == nil || !strings.Contains(err.Error(), "branch was never resolved") {
 		t.Fatalf("half-removed disposal with an unresolved branch: err = %v, want the unresolved-branch refusal", err)
 	}

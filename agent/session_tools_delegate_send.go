@@ -146,7 +146,7 @@ func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
 			}
 			earlier.Output = message
 		} else {
-			completeStableDelegateSendResult(&earlier, packet)
+			completeDelegateSendResult(&earlier, packet)
 		}
 		out.EarlierResults = append(out.EarlierResults, delegateSendResultFrom(earlier))
 	}
