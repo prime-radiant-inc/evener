@@ -1,5 +1,5 @@
 import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -15,6 +15,7 @@ import {
 import { connectionStore } from "../../stores/connection";
 import { answerActivityRead } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../stores/threads";
+import { connectReadyFakeClient } from "../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../threadTestUtils";
 import virtualStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import { resetSubagentModuleStoreForTests } from "../session/transcript/tools/subagentModuleStore";
@@ -61,10 +62,9 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
 }
 
 function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  fake.on("evener/thread/activity/read", answerActivityRead);
-  connectionStore.getState().connect(fake);
-  return fake;
+  return connectReadyFakeClient((fake) => {
+    fake.on("evener/thread/activity/read", answerActivityRead);
+  });
 }
 
 let restoreGeometry: () => void;
