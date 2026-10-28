@@ -183,7 +183,7 @@ func TestBootStoreSyncReappliesAPurgeTheStoreMissed(t *testing.T) {
 	fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
 
 	m := fixture.manager(t)
-	if _, ok := m.cfg.ops.OutstandingToken("m4"); ok {
+	if _, ok := m.opsStore().OutstandingToken("m4"); ok {
 		t.Fatal("boot did not re-apply the intent's purge")
 	}
 	if fixture.carriesIntent(t, "m4") {
@@ -229,7 +229,7 @@ func TestBootStoreSyncClearsAnIntentWhosePurgeLanded(t *testing.T) {
 	if fixture.carriesIntent(t, "m4") {
 		t.Fatal("boot did not clear the converged intent")
 	}
-	if _, ok := m.cfg.ops.OutstandingToken("m4"); ok {
+	if _, ok := m.opsStore().OutstandingToken("m4"); ok {
 		t.Fatal("boot resurrected a row the intent's clear must not")
 	}
 	after, err := os.ReadFile(hostops.StorePath(fixture.dir))
@@ -260,13 +260,13 @@ func TestBootCompensationArmedWithRowsPresentRestoresHubTOML(t *testing.T) {
 	}
 
 	m := fixture.manager(t)
-	if _, ok := m.cfg.ops.Compensation("m4"); ok {
+	if _, ok := m.opsStore().Compensation("m4"); ok {
 		t.Fatal("boot did not clear the converged compensation record")
 	}
 	if _, err := os.Stat(hubTOMLStashPath(fixture.configPath, "test-key")); !os.IsNotExist(err) {
 		t.Fatal("boot did not prune the cleared compensation's stash")
 	}
-	if _, ok := m.cfg.ops.OutstandingToken("m4"); !ok {
+	if _, ok := m.opsStore().OutstandingToken("m4"); !ok {
 		t.Fatal("boot dropped rows the purge never landed for")
 	}
 	// The store's model converged to the restored records: the compensated
@@ -360,7 +360,7 @@ func TestBootCompensationResumesTheOwedRowsAfterAFailedAdvance(t *testing.T) {
 		return nil
 	}
 	m.reconcileCompensations()
-	record, open := m.cfg.ops.Compensation("keep")
+	record, open := m.opsStore().Compensation("keep")
 	if !open || record.Phase != hostops.CompensationHubTOML {
 		t.Fatalf("record after the failed advance = %+v/%v, want it left in %s", record, open, hostops.CompensationHubTOML)
 	}
@@ -371,7 +371,7 @@ func TestBootCompensationResumesTheOwedRowsAfterAFailedAdvance(t *testing.T) {
 	if _, carried := restoredCfg.PendingStoreSync["keep"]; carried {
 		t.Fatal("the restored file still carries the intent")
 	}
-	if _, ok := m.cfg.ops.OutstandingToken("keep"); ok {
+	if _, ok := m.opsStore().OutstandingToken("keep"); ok {
 		t.Fatal("the purged row came back before the rows arm")
 	}
 	// The hub keeps serving: a sibling host's mutation rewrites hub.toml through
@@ -384,10 +384,10 @@ func TestBootCompensationResumesTheOwedRowsAfterAFailedAdvance(t *testing.T) {
 	// gone; the hubtoml arm must still finish the owed rows re-insertion.
 	m.testOnlyFailCompensationStep = nil
 	m.reconcileCompensations()
-	if _, open := m.cfg.ops.Compensation("keep"); open {
+	if _, open := m.opsStore().Compensation("keep"); open {
 		t.Fatal("the resumed compensation did not clear")
 	}
-	back, ok := m.cfg.ops.OutstandingToken("keep")
+	back, ok := m.opsStore().OutstandingToken("keep")
 	if !ok || back.Value != token.Value || back.Generation != 2 || back.IncarnationID != "inc-keep" {
 		t.Fatalf("row = %+v/%v, want the preimage row re-inserted for the restored identity", back, ok)
 	}
@@ -418,7 +418,7 @@ func TestBootCompensationArmedWithRowsPresentLeavesTheRecordWhenTheRegistryLacks
 		t.Fatalf("ArmCompensation: %v", err)
 	}
 	m := fixture.manager(t)
-	record, open := m.cfg.ops.Compensation("m4")
+	record, open := m.opsStore().Compensation("m4")
 	if !open || record.Phase != hostops.CompensationRuntime {
 		t.Fatalf("record = %+v/%v, want it left in %s (the restored host is not served)", record, open, hostops.CompensationRuntime)
 	}
@@ -429,7 +429,7 @@ func TestBootCompensationArmedWithRowsPresentLeavesTheRecordWhenTheRegistryLacks
 	if _, live := hostEntryNamed(hostRegistryEntries(cfg), "m4"); !live {
 		t.Fatal("the compensation did not restore hub.toml")
 	}
-	if _, ok := m.cfg.ops.OutstandingToken("m4"); !ok {
+	if _, ok := m.opsStore().OutstandingToken("m4"); !ok {
 		t.Fatal("the restored row is missing")
 	}
 }
@@ -453,11 +453,11 @@ func TestBootCompensationPurgeLandedReinsertsTheRows(t *testing.T) {
 	}
 
 	m := fixture.manager(t)
-	restored, ok := m.cfg.ops.OutstandingToken("m4")
+	restored, ok := m.opsStore().OutstandingToken("m4")
 	if !ok || restored.Value != token.Value || restored.Generation != 2 || restored.IncarnationID != "inc-m4" {
 		t.Fatalf("re-inserted row = %+v/%v, want the preimage row at the restored identity", restored, ok)
 	}
-	if _, ok := m.cfg.ops.Compensation("m4"); ok {
+	if _, ok := m.opsStore().Compensation("m4"); ok {
 		t.Fatal("boot did not clear the converged compensation record")
 	}
 	cfg, _ := readPipelineConfig(t, fixture.configPath)
@@ -485,10 +485,10 @@ func TestBootCompensationWithIntentClearedClearsWithoutResurrection(t *testing.T
 		t.Fatalf("ArmCompensation: %v", err)
 	}
 	m := fixture.manager(t)
-	if _, ok := m.cfg.ops.Compensation("m4"); ok {
+	if _, ok := m.opsStore().Compensation("m4"); ok {
 		t.Fatal("boot did not clear the record whose intent was already cleared")
 	}
-	if _, ok := m.cfg.ops.OutstandingToken("m4"); ok {
+	if _, ok := m.opsStore().OutstandingToken("m4"); ok {
 		t.Fatal("boot resurrected a row the commit had purged")
 	}
 	cfg, _ := readPipelineConfig(t, fixture.configPath)
@@ -507,16 +507,16 @@ func TestRemovePurgesTokensThroughTheIntent(t *testing.T) {
 		pipelineToken(t, store, "keep", 2)
 	})
 	m := fixture.manager(t)
-	if _, ok := m.cfg.ops.OutstandingToken("keep"); !ok {
+	if _, ok := m.opsStore().OutstandingToken("keep"); !ok {
 		t.Fatal("the fixture's token row is missing")
 	}
 	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
 		t.Fatalf("Remove(keep): %v", err)
 	}
-	if _, ok := m.cfg.ops.OutstandingToken("keep"); ok {
+	if _, ok := m.opsStore().OutstandingToken("keep"); ok {
 		t.Fatal("the committed removal left its token row behind")
 	}
-	if _, ok := m.cfg.ops.Compensation("keep"); ok {
+	if _, ok := m.opsStore().Compensation("keep"); ok {
 		t.Fatal("the committed removal left its compensation record open")
 	}
 	if names := pipelineStashSiblings(t, fixture.configPath); len(names) != 0 {
@@ -588,7 +588,7 @@ func TestBootHostRemovedPassMarksTheRemovedIncarnationsRecords(t *testing.T) {
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
 	}, fixture.configPath, nil, nil)
-	records := second.cfg.ops.Records()
+	records := second.opsStore().Records()
 	var removedMarked, readdMarked bool
 	for _, record := range records {
 		switch record.ClientOperationID {
@@ -630,7 +630,7 @@ func TestBootMirrorRollsBackATornStoreAndWritesTheHighWater(t *testing.T) {
 		}
 	})
 	m := fixture.manager(t)
-	mirror, ok := m.cfg.ops.Boundary("m4")
+	mirror, ok := m.opsStore().Boundary("m4")
 	if !ok || mirror.Generation != 9 || mirror.IncarnationID != "inc-m4" {
 		t.Fatalf("mirror after the boot rollback = %+v, want generation 9 with the file's incarnation", mirror)
 	}
@@ -638,7 +638,7 @@ func TestBootMirrorRollsBackATornStoreAndWritesTheHighWater(t *testing.T) {
 	if mark := cfg.Generations["m4"]; mark.Generation != 9 {
 		t.Fatalf("hub.toml high-water = %+v, want the discarded generation 9 recorded", mark)
 	}
-	records := m.cfg.ops.Records()
+	records := m.opsStore().Records()
 	if len(records) != 1 || records[0].State != hostops.StateInterrupted || records[0].Result == nil || records[0].Result.Message != hostops.TornWriteNote {
 		t.Fatalf("record after the boot rollback = %+v, want interrupted with the torn-write note", records)
 	}
@@ -656,7 +656,7 @@ func TestBootMirrorPushesAFileMarkForward(t *testing.T) {
 		}
 	})
 	m := fixture.manager(t)
-	mirror, ok := m.cfg.ops.Boundary("m4")
+	mirror, ok := m.opsStore().Boundary("m4")
 	if !ok || mirror.Generation != 7 || mirror.IncarnationID != "inc-m4" {
 		t.Fatalf("mirror after the boot push-forward = %+v, want the file mark", mirror)
 	}
@@ -675,7 +675,7 @@ func TestBootMirrorPreservesAMirrorWithoutAFileEntry(t *testing.T) {
 		}
 	})
 	m := fixture.manager(t)
-	mirror, ok := m.cfg.ops.Boundary("gone")
+	mirror, ok := m.opsStore().Boundary("gone")
 	if !ok || mirror.Generation != 11 || mirror.IncarnationID != "inc-gone" {
 		t.Fatalf("preserved mirror = %+v, want the store's value", mirror)
 	}
@@ -712,7 +712,7 @@ func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredFileIsMissing(t *t
 	}
 	m.testOnlyFailRuntimeRevert = func(string) error { return errors.New("injected runtime-revert failure") }
 	m.reconcileCompensations()
-	record, ok := m.cfg.ops.Compensation("m4")
+	record, ok := m.opsStore().Compensation("m4")
 	if !ok || record.Phase != hostops.CompensationRuntime {
 		t.Fatalf("record after a failed runtime revert = %+v/%v, want it left in %s", record, ok, hostops.CompensationRuntime)
 	}
@@ -722,7 +722,7 @@ func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredFileIsMissing(t *t
 	// The retry, with the failure gone, converges and clears.
 	m.testOnlyFailRuntimeRevert = nil
 	m.reconcileCompensations()
-	if _, ok := m.cfg.ops.Compensation("m4"); ok {
+	if _, ok := m.opsStore().Compensation("m4"); ok {
 		t.Fatal("the retried compensation did not clear")
 	}
 	if _, err := os.Stat(stash); !os.IsNotExist(err) {
@@ -826,10 +826,10 @@ func TestBootCompensationHubTOMLWithIntentClearedDoesNotRestore(t *testing.T) {
 		t.Fatalf("ArmCompensation: %v", err)
 	}
 	m := fixture.manager(t)
-	if _, ok := m.cfg.ops.Compensation("m4"); ok {
+	if _, ok := m.opsStore().Compensation("m4"); ok {
 		t.Fatal("boot did not clear the record whose intent was already cleared")
 	}
-	if _, ok := m.cfg.ops.OutstandingToken("m4"); ok {
+	if _, ok := m.opsStore().OutstandingToken("m4"); ok {
 		t.Fatal("boot resurrected a row the commit had purged")
 	}
 	cfg, _ := readPipelineConfig(t, fixture.configPath)
@@ -878,7 +878,7 @@ func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredHostIsNotRegistere
 	}
 	// The registry is empty: the boot loaded the committed (host-less) file.
 	m := fixture.manager(t)
-	record, open := m.cfg.ops.Compensation("m4")
+	record, open := m.opsStore().Compensation("m4")
 	if !open || record.Phase != hostops.CompensationRuntime {
 		t.Fatalf("record after the unserved runtime revert = %+v/%v, want it left in %s", record, open, hostops.CompensationRuntime)
 	}
@@ -897,7 +897,7 @@ func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredHostIsNotRegistere
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
 	}, fixture.configPath, registry, nil)
-	if _, open := second.cfg.ops.Compensation("m4"); open {
+	if _, open := second.opsStore().Compensation("m4"); open {
 		t.Fatal("the next boot did not converge the left-open compensation")
 	}
 }
@@ -931,7 +931,7 @@ func TestBootCompensationRowsUseTheRegistryGenerationWithoutAFileMark(t *testing
 		t.Fatalf("PurgeCompensated: %v", err)
 	}
 	m := fixture.manager(t)
-	row, ok := m.cfg.ops.OutstandingToken("m4")
+	row, ok := m.opsStore().OutstandingToken("m4")
 	if !ok || row.Value != token.Value {
 		t.Fatalf("re-inserted row = %+v/%v, want the preimage row revalidated by the registry's generation", row, ok)
 	}
@@ -1067,7 +1067,7 @@ func TestBootRestoreInstallsTheMachineRecords(t *testing.T) {
 		t.Fatalf("PurgeCompensated: %v", err)
 	}
 	m := fixture.manager(t)
-	if _, ok := m.cfg.ops.OutstandingToken("keep"); !ok {
+	if _, ok := m.opsStore().OutstandingToken("keep"); !ok {
 		t.Fatal("boot did not re-insert the restored row")
 	}
 	// The next hub.toml write derives from the restored records: no intent.
@@ -1078,7 +1078,7 @@ func TestBootRestoreInstallsTheMachineRecords(t *testing.T) {
 	if _, carried := cfg.PendingStoreSync["keep"]; carried {
 		t.Fatal("the next hub.toml write re-emitted the compensated clear intent")
 	}
-	if _, ok := m.cfg.ops.OutstandingToken("keep"); !ok {
+	if _, ok := m.opsStore().OutstandingToken("keep"); !ok {
 		t.Fatal("the write path purged the restored row")
 	}
 	// A follow-up boot must not purge the restored row either.
@@ -1086,7 +1086,7 @@ func TestBootRestoreInstallsTheMachineRecords(t *testing.T) {
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
 	}, fixture.configPath, nil, nil)
-	if _, ok := second.cfg.ops.OutstandingToken("keep"); !ok {
+	if _, ok := second.opsStore().OutstandingToken("keep"); !ok {
 		t.Fatal("the follow-up boot purged the restored row")
 	}
 }
@@ -1425,16 +1425,16 @@ func TestRemoveWithoutAConfigFilePurgesTokensLive(t *testing.T) {
 		RemoteHostRegistry: registry,
 		RemoteHostOpsStore: fixture.store,
 	}, "", registry, nil)
-	if _, ok := m.cfg.ops.OutstandingToken("keep"); !ok {
+	if _, ok := m.opsStore().OutstandingToken("keep"); !ok {
 		t.Fatal("the fixture's token row is missing")
 	}
 	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
 		t.Fatalf("Remove(keep) with no hub.toml: %v", err)
 	}
-	if _, ok := m.cfg.ops.OutstandingToken("keep"); ok {
+	if _, ok := m.opsStore().OutstandingToken("keep"); ok {
 		t.Fatal("the removal left its token row behind")
 	}
-	if _, open := m.cfg.ops.Compensation("keep"); open {
+	if _, open := m.opsStore().Compensation("keep"); open {
 		t.Fatal("a removal with no hub.toml armed a cross-file compensation")
 	}
 }
@@ -1463,10 +1463,10 @@ func TestRemoveWithAConfiguredPathAndNoFilePurgesTokensLive(t *testing.T) {
 	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
 		t.Fatalf("Remove(keep) with a configured path and no file: %v", err)
 	}
-	if _, ok := m.cfg.ops.OutstandingToken("keep"); ok {
+	if _, ok := m.opsStore().OutstandingToken("keep"); ok {
 		t.Fatal("the removal left its token row behind")
 	}
-	if _, open := m.cfg.ops.Compensation("keep"); open {
+	if _, open := m.opsStore().Compensation("keep"); open {
 		t.Fatal("a removal with no hub.toml bytes armed a cross-file compensation")
 	}
 	if names := pipelineStashSiblings(t, fixture.configPath); len(names) != 0 {
@@ -1490,7 +1490,7 @@ func TestRemovalLeavesTokensWhenTheHubTOMLIsCorrupt(t *testing.T) {
 	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err == nil {
 		t.Fatal("the removal over a corrupt hub.toml succeeded")
 	}
-	if _, ok := m.cfg.ops.OutstandingToken("keep"); !ok {
+	if _, ok := m.opsStore().OutstandingToken("keep"); !ok {
 		t.Fatal("a failed staged commit purged the token")
 	}
 	if got, err := os.ReadFile(fixture.configPath); err != nil || !bytes.Equal(got, corrupt) {
@@ -1641,7 +1641,7 @@ func TestCompensateStagedCrossFileLeavesAStaleRecordUntouched(t *testing.T) {
 	if marked {
 		t.Fatal("the compensation left the mutation mark set")
 	}
-	record, open := m.cfg.ops.Compensation("keep")
+	record, open := m.opsStore().Compensation("keep")
 	if !open || record.Generation != 7 || record.Stash != staleStash {
 		t.Fatalf("the stale record was touched: %+v/%v, want generation 7 and its own stash", record, open)
 	}
@@ -1716,7 +1716,7 @@ func TestCompensateStagedCrossFileLeavesTheRecordWhenAStepFails(t *testing.T) {
 			case "clear":
 				wantPhase = hostops.CompensationClear
 			}
-			record, open := m.cfg.ops.Compensation("keep")
+			record, open := m.opsStore().Compensation("keep")
 			if !open || record.Phase != wantPhase {
 				t.Fatalf("record after the failed step = %+v/%v, want it left in %s", record, open, wantPhase)
 			}
@@ -1732,13 +1732,13 @@ func TestCompensateStagedCrossFileLeavesTheRecordWhenAStepFails(t *testing.T) {
 				t.Fatal("the retried compensation reported success without the cause")
 			}
 			m.cfg.mu.Unlock()
-			if _, open := m.cfg.ops.Compensation("keep"); open {
+			if _, open := m.opsStore().Compensation("keep"); open {
 				t.Fatal("the retried compensation did not clear")
 			}
 			if _, err := os.Stat(stash); !os.IsNotExist(err) {
 				t.Fatal("the converged retry left the stash behind")
 			}
-			if _, ok := m.cfg.ops.OutstandingToken("keep"); !ok {
+			if _, ok := m.opsStore().OutstandingToken("keep"); !ok {
 				t.Fatal("the retried compensation did not re-insert the purged row")
 			}
 		})
@@ -1771,7 +1771,7 @@ func TestBootCompensationArmedClearsWithNoConfigDocument(t *testing.T) {
 	}
 
 	m := fixture.manager(t)
-	if _, ok := m.cfg.ops.Compensation("m4"); ok {
+	if _, ok := m.opsStore().Compensation("m4"); ok {
 		t.Fatal("boot did not clear the armed compensation record with no config document")
 	}
 	if _, err := os.Stat(stash); !os.IsNotExist(err) {
@@ -1800,7 +1800,7 @@ func TestBootCompensationSurvivesAnUnreadableConfigDocument(t *testing.T) {
 	}
 
 	m := fixture.manager(t)
-	if _, ok := m.cfg.ops.Compensation("m4"); !ok {
+	if _, ok := m.opsStore().Compensation("m4"); !ok {
 		t.Fatal("boot cleared the armed compensation over a document it could not decode")
 	}
 	if _, err := os.Stat(stash); err != nil {
@@ -1859,7 +1859,7 @@ func TestBootCompensationClearsWithAZeroByteConfigDocument(t *testing.T) {
 	}
 
 	m := fixture.manager(t)
-	if _, ok := m.cfg.ops.Compensation("m4"); ok {
+	if _, ok := m.opsStore().Compensation("m4"); ok {
 		t.Fatal("boot did not clear the armed compensation for a zero-byte document")
 	}
 	if _, err := os.Stat(stash); !os.IsNotExist(err) {

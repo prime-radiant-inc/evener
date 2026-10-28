@@ -155,6 +155,9 @@ type hubRuntime struct {
 	hostRegistry     *hostreg.Registry
 	sshManager       *sshconn.Manager
 	opsStore         *hostops.Store
+	// opsUnavailable marks a hub whose operation store failed to open: it serves
+	// its hosts, refuses host changes, and retries the open in the background.
+	opsUnavailable bool
 
 	resumeLocks               *hubcore.ResumeLocks
 	deletionStore             *hubcore.DeletionStore
@@ -460,15 +463,28 @@ func (r *hubRuntime) openDurableState() error {
 // which owns every live SSH channel, so they die with the hub.
 func (r *hubRuntime) connectHosts() (func(), error) {
 	cfg := r.cfg
-	r.hostEntries = hostRegistryEntries(cfg)
+	// The operation store opens first: it holds the machine records the
+	// registry's identities restore from. A store that cannot open does not stop
+	// the hub. The hosts in hub.toml keep serving with the identities minted at
+	// load, host changes refuse until the store opens, and the open is retried
+	// in the background. A corrupt store file takes the custody-first quarantine
+	// when its custody can be shown whole; a file whose custody cannot is left
+	// where it is, and the same retry covers it.
+	var err error
+	r.opsStore, err = openHostOpsStore(r.hubStateRoot, r.stderr, hostOperationRetention(cfg))
+	if err != nil {
+		r.opsUnavailable = true
+		r.logf("host operation store unavailable; hosts keep serving and host changes pause while the hub retries: %v", err)
+	}
+	boot := hostBootDocument(cfg, r.opsStore)
+	r.hostEntries = boot.Hosts
 	// Config loading already validated these through hostreg.New; build the
 	// real registry used by the SSH manager and handle the (impossible) error
-	// like any other startup failure. The file's retained high-water marks seed
-	// the counters first, so a hub.toml host with no persisted record is minted
-	// above every mark the file carries (registry spec 08 §1) rather than below
+	// like any other startup failure. The retained high-water marks seed the
+	// counters first, so a hub.toml host with no persisted record is minted
+	// above every mark the records carry (registry spec 08 §1) rather than below
 	// a mark another name retained.
-	var err error
-	r.hostRegistry, err = hostreg.NewSeeded(r.hostEntries, hostHighWaterMarks(cfg))
+	r.hostRegistry, err = hostreg.NewSeeded(r.hostEntries, boot.Records.highWaterMarks())
 	if err != nil {
 		return nil, fmt.Errorf("validate hosts: %w", err)
 	}
@@ -507,16 +523,6 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	}
 	for _, key := range cfg.removedHostKnobs {
 		r.logf("hub.toml sets %s, which is no longer tunable; the hub ignores it and uses its built-in default", key)
-	}
-	// The operation store opens before the hub serves anything. A corrupt store
-	// file takes §4's custody-first quarantine; a corrupt file whose custody
-	// snapshot is incomplete refuses the boot outright — the hub must never serve
-	// hosts past a fence the quarantine cannot prove.
-	r.opsStore, err = openHostOpsStore(r.hubStateRoot, r.stderr, hostOperationRetention(cfg))
-	if err != nil {
-		closeSSH()
-		r.logf("%v", err)
-		return nil, err
 	}
 	// The operation store loads before the web server is built; a loaded
 	// compensation record whose stash reference is not this hub.toml family's
@@ -623,10 +629,11 @@ func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace) (*WebServe
 		// The one live registry the SSH manager dials through, shared with the
 		// attach handler and the host-management surface, and the selected
 		// hub.toml path the host surface rewrites in place (machine-managed).
-		RemoteHostRegistry:   r.hostRegistry,
-		RemoteHostSSHManager: sshManager,
-		RemoteHostConfigPath: r.opts.configPath,
-		RemoteHostOpsStore:   r.opsStore,
+		RemoteHostRegistry:       r.hostRegistry,
+		RemoteHostSSHManager:     sshManager,
+		RemoteHostConfigPath:     r.opts.configPath,
+		RemoteHostOpsStore:       r.opsStore,
+		RemoteHostOpsUnavailable: r.opsUnavailable,
 		// This hub's own running identity and the two owner-adjustable
 		// deploy-pipeline knobs: the probe deadline the plan's gated probe
 		// uses, and the minimum free space evener/host/running's health
@@ -824,6 +831,14 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	// broadcasts evener/notices/changed when they change (S11).
 	goBackground(func() { watchHubNotices(ctx, web) })
 
+	// A hub that started without its operation store, or could not settle the
+	// host records in it, keeps serving its hosts and refuses host changes. The
+	// condition clears on its own: retry until the store opens and the records
+	// settle.
+	if web.hostManage != nil && web.hostManage.mutationRefusal() != nil {
+		goBackground(func() { r.retryHostRecords(ctx, web.hostManage) })
+	}
+
 	// Seed the bundled default marketplaces (best-effort, first-run-gated —
 	// see SeedDefaultMarketplaces). Every evener CLI path does this already
 	// (cmd/evener/run.go, serve.go, plugincmd.go); the hub was the one surface
@@ -869,4 +884,41 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	// Through deps so hermetic runMain tests stay offline.
 	deps.startLaunchPrefetch(ctx, web, goBackground)
 	return ctx, cleanup
+}
+
+// The delays between attempts to open the operation store and settle the host
+// records after startup could not.
+var (
+	hostRecordsRetryInitial = 5 * time.Second
+	hostRecordsRetryMax     = time.Minute
+)
+
+// retryHostRecords reopens the operation store when it is not attached and
+// settles the host records, backing off between attempts, until host changes
+// are no longer refused or the hub stops.
+func (r *hubRuntime) retryHostRecords(ctx context.Context, manage *hubHostManager) {
+	delay := hostRecordsRetryInitial
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		var store *hostops.Store
+		if manage.opsStore() == nil {
+			opened, err := openHostOpsStore(r.hubStateRoot, r.stderr, hostOperationRetention(r.cfg))
+			if err != nil {
+				r.logf("host operation store still unavailable: %v", err)
+				delay = min(delay*2, hostRecordsRetryMax)
+				continue
+			}
+			store = opened
+		}
+		manage.attachOps(store)
+		if manage.mutationRefusal() == nil {
+			r.logf("host operation store and host records are settled; host changes resume")
+			return
+		}
+		delay = min(delay*2, hostRecordsRetryMax)
+	}
 }

@@ -372,12 +372,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 // quarantined file and its custody, and stays visible for as long as the
 // custody file keeps the names it closed closed.
 //
-// A corrupt file whose custody snapshot is incomplete — anything that would
-// leave a fence unprovable — fails startup here, never serves: the error aborts
-// the boot rather than leaving host operations unwired. Every other open failure
-// keeps the pre-quarantine disposition: the failure is logged and the hub
-// serves with host operations unwired, because a transient permission or I/O
-// problem is not a fence the hub cannot prove.
+// Every open failure is returned with a nil store, and the caller decides what
+// to serve: a corrupt file whose custody snapshot is incomplete is left where
+// it is, and a transient permission or I/O problem is logged, because neither
+// is a reason to stop serving the hosts in hub.toml. The caller retries.
 //
 // The opened store also runs §3's boot reap: expired confirmation tokens are
 // dropped at startup, so a restart never leaves an unexpired-looking row behind
@@ -394,11 +392,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.RetentionPolicy) (*hostops.Store, error) {
 	store, err := hostops.OpenWithRetention(hostops.StorePath(stateRoot), retention)
 	if err != nil {
-		if errors.Is(err, hostops.ErrStoreCorrupt) {
-			return nil, fmt.Errorf("host operation store: %w", err)
-		}
-		_, _ = fmt.Fprintf(stderr, "[hub] host operation store not opened, host boundary records will not be mirrored: %v\n", err)
-		return nil, nil
+		return nil, fmt.Errorf("host operation store: %w", err)
 	}
 	if signal := store.Quarantine(); signal != nil {
 		_, _ = fmt.Fprintf(stderr,

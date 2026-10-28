@@ -468,7 +468,7 @@ func TestRemoveResultCrossFileCommitLeavesTheLockStateBalancedOnEveryExit(t *tes
 			if err != nil || result.HostMutationCommittedRemoved == nil {
 				t.Fatalf("Remove = (%+v, %v), want the committed arm", result, err)
 			}
-			if _, ok := m.cfg.ops.OutstandingToken("m4"); ok {
+			if _, ok := m.opsStore().OutstandingToken("m4"); ok {
 				t.Fatal("the cross-file commit left the token row behind")
 			}
 			return m, "m4"
@@ -488,11 +488,11 @@ func TestRemoveResultCrossFileCommitLeavesTheLockStateBalancedOnEveryExit(t *tes
 		}},
 		{name: "compensation cannot be armed", run: func(t *testing.T) (*hubHostManager, string) {
 			m := crossFileRemoval(t)
-			token, ok := m.cfg.ops.OutstandingToken("m4")
+			token, ok := m.opsStore().OutstandingToken("m4")
 			if !ok {
 				t.Fatal("fixture lost the token row")
 			}
-			if err := m.cfg.ops.ArmCompensation(hostops.Compensation{
+			if err := m.opsStore().ArmCompensation(hostops.Compensation{
 				Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
 				Stash: hubTOMLStashPath(m.cfg.configPath, "earlier"), Generation: 2,
 			}); err != nil {

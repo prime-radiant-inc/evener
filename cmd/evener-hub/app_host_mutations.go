@@ -169,6 +169,9 @@ func (m *hubHostManager) admitMutation(ctx context.Context, kind hostMutationKin
 	if replay, err = m.replayArm(kind, name, mutationID); err != nil || replay != nil {
 		return nil, replay, err
 	}
+	if err = m.mutationRefusal(); err != nil {
+		return nil, nil, err
+	}
 	if replay, err = m.settleOrphanMarker(ctx, kind, name, mutationID); err != nil || replay != nil {
 		return nil, replay, err
 	}
@@ -300,6 +303,9 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 		if replay != nil {
 			return *replay, nil
 		}
+	}
+	if err := m.mutationRefusal(); err != nil {
+		return appwire.HostMutationResult{}, err
 	}
 	auditKey := params.MutationID
 	if auditKey == "" {
@@ -477,7 +483,7 @@ func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previou
 		// The live set the rollback restored: the pre-mutation entries (with any
 		// adopted foreign edit for this name).
 		m.cfg.store.set(adopted)
-	} else if doc, ok := m.cfg.records.load(); ok {
+	} else if doc, ok := m.recordStore().load(); ok {
 		// The rollback did not land: the file still holds the failed commit's
 		// bytes, so the store's model converges to them — a model ahead of the
 		// file (the pre-mutation live set) would make the next write re-emit a
@@ -486,11 +492,11 @@ func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previou
 		m.installRestoredRecords(doc)
 	}
 	m.unmarkMutating(plan.Name)
-	if m.cfg.ops == nil {
+	if m.opsStore() == nil {
 		m.pruneHubTOMLStash(stash)
 		return appwire.HostMutationResult{}, err
 	}
-	record, open := m.cfg.ops.Compensation(plan.Name)
+	record, open := m.opsStore().Compensation(plan.Name)
 	if !open {
 		// Nothing armed (the arm itself failed): there is no store state to
 		// compensate, and the stash has no record to serve.
@@ -534,7 +540,7 @@ func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previou
 				failStep("advance-rows", stepErr)
 				return appwire.HostMutationResult{}, err
 			}
-			if stepErr := m.cfg.ops.AdvanceCompensation(plan.Name, hostops.CompensationRows); stepErr != nil {
+			if stepErr := m.opsStore().AdvanceCompensation(plan.Name, hostops.CompensationRows); stepErr != nil {
 				failStep("advance-rows", stepErr)
 				return appwire.HostMutationResult{}, err
 			}
@@ -543,7 +549,7 @@ func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previou
 			failStep("reinsert", stepErr)
 			return appwire.HostMutationResult{}, err
 		}
-		if _, stepErr := m.cfg.ops.ReinsertCompensationRows(plan.Name, alsoKeep); stepErr != nil {
+		if _, stepErr := m.opsStore().ReinsertCompensationRows(plan.Name, alsoKeep); stepErr != nil {
 			failStep("reinsert", stepErr)
 			return appwire.HostMutationResult{}, err
 		}
@@ -551,7 +557,7 @@ func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previou
 			failStep("advance-clear", stepErr)
 			return appwire.HostMutationResult{}, err
 		}
-		if stepErr := m.cfg.ops.AdvanceCompensation(plan.Name, hostops.CompensationClear); stepErr != nil {
+		if stepErr := m.opsStore().AdvanceCompensation(plan.Name, hostops.CompensationClear); stepErr != nil {
 			failStep("advance-clear", stepErr)
 			return appwire.HostMutationResult{}, err
 		}
@@ -561,7 +567,7 @@ func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previou
 			failStep("advance-clear", stepErr)
 			return appwire.HostMutationResult{}, err
 		}
-		if stepErr := m.cfg.ops.AdvanceCompensation(plan.Name, hostops.CompensationClear); stepErr != nil {
+		if stepErr := m.opsStore().AdvanceCompensation(plan.Name, hostops.CompensationClear); stepErr != nil {
 			failStep("advance-clear", stepErr)
 			return appwire.HostMutationResult{}, err
 		}
@@ -575,7 +581,7 @@ func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previou
 		failStep("clear", stepErr)
 		return appwire.HostMutationResult{}, err
 	}
-	if stepErr := m.cfg.ops.ClearCompensation(plan.Name); stepErr != nil {
+	if stepErr := m.opsStore().ClearCompensation(plan.Name); stepErr != nil {
 		failStep("clear", stepErr)
 		return appwire.HostMutationResult{}, err
 	}
@@ -909,8 +915,8 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	// anything purges them (a host holds at most one outstanding token row).
 	var purgeValues []string
 	var purgePreimage []hostops.Token
-	if m.cfg.ops != nil {
-		if row, ok := m.cfg.ops.OutstandingToken(host.Name); ok {
+	if m.opsStore() != nil {
+		if row, ok := m.opsStore().OutstandingToken(host.Name); ok {
 			purgeValues = []string{row.Value}
 			purgePreimage = []hostops.Token{row}
 		}
@@ -923,7 +929,7 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	// config file — no counterpart to carry an intent, nothing a compensation
 	// could restore.
 	stash := ""
-	if len(purgeValues) > 0 {
+	if len(purgeValues) > 0 && !m.recordsInStore() {
 		stash, err = m.writeHubTOMLStash(receiptKey)
 		if err != nil {
 			return appwire.HostMutationResult{}, err
@@ -990,10 +996,10 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 			Stash:      stash,
 			Generation: host.Generation,
 		}
-		if err := m.cfg.ops.ArmCompensation(armed); err != nil {
+		if err := m.opsStore().ArmCompensation(armed); err != nil {
 			return m.compensateStagedCrossFile(plan, prev, err, stash)
 		}
-		if _, err := m.cfg.ops.PurgeCompensated(host.Name, purgeValues); err != nil {
+		if _, err := m.opsStore().PurgeCompensated(host.Name, purgeValues); err != nil {
 			return m.compensateStagedCrossFile(plan, prev, err, stash)
 		}
 		if err := m.persistHosts(m.cfg.store.snapshot(), plan.Known, hostPersistChange{
@@ -1011,7 +1017,7 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 		// the retry, and a failure behind it is a committed removal whose tokens
 		// are already gone). One atomic store write, logged on failure like the
 		// pre-§9 live revocation it replaces.
-		if _, err := m.cfg.ops.ApplyStoreSync(hostops.StoreSyncIntent{
+		if _, err := m.opsStore().ApplyStoreSync(hostops.StoreSyncIntent{
 			Host:       host.Name,
 			Generation: host.Generation,
 			Values:     purgeValues,
@@ -1054,7 +1060,7 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 		// own store write and the stash goes with it. A crash before this clear
 		// finds the intent already cleared at boot, so the record clears without
 		// resurrecting rows.
-		if err := m.cfg.ops.ClearCompensation(host.Name); err != nil {
+		if err := m.opsStore().ClearCompensation(host.Name); err != nil {
 			m.logf("remove %q: compensation record not cleared past the commit point: %v", host.Name, err)
 		}
 		m.pruneHubTOMLStash(stash)

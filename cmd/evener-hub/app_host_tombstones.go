@@ -58,15 +58,15 @@ const (
 // explicit indicator that the projection dropped rows at the bound (spec §15:
 // "plus an explicit `rowsTruncated: bool` on the tombstone").
 type HostTombstone struct {
-	Name          string     `toml:"name"`
-	Entry         HostConfig `toml:"entry"`
-	Origin        string     `toml:"origin"`
-	Generation    uint64     `toml:"generation"`
-	IncarnationID string     `toml:"incarnation_id"`
-	PresenceEpoch uint64     `toml:"presence_epoch"`
-	RemovedAt     string     `toml:"removed_at"`
-	Rows          []string   `toml:"rows,omitempty"`
-	RowsTruncated bool       `toml:"rows_truncated"`
+	Name          string     `toml:"name" json:"name"`
+	Entry         HostConfig `toml:"entry" json:"entry"`
+	Origin        string     `toml:"origin" json:"origin"`
+	Generation    uint64     `toml:"generation" json:"generation"`
+	IncarnationID string     `toml:"incarnation_id" json:"incarnation_id"`
+	PresenceEpoch uint64     `toml:"presence_epoch" json:"presence_epoch"`
+	RemovedAt     string     `toml:"removed_at" json:"removed_at"`
+	Rows          []string   `toml:"rows,omitempty" json:"rows,omitempty"`
+	RowsTruncated bool       `toml:"rows_truncated" json:"rows_truncated"`
 }
 
 // PrunedReceiptMarker is one [pruned_receipts."<scoped-key>"] record (spec §6):
@@ -77,7 +77,7 @@ type HostTombstone struct {
 // replay naming a marked key with no retained receipt refuses as the typed
 // `stale-entry` (pruned-generation) instead of fresh-applying.
 type PrunedReceiptMarker struct {
-	PrunedAt string `toml:"pruned_at"`
+	PrunedAt string `toml:"pruned_at" json:"pruned_at"`
 }
 
 // hostRecordPolicy is the resolved knob set one write's record derivation

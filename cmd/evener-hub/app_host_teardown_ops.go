@@ -94,6 +94,9 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 	if !remnant.open() {
 		return m.alreadyClearedArm(remnant), nil
 	}
+	if err := m.mutationRefusal(); err != nil {
+		return appwire.HostTeardownRetryResult{}, err
+	}
 	name := remnant.Host
 	// Gate first, then the mutation lock (spec §5's fixed order). A held gate —
 	// a live retry attempt holding it, a deploy/restart, an Ensure, a
@@ -256,6 +259,9 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 	}
 	if !remnant.open() {
 		return recoveredClearedResult(remnant), nil
+	}
+	if err := m.mutationRefusal(); err != nil {
+		return appwire.HostTeardownRecoverResult{}, err
 	}
 	name := remnant.Host
 	// Gate first: "failing fast with the typed busy error when a retry attempt
@@ -715,12 +721,12 @@ func (m *hubHostManager) resolveCleanupHandle(remnantID string, remnant HostTear
 		if handle.IncarnationID != remnant.IncarnationID {
 			return teardownUnknownKeyRefusal(remnantID)
 		}
-		if m.cfg.ops == nil {
+		if m.opsStore() == nil {
 			// No operation store is wired (tests, embedders): the handle's own
 			// record is the whole durable handle, and it is complete.
 			return nil
 		}
-		mark, ok := m.cfg.ops.Boundary(remnant.Host)
+		mark, ok := m.opsStore().Boundary(remnant.Host)
 		if !ok {
 			return teardownUnknownKeyRefusal(remnantID)
 		}

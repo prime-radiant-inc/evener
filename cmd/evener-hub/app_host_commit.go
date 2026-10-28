@@ -278,11 +278,11 @@ func (m *hubHostManager) adoptedPreimage(plan *hostCommitPlan, previous []hostre
 // carries for name. ok is false when the file is unreadable, undecodable, or
 // carries no such entry — every case where there is nothing to adopt.
 func (m *hubHostManager) hubTOMLFileEntry(name string) (hostreg.Host, bool) {
-	doc, ok := m.cfg.records.load()
+	hosts, ok := m.recordStore().hosts()
 	if !ok {
 		return hostreg.Host{}, false
 	}
-	for _, entry := range doc.Hosts {
+	for _, entry := range hosts {
 		if entry.Name == name {
 			return entry, true
 		}
@@ -329,7 +329,7 @@ func (m *hubHostManager) finalizeReceipt(plan *hostCommitPlan, receipt HostMutat
 		if adopted, ok := m.hubTOMLFileEntries(); ok {
 			entries = adopted
 		}
-		if doc, ok := m.cfg.records.load(); ok {
+		if doc, ok := m.recordStore().load(); ok {
 			carryReceipts = doc.Records.MutationReceipts
 		}
 	}
@@ -390,11 +390,7 @@ func (m *hubHostManager) reconcileRuntimeToFileLocked(name string) {
 // hubTOMLFileEntries reads the selected hub.toml and returns the live entry set
 // it carries, in file order — the set a collision write adopts.
 func (m *hubHostManager) hubTOMLFileEntries() ([]hostreg.Host, bool) {
-	doc, ok := m.cfg.records.load()
-	if !ok {
-		return nil, false
-	}
-	return doc.Hosts, true
+	return m.recordStore().hosts()
 }
 
 // reconcileRenameCollision is the post-rename re-read (spec §11: "the dropped

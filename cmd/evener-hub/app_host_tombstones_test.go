@@ -998,7 +998,7 @@ func TestHostRemovalMirrorsTheRemovalMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
-	f.m.cfg.ops = store
+	f.m.cfg.ops.Store(store)
 	removedAt := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
 	f.m.cfg.now = func() time.Time { return removedAt }
 
