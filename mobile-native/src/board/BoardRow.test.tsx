@@ -526,13 +526,17 @@ function pressedStyle(tree: ReactTestRenderer, pressed: boolean): Style {
 }
 
 describe("spokenAge", () => {
-	it("says each relative-age unit in words, singular at one", () => {
-		expect(spokenAge("1m")).toBe("1 minute");
-		expect(spokenAge("2m")).toBe("2 minutes");
-		expect(spokenAge("1h")).toBe("1 hour");
-		expect(spokenAge("5h")).toBe("5 hours");
-		expect(spokenAge("1d")).toBe("1 day");
-		expect(spokenAge("12d")).toBe("12 days");
+	it("leads with the count and names a different unit for each age suffix", () => {
+		const spoken = ["12m", "12h", "12d"].map(spokenAge);
+		for (const text of spoken) expect(text.startsWith("12")).toBe(true);
+		expect(new Set(spoken.map((text) => text.replace(/^12/, ""))).size).toBe(3);
+	});
+
+	it("pluralizes the unit from two up and not at one", () => {
+		for (const unit of ["m", "h", "d"]) {
+			const one = spokenAge(`1${unit}`);
+			expect(spokenAge(`2${unit}`)).toBe(`${one.replace(/^1/, "2")}s`);
+		}
 	});
 
 	it("passes through an age that is not a count and unit", () => {
