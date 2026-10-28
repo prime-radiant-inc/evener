@@ -21,7 +21,7 @@ package contextmgr
 // through the OAuth-backed Codex backend.
 //
 // Three arms per case (all combined-output scored):
-//   A baseline:    summarizeWithLLMSteered(hist, 2, "")              -> summary only
+//   A baseline:    summarizeFold(hist, 2, "")              -> summary only
 //   B note only:   [NOTE TO SELF] mustKeep [END] + baseline summary
 //   C note + steer:[NOTE TO SELF] mustKeep [END] + steered summary (c.instruction)
 // Scored two ways: objective needle-match (mustKeep present?) and an LLM-judge
@@ -127,9 +127,9 @@ func TestEvalSmoke(t *testing.T) {
 	hist := turnsFromText(t, block("build output", repeat("go build ./...\n", 30))+"\n"+
 		fact("The team decided the public API signature is: func CreateOrder(ctx, req) (*Order, error)"))
 
-	out, err := cm.summarizeWithLLMSteered(ctx, hist, 2, "")
+	out, err := cm.summarizeFold(ctx, hist, 2, "", nil)
 	if err != nil {
-		t.Fatalf("summarizeWithLLMSteered (real OAuth model): %v", err)
+		t.Fatalf("summarizeFold (real OAuth model): %v", err)
 	}
 	summary := summaryText(out)
 	if strings.TrimSpace(summary) == "" {
@@ -193,7 +193,7 @@ func (cm *Manager) judgeOutput(ctx context.Context, taskContext, handoff string)
 // consume the whole run's budget.
 const perCallTimeout = 3 * time.Minute
 
-// summarizeRetry runs summarizeWithLLMSteered with a bounded per-call timeout,
+// summarizeRetry runs summarizeFold with a bounded per-call timeout,
 // retrying once on a transient error so a single slow/timed-out call does not
 // drop a case.
 func summarizeRetry(t *testing.T, cm *Manager, hist []schema.Turn, instructions string) (string, error) {
@@ -201,7 +201,7 @@ func summarizeRetry(t *testing.T, cm *Manager, hist []schema.Turn, instructions 
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), perCallTimeout)
-		out, err := cm.summarizeWithLLMSteered(ctx, hist, 2, instructions)
+		out, err := cm.summarizeFold(ctx, hist, 2, instructions, nil)
 		cancel()
 		if err == nil {
 			return summaryText(out), nil
@@ -413,9 +413,9 @@ func writeResultsDoc(t *testing.T, n, total int, skipped []string, rows []caseRo
 	if len(skipped) > 0 {
 		fmt.Fprintf(&b, "Skipped (transient errors, not scored): %s\n\n", strings.Join(skipped, ", "))
 	}
-	fmt.Fprintf(&b, "- **A baseline**: `summarizeWithLLMSteered(hist, 2, \"\")` — cheap-model summary only.\n")
+	fmt.Fprintf(&b, "- **A baseline**: `summarizeFold(hist, 2, \"\")` — cheap-model summary only.\n")
 	fmt.Fprintf(&b, "- **B note only**: `[NOTE TO SELF]`+key fact+`[END]` + the same baseline summary.\n")
-	fmt.Fprintf(&b, "- **C note + steer**: the note block + `summarizeWithLLMSteered(hist, 2, instruction)`.\n\n")
+	fmt.Fprintf(&b, "- **C note + steer**: the note block + `summarizeFold(hist, 2, instruction)`.\n\n")
 	fmt.Fprintf(&b, "The note content is the case's `mustKeep` key fact, simulating an agent that pinned the fact before compaction.\n\n")
 
 	fmt.Fprintf(&b, "## Aggregate\n\n")

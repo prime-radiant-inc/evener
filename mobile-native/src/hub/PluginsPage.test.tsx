@@ -27,6 +27,7 @@ import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeCli
 import type { ConversationClientLike } from "../conversation/services/conversation";
 import { fonts } from "../design/tokens";
 import { AddMarketplace, MarketplaceDetail } from "../MarketplaceBrowser";
+import { timeAgo } from "../session/format";
 import { PluginsPage } from "./PluginsPage";
 import { PluginsStack } from "./pluginsStackTestUtils";
 import {
@@ -3420,16 +3421,16 @@ it("says a time from a clock ahead of this phone's was just now, not a count of 
 	expect(detail.findAllByProps({ accessibilityLabel: "Updated, just now" }).length).toBeGreaterThan(0);
 });
 
-it("says a time under a second old was just now", async () => {
-	// The clock stands still, so however long the mount takes the time is
-	// half a second old when the detail reads it.
+it("ages a plugin's time with the same wording as any other age in the app", async () => {
+	// The clock stands still, so the time is exactly thirty seconds old when
+	// the detail reads it.
 	vi.useFakeTimers({ toFake: ["Date"] });
 	try {
-		const halfASecondAgo = (Date.now() - 500) / 1000;
-		const hub = pageHub([entry("demo-plugin", { installedAt: halfASecondAgo, lastUpdated: halfASecondAgo })]);
+		const thirtySecondsAgo = (Date.now() - 30_000) / 1000;
+		const hub = pageHub([entry("demo-plugin", { installedAt: thirtySecondsAgo, lastUpdated: thirtySecondsAgo })]);
 		const { tree } = await mountPage(hub);
 		const detail = await openDetail(tree, "demo-plugin");
-		expect(detail.findAllByProps({ accessibilityLabel: "Installed, just now" }).length).toBeGreaterThan(0);
+		expect(detail.findAllByProps({ accessibilityLabel: `Updated, ${timeAgo(30_000)}` }).length).toBeGreaterThan(0);
 	} finally {
 		vi.useRealTimers();
 	}

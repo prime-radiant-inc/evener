@@ -97,9 +97,9 @@ func TestSummarizeWithLLMOwnsOneLogicalAttemptGroupWhenAllRoutesFail(t *testing.
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
-	_, gotErr := cm.summarizeWithLLM(context.Background(), history, 1)
+	_, gotErr := cm.summarizeFold(context.Background(), history, 1, "", nil)
 	if !errors.Is(gotErr, activeErr) {
-		t.Fatalf("summarizeWithLLM error = %v, want final provider error %v", gotErr, activeErr)
+		t.Fatalf("summarizeFold error = %v, want final provider error %v", gotErr, activeErr)
 	}
 	if err := logger.Close(); err != nil {
 		t.Fatalf("Close API logger: %v", err)
