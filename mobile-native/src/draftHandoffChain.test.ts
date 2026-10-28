@@ -1137,4 +1137,137 @@ describe("handoff chain obligations", () => {
 		expect(document.getSnapshot().error).toBeNull();
 		expect(repository.read(endpoint("a"))).toMatchObject({ draft: "typed mid-flight", unconfirmed: null });
 	});
+
+	test("a stale retired snapshot never deletes newer source work", () => {
+		const { storageLedger, repository } = setup();
+		// The transfer commits; its composed marker and its settlement both
+		// fail, so the edge stays pending and retains the retired snapshot.
+		const failing = flaky(flaky(storageLedger, "recordComposed", 1), "settleEdge", 1);
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => failing,
+		);
+		repository.write(endpoint("a"), { draft: "original work", unconfirmed: null });
+		expect(library.handoff(endpoint("a"), endpoint("b"))).toBe(false);
+		expect(storageLedger.readGraph().edges[0]).toMatchObject({ state: "pending", composedAt: null });
+
+		// The destination clears its copy, and the reopened source composes
+		// fresh work: the reviewer's exact recovery sequence.
+		library.open(endpoint("b")).edit("");
+		library.open(endpoint("a")).edit("newer work");
+
+		library.retryPendingHandoffs();
+		// The retry must not move the stale snapshot over the source's newer
+		// durable work; without destination evidence the edge keeps waiting.
+		expect(repository.read(endpoint("a"))).toMatchObject({ draft: "newer work" });
+		expect(repository.read(endpoint("b"))).toEqual({ draft: "", unconfirmed: null });
+		expect(storageLedger.readGraph().edges[0].state).toBe("pending");
+	});
+
+	test("a recovery pass applies a resolved completion with no pending edge", () => {
+		const { storageLedger, repository } = setup();
+		// The durable state a crash leaves behind: the resolution committed to
+		// the ledger, the capture it owns was never cleared, and no edge ever
+		// waited for the obligation.
+		storageLedger.beginSubmission("token-x", endpoint("a"), ["recovered-a"]);
+		repository.write(endpoint("a"), {
+			draft: "current",
+			unconfirmed: "current",
+			unconfirmedComposer: { recoveryIds: ["recovered-a"] },
+			unconfirmedCaptureToken: "token-x",
+		});
+		storageLedger.resolveSubmission("token-x", "completed", ["recovered-a"]);
+
+		// The ledger recovers on a restart: the recovery pass must apply the
+		// completion at the capture owner even though no edge waited for it,
+		// so the completed command cannot come back as editable input.
+		const restarted = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => storageLedger,
+		);
+		restarted.retryPendingHandoffs();
+		const settled = repository.read(endpoint("a"));
+		expect(settled.unconfirmedCaptureToken).toBeUndefined();
+		expect(settled).toMatchObject({
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+		expect(
+			restarted.open(endpoint("a")).appendEditedRecovery({
+				version: 1,
+				clientMutationId: "recovered-a",
+				targetRef: targetKey("a"),
+				method: "turn/start",
+				payload: { input: [{ type: "text", text: "encoded" }] },
+				attachments: [],
+				composerText: "encoded",
+				optimisticDisplay: {},
+				intentSequence: 1,
+				createdAt: 1,
+				state: "canceled",
+				attempted: false,
+				recoveryKind: "editing",
+			}),
+		).toBe("already-restored");
+	});
+
+	test("a reopened origin's durable record owns its new capture", () => {
+		const { storageLedger, repository } = setup();
+		// A historical handoff A -> B settles and cleans up.
+		repository.write(endpoint("a"), { draft: "old work", unconfirmed: null });
+		const first = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => storageLedger,
+		);
+		expect(first.handoff(endpoint("a"), endpoint("b"))).toBe(true);
+		first.retryPendingHandoffs();
+		expect(storageLedger.readGraph().edges[0]).toMatchObject({ resolvedAs: "settled", state: "cleaned" });
+
+		// A crash leaves a resolved submission at the reopened origin: no edge
+		// adopts it, and its capture sits in A's own durable record.
+		storageLedger.beginSubmission("token-fresh", endpoint("a"), ["recovered-new"]);
+		repository.write(endpoint("a"), {
+			draft: "fresh work",
+			unconfirmed: "fresh work",
+			unconfirmedComposer: { recoveryIds: ["recovered-new"] },
+			unconfirmedCaptureToken: "token-fresh",
+		});
+		storageLedger.resolveSubmission("token-fresh", "completed", ["recovered-new"]);
+
+		// On restart the completion must apply at A - whose record durably
+		// holds the token - not at B, the terminal of the unrelated
+		// historical edge the graph would otherwise route it through.
+		const restarted = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => storageLedger,
+		);
+		restarted.retryPendingHandoffs();
+		const settled = repository.read(endpoint("a"));
+		expect(settled.unconfirmedCaptureToken).toBeUndefined();
+		expect(settled).toMatchObject({
+			completedCommandRecoveryIds: ["recovered-new"],
+		});
+		expect(repository.read(endpoint("b"))).toEqual({ draft: "old work", unconfirmed: null });
+		expect(
+			restarted.open(endpoint("a")).appendEditedRecovery({
+				version: 1,
+				clientMutationId: "recovered-new",
+				targetRef: targetKey("a"),
+				method: "turn/start",
+				payload: { input: [{ type: "text", text: "encoded" }] },
+				attachments: [],
+				composerText: "encoded",
+				optimisticDisplay: {},
+				intentSequence: 1,
+				createdAt: 1,
+				state: "canceled",
+				attempted: false,
+				recoveryKind: "editing",
+			}),
+		).toBe("already-restored");
+	});
 });

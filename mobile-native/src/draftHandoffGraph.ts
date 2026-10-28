@@ -74,8 +74,11 @@ function sameEndpoint(a: DraftHandoffEndpoint, b: DraftHandoffEndpoint): boolean
  * the answer unless one of the chain's hops durably holds the capture token: a
  * transfer can commit while its composed-marker write fails, and a delayed
  * predecessor can land its composition at an intermediate identity after the
- * continuation moved on. The capture token is unique, so durable evidence at
- * any hop wins over the graph's routing. */
+ * continuation moved on, and a submission begun at a reopened origin durably
+ * holds its token there while historical edges would route it elsewhere. The
+ * capture token is unique, so durable evidence at any hop - or at the origin
+ * itself - wins over the graph's routing, and an obligation no edge ever
+ * adopted is never routed through unrelated historical edges. */
 export function captureTerminal(
 	edges: readonly DraftHandoffEdge[],
 	obligation: {
@@ -93,6 +96,14 @@ export function captureTerminal(
 		const record = read(hop.to);
 		if (record?.unconfirmedCaptureToken === obligation.obligationId) return hop.to;
 	}
+	// The origin's own durable record can hold the exact token: a submission
+	// begun after every historical handoff cleaned up never moved, and durable
+	// evidence at the origin wins over graph routing.
+	if (read(obligation.origin)?.unconfirmedCaptureToken === obligation.obligationId) return obligation.origin;
+	// An obligation no edge ever adopted cannot have been routed by the graph:
+	// its capture either sits at a hop checked above or at the origin, and
+	// routing it through unrelated historical edges would strand it.
+	if (obligation.chainId === null) return obligation.origin;
 	return terminalDestination(edges, obligation.origin, obligation.chainId ?? undefined);
 }
 
