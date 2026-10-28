@@ -23,13 +23,17 @@ function bind(root: HTMLElement, part: ComicMarkdownPart): void {
     const text = node as Text;
     for (let index = 0; index < text.length; index++) {
       const next = expected[cursor];
-      // Marked emits layout newlines between elements which are not token text.
-      if (text.data[index] !== next?.char && /\s/.test(text.data[index] ?? "")) continue;
-      if (!next) break;
+      // Only whitespace-only markup nodes may be skipped, never authored text
+      // within a node or any literal code whitespace.
+      if (!next || text.data[index] !== next.char) {
+        if (!part.plain && part.kind !== "code" && !text.data.trim()) continue;
+        throw new TypeError("Comic Markdown glyph does not match its source map");
+      }
       result.push({ node: text, index, source: next.source });
       cursor++;
     }
   }
+  if (cursor !== expected.length) throw new TypeError("Comic Markdown source map has unbound glyphs");
   glyphs.set(root, result);
 }
 

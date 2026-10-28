@@ -92,7 +92,28 @@ function unquote(raw: MappedText, text: string): MappedText {
 function listBody(raw: MappedText, item: Tokens.ListItem): MappedText {
   const prefix = item.raw.match(/^ {0,3}(?:[*+-]|\d{1,9}[.)])/)?.[0].length ?? 0;
   const checkbox = item.tokens[0]?.type === "checkbox" ? item.tokens[0].raw : "";
-  return bodyLines(raw, checkbox + item.text, prefix);
+  const target = checkbox + item.text;
+  const targetLines = target.split("\n");
+  // Marked expands first-line tabs to tab stops and continuation tabs to four
+  // spaces before removing the item's indentation. Each expanded unit still
+  // belongs to the authored tab, including after a second block-level dedent.
+  const expanded = joinLines(
+    lines(raw).map((line, row) => {
+      // Lazy continuation lines retain tabs verbatim in the lexer's item text.
+      if (targetLines[row]?.includes("\t")) return line;
+      let text = "";
+      const offsets: number[] = [];
+      for (let i = 0; i < line.text.length; i++) {
+        const char = line.text[i] ?? "";
+        const width = char === "\t" ? (row ? 4 : 4 - (text.length % 4)) : 1;
+        text += char === "\t" ? " ".repeat(width) : char;
+        for (let j = 0; j < width; j++) offsets.push(line.offsets[i] as number);
+      }
+      return { text, offsets };
+    }),
+    raw,
+  );
+  return bodyLines(expanded, target, prefix);
 }
 
 function decoded(value: MappedText): MappedText {
@@ -107,7 +128,8 @@ function decoded(value: MappedText): MappedText {
     for (const offset of value.offsets.slice(cursor, match.index)) offsets.push(offset);
     decoder.innerHTML = match[0];
     text += decoder.value;
-    offsets.push(...Array.from({ length: decoder.value.length }, () => value.offsets[match.index] ?? 0));
+    for (let i = 0; i < decoder.value.length; i++)
+      offsets.push(value.offsets[match.index + (decoder.value === match[0] ? i : 0)] as number);
     cursor = match.index + match[0].length;
   }
   return { text: text + value.text.slice(cursor), offsets: [...offsets, ...value.offsets.slice(cursor)] };
@@ -130,7 +152,15 @@ function inline(tokens: Token[], raw: MappedText): VisibleRun[] {
         const t = token as Tokens.Link;
         // Explicit labels start after [, autolinks after <, GFM URLs have no delimiter.
         const prefix = token.raw[0] === "[" || token.raw[0] === "<" ? 1 : 0;
-        return inline(t.tokens, cut(value, prefix, prefix + t.text.length));
+        const offsets: number[] = [];
+        let cursor = prefix;
+        // The lexer removes escapes before square brackets before lexing the label.
+        // Walk exactly the normalized label, not a search for matching text.
+        for (let i = 0; i < t.text.length; i++, cursor++) {
+          if (value.text[cursor] === "\\" && /[[\]]/.test(value.text[cursor + 1] ?? "")) cursor++;
+          offsets.push(value.offsets[cursor] as number);
+        }
+        return inline(t.tokens, { text: t.text, offsets });
       }
       case "image":
       case "br":
@@ -212,8 +242,16 @@ function visible(token: Token, raw: MappedText): VisibleRun[] {
       return tableRuns(token as Tokens.Table, raw);
     case "heading": {
       const t = token as Tokens.Heading;
-      const prefix = token.raw.match(/^ {0,3}#{1,6}[ \t]+/)?.[0].length ?? 0;
+      const prefix =
+        token.raw.match(/^ {0,3}#{1,6}[ \t]+/)?.[0].length ?? token.raw.length - token.raw.trimStart().length;
       return inline(t.tokens, cut(raw, prefix, prefix + t.text.length));
+    }
+    case "paragraph":
+    case "text": {
+      const t = token as Tokens.Paragraph;
+      // A code-indented continuation can be folded into a paragraph/text token.
+      // Its inline tokens refer to the dedented text, not the token's raw span.
+      return inline(t.tokens, bodyLines(raw, t.text));
     }
     case "html":
       return [raw];
@@ -254,8 +292,17 @@ export function projectComicMarkdown(source: string, live: boolean): ComicMarkdo
     if (token.type === "def") definitions.push(token.raw);
   });
   const references = definitions.join("\n");
-  const parts: ComicMarkdownPart[] = [];
-  const emit = (token: Token, raw: MappedText, wrap: (input: string) => string) => {
+  const append = (parts: ComicMarkdownPart[], part: ComicMarkdownPart) => {
+    const prior = parts.at(-1);
+    if (part.kind === "prose" && prior?.kind === "prose") {
+      prior.input += `\n\n${part.input}`;
+      prior.end = part.end;
+      for (const run of part.visible) prior.visible.push(run);
+      for (const block of part.blocks ?? []) prior.blocks?.push(block);
+      prior.plain &&= part.plain;
+    } else parts.push(part);
+  };
+  const emit = (parts: ComicMarkdownPart[], token: Token, raw: MappedText) => {
     const start = raw.offsets[0] ?? source.length;
     const end = (raw.offsets.at(-1) ?? start - 1) + 1;
     if (token.type === "space" || token.type === "def" || token.type === "checkbox") return;
@@ -275,43 +322,58 @@ export function projectComicMarkdown(source: string, live: boolean): ComicMarkdo
         plain: false,
       });
     } else {
-      const input = wrap(raw.text);
+      const input = raw.text;
       const runs = visible(token, raw);
       const kind = token.type === "table" ? "table" : "prose";
       const block = { start, end, input, visible: [...runs] };
-      const prior = parts.at(-1);
-      if (kind === "prose" && prior?.kind === "prose") {
-        prior.input += `\n\n${input}`;
-        prior.end = end;
-        for (const run of runs) prior.visible.push(run);
-        prior.blocks?.push(block);
-        prior.plain &&= isPlain(token) && input === raw.text;
-      } else
-        parts.push({
-          kind,
-          start,
-          end,
-          input,
-          visible: runs,
-          plain: isPlain(token) && input === raw.text,
-          blocks: kind === "prose" ? [block] : undefined,
-        });
+      append(parts, {
+        kind,
+        start,
+        end,
+        input,
+        visible: runs,
+        plain: isPlain(token),
+        blocks: kind === "prose" ? [block] : undefined,
+      });
     }
   };
-  const visit = (values: Token[], input: MappedText, wrap: (text: string) => string) => {
+  const wrapFragments = (
+    parts: ComicMarkdownPart[],
+    fragments: ComicMarkdownPart[],
+    wrap: (input: string) => string,
+  ) => {
+    for (const fragment of fragments) {
+      if (fragment.kind !== "code") {
+        fragment.input = wrap(fragment.input);
+        fragment.plain = false;
+        // A contiguous fragment of one authored container is indivisible.
+        // Wrapping its paragraphs separately would invent list items/quotes.
+        if (fragment.kind === "prose")
+          fragment.blocks = [
+            {
+              start: fragment.start,
+              end: fragment.end,
+              input: fragment.input,
+              visible: [...fragment.visible],
+            },
+          ];
+      }
+      append(parts, fragment);
+    }
+  };
+  const visit = (values: Token[], input: MappedText): ComicMarkdownPart[] => {
+    const parts: ComicMarkdownPart[] = [];
     let cursor = 0;
     for (const token of values) {
       const raw = cut(input, cursor, cursor + token.raw.length);
       cursor += token.raw.length;
       if (token.type === "blockquote" && hasInsert(token)) {
         const t = token as Tokens.Blockquote;
-        visit(t.tokens, unquote(raw, t.text), (text) =>
-          wrap(
-            text
-              .split("\n")
-              .map((line) => `> ${line}`)
-              .join("\n"),
-          ),
+        wrapFragments(parts, visit(t.tokens, unquote(raw, t.text)), (text) =>
+          text
+            .split("\n")
+            .map((line) => `> ${line}`)
+            .join("\n"),
         );
       } else if (token.type === "list" && hasInsert(token)) {
         const list = token as Tokens.List;
@@ -320,19 +382,18 @@ export function projectComicMarkdown(source: string, live: boolean): ComicMarkdo
           const value = cut(raw, offset, offset + item.raw.length);
           offset += item.raw.length;
           const marker = list.ordered ? `${Number(list.start) + index}. ` : "- ";
-          visit(item.tokens, listBody(value, item), (text) =>
-            wrap(
-              text
-                .split("\n")
-                .map((line, i) => `${i ? " ".repeat(marker.length) : marker}${line}`)
-                .join("\n"),
-            ),
+          wrapFragments(parts, visit(item.tokens, listBody(value, item)), (text) =>
+            text
+              .split("\n")
+              .map((line, i) => `${i ? " ".repeat(marker.length) : marker}${line}`)
+              .join("\n"),
           );
         });
-      } else emit(token, raw, wrap);
+      } else emit(parts, token, raw);
     }
+    return parts;
   };
-  visit(tokens, original, (text) => text);
+  const parts = visit(tokens, original);
   if (!parts.length)
     parts.push({ kind: "prose", start: 0, end: source.length, input: source, visible: [], plain: !source.trim() });
   // Whitespace, container markers and definitions belong to an adjacent panel, never an empty insert surround.

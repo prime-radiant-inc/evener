@@ -116,6 +116,37 @@ function Reader({
     />
   );
 }
+
+test("mounted fit cache measures plain and Markdown versions of the same paragraph input", async () => {
+  const plain = { ...entry, id: "plain", kind: "thought" as const, text: "First\n\nSecond" };
+  const formatted = { ...plain, id: "formatted", sourceIndex: 1, text: "First\n\nSecond\n\n**Third**" };
+  let measuredPlain = false;
+  let measuredMarkdownPair = false;
+  // Platform geometry distinguishes actual widget paragraphs from literal pre-wrap
+  // text. The production reader, cache, composer and measurer all run unchanged.
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    let height = 20;
+    if (this.matches("[data-comic-text]") && this.closest("[data-comic-probe]")) {
+      const paragraphs = this.querySelectorAll("p");
+      if (!paragraphs.length && this.textContent === "First\n\nSecond") measuredPlain = true;
+      if (paragraphs.length === 2 && !this.querySelector("strong")) measuredMarkdownPair = true;
+      height = paragraphs.length >= 2 ? 1000 : 20;
+    }
+    return new DOMRect(0, 0, 760, height);
+  });
+  const mounted = render(<Reader entries={[plain, formatted]} older={history()} />);
+  await waitFor(() => expect(measuredPlain).toBe(true));
+  await waitFor(() => expect(measuredMarkdownPair).toBe(true));
+  const panels = [...mounted.container.querySelectorAll<HTMLElement>("[data-comic-entry='formatted']")];
+  expect(panels).toHaveLength(3);
+  expect(panels.map((panel) => panel.querySelectorAll("p").length)).toEqual([1, 1, 1]);
+  expect(
+    panels
+      .map((panel) => formatted.text.slice(Number(panel.dataset.comicStart), Number(panel.dataset.comicEnd)))
+      .join(""),
+  ).toBe(formatted.text);
+});
+
 test("uses one scroll port through view changes and cancels restoration at latest", async () => {
   const older = history();
   const mounted = render(<Reader older={older} />);

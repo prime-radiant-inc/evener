@@ -3,6 +3,20 @@ import { projectComicMarkdown } from "./markdown";
 
 const source = "**before**\n\n```ts\n  a\n\tb\n```\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\nafter";
 
+test.each([
+  ["  abc\n  ===", "abc", [2, 3, 4]],
+  ["[x\\]](/url) after", "x] after", [1, 3, 11, 12, 13, 14, 15, 16]],
+  ["- a\n\t\tb", "a\n  b", [2, 3, 5, 5, 6]],
+  ["- a\nb\tc", "a\nb\tc", [2, 3, 4, 5, 6]],
+  ["&bogus;", "&bogus;", [0, 1, 2, 3, 4, 5, 6]],
+] as const)("normalized source %s maps every visible unit", (raw, text, offsets) => {
+  const doc = projectComicMarkdown(raw, false);
+  expect(doc.parts.map((part) => raw.slice(part.start, part.end)).join("")).toBe(raw);
+  const runs = doc.parts.flatMap((part) => part.visible);
+  expect(runs.map((run) => run.text).join("")).toBe(text);
+  expect(runs.flatMap((run) => run.offsets)).toEqual(offsets);
+});
+
 test("parts retain every original UTF-16 unit in prose, code, table, prose order", () => {
   const document = projectComicMarkdown(source, false);
   expect(document.source).toBe(source);

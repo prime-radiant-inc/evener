@@ -267,7 +267,15 @@ export function ComicTranscript({
     if (!measurer) return;
     const used = new Set<string>();
     const fits: Parameters<typeof composeComicFlow>[3] = (document, part, composition, kind) => {
-      const key = JSON.stringify([kind, composition, document.live, document.references, part.kind, part.input]);
+      const key = JSON.stringify([
+        kind,
+        composition,
+        document.live,
+        document.references,
+        part.kind,
+        part.plain,
+        part.input,
+      ]);
       used.add(key);
       const cached = fitsCache.current.get(key);
       if (cached !== undefined) return cached;

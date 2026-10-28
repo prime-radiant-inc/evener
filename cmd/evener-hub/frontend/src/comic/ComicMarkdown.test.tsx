@@ -28,6 +28,74 @@ function ranges(doc: Document) {
   };
 }
 
+test.each([
+  {
+    source: "  abc\n  ===",
+    selector: "h1",
+    text: "abc",
+    points: [
+      [2, 0],
+      [3, 1],
+      [4, 2],
+    ],
+  },
+  {
+    source: "[x\\]](/url) after",
+    selector: "a",
+    text: "x]",
+    points: [
+      [1, 0],
+      [3, 1],
+    ],
+  },
+  {
+    source: "- a\n\t\tb",
+    selector: "li",
+    text: "a\n  b",
+    points: [
+      [2, 0],
+      [6, 4],
+    ],
+  },
+  {
+    source: "&bogus;",
+    selector: "p",
+    text: "&bogus;",
+    points: [
+      [0, 0],
+      [1, 1],
+      [5, 5],
+      [6, 6],
+    ],
+  },
+  {
+    source: "- a\nb\tc",
+    selector: "li",
+    text: "a\nb\tc",
+    points: [
+      [2, 0],
+      [4, 2],
+      [5, 3],
+      [6, 4],
+    ],
+  },
+])("normalized source $source retains actual DOM glyph endpoints", ({ source, selector, text, points }) => {
+  const { container } = render(formatted(source));
+  const node = container.querySelector(selector)?.firstChild;
+  expect(node?.textContent).toBe(text);
+  const probe = ranges(container.ownerDocument);
+  try {
+    for (const [sourceOffset, domOffset] of points) {
+      comicMarkdownPoint(container, sourceOffset as number);
+      expect(probe.last?.startContainer).toBe(node);
+      expect(probe.last?.startOffset).toBe(domOffset);
+      expect(node?.textContent?.[domOffset as number]).toBe(source[sourceOffset as number]);
+    }
+  } finally {
+    probe.spy.mockRestore();
+  }
+});
+
 test("source offsets identify exact DOM nodes and positions, including repeated nested labels", () => {
   const source = "# **same [same](https://x.test) same**\r\n\r\n&amp; \\* 😀\tZ";
   const { container } = render(formatted(source));
@@ -66,6 +134,14 @@ test("source offsets identify exact DOM nodes and positions, including repeated 
   } finally {
     probe.spy.mockRestore();
   }
+});
+
+test.each(["xbc", "ab", "abcd"])("inconsistent visible map %s cannot bind another glyph", (text) => {
+  const document = projectComicMarkdown("**abc**", false);
+  const part = document.parts[0];
+  if (!part) throw new Error("missing part");
+  const inconsistent = { ...part, visible: [{ text, offsets: [2, 3, 4, 5] }] };
+  expect(() => render(<ComicMarkdown document={document} part={inconsistent} />)).toThrow(TypeError);
 });
 
 test("whole-document references resolve on both sides of a code insert without rendering definitions", () => {
@@ -107,6 +183,48 @@ test("nested list and quote prose keeps its containers around character-free blo
   } finally {
     probe.spy.mockRestore();
   }
+});
+
+test.each([
+  { marker: "- ", selector: "ul > li", ordered: false },
+  { marker: "7. ", selector: "ol > li", ordered: true },
+  { marker: "> ", selector: "blockquote", ordered: false },
+])("insert fragments preserve paragraphs in one $selector", ({ marker, selector, ordered }) => {
+  const body = "before\n\nsecond\n\n```txt\ncode\n```\n\nafter\n\nlast";
+  const source = body
+    .split("\n")
+    .map((line, index) => `${marker === "> " || index === 0 ? marker : " ".repeat(marker.length)}${line}`)
+    .join("\n");
+  const doc = projectComicMarkdown(source, false);
+  expect(doc.parts.map((part) => source.slice(part.start, part.end)).join("")).toBe(source);
+  if (ordered)
+    expect(doc.parts.filter((part) => part.kind === "prose").every((part) => part.input.startsWith("7. "))).toBe(true);
+  const { container } = render(formatted(source));
+  const prose = [...container.querySelectorAll("[data-comic-markdown='prose']")];
+  expect(prose).toHaveLength(2);
+  for (const fragment of prose) {
+    expect(fragment.querySelectorAll(selector)).toHaveLength(1);
+    expect(fragment.querySelector(selector)?.querySelectorAll(":scope > p")).toHaveLength(2);
+  }
+  expect(container.querySelector("pre code")?.textContent).toBe("code");
+});
+
+test("nested ordered and unordered item identity survives an insert inside a quote", () => {
+  const source =
+    "> 3. outer\n>\n>    - before\n>\n>      second\n>\n>      ```txt\n>      code\n>      ```\n>\n>      after\n>\n>      last\n>\n>    outer end";
+  const doc = projectComicMarkdown(source, false);
+  expect(doc.parts.map((part) => source.slice(part.start, part.end)).join("")).toBe(source);
+  expect(doc.parts.filter((part) => part.kind === "prose").every((part) => part.input.startsWith("> 3. "))).toBe(true);
+  const { container } = render(formatted(source));
+  const prose = [...container.querySelectorAll("[data-comic-markdown='prose']")];
+  expect(prose).toHaveLength(2);
+  for (const fragment of prose) {
+    expect(fragment.querySelectorAll("blockquote, ol, ul")).toHaveLength(3);
+    expect(fragment.querySelectorAll("li")).toHaveLength(2);
+    expect(fragment.querySelectorAll("ol > li > p")).toHaveLength(1);
+    expect(fragment.querySelectorAll("ul > li > p")).toHaveLength(2);
+  }
+  expect(container.querySelector("pre code")?.textContent).toBe("code");
 });
 
 test("safe shared rendering escapes authored HTML and strips unsafe destinations while preserving selectable text", () => {
