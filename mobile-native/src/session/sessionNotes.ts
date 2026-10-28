@@ -347,7 +347,7 @@ export class NotesController {
 				this.publish({ ...this.state, phase: caughtUp ? "clean" : "editing" });
 			}
 			// An unchanged note projects "removed" and wakes no one
-			// (agent/session_notes_rpc.go).
+			// (agent/session_notes_mutations.go).
 			return { saved: true, woke: !working && response.receipt.projectionState === "pending" };
 		} catch {
 			this.storeDraft(this.state.text);

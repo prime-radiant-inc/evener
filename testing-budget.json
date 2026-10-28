@@ -110,6 +110,8 @@
   "primeradiant.com/evener/tools/tool-fluency/cmd/evener-fluency": 21.67,
   "primeradiant.com/evener/agent": 130.64,
   "primeradiant.com/evener/agent/envctx": 2.0,
+ "primeradiant.com/evener/agent/hostresources": 2.0,
+ "primeradiant.com/evener/agent/memorypages": 2.0,
   "primeradiant.com/evener/agent/events": 2.0,
   "primeradiant.com/evener/agent/diagnostic": 2.0,
   "primeradiant.com/evener/agent/internal/agenttest": 2.0,

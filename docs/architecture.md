@@ -139,7 +139,9 @@ lower layer imports a higher one.
   `SessionMeta` / `ConfigSnapshot` / `EnvironmentInfo`), `events`, `execenv`. No
   intra-`agent` dependencies.
 - **Subsystems** — `agent/internal/tool` (tool registry + builtins), `provider` (model
-  profiles), `transcript` (JSONL writer/reader), `mcpconfig`, `skill`, `task`.
+  profiles), `transcript` (JSONL writer/reader), `mcpconfig`, `skill`, `task`,
+  `hostresources` (cgroup-aware CPU and memory caps for the environment snapshot),
+  `memorypages` (memory page parsing, generated index rendering, legacy index migration).
 - **Engine internals** (`agent/internal/…`, off the public surface) — `contextmgr`
   (context-pressure management: compaction + the pluggable strategies + recall),
   `sessionlog` (the shared session-action-log substrate), `hooks` (the plugin/hook
@@ -357,6 +359,14 @@ accept is otherwise a no-op that still calls
 `finishProcessingAtBoundary` → `drainPendingWatchSends` (`agent/session_lifecycle.go`),
 so a wake carrying only already-settled shell/watch bookkeeping can finish with
 zero model turns; model-bound transcript attention always runs the owner turn.
+
+**Session lock contract.** `Session.mu` guards the session's mutable state; the full
+list and the ordered lock pairs live in the `Session` struct comment
+(`agent/session.go`). Ordered pairs, outermost first: `responseSideEffectsMu > mu`,
+`restMu > delegateDeliveryMu > mu`, `metaSaveMu > mu`, `goalUpdateMu > mu`,
+`notesUpdateMu > mu`. `drainAbandonedMu` and `childCommittedSendMu` are leaves. `restMu` serializes a rest
+transition with its `STATUS_SETTLED` emit; the rest-generation fields themselves are
+guarded by `mu`.
 
 **The forbidden re-entry.** `responseSideEffectsMu` is held across event emits
 (`emitAssistantResponse`, the tool-call-end emit). Observation paths and the `jobManager`'s

@@ -1,4 +1,4 @@
-package agent
+package memorypages
 
 import (
 	"cmp"
@@ -12,15 +12,15 @@ import (
 	"primeradiant.com/evener/agent/internal/runetrim"
 )
 
-// memoryProjectionCap bounds, in bytes, the index a scope projects into context.
-const memoryProjectionCap = 8192
+// ProjectionCap bounds, in bytes, the index a scope projects into context.
+const ProjectionCap = 8192
 
 // memoryPageSortDate is the date a page sorts by: its stamp, else its file's
 // modification date. A page whose frontmatter is unreadable has none, so it
 // sorts after every dated page: its file date says nothing about what it
 // holds, and a freshly touched broken page must not crowd out the newest
 // real ones.
-func memoryPageSortDate(p memoryPage) string {
+func memoryPageSortDate(p Page) string {
 	switch {
 	case p.Unreadable:
 		return ""
@@ -32,9 +32,9 @@ func memoryPageSortDate(p memoryPage) string {
 
 // sortedMemoryPages orders pages newest first by memoryPageSortDate, ties
 // by path, so pages with unreadable frontmatter come last, by path.
-func sortedMemoryPages(pages []memoryPage) []memoryPage {
+func sortedMemoryPages(pages []Page) []Page {
 	sorted := slices.Clone(pages)
-	slices.SortStableFunc(sorted, func(a, b memoryPage) int {
+	slices.SortStableFunc(sorted, func(a, b Page) int {
 		return cmp.Or(strings.Compare(memoryPageSortDate(b), memoryPageSortDate(a)), strings.Compare(a.Path, b.Path))
 	})
 	return sorted
@@ -94,8 +94,8 @@ func isMemoryUnlinkedIndexLine(line string) bool {
 		(strings.HasSuffix(line, `" — `+memoryUnlinkedPathNote) || strings.HasSuffix(line, `" — `+memoryInvalidUTF8PathNote))
 }
 
-// memoryIndexLine is one page's index line.
-func memoryIndexLine(p memoryPage) string {
+// IndexLine is one page's index line.
+func IndexLine(p Page) string {
 	if execenv.PathHasControl(p.Path) {
 		return memoryUnlinkedIndexLine(p.Path)
 	}
@@ -108,7 +108,7 @@ func memoryIndexLine(p memoryPage) string {
 	}
 	fmt.Fprintf(&b, "- [%s](%s) — %s", memoryTextEscaper.Replace(p.Path), memoryLinkTarget(p.Path), summary)
 	if p.Unreadable {
-		b.WriteString(" " + memoryFrontmatterUnreadable)
+		b.WriteString(" " + FrontmatterUnreadable)
 	}
 	if len(p.Tags) > 0 {
 		b.WriteString(" [" + strings.Join(p.Tags, ", ") + "]")
@@ -121,7 +121,7 @@ func memoryIndexLine(p memoryPage) string {
 
 // memoryIndexLineFor reports whether line is the index line of the page at
 // rel: its leading link "- [text](rel) — ". The text ends at its first
-// unescaped "](" (memoryIndexLine escapes "\\" and "]" in it), and the
+// unescaped "](" (IndexLine escapes "\\" and "]" in it), and the
 // path is matched whole from there, so neither a link inside the text nor
 // one quoted in the description is read as this line's page. A path holding
 // a control character has the one line memoryUnlinkedIndexLine writes.
@@ -145,11 +145,11 @@ func memoryIndexLineFor(line, rel string) bool {
 	return false
 }
 
-// patchMemoryIndex is index's page lines with the line of the page at rel
+// PatchIndex is index's page lines with the line of the page at rel
 // replaced by line, or dropped when line is "": "" when no page line is left.
-func patchMemoryIndex(index, rel, line string) string {
+func PatchIndex(index, rel, line string) string {
 	var kept []string
-	for _, existing := range memoryIndexLines(index) {
+	for _, existing := range indexLines(index) {
 		if !memoryIndexLineFor(existing, rel) {
 			kept = append(kept, existing+"\n")
 		}
@@ -161,7 +161,7 @@ func patchMemoryIndex(index, rel, line string) string {
 }
 
 // memoryTagCounts counts pages per tag; a page counts once under each tag.
-func memoryTagCounts(pages []memoryPage) (counts map[string]int, untagged int) {
+func memoryTagCounts(pages []Page) (counts map[string]int, untagged int) {
 	counts = make(map[string]int)
 	for _, p := range pages {
 		if len(p.Tags) == 0 {
@@ -217,7 +217,7 @@ func memoryTagParts(tags []string, part func(tag string) string, more int) []str
 // capped header, for a projection the whole index does not fit, lists only
 // the most-used tags within memoryTagListBudget, then how many more there
 // are.
-func memoryTagsHeaderLine(pages []memoryPage, capped bool) string {
+func memoryTagsHeaderLine(pages []Page, capped bool) string {
 	counts, _ := memoryTagCounts(pages)
 	if len(counts) == 0 {
 		return ""
@@ -235,7 +235,7 @@ func memoryTagsHeaderLine(pages []memoryPage, capped bool) string {
 // then their most-used tags with counts, most common first, within
 // memoryTagListBudget, then how many more tags there are, then the untagged
 // count.
-func memoryNotShownLine(rest []memoryPage) string {
+func memoryNotShownLine(rest []Page) string {
 	counts, untagged := memoryTagCounts(rest)
 	part := func(tag string) string { return fmt.Sprintf("%s %d", tag, counts[tag]) }
 	tags, more := topMemoryTags(counts, part)
@@ -250,27 +250,27 @@ func memoryNotShownLine(rest []memoryPage) string {
 
 // memoryPageLines is a scope's pages newest first and one index line per
 // page.
-func memoryPageLines(pages []memoryPage) (sorted []memoryPage, lines []string) {
+func memoryPageLines(pages []Page) (sorted []Page, lines []string) {
 	sorted = sortedMemoryPages(pages)
 	lines = make([]string, len(sorted))
 	for i, p := range sorted {
-		lines[i] = memoryIndexLine(p) + "\n"
+		lines[i] = IndexLine(p) + "\n"
 	}
 	return sorted, lines
 }
 
-// renderMemoryIndex is a scope's whole generated index: the tag header, then
+// RenderIndex is a scope's whole generated index: the tag header, then
 // one line per page, newest first. It is "" for a scope with no pages.
-func renderMemoryIndex(pages []memoryPage) string {
+func RenderIndex(pages []Page) string {
 	sorted, lines := memoryPageLines(pages)
 	return memoryTagsHeaderLine(sorted, false) + strings.Join(lines, "")
 }
 
-// projectMemoryIndex is the index as projected into context within limit
+// ProjectIndex is the index as projected into context within limit
 // bytes: the whole index when it fits; otherwise the capped tag header, the
 // newest lines that fit, and a closing line counting the pages left out. full
 // is the whole index, rendered in the same pass.
-func projectMemoryIndex(pages []memoryPage, limit int) (content, full string, truncated bool) {
+func ProjectIndex(pages []Page, limit int) (content, full string, truncated bool) {
 	sorted, lines := memoryPageLines(pages)
 	full = memoryTagsHeaderLine(sorted, false) + strings.Join(lines, "")
 	if len(full) <= limit {
@@ -301,4 +301,43 @@ func projectMemoryIndex(pages []memoryPage, limit int) (content, full string, tr
 		}
 	}
 	return runetrim.Cut(prefix+memoryNotShownLine(sorted)+"\n", limit), full, true
+}
+
+// IndexAddedLines compares two indexes line by line as multisets,
+// comparing page lines only, and returns the lines of next not matched in
+// prior, in file order.
+func IndexAddedLines(prior, next string) []string {
+	counts := make(map[string]int)
+	for _, line := range indexLines(prior) {
+		counts[line]++
+	}
+	var added []string
+	for _, line := range indexLines(next) {
+		if counts[line] > 0 {
+			counts[line]--
+			continue
+		}
+		added = append(added, line)
+	}
+	return added
+}
+
+// indexLines returns an index's page lines; the tag header and the
+// "Not shown" line are not page lines and never appear in a change section.
+func indexLines(index string) []string {
+	var lines []string
+	for line := range strings.SplitSeq(index, "\n") {
+		if strings.HasPrefix(line, "- ") {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// pluralizedUnit formats n with unit, adding an "s" unless n is 1.
+func pluralizedUnit(n int, unit string) string {
+	if n == 1 {
+		return "1 " + unit
+	}
+	return fmt.Sprintf("%d %ss", n, unit)
 }

@@ -1,4 +1,4 @@
-package agent
+package memorypages
 
 import (
 	"fmt"
@@ -16,11 +16,11 @@ import (
 
 // sprawlMemoryPages is n pages spread evenly over tags distinct tags, each
 // stamped one day after the last, so page n-1 is the newest.
-func sprawlMemoryPages(n, tags int) []memoryPage {
+func sprawlMemoryPages(n, tags int) []Page {
 	base := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-	pages := make([]memoryPage, n)
+	pages := make([]Page, n)
 	for i := range n {
-		pages[i] = memoryPage{
+		pages[i] = Page{
 			Path:           fmt.Sprintf("notes/page-%04d.md", i),
 			Description:    fmt.Sprintf("How the build handles case %d when the cache is cold and the runner restarts", i),
 			HasDescription: true,
@@ -55,18 +55,18 @@ func TestProjectMemoryIndexKeepsNewestPagesAsTagsSprawl(t *testing.T) {
 		t.Run(fmt.Sprintf("tags=%d", tags), func(t *testing.T) {
 			t.Parallel()
 			pages := sprawlMemoryPages(1000, tags)
-			content, _, _ := projectMemoryIndex(pages, memoryProjectionCap)
+			content, _, _ := ProjectIndex(pages, ProjectionCap)
 			sorted := sortedMemoryPages(pages)
 			var missing []string
 			for _, p := range sorted[:memorySprawlNewest] {
-				if !strings.Contains(content, memoryIndexLine(p)+"\n") {
+				if !strings.Contains(content, IndexLine(p)+"\n") {
 					missing = append(missing, p.Path)
 				}
 			}
 			header := memoryTagsHeaderLine(sorted, true)
-			if len(content) > memoryProjectionCap || len(missing) > 0 {
+			if len(content) > ProjectionCap || len(missing) > 0 {
 				t.Fatalf("tags=%d: len=%d (cap %d), %d page lines shown, header %d bytes; of the newest %d pages, missing %q",
-					tags, len(content), memoryProjectionCap, memoryProjectedPageLines(content), len(header), memorySprawlNewest, missing)
+					tags, len(content), ProjectionCap, memoryProjectedPageLines(content), len(header), memorySprawlNewest, missing)
 			}
 		})
 	}
@@ -149,7 +149,7 @@ func BenchmarkMemoryIndexRender(b *testing.B) {
 				if len(pages) != tc.pages {
 					b.Fatalf("listed %d pages, want %d", len(pages), tc.pages)
 				}
-				projectMemoryIndex(pages, memoryProjectionCap)
+				ProjectIndex(pages, ProjectionCap)
 			}
 		})
 	}

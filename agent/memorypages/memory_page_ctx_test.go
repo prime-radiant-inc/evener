@@ -1,4 +1,4 @@
-package agent
+package memorypages
 
 import (
 	"context"
@@ -23,9 +23,9 @@ func TestListMemoryPagesCtxPropagatesCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	pages, err := listMemoryPagesCtx(ctx, env)
+	pages, err := ListPagesCtx(ctx, env)
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("listMemoryPagesCtx(cancelled) = %d pages, %v; want context.Canceled", len(pages), err)
+		t.Fatalf("ListPagesCtx(cancelled) = %d pages, %v; want context.Canceled", len(pages), err)
 	}
 }
 
@@ -34,10 +34,10 @@ func TestListMemoryPagesCtxPropagatesCancellation(t *testing.T) {
 // is fabricated from it.
 func TestMemoryPageFromReadDoesNotFabricateAPageForCancellation(t *testing.T) {
 	t.Parallel()
-	if _, ok := memoryPageFromRead("page.md", nil, context.Canceled, time.Time{}); ok {
-		t.Fatal("memoryPageFromRead fabricated a page entry for a context error")
+	if _, ok := PageFromRead("page.md", nil, context.Canceled, time.Time{}); ok {
+		t.Fatal("PageFromRead fabricated a page entry for a context error")
 	}
-	if _, ok := memoryPageFromRead("page.md", nil, context.DeadlineExceeded, time.Time{}); ok {
-		t.Fatal("memoryPageFromRead fabricated a page entry for a deadline error")
+	if _, ok := PageFromRead("page.md", nil, context.DeadlineExceeded, time.Time{}); ok {
+		t.Fatal("PageFromRead fabricated a page entry for a deadline error")
 	}
 }

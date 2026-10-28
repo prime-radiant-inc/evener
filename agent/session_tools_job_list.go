@@ -565,3 +565,9 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 		return "", fmt.Errorf("invalid job status %q", status)
 	})
 }
+
+// collapseWhitespace trims text and turns each inner run of whitespace into
+// one space.
+func collapseWhitespace(text string) string {
+	return strings.Join(strings.Fields(text), " ")
+}

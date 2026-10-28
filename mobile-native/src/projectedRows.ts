@@ -551,7 +551,7 @@ function criticalReasoningRow(entry: Extract<ProjectedEntry, { kind: "critical" 
 // --- item helpers ---------------------------------------------------------------
 
 // The daemon's shared-notes steer opens with this marker (last-resort
-// provenance; agent/session_notes_rpc.go's humanNoteSteerPrefix), followed by
+// provenance; agent/session_notes_selfecho.go's humanNoteSteerPrefix), followed by
 // the note itself or "(whiteboard cleared)" for an emptied note. A multi-line
 // note's continuation lines carry a two-space indent under the prefix
 // (formatNotesField); a stored note's lines are trimmed, so removing that

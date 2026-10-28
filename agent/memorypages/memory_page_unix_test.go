@@ -1,6 +1,6 @@
 //go:build linux || darwin
 
-package agent
+package memorypages
 
 import (
 	"path/filepath"

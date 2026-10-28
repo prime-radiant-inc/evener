@@ -1275,7 +1275,7 @@ function normalizeWhiteboard(text: string): string {
 }
 
 // The steer text for a changed note, as the daemon renders it
-// (agent/session_notes_rpc.go's formatNotesField): continuation lines indented
+// (agent/session_notes_context.go's formatNotesField): continuation lines indented
 // two spaces under the prefix, blank lines left empty. noteFromSteer reads it
 // back.
 export function humanNoteSteerText(note: string): string {
@@ -1286,7 +1286,7 @@ export function humanNoteSteerText(note: string): string {
 // notes/human/set: your note replaces the session's. A changed note steers
 // the agent in a turn of its own, which the receipt names; an unchanged one
 // projects "removed" and wakes no one, as the daemon's does
-// (agent/session_notes_rpc.go).
+// (agent/session_notes_mutations.go).
 export function setHumanNote(thread: Thread, params: NotesHumanSetParams, now: number): NotesHumanSetResponse {
 	requireSharedNotes(thread, params.expectedInstanceId, params.clientMutationId, now);
 	const note = normalizeWhiteboard(params.note ?? "");
@@ -1295,7 +1295,7 @@ export function setHumanNote(thread: Thread, params: NotesHumanSetParams, now: n
 	let turnId: string | undefined;
 	if (changed) {
 		// The note steers the agent, recorded as the daemon records it
-		// (agent/session_notes_rpc.go); the phone shows it as your note's row.
+		// (agent/session_notes_mutations.go); the phone shows it as your note's row.
 		const steer: ThreadItem = {
 			id: `demo-note-${params.clientMutationId}`,
 			type: "steering",

@@ -37,6 +37,7 @@ native:.:./cmd/evener-migrate:FuzzConvertProvidersConfig
 native:agent:.:FuzzToolArgsValidate:./internal/tool,.
 native:agent:./activitybound:FuzzReportPreview
 native:agent:./schema:FuzzSessionMetaRoundTrip
+native:agent:./memorypages:FuzzParsePage
 native:agent:./schema:FuzzSessionDisplayName
 native:agent:./schema:FuzzHookAnnouncement
 native:agent:./internal/jobstore:FuzzJobEventLogReplay

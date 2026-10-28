@@ -1,6 +1,6 @@
 //go:build linux || darwin
 
-package agent
+package memorypages
 
 import (
 	"errors"
@@ -127,7 +127,7 @@ func TestMigrateMemoryScopeSkipsAFIFOIndex(t *testing.T) {
 func TestMigrateMemoryScopeTreatsASymlinkBackupAsTaken(t *testing.T) {
 	t.Parallel()
 	env, scope := newMemoryMigrateScope(t)
-	link := filepath.Join(scope, memoryLegacyIndexBackup)
+	link := filepath.Join(scope, LegacyIndexBackup)
 	if err := os.Symlink("gone", link); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestMigrateMemoryScopeTreatsASymlinkBackupAsTaken(t *testing.T) {
 	if target, err := os.Readlink(link); err != nil || target != "gone" {
 		t.Fatalf("the symlink backup was replaced: %q, %v", target, err)
 	}
-	if raw, err := os.ReadFile(filepath.Join(scope, memoryLegacyIndexBackup+".2")); err != nil || string(raw) != "- [a](a.md) — index\n" {
-		t.Fatalf("%s.2=%q, %v", memoryLegacyIndexBackup, raw, err)
+	if raw, err := os.ReadFile(filepath.Join(scope, LegacyIndexBackup+".2")); err != nil || string(raw) != "- [a](a.md) — index\n" {
+		t.Fatalf("%s.2=%q, %v", LegacyIndexBackup, raw, err)
 	}
 }

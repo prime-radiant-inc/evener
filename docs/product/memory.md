@@ -246,8 +246,8 @@ cannot follow.
 ## Generated index
 
 A scope's `MEMORY.md` is not a file. Evener renders it from the scope's pages
-whenever it is needed, in [`memory_index_render.go`](../../agent/memory_index_render.go)
-and [`memory_page.go`](../../agent/memory_page.go). A hand-written root index
+whenever it is needed, in [`memory_index_render.go`](../../agent/memorypages/memory_index_render.go)
+and [`memory_page.go`](../../agent/memorypages/memory_page.go). A hand-written root index
 from earlier builds stays on disk until migrated (see **Migration**). Every
 rule here about a root `MEMORY.md` ignores letter case, since `memory.md` names
 the same file on macOS's default filesystem.
