@@ -409,6 +409,23 @@ function writeSurvivingRefSeat(ref: string, panes: readonly OpenPaneRecord[], pr
   if (chosen?.composerSeatId !== undefined) writeRefComposerSeat(ref, chosen.composerSeatId);
 }
 
+// Every conversation whose seat mapping a conversation pane can own: a
+// session pane owns exactly its ref; a cascade pane owns its leaf, its
+// source, and every column its edges retain. Closing must reconcile each of
+// them against the surviving panes, not only the leaf.
+function conversationPaneRefs(pane: OpenPaneRecord): string[] {
+  const ref = refParam(pane.params);
+  if (pane.type !== "sessionZoom" || ref === null) return ref === null ? [] : [ref];
+  const params = parseZoomParams(pane.params);
+  if (params === null) return [ref];
+  const refs = new Set<string>([ref, params.source.params.ref]);
+  for (const edge of params.edges) {
+    refs.add(edge.ownerRef);
+    refs.add(edge.childRef);
+  }
+  return [...refs];
+}
+
 // A cascade pane keeps every conversation on its cached path - the source it
 // can Return to plus each column its edges walked - alive as retained columns.
 // Every column's composer shares the pane's own seat, so the pane still owns
@@ -938,8 +955,12 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       focusedPaneId: state.focusedPaneId === paneId ? null : state.focusedPaneId,
     });
     if (isConversationPaneType(closed.type)) {
-      const ref = refParam(closed.params);
-      if (ref !== null) writeSurvivingRefSeat(ref, remaining, state.focusedPaneId);
+      // Two cascades can retain the same ancestor while its mapping names
+      // the closing pane's seat; the survivor's own selected row must win
+      // the mapping or a reload restores the closed pane's choice instead.
+      for (const ref of conversationPaneRefs(closed)) {
+        writeSurvivingRefSeat(ref, remaining, state.focusedPaneId);
+      }
     }
   },
 

@@ -1,3 +1,4 @@
+import { readRefComposerSeat } from "../panes/session/composer/draft";
 import { parseZoomParams } from "../panes/zoom/intent";
 import { navigate, paneToURL, refParam } from "./routing";
 import {
@@ -75,8 +76,12 @@ export function openTopLevelSession(ref: string): void {
 // opening the contextual child in secondary.
 export function openNestedSessionWithOwner(ref: string, ownerRef: string): void {
   // Capture the outgoing selection seat before replacing the owner: promoting
-  // the owner can remove the pane that carried this conversation's choice.
-  const outgoingSeat = selectionSeatForRef(ref, workspaceStore.getState().panes);
+  // the owner can remove the pane that carried this conversation's choice. A
+  // cold route reconstruction has no live pane to ask, so fall back to the
+  // persisted conversation mapping: the parent placed first can claim the
+  // seat it names, and the child's distinct seat must then receive a copy
+  // of that seat's saved selection.
+  const outgoingSeat = selectionSeatForRef(ref, workspaceStore.getState().panes) ?? readRefComposerSeat(ref);
   openTopLevelSession(ownerRef);
   const openedId = workspaceStore
     .getState()
