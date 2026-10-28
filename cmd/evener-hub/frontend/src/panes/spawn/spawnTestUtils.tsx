@@ -1,17 +1,33 @@
-import type { ModelListParams, NavigationManifest, PluginPreviewResponse } from "@evener/appwire-client";
+import type {
+  HostForwardedResult,
+  HostRequestParams,
+  ModelDescriptor,
+  ModelListParams,
+  NavigationManifest,
+  PluginPreviewResponse,
+  Thread,
+  ThreadCapabilities,
+  ThreadStartResponse,
+} from "@evener/appwire-client";
 import type { ResourceState } from "@evener/appwire-client/state/navigation";
-import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
 import { navigate } from "../../shell/routing";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
-import { navigationStore } from "../../stores/navigation/store";
+import { resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../stores/credentials";
+import { resetExtensionsStoreForTests } from "../../stores/extensions";
+import { hostsStore } from "../../stores/hosts";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { resetThreadsStoreForTests } from "../../stores/threads";
 import { enterText } from "../../textEntryTestUtils";
 import { Toast } from "../../widgets";
+import { resetToastStoreForTests } from "../../widgets/toast/store";
 import Spawn from "./Spawn";
-import { spawnDraftsStore } from "./spawnDrafts";
+import { resetSpawnDraftsForTests, spawnDraftsStore } from "./spawnDrafts";
 
 export function modelListRequests(fake: FakeClient): ModelListParams[] {
   return fake.calls.filter((call) => call.method === "model/list").map((call) => call.params as ModelListParams);
@@ -77,22 +93,22 @@ export function modelTrigger(): HTMLElement {
   return within(screen.getByTestId("spawn-controls")).getByRole("button", { name: /change model/i });
 }
 
-export /** The trigger's value hook inside the card's control row. */
-function modelValue(): HTMLElement {
+/** The trigger's value hook inside the card's control row. */
+export function modelValue(): HTMLElement {
   return screen.getByTestId("spawn-model-value");
 }
 
-export /** The quiet effort control in the card's control row (StatusRow's overlay-select recipe). */
-function effortControl(): HTMLElement {
+/** The quiet effort control in the card's control row (StatusRow's overlay-select recipe). */
+export function effortControl(): HTMLElement {
   return screen.getByLabelText("Prompt reasoning effort");
 }
 
-export /** The trigger's rendered path. It also carries a chevron and a screen-reader
+/** The trigger's rendered path. It also carries a chevron and a screen-reader
  * hint, so the value is matched inside the text rather than compared whole. */
 /** What the card's model trigger stands for: "required" (the hub has no
  * default and the user must choose), "chosen", "resolved-default" (the
  * resolved default model), or "default" (before a resolve lands). */
-function modelState(): string | undefined {
+export function modelState(): string | undefined {
   return screen.getByTestId("spawn-model-slot").dataset.state;
 }
 
@@ -124,10 +140,10 @@ export async function setWorkingDir(user: ReturnType<typeof userEvent.setup>, pa
   await user.click(confirm);
 }
 
-export /** Enters prompt text as one paste instead of key by key: each prompt
+/** Enters prompt text as one paste instead of key by key: each prompt
  * keystroke re-renders the whole pane. Tests about per-keystroke prompt
  * behavior (the slash menu) type with `user.type` instead. */
-async function fillPrompt(user: ReturnType<typeof userEvent.setup>, text: string): Promise<void> {
+export async function fillPrompt(user: ReturnType<typeof userEvent.setup>, text: string): Promise<void> {
   await enterText(user, promptField(), text);
 }
 
@@ -142,7 +158,7 @@ export function setupUser() {
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 }
 
-export /** Lets the hub answers the pane is waiting on land inside act: the mount-time
+/** Lets the hub answers the pane is waiting on land inside act: the mount-time
  * catalogs, or whatever a host, directory or route change just requested. The
  * fake client answers on microtasks, and an async act keeps collecting React
  * work until a real macrotask passes with none left. Testing Library cannot do
@@ -153,7 +169,7 @@ export /** Lets the hub answers the pane is waiting on land inside act: the moun
  * the action and the flush. Debounced loads still need their clock advanced
  * first. The Advanced-options toggle is the sentinel that the form rendered;
  * it renders unconditionally. */
-async function settled(): Promise<void> {
+export async function settled(): Promise<void> {
   await act(async () => {});
   screen.getByRole("button", { name: "Advanced options" });
 }
@@ -311,4 +327,193 @@ export function slashOptions() {
 
 export function promptField(): HTMLDivElement {
   return screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
+}
+
+/** The model list the next `model/list` answer returns, or null for the default two-model list. Reset before each test by the hooks. */
+export const modelListScript: { override: ModelDescriptor[] | null } = { override: null };
+
+export const NO_CAPABILITIES: ThreadCapabilities = {
+  send: false,
+  steer: false,
+  interrupt: false,
+  compact: false,
+  clear: false,
+  forkFromTurn: false,
+  shutdown: false,
+  changeModel: false,
+  changeVisionModel: false,
+  queue: false,
+  goal: false,
+  sharedNotes: false,
+  rename: false,
+};
+
+export function threadWithRef(ref: string): Thread {
+  return {
+    id: ref.includes(":") ? ref.slice(ref.indexOf(":") + 1) : ref,
+    sessionId: `sess_${ref}`,
+    preview: "test",
+    ephemeral: false,
+    modelProvider: "anthropic/claude-sonnet-4-5",
+    createdAt: 1000,
+    updatedAt: 1000,
+    status: { type: "idle" },
+    cwd: "/tmp/project",
+    cliVersion: "1.0.0",
+    source: "local",
+    evener: { ref, capabilities: NO_CAPABILITIES, queue: { revision: 0 } },
+  };
+}
+
+export function startResponse(ref: string): ThreadStartResponse {
+  return { thread: threadWithRef(ref), turn: { id: "turn_1", itemsView: "full", status: "idle" } };
+}
+
+export function routedDiscoveryDefault(method: string): HostForwardedResult {
+  switch (method) {
+    case "evener/instance/list":
+      return {
+        instances: [
+          {
+            name: "anthropic",
+            providerId: "anthropic",
+            protocol: "anthropic",
+            auth: "bearer",
+            implicit: false,
+            isDefault: true,
+            activeSource: "store",
+            hasStoredOAuth: false,
+            credentialRequired: true,
+          },
+        ],
+        availableProviders: [],
+      };
+    case "evener/harnesses/list":
+      return {
+        data: [
+          { id: "evener", label: "evener", kind: "evener" },
+          { id: "external", label: "external", kind: "external" },
+        ],
+      };
+    case "evener/launch/schema":
+      return { options: [] };
+    case "model/list":
+      return {
+        data: modelListScript.override ?? [
+          { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+          { provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" },
+        ],
+      };
+    case "evener/launch/resolve":
+      return { effective: {}, layers: {}, provenance: {} };
+    case "evener/git/head":
+      return { head: "main" };
+    case "evener/projects/recent":
+    case "evener/paths/complete":
+      return { data: [] };
+    case "evener/path/validate":
+      return { path: "", valid: true };
+    case "evener/dirs/create":
+      return { path: "", created: true };
+    case "evener/plugin/preview":
+      return { plugins: [] };
+    case "evener/spawn/slashCatalog":
+      return { commands: [], skills: [] };
+    default:
+      return {};
+  }
+}
+
+export function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
+  const fake = new FakeClient("ready");
+  fake.on("evener/instance/list", () => ({
+    instances: [
+      {
+        name: "anthropic",
+        providerId: "anthropic",
+        protocol: "anthropic",
+        auth: "bearer",
+        implicit: false,
+        isDefault: true,
+        activeSource: "store",
+        hasStoredOAuth: false,
+        credentialRequired: true,
+      },
+    ],
+    availableProviders: [],
+  }));
+  fake.on("evener/harnesses/list", () => ({
+    data: [
+      { id: "evener", label: "evener", kind: "evener" },
+      { id: "external", label: "external", kind: "external" },
+    ],
+  }));
+  fake.on("evener/launch/schema", () => ({ options: [] }));
+  fake.on("model/list", () => ({
+    data: modelListScript.override ?? [
+      { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+      { provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" },
+    ],
+  }));
+  fake.on("evener/projects/recent", () => ({ data: [] }));
+  fake.on("evener/paths/complete", () => ({ data: [] }));
+  fake.on("evener/path/validate", () => ({ path: "", valid: true }));
+  fake.on("evener/dirs/create", ({ path }) => ({ path, created: true }));
+  fake.on("evener/git/head", () => ({ head: "main" }));
+  fake.on("evener/plugin/preview", () => ({ plugins: [] }));
+  fake.on("evener/spawn/slashCatalog", () => ({ commands: [], skills: [] }));
+  fake.on("thread/start", () => startResponse("local:abc123"));
+  // The explicit attach trigger (component 06's Connect): the picker fires
+  // evener/host/attach when a remote host is selected or its Connect action is
+  // tapped. Tests that assert the call override or inspect fake.calls.
+  fake.on("evener/host/attach", () => ({ attached: true }));
+  // Host-routed discovery (component 07b): a selected remote host's calls go
+  // through evener/host/request, so the same answers are wired here. Tests that
+  // pin host-specific values override this handler in `configure`.
+  fake.on("evener/host/request", (params) => routedDiscoveryDefault((params as HostRequestParams).method));
+  configure?.(fake);
+  return fake;
+}
+
+export function scriptModelList(models: ModelDescriptor[]): void {
+  modelListScript.override = models;
+}
+
+/** Registers the lifecycle hooks every Spawn test file shares; call it once at the top level of the file. */
+export function installSpawnTestHooks(): void {
+  beforeAll(() => {
+    installLocalStorage(new MemoryStorage());
+    // The afterEach below restores /new after every test; the first test of a
+    // file has no earlier test to have done that.
+    window.history.pushState({}, "", "/new");
+  });
+
+  beforeEach(() => {
+    vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    localStorage.clear();
+    resetSpawnDraftsForTests();
+    resetCredentialsStoreForTests();
+    // The registry and the remote-host partitions are module singletons: a
+    // leftover ready snapshot from another test would gate a remote read.
+    resetHostInstancesForTests();
+    hostsStore.getState().resetForTests();
+    resetNavigationStoreForTests();
+    modelListScript.override = null;
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    resetExtensionsStoreForTests();
+    resetNavigationStoreForTests();
+    resetThreadsStoreForTests();
+    vi.unstubAllGlobals();
+    // The shell mounts the Spawn pane only at /new (shell/routing.ts), so a test
+    // that sets no route of its own exercises the real mounted state: the active
+    // New Session view.
+    window.history.pushState({}, "", "/new");
+    resetToastStoreForTests();
+  });
 }

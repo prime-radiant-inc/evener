@@ -1,221 +1,39 @@
 import "../session/testing/editorGeometry";
-import type {
-  HostForwardedResult,
-  HostRequestParams,
-  ModelDescriptor,
-  ModelListResponse,
-  Thread,
-  ThreadCapabilities,
-  ThreadStartParams,
-  ThreadStartResponse,
-} from "@evener/appwire-client";
+import type { HostRequestParams, ModelDescriptor, ModelListResponse, ThreadStartParams } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type userEvent from "@testing-library/user-event";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
+import { expect, test, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
-import { credentialsStore, resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../stores/credentials";
-import { resetExtensionsStoreForTests } from "../../stores/extensions";
+import { credentialsStore } from "../../stores/credentials";
 import { hostsStore } from "../../stores/hosts";
 import { ownClientId } from "../../stores/mutationClientIdentity";
-import { resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { resetThreadsStoreForTests } from "../../stores/threads";
-import { resetToastStoreForTests } from "../../widgets/toast/store";
-import { resetSpawnDraftsForTests, setDraftField, spawnDraftsStore } from "./spawnDrafts";
+import { setDraftField, spawnDraftsStore } from "./spawnDrafts";
 import {
   completionDraft,
   deferred,
   expectWorkingDir,
   fillPrompt,
   installCanvasStubs,
+  installSpawnTestHooks,
   modelListRequests,
   modelState,
   modelTrigger,
   modelValue,
   pastePngInto,
   pickModel,
+  readyClient,
   renderSpawn,
+  routedDiscoveryDefault,
   seedSources,
   settled,
   setupUser,
   setWorkingDir,
+  startResponse,
   visitSpawnURL,
 } from "./spawnTestUtils";
 
-let modelListOverride: ModelDescriptor[] | null = null;
-
-const NO_CAPABILITIES: ThreadCapabilities = {
-  send: false,
-  steer: false,
-  interrupt: false,
-  compact: false,
-  clear: false,
-  forkFromTurn: false,
-  shutdown: false,
-  changeModel: false,
-  changeVisionModel: false,
-  queue: false,
-  goal: false,
-  sharedNotes: false,
-  rename: false,
-};
-
-function threadWithRef(ref: string): Thread {
-  return {
-    id: ref.includes(":") ? ref.slice(ref.indexOf(":") + 1) : ref,
-    sessionId: `sess_${ref}`,
-    preview: "test",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "idle" },
-    cwd: "/tmp/project",
-    cliVersion: "1.0.0",
-    source: "local",
-    evener: { ref, capabilities: NO_CAPABILITIES, queue: { revision: 0 } },
-  };
-}
-
-function startResponse(ref: string): ThreadStartResponse {
-  return { thread: threadWithRef(ref), turn: { id: "turn_1", itemsView: "full", status: "idle" } };
-}
-
-// routedDiscoveryDefault answers one forwarded discovery method the way
-// readyClient answers its controller-scoped twin, so a test that selects a
-// remote host hydrates exactly as a local mount does: the spawn form issues the
-// same calls, just wrapped in evener/host/request (component 07b). A test
-// overrides the proxy handler wholesale when it needs host-specific values.
-function routedDiscoveryDefault(method: string): HostForwardedResult {
-  switch (method) {
-    case "evener/instance/list":
-      return {
-        instances: [
-          {
-            name: "anthropic",
-            providerId: "anthropic",
-            protocol: "anthropic",
-            auth: "bearer",
-            implicit: false,
-            isDefault: true,
-            activeSource: "store",
-            hasStoredOAuth: false,
-            credentialRequired: true,
-          },
-        ],
-        availableProviders: [],
-      };
-    case "evener/harnesses/list":
-      return {
-        data: [
-          { id: "evener", label: "evener", kind: "evener" },
-          { id: "external", label: "external", kind: "external" },
-        ],
-      };
-    case "evener/launch/schema":
-      return { options: [] };
-    case "model/list":
-      return {
-        data: modelListOverride ?? [
-          { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
-          { provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" },
-        ],
-      };
-    case "evener/launch/resolve":
-      return { effective: {}, layers: {}, provenance: {} };
-    case "evener/git/head":
-      return { head: "main" };
-    case "evener/projects/recent":
-    case "evener/paths/complete":
-      return { data: [] };
-    case "evener/path/validate":
-      return { path: "", valid: true };
-    case "evener/dirs/create":
-      return { path: "", created: true };
-    case "evener/plugin/preview":
-      return { plugins: [] };
-    case "evener/spawn/slashCatalog":
-      return { commands: [], skills: [] };
-    default:
-      return {};
-  }
-}
-
-// A ready FakeClient with every mount-time catalog scripted so the form fully
-// hydrates; individual tests override specific methods as needed.
-function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
-  const fake = new FakeClient("ready");
-  fake.on("evener/instance/list", () => ({
-    instances: [
-      {
-        name: "anthropic",
-        providerId: "anthropic",
-        protocol: "anthropic",
-        auth: "bearer",
-        implicit: false,
-        isDefault: true,
-        activeSource: "store",
-        hasStoredOAuth: false,
-        credentialRequired: true,
-      },
-    ],
-    availableProviders: [],
-  }));
-  fake.on("evener/harnesses/list", () => ({
-    data: [
-      { id: "evener", label: "evener", kind: "evener" },
-      { id: "external", label: "external", kind: "external" },
-    ],
-  }));
-  fake.on("evener/launch/schema", () => ({ options: [] }));
-  fake.on("model/list", () => ({
-    data: modelListOverride ?? [
-      { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
-      { provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" },
-    ],
-  }));
-  fake.on("evener/projects/recent", () => ({ data: [] }));
-  fake.on("evener/paths/complete", () => ({ data: [] }));
-  fake.on("evener/path/validate", () => ({ path: "", valid: true }));
-  fake.on("evener/dirs/create", ({ path }) => ({ path, created: true }));
-  fake.on("evener/git/head", () => ({ head: "main" }));
-  fake.on("evener/plugin/preview", () => ({ plugins: [] }));
-  fake.on("evener/spawn/slashCatalog", () => ({ commands: [], skills: [] }));
-  fake.on("thread/start", () => startResponse("local:abc123"));
-  // The explicit attach trigger (component 06's Connect): the picker fires
-  // evener/host/attach when a remote host is selected or its Connect action is
-  // tapped. Tests that assert the call override or inspect fake.calls.
-  fake.on("evener/host/attach", () => ({ attached: true }));
-  // Host-routed discovery (component 07b): a selected remote host's calls go
-  // through evener/host/request, so the same answers are wired here. Tests that
-  // pin host-specific values override this handler in `configure`.
-  fake.on("evener/host/request", (params) => routedDiscoveryDefault((params as HostRequestParams).method));
-  configure?.(fake);
-  return fake;
-}
-
-beforeAll(() => {
-  installLocalStorage(new MemoryStorage());
-  // The afterEach below restores /new after every test; the first test of a
-  // file has no earlier test to have done that.
-  window.history.pushState({}, "", "/new");
-});
-
-beforeEach(() => {
-  vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-  localStorage.clear();
-  resetSpawnDraftsForTests();
-  resetCredentialsStoreForTests();
-  // The registry and the remote-host partitions are module singletons: a
-  // leftover ready snapshot from another test would gate a remote read.
-  resetHostInstancesForTests();
-  hostsStore.getState().resetForTests();
-  resetNavigationStoreForTests();
-  modelListOverride = null;
-});
+installSpawnTestHooks();
 
 test("missing credentials surface setup in the composer without opening a dialog or losing its draft", async () => {
   const user = setupUser();
@@ -1612,19 +1430,4 @@ test("credential changes reload the cached model catalog and re-enter setup afte
   configured = false;
   await act(async () => credentialsStore.getState().fetch());
   await screen.findByRole("button", { name: "Connect provider" });
-});
-
-afterEach(() => {
-  cleanup();
-  vi.useRealTimers();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  resetExtensionsStoreForTests();
-  resetNavigationStoreForTests();
-  resetThreadsStoreForTests();
-  vi.unstubAllGlobals();
-  // The shell mounts the Spawn pane only at /new (shell/routing.ts), so a test
-  // that sets no route of its own exercises the real mounted state: the active
-  // New Session view.
-  window.history.pushState({}, "", "/new");
-  resetToastStoreForTests();
 });
