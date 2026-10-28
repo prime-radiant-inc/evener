@@ -1,7 +1,12 @@
-import type { ItemModel, TurnModel } from "@evener/appwire-client";
-import { copyItemTextPresence, ITEM_OMISSION_TOLERANT_FIELDS, itemTextPresence } from "@evener/appwire-client";
-import type { ActivityMember, MobileTimelineItem } from "../../projectedRows";
-import { activityIdentity, attachmentSourceIdentity, timelineIdentity } from "../../projectedRows";
+import type { ItemModel, ThreadTurnsListResponse, TurnModel } from "@evener/appwire-client";
+import {
+	copyItemTextPresence,
+	ITEM_OMISSION_TOLERANT_FIELDS,
+	itemIdentityMatches,
+	itemTextPresence,
+} from "@evener/appwire-client";
+import type { ActivityMember, MobileConversation, MobileTimelineItem } from "../../projectedRows";
+import { activityIdentity, attachmentSourceIdentity, failureRowIdentity, timelineIdentity } from "../../projectedRows";
 
 // See applyThreadNotification's own comment: an identity `previous` held
 // under one turn that this frame just reissued under ANOTHER turn stays
@@ -222,4 +227,138 @@ export function splitClusterAtAnchors(
 	const tail = activityRunRow(run);
 	if (tail !== null) out.push(tail);
 	return out;
+}
+
+// loadOlder and rehydrate fold page/reread content into `turns` through
+// applyReadModel/mergeOlderItemPage/reconcileCrossTurnReissues, which read
+// and write model.history.turns — the versioned record every OTHER live
+// frame (history/updated, overlay/*, via applyNotification -> the
+// reducer's withDisplay) rebuilds `turns` FROM. Left unsynced, a page turn
+// or a rehydrate's retained history lives only in `turns`, and the next
+// such frame silently drops it (withDisplay derives `turns` from
+// model.history.turns, not from the caller's prior `turns`). Both callers
+// must therefore commit the SAME final turns array into both fields; this
+// is the one place that happens.
+//
+// A model whose `.history` was never established (no read has gone
+// through applyReadModel/mergeOlderItemPage's own versioned branch yet —
+// in production this is momentary, since every hydrate already stamps one
+// via hydrateThread's own snapshot branch; the mobile test suite's legacy
+// non-versioned fixtures can hold one indefinitely) mints one now, seeded
+// with these turns: applyReadModel otherwise reads an eternally-empty
+// held.turns forever and silently discards whatever this merge just
+// produced the very next time it runs. The seeded bootGeneration stays ""
+// — never a real one's spelling — so a model that only ever went through
+// this seeding, and never a real read, still reads as NOT-really-versioned
+// to the one other place that cares (reducer.ts's "warning" case: it folds
+// a warning into the active turn's items on a legacy model, and shows it
+// as an overlay notice, not yet implemented, on a real v6 one — see its
+// own comment).
+export function withSyncedHistoryTurns<M extends MobileConversation>(model: M, turns: readonly TurnModel[]): M {
+	const turnsArray = [...turns];
+	if (model.history === undefined) {
+		return {
+			...model,
+			history: {
+				bootGeneration: "",
+				epoch: 0,
+				length: 0,
+				appliedGeneration: 0,
+				issuedGeneration: 0,
+				deferredPages: [],
+				turns: turnsArray,
+			},
+		};
+	}
+	return { ...model, history: { ...model.history, turns: turnsArray } };
+}
+
+// mergeReplacedItem (reducer.ts) is deliberately omission-tolerant per field
+// (ITEM_OMISSION_TOLERANT_FIELDS): an incremental history/updated delta
+// naturally omits a field it did not change, and that must fall back to the
+// held value. A full thread/read snapshot is not incremental: it describes the
+// item's CURRENT complete state, so a field it omits for an item it otherwise
+// covers is genuinely absent now, and a payload a live frame added while the
+// read was in flight (an image, a tool's output) must not survive past a clean
+// covering snapshot that says nothing about it. Strips exactly that, only for
+// an item the read's OWN turns name (an item outside its window is untouched).
+export function stripFieldsOmittedByRead(mergedTurns: TurnModel[], readTurns: readonly TurnModel[]): TurnModel[] {
+	const freshItemByIdentity = new Map<string, ItemModel>();
+	for (const turn of readTurns) {
+		for (const item of turn.items) {
+			freshItemByIdentity.set(item.transcriptKey ?? item.id, item);
+			freshItemByIdentity.set(item.id, item);
+		}
+	}
+	return mergedTurns.map((turn) => {
+		let turnChanged = false;
+		const items = turn.items.map((item) => {
+			const fresh = freshItemByIdentity.get(item.transcriptKey ?? item.id) ?? freshItemByIdentity.get(item.id);
+			if (fresh === undefined || !itemIdentityMatches(item, fresh)) return item;
+			let stripped: ItemModel | undefined;
+			for (const field of ITEM_OMISSION_TOLERANT_FIELDS) {
+				const heldValue = (item as unknown as Record<string, unknown>)[field];
+				const freshValue = (fresh as unknown as Record<string, unknown>)[field];
+				if (heldValue === undefined || freshValue !== undefined) continue;
+				stripped ??= copyItemTextPresence(item, { ...item });
+				(stripped as unknown as Record<string, unknown>)[field] = Array.isArray(heldValue) ? [] : undefined;
+			}
+			if (stripped === undefined) return item;
+			turnChanged = true;
+			return stripped;
+		});
+		if (!turnChanged) return turn;
+		return { ...turn, items };
+	});
+}
+
+// The identities a loadOlder page brought that the held turns did not carry
+// (the reader's no-progress signal: nonempty clears its retry guard). An
+// identity already held contributed nothing new, whatever field the page's own
+// (possibly higher-version) copy carried, so a page that only re-serves
+// retained content, even under a different turn id, reports empty. A failed
+// turn projects its own row keyed failure:<turnId> (projectedRows.ts), never an
+// item identity, so it counts too.
+export function pageContributedKeys(
+	heldTurns: readonly TurnModel[],
+	pageTurns: ThreadTurnsListResponse["data"],
+): Set<string> {
+	const held = new Set<string>();
+	for (const turn of heldTurns) {
+		for (const item of turn.items) {
+			held.add(item.transcriptKey ?? item.id);
+			held.add(item.id);
+		}
+	}
+	const pageIdentities = new Set<string>();
+	for (const turn of pageTurns) {
+		for (const item of turn.items ?? []) {
+			pageIdentities.add(item.transcriptKey ?? item.id);
+			pageIdentities.add(item.id);
+		}
+		if (turn.error !== undefined) pageIdentities.add(failureRowIdentity(turn.id));
+	}
+	const keys = new Set<string>();
+	for (const id of pageIdentities) {
+		if (!held.has(id)) keys.add(id);
+	}
+	return keys;
+}
+
+// Whether a page's merge put an already-valid history into the invalid state,
+// or moved an already-invalid one to a newer signal. invalidatedAtGeneration
+// alone cannot tell the second case: this caller's issuedGeneration never
+// advances (mobile never issues issueLatestWindowRead), so it only ever moves
+// from undefined to 0, and a re-invalidation (the awaited signal moving to a
+// newer epoch/incarnation) would go unseen. Compare the signal that changes.
+export function historyNewlyInvalidated(
+	held: MobileConversation["history"],
+	merged: NonNullable<MobileConversation["history"]>,
+): boolean {
+	return (
+		held?.invalidatedAtGeneration === undefined ||
+		held.awaited?.bootGeneration !== merged.awaited?.bootGeneration ||
+		held.awaited?.epoch !== merged.awaited?.epoch ||
+		held.pendingIncarnation !== merged.pendingIncarnation
+	);
 }
