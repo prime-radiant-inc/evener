@@ -69,6 +69,11 @@ export interface DraftSubmissionObligation {
 	releasedRecoveryIds: string[];
 	createdAt: number;
 	resolvedAt: number | null;
+	/** Null while the completion still owes routine reconciliation work; set
+	 * once the completion durably applied at its capture owner - or proved
+	 * durably absent - so routine passes stop revisiting it. Optional because
+	 * ledgers created before it lack the column. */
+	appliedAt?: number | null;
 }
 
 export interface DraftHandoffGraph {
@@ -128,6 +133,10 @@ export interface DraftHandoffLedger extends DraftSubmissionLedger {
 	 * hubs. Optional: without the method the library's own guards still keep a
 	 * removed hub inert. */
 	removeHub?(hubId: string): void;
+	/** Durably acknowledge a resolved obligation whose completion has been
+	 * applied, so routine reconciliation stops revisiting it. Optional:
+	 * without the method the pass keeps re-checking every time. */
+	acknowledgeAppliedCompletion?(obligationId: string): void;
 }
 
 /** The target key is the composite `[hubId, sessionRef]` encoding used by every

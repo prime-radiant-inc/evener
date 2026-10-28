@@ -42,6 +42,7 @@ interface ObligationRow {
 	released_recovery_ids: string;
 	created_at: number;
 	resolved_at: number | null;
+	applied_at: number | null;
 }
 
 interface DeliveryRow {
@@ -145,6 +146,7 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 		this.addColumnIfMissing("draft_handoff_edges", "resolved_as", "TEXT");
 		this.addColumnIfMissing("draft_submission_obligations", "recovery_ids", "TEXT NOT NULL DEFAULT '[]'");
 		this.addColumnIfMissing("draft_submission_obligations", "released_recovery_ids", "TEXT NOT NULL DEFAULT '[]'");
+		this.addColumnIfMissing("draft_submission_obligations", "applied_at", "INTEGER");
 	}
 
 	private addColumnIfMissing(table: string, column: string, definition: string): void {
@@ -170,10 +172,8 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 				to.sessionRef,
 			);
 			if (recorded !== null) {
-				for (const obligation of this.openObligations(recorded.chain_id, from)) {
-					this.stampChain(obligation, recorded.chain_id);
+				for (const obligation of this.continuationObligations(recorded.chain_id, from))
 					this.attachObligation(recorded.edge_id, obligation);
-				}
 				for (const predecessor of this.db.getAllSync<EdgeRow>(
 					`SELECT * FROM draft_handoff_edges
 					 WHERE to_hub_id = ? AND to_ref = ? AND state != 'cleaned' ORDER BY created_at, rowid`,
@@ -214,8 +214,7 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			);
 			const reusedChain = inbound?.chain_id ?? this.#createId();
 			const chainId = finished !== null && finished.chain_id === reusedChain ? this.#createId() : reusedChain;
-			const obligations = this.openObligations(chainId, from);
-			for (const obligation of obligations) this.stampChain(obligation, chainId);
+			const obligations = this.continuationObligations(chainId, from);
 			const edge = this.createEdge({ chainId, from, to, obligations });
 			// A predecessor settles after the edge that continues the chain, so
 			// its older composition cannot occupy the terminal destination first.
@@ -470,6 +469,20 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 		});
 	}
 
+	/** Durably acknowledge a resolved obligation whose completion has been
+	 * applied, so routine reconciliation stops revisiting it. Only a resolved
+	 * obligation can be acknowledged: an open one still owes its decision. */
+	acknowledgeAppliedCompletion(obligationId: string): void {
+		withSavepoint(this.db, "draft_handoff_ack_completion", () => {
+			this.db.runSync(
+				`UPDATE draft_submission_obligations SET applied_at = ?
+				 WHERE obligation_id = ? AND state != 'open' AND applied_at IS NULL`,
+				this.#now(),
+				obligationId,
+			);
+		});
+	}
+
 	beginSubmission(obligationId: string, origin: DraftHandoffEndpoint, recoveryIds: readonly string[] = []): void {
 		withSavepoint(this.db, "draft_handoff_begin_submission", () => {
 			this.db.runSync(
@@ -561,6 +574,44 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			from.sessionRef,
 		);
 		return rows.map((row) => row.obligation_id);
+	}
+
+	/** Open obligations a continuation from `from` must inherit: its own
+	 * chain's and its origin's, plus one from every inbound edge whose
+	 * recovery rows durably continue through `from`. Converging chains can
+	 * deliver a running command's composition here while the continuation
+	 * selects another chain, and without the inherited obligation the
+	 * continuation could settle and clean while the command still runs,
+	 * leaving the terminal without the pending handoff that keeps its row
+	 * from restoring. Inherited obligations keep their own chain: the
+	 * attachment waits for them, the chain still routes them. */
+	private continuationObligations(chainId: string, from: DraftHandoffEndpoint): string[] {
+		const own = this.openObligations(chainId, from);
+		for (const obligation of own) this.stampChain(obligation, chainId);
+		const inherited = new Set(own);
+		for (const inbound of this.db.getAllSync<{ edge_id: string }>(
+			`SELECT edge_id FROM draft_handoff_edges
+			 WHERE to_hub_id = ? AND to_ref = ? AND state != 'cleaned' ORDER BY created_at, rowid`,
+			from.hubId,
+			from.sessionRef,
+		)) {
+			for (const row of this.db.getAllSync<{ obligation_id: string }>(
+				`SELECT obligation_id FROM draft_handoff_edge_obligations WHERE edge_id = ? ORDER BY rowid`,
+				inbound.edge_id,
+			)) {
+				if (inherited.has(row.obligation_id)) continue;
+				const obligation = this.obligation(row.obligation_id);
+				if (obligation === undefined || obligation.state !== "open") continue;
+				// Only rows that durably continue through this destination ride
+				// the continuation: the command's recovery rows follow the
+				// retargets, and the terminal they target is the one at risk.
+				const owners = this.recoveryRowOwners(obligation.recoveryIds);
+				if (owners === undefined) continue;
+				if (!owners.some((owner) => owner.hubId === from.hubId && owner.sessionRef === from.sessionRef)) continue;
+				inherited.add(row.obligation_id);
+			}
+		}
+		return [...inherited];
 	}
 
 	private stampChain(obligationId: string, chainId: string): void {
@@ -699,6 +750,7 @@ export class DraftHandoffLedgerSQLite implements DraftHandoffLedger {
 			releasedRecoveryIds: JSON.parse(row.released_recovery_ids) as string[],
 			createdAt: row.created_at,
 			resolvedAt: row.resolved_at,
+			appliedAt: row.applied_at ?? null,
 		};
 	}
 }

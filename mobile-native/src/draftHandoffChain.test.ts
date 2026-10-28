@@ -1317,6 +1317,110 @@ describe("handoff chain obligations", () => {
 		expect(storageLedger.readGraph().edges).toEqual([]);
 	});
 
+	test("a converged continuation inherits the running command's obligation", async () => {
+		const { storage, storageLedger, repository } = setup();
+		const intent = (ref: string): MutationIntent => ({
+			targetRef: targetKey(ref),
+			threadId: `thread-${ref}`,
+			method: "notes/human/set",
+			payload: { ref, expectedInstanceId: `instance-${ref}`, note: "recovered command input" },
+			attachments: [],
+			optimisticDisplay: null,
+		});
+		const captured = await storage.enqueueIntent(intent("a"));
+		// The retarget only moves rows while a live outbox row rides it, so a
+		// driver intent keeps the resume real.
+		await storage.enqueueIntent(intent("a"));
+		await storage.transferToRecovery(captured.clientMutationId, "editing");
+		const library = new DraftLibrary(
+			() => repository,
+			undefined,
+			() => storageLedger,
+		);
+		repository.write(endpoint("a"), {
+			draft: "a work",
+			unconfirmed: null,
+			composer: { recoveryIds: [captured.clientMutationId] },
+		});
+		// The recovered command runs while its draft converges on B.
+		const source = library.open(endpoint("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		const token = storageLedger.readGraph().obligations[0]?.obligationId;
+		if (token === undefined) throw new Error("missing obligation");
+		resume(storage, "a", "b");
+		expect(library.handoff(endpoint("a"), endpoint("b"))).toBe(true);
+		// A second origin converges on B, and the continuation selects its
+		// chain - so the running command's obligation must ride it anyway.
+		resume(storage, "x", "b");
+		resume(storage, "b", "c");
+		const bc = storageLedger.readGraph().edges.find((edge) => edge.from.sessionRef === "b");
+		if (bc === undefined) throw new Error("missing continuation edge");
+		expect(bc.obligations).toContain(token);
+
+		library.retryPendingHandoffs();
+		// The continuation waits for the running command: it cannot settle out
+		// from under it, and the terminal's screen keeps the row excluded.
+		expect(storageLedger.readGraph().edges.find((edge) => edge.edgeId === bc.edgeId)?.state).toBe("pending");
+		expect([...library.openObligationRecoveryIds(endpoint("c"))]).toContain(captured.clientMutationId);
+
+		finish();
+		await submitted;
+		library.retryPendingHandoffs();
+		const settled = storageLedger.readGraph().edges.find((edge) => edge.edgeId === bc.edgeId);
+		expect(settled?.resolvedAs).toBe("settled");
+		const atC = repository.read(endpoint("c"));
+		expect(atC.unconfirmedCaptureToken).toBeUndefined();
+		expect(atC).toMatchObject({ completedCommandRecoveryIds: [captured.clientMutationId] });
+	});
+
+	test("an applied completion is never revisited by the routine pass", () => {
+		const { storageLedger, repository } = setup();
+		// The durable state a crash leaves behind: a resolved obligation whose
+		// capture was never cleared.
+		storageLedger.beginSubmission("token-done", endpoint("a"), []);
+		repository.write(endpoint("a"), {
+			draft: "work",
+			unconfirmed: "work",
+			unconfirmedCaptureToken: "token-done",
+		});
+		storageLedger.resolveSubmission("token-done", "completed", []);
+		let reads = 0;
+		const counting = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "read" && typeof value === "function")
+					return (...args: unknown[]) => {
+						reads++;
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		const library = new DraftLibrary(
+			() => counting,
+			undefined,
+			() => storageLedger,
+		);
+		library.retryPendingHandoffs();
+		// The pass applied the completion at its capture owner.
+		const settled = repository.read(endpoint("a"));
+		expect(settled.unconfirmedCaptureToken).toBeUndefined();
+		expect(settled).toMatchObject({ unconfirmed: null });
+
+		// The acknowledged obligation is excluded from every later routine
+		// pass: typing must not revisit the whole submission history.
+		const afterFirst = reads;
+		library.retryPendingHandoffs();
+		library.retryPendingHandoffs();
+		expect(reads).toBe(afterFirst);
+	});
+
 	test("a recovery pass applies a resolved completion with no pending edge", () => {
 		const { storageLedger, repository } = setup();
 		// The durable state a crash leaves behind: the resolution committed to

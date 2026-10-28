@@ -164,18 +164,15 @@ export class DraftLibrary {
 		for (const entry of this.retired.values()) entry.document.retry();
 		const load = readHandoffGraph(ledger);
 		if (load.state !== "ready") return;
-		// Resolved dispositions reach the identities owning their recovery rows
-		// even when no edge waited for their obligation - an unrecorded begin
-		// retried after its handoff already decided, or a completion delivered
-		// at a stranded capture.
-		this.reconcileDispositionsToRowOwners(ledger, load.graph);
-		// A resolution whose capture was never cleared - the process died
-		// between the resolution write and the capture clear, or the owner was
-		// opened while this ledger was unavailable - strands a completed
-		// command as restorable input. Every recovery pass applies resolved
-		// completions at their capture owners, with no edge required to wait
-		// for their obligation.
-		this.applyResolvedCompletions(load.graph);
+		// Resolved obligations still owe routine work until their dispositions
+		// reach the identities owning their recovery rows and their completion
+		// applies at the identity that owns their capture - an unrecorded begin
+		// retried after its handoff decided, or a completion stranded by a
+		// crash between its resolution and its capture clear. An obligation
+		// whose completion is durably applied is acknowledged and never
+		// revisited, so the pass costs what is still unresolved, not the
+		// device's whole submission history.
+		this.reconcileResolvedObligations(ledger, load.graph);
 		// A reconciled obligation unblocks the edges waiting on it, so the
 		// ordering must read the graph that exists after the reconciliation.
 		if (this.reconcileAbandonedObligations(ledger, load.graph)) {
@@ -664,24 +661,50 @@ export class DraftLibrary {
 		return true;
 	}
 
-	/** Resolved dispositions reach the identities owning their recovery rows
-	 * even when no edge ever waited for their obligation - an unrecorded begin
-	 * retried after its handoff decided, or a completion stranded at a capture
-	 * whose rows moved on. Idempotent: markers already present write nothing. */
-	private reconcileDispositionsToRowOwners(ledger: DraftHandoffLedger, graph: DraftHandoffGraph): void {
+	/** Resolved obligations still owed routine work: their dispositions must
+	 * reach the identities owning their recovery rows, and their completion
+	 * must apply at the identity that owns their capture - an unrecorded begin
+	 * retried after its handoff decided, or a completion stranded by a crash
+	 * between its resolution and its capture clear. An obligation whose
+	 * completion durably applied - or proved durably absent, with every read
+	 * successful - is acknowledged in the ledger and excluded from later
+	 * passes, so routine reconciliation costs what is still unresolved, not
+	 * the device's whole submission history. */
+	private reconcileResolvedObligations(ledger: DraftHandoffLedger, graph: DraftHandoffGraph): void {
 		for (const obligation of graph.obligations) {
 			if (!clearsCapture(obligation.state)) continue;
+			if (obligation.appliedAt != null) continue;
 			const completed = obligation.state === "completed" ? obligation.completedCommandIds : [];
 			const released = obligation.releasedRecoveryIds;
-			if (!completed.length && !released.length) continue;
+			let readsFailed = false;
+			let tokenSeen = false;
 			const owner = captureTerminal(graph.edges, obligation, (endpoint) => {
 				try {
-					return this.repository().read(endpoint);
+					const record = this.repository().read(endpoint);
+					if (record?.unconfirmedCaptureToken === obligation.obligationId) tokenSeen = true;
+					return record;
 				} catch {
+					readsFailed = true;
 					return undefined;
 				}
 			});
-			this.writeDispositionsAtRowOwners(ledger, owner, obligation.chainId ?? "", completed, released);
+			if (
+				(completed.length !== 0 || released.length !== 0) &&
+				!this.writeDispositionsAtRowOwners(ledger, owner, obligation.chainId ?? "", completed, released)
+			)
+				continue;
+			const outcome = this.applyCompletion(obligation, owner);
+			// A delivered completion just landed; a token no durable record
+			// holds, with every read successful, is durably absent. Either way
+			// the obligation owes no further routine work; a failed read or
+			// write retries on the next pass.
+			if (!readsFailed && (outcome === "delivered" || !tokenSeen)) {
+				try {
+					ledger.acknowledgeAppliedCompletion?.(obligation.obligationId);
+				} catch {
+					// The next pass retries the acknowledgment.
+				}
+			}
 		}
 	}
 
@@ -735,6 +758,9 @@ export class DraftLibrary {
 		}
 		for (const obligation of graph.obligations) {
 			if (!clearsCapture(obligation.state)) continue;
+			// An acknowledged obligation's completion already applied; nothing
+			// of it can render as a stale capture.
+			if (obligation.appliedAt != null) continue;
 			// A transfer can commit while its composed-marker write fails, so the
 			// graph can name an origin whose capture durably lives elsewhere.
 			const owner = captureTerminal(graph.edges, obligation, (endpoint) => {
@@ -751,31 +777,16 @@ export class DraftLibrary {
 
 	/** The recovery pass: every resolved completion still waiting on a capture is
 	 * applied to the record that owns it. */
-	private applyCompletion(obligation: DraftSubmissionObligation, terminal: DraftDestination): void {
-		this.deliverCompletionAt(terminal, {
+	private applyCompletion(
+		obligation: DraftSubmissionObligation,
+		terminal: DraftDestination,
+	): CompletionDeliveryOutcome {
+		return this.deliverCompletionAt(terminal, {
 			captureToken: obligation.obligationId,
 			state: obligation.state === "completed" ? "completed" : "not-sent",
 			completedCommandIds: obligation.completedCommandIds,
 			releasedRecoveryIds: obligation.releasedRecoveryIds,
 		});
-	}
-
-	/** Every resolved completion still owed to a capture: apply it to the
-	 * identity that owns the capture, whether or not any edge waits for the
-	 * obligation. Idempotent on the capture token, so a pass that finds nothing
-	 * owed writes nothing. */
-	private applyResolvedCompletions(graph: DraftHandoffGraph): void {
-		for (const obligation of graph.obligations) {
-			if (!clearsCapture(obligation.state)) continue;
-			const owner = captureTerminal(graph.edges, obligation, (endpoint) => {
-				try {
-					return this.repository().read(endpoint);
-				} catch {
-					return undefined;
-				}
-			});
-			this.applyCompletion(obligation, owner);
-		}
 	}
 
 	/** Merge a delivered completion into the terminal's live document when one
