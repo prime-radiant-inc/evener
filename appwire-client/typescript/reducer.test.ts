@@ -9,25 +9,30 @@ import toolAndJobsFixture from "./fixtures/tool-and-jobs.jsonl?raw";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import {
   applyNotification,
-  applyReadModel,
-  applyReadResponse,
   collectAuthoritativeMutationIds,
   decodeTranscriptItem,
   encodeTranscriptItem,
   hydrateThread,
-  imageSessionRouteForSession,
-  mergeOlderItemPage,
-  mergeTranscriptItemVersioned,
-  mergeTranscriptTurnVersioned,
-  mergeTurnHistory,
-  mergeTurnHistoryWithFolds,
   notificationTargetsThread,
   notificationTouchesTranscript,
   prependOlderTurns,
   resolvePendingEscalation,
 } from "./reducer";
 import { itemAt, turnAt } from "./testing/modelAccessors";
-import { itemTextPresence, markItemIdentityOnly, markItemTextOmitted } from "./transcriptItems";
+import {
+  applyReadModel,
+  applyReadResponse,
+  mergeOlderItemPage,
+  mergeTranscriptItemVersioned,
+  mergeTranscriptTurnVersioned,
+} from "./transcriptHistory";
+import {
+  imageSessionRouteForSession,
+  itemTextPresence,
+  markItemIdentityOnly,
+  markItemTextOmitted,
+} from "./transcriptItems";
+import { mergeTurnHistory, mergeTurnHistoryWithFolds } from "./turnHistoryMerge";
 import type {
   AnyNotification,
   EvenerDelegateInfo,

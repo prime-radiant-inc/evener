@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InputItem, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
@@ -35,6 +35,7 @@ import {
   setMutationStorageForTests,
   threadsStore,
 } from "../../../stores/threads";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
 import buttonStyles from "../../../widgets/button/button.module.css";
@@ -177,13 +178,6 @@ function _emptyActivityTree(ref: string) {
 // starts serving requests synchronously (the command catalog's
 // connection-driven load fires inside connect's own publish), so a handler
 // scripted after the wiring would miss the request it existed to answer.
-function connectFakeClient(prepare?: (fake: FakeClient) => void): FakeClient {
-  const fake = new FakeClient("ready");
-  prepare?.(fake);
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 class PausedCommitStorage extends MutationOutboxIndexedDB {
   readonly commitStarted: Promise<void>;
   private markCommitStarted: (() => void) | undefined;
@@ -308,7 +302,7 @@ async function mountComposerWithHandle(
     source?: ReturnType<typeof createTestComposerSource>;
   } = {},
 ) {
-  const fake = connectFakeClient(options.prepare);
+  const fake = connectReadyFakeClient(options.prepare);
   const source = options.source ?? createTestComposerSource(ref);
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
@@ -355,7 +349,7 @@ function deferred<T>() {
 }
 
 test("onEditingChange follows IME composition, not editor focus or draft content", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
   writeComposerDraft("ref_a", { text: "saved draft", skillNames: [] });
@@ -1239,7 +1233,7 @@ test("a focused pane never focuses its composer on mount on mobile", async () =>
 
 test("the real live Composer mount discovers initial activity without a test-supplied opt-in", async () => {
   const ref = "ref_activity_live";
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const activityRefs: unknown[] = [];
   const subtreeRefs: unknown[] = [];
   fake.on("thread/read", () => readResponse(ref));
@@ -1270,7 +1264,7 @@ test("the real live Composer mount discovers initial activity without a test-sup
 // Saved sessions discover activity through inline chrome while the editor rests.
 test("a saved notLoaded session with sending enabled discovers activity while its card rests", async () => {
   const ref = "ref_activity_saved";
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const activityRefs: unknown[] = [];
   const subtreeRefs: unknown[] = [];
   fake.on("thread/read", () =>
@@ -1550,9 +1544,9 @@ test("an addressed quote-insert request is visible only to the addressed seat", 
 
 test("an addressed quote-insert request reaches the addressed seat's composer", async () => {
   const ref = "ref_two_seats";
-  const fakeA = connectFakeClient();
+  const fakeA = connectReadyFakeClient();
   fakeA.on("thread/read", () => readResponse(ref));
-  const fakeB = connectFakeClient();
+  const fakeB = connectReadyFakeClient();
   fakeB.on("thread/read", () => readResponse(ref));
   await threadsStore.getState().ensureThread(ref);
   render(
@@ -1589,7 +1583,7 @@ test("goal editing focuses only the requesting seat's composer when two share a 
   // Both seats live in ONE tree, like an ordinary pane and its embedded
   // column do in production: effects run in mount order, so an unaddressed
   // request deterministically reaches every seat.
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", overrides));
   await threadsStore.getState().ensureThread("ref_a");
   render(
@@ -1620,7 +1614,7 @@ test("goal editing focuses only the requesting seat's composer when two share a 
 });
 
 test("the composer anchor carries its owning ref and pane id for the hold-hint overlay", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_anchor"));
   await threadsStore.getState().ensureThread("ref_anchor");
   render(
@@ -1643,7 +1637,7 @@ test("the composer anchor carries its owning ref and pane id for the hold-hint o
 test("the current-task control opens this column's tasks without stealing cascade focus", async () => {
   const user = userEvent.setup();
   const overrides = { evener: currentWorkEvener({ task: true }) };
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("remote:parent", overrides));
   await threadsStore.getState().ensureThread("remote:parent");
   // An embedded column's composer: the host cascade covers this
@@ -6666,7 +6660,7 @@ test.each(["before render", "before subscription"] as const)(
   async (arrival) => {
     const ref = "ref_selection_only";
     const draft = { text: "", skillNames: ["simplify"] };
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", () =>
       readResponse(ref, {
         evener: { ref, capabilities: { ...FULL_CAPABILITIES, skillInput: true }, queue: { revision: 0 } },

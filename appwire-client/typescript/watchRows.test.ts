@@ -2,7 +2,8 @@
 
 import { expect, test } from "vitest";
 import type { ItemModel, ThreadModel } from "./model";
-import { applyNotification, mergeOlderItemPage } from "./reducer";
+import { applyNotification } from "./reducer";
+import { mergeOlderItemPage } from "./transcriptHistory";
 import { foldWatchSummaries } from "./watchRows";
 
 function watchItem(id: string, raw: unknown, turnId = "t1", argumentsJSON?: string): ItemModel {

@@ -325,7 +325,7 @@ func TestRetirementRoutedEngineEffectsRefused(t *testing.T) {
 	if !reflect.DeepEqual(before, after) {
 		t.Fatal("routed refusal changed engine metadata")
 	}
-	if root.QueueDepth() != 0 || len(root.SteeringQueueSnapshot()) != 0 {
+	if durablyAcceptedMutations(root) != 0 {
 		t.Fatal("routed refusal changed input")
 	}
 	// Reads may finish while preparing, but cannot enter after commit.

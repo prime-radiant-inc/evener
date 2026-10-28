@@ -2,11 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { ItemModel } from "./model";
 import {
   applyNotification,
-  applyReadModel,
   currentTranscriptState,
   decodeCurrentTranscriptState,
   hydrateThread,
-  mergeOlderItemPage,
   threadModelFromCurrentState,
 } from "./reducer";
 import { currentRead, textDelta } from "./testing/currentTranscript";
@@ -14,6 +12,7 @@ import { notificationWireItem } from "./testing/notificationWireFixtures";
 import { appendChunk, chunkViewBackingForTests } from "./testing/reducerHooks";
 import { subagentCallItems } from "./testing/subagentWireFixtures";
 import { toolWireItems } from "./testing/toolWireFixtures";
+import { applyReadModel, mergeOlderItemPage } from "./transcriptHistory";
 import { itemTextPresence, markItemIdentityOnly, markItemTextOmitted } from "./transcriptItems";
 import {
   type EvenerDelegateInfo,

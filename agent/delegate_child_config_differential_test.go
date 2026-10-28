@@ -29,10 +29,6 @@ var freshVersusRestoredChildConfigExemptions = []string{
 	// Only the child-ID input for NewSession; the restored child's ID comes
 	// from its saved metadata instead.
 	"cfg.spawn.sessionID",
-	// A restored child does not carry the tree's turn counters, so the tree's
-	// concurrency budget does not cover its own delegates. Removed with the fix.
-	"cfg.spawn.treeCounter",
-	"cfg.spawn.driveCounter",
 }
 
 // Pins that a cold-restored delegate runs with the same configuration it had
@@ -128,6 +124,11 @@ func TestRestoredDelegateChildConfigMatchesFreshChild(t *testing.T) {
 			sort.Strings(diffs)
 			if len(diffs) != 0 {
 				t.Fatalf("restored child config differs from the fresh child's at:\n%v", diffs)
+			}
+			// The tree's counters are shared by identity, not copied: the budget
+			// only holds if the restored child draws on its root's counters.
+			if restoredCfg.spawn.treeCounter != restoredRoot.treeCounter || restoredCfg.spawn.driveCounter != restoredRoot.driveCounter {
+				t.Fatal("restored child does not share its root's tree counters")
 			}
 		})
 	}
