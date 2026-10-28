@@ -1,14 +1,13 @@
 import { expect, test } from "vitest";
 import type { ItemModel } from "./model";
+import { applyNotification } from "./reducer";
 import {
-  applyNotification,
   cachedSessionRecord,
   decodeTranscriptItem,
   encodeTranscriptItem,
-  hydrateThread,
   threadModelFromCache,
-} from "./reducer";
-import { mergeTranscriptItemVersioned } from "./transcriptHistory";
+} from "./transcriptCache";
+import { hydrateThread, mergeTranscriptItemVersioned } from "./transcriptHistory";
 import { mergeTurnHistory } from "./turnHistoryMerge";
 
 const author = {

@@ -15,10 +15,12 @@ import {
   markItemTextOmitted,
   outputImagesToItemImages,
   threadFields,
+  wireImageSessionId,
   wireItemToModel,
+  wireToTurnModel,
   wireToTurnScalars,
 } from "./transcriptItems";
-import { mergeOlderItemPageWithFolds } from "./turnHistoryMerge";
+import { mergeOlderItemPageWithFolds, mergeToolCallsByCallId, mergeTurnHistory } from "./turnHistoryMerge";
 import type {
   OverlayItem,
   Thread,
@@ -1066,4 +1068,73 @@ export type ModelExtras<M extends ThreadModel> = M extends unknown ? Omit<M, key
 // to the conditional type above, so the public entry points convert here.
 export function publicModel<M extends ThreadModel>(value: unknown): ThreadModel & ModelExtras<M> {
   return value as ThreadModel & ModelExtras<M>;
+}
+
+// hydrateThread builds a thread's whole model from one read. A v6 read (one
+// that names its snapshot) builds versioned history and the overlay; a pre-v6
+// read keeps the unversioned turns it always had.
+export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number): ThreadModel {
+  const fields = threadFields(resp, ref, now);
+  const imageSessionRoute = imageSessionRouteForSession(fields.imageSessionId ?? fields.threadId);
+  if (!resp.snapshot) {
+    return {
+      ...fields,
+      turns: mergeToolCallsByCallId((resp.thread.turns ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute))),
+    };
+  }
+  const fresh = splitWireTurns(resp.thread.turns ?? [], imageSessionRoute);
+  const generation = resp.requestGeneration ?? 0;
+  const history: HistoryState = {
+    ...readIdentity(resp),
+    appliedGeneration: generation,
+    issuedGeneration: generation,
+    deferredPages: [],
+    turns: mergeHistory([], fresh),
+  };
+  return withDisplay({ ...fields, turns: [], ...runningTurn(resp.thread) }, history, overlayRecord(resp.overlay));
+}
+
+/** The first and last item positions of a read response's fresh window: the
+ * bounds the store's shell seam compares against the captured anchor and the
+ * model's current newest (spec, "The two serving paths, the live gap, and
+ * its rule"). Pure record data; no disposition logic lives here. */
+export function readWindowBounds(resp: ThreadReadResponse): {
+  start: ThreadItemPosition | undefined;
+  end: ThreadItemPosition | undefined;
+} {
+  // threadFields' own session-id derivation (the wire sessionId, falling back
+  // to the thread id, trimmed), shared here so the bounds read the same
+  // image session route the read itself would.
+  const fresh = splitWireTurns(resp.thread.turns ?? [], imageSessionRouteForSession(wireImageSessionId(resp.thread)));
+  const range = fragmentRange(fresh.items);
+  return { start: range?.[0], end: range?.[1] };
+}
+
+/** Merges a fold tail (the pre-replacement model's turns positioned above the
+ * replacement window's end) onto a model whose history hydrateThread just
+ * built. The replay's result is the window plus exactly the folds that
+ * arrived (spec: "the rule therefore still replaces, then replays"). */
+export function mergeTailTurns<M extends ThreadModel>(model: M, tail: TurnModel[]): ThreadModel & ModelExtras<M> {
+  if (tail.length === 0 || model.history === undefined) return publicModel<M>(model);
+  const merged = mergeTurnHistory(model.history.turns, tail);
+  const history: HistoryState = { ...model.history, turns: merged.turns };
+  // model.overlay is set on every model withDisplay built (hydrateThread's v6
+  // branch included); the ?? {} is for the type, whose field is optional.
+  return publicModel<M>(withDisplay({ ...model, history }, history, model.overlay ?? {}));
+}
+
+export function collectAuthoritativeMutationIds(resp: ThreadReadResponse): Set<string> {
+  const identities = new Set<string>();
+  for (const pending of resp.thread.evener.pendingMutations ?? []) identities.add(pending.clientMutationId);
+  for (const clientMutationId of resp.thread.evener.queue.clientMutationIds ?? []) identities.add(clientMutationId);
+  for (const turn of resp.thread.turns ?? []) {
+    for (const item of turn.items ?? []) {
+      if (item.clientMutationId) identities.add(item.clientMutationId);
+    }
+  }
+  return identities;
+}
+
+export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
+  return mergeOlderItemPage(model, resp);
 }

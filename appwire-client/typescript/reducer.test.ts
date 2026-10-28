@@ -9,22 +9,21 @@ import toolAndJobsFixture from "./fixtures/tool-and-jobs.jsonl?raw";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import {
   applyNotification,
-  collectAuthoritativeMutationIds,
-  decodeTranscriptItem,
-  encodeTranscriptItem,
-  hydrateThread,
   notificationTargetsThread,
   notificationTouchesTranscript,
-  prependOlderTurns,
   resolvePendingEscalation,
 } from "./reducer";
 import { itemAt, turnAt } from "./testing/modelAccessors";
+import { decodeTranscriptItem, encodeTranscriptItem } from "./transcriptCache";
 import {
   applyReadModel,
   applyReadResponse,
+  collectAuthoritativeMutationIds,
+  hydrateThread,
   mergeOlderItemPage,
   mergeTranscriptItemVersioned,
   mergeTranscriptTurnVersioned,
+  prependOlderTurns,
 } from "./transcriptHistory";
 import {
   imageSessionRouteForSession,

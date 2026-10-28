@@ -773,55 +773,8 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// the first EventContextCompaction, and strategyInjected accumulates
 	// across however many times a strategy reports (ordinarily once).
 	injectedTurns := func() int { return len(pendingSteering) + strategyInjected }
-	// The generation-matched publication claim, run by the winning publish
-	// inside its s.mu critical section (see foldCommit). actualCompaction is
-	// decided by the publisher from the staged EventContextCompaction
-	// payloads; the claim itself matches the captured operation's generation
-	// AND note generation against the live pending operation, so a fold
-	// whose intent was superseded or cleared mid-flight claims nothing. The
-	// publication identity is minted from the lifecycle revision the claim
-	// stamps — persisted in every snapshot and receipt, and bumped exactly
-	// once per recorded publication, so a restored session's publications
-	// can never re-mint a prior publication's identity. A real compaction
-	// that captured no operation still records the absent-selection
-	// reminder handoff.
 	commit.stagedCompactionCount = func() int { return len(pendingCompactionEvents) }
-	commit.claimCompactionLocked = func() {
-		captured := commit.captured
-		pending := s.skillLifecycle.PendingCompaction
-		claim := commit.actualCompaction && pending != nil && captured != nil &&
-			pending.Generation == captured.Generation && pending.NoteGeneration == captured.NoteGeneration
-		var receipt *schema.SkillCompactionReceipt
-		if claim {
-			pending.Phase = skillCompactionPhasePublished
-			s.skillLifecycle.Revision++
-			pending.PublicationID = foldPublicationID(s.skillLifecycle.Revision)
-			claimed := *pending
-			claimed.Selection.Names = slices.Clone(pending.Selection.Names)
-			receipt = &schema.SkillCompactionReceipt{
-				Revision:  s.skillLifecycle.Revision,
-				SessionID: s.id,
-				Operation: claimed,
-				Phase:     skillCompactionReceiptPublished,
-			}
-		} else if commit.actualCompaction {
-			// The reminder handoff is itself a lifecycle mutation: it bumps
-			// the revision like any other receipt, so a restart reconciles
-			// it from the transcript even if the post-flush save never ran.
-			s.skillLifecycle.Revision++
-			receipt = &schema.SkillCompactionReceipt{
-				Revision:  s.skillLifecycle.Revision,
-				SessionID: s.id,
-				Operation: schema.SkillCompactionOperation{PublicationID: foldPublicationID(s.skillLifecycle.Revision)},
-				Phase:     skillCompactionReceiptPublished,
-				Reason:    skillCompactionReminderNoOperation,
-			}
-		}
-		if receipt != nil {
-			s.recordSkillCompactionHandoffLocked(*receipt)
-			commit.receipt = receipt
-		}
-	}
+	commit.claimCompactionLocked = func() { s.claimCompactionLocked(commit) }
 	commit.claimNoteLocked = func() {
 		if noteClaimLocked != nil {
 			noteClaimLocked()
@@ -830,6 +783,55 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	commit.commitTranscriptsLocked = commitTranscriptsLocked
 	commit.flush = flush
 	return ctx, emitFn, commit, injectedTurns
+}
+
+// claimCompactionLocked is the generation-matched publication claim, run by
+// the winning publish inside its s.mu critical section (see foldCommit).
+// actualCompaction is decided by the publisher from the staged
+// EventContextCompaction payloads; the claim itself matches the captured
+// operation's generation AND note generation against the live pending
+// operation, so a fold whose intent was superseded or cleared mid-flight
+// claims nothing. The publication identity is minted from the lifecycle
+// revision the claim stamps — persisted in every snapshot and receipt, and
+// bumped exactly once per recorded publication, so a restored session's
+// publications can never re-mint a prior publication's identity. A real
+// compaction that captured no operation still records the absent-selection
+// reminder handoff. Callers must hold s.mu.
+func (s *Session) claimCompactionLocked(commit *foldCommit) {
+	captured := commit.captured
+	pending := s.skillLifecycle.PendingCompaction
+	claim := commit.actualCompaction && pending != nil && captured != nil &&
+		pending.Generation == captured.Generation && pending.NoteGeneration == captured.NoteGeneration
+	var receipt *schema.SkillCompactionReceipt
+	if claim {
+		pending.Phase = skillCompactionPhasePublished
+		s.skillLifecycle.Revision++
+		pending.PublicationID = foldPublicationID(s.skillLifecycle.Revision)
+		claimed := *pending
+		claimed.Selection.Names = slices.Clone(pending.Selection.Names)
+		receipt = &schema.SkillCompactionReceipt{
+			Revision:  s.skillLifecycle.Revision,
+			SessionID: s.id,
+			Operation: claimed,
+			Phase:     skillCompactionReceiptPublished,
+		}
+	} else if commit.actualCompaction {
+		// The reminder handoff is itself a lifecycle mutation: it bumps
+		// the revision like any other receipt, so a restart reconciles
+		// it from the transcript even if the post-flush save never ran.
+		s.skillLifecycle.Revision++
+		receipt = &schema.SkillCompactionReceipt{
+			Revision:  s.skillLifecycle.Revision,
+			SessionID: s.id,
+			Operation: schema.SkillCompactionOperation{PublicationID: foldPublicationID(s.skillLifecycle.Revision)},
+			Phase:     skillCompactionReceiptPublished,
+			Reason:    skillCompactionReminderNoOperation,
+		}
+	}
+	if receipt != nil {
+		s.recordSkillCompactionHandoffLocked(*receipt)
+		commit.receipt = receipt
+	}
 }
 
 func consumeMatchingCompactionArtifact(existing *[]schema.Turn, turn schema.Turn) bool {

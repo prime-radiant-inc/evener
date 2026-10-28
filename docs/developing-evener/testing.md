@@ -757,7 +757,7 @@ from the assertion that fails:
 
 - A store fixture's `thread/read` handler must echo the request generation
   (`requestGeneration: params.requestGeneration ?? …`), or the response is
-  thrown away: `readDisposition` (appwire-client/typescript/reducer.ts)
+  thrown away: `readDisposition` (appwire-client/typescript/transcriptHistory.ts)
   discards a latest-window response whose `requestGeneration` is older than
   the held history's `issuedGeneration`, so a handler returning a static
   fixture with a stale default generation turns the read into a silent no-op

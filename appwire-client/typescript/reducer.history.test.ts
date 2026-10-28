@@ -8,11 +8,12 @@
 import { describe, expect, test } from "vitest";
 import { displayTurnStatus } from "./itemFailure";
 import type { ThreadModel } from "./model";
-import { applyNotification, hydrateThread } from "./reducer";
+import { applyNotification } from "./reducer";
 import {
   applyHistoryReadFailure,
   applyReadModel,
   applyReadResponse,
+  hydrateThread,
   invalidateHistory,
   issueLatestWindowRead,
   mergeOlderItemPage,

@@ -480,6 +480,11 @@ export function imageSessionRouteForSession(sessionId: string): string | undefin
   return encodeURIComponent(sessionId);
 }
 
+// stampThreadImageURLs (output_images.go) prefers the wire session id and
+// falls back to the thread id, trimming both (strings.TrimSpace); the
+// client-side rebuild matches it exactly — a whitespace-padded session id
+// must not win the fallback and escape to a /s/%20.../images route the hub
+// would 404 on while the trimmed thread id would have served.
 export function wireImageSessionId(thread: Thread): string {
   return thread.sessionId.trim() || thread.id.trim();
 }
